@@ -4,12 +4,14 @@ import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
 import type {
   AiConfig,
+  DocumentBlockDraft,
   DocumentChild,
   DocumentDetail,
   DocumentTreeNode,
   HomeData,
   LinkedDocument,
   RecentDocument,
+  UpdateDocumentInput,
   WorkspaceSummary
 } from '@shared/contracts'
 import { appSchema } from './schema'
@@ -47,6 +49,12 @@ interface DocumentDetailRow {
 interface ParentDocumentRow {
   id: string
   path: string
+}
+
+interface DocumentPathRow {
+  id: string
+  path: string
+  parent_id: string | null
 }
 
 interface ExportDocumentRow {
@@ -215,6 +223,60 @@ export class KnowbookStore {
     return id
   }
 
+  updateDocument(documentId: string, input: UpdateDocumentInput): void {
+    const now = new Date().toISOString()
+    const document = this.db.prepare(`
+      SELECT id, path, parent_id
+      FROM documents
+      WHERE id = ?
+    `).get(documentId) as DocumentPathRow | undefined
+
+    if (!document) {
+      throw new Error('Document not found')
+    }
+
+    const parentPath = document.parent_id
+      ? (this.db.prepare('SELECT path FROM documents WHERE id = ?').get(document.parent_id) as { path: string } | undefined)?.path
+      : null
+
+    const normalizedTitle = input.title.trim() || 'Untitled'
+    const normalizedSummary = input.summary.trim()
+    const normalizedBlocks = this.normalizeBlocks(input.blocks)
+    const oldPath = document.path
+    const newPath = parentPath ? `${parentPath}/${normalizedTitle}` : normalizedTitle
+
+    const updateDocumentStatement = this.db.prepare(`
+      UPDATE documents
+      SET title = ?, path = ?, summary = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    const updateDescendantsStatement = this.db.prepare(`
+      UPDATE documents
+      SET path = REPLACE(path, ?, ?)
+      WHERE path LIKE ?
+    `)
+    const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
+    const insertBlockStatement = this.db.prepare(`
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    const transaction = this.db.transaction(() => {
+      updateDocumentStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
+
+      if (newPath !== oldPath) {
+        updateDescendantsStatement.run(`${oldPath}/`, `${newPath}/`, `${oldPath}/%`)
+      }
+
+      deleteBlocksStatement.run(documentId)
+      normalizedBlocks.forEach((block, index) => {
+        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, now, now)
+      })
+    })
+
+    transaction()
+  }
+
   getExportDocuments(): ExportDocument[] {
     const documents = this.db.prepare(`
       SELECT id, title, path, summary, updated_at
@@ -354,6 +416,26 @@ export class KnowbookStore {
     }
 
     return candidate
+  }
+
+  private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+    const normalized = blocks
+      .map((block) => ({
+        type: block.type.trim() || 'paragraph',
+        content: block.content
+      }))
+      .filter((block) => block.content.trim().length > 0)
+
+    if (normalized.length > 0) {
+      return normalized
+    }
+
+    return [
+      {
+        type: 'paragraph',
+        content: 'Start writing here.'
+      }
+    ]
   }
 
   private documentTitleExists(parentId: string | null, title: string): boolean {

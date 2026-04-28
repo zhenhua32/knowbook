@@ -149,11 +149,24 @@ dt,
   cursor: pointer;
 }
 
+.danger-button {
+  border: 1px solid rgba(165, 45, 45, 0.2);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 241, 241, 0.92);
+  color: #8c2424;
+  cursor: pointer;
+}
+
 .primary-button:hover {
   transform: translateY(-1px);
 }
 
 .secondary-button:hover {
+  transform: translateY(-1px);
+}
+
+.danger-button:hover {
   transform: translateY(-1px);
 }
 
@@ -328,6 +341,42 @@ dt,
   font-size: 16px;
 }
 
+.editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.editor-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #4e4435;
+  font-size: 13px;
+}
+
+.editor-input,
+.editor-textarea,
+.editor-select {
+  border: 1px solid rgba(82, 66, 39, 0.15);
+  border-radius: 12px;
+  background: rgba(255, 252, 247, 0.96);
+  color: #2a241b;
+}
+
+.editor-input,
+.editor-select {
+  height: 38px;
+  padding: 0 12px;
+}
+
+.editor-textarea {
+  resize: vertical;
+  min-height: 76px;
+  padding: 10px 12px;
+}
+
 .document-updated {
   margin-top: 10px;
   font-size: 13px;
@@ -342,6 +391,27 @@ dt,
   flex-direction: column;
   gap: 12px;
   margin-top: 12px;
+}
+
+.block-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.block-editor-row {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(247, 243, 235, 0.95);
+}
+
+.block-editor-textarea {
+  min-height: 60px;
 }
 
 .block-preview {
@@ -445,6 +515,10 @@ dt,
   .workspace-grid,
   .relation-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .block-editor-row {
+    grid-template-columns: 1fr;
   }
 }
 

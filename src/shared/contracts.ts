@@ -29,6 +29,11 @@ export interface DocumentBlock {
   sortOrder: number
 }
 
+export interface DocumentBlockDraft {
+  type: string
+  content: string
+}
+
 export interface LinkedDocument {
   id: string
   title: string
@@ -78,10 +83,17 @@ export interface CreateDocumentResult {
   id: string
 }
 
+export interface UpdateDocumentInput {
+  title: string
+  summary: string
+  blocks: DocumentBlockDraft[]
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
+  updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<void>
   triggerBackup: () => Promise<BackupResult>
 }
 

@@ -27,6 +27,11 @@ export function App() {
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
+  const [isEditing, setIsEditing] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftSummary, setDraftSummary] = useState('')
+  const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
 
   useEffect(() => {
     let mounted = true
@@ -56,6 +61,15 @@ export function App() {
     window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
       if (mounted) {
         setSelectedDocument(detail)
+        setIsEditing(false)
+        setDraftTitle(detail?.title ?? '')
+        setDraftSummary(detail?.summary ?? '')
+        setDraftBlocks(
+          detail?.blocks.map((block) => ({
+            type: block.type,
+            content: block.content
+          })) ?? []
+        )
         setDetailLoading(false)
       }
     })
@@ -87,6 +101,97 @@ export function App() {
     setSelectedDocumentId(created.id)
     const detail = await window.knowbook.getDocumentDetail(created.id)
     setSelectedDocument(detail)
+    setIsEditing(true)
+    setDraftTitle(detail?.title ?? '')
+    setDraftSummary(detail?.summary ?? '')
+    setDraftBlocks(
+      detail?.blocks.map((block) => ({
+        type: block.type,
+        content: block.content
+      })) ?? []
+    )
+  }
+
+  function startEdit() {
+    if (!selectedDocument) {
+      return
+    }
+
+    setDraftTitle(selectedDocument.title)
+    setDraftSummary(selectedDocument.summary)
+    setDraftBlocks(
+      selectedDocument.blocks.map((block) => ({
+        type: block.type,
+        content: block.content
+      }))
+    )
+    setIsEditing(true)
+  }
+
+  function cancelEdit() {
+    if (!selectedDocument) {
+      setIsEditing(false)
+      return
+    }
+
+    setDraftTitle(selectedDocument.title)
+    setDraftSummary(selectedDocument.summary)
+    setDraftBlocks(
+      selectedDocument.blocks.map((block) => ({
+        type: block.type,
+        content: block.content
+      }))
+    )
+    setIsEditing(false)
+  }
+
+  async function saveDocument() {
+    if (!selectedDocumentId || !selectedDocument) {
+      return
+    }
+
+    setIsSaving(true)
+    await window.knowbook.updateDocument(selectedDocumentId, {
+      title: draftTitle,
+      summary: draftSummary,
+      blocks: draftBlocks
+    })
+
+    const [refreshedHome, refreshedDetail] = await Promise.all([
+      window.knowbook.getHomeData(),
+      window.knowbook.getDocumentDetail(selectedDocumentId)
+    ])
+    setHomeData(refreshedHome)
+    setSelectedDocument(refreshedDetail)
+    setIsEditing(false)
+    setIsSaving(false)
+  }
+
+  function updateDraftBlock(index: number, patch: Partial<{ type: string; content: string }>) {
+    setDraftBlocks((previous) =>
+      previous.map((block, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...block,
+              ...patch
+            }
+          : block
+      )
+    )
+  }
+
+  function addDraftBlock() {
+    setDraftBlocks((previous) => [
+      ...previous,
+      {
+        type: 'paragraph',
+        content: ''
+      }
+    ])
+  }
+
+  function removeDraftBlock(index: number) {
+    setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
   }
 
   return (
@@ -187,7 +292,22 @@ export function App() {
                     Add child
                   </button>
                 ) : null}
-                {detailLoading ? <span className="pill">Loading...</span> : <span className="pill">Read only</span>}
+                {selectedDocument && !isEditing ? (
+                  <button className="secondary-button" onClick={startEdit} type="button">
+                    Edit
+                  </button>
+                ) : null}
+                {selectedDocument && isEditing ? (
+                  <>
+                    <button className="secondary-button" disabled={isSaving} onClick={cancelEdit} type="button">
+                      Cancel
+                    </button>
+                    <button className="secondary-button" disabled={isSaving} onClick={saveDocument} type="button">
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : null}
+                {detailLoading ? <span className="pill">Loading...</span> : <span className="pill">{isEditing ? 'Editing' : 'Read only'}</span>}
               </div>
             </div>
 
@@ -195,19 +315,69 @@ export function App() {
               <>
                 <div className="document-summary-card">
                   <p className="document-path">{selectedDocument.path}</p>
-                  <p className="document-summary">{selectedDocument.summary}</p>
+                  {isEditing ? (
+                    <div className="editor-fields">
+                      <label className="editor-label">
+                        Title
+                        <input className="editor-input" onChange={(event) => setDraftTitle(event.target.value)} type="text" value={draftTitle} />
+                      </label>
+                      <label className="editor-label">
+                        Summary
+                        <textarea
+                          className="editor-textarea"
+                          onChange={(event) => setDraftSummary(event.target.value)}
+                          rows={3}
+                          value={draftSummary}
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <p className="document-summary">{selectedDocument.summary}</p>
+                  )}
                   <p className="document-updated">Updated {new Date(selectedDocument.updatedAt).toLocaleString()}</p>
                 </div>
 
                 <div className="preview-section">
                   <p className="panel-label">Blocks</p>
-                  <div className="block-preview-list">
-                    {selectedDocument.blocks.map((block) => (
-                      <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
-                        {renderBlock(block)}
-                      </div>
-                    ))}
-                  </div>
+                  {isEditing ? (
+                    <div className="block-editor-list">
+                      {draftBlocks.map((block, index) => (
+                        <div className="block-editor-row" key={`${selectedDocument.id}-draft-${index}`}>
+                          <select
+                            className="editor-select"
+                            onChange={(event) => updateDraftBlock(index, { type: event.target.value })}
+                            value={block.type}
+                          >
+                            <option value="paragraph">Paragraph</option>
+                            <option value="heading-1">Heading 1</option>
+                            <option value="heading-2">Heading 2</option>
+                            <option value="todo">Todo</option>
+                            <option value="code">Code</option>
+                          </select>
+                          <textarea
+                            className="editor-textarea block-editor-textarea"
+                            onChange={(event) => updateDraftBlock(index, { content: event.target.value })}
+                            rows={block.type === 'code' ? 5 : 2}
+                            value={block.content}
+                          />
+                          <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                      <button className="secondary-button" onClick={addDraftBlock} type="button">
+                        Add block
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="block-preview-list">
+                      {selectedDocument.blocks.map((block) => (
+                        <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
+                          {renderBlock(block)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="relation-grid">
