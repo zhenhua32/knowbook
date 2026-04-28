@@ -50,6 +50,8 @@ export function App() {
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
+  const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
+  const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
@@ -98,6 +100,8 @@ export function App() {
     window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
       if (mounted) {
         setSelectedDocument(detail)
+        setDraggingBlockIndex(null)
+        setDragOverBlockIndex(null)
         setActiveBlockIndex(null)
         setActiveCursorPosition(0)
         setLinkSuggestions([])
@@ -230,6 +234,8 @@ export function App() {
     setSelectedDocument(refreshedDetail)
     setIsEditing(false)
     setIsSaving(false)
+    setDraggingBlockIndex(null)
+    setDragOverBlockIndex(null)
     setLinkSuggestions([])
   }
 
@@ -384,6 +390,52 @@ export function App() {
 
   function removeDraftBlock(index: number) {
     setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
+  }
+
+  function beginBlockDrag(index: number) {
+    setDraggingBlockIndex(index)
+    setDragOverBlockIndex(index)
+  }
+
+  function endBlockDrag() {
+    setDraggingBlockIndex(null)
+    setDragOverBlockIndex(null)
+  }
+
+  function dropBlockAt(targetIndex: number) {
+    if (draggingBlockIndex === null || draggingBlockIndex === targetIndex) {
+      endBlockDrag()
+      return
+    }
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      const [moved] = next.splice(draggingBlockIndex, 1)
+      next.splice(targetIndex, 0, moved)
+      return next
+    })
+
+    setActiveBlockIndex((previous) => {
+      if (previous === null) {
+        return previous
+      }
+
+      if (previous === draggingBlockIndex) {
+        return targetIndex
+      }
+
+      if (draggingBlockIndex < targetIndex && previous > draggingBlockIndex && previous <= targetIndex) {
+        return previous - 1
+      }
+
+      if (draggingBlockIndex > targetIndex && previous < draggingBlockIndex && previous >= targetIndex) {
+        return previous + 1
+      }
+
+      return previous
+    })
+
+    endBlockDrag()
   }
 
   function captureBlockCursor(index: number, element: HTMLTextAreaElement) {
@@ -723,7 +775,33 @@ export function App() {
                   {isEditing ? (
                     <div className="block-editor-list">
                       {draftBlocks.map((block, index) => (
-                        <div className="block-editor-row" key={`${selectedDocument.id}-draft-${index}`}>
+                        <div
+                          className={`block-editor-row${dragOverBlockIndex === index && draggingBlockIndex !== null ? ' block-editor-row-drag-over' : ''}`}
+                          key={`${selectedDocument.id}-draft-${index}`}
+                          onDragOver={(event) => {
+                            event.preventDefault()
+                            if (draggingBlockIndex !== null) {
+                              setDragOverBlockIndex(index)
+                            }
+                          }}
+                          onDrop={(event) => {
+                            event.preventDefault()
+                            dropBlockAt(index)
+                          }}
+                        >
+                          <button
+                            aria-label="Drag block"
+                            className="block-drag-handle"
+                            draggable
+                            onDragEnd={endBlockDrag}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = 'move'
+                              beginBlockDrag(index)
+                            }}
+                            type="button"
+                          >
+                            ⋮⋮
+                          </button>
                           <select
                             className="editor-select"
                             onChange={(event) => updateDraftBlock(index, { type: event.target.value })}
