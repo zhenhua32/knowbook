@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   BackupResult,
   DocumentBlock,
@@ -52,6 +52,7 @@ export function App() {
   const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
+  const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
@@ -67,6 +68,7 @@ export function App() {
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
+  const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
 
   useEffect(() => {
     let mounted = true
@@ -91,6 +93,7 @@ export function App() {
   useEffect(() => {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
+      setPendingFocusBlockIndex(null)
       return
     }
 
@@ -102,6 +105,7 @@ export function App() {
         setSelectedDocument(detail)
         setDraggingBlockIndex(null)
         setDragOverBlockIndex(null)
+        setPendingFocusBlockIndex(null)
         setActiveBlockIndex(null)
         setActiveCursorPosition(0)
         setLinkSuggestions([])
@@ -148,6 +152,24 @@ export function App() {
     }
   }, [activeLinkQuery, isEditing, selectedDocumentId])
 
+  useEffect(() => {
+    if (pendingFocusBlockIndex === null) {
+      return
+    }
+
+    const textarea = blockTextareaRefs.current[pendingFocusBlockIndex]
+    if (!textarea) {
+      setPendingFocusBlockIndex(null)
+      return
+    }
+
+    textarea.focus()
+    const cursor = textarea.value.length
+    textarea.setSelectionRange(cursor, cursor)
+    captureBlockCursor(pendingFocusBlockIndex, textarea)
+    setPendingFocusBlockIndex(null)
+  }, [draftBlocks, pendingFocusBlockIndex])
+
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
     const refreshed = await window.knowbook.getHomeData()
@@ -179,6 +201,7 @@ export function App() {
         content: block.content
       })) ?? []
     )
+    setPendingFocusBlockIndex(null)
   }
 
   function startEdit() {
@@ -194,6 +217,7 @@ export function App() {
         content: block.content
       }))
     )
+    setPendingFocusBlockIndex(null)
     setIsEditing(true)
   }
 
@@ -211,6 +235,7 @@ export function App() {
         content: block.content
       }))
     )
+    setPendingFocusBlockIndex(null)
     setIsEditing(false)
   }
 
@@ -234,6 +259,7 @@ export function App() {
     setSelectedDocument(refreshedDetail)
     setIsEditing(false)
     setIsSaving(false)
+    setPendingFocusBlockIndex(null)
     setDraggingBlockIndex(null)
     setDragOverBlockIndex(null)
     setLinkSuggestions([])
@@ -378,18 +404,47 @@ export function App() {
     )
   }
 
-  function addDraftBlock() {
-    setDraftBlocks((previous) => [
-      ...previous,
-      {
+  function insertDraftBlockAt(index: number) {
+    const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      next.splice(nextIndex, 0, {
         type: 'paragraph',
         content: ''
-      }
-    ])
+      })
+      return next
+    })
+
+    setActiveBlockIndex(nextIndex)
+    setActiveCursorPosition(0)
+    setPendingFocusBlockIndex(nextIndex)
+    endBlockDrag()
+  }
+
+  function addDraftBlock() {
+    insertDraftBlockAt(draftBlocks.length)
   }
 
   function removeDraftBlock(index: number) {
     setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
+    setActiveBlockIndex((previous) => {
+      if (previous === null) {
+        return previous
+      }
+
+      if (previous === index) {
+        return null
+      }
+
+      if (previous > index) {
+        return previous - 1
+      }
+
+      return previous
+    })
+    setPendingFocusBlockIndex(null)
+    endBlockDrag()
   }
 
   function beginBlockDrag(index: number) {
@@ -815,20 +870,37 @@ export function App() {
                           </select>
                           <textarea
                             className="editor-textarea block-editor-textarea"
+                            ref={(element) => {
+                              blockTextareaRefs.current[index] = element
+                            }}
                             onChange={(event) => {
                               updateDraftBlock(index, { content: event.target.value })
                               captureBlockCursor(index, event.target)
                             }}
                             onClick={(event) => captureBlockCursor(index, event.currentTarget)}
                             onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
+                            onKeyDown={(event) => {
+                              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                                event.preventDefault()
+                                insertDraftBlockAt(index + 1)
+                              }
+                            }}
                             onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
                             onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
                             rows={block.type === 'code' ? 5 : 2}
                             value={block.content}
                           />
-                          <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
-                            Remove
-                          </button>
+                          <div className="block-editor-actions">
+                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
+                              + Above
+                            </button>
+                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1)} type="button">
+                              + Below
+                            </button>
+                            <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
+                              Remove
+                            </button>
+                          </div>
                         </div>
                       ))}
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
@@ -852,7 +924,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type [[文档名]] or [[路径]] in any block to create a bidirectional link.</p>
+                        <p className="mini-hint">Type [[文档名]] or [[路径]] to create a bidirectional link. Press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (

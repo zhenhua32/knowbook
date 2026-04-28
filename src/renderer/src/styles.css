@@ -466,7 +466,7 @@ dt,
 
 .block-editor-row {
   display: grid;
-  grid-template-columns: 48px 160px 1fr auto;
+  grid-template-columns: 48px 160px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
   padding: 14px;
@@ -493,6 +493,21 @@ dt,
 
 .block-editor-textarea {
   min-height: 60px;
+}
+
+.block-editor-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.block-editor-actions button {
+  width: 100%;
+  white-space: nowrap;
+}
+
+.block-insert-button {
+  min-width: 88px;
 }
 
 .ai-panel {
@@ -635,6 +650,15 @@ dt,
 
   .block-editor-row {
     grid-template-columns: 1fr;
+  }
+
+  .block-editor-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .block-editor-actions button {
+    width: auto;
   }
 }
 
