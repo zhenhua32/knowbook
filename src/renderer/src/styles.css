@@ -356,6 +356,13 @@ dt,
   font-size: 13px;
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #4e4435;
+}
+
 .editor-input,
 .editor-textarea,
 .editor-select {
@@ -369,6 +376,11 @@ dt,
 .editor-select {
   height: 38px;
   padding: 0 12px;
+}
+
+.compact-select {
+  width: 180px;
+  background: rgba(255, 251, 245, 0.9);
 }
 
 .editor-textarea {

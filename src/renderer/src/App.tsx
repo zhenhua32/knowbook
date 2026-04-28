@@ -32,6 +32,11 @@ export function App() {
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
+  const [moveTargetId, setMoveTargetId] = useState('')
+  const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
+  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
+  const [aiModelDraft, setAiModelDraft] = useState('')
+  const [aiSaving, setAiSaving] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -41,6 +46,9 @@ export function App() {
         setHomeData(data)
         setLoading(false)
         setSelectedDocumentId((current) => current ?? data.initialDocumentId)
+        setAiEnabledDraft(data.aiConfig.enabled)
+        setAiBaseUrlDraft(data.aiConfig.baseUrl)
+        setAiModelDraft(data.aiConfig.model)
       }
     })
 
@@ -61,6 +69,7 @@ export function App() {
     window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
       if (mounted) {
         setSelectedDocument(detail)
+        setMoveTargetId('')
         setIsEditing(false)
         setDraftTitle(detail?.title ?? '')
         setDraftSummary(detail?.summary ?? '')
@@ -167,6 +176,71 @@ export function App() {
     setIsSaving(false)
   }
 
+  async function deleteSelectedDocument() {
+    if (!selectedDocument) {
+      return
+    }
+
+    const accepted = window.confirm(`Delete "${selectedDocument.title}"? Child documents will be kept and reparented.`)
+    if (!accepted) {
+      return
+    }
+
+    await window.knowbook.deleteDocument(selectedDocument.id)
+    const refreshed = await window.knowbook.getHomeData()
+    setHomeData(refreshed)
+
+    const nextId = refreshed.initialDocumentId
+    setSelectedDocumentId(nextId)
+    setIsEditing(false)
+
+    if (nextId) {
+      const detail = await window.knowbook.getDocumentDetail(nextId)
+      setSelectedDocument(detail)
+    } else {
+      setSelectedDocument(null)
+    }
+  }
+
+  async function moveSelectedDocument() {
+    if (!selectedDocument || !moveTargetId) {
+      return
+    }
+
+    const newParentId = moveTargetId === '__root__' ? null : moveTargetId
+
+    try {
+      await window.knowbook.moveDocument(selectedDocument.id, newParentId)
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDocumentDetail(selectedDocument.id)
+      ])
+      setHomeData(refreshedHome)
+      setSelectedDocument(refreshedDetail)
+      setMoveTargetId('')
+      setBackupMessage(`Moved "${selectedDocument.title}" successfully.`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Move failed.'
+      setBackupMessage(message)
+    }
+  }
+
+  async function saveAiConfig() {
+    setAiSaving(true)
+    await window.knowbook.updateAiConfig({
+      enabled: aiEnabledDraft,
+      baseUrl: aiBaseUrlDraft,
+      model: aiModelDraft
+    })
+    const refreshed = await window.knowbook.getHomeData()
+    setHomeData(refreshed)
+    setAiEnabledDraft(refreshed.aiConfig.enabled)
+    setAiBaseUrlDraft(refreshed.aiConfig.baseUrl)
+    setAiModelDraft(refreshed.aiConfig.model)
+    setAiSaving(false)
+    setBackupMessage('AI settings saved.')
+  }
+
   function updateDraftBlock(index: number, patch: Partial<{ type: string; content: string }>) {
     setDraftBlocks((previous) =>
       previous.map((block, currentIndex) =>
@@ -194,6 +268,13 @@ export function App() {
     setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
   }
 
+  const moveOptions = flattenTree(homeData.documentTree)
+    .filter((option) => option.id !== selectedDocumentId)
+    .map((option) => ({
+      ...option,
+      label: `${'  '.repeat(option.depth)}${option.title}`
+    }))
+
   return (
     <div className="shell">
       <aside className="rail">
@@ -217,9 +298,31 @@ export function App() {
           <p className="panel-label">Next up</p>
           <ul className="panel-list">
             <li>Editable block canvas backed by the existing document detail API</li>
-            <li>Document creation, rename, and drag-to-reparent flows</li>
+            <li>Document drag-to-reparent flow</li>
             <li>AI provider settings and embeddings pipeline</li>
           </ul>
+        </div>
+
+        <div className="panel">
+          <p className="panel-label">AI settings</p>
+          <h3>Cloud API configuration</h3>
+          <div className="editor-fields">
+            <label className="toggle-row">
+              <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
+              <span>Enable AI features</span>
+            </label>
+            <label className="editor-label">
+              Base URL
+              <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
+            </label>
+            <label className="editor-label">
+              Model
+              <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
+            </label>
+            <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
+              {aiSaving ? 'Saving...' : 'Save AI settings'}
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -304,6 +407,27 @@ export function App() {
                     </button>
                     <button className="secondary-button" disabled={isSaving} onClick={saveDocument} type="button">
                       {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </>
+                ) : null}
+                {selectedDocument && !isEditing ? (
+                  <button className="danger-button" onClick={deleteSelectedDocument} type="button">
+                    Delete
+                  </button>
+                ) : null}
+                {selectedDocument && !isEditing ? (
+                  <>
+                    <select className="editor-select compact-select" onChange={(event) => setMoveTargetId(event.target.value)} value={moveTargetId}>
+                      <option value="">Move to...</option>
+                      <option value="__root__">(Root)</option>
+                      {moveOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="secondary-button" disabled={!moveTargetId} onClick={moveSelectedDocument} type="button">
+                      Move
                     </button>
                   </>
                 ) : null}
@@ -554,4 +678,19 @@ function renderBlock(block: DocumentBlock) {
   }
 
   return <p className="block-paragraph">{block.content}</p>
+}
+
+function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; title: string; depth: number }> {
+  const flattened: Array<{ id: string; title: string; depth: number }> = []
+
+  for (const node of nodes) {
+    flattened.push({
+      id: node.id,
+      title: node.title,
+      depth
+    })
+    flattened.push(...flattenTree(node.children, depth + 1))
+  }
+
+  return flattened
 }

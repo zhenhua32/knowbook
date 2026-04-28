@@ -11,6 +11,7 @@ import type {
   HomeData,
   LinkedDocument,
   RecentDocument,
+  UpdateAiConfigInput,
   UpdateDocumentInput,
   WorkspaceSummary
 } from '@shared/contracts'
@@ -54,6 +55,7 @@ interface ParentDocumentRow {
 interface DocumentPathRow {
   id: string
   path: string
+  title: string
   parent_id: string | null
 }
 
@@ -275,6 +277,107 @@ export class KnowbookStore {
     })
 
     transaction()
+  }
+
+  deleteDocument(documentId: string): void {
+    const now = new Date().toISOString()
+    const document = this.db.prepare(`
+      SELECT id, path, title, parent_id
+      FROM documents
+      WHERE id = ?
+    `).get(documentId) as DocumentPathRow | undefined
+
+    if (!document) {
+      throw new Error('Document not found')
+    }
+
+    const parentPath = document.parent_id
+      ? (this.db.prepare('SELECT path FROM documents WHERE id = ?').get(document.parent_id) as { path: string } | undefined)?.path
+      : null
+
+    const oldPrefix = `${document.path}/`
+    const newPrefix = parentPath ? `${parentPath}/` : ''
+
+    const reparentChildrenStatement = this.db.prepare(`
+      UPDATE documents
+      SET parent_id = ?, updated_at = ?
+      WHERE parent_id = ?
+    `)
+    const rewriteDescendantPathStatement = this.db.prepare(`
+      UPDATE documents
+      SET path = REPLACE(path, ?, ?), updated_at = ?
+      WHERE path LIKE ?
+    `)
+    const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
+
+    const transaction = this.db.transaction(() => {
+      reparentChildrenStatement.run(document.parent_id, now, document.id)
+      rewriteDescendantPathStatement.run(oldPrefix, newPrefix, now, `${oldPrefix}%`)
+      deleteDocumentStatement.run(document.id)
+    })
+
+    transaction()
+  }
+
+  moveDocument(documentId: string, newParentId: string | null): void {
+    const now = new Date().toISOString()
+    const document = this.db.prepare(`
+      SELECT id, path, title, parent_id
+      FROM documents
+      WHERE id = ?
+    `).get(documentId) as DocumentPathRow | undefined
+
+    if (!document) {
+      throw new Error('Document not found')
+    }
+
+    if (newParentId === document.id) {
+      throw new Error('Document cannot be moved under itself')
+    }
+
+    const targetParent = newParentId
+      ? (this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(newParentId) as ParentDocumentRow | undefined)
+      : undefined
+
+    if (newParentId && !targetParent) {
+      throw new Error('Target parent not found')
+    }
+
+    if (targetParent && (targetParent.path === document.path || targetParent.path.startsWith(`${document.path}/`))) {
+      throw new Error('Document cannot be moved into its own subtree')
+    }
+
+    const newPath = targetParent ? `${targetParent.path}/${document.title}` : document.title
+    if (document.parent_id === (targetParent?.id ?? null) && newPath === document.path) {
+      return
+    }
+
+    const oldPrefix = `${document.path}/`
+    const newPrefix = `${newPath}/`
+
+    const updateDocumentStatement = this.db.prepare(`
+      UPDATE documents
+      SET parent_id = ?, path = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    const updateDescendantsStatement = this.db.prepare(`
+      UPDATE documents
+      SET path = REPLACE(path, ?, ?), updated_at = ?
+      WHERE path LIKE ?
+    `)
+
+    const transaction = this.db.transaction(() => {
+      updateDocumentStatement.run(targetParent?.id ?? null, newPath, now, document.id)
+      updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${oldPrefix}%`)
+    })
+
+    transaction()
+  }
+
+  updateAiConfig(input: UpdateAiConfigInput): void {
+    this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
+    this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
+    this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
   }
 
   getExportDocuments(): ExportDocument[] {

@@ -89,11 +89,20 @@ export interface UpdateDocumentInput {
   blocks: DocumentBlockDraft[]
 }
 
+export interface UpdateAiConfigInput {
+  enabled: boolean
+  baseUrl: string
+  model: string
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<void>
+  deleteDocument: (documentId: string) => Promise<void>
+  moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
+  updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   triggerBackup: () => Promise<BackupResult>
 }
 

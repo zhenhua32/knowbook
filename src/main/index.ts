@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import type { BackupResult, DocumentDetail, HomeData, UpdateDocumentInput } from '@shared/contracts'
+import type { BackupResult, DocumentDetail, HomeData, UpdateAiConfigInput, UpdateDocumentInput } from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
 import { KnowbookStore } from './database/store'
 
@@ -60,6 +60,18 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:update-document', (_event, documentId: string, input: UpdateDocumentInput) => {
     store.updateDocument(documentId, input)
+  })
+
+  ipcMain.handle('knowbook:delete-document', (_event, documentId: string) => {
+    store.deleteDocument(documentId)
+  })
+
+  ipcMain.handle('knowbook:move-document', (_event, documentId: string, newParentId: string | null) => {
+    store.moveDocument(documentId, newParentId)
+  })
+
+  ipcMain.handle('knowbook:update-ai-config', (_event, input: UpdateAiConfigInput) => {
+    store.updateAiConfig(input)
   })
 
   ipcMain.handle('knowbook:trigger-backup', () => {
