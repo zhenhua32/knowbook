@@ -44,6 +44,11 @@ interface DocumentDetailRow {
   updated_at: string
 }
 
+interface ParentDocumentRow {
+  id: string
+  path: string
+}
+
 interface ExportDocumentRow {
   id: string
   title: string
@@ -181,6 +186,35 @@ export class KnowbookStore {
     }
   }
 
+  createDocument(parentId: string | null): string {
+    const now = new Date().toISOString()
+    const title = this.generateSiblingTitle(parentId, 'Untitled')
+    const id = randomUUID()
+    const slug = `doc-${id.slice(0, 8)}`
+    const parent = parentId
+      ? (this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined)
+      : undefined
+
+    const path = parent ? `${parent.path}/${title}` : title
+    const insertDocument = this.db.prepare(`
+      INSERT INTO documents (id, title, slug, parent_id, path, summary, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const insertBlock = this.db.prepare(`
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+
+    const transaction = this.db.transaction(() => {
+      insertDocument.run(id, title, slug, parent?.id ?? null, path, 'New knowledge node ready for editing.', now, now)
+      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, now, now)
+      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', now, now)
+    })
+
+    transaction()
+    return id
+  }
+
   getExportDocuments(): ExportDocument[] {
     const documents = this.db.prepare(`
       SELECT id, title, path, summary, updated_at
@@ -308,6 +342,40 @@ export class KnowbookStore {
     }
 
     return normalize(roots)
+  }
+
+  private generateSiblingTitle(parentId: string | null, baseTitle: string): string {
+    let candidate = baseTitle
+    let index = 1
+
+    while (this.documentTitleExists(parentId, candidate)) {
+      candidate = `${baseTitle} ${index}`
+      index += 1
+    }
+
+    return candidate
+  }
+
+  private documentTitleExists(parentId: string | null, title: string): boolean {
+    if (parentId) {
+      const row = this.db.prepare(`
+        SELECT id
+        FROM documents
+        WHERE parent_id = ? AND title = ?
+        LIMIT 1
+      `).get(parentId, title) as { id: string } | undefined
+
+      return Boolean(row)
+    }
+
+    const row = this.db.prepare(`
+      SELECT id
+      FROM documents
+      WHERE parent_id IS NULL AND title = ?
+      LIMIT 1
+    `).get(title) as { id: string } | undefined
+
+    return Boolean(row)
   }
 
   private getAiConfig(): AiConfig {

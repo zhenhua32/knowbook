@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { BackupResult, HomeData } from '@shared/contracts'
+import type { BackupResult, DocumentBlock, DocumentDetail, DocumentTreeNode, HomeData, LinkedDocument } from '@shared/contracts'
 
 const emptyState: HomeData = {
   summary: {
@@ -15,13 +15,18 @@ const emptyState: HomeData = {
     enabled: false,
     baseUrl: '',
     model: ''
-  }
+  },
+  documentTree: [],
+  initialDocumentId: null
 }
 
 export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
+  const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
+  const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -30,6 +35,7 @@ export function App() {
       if (mounted) {
         setHomeData(data)
         setLoading(false)
+        setSelectedDocumentId((current) => current ?? data.initialDocumentId)
       }
     })
 
@@ -38,11 +44,49 @@ export function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!selectedDocumentId) {
+      setSelectedDocument(null)
+      return
+    }
+
+    let mounted = true
+    setDetailLoading(true)
+
+    window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
+      if (mounted) {
+        setSelectedDocument(detail)
+        setDetailLoading(false)
+      }
+    })
+
+    return () => {
+      mounted = false
+    }
+  }, [selectedDocumentId])
+
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
+    const nextDocumentId = selectedDocumentId ?? refreshed.initialDocumentId
+    if (!selectedDocumentId && nextDocumentId) {
+      setSelectedDocumentId(nextDocumentId)
+    }
+    if (selectedDocumentId) {
+      const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
+      setSelectedDocument(detail)
+    }
     setBackupMessage(`Exported ${result.exported} markdown files at ${new Date(result.at).toLocaleString()}.`)
+  }
+
+  async function handleCreateDocument(parentId: string | null) {
+    const created = await window.knowbook.createDocument(parentId)
+    const refreshed = await window.knowbook.getHomeData()
+    setHomeData(refreshed)
+    setSelectedDocumentId(created.id)
+    const detail = await window.knowbook.getDocumentDetail(created.id)
+    setSelectedDocument(detail)
   }
 
   return (
@@ -58,17 +102,17 @@ export function App() {
 
         <div className="panel panel-accent">
           <p className="panel-label">Implementation Slice</p>
-          <h2>Phase 1 bootstrap</h2>
+          <h2>Phase 1.5 workspace shell</h2>
           <p>
-            Electron shell, SQLite schema, scheduled markdown exports, and API-driven AI config are now wired into a single desktop baseline.
+            The desktop shell now exposes a real document tree, detail preview, scheduled markdown exports, and API-driven AI configuration from the same SQLite source.
           </p>
         </div>
 
         <div className="panel">
           <p className="panel-label">Next up</p>
           <ul className="panel-list">
-            <li>Block editor selection and schema evolution</li>
-            <li>Document tree and workspace navigation</li>
+            <li>Editable block canvas backed by the existing document detail API</li>
+            <li>Document creation, rename, and drag-to-reparent flows</li>
             <li>AI provider settings and embeddings pipeline</li>
           </ul>
         </div>
@@ -78,9 +122,9 @@ export function App() {
         <section className="hero">
           <div>
             <p className="eyebrow">Workspace status</p>
-            <h2>Desktop foundation is in place</h2>
+            <h2>Workspace navigation is alive</h2>
             <p className="hero-copy">
-              SQLite is the source of truth, markdown backups are exported to a nested tree, and the renderer reads live metrics over a secure preload bridge.
+              SQLite remains the source of truth, markdown backups export into a nested tree, and the renderer can now browse document hierarchy and inspect document relationships over the preload bridge.
             </p>
           </div>
           <button className="primary-button" onClick={handleBackup} type="button">
@@ -106,6 +150,97 @@ export function App() {
           <article className="stat-card">
             <span className="stat-label">AI</span>
             <strong>{homeData.aiConfig.enabled ? 'API ready' : 'Disabled'}</strong>
+          </article>
+        </section>
+
+        <section className="workspace-grid">
+          <article className="panel tree-panel">
+            <div className="panel-head compact-head">
+              <div>
+                <p className="panel-label">Workspace tree</p>
+                <h3>Seeded documents</h3>
+              </div>
+              <div className="toolbar-inline">
+                <span className="pill">{homeData.documentTree.length} roots</span>
+                <button className="secondary-button" onClick={() => handleCreateDocument(null)} type="button">
+                  New root
+                </button>
+              </div>
+            </div>
+
+            <DocumentTree
+              nodes={homeData.documentTree}
+              selectedDocumentId={selectedDocumentId}
+              onSelect={setSelectedDocumentId}
+            />
+          </article>
+
+          <article className="panel preview-panel">
+            <div className="panel-head">
+              <div>
+                <p className="panel-label">Document preview</p>
+                <h3>{selectedDocument?.title ?? 'Select a document'}</h3>
+              </div>
+              <div className="toolbar-inline">
+                {selectedDocument ? (
+                  <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
+                    Add child
+                  </button>
+                ) : null}
+                {detailLoading ? <span className="pill">Loading...</span> : <span className="pill">Read only</span>}
+              </div>
+            </div>
+
+            {selectedDocument ? (
+              <>
+                <div className="document-summary-card">
+                  <p className="document-path">{selectedDocument.path}</p>
+                  <p className="document-summary">{selectedDocument.summary}</p>
+                  <p className="document-updated">Updated {new Date(selectedDocument.updatedAt).toLocaleString()}</p>
+                </div>
+
+                <div className="preview-section">
+                  <p className="panel-label">Blocks</p>
+                  <div className="block-preview-list">
+                    {selectedDocument.blocks.map((block) => (
+                      <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
+                        {renderBlock(block)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="relation-grid">
+                  <RelationList
+                    title="Children"
+                    emptyText="No child documents yet"
+                    links={selectedDocument.children.map((child) => ({
+                      id: child.id,
+                      title: child.title,
+                      path: child.path,
+                      label: 'child'
+                    }))}
+                    onSelect={setSelectedDocumentId}
+                  />
+                  <RelationList
+                    title="Outgoing links"
+                    emptyText="No outgoing links yet"
+                    links={selectedDocument.outgoingLinks}
+                    onSelect={setSelectedDocumentId}
+                  />
+                  <RelationList
+                    title="Backlinks"
+                    emptyText="No backlinks yet"
+                    links={selectedDocument.backlinks}
+                    onSelect={setSelectedDocumentId}
+                  />
+                </div>
+              </>
+            ) : (
+              <div className="empty-preview">
+                <p>Select a document from the tree or recent list to inspect its blocks and relationships.</p>
+              </div>
+            )}
           </article>
         </section>
 
@@ -148,7 +283,7 @@ export function App() {
 
             <div className="document-list">
               {homeData.recentDocuments.map((document) => (
-                <div className="document-row" key={document.id}>
+                <button className="document-row document-button" key={document.id} onClick={() => setSelectedDocumentId(document.id)} type="button">
                   <div>
                     <strong>{document.title}</strong>
                     <p>{document.path}</p>
@@ -157,7 +292,7 @@ export function App() {
                     <span>{document.blockCount} blocks</span>
                     <span>{new Date(document.updatedAt).toLocaleDateString()}</span>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           </article>
@@ -165,4 +300,88 @@ export function App() {
       </main>
     </div>
   )
+}
+
+function DocumentTree({
+  nodes,
+  selectedDocumentId,
+  onSelect
+}: {
+  nodes: DocumentTreeNode[]
+  selectedDocumentId: string | null
+  onSelect: (documentId: string) => void
+}) {
+  return (
+    <ul className="tree-list">
+      {nodes.map((node) => (
+        <li className="tree-node" key={node.id}>
+          <button
+            className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}`}
+            onClick={() => onSelect(node.id)}
+            type="button"
+          >
+            <span>{node.title}</span>
+            <small>{new Date(node.updatedAt).toLocaleDateString()}</small>
+          </button>
+          <p className="tree-path">{node.path}</p>
+          {node.children.length > 0 ? (
+            <div className="tree-children">
+              <DocumentTree nodes={node.children} selectedDocumentId={selectedDocumentId} onSelect={onSelect} />
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function RelationList({
+  title,
+  links,
+  emptyText,
+  onSelect
+}: {
+  title: string
+  links: LinkedDocument[]
+  emptyText: string
+  onSelect: (documentId: string) => void
+}) {
+  return (
+    <section className="relation-panel">
+      <p className="panel-label">{title}</p>
+      {links.length > 0 ? (
+        <div className="relation-list">
+          {links.map((link) => (
+            <button className="relation-chip" key={`${title}-${link.id}`} onClick={() => onSelect(link.id)} type="button">
+              <strong>{link.title}</strong>
+              <span>{link.path}</span>
+              <small>{link.label}</small>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-text">{emptyText}</p>
+      )}
+    </section>
+  )
+}
+
+function renderBlock(block: DocumentBlock) {
+  if (block.type === 'heading-1') {
+    return <h4 className="block-heading"># {block.content}</h4>
+  }
+
+  if (block.type === 'heading-2') {
+    return <h5 className="block-heading">## {block.content}</h5>
+  }
+
+  if (block.type === 'todo') {
+    return <p className="block-todo">- [ ] {block.content}</p>
+  }
+
+  if (block.type === 'code') {
+    return <pre className="block-code">{block.content}</pre>
+  }
+
+  return <p className="block-paragraph">{block.content}</p>
 }

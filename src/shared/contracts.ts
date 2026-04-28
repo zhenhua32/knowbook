@@ -74,9 +74,14 @@ export interface BackupResult {
   at: string
 }
 
+export interface CreateDocumentResult {
+  id: string
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
+  createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   triggerBackup: () => Promise<BackupResult>
 }
 

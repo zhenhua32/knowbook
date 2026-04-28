@@ -24,7 +24,7 @@ function createWindow(): void {
     backgroundColor: '#f4f0e8',
     title: 'KnowBook',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       sandbox: false,
       nodeIntegration: false
@@ -51,6 +51,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-document-detail', (_event, documentId: string) => {
     const document: DocumentDetail | null = store.getDocumentDetail(documentId)
     return document
+  })
+
+  ipcMain.handle('knowbook:create-document', (_event, parentId: string | null) => {
+    const id = store.createDocument(parentId)
+    return { id }
   })
 
   ipcMain.handle('knowbook:trigger-backup', () => {
