@@ -37,6 +37,50 @@ const emptyState: HomeData = {
   initialDocumentId: null
 }
 
+const blockSlashCommands: Array<{
+  id: string
+  label: string
+  description: string
+  keywords: string[]
+  type: DocumentBlock['type']
+}> = [
+  {
+    id: 'text',
+    label: 'Text',
+    description: 'Convert the current block into a plain paragraph.',
+    keywords: ['paragraph', 'plain', 'p'],
+    type: 'paragraph'
+  },
+  {
+    id: 'h1',
+    label: 'Heading 1',
+    description: 'Promote this block to a top-level heading.',
+    keywords: ['title', 'heading-1', 'header'],
+    type: 'heading-1'
+  },
+  {
+    id: 'h2',
+    label: 'Heading 2',
+    description: 'Convert this block to a section heading.',
+    keywords: ['subtitle', 'heading-2', 'section'],
+    type: 'heading-2'
+  },
+  {
+    id: 'todo',
+    label: 'Todo',
+    description: 'Turn this block into an unchecked todo item.',
+    keywords: ['task', 'checkbox', 'checklist'],
+    type: 'todo'
+  },
+  {
+    id: 'code',
+    label: 'Code',
+    description: 'Switch this block into a code block.',
+    keywords: ['snippet', 'pre', 'terminal'],
+    type: 'code'
+  }
+]
+
 export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
@@ -133,6 +177,21 @@ export function App() {
       ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
       : null
   const activeLinkQuery = activeLinkContext?.query ?? null
+  const activeSlashContext =
+    activeLinkContext || activeBlockIndex === null
+      ? null
+      : getSlashCommandContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
+  const filteredSlashCommands = blockSlashCommands.filter((command) => {
+    const query = activeSlashContext?.query.trim().toLowerCase() ?? ''
+    if (!query) {
+      return true
+    }
+
+    return [command.id, command.label, ...command.keywords]
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  })
 
   useEffect(() => {
     if (!isEditing || !activeLinkContext) {
@@ -420,6 +479,32 @@ export function App() {
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(nextIndex)
     endBlockDrag()
+  }
+
+  function applySlashCommand(command: (typeof blockSlashCommands)[number]) {
+    if (activeBlockIndex === null || !activeSlashContext) {
+      return
+    }
+
+    const currentBlock = draftBlocks[activeBlockIndex]
+    if (!currentBlock) {
+      return
+    }
+
+    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
+    setDraftBlocks((previous) =>
+      previous.map((block, index) =>
+        index === activeBlockIndex
+          ? {
+              ...block,
+              type: command.type,
+              content: nextContent
+            }
+          : block
+      )
+    )
+    setActiveCursorPosition(nextContent.length)
+    setPendingFocusBlockIndex(activeBlockIndex)
   }
 
   function addDraftBlock() {
@@ -880,6 +965,15 @@ export function App() {
                             onClick={(event) => captureBlockCursor(index, event.currentTarget)}
                             onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
                             onKeyDown={(event) => {
+                              if (activeBlockIndex === index && activeSlashContext && event.key === 'Enter' && !event.shiftKey) {
+                                const [firstCommand] = filteredSlashCommands
+                                if (firstCommand) {
+                                  event.preventDefault()
+                                  applySlashCommand(firstCommand)
+                                  return
+                                }
+                              }
+
                               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                                 event.preventDefault()
                                 insertDraftBlockAt(index + 1)
@@ -906,7 +1000,25 @@ export function App() {
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
                         Add block
                       </button>
-                      {activeLinkContext ? (
+                      {activeSlashContext ? (
+                        <div className="link-helper-panel">
+                          <p className="panel-label">Slash Commands</p>
+                          <p className="mini-hint">Current query: {activeSlashContext.query || '(all commands)'}</p>
+                          <div className="relation-list">
+                            {filteredSlashCommands.length > 0 ? (
+                              filteredSlashCommands.map((command) => (
+                                <button className="relation-chip" key={`slash-${command.id}`} onClick={() => applySlashCommand(command)} type="button">
+                                  <strong>/{command.id}</strong>
+                                  <span>{command.label}</span>
+                                  <small>{command.description}</small>
+                                </button>
+                              ))
+                            ) : (
+                              <p className="empty-text">No matching commands.</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : activeLinkContext ? (
                         <div className="link-helper-panel">
                           <p className="panel-label">Link Suggestions</p>
                           <p className="mini-hint">Current query: {activeLinkContext.query || '(all documents)'}</p>
@@ -924,7 +1036,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type [[文档名]] or [[路径]] to create a bidirectional link. Press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / to switch block type, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1354,6 +1466,33 @@ function getOpenLinkContext(content: string, cursorPosition: number): { query: s
     query: openSegment.trim(),
     start
   }
+}
+
+function getSlashCommandContext(content: string, cursorPosition: number): { query: string; start: number } | null {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const beforeCursor = content.slice(0, safeCursor)
+  const lineStart = beforeCursor.lastIndexOf('\n') + 1
+  const lineBeforeCursor = beforeCursor.slice(lineStart)
+  const trimmedStart = lineBeforeCursor.trimStart()
+
+  if (!trimmedStart.startsWith('/')) {
+    return null
+  }
+
+  if (trimmedStart.includes(' ')) {
+    return null
+  }
+
+  return {
+    query: trimmedStart.slice(1),
+    start: lineStart + lineBeforeCursor.indexOf('/')
+  }
+}
+
+function stripSlashCommand(content: string, start: number, cursorPosition: number) {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const next = `${content.slice(0, start)}${content.slice(safeCursor)}`
+  return next.trim() === '' ? '' : next
 }
 
 function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {
