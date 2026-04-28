@@ -14,7 +14,8 @@ const emptyState: HomeData = {
   aiConfig: {
     enabled: false,
     baseUrl: '',
-    model: ''
+    model: '',
+    hasApiKey: false
   },
   documentTree: [],
   initialDocumentId: null
@@ -33,10 +34,17 @@ export function App() {
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
   const [moveTargetId, setMoveTargetId] = useState('')
+  const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
+  const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
+  const [dragOverRoot, setDragOverRoot] = useState(false)
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
+  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
+  const [aiPromptDraft, setAiPromptDraft] = useState('')
+  const [aiAnswer, setAiAnswer] = useState('')
+  const [aiAsking, setAiAsking] = useState(false)
 
   useEffect(() => {
     let mounted = true
@@ -49,6 +57,7 @@ export function App() {
         setAiEnabledDraft(data.aiConfig.enabled)
         setAiBaseUrlDraft(data.aiConfig.baseUrl)
         setAiModelDraft(data.aiConfig.model)
+        setAiApiKeyDraft('')
       }
     })
 
@@ -208,21 +217,60 @@ export function App() {
     }
 
     const newParentId = moveTargetId === '__root__' ? null : moveTargetId
+    await handleMoveDocument(selectedDocument.id, newParentId, `Moved "${selectedDocument.title}" successfully.`)
+  }
 
+  async function handleMoveDocument(documentId: string, newParentId: string | null, successMessage?: string) {
     try {
-      await window.knowbook.moveDocument(selectedDocument.id, newParentId)
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(selectedDocument.id)
-      ])
+      await window.knowbook.moveDocument(documentId, newParentId)
+      const refreshedHome = await window.knowbook.getHomeData()
       setHomeData(refreshedHome)
-      setSelectedDocument(refreshedDetail)
+
+      if (selectedDocumentId) {
+        const refreshedDetail = await window.knowbook.getDocumentDetail(selectedDocumentId)
+        setSelectedDocument(refreshedDetail)
+      }
+
       setMoveTargetId('')
-      setBackupMessage(`Moved "${selectedDocument.title}" successfully.`)
+      if (successMessage) {
+        setBackupMessage(successMessage)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Move failed.'
       setBackupMessage(message)
+    } finally {
+      setDraggingDocumentId(null)
+      setDragOverDocumentId(null)
+      setDragOverRoot(false)
     }
+  }
+
+  function beginDrag(documentId: string) {
+    setDraggingDocumentId(documentId)
+  }
+
+  function endDrag() {
+    setDraggingDocumentId(null)
+    setDragOverDocumentId(null)
+    setDragOverRoot(false)
+  }
+
+  async function dropOnDocument(targetId: string) {
+    if (!draggingDocumentId || draggingDocumentId === targetId) {
+      endDrag()
+      return
+    }
+
+    await handleMoveDocument(draggingDocumentId, targetId)
+  }
+
+  async function dropToRoot() {
+    if (!draggingDocumentId) {
+      endDrag()
+      return
+    }
+
+    await handleMoveDocument(draggingDocumentId, null)
   }
 
   async function saveAiConfig() {
@@ -230,15 +278,37 @@ export function App() {
     await window.knowbook.updateAiConfig({
       enabled: aiEnabledDraft,
       baseUrl: aiBaseUrlDraft,
-      model: aiModelDraft
+      model: aiModelDraft,
+      apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
     setAiEnabledDraft(refreshed.aiConfig.enabled)
     setAiBaseUrlDraft(refreshed.aiConfig.baseUrl)
     setAiModelDraft(refreshed.aiConfig.model)
+    setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage('AI settings saved.')
+  }
+
+  async function askAiOnSelectedDocument() {
+    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+      return
+    }
+
+    setAiAsking(true)
+    try {
+      const result = await window.knowbook.askAiAboutDocument({
+        documentId: selectedDocumentId,
+        prompt: aiPromptDraft.trim()
+      })
+      setAiAnswer(result.answer)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI request failed.'
+      setAiAnswer(message)
+    } finally {
+      setAiAsking(false)
+    }
   }
 
   function updateDraftBlock(index: number, patch: Partial<{ type: string; content: string }>) {
@@ -319,6 +389,11 @@ export function App() {
               Model
               <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
             </label>
+            <label className="editor-label">
+              API Key (leave blank to keep current)
+              <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
+            </label>
+            <p className="mini-hint">Current key: {homeData.aiConfig.hasApiKey ? 'configured' : 'missing'}</p>
             <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
               {aiSaving ? 'Saving...' : 'Save AI settings'}
             </button>
@@ -376,10 +451,39 @@ export function App() {
               </div>
             </div>
 
+            <div
+              className={`root-drop-zone${dragOverRoot ? ' root-drop-zone-active' : ''}`}
+              onDragOver={(event) => {
+                event.preventDefault()
+                if (draggingDocumentId) {
+                  setDragOverRoot(true)
+                  setDragOverDocumentId(null)
+                }
+              }}
+              onDragLeave={() => setDragOverRoot(false)}
+              onDrop={async (event) => {
+                event.preventDefault()
+                await dropToRoot()
+              }}
+            >
+              Drop here to move document to root
+            </div>
+
             <DocumentTree
               nodes={homeData.documentTree}
               selectedDocumentId={selectedDocumentId}
               onSelect={setSelectedDocumentId}
+              draggingDocumentId={draggingDocumentId}
+              dragOverDocumentId={dragOverDocumentId}
+              onDragStart={beginDrag}
+              onDragEnd={endDrag}
+              onDragOverNode={(documentId) => {
+                if (draggingDocumentId && draggingDocumentId !== documentId) {
+                  setDragOverDocumentId(documentId)
+                  setDragOverRoot(false)
+                }
+              }}
+              onDropOnNode={dropOnDocument}
             />
           </article>
 
@@ -529,6 +633,23 @@ export function App() {
                     onSelect={setSelectedDocumentId}
                   />
                 </div>
+
+                <div className="preview-section">
+                  <p className="panel-label">Ask AI</p>
+                  <div className="ai-panel">
+                    <textarea
+                      className="editor-textarea"
+                      onChange={(event) => setAiPromptDraft(event.target.value)}
+                      placeholder="例如：基于当前文档，给我 3 条结构优化建议"
+                      rows={3}
+                      value={aiPromptDraft}
+                    />
+                    <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
+                      {aiAsking ? 'Thinking...' : 'Ask AI'}
+                    </button>
+                    {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
+                  </div>
+                </div>
               </>
             ) : (
               <div className="empty-preview">
@@ -599,20 +720,49 @@ export function App() {
 function DocumentTree({
   nodes,
   selectedDocumentId,
-  onSelect
+  onSelect,
+  draggingDocumentId,
+  dragOverDocumentId,
+  onDragStart,
+  onDragEnd,
+  onDragOverNode,
+  onDropOnNode
 }: {
   nodes: DocumentTreeNode[]
   selectedDocumentId: string | null
   onSelect: (documentId: string) => void
+  draggingDocumentId: string | null
+  dragOverDocumentId: string | null
+  onDragStart: (documentId: string) => void
+  onDragEnd: () => void
+  onDragOverNode: (documentId: string) => void
+  onDropOnNode: (documentId: string) => Promise<void>
 }) {
   return (
     <ul className="tree-list">
       {nodes.map((node) => (
         <li className="tree-node" key={node.id}>
           <button
-            className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}`}
+            className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}${dragOverDocumentId === node.id ? ' tree-button-drag-over' : ''}`}
             onClick={() => onSelect(node.id)}
             type="button"
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', node.id)
+              onDragStart(node.id)
+            }}
+            onDragEnd={onDragEnd}
+            onDragOver={(event) => {
+              event.preventDefault()
+              if (draggingDocumentId !== node.id) {
+                onDragOverNode(node.id)
+              }
+            }}
+            onDrop={async (event) => {
+              event.preventDefault()
+              await onDropOnNode(node.id)
+            }}
           >
             <span>{node.title}</span>
             <small>{new Date(node.updatedAt).toLocaleDateString()}</small>
@@ -620,7 +770,17 @@ function DocumentTree({
           <p className="tree-path">{node.path}</p>
           {node.children.length > 0 ? (
             <div className="tree-children">
-              <DocumentTree nodes={node.children} selectedDocumentId={selectedDocumentId} onSelect={onSelect} />
+              <DocumentTree
+                nodes={node.children}
+                selectedDocumentId={selectedDocumentId}
+                onSelect={onSelect}
+                draggingDocumentId={draggingDocumentId}
+                dragOverDocumentId={dragOverDocumentId}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onDragOverNode={onDragOverNode}
+                onDropOnNode={onDropOnNode}
+              />
             </div>
           ) : null}
         </li>

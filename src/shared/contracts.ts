@@ -63,6 +63,7 @@ export interface AiConfig {
   enabled: boolean
   baseUrl: string
   model: string
+  hasApiKey: boolean
 }
 
 export interface HomeData {
@@ -93,6 +94,16 @@ export interface UpdateAiConfigInput {
   enabled: boolean
   baseUrl: string
   model: string
+  apiKey?: string
+}
+
+export interface AskAiInput {
+  documentId: string
+  prompt: string
+}
+
+export interface AskAiResult {
+  answer: string
 }
 
 export interface ElectronApi {
@@ -103,6 +114,7 @@ export interface ElectronApi {
   deleteDocument: (documentId: string) => Promise<void>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
+  askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   triggerBackup: () => Promise<BackupResult>
 }
 

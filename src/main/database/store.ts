@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
 import type {
   AiConfig,
+  AskAiInput,
   DocumentBlockDraft,
   DocumentChild,
   DocumentDetail,
@@ -378,6 +379,33 @@ export class KnowbookStore {
     this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
+    if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
+      this.saveSetting('ai.apiKey', input.apiKey.trim())
+    }
+  }
+
+  buildAiPrompt(input: AskAiInput): string {
+    const detail = this.getDocumentDetail(input.documentId)
+    if (!detail) {
+      throw new Error('Document not found')
+    }
+
+    const content = detail.blocks.map((block) => `- [${block.type}] ${block.content}`).join('\n')
+
+    return [
+      `Document title: ${detail.title}`,
+      `Document path: ${detail.path}`,
+      `Summary: ${detail.summary}`,
+      'Blocks:',
+      content,
+      '',
+      `User request: ${input.prompt}`,
+      'Answer in concise Chinese with actionable suggestions.'
+    ].join('\n')
+  }
+
+  getAiApiKey(): string | null {
+    return this.readSetting('ai.apiKey')
   }
 
   getExportDocuments(): ExportDocument[] {
@@ -567,7 +595,8 @@ export class KnowbookStore {
     return {
       enabled: this.readSetting('ai.enabled') !== 'false',
       baseUrl: this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1',
-      model: this.readSetting('ai.model') ?? 'gpt-4.1-mini'
+      model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
+      hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
 

@@ -1,6 +1,14 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain } from 'electron'
-import type { BackupResult, DocumentDetail, HomeData, UpdateAiConfigInput, UpdateDocumentInput } from '@shared/contracts'
+import type {
+  AskAiInput,
+  AskAiResult,
+  BackupResult,
+  DocumentDetail,
+  HomeData,
+  UpdateAiConfigInput,
+  UpdateDocumentInput
+} from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
 import { KnowbookStore } from './database/store'
 
@@ -74,10 +82,67 @@ function registerIpcHandlers(): void {
     store.updateAiConfig(input)
   })
 
+  ipcMain.handle('knowbook:ask-ai-about-document', async (_event, input: AskAiInput) => {
+    const result = await askAiAboutDocument(input)
+    return result
+  })
+
   ipcMain.handle('knowbook:trigger-backup', () => {
     const result: BackupResult = backupService.exportAll()
     return result
   })
+}
+
+async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    throw new Error('AI is disabled. Enable AI in settings first.')
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    throw new Error('Missing API key. Save an API key in AI settings.')
+  }
+
+  const prompt = store.buildAiPrompt(input)
+  const endpoint = `${home.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: home.aiConfig.model,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an assistant helping users organize and improve their notes.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.3
+    })
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`AI request failed (${response.status}): ${errorBody}`)
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+  }
+  const answer = payload.choices?.[0]?.message?.content?.trim()
+
+  if (!answer) {
+    throw new Error('AI returned an empty response.')
+  }
+
+  return { answer }
 }
 
 function startBackupSchedule(): void {
