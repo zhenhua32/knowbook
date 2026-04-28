@@ -6,6 +6,7 @@ import type {
   AiConfig,
   AskAiInput,
   DocumentBlockDraft,
+  DocumentCatalogEntry,
   DocumentChild,
   DocumentDetail,
   DocumentSuggestion,
@@ -15,6 +16,8 @@ import type {
   RecentDocument,
   UpdateAiConfigInput,
   UpdateDocumentInput,
+  WorkspaceGraphEdge,
+  WorkspaceGraphNode,
   WorkspaceSummary
 } from '@shared/contracts'
 import { appSchema } from './schema'
@@ -33,12 +36,28 @@ interface DocumentRow {
   block_count: number
 }
 
+interface DocumentCatalogRow {
+  id: string
+  title: string
+  path: string
+  summary: string
+  updated_at: string
+  block_count: number
+  link_count: number
+  child_count: number
+}
+
 interface DocumentTreeRow {
   id: string
   title: string
   path: string
   parent_id: string | null
   updated_at: string
+}
+
+interface GraphLinkRow {
+  source_document_id: string
+  target_document_id: string
 }
 
 interface DocumentDetailRow {
@@ -128,12 +147,15 @@ export class KnowbookStore {
   getHomeData(backupRoot: string): HomeData {
     const recentDocuments = this.getRecentDocuments()
     const documentTree = this.getDocumentTree()
+    const graph = this.getWorkspaceGraph()
 
     return {
       summary: this.getSummary(backupRoot),
       recentDocuments,
+      documentCatalog: this.getDocumentCatalog(),
       aiConfig: this.getAiConfig(),
       documentTree,
+      graph,
       initialDocumentId: recentDocuments[0]?.id ?? documentTree[0]?.id ?? null
     }
   }
@@ -556,6 +578,33 @@ export class KnowbookStore {
     }))
   }
 
+  private getDocumentCatalog(): DocumentCatalogEntry[] {
+    const rows = this.db.prepare(`
+      SELECT
+        documents.id,
+        documents.title,
+        documents.path,
+        documents.summary,
+        documents.updated_at,
+        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
+        (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
+        (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
+      FROM documents
+      ORDER BY documents.path ASC
+    `).all() as DocumentCatalogRow[]
+
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      summary: row.summary,
+      updatedAt: row.updated_at,
+      blockCount: row.block_count,
+      linkCount: row.link_count,
+      childCount: row.child_count
+    }))
+  }
+
   private getDocumentTree(): DocumentTreeNode[] {
     interface TreeBuilderNode extends DocumentTreeNode {
       parentId: string | null
@@ -607,6 +656,46 @@ export class KnowbookStore {
     }
 
     return normalize(roots)
+  }
+
+  private getWorkspaceGraph(): { nodes: WorkspaceGraphNode[]; edges: WorkspaceGraphEdge[] } {
+    const rows = this.db.prepare(`
+      SELECT id, title, path, parent_id, updated_at
+      FROM documents
+      ORDER BY path ASC
+    `).all() as DocumentTreeRow[]
+
+    const nodes: WorkspaceGraphNode[] = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      depth: Math.max(0, row.path.split('/').length - 1)
+    }))
+
+    const treeEdges: WorkspaceGraphEdge[] = rows
+      .filter((row) => Boolean(row.parent_id))
+      .map((row) => ({
+        sourceId: row.parent_id as string,
+        targetId: row.id,
+        kind: 'tree' as const
+      }))
+
+    const linkRows = this.db.prepare(`
+      SELECT source_document_id, target_document_id
+      FROM links
+      ORDER BY source_document_id ASC, target_document_id ASC
+    `).all() as GraphLinkRow[]
+
+    const linkEdges: WorkspaceGraphEdge[] = linkRows.map((row) => ({
+      sourceId: row.source_document_id,
+      targetId: row.target_document_id,
+      kind: 'link'
+    }))
+
+    return {
+      nodes,
+      edges: [...treeEdges, ...linkEdges]
+    }
   }
 
   private generateSiblingTitle(parentId: string | null, baseTitle: string): string {

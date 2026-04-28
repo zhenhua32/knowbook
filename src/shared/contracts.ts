@@ -15,12 +15,36 @@ export interface RecentDocument {
   blockCount: number
 }
 
+export interface DocumentCatalogEntry {
+  id: string
+  title: string
+  path: string
+  summary: string
+  updatedAt: string
+  blockCount: number
+  linkCount: number
+  childCount: number
+}
+
 export interface DocumentTreeNode {
   id: string
   title: string
   path: string
   updatedAt: string
   children: DocumentTreeNode[]
+}
+
+export interface WorkspaceGraphNode {
+  id: string
+  title: string
+  path: string
+  depth: number
+}
+
+export interface WorkspaceGraphEdge {
+  sourceId: string
+  targetId: string
+  kind: 'tree' | 'link'
 }
 
 export interface DocumentBlock {
@@ -75,8 +99,13 @@ export interface AiConfig {
 export interface HomeData {
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
+  documentCatalog: DocumentCatalogEntry[]
   aiConfig: AiConfig
   documentTree: DocumentTreeNode[]
+  graph: {
+    nodes: WorkspaceGraphNode[]
+    edges: WorkspaceGraphEdge[]
+  }
   initialDocumentId: string | null
 }
 

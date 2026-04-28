@@ -1,5 +1,16 @@
 import { useEffect, useState } from 'react'
-import type { BackupResult, DocumentBlock, DocumentDetail, DocumentSuggestion, DocumentTreeNode, HomeData, LinkedDocument } from '@shared/contracts'
+import type {
+  BackupResult,
+  DocumentBlock,
+  DocumentCatalogEntry,
+  DocumentDetail,
+  DocumentSuggestion,
+  DocumentTreeNode,
+  HomeData,
+  LinkedDocument,
+  WorkspaceGraphEdge,
+  WorkspaceGraphNode
+} from '@shared/contracts'
 
 const emptyState: HomeData = {
   summary: {
@@ -11,6 +22,7 @@ const emptyState: HomeData = {
     lastBackupAt: null
   },
   recentDocuments: [],
+  documentCatalog: [],
   aiConfig: {
     enabled: false,
     baseUrl: '',
@@ -18,12 +30,17 @@ const emptyState: HomeData = {
     hasApiKey: false
   },
   documentTree: [],
+  graph: {
+    nodes: [],
+    edges: []
+  },
   initialDocumentId: null
 }
 
 export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
+  const [catalogQuery, setCatalogQuery] = useState('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
@@ -403,6 +420,18 @@ export function App() {
       label: `${'  '.repeat(option.depth)}${option.title}`
     }))
   const documentReferences = buildDocumentReferences(homeData.documentTree)
+  const filteredCatalog = homeData.documentCatalog.filter((document) => {
+    const query = catalogQuery.trim().toLowerCase()
+    if (!query) {
+      return true
+    }
+
+    return [document.title, document.path, document.summary]
+      .join(' ')
+      .toLowerCase()
+      .includes(query)
+  })
+  const boardColumns = buildBoardColumns(filteredCatalog)
 
   return (
     <div className="shell">
@@ -492,6 +521,71 @@ export function App() {
           <article className="stat-card">
             <span className="stat-label">AI</span>
             <strong>{homeData.aiConfig.enabled ? 'API ready' : 'Disabled'}</strong>
+          </article>
+        </section>
+
+        <section className="graph-grid">
+          <article className="panel graph-panel">
+            <div className="panel-head compact-head">
+              <div>
+                <p className="panel-label">Knowledge graph</p>
+                <h3>Workspace topology</h3>
+              </div>
+              <div className="toolbar-inline">
+                <span className="pill">{homeData.graph.nodes.length} nodes</span>
+                <span className="pill">{homeData.graph.edges.length} edges</span>
+              </div>
+            </div>
+
+            <WorkspaceGraph
+              edges={homeData.graph.edges}
+              nodes={homeData.graph.nodes}
+              selectedDocumentId={selectedDocumentId}
+              onSelect={setSelectedDocumentId}
+            />
+          </article>
+        </section>
+
+        <section className="database-grid">
+          <article className="panel database-panel">
+            <div className="panel-head compact-head">
+              <div>
+                <p className="panel-label">Database view</p>
+                <h3>Document catalog</h3>
+              </div>
+              <div className="toolbar-inline">
+                <input
+                  className="editor-input table-search"
+                  onChange={(event) => setCatalogQuery(event.target.value)}
+                  placeholder="Search documents..."
+                  type="text"
+                  value={catalogQuery}
+                />
+                <span className="pill">{filteredCatalog.length} rows</span>
+              </div>
+            </div>
+
+            <DocumentCatalogTable
+              documents={filteredCatalog}
+              onSelect={setSelectedDocumentId}
+              selectedDocumentId={selectedDocumentId}
+            />
+          </article>
+
+          <article className="panel board-panel">
+            <div className="panel-head compact-head">
+              <div>
+                <p className="panel-label">Board view</p>
+                <h3>Grouped by parent bucket</h3>
+              </div>
+              <span className="pill">{boardColumns.length} columns</span>
+            </div>
+
+            <DocumentBoard
+              columns={boardColumns}
+              onSelect={setSelectedDocumentId}
+              selectedDocumentId={selectedDocumentId}
+            />
           </article>
         </section>
 
@@ -875,6 +969,153 @@ function DocumentTree({
   )
 }
 
+function WorkspaceGraph({
+  nodes,
+  edges,
+  selectedDocumentId,
+  onSelect
+}: {
+  nodes: WorkspaceGraphNode[]
+  edges: WorkspaceGraphEdge[]
+  selectedDocumentId: string | null
+  onSelect: (documentId: string) => void
+}) {
+  const width = 920
+  const height = 320
+  const layout = buildGraphLayout(nodes, width, height)
+  const positionMap = new Map(layout.map((node) => [node.id, node]))
+
+  return (
+    <div className="graph-surface">
+      <svg className="graph-svg" viewBox={`0 0 ${width} ${height}`}>
+        {edges.map((edge, index) => {
+          const source = positionMap.get(edge.sourceId)
+          const target = positionMap.get(edge.targetId)
+          if (!source || !target) {
+            return null
+          }
+
+          return (
+            <line
+              className={`graph-edge graph-edge-${edge.kind}`}
+              key={`edge-${edge.kind}-${index}`}
+              x1={source.x}
+              x2={target.x}
+              y1={source.y}
+              y2={target.y}
+            />
+          )
+        })}
+
+        {layout.map((node) => (
+          <g className="graph-node-group" key={node.id} onClick={() => onSelect(node.id)}>
+            <circle
+              className={`graph-node${selectedDocumentId === node.id ? ' graph-node-active' : ''}`}
+              cx={node.x}
+              cy={node.y}
+              r={selectedDocumentId === node.id ? 12 : 9}
+            />
+            <text className="graph-node-label" textAnchor="middle" x={node.x} y={node.y + 24}>
+              {node.title}
+            </text>
+          </g>
+        ))}
+      </svg>
+      <div className="graph-legend">
+        <span><i className="legend-swatch legend-swatch-tree" /> Tree edge</span>
+        <span><i className="legend-swatch legend-swatch-link" /> Reference link</span>
+      </div>
+    </div>
+  )
+}
+
+function DocumentCatalogTable({
+  documents,
+  onSelect,
+  selectedDocumentId
+}: {
+  documents: DocumentCatalogEntry[]
+  onSelect: (documentId: string) => void
+  selectedDocumentId: string | null
+}) {
+  return (
+    <div className="catalog-table-wrap">
+      <table className="catalog-table">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Path</th>
+            <th>Blocks</th>
+            <th>Links</th>
+            <th>Children</th>
+            <th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {documents.map((document) => (
+            <tr
+              className={selectedDocumentId === document.id ? 'catalog-row-active' : ''}
+              key={document.id}
+              onClick={() => onSelect(document.id)}
+            >
+              <td>
+                <strong>{document.title}</strong>
+                <p className="catalog-summary">{document.summary}</p>
+              </td>
+              <td>{document.path}</td>
+              <td>{document.blockCount}</td>
+              <td>{document.linkCount}</td>
+              <td>{document.childCount}</td>
+              <td>{new Date(document.updatedAt).toLocaleDateString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function DocumentBoard({
+  columns,
+  onSelect,
+  selectedDocumentId
+}: {
+  columns: Array<{ id: string; title: string; items: DocumentCatalogEntry[] }>
+  onSelect: (documentId: string) => void
+  selectedDocumentId: string | null
+}) {
+  return (
+    <div className="board-wrap">
+      {columns.map((column) => (
+        <section className="board-column" key={column.id}>
+          <div className="board-column-head">
+            <strong>{column.title}</strong>
+            <span>{column.items.length}</span>
+          </div>
+
+          <div className="board-card-list">
+            {column.items.map((document) => (
+              <button
+                className={`board-card${selectedDocumentId === document.id ? ' board-card-active' : ''}`}
+                key={document.id}
+                onClick={() => onSelect(document.id)}
+                type="button"
+              >
+                <strong>{document.title}</strong>
+                <p>{document.path}</p>
+                <div className="board-card-meta">
+                  <span>{document.blockCount} blocks</span>
+                  <span>{document.linkCount} links</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  )
+}
+
 function RelationList({
   title,
   links,
@@ -1042,4 +1283,50 @@ function resolveInlineReference(token: string, references: Array<{ id: string; t
   }
 
   return null
+}
+
+function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: number) {
+  if (nodes.length === 0) {
+    return [] as Array<WorkspaceGraphNode & { x: number; y: number }>
+  }
+
+  const centerX = width / 2
+  const centerY = height / 2
+  const maxDepth = Math.max(...nodes.map((node) => node.depth), 0)
+  const ringStep = maxDepth > 0 ? Math.min(72, 120 / maxDepth) : 0
+
+  return nodes.map((node, index) => {
+    const angle = (Math.PI * 2 * index) / nodes.length - Math.PI / 2
+    const radius = 38 + node.depth * (ringStep || 48)
+
+    return {
+      ...node,
+      x: centerX + Math.cos(angle) * radius,
+      y: centerY + Math.sin(angle) * radius
+    }
+  })
+}
+
+function buildBoardColumns(documents: DocumentCatalogEntry[]) {
+  const columnMap = new Map<string, { id: string; title: string; items: DocumentCatalogEntry[] }>()
+
+  for (const document of documents) {
+    const segments = document.path.split('/')
+    const bucket = segments.length === 1 ? 'Root' : segments[segments.length - 2]
+    const key = bucket.toLowerCase()
+    if (!columnMap.has(key)) {
+      columnMap.set(key, {
+        id: key,
+        title: bucket,
+        items: []
+      })
+    }
+
+    columnMap.get(key)?.items.push(document)
+  }
+
+  return [...columnMap.values()].map((column) => ({
+    ...column,
+    items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
+  }))
 }
