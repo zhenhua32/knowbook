@@ -5,6 +5,7 @@ import type {
   BackupResult,
   CreateDocumentResult,
   DocumentDetail,
+  DocumentSuggestion,
   ElectronApi,
   HomeData,
   UpdateAiConfigInput,
@@ -14,6 +15,7 @@ import type {
 const api: ElectronApi = {
   getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
   getDocumentDetail: (documentId: string) => ipcRenderer.invoke('knowbook:get-document-detail', documentId) as Promise<DocumentDetail | null>,
+  getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
   updateDocument: (documentId: string, input: UpdateDocumentInput) => ipcRenderer.invoke('knowbook:update-document', documentId, input) as Promise<void>,
   deleteDocument: (documentId: string) => ipcRenderer.invoke('knowbook:delete-document', documentId) as Promise<void>,

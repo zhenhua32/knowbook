@@ -469,6 +469,12 @@ dt,
   word-break: break-word;
 }
 
+.link-helper-panel {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(240, 247, 255, 0.78);
+}
+
 .block-preview {
   padding: 14px 16px;
   border-radius: 16px;
@@ -488,6 +494,16 @@ dt,
   overflow-x: auto;
   background: #221d18;
   color: #f5f0e8;
+}
+
+.inline-link {
+  border: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin: 0 2px;
+  background: rgba(47, 111, 237, 0.12);
+  color: #1d4aa9;
+  cursor: pointer;
 }
 
 .relation-grid {

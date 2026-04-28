@@ -8,6 +8,7 @@ import type {
   DocumentBlockDraft,
   DocumentChild,
   DocumentDetail,
+  DocumentSuggestion,
   DocumentTreeNode,
   HomeData,
   LinkedDocument,
@@ -87,6 +88,17 @@ interface DocumentChildRow {
   path: string
 }
 
+interface DocumentLookupRow {
+  id: string
+  title: string
+  path: string
+}
+
+interface BlockReferenceRow {
+  document_id: string
+  content: string
+}
+
 export interface ExportDocument {
   id: string
   title: string
@@ -110,6 +122,7 @@ export class KnowbookStore {
     this.db.pragma('foreign_keys = ON')
     this.db.exec(appSchema)
     this.seed()
+    this.resyncLinksForAllDocuments()
   }
 
   getHomeData(backupRoot: string): HomeData {
@@ -223,6 +236,7 @@ export class KnowbookStore {
     })
 
     transaction()
+    this.resyncLinksForAllDocuments()
     return id
   }
 
@@ -278,6 +292,7 @@ export class KnowbookStore {
     })
 
     transaction()
+    this.resyncLinksForAllDocuments()
   }
 
   deleteDocument(documentId: string): void {
@@ -318,6 +333,7 @@ export class KnowbookStore {
     })
 
     transaction()
+    this.resyncLinksForAllDocuments()
   }
 
   moveDocument(documentId: string, newParentId: string | null): void {
@@ -373,6 +389,7 @@ export class KnowbookStore {
     })
 
     transaction()
+    this.resyncLinksForAllDocuments()
   }
 
   updateAiConfig(input: UpdateAiConfigInput): void {
@@ -406,6 +423,61 @@ export class KnowbookStore {
 
   getAiApiKey(): string | null {
     return this.readSetting('ai.apiKey')
+  }
+
+  getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
+    const normalizedQuery = query.trim()
+    const likeQuery = `%${normalizedQuery}%`
+
+    if (excludeDocumentId) {
+      return this.db.prepare(`
+        SELECT id, title, path
+        FROM documents
+        WHERE id != ?
+          AND (? = '' OR title LIKE ? OR path LIKE ?)
+        ORDER BY
+          CASE
+            WHEN title = ? THEN 0
+            WHEN path = ? THEN 1
+            WHEN title LIKE ? THEN 2
+            ELSE 3
+          END,
+          LENGTH(path) ASC,
+          path ASC
+        LIMIT 8
+      `).all(
+        excludeDocumentId,
+        normalizedQuery,
+        likeQuery,
+        likeQuery,
+        normalizedQuery,
+        normalizedQuery,
+        `${normalizedQuery}%`
+      ) as DocumentSuggestion[]
+    }
+
+    return this.db.prepare(`
+      SELECT id, title, path
+      FROM documents
+      WHERE (? = '' OR title LIKE ? OR path LIKE ?)
+      ORDER BY
+        CASE
+          WHEN title = ? THEN 0
+          WHEN path = ? THEN 1
+          WHEN title LIKE ? THEN 2
+          ELSE 3
+        END,
+        LENGTH(path) ASC,
+        path ASC
+      LIMIT 8
+    `).all(
+      normalizedQuery,
+      likeQuery,
+      likeQuery,
+      normalizedQuery,
+      normalizedQuery,
+      `${normalizedQuery}%`
+    ) as DocumentSuggestion[]
   }
 
   getExportDocuments(): ExportDocument[] {
@@ -569,6 +641,86 @@ export class KnowbookStore {
     ]
   }
 
+  private resyncLinksForAllDocuments(): void {
+    const documents = this.db.prepare(`
+      SELECT id, title, path
+      FROM documents
+    `).all() as DocumentLookupRow[]
+    const blocks = this.db.prepare(`
+      SELECT document_id, content
+      FROM blocks
+      ORDER BY document_id ASC, sort_order ASC
+    `).all() as BlockReferenceRow[]
+
+    const pathMap = new Map<string, DocumentLookupRow>()
+    const titleMap = new Map<string, DocumentLookupRow | null>()
+    for (const document of documents) {
+      pathMap.set(document.path, document)
+      const existing = titleMap.get(document.title)
+      if (existing === undefined) {
+        titleMap.set(document.title, document)
+      } else {
+        titleMap.set(document.title, null)
+      }
+    }
+
+    const deleteLinks = this.db.prepare('DELETE FROM links')
+    const insertLink = this.db.prepare(`
+      INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+
+    const transaction = this.db.transaction(() => {
+      deleteLinks.run()
+
+      const seen = new Set<string>()
+      for (const block of blocks) {
+        for (const token of this.extractLinkTargets(block.content)) {
+          const target = this.resolveDocumentReference(token, pathMap, titleMap)
+          if (!target) {
+            continue
+          }
+
+          const linkKey = `${block.document_id}:${target.id}:${token}`
+          if (seen.has(linkKey)) {
+            continue
+          }
+
+          seen.add(linkKey)
+          insertLink.run(randomUUID(), block.document_id, target.id, token, new Date().toISOString())
+        }
+      }
+    })
+
+    transaction()
+  }
+
+  private extractLinkTargets(content: string): string[] {
+    const matches = content.matchAll(/\[\[([^\]]+)\]\]/g)
+    const targets = new Set<string>()
+    for (const match of matches) {
+      const token = match[1]?.trim()
+      if (token) {
+        targets.add(token)
+      }
+    }
+    return [...targets]
+  }
+
+  private resolveDocumentReference(
+    token: string,
+    pathMap: Map<string, DocumentLookupRow>,
+    titleMap: Map<string, DocumentLookupRow | null>
+  ): DocumentLookupRow | null {
+    const byPath = pathMap.get(token)
+    if (byPath) {
+      return byPath
+    }
+
+    const byTitle = titleMap.get(token)
+    return byTitle ?? null
+  }
+
   private documentTitleExists(parentId: string | null, title: string): boolean {
     if (parentId) {
       const row = this.db.prepare(`
@@ -637,11 +789,9 @@ export class KnowbookStore {
       insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', now, now)
       insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', now, now)
       insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and scheduled markdown exports.', now, now)
+      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', now, now)
       insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', now, now)
       insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', now, now)
-
-      insertLink.run(randomUUID(), productId, roadmapId, 'drives', now)
 
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')

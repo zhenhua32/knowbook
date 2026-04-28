@@ -5,6 +5,7 @@ import type {
   AskAiResult,
   BackupResult,
   DocumentDetail,
+  DocumentSuggestion,
   HomeData,
   UpdateAiConfigInput,
   UpdateDocumentInput
@@ -59,6 +60,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-document-detail', (_event, documentId: string) => {
     const document: DocumentDetail | null = store.getDocumentDetail(documentId)
     return document
+  })
+
+  ipcMain.handle('knowbook:get-document-suggestions', (_event, query: string, excludeDocumentId: string | null = null) => {
+    const suggestions: DocumentSuggestion[] = store.getDocumentSuggestions(query, excludeDocumentId)
+    return suggestions
   })
 
   ipcMain.handle('knowbook:create-document', (_event, parentId: string | null) => {

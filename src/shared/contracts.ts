@@ -41,6 +41,12 @@ export interface LinkedDocument {
   label: string
 }
 
+export interface DocumentSuggestion {
+  id: string
+  title: string
+  path: string
+}
+
 export interface DocumentChild {
   id: string
   title: string
@@ -115,6 +121,7 @@ export interface ElectronApi {
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
+  getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   triggerBackup: () => Promise<BackupResult>
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { BackupResult, DocumentBlock, DocumentDetail, DocumentTreeNode, HomeData, LinkedDocument } from '@shared/contracts'
+import type { BackupResult, DocumentBlock, DocumentDetail, DocumentSuggestion, DocumentTreeNode, HomeData, LinkedDocument } from '@shared/contracts'
 
 const emptyState: HomeData = {
   summary: {
@@ -33,6 +33,9 @@ export function App() {
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
+  const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
+  const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
+  const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
@@ -78,6 +81,9 @@ export function App() {
     window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
       if (mounted) {
         setSelectedDocument(detail)
+        setActiveBlockIndex(null)
+        setActiveCursorPosition(0)
+        setLinkSuggestions([])
         setMoveTargetId('')
         setIsEditing(false)
         setDraftTitle(detail?.title ?? '')
@@ -96,6 +102,30 @@ export function App() {
       mounted = false
     }
   }, [selectedDocumentId])
+
+  const activeLinkContext =
+    activeBlockIndex !== null
+      ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
+      : null
+  const activeLinkQuery = activeLinkContext?.query ?? null
+
+  useEffect(() => {
+    if (!isEditing || !activeLinkContext) {
+      setLinkSuggestions([])
+      return
+    }
+
+    let mounted = true
+    window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
+      if (mounted) {
+        setLinkSuggestions(suggestions)
+      }
+    })
+
+    return () => {
+      mounted = false
+    }
+  }, [activeLinkQuery, isEditing, selectedDocumentId])
 
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
@@ -183,6 +213,7 @@ export function App() {
     setSelectedDocument(refreshedDetail)
     setIsEditing(false)
     setIsSaving(false)
+    setLinkSuggestions([])
   }
 
   async function deleteSelectedDocument() {
@@ -338,12 +369,40 @@ export function App() {
     setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
   }
 
+  function captureBlockCursor(index: number, element: HTMLTextAreaElement) {
+    setActiveBlockIndex(index)
+    setActiveCursorPosition(element.selectionStart ?? element.value.length)
+  }
+
+  function insertLinkSuggestion(suggestion: DocumentSuggestion) {
+    if (activeBlockIndex === null || !activeLinkContext) {
+      return
+    }
+
+    const replacement = `[[${suggestion.path}]]`
+    setDraftBlocks((previous) =>
+      previous.map((block, index) => {
+        if (index !== activeBlockIndex) {
+          return block
+        }
+
+        return {
+          ...block,
+          content: `${block.content.slice(0, activeLinkContext.start)}${replacement}${block.content.slice(activeCursorPosition)}`
+        }
+      })
+    )
+    setActiveCursorPosition(activeLinkContext.start + replacement.length)
+    setLinkSuggestions([])
+  }
+
   const moveOptions = flattenTree(homeData.documentTree)
     .filter((option) => option.id !== selectedDocumentId)
     .map((option) => ({
       ...option,
       label: `${'  '.repeat(option.depth)}${option.title}`
     }))
+  const documentReferences = buildDocumentReferences(homeData.documentTree)
 
   return (
     <div className="shell">
@@ -584,7 +643,14 @@ export function App() {
                           </select>
                           <textarea
                             className="editor-textarea block-editor-textarea"
-                            onChange={(event) => updateDraftBlock(index, { content: event.target.value })}
+                            onChange={(event) => {
+                              updateDraftBlock(index, { content: event.target.value })
+                              captureBlockCursor(index, event.target)
+                            }}
+                            onClick={(event) => captureBlockCursor(index, event.currentTarget)}
+                            onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
+                            onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
+                            onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
                             rows={block.type === 'code' ? 5 : 2}
                             value={block.content}
                           />
@@ -596,12 +662,32 @@ export function App() {
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
                         Add block
                       </button>
+                      {activeLinkContext ? (
+                        <div className="link-helper-panel">
+                          <p className="panel-label">Link Suggestions</p>
+                          <p className="mini-hint">Current query: {activeLinkContext.query || '(all documents)'}</p>
+                          <div className="relation-list">
+                            {linkSuggestions.length > 0 ? (
+                              linkSuggestions.map((suggestion) => (
+                                <button className="relation-chip" key={`suggestion-${suggestion.id}`} onClick={() => insertLinkSuggestion(suggestion)} type="button">
+                                  <strong>{suggestion.title}</strong>
+                                  <span>{suggestion.path}</span>
+                                </button>
+                              ))
+                            ) : (
+                              <p className="empty-text">No matching documents.</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mini-hint">Type [[文档名]] or [[路径]] in any block to create a bidirectional link.</p>
+                      )}
                     </div>
                   ) : (
                     <div className="block-preview-list">
                       {selectedDocument.blocks.map((block) => (
                         <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
-                          {renderBlock(block)}
+                          {renderBlock(block, setSelectedDocumentId, documentReferences)}
                         </div>
                       ))}
                     </div>
@@ -820,24 +906,28 @@ function RelationList({
   )
 }
 
-function renderBlock(block: DocumentBlock) {
+function renderBlock(
+  block: DocumentBlock,
+  onSelectDocument: (documentId: string) => void,
+  references: Array<{ id: string; title: string; path: string }>
+) {
   if (block.type === 'heading-1') {
-    return <h4 className="block-heading"># {block.content}</h4>
+    return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references)}</h4>
   }
 
   if (block.type === 'heading-2') {
-    return <h5 className="block-heading">## {block.content}</h5>
+    return <h5 className="block-heading">## {renderInlineContent(block.content, onSelectDocument, references)}</h5>
   }
 
   if (block.type === 'todo') {
-    return <p className="block-todo">- [ ] {block.content}</p>
+    return <p className="block-todo">- [ ] {renderInlineContent(block.content, onSelectDocument, references)}</p>
   }
 
   if (block.type === 'code') {
     return <pre className="block-code">{block.content}</pre>
   }
 
-  return <p className="block-paragraph">{block.content}</p>
+  return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references)}</p>
 }
 
 function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; title: string; depth: number }> {
@@ -853,4 +943,103 @@ function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; 
   }
 
   return flattened
+}
+
+function getOpenLinkContext(content: string, cursorPosition: number): { query: string; start: number } | null {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const beforeCursor = content.slice(0, safeCursor)
+  const start = beforeCursor.lastIndexOf('[[')
+
+  if (start === -1) {
+    return null
+  }
+
+  const openSegment = beforeCursor.slice(start + 2)
+  if (openSegment.includes(']]') || openSegment.includes('\n')) {
+    return null
+  }
+
+  return {
+    query: openSegment.trim(),
+    start
+  }
+}
+
+function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {
+  const references: Array<{ id: string; title: string; path: string }> = []
+
+  for (const node of nodes) {
+    references.push({
+      id: node.id,
+      title: node.title,
+      path: node.path
+    })
+    references.push(...buildDocumentReferences(node.children))
+  }
+
+  return references
+}
+
+function renderInlineContent(
+  content: string,
+  onSelectDocument: (documentId: string) => void,
+  references: Array<{ id: string; title: string; path: string }>
+) {
+  const segments: Array<string | { id: string; label: string }> = []
+  const matches = content.matchAll(/\[\[([^\]]+)\]\]/g)
+  let lastIndex = 0
+
+  for (const match of matches) {
+    const start = match.index ?? 0
+    if (start > lastIndex) {
+      segments.push(content.slice(lastIndex, start))
+    }
+
+    const token = match[1]?.trim() ?? ''
+    const target = resolveInlineReference(token, references)
+    if (target) {
+      segments.push({
+        id: target.id,
+        label: token
+      })
+    } else {
+      segments.push(match[0])
+    }
+
+    lastIndex = start + match[0].length
+  }
+
+  if (lastIndex < content.length) {
+    segments.push(content.slice(lastIndex))
+  }
+
+  if (segments.length === 0) {
+    return content
+  }
+
+  return segments.map((segment, index) => {
+    if (typeof segment === 'string') {
+      return <span key={`text-${index}`}>{segment}</span>
+    }
+
+    return (
+      <button className="inline-link" key={`link-${segment.id}-${index}`} onClick={() => onSelectDocument(segment.id)} type="button">
+        [[{segment.label}]]
+      </button>
+    )
+  })
+}
+
+function resolveInlineReference(token: string, references: Array<{ id: string; title: string; path: string }>) {
+  const byPath = references.find((reference) => reference.path === token)
+  if (byPath) {
+    return byPath
+  }
+
+  const matchedByTitle = references.filter((reference) => reference.title === token)
+  if (matchedByTitle.length === 1) {
+    return matchedByTitle[0]
+  }
+
+  return null
 }
