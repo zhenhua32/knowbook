@@ -636,16 +636,17 @@ export function App() {
     endBlockDrag()
   }
 
-  function splitDraftBlock(index: number, cursorPosition: number) {
+  function splitDraftBlock(index: number, selectionStart: number, selectionEnd = selectionStart, nextTypeOverride?: string) {
     const currentBlock = draftBlocks[index]
     if (!currentBlock) {
       return
     }
 
-    const safeCursor = Math.max(0, Math.min(cursorPosition, currentBlock.content.length))
-    const leftContent = currentBlock.content.slice(0, safeCursor)
-    const rightContent = currentBlock.content.slice(safeCursor)
-    const nextType = currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type
+    const safeStart = Math.max(0, Math.min(selectionStart, currentBlock.content.length))
+    const safeEnd = Math.max(safeStart, Math.min(selectionEnd, currentBlock.content.length))
+    const leftContent = currentBlock.content.slice(0, safeStart)
+    const rightContent = currentBlock.content.slice(safeEnd)
+    const nextType = nextTypeOverride ?? (currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type)
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -660,6 +661,43 @@ export function App() {
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(index + 1)
     endBlockDrag()
+  }
+
+  function continueBlockAt(index: number, selectionStart: number, selectionEnd = selectionStart) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return
+    }
+
+    const exitsToParagraph = ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list']
+    if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
+      updateDraftBlock(index, buildBlockTypePatch('paragraph', ''))
+      setActiveBlockIndex(index)
+      setActiveCursorPosition(0)
+      setPendingFocusBlockIndex(index)
+      return
+    }
+
+    if (['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+      const nextType = currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type
+      splitDraftBlock(index, selectionStart, selectionEnd, nextType)
+    }
+  }
+
+  function downgradeBlockAt(index: number) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return
+    }
+
+    if (!['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+      return
+    }
+
+    updateDraftBlock(index, buildBlockTypePatch('paragraph', currentBlock.content))
+    setActiveBlockIndex(index)
+    setActiveCursorPosition(0)
+    setPendingFocusBlockIndex(index)
   }
 
   function applySlashCommand(command: BlockSlashCommand) {
@@ -1287,6 +1325,38 @@ export function App() {
                                   }
                                 }
 
+                                if (
+                                  event.key === 'Enter' &&
+                                  !event.shiftKey &&
+                                  !event.altKey &&
+                                  !event.metaKey &&
+                                  !event.ctrlKey &&
+                                  ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)
+                                ) {
+                                  event.preventDefault()
+                                  continueBlockAt(
+                                    index,
+                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
+                                  )
+                                  return
+                                }
+
+                                if (
+                                  event.key === 'Backspace' &&
+                                  !event.shiftKey &&
+                                  !event.altKey &&
+                                  !event.metaKey &&
+                                  !event.ctrlKey &&
+                                  (event.currentTarget.selectionStart ?? 0) === 0 &&
+                                  (event.currentTarget.selectionEnd ?? 0) === 0 &&
+                                  ['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)
+                                ) {
+                                  event.preventDefault()
+                                  downgradeBlockAt(index)
+                                  return
+                                }
+
                                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
                                   event.preventDefault()
                                   duplicateDraftBlock(index)
@@ -1295,7 +1365,11 @@ export function App() {
 
                                 if (event.altKey && event.key === 'Enter') {
                                   event.preventDefault()
-                                  splitDraftBlock(index, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                                  splitDraftBlock(
+                                    index,
+                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
+                                  )
                                   return
                                 }
 
@@ -1372,7 +1446,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, press Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
