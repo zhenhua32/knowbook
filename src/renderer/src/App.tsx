@@ -530,6 +530,19 @@ export function App() {
     )
   }
 
+  function handleBlockContentChange(index: number, content: string) {
+    const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index]?.type ?? 'paragraph', content)
+    if (shortcut) {
+      updateDraftBlock(index, shortcut)
+      setActiveBlockIndex(index)
+      setActiveCursorPosition(shortcut.content.length)
+      setPendingFocusBlockIndex(index)
+      return
+    }
+
+    updateDraftBlock(index, { content })
+  }
+
   function insertDraftBlockAt(index: number) {
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
 
@@ -1122,7 +1135,7 @@ export function App() {
                               blockTextareaRefs.current[index] = element
                             }}
                             onChange={(event) => {
-                              updateDraftBlock(index, { content: event.target.value })
+                              handleBlockContentChange(index, event.target.value)
                               captureBlockCursor(index, event.target)
                             }}
                             onClick={(event) => captureBlockCursor(index, event.currentTarget)}
@@ -1231,7 +1244,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / - [ ] / ``` for markdown shortcuts, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1688,6 +1701,33 @@ function stripSlashCommand(content: string, start: number, cursorPosition: numbe
   const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
   const next = `${content.slice(0, start)}${content.slice(safeCursor)}`
   return next.trim() === '' ? '' : next
+}
+
+function resolveMarkdownBlockShortcut(type: string, content: string): { type: string; content: string } | null {
+  const shortcuts: Array<{ prefix: string; type: string; allowFrom?: string[] }> = [
+    { prefix: '## ', type: 'heading-2' },
+    { prefix: '# ', type: 'heading-1' },
+    { prefix: '- [ ] ', type: 'todo' },
+    { prefix: '```', type: 'code', allowFrom: ['paragraph', 'heading-1', 'heading-2', 'todo'] }
+  ]
+
+  for (const shortcut of shortcuts) {
+    if (!content.startsWith(shortcut.prefix)) {
+      continue
+    }
+
+    if (shortcut.allowFrom && !shortcut.allowFrom.includes(type)) {
+      continue
+    }
+
+    const nextContent = content.slice(shortcut.prefix.length).replace(/^\s/, '')
+    return {
+      type: shortcut.type,
+      content: nextContent
+    }
+  }
+
+  return null
 }
 
 function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {
