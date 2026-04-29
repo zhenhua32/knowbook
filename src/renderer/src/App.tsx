@@ -55,7 +55,7 @@ type BlockSlashCommand = {
       }
     | {
         kind: 'action'
-      action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete'
+      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete'
       }
   )
 
@@ -157,6 +157,14 @@ const blockSlashCommands: BlockSlashCommand[] = [
     action: 'insert-below'
   },
   {
+    id: 'child',
+    label: 'Insert Child',
+    description: 'Insert a nested child block below the current subtree.',
+    keywords: ['child', 'sub-block', 'nested', 'descendant'],
+    kind: 'action',
+    action: 'insert-child'
+  },
+  {
     id: 'up',
     label: 'Move Up',
     description: 'Move the current block one slot upward.',
@@ -239,6 +247,18 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
     checked: type === 'todo' ? checked : false,
     depth: normalizeBlockDepth(type, depth)
   }
+}
+
+function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
+  if (type === 'todo') {
+    return 'todo'
+  }
+
+  if (type === 'numbered-list') {
+    return 'numbered-list'
+  }
+
+  return 'bulleted-list'
 }
 
 function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked' | 'depth'>): DocumentBlockDraft {
@@ -696,6 +716,39 @@ export function App() {
     endBlockDrag()
   }
 
+  function insertChildDraftBlock(index: number, contentOverride?: string) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return
+    }
+
+    const childType = getDefaultChildBlockType(currentBlock.type)
+    const childDepth = currentBlock.depth + 1
+    if (!isNestableBlock(childType) || childDepth > 6) {
+      return
+    }
+
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      if (contentOverride !== undefined) {
+        next[index] = {
+          ...next[index],
+          content: contentOverride
+        }
+      }
+
+      next.splice(subtreeEndIndex + 1, 0, buildBlockTypePatch(childType, '', false, childDepth))
+      return next
+    })
+
+    setActiveBlockIndex(subtreeEndIndex + 1)
+    setActiveCursorPosition(0)
+    setPendingFocusBlockIndex(subtreeEndIndex + 1)
+    endBlockDrag()
+  }
+
   function duplicateDraftBlock(index: number, contentOverride?: string) {
     const currentBlock = draftBlocks[index]
     if (!currentBlock) {
@@ -978,6 +1031,11 @@ export function App() {
       setActiveBlockIndex(activeBlockIndex + 1)
       setActiveCursorPosition(0)
       setPendingFocusBlockIndex(activeBlockIndex + 1)
+      return
+    }
+
+    if (command.action === 'insert-child') {
+      insertChildDraftBlock(activeBlockIndex, nextContent)
       return
     }
 
@@ -1669,6 +1727,11 @@ export function App() {
                                 </button>
                               </>
                             ) : null}
+                            {block.type !== 'divider' ? (
+                              <button className="secondary-button block-insert-button" onClick={() => insertChildDraftBlock(index)} type="button">
+                                + Child
+                              </button>
+                            ) : null}
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
                               + Above
                             </button>
@@ -1731,7 +1794,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
