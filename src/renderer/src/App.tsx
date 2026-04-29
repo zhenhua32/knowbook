@@ -591,7 +591,7 @@ export function App() {
     }
   }
 
-  function updateDraftBlock(index: number, patch: Partial<{ type: string; content: string }>) {
+  function updateDraftBlock(index: number, patch: Partial<DocumentBlockDraft>) {
     setDraftBlocks((previous) =>
       previous.map((block, currentIndex) =>
         currentIndex === index
@@ -605,7 +605,7 @@ export function App() {
   }
 
   function handleBlockContentChange(index: number, content: string) {
-    const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index]?.type ?? 'paragraph', content)
+    const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
     if (shortcut) {
       updateDraftBlock(index, shortcut)
       setActiveBlockIndex(index)
@@ -624,7 +624,8 @@ export function App() {
       const next = [...previous]
       next.splice(nextIndex, 0, {
         type: 'paragraph',
-        content: ''
+        content: '',
+        checked: false
       })
       return next
     })
@@ -643,7 +644,8 @@ export function App() {
 
     const duplicated = {
       ...currentBlock,
-      content: contentOverride ?? currentBlock.content
+      content: contentOverride ?? currentBlock.content,
+      checked: currentBlock.type === 'todo' ? currentBlock.checked : false
     }
 
     setDraftBlocks((previous) => {
@@ -681,7 +683,7 @@ export function App() {
         ...next[index],
         content: leftContent
       }
-      next.splice(index + 1, 0, buildBlockTypePatch(nextType, rightContent))
+      next.splice(index + 1, 0, buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked))
       return next
     })
     setActiveBlockIndex(index + 1)
@@ -745,7 +747,7 @@ export function App() {
           index === activeBlockIndex
             ? {
                 ...block,
-                ...buildBlockTypePatch(command.type, nextContent)
+                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false)
               }
             : block
         )
@@ -764,7 +766,8 @@ export function App() {
         }
         next.splice(activeBlockIndex, 0, {
           type: 'paragraph',
-          content: ''
+          content: '',
+          checked: false
         })
         return next
       })
@@ -783,7 +786,8 @@ export function App() {
         }
         next.splice(activeBlockIndex + 1, 0, {
           type: 'paragraph',
-          content: ''
+          content: '',
+          checked: false
         })
         return next
       })
@@ -1290,7 +1294,7 @@ export function App() {
                           </button>
                           <select
                             className="editor-select"
-                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content))}
+                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked))}
                             value={block.type}
                           >
                             <option value="paragraph">Paragraph</option>
@@ -1412,6 +1416,16 @@ export function App() {
                             />
                           )}
                           <div className="block-editor-actions">
+                            {block.type === 'todo' ? (
+                              <label className="block-todo-toggle">
+                                <input
+                                  checked={block.checked}
+                                  onChange={(event) => updateDraftBlock(index, { checked: event.target.checked })}
+                                  type="checkbox"
+                                />
+                                <span>{block.checked ? 'Checked' : 'Unchecked'}</span>
+                              </label>
+                            ) : null}
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
                               + Above
                             </button>
@@ -1473,14 +1487,14 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
                     <div className="block-preview-list">
-                      {selectedDocument.blocks.map((block) => (
+                      {selectedDocument.blocks.map((block, index) => (
                         <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
-                          {renderBlock(block, setSelectedDocumentId, documentReferences)}
+                          {renderBlock(block, setSelectedDocumentId, documentReferences, (checked) => toggleTodoBlockChecked(index, checked))}
                         </div>
                       ))}
                     </div>
@@ -1849,7 +1863,8 @@ function RelationList({
 function renderBlock(
   block: DocumentBlock,
   onSelectDocument: (documentId: string) => void,
-  references: Array<{ id: string; title: string; path: string }>
+  references: Array<{ id: string; title: string; path: string }>,
+  onToggleTodo?: (checked: boolean) => void
 ) {
   if (block.type === 'heading-1') {
     return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references)}</h4>
@@ -1860,7 +1875,12 @@ function renderBlock(
   }
 
   if (block.type === 'todo') {
-    return <p className="block-todo">- [ ] {renderInlineContent(block.content, onSelectDocument, references)}</p>
+    return (
+      <label className={`block-todo${block.checked ? ' block-todo-checked' : ''}`}>
+        <input checked={block.checked} onChange={(event) => onToggleTodo?.(event.target.checked)} type="checkbox" />
+        <span>{renderInlineContent(block.content, onSelectDocument, references)}</span>
+      </label>
+    )
   }
 
   if (block.type === 'quote') {
@@ -1956,7 +1976,9 @@ function normalizeBlockContentForType(type: string, content: string) {
   return content
 }
 
-function resolveMarkdownBlockShortcut(type: string, content: string): { type: string; content: string } | null {
+function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockDraft | null {
+  const { type, content } = block
+
   if (content === '---') {
     return buildBlockTypePatch('divider', '')
   }
@@ -1969,8 +1991,12 @@ function resolveMarkdownBlockShortcut(type: string, content: string): { type: st
     return buildBlockTypePatch('heading-1', content.slice(2).replace(/^\s/, ''))
   }
 
+  if (content.startsWith('- [x] ') || content.startsWith('- [X] ')) {
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true)
+  }
+
   if (content.startsWith('- [ ] ')) {
-    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''))
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), false)
   }
 
   if (content.startsWith('> ')) {
