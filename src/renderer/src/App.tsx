@@ -854,6 +854,45 @@ export function App() {
     updateDraftBlock(index, { content })
   }
 
+  function handleBlockPaste(index: number, pastedText: string, selectionStart: number, selectionEnd: number) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return false
+    }
+
+    const normalizedText = pastedText.replace(/\r\n?/g, '\n')
+    if (!normalizedText.includes('\n')) {
+      return false
+    }
+
+    clearBlockSelection()
+
+    const before = currentBlock.content.slice(0, selectionStart)
+    const after = currentBlock.content.slice(selectionEnd)
+    const lines = normalizedText.split('\n')
+    const firstLine = lines[0] ?? ''
+    const lastLine = lines[lines.length - 1] ?? ''
+    const middleLines = lines.slice(1, -1)
+    const nextBlocks = [
+      normalizePastedLineBlock(currentBlock, `${before}${firstLine}`),
+      ...middleLines.map((line) => normalizePastedLineBlock(currentBlock, line)),
+      normalizePastedLineBlock(currentBlock, `${lastLine}${after}`)
+    ]
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      next.splice(index, 1, ...nextBlocks)
+      return next
+    })
+
+    const focusIndex = index + nextBlocks.length - 1
+    setActiveBlockIndex(focusIndex)
+    setActiveCursorPosition(lastLine.length)
+    setPendingFocusBlockIndex(focusIndex)
+    endBlockDrag()
+    return true
+  }
+
   function insertDraftBlockAt(index: number) {
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
     clearBlockSelection()
@@ -1808,6 +1847,18 @@ export function App() {
                                 handleBlockContentChange(index, event.target.value)
                                 captureBlockCursor(index, event.target)
                               }}
+                              onPaste={(event) => {
+                                if (
+                                  handleBlockPaste(
+                                    index,
+                                    event.clipboardData.getData('text/plain'),
+                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
+                                  )
+                                ) {
+                                  event.preventDefault()
+                                }
+                              }}
                               onClick={(event) => captureBlockCursor(index, event.currentTarget)}
                               onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
                               onKeyDown={(event) => {
@@ -2022,7 +2073,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -2634,6 +2685,11 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
   }
 
   return null
+}
+
+function normalizePastedLineBlock(template: DocumentBlockDraft, content: string): DocumentBlockDraft {
+  const draft = buildBlockTypePatch(template.type, content, template.checked, template.depth)
+  return resolveMarkdownBlockShortcut(draft) ?? draft
 }
 
 function renderMathBlock(content: string): string {
