@@ -63,6 +63,22 @@ export class MarkdownBackupService {
       return `- [ ] ${content}`
     }
 
+    if (type === 'quote') {
+      return `> ${content}`
+    }
+
+    if (type === 'bulleted-list') {
+      return `- ${content}`
+    }
+
+    if (type === 'numbered-list') {
+      return `1. ${content}`
+    }
+
+    if (type === 'divider') {
+      return '---'
+    }
+
     if (type === 'code') {
       return ['```txt', content, '```'].join('\n')
     }

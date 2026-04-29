@@ -542,8 +542,39 @@ dt,
 .block-heading,
 .block-paragraph,
 .block-todo,
+.block-quote,
+.block-bulleted-list,
+.block-numbered-list,
 .block-code {
   margin: 0;
+}
+
+.block-quote {
+  padding-left: 14px;
+  border-left: 3px solid rgba(203, 122, 32, 0.42);
+  color: #5b513f;
+}
+
+.block-bulleted-list,
+.block-numbered-list {
+  color: #2a241b;
+}
+
+.block-divider {
+  border: none;
+  border-top: 1px solid rgba(91, 72, 44, 0.18);
+  margin: 2px 0;
+}
+
+.block-divider-editor {
+  display: flex;
+  align-items: center;
+  min-height: 60px;
+  padding: 0 12px;
+  border: 1px dashed rgba(91, 72, 44, 0.18);
+  border-radius: 12px;
+  color: #746955;
+  background: rgba(255, 251, 245, 0.92);
 }
 
 .block-code {

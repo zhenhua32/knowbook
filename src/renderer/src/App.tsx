@@ -96,6 +96,38 @@ const blockSlashCommands: BlockSlashCommand[] = [
     type: 'code'
   },
   {
+    id: 'quote',
+    label: 'Quote',
+    description: 'Convert this block into a quoted callout.',
+    keywords: ['blockquote', 'callout', 'cite'],
+    kind: 'type',
+    type: 'quote'
+  },
+  {
+    id: 'bullet',
+    label: 'Bulleted List',
+    description: 'Turn this block into a bulleted list item.',
+    keywords: ['unordered', 'list', 'dash'],
+    kind: 'type',
+    type: 'bulleted-list'
+  },
+  {
+    id: 'numbered',
+    label: 'Numbered List',
+    description: 'Turn this block into an ordered list item.',
+    keywords: ['ordered', 'list', 'number'],
+    kind: 'type',
+    type: 'numbered-list'
+  },
+  {
+    id: 'divider',
+    label: 'Divider',
+    description: 'Insert a horizontal divider block.',
+    keywords: ['separator', 'rule', 'hr'],
+    kind: 'type',
+    type: 'divider'
+  },
+  {
     id: 'above',
     label: 'Insert Above',
     description: 'Insert a new paragraph block above the current block.',
@@ -136,6 +168,13 @@ const blockSlashCommands: BlockSlashCommand[] = [
     action: 'delete'
   }
 ]
+
+function buildBlockTypePatch(type: string, content: string) {
+  return {
+    type,
+    content: normalizeBlockContentForType(type, content)
+  }
+}
 
 export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
@@ -579,8 +618,7 @@ export function App() {
           index === activeBlockIndex
             ? {
                 ...block,
-                type: command.type,
-                content: nextContent
+                ...buildBlockTypePatch(command.type, nextContent)
               }
             : block
         )
@@ -1120,7 +1158,7 @@ export function App() {
                           </button>
                           <select
                             className="editor-select"
-                            onChange={(event) => updateDraftBlock(index, { type: event.target.value })}
+                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content))}
                             value={block.type}
                           >
                             <option value="paragraph">Paragraph</option>
@@ -1128,63 +1166,71 @@ export function App() {
                             <option value="heading-2">Heading 2</option>
                             <option value="todo">Todo</option>
                             <option value="code">Code</option>
+                            <option value="quote">Quote</option>
+                            <option value="bulleted-list">Bulleted List</option>
+                            <option value="numbered-list">Numbered List</option>
+                            <option value="divider">Divider</option>
                           </select>
-                          <textarea
-                            className="editor-textarea block-editor-textarea"
-                            ref={(element) => {
-                              blockTextareaRefs.current[index] = element
-                            }}
-                            onChange={(event) => {
-                              handleBlockContentChange(index, event.target.value)
-                              captureBlockCursor(index, event.target)
-                            }}
-                            onClick={(event) => captureBlockCursor(index, event.currentTarget)}
-                            onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
-                            onKeyDown={(event) => {
-                              if (activeBlockIndex === index && activeSlashContext) {
-                                if (event.key === 'ArrowDown') {
-                                  event.preventDefault()
-                                  setSelectedSlashCommandIndex((previous) =>
-                                    filteredSlashCommands.length === 0 ? 0 : (previous + 1) % filteredSlashCommands.length
-                                  )
-                                  return
-                                }
-
-                                if (event.key === 'ArrowUp') {
-                                  event.preventDefault()
-                                  setSelectedSlashCommandIndex((previous) =>
-                                    filteredSlashCommands.length === 0
-                                      ? 0
-                                      : (previous - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
-                                  )
-                                  return
-                                }
-
-                                if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-                                  if (activeSlashCommand) {
+                          {block.type === 'divider' ? (
+                            <div className="block-divider-editor">Divider block</div>
+                          ) : (
+                            <textarea
+                              className="editor-textarea block-editor-textarea"
+                              ref={(element) => {
+                                blockTextareaRefs.current[index] = element
+                              }}
+                              onChange={(event) => {
+                                handleBlockContentChange(index, event.target.value)
+                                captureBlockCursor(index, event.target)
+                              }}
+                              onClick={(event) => captureBlockCursor(index, event.currentTarget)}
+                              onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
+                              onKeyDown={(event) => {
+                                if (activeBlockIndex === index && activeSlashContext) {
+                                  if (event.key === 'ArrowDown') {
                                     event.preventDefault()
-                                    applySlashCommand(activeSlashCommand)
+                                    setSelectedSlashCommandIndex((previous) =>
+                                      filteredSlashCommands.length === 0 ? 0 : (previous + 1) % filteredSlashCommands.length
+                                    )
+                                    return
+                                  }
+
+                                  if (event.key === 'ArrowUp') {
+                                    event.preventDefault()
+                                    setSelectedSlashCommandIndex((previous) =>
+                                      filteredSlashCommands.length === 0
+                                        ? 0
+                                        : (previous - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+                                    )
+                                    return
+                                  }
+
+                                  if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+                                    if (activeSlashCommand) {
+                                      event.preventDefault()
+                                      applySlashCommand(activeSlashCommand)
+                                      return
+                                    }
+                                  }
+
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault()
+                                    dismissSlashCommand()
                                     return
                                   }
                                 }
 
-                                if (event.key === 'Escape') {
+                                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                                   event.preventDefault()
-                                  dismissSlashCommand()
-                                  return
+                                  insertDraftBlockAt(index + 1)
                                 }
-                              }
-
-                              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                                event.preventDefault()
-                                insertDraftBlockAt(index + 1)
-                              }
-                            }}
-                            onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
-                            onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
-                            rows={block.type === 'code' ? 5 : 2}
-                            value={block.content}
-                          />
+                              }}
+                              onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
+                              onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
+                              rows={block.type === 'code' ? 5 : 2}
+                              value={block.content}
+                            />
+                          )}
                           <div className="block-editor-actions">
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
                               + Above
@@ -1244,7 +1290,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / - [ ] / ``` for markdown shortcuts, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1634,6 +1680,22 @@ function renderBlock(
     return <p className="block-todo">- [ ] {renderInlineContent(block.content, onSelectDocument, references)}</p>
   }
 
+  if (block.type === 'quote') {
+    return <blockquote className="block-quote">{renderInlineContent(block.content, onSelectDocument, references)}</blockquote>
+  }
+
+  if (block.type === 'bulleted-list') {
+    return <p className="block-bulleted-list">- {renderInlineContent(block.content, onSelectDocument, references)}</p>
+  }
+
+  if (block.type === 'numbered-list') {
+    return <p className="block-numbered-list">1. {renderInlineContent(block.content, onSelectDocument, references)}</p>
+  }
+
+  if (block.type === 'divider') {
+    return <hr className="block-divider" />
+  }
+
   if (block.type === 'code') {
     return <pre className="block-code">{block.content}</pre>
   }
@@ -1703,28 +1765,46 @@ function stripSlashCommand(content: string, start: number, cursorPosition: numbe
   return next.trim() === '' ? '' : next
 }
 
+function normalizeBlockContentForType(type: string, content: string) {
+  if (type === 'divider') {
+    return ''
+  }
+
+  return content
+}
+
 function resolveMarkdownBlockShortcut(type: string, content: string): { type: string; content: string } | null {
-  const shortcuts: Array<{ prefix: string; type: string; allowFrom?: string[] }> = [
-    { prefix: '## ', type: 'heading-2' },
-    { prefix: '# ', type: 'heading-1' },
-    { prefix: '- [ ] ', type: 'todo' },
-    { prefix: '```', type: 'code', allowFrom: ['paragraph', 'heading-1', 'heading-2', 'todo'] }
-  ]
+  if (content === '---') {
+    return buildBlockTypePatch('divider', '')
+  }
 
-  for (const shortcut of shortcuts) {
-    if (!content.startsWith(shortcut.prefix)) {
-      continue
-    }
+  if (content.startsWith('## ')) {
+    return buildBlockTypePatch('heading-2', content.slice(3).replace(/^\s/, ''))
+  }
 
-    if (shortcut.allowFrom && !shortcut.allowFrom.includes(type)) {
-      continue
-    }
+  if (content.startsWith('# ')) {
+    return buildBlockTypePatch('heading-1', content.slice(2).replace(/^\s/, ''))
+  }
 
-    const nextContent = content.slice(shortcut.prefix.length).replace(/^\s/, '')
-    return {
-      type: shortcut.type,
-      content: nextContent
-    }
+  if (content.startsWith('- [ ] ')) {
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''))
+  }
+
+  if (content.startsWith('> ')) {
+    return buildBlockTypePatch('quote', content.slice(2).replace(/^\s/, ''))
+  }
+
+  if (content.startsWith('- ')) {
+    return buildBlockTypePatch('bulleted-list', content.slice(2).replace(/^\s/, ''))
+  }
+
+  const orderedPrefix = content.match(/^\d+\.\s+/)?.[0]
+  if (orderedPrefix) {
+    return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''))
+  }
+
+  if (content.startsWith('```') && ['paragraph', 'heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(type)) {
+    return buildBlockTypePatch('code', content.slice(3).replace(/^\s/, ''))
   }
 
   return null
