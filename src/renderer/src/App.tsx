@@ -1,3 +1,4 @@
+import { renderToString } from 'katex'
 import { useEffect, useRef, useState } from 'react'
 import type {
   BackupResult,
@@ -95,6 +96,14 @@ const blockSlashCommands: BlockSlashCommand[] = [
     keywords: ['snippet', 'pre', 'terminal'],
     kind: 'type',
     type: 'code'
+  },
+  {
+    id: 'math',
+    label: 'Math Formula',
+    description: 'Render this block as a KaTeX display equation.',
+    keywords: ['latex', 'equation', 'formula', 'katex'],
+    kind: 'type',
+    type: 'math'
   },
   {
     id: 'quote',
@@ -1302,6 +1311,7 @@ export function App() {
                             <option value="heading-2">Heading 2</option>
                             <option value="todo">Todo</option>
                             <option value="code">Code</option>
+                            <option value="math">Math Formula</option>
                             <option value="quote">Quote</option>
                             <option value="bulleted-list">Bulleted List</option>
                             <option value="numbered-list">Numbered List</option>
@@ -1411,7 +1421,7 @@ export function App() {
                               }}
                               onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
                               onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
-                              rows={block.type === 'code' ? 5 : 2}
+                              rows={block.type === 'code' ? 5 : block.type === 'math' ? 3 : 2}
                               value={block.content}
                             />
                           )}
@@ -1487,7 +1497,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1899,6 +1909,10 @@ function renderBlock(
     return <hr className="block-divider" />
   }
 
+  if (block.type === 'math') {
+    return <div className="block-math" dangerouslySetInnerHTML={{ __html: renderMathBlock(block.content) }} />
+  }
+
   if (block.type === 'code') {
     return <pre className="block-code">{block.content}</pre>
   }
@@ -1991,6 +2005,10 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
     return buildBlockTypePatch('heading-1', content.slice(2).replace(/^\s/, ''))
   }
 
+  if (content.startsWith('$$ ')) {
+    return buildBlockTypePatch('math', content.slice(3).replace(/^\s/, ''))
+  }
+
   if (content.startsWith('- [x] ') || content.startsWith('- [X] ')) {
     return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true)
   }
@@ -2012,11 +2030,19 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
     return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''))
   }
 
-  if (content.startsWith('```') && ['paragraph', 'heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(type)) {
+  if (content.startsWith('```') && ['paragraph', 'heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list', 'math'].includes(type)) {
     return buildBlockTypePatch('code', content.slice(3).replace(/^\s/, ''))
   }
 
   return null
+}
+
+function renderMathBlock(content: string): string {
+  return renderToString(content, {
+    displayMode: true,
+    throwOnError: false,
+    strict: 'ignore'
+  })
 }
 
 function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {

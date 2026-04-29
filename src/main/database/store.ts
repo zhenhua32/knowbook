@@ -92,6 +92,7 @@ interface ExportBlockRow {
   type: string
   content: string
   checked: number
+  depth: number
   sort_order: number
 }
 
@@ -133,6 +134,7 @@ export interface ExportDocument {
     type: string
     content: string
     checked: boolean
+    depth: number
     sortOrder: number
   }>
 }
@@ -147,6 +149,7 @@ export class KnowbookStore {
     this.db.pragma('foreign_keys = ON')
     this.db.exec(appSchema)
     this.ensureBlockCheckedColumn()
+    this.ensureBlockDepthColumn()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
@@ -179,7 +182,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT type, content, checked, sort_order
+      SELECT type, content, checked, depth, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -218,6 +221,7 @@ export class KnowbookStore {
         type: block.type,
         content: block.content,
         checked: Boolean(block.checked),
+        depth: Math.max(0, block.depth ?? 0),
         sortOrder: block.sort_order
       })),
       children: children.map((child): DocumentChild => ({
@@ -255,14 +259,14 @@ export class KnowbookStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
       insertDocument.run(id, title, slug, parent?.id ?? null, path, 'New knowledge node ready for editing.', now, now)
-      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, now, now)
-      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, now, now)
+      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, now, now)
+      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, now, now)
     })
 
     transaction()
@@ -304,8 +308,8 @@ export class KnowbookStore {
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
@@ -317,7 +321,7 @@ export class KnowbookStore {
 
       deleteBlocksStatement.run(documentId)
       normalizedBlocks.forEach((block, index) => {
-        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, block.checked ? 1 : 0, now, now)
+        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, block.checked ? 1 : 0, block.depth, now, now)
       })
     })
 
@@ -518,7 +522,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT type, content, checked, sort_order
+      SELECT type, content, checked, depth, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -534,6 +538,7 @@ export class KnowbookStore {
         type: block.type,
         content: block.content,
         checked: Boolean(block.checked),
+        depth: Math.max(0, block.depth ?? 0),
         sortOrder: block.sort_order
       }))
     }))
@@ -721,11 +726,15 @@ export class KnowbookStore {
 
   private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
     const normalized = blocks
-      .map((block) => ({
-        type: block.type.trim() || 'paragraph',
+      .map((block) => {
+        const type = block.type.trim() || 'paragraph'
+        return {
+        type,
         content: block.content,
-        checked: block.type.trim() === 'todo' ? Boolean(block.checked) : false
-      }))
+        checked: type === 'todo' ? Boolean(block.checked) : false,
+        depth: ['todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0))) : 0
+      }
+      })
       .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
 
     if (normalized.length > 0) {
@@ -736,7 +745,8 @@ export class KnowbookStore {
       {
         type: 'paragraph',
         content: 'Start writing here.',
-        checked: false
+        checked: false,
+        depth: 0
       }
     ]
   }
@@ -859,6 +869,13 @@ export class KnowbookStore {
     }
   }
 
+  private ensureBlockDepthColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'depth')) {
+      this.db.exec('ALTER TABLE blocks ADD COLUMN depth INTEGER NOT NULL DEFAULT 0')
+    }
+  }
+
   private readSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value ?? null
@@ -880,8 +897,8 @@ export class KnowbookStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
@@ -893,12 +910,12 @@ export class KnowbookStore {
       insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
       insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)
 
-      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, now, now)
-      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, now, now)
+      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, 0, now, now)
+      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, 0, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, 0, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, 0, now, now)
 
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')

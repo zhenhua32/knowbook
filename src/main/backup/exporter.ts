@@ -44,13 +44,15 @@ export class MarkdownBackupService {
     ].join('\n')
 
     const body = document.blocks
-      .map((block) => this.renderBlock(block.type, block.content, block.checked))
+      .map((block) => this.renderBlock(block.type, block.content, block.checked, block.depth))
       .join('\n\n')
 
     return `${frontmatter}${body}\n`
   }
 
-  private renderBlock(type: string, content: string, checked: boolean): string {
+  private renderBlock(type: string, content: string, checked: boolean, depth: number): string {
+    const indent = '  '.repeat(Math.max(0, depth))
+
     if (type === 'heading-1') {
       return `# ${content}`
     }
@@ -60,7 +62,7 @@ export class MarkdownBackupService {
     }
 
     if (type === 'todo') {
-      return `- [${checked ? 'x' : ' '}] ${content}`
+      return `${indent}- [${checked ? 'x' : ' '}] ${content}`
     }
 
     if (type === 'quote') {
@@ -68,15 +70,19 @@ export class MarkdownBackupService {
     }
 
     if (type === 'bulleted-list') {
-      return `- ${content}`
+      return `${indent}- ${content}`
     }
 
     if (type === 'numbered-list') {
-      return `1. ${content}`
+      return `${indent}1. ${content}`
     }
 
     if (type === 'divider') {
       return '---'
+    }
+
+    if (type === 'math') {
+      return ['$$', content, '$$'].join('\n')
     }
 
     if (type === 'code') {

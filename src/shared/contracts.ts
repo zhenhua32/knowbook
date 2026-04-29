@@ -51,6 +51,7 @@ export interface DocumentBlock {
   type: string
   content: string
   checked: boolean
+  depth: number
   sortOrder: number
 }
 
@@ -58,6 +59,7 @@ export interface DocumentBlockDraft {
   type: string
   content: string
   checked: boolean
+  depth: number
 }
 
 export interface LinkedDocument {

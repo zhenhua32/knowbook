@@ -559,6 +559,7 @@ dt,
 .block-quote,
 .block-bulleted-list,
 .block-numbered-list,
+.block-math,
 .block-code {
   margin: 0;
 }
@@ -602,6 +603,21 @@ dt,
   border: none;
   border-top: 1px solid rgba(91, 72, 44, 0.18);
   margin: 2px 0;
+}
+
+.block-math {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 251, 245, 0.92);
+  overflow-x: auto;
+}
+
+.block-math .katex-display {
+  margin: 0;
+}
+
+.block-math .katex {
+  color: #2a241b;
 }
 
 .block-divider-editor {
