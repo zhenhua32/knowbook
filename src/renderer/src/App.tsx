@@ -214,6 +214,24 @@ function normalizeBlockDepth(type: string, depth: number) {
   return isNestableBlock(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
 }
 
+function getBlockSubtreeEndIndex(blocks: Array<{ depth: number }>, index: number) {
+  const root = blocks[index]
+  if (!root) {
+    return index
+  }
+
+  let endIndex = index
+  for (let currentIndex = index + 1; currentIndex < blocks.length; currentIndex += 1) {
+    if (blocks[currentIndex].depth <= root.depth) {
+      break
+    }
+
+    endIndex = currentIndex
+  }
+
+  return endIndex
+}
+
 function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0): DocumentBlockDraft {
   return {
     type,
@@ -792,12 +810,105 @@ export function App() {
       return
     }
 
-    updateDraftBlock(index, {
-      depth: normalizeBlockDepth(currentBlock.type, currentBlock.depth + delta)
-    })
+    const nextRootDepth = normalizeBlockDepth(currentBlock.type, currentBlock.depth + delta)
+    const appliedDelta = nextRootDepth - currentBlock.depth
+    if (appliedDelta === 0) {
+      return
+    }
+
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+
+    setDraftBlocks((previous) =>
+      previous.map((block, currentIndex) => {
+        if (currentIndex < index || currentIndex > subtreeEndIndex) {
+          return block
+        }
+
+        if (!isNestableBlock(block.type)) {
+          return block
+        }
+
+        return {
+          ...block,
+          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+        }
+      })
+    )
     setActiveBlockIndex(index)
     setActiveCursorPosition(cursorPosition)
     setPendingFocusBlockIndex(index)
+  }
+
+  function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null) {
+    setDraftBlocks((previous) => {
+      const subtreeEndIndex = getBlockSubtreeEndIndex(previous, sourceIndex)
+      const movedBlocks = previous.slice(sourceIndex, subtreeEndIndex + 1)
+      const next = [...previous]
+      next.splice(sourceIndex, movedBlocks.length)
+
+      const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
+      const rootBlock = movedBlocks[0]
+      if (!rootBlock) {
+        return previous
+      }
+
+      const nextRootDepth = targetDepth === null ? rootBlock.depth : normalizeBlockDepth(rootBlock.type, targetDepth)
+      const appliedDelta = nextRootDepth - rootBlock.depth
+      const normalizedMovedBlocks = movedBlocks.map((block) =>
+        isNestableBlock(block.type)
+          ? {
+              ...block,
+              depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+            }
+          : block
+      )
+
+      next.splice(insertionIndex, 0, ...normalizedMovedBlocks)
+      return next
+    })
+
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, sourceIndex)
+    const subtreeSize = subtreeEndIndex - sourceIndex + 1
+    const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - subtreeSize + 1) : targetIndex
+
+    setActiveBlockIndex((previous) => {
+      if (previous === null) {
+        return previous
+      }
+
+      if (previous >= sourceIndex && previous <= subtreeEndIndex) {
+        return insertionIndex + (previous - sourceIndex)
+      }
+
+      if (sourceIndex < insertionIndex && previous > subtreeEndIndex && previous <= targetIndex) {
+        return previous - subtreeSize
+      }
+
+      if (sourceIndex > insertionIndex && previous >= insertionIndex && previous < sourceIndex) {
+        return previous + subtreeSize
+      }
+
+      return previous
+    })
+    setPendingFocusBlockIndex((previous) => {
+      if (previous === null) {
+        return previous
+      }
+
+      if (previous >= sourceIndex && previous <= subtreeEndIndex) {
+        return insertionIndex + (previous - sourceIndex)
+      }
+
+      if (sourceIndex < insertionIndex && previous > subtreeEndIndex && previous <= targetIndex) {
+        return previous - subtreeSize
+      }
+
+      if (sourceIndex > insertionIndex && previous >= insertionIndex && previous < sourceIndex) {
+        return previous + subtreeSize
+      }
+
+      return previous
+    })
   }
 
   function applySlashCommand(command: BlockSlashCommand) {
@@ -1025,39 +1136,13 @@ export function App() {
       return
     }
 
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      const [moved] = next.splice(draggingBlockIndex, 1)
-      if (!moved) {
-        return previous
-      }
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
+    if (targetIndex >= draggingBlockIndex && targetIndex <= subtreeEndIndex) {
+      endBlockDrag()
+      return
+    }
 
-      next.splice(targetIndex, 0, {
-        ...moved,
-        depth: targetDepth === null ? moved.depth : normalizeBlockDepth(moved.type, targetDepth)
-      })
-      return next
-    })
-
-    setActiveBlockIndex((previous) => {
-      if (previous === null) {
-        return previous
-      }
-
-      if (previous === draggingBlockIndex) {
-        return targetIndex
-      }
-
-      if (draggingBlockIndex < targetIndex && previous > draggingBlockIndex && previous <= targetIndex) {
-        return previous - 1
-      }
-
-      if (draggingBlockIndex > targetIndex && previous < draggingBlockIndex && previous >= targetIndex) {
-        return previous + 1
-      }
-
-      return previous
-    })
+    moveDraftSubtree(draggingBlockIndex, targetIndex, targetDepth)
 
     endBlockDrag()
   }
