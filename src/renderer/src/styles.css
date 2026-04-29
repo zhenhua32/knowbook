@@ -516,6 +516,15 @@ dt,
   height: 16px;
 }
 
+.block-depth-indicator {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 4px;
+  color: #776b58;
+  font-size: 0.84rem;
+}
+
 .block-editor-actions button {
   width: 100%;
   white-space: nowrap;

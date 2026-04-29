@@ -187,19 +187,29 @@ const blockSlashCommands: BlockSlashCommand[] = [
   }
 ]
 
-function buildBlockTypePatch(type: string, content: string, checked = false): DocumentBlockDraft {
+function isNestableBlock(type: string) {
+  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+}
+
+function normalizeBlockDepth(type: string, depth: number) {
+  return isNestableBlock(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
+}
+
+function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0): DocumentBlockDraft {
   return {
     type,
     content: normalizeBlockContentForType(type, content),
-    checked: type === 'todo' ? checked : false
+    checked: type === 'todo' ? checked : false,
+    depth: normalizeBlockDepth(type, depth)
   }
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked'>): DocumentBlockDraft {
+function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked' | 'depth'>): DocumentBlockDraft {
   return {
     type: block.type,
     content: block.content,
-    checked: Boolean(block.checked)
+    checked: Boolean(block.checked),
+    depth: normalizeBlockDepth(block.type, block.depth)
   }
 }
 
@@ -634,7 +644,8 @@ export function App() {
       next.splice(nextIndex, 0, {
         type: 'paragraph',
         content: '',
-        checked: false
+        checked: false,
+        depth: 0
       })
       return next
     })
@@ -654,7 +665,8 @@ export function App() {
     const duplicated = {
       ...currentBlock,
       content: contentOverride ?? currentBlock.content,
-      checked: currentBlock.type === 'todo' ? currentBlock.checked : false
+      checked: currentBlock.type === 'todo' ? currentBlock.checked : false,
+      depth: normalizeBlockDepth(currentBlock.type, currentBlock.depth)
     }
 
     setDraftBlocks((previous) => {
@@ -692,7 +704,11 @@ export function App() {
         ...next[index],
         content: leftContent
       }
-      next.splice(index + 1, 0, buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked))
+      next.splice(
+        index + 1,
+        0,
+        buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked, currentBlock.depth)
+      )
       return next
     })
     setActiveBlockIndex(index + 1)
@@ -738,6 +754,20 @@ export function App() {
     setPendingFocusBlockIndex(index)
   }
 
+  function adjustBlockDepth(index: number, delta: number, cursorPosition = activeCursorPosition) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock || !isNestableBlock(currentBlock.type)) {
+      return
+    }
+
+    updateDraftBlock(index, {
+      depth: normalizeBlockDepth(currentBlock.type, currentBlock.depth + delta)
+    })
+    setActiveBlockIndex(index)
+    setActiveCursorPosition(cursorPosition)
+    setPendingFocusBlockIndex(index)
+  }
+
   function applySlashCommand(command: BlockSlashCommand) {
     if (activeBlockIndex === null || !activeSlashContext) {
       return
@@ -756,7 +786,7 @@ export function App() {
           index === activeBlockIndex
             ? {
                 ...block,
-                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false)
+                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false, currentBlock.depth)
               }
             : block
         )
@@ -776,7 +806,8 @@ export function App() {
         next.splice(activeBlockIndex, 0, {
           type: 'paragraph',
           content: '',
-          checked: false
+          checked: false,
+          depth: 0
         })
         return next
       })
@@ -796,7 +827,8 @@ export function App() {
         next.splice(activeBlockIndex + 1, 0, {
           type: 'paragraph',
           content: '',
-          checked: false
+          checked: false,
+          depth: 0
         })
         return next
       })
@@ -1303,7 +1335,7 @@ export function App() {
                           </button>
                           <select
                             className="editor-select"
-                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked))}
+                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth))}
                             value={block.type}
                           >
                             <option value="paragraph">Paragraph</option>
@@ -1322,6 +1354,7 @@ export function App() {
                           ) : (
                             <textarea
                               className="editor-textarea block-editor-textarea"
+                              style={isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * 24}px` } : undefined}
                               ref={(element) => {
                                 blockTextareaRefs.current[index] = element
                               }}
@@ -1364,6 +1397,16 @@ export function App() {
                                     dismissSlashCommand()
                                     return
                                   }
+                                }
+
+                                if (event.key === 'Tab' && isNestableBlock(block.type)) {
+                                  event.preventDefault()
+                                  adjustBlockDepth(
+                                    index,
+                                    event.shiftKey ? -1 : 1,
+                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                                  )
+                                  return
                                 }
 
                                 if (
@@ -1436,6 +1479,17 @@ export function App() {
                                 <span>{block.checked ? 'Checked' : 'Unchecked'}</span>
                               </label>
                             ) : null}
+                            {isNestableBlock(block.type) ? (
+                              <>
+                                <span className="block-depth-indicator">Depth {block.depth}</span>
+                                <button className="secondary-button block-insert-button" onClick={() => adjustBlockDepth(index, -1)} type="button">
+                                  Outdent
+                                </button>
+                                <button className="secondary-button block-insert-button" onClick={() => adjustBlockDepth(index, 1)} type="button">
+                                  Indent
+                                </button>
+                              </>
+                            ) : null}
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
                               + Above
                             </button>
@@ -1497,7 +1551,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1876,6 +1930,8 @@ function renderBlock(
   references: Array<{ id: string; title: string; path: string }>,
   onToggleTodo?: (checked: boolean) => void
 ) {
+  const indentStyle = isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * 24}px` } : undefined
+
   if (block.type === 'heading-1') {
     return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references)}</h4>
   }
@@ -1886,7 +1942,7 @@ function renderBlock(
 
   if (block.type === 'todo') {
     return (
-      <label className={`block-todo${block.checked ? ' block-todo-checked' : ''}`}>
+      <label className={`block-todo${block.checked ? ' block-todo-checked' : ''}`} style={indentStyle}>
         <input checked={block.checked} onChange={(event) => onToggleTodo?.(event.target.checked)} type="checkbox" />
         <span>{renderInlineContent(block.content, onSelectDocument, references)}</span>
       </label>
@@ -1898,11 +1954,11 @@ function renderBlock(
   }
 
   if (block.type === 'bulleted-list') {
-    return <p className="block-bulleted-list">- {renderInlineContent(block.content, onSelectDocument, references)}</p>
+    return <p className="block-bulleted-list" style={indentStyle}>- {renderInlineContent(block.content, onSelectDocument, references)}</p>
   }
 
   if (block.type === 'numbered-list') {
-    return <p className="block-numbered-list">1. {renderInlineContent(block.content, onSelectDocument, references)}</p>
+    return <p className="block-numbered-list" style={indentStyle}>1. {renderInlineContent(block.content, onSelectDocument, references)}</p>
   }
 
   if (block.type === 'divider') {
@@ -2010,11 +2066,11 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
   }
 
   if (content.startsWith('- [x] ') || content.startsWith('- [X] ')) {
-    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true)
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true, block.depth)
   }
 
   if (content.startsWith('- [ ] ')) {
-    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), false)
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), false, block.depth)
   }
 
   if (content.startsWith('> ')) {
@@ -2022,12 +2078,12 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
   }
 
   if (content.startsWith('- ')) {
-    return buildBlockTypePatch('bulleted-list', content.slice(2).replace(/^\s/, ''))
+    return buildBlockTypePatch('bulleted-list', content.slice(2).replace(/^\s/, ''), false, block.depth)
   }
 
   const orderedPrefix = content.match(/^\d+\.\s+/)?.[0]
   if (orderedPrefix) {
-    return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''))
+    return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''), false, block.depth)
   }
 
   if (content.startsWith('```') && ['paragraph', 'heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list', 'math'].includes(type)) {
