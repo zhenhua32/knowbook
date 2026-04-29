@@ -42,6 +42,12 @@ const emptyState: HomeData = {
 const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 
+type BlockDropPreview = {
+  positionLabel: string
+  effectiveDepth: number
+  parentText: string | null
+}
+
 type BlockSlashCommand = {
   id: string
   label: string
@@ -259,6 +265,67 @@ function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
   }
 
   return 'bulleted-list'
+}
+
+function getBlockDropPreview(
+  blocks: DocumentBlockDraft[],
+  sourceIndex: number,
+  targetIndex: number,
+  targetDepth: number | null
+): BlockDropPreview | null {
+  const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, sourceIndex)
+  if (targetIndex >= sourceIndex && targetIndex <= subtreeEndIndex) {
+    return null
+  }
+
+  const movedBlocks = blocks.slice(sourceIndex, subtreeEndIndex + 1)
+  const rootBlock = movedBlocks[0]
+  if (!rootBlock) {
+    return null
+  }
+
+  const remainingBlocks = [...blocks]
+  remainingBlocks.splice(sourceIndex, movedBlocks.length)
+
+  const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
+  const nextRootDepth = targetDepth === null ? rootBlock.depth : normalizeBlockDepth(rootBlock.type, targetDepth)
+  const appliedDelta = nextRootDepth - rootBlock.depth
+  const normalizedMovedBlocks = movedBlocks.map((block) =>
+    isNestableBlock(block.type)
+      ? {
+          ...block,
+          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+        }
+      : block
+  )
+
+  const nextBlocks = [...remainingBlocks]
+  nextBlocks.splice(insertionIndex, 0, ...normalizedMovedBlocks)
+
+  const depthStack: Array<{ text: string } | null> = []
+
+  for (const [index, block] of nextBlocks.entries()) {
+    let effectiveDepth = normalizeBlockDepth(block.type, block.depth)
+    while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
+      effectiveDepth -= 1
+    }
+
+    const parent = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] : null
+    if (index === insertionIndex) {
+      return {
+        positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
+        effectiveDepth,
+        parentText: parent?.text ?? null
+      }
+    }
+
+    depthStack.length = effectiveDepth + 1
+    depthStack[effectiveDepth] = {
+      text: getBlockTreeText(block.type, block.content)
+    }
+  }
+
+  return null
 }
 
 function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked' | 'depth'>): DocumentBlockDraft {
@@ -1541,22 +1608,28 @@ export function App() {
                   <p className="panel-label">Blocks</p>
                   {isEditing ? (
                     <div className="block-editor-list">
-                      {draftBlocks.map((block, index) => (
-                        <div
-                          className={`block-editor-row${dragOverBlockIndex === index && draggingBlockIndex !== null ? ' block-editor-row-drag-over' : ''}`}
-                          key={`${selectedDocument.id}-draft-${index}`}
-                          onDragOver={(event) => {
-                            event.preventDefault()
-                            if (draggingBlockIndex !== null) {
-                              setDragOverBlockIndex(index)
-                              setDragOverBlockDepth(getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
-                            }
-                          }}
-                          onDrop={(event) => {
-                            event.preventDefault()
-                            dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
-                          }}
-                        >
+                      {draftBlocks.map((block, index) => {
+                        const dropPreview =
+                          draggingBlockIndex !== null && dragOverBlockIndex === index
+                            ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
+                            : null
+
+                        return (
+                          <div
+                            className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}`}
+                            key={`${selectedDocument.id}-draft-${index}`}
+                            onDragOver={(event) => {
+                              event.preventDefault()
+                              if (draggingBlockIndex !== null) {
+                                setDragOverBlockIndex(index)
+                                setDragOverBlockDepth(getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
+                              }
+                            }}
+                            onDrop={(event) => {
+                              event.preventDefault()
+                              dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
+                            }}
+                          >
                           <button
                             aria-label="Drag block"
                             className="block-drag-handle"
@@ -1745,8 +1818,20 @@ export function App() {
                               Remove
                             </button>
                           </div>
-                        </div>
-                      ))}
+                          {dropPreview ? (
+                            <div
+                              className="block-drop-preview"
+                              style={{ marginInlineStart: `${dropPreview.effectiveDepth * BLOCK_INDENT_SIZE}px` }}
+                            >
+                              <span className="block-drop-preview-badge">{dropPreview.positionLabel}</span>
+                              <span className="block-drop-preview-meta">
+                                Depth {dropPreview.effectiveDepth} · {dropPreview.parentText ? `Child of ${dropPreview.parentText}` : 'Root level'}
+                              </span>
+                            </div>
+                          ) : null}
+                          </div>
+                        )
+                      })}
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
                         Add block
                       </button>
@@ -1794,7 +1879,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
