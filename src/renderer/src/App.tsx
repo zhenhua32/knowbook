@@ -39,6 +39,9 @@ const emptyState: HomeData = {
   initialDocumentId: null
 }
 
+const BLOCK_INDENT_SIZE = 24
+const BLOCK_DRAG_DEPTH_THRESHOLD = 72
+
 type BlockSlashCommand = {
   id: string
   label: string
@@ -244,6 +247,7 @@ export function App() {
   const [draftBlocks, setDraftBlocks] = useState<DocumentBlockDraft[]>([])
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
+  const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
@@ -298,6 +302,7 @@ export function App() {
         setSelectedDocument(detail)
         setDraggingBlockIndex(null)
         setDragOverBlockIndex(null)
+        setDragOverBlockDepth(null)
         setPendingFocusBlockIndex(null)
         setActiveBlockIndex(null)
         setActiveCursorPosition(0)
@@ -460,6 +465,7 @@ export function App() {
     setPendingFocusBlockIndex(null)
     setDraggingBlockIndex(null)
     setDragOverBlockIndex(null)
+    setDragOverBlockDepth(null)
     setLinkSuggestions([])
   }
 
@@ -985,15 +991,36 @@ export function App() {
   function beginBlockDrag(index: number) {
     setDraggingBlockIndex(index)
     setDragOverBlockIndex(index)
+    setDragOverBlockDepth(draftBlocks[index]?.depth ?? null)
   }
 
   function endBlockDrag() {
     setDraggingBlockIndex(null)
     setDragOverBlockIndex(null)
+    setDragOverBlockDepth(null)
   }
 
-  function dropBlockAt(targetIndex: number) {
-    if (draggingBlockIndex === null || draggingBlockIndex === targetIndex) {
+  function getDraggedBlockDepthPreview(targetIndex: number, clientX: number, element: HTMLDivElement) {
+    if (draggingBlockIndex === null) {
+      return null
+    }
+
+    const draggingBlock = draftBlocks[draggingBlockIndex]
+    if (!draggingBlock || !isNestableBlock(draggingBlock.type)) {
+      return null
+    }
+
+    const targetBlock = draftBlocks[targetIndex]
+    const anchorDepth = targetBlock && isNestableBlock(targetBlock.type) ? targetBlock.depth : 0
+    const contentColumnStart = element.getBoundingClientRect().left + 48 + 160 + 20
+    const horizontalDelta = clientX - contentColumnStart
+    const depthDelta = horizontalDelta > BLOCK_DRAG_DEPTH_THRESHOLD ? 1 : horizontalDelta < -BLOCK_DRAG_DEPTH_THRESHOLD ? -1 : 0
+
+    return normalizeBlockDepth(draggingBlock.type, anchorDepth + depthDelta)
+  }
+
+  function dropBlockAt(targetIndex: number, targetDepth = dragOverBlockDepth) {
+    if (draggingBlockIndex === null) {
       endBlockDrag()
       return
     }
@@ -1001,7 +1028,14 @@ export function App() {
     setDraftBlocks((previous) => {
       const next = [...previous]
       const [moved] = next.splice(draggingBlockIndex, 1)
-      next.splice(targetIndex, 0, moved)
+      if (!moved) {
+        return previous
+      }
+
+      next.splice(targetIndex, 0, {
+        ...moved,
+        depth: targetDepth === null ? moved.depth : normalizeBlockDepth(moved.type, targetDepth)
+      })
       return next
     })
 
@@ -1372,11 +1406,12 @@ export function App() {
                             event.preventDefault()
                             if (draggingBlockIndex !== null) {
                               setDragOverBlockIndex(index)
+                              setDragOverBlockDepth(getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
                             }
                           }}
                           onDrop={(event) => {
                             event.preventDefault()
-                            dropBlockAt(index)
+                            dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
                           }}
                         >
                           <button
@@ -1413,7 +1448,7 @@ export function App() {
                           ) : (
                             <textarea
                               className="editor-textarea block-editor-textarea"
-                              style={isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * 24}px` } : undefined}
+                              style={isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined}
                               ref={(element) => {
                                 blockTextareaRefs.current[index] = element
                               }}
@@ -1610,7 +1645,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -1989,7 +2024,7 @@ function renderBlock(
   references: Array<{ id: string; title: string; path: string }>,
   onToggleTodo?: (checked: boolean) => void
 ) {
-  const indentStyle = isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * 24}px` } : undefined
+  const indentStyle = isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined
 
   if (block.type === 'heading-1') {
     return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references)}</h4>
