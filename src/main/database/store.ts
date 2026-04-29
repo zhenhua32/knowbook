@@ -93,7 +93,16 @@ interface ExportBlockRow {
   content: string
   checked: number
   depth: number
+  parent_block_id: string | null
   sort_order: number
+}
+
+interface BlockTreeRow {
+  id: string
+  document_id: string
+  type: string
+  depth: number
+  parent_block_id: string | null
 }
 
 interface BlockTableInfoRow {
@@ -150,6 +159,7 @@ export class KnowbookStore {
     this.db.exec(appSchema)
     this.ensureBlockCheckedColumn()
     this.ensureBlockDepthColumn()
+    this.ensureBlockParentRelationships()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
@@ -182,7 +192,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT type, content, checked, depth, sort_order
+      SELECT type, content, checked, depth, parent_block_id, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -222,6 +232,7 @@ export class KnowbookStore {
         content: block.content,
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
+        parentBlockId: block.parent_block_id ?? null,
         sortOrder: block.sort_order
       })),
       children: children.map((child): DocumentChild => ({
@@ -320,8 +331,19 @@ export class KnowbookStore {
       }
 
       deleteBlocksStatement.run(documentId)
-      normalizedBlocks.forEach((block, index) => {
-        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, block.checked ? 1 : 0, block.depth, now, now)
+      this.buildPersistedBlocks(normalizedBlocks).forEach((block, index) => {
+        insertBlockStatement.run(
+          block.id,
+          documentId,
+          block.parentBlockId,
+          index,
+          block.type,
+          block.content,
+          block.checked ? 1 : 0,
+          block.depth,
+          now,
+          now
+        )
       })
     })
 
@@ -522,7 +544,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT type, content, checked, depth, sort_order
+      SELECT type, content, checked, depth, parent_block_id, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -729,11 +751,11 @@ export class KnowbookStore {
       .map((block) => {
         const type = block.type.trim() || 'paragraph'
         return {
-        type,
-        content: block.content,
-        checked: type === 'todo' ? Boolean(block.checked) : false,
-        depth: ['todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0))) : 0
-      }
+          type,
+          content: block.content,
+          checked: type === 'todo' ? Boolean(block.checked) : false,
+          depth: this.normalizeNestableDepth(type, block.depth ?? 0)
+        }
       })
       .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
 
@@ -749,6 +771,39 @@ export class KnowbookStore {
         depth: 0
       }
     ]
+  }
+
+  private normalizeNestableDepth(type: string, depth: number): number {
+    return ['todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
+  }
+
+  private buildPersistedBlocks(blocks: DocumentBlockDraft[]): Array<
+    DocumentBlockDraft & {
+      id: string
+      parentBlockId: string | null
+    }
+  > {
+    const depthStack: Array<string | null> = []
+
+    return blocks.map((block) => {
+      let effectiveDepth = this.normalizeNestableDepth(block.type, block.depth)
+      while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
+        effectiveDepth -= 1
+      }
+
+      const id = randomUUID()
+      const parentBlockId = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] ?? null : null
+
+      depthStack.length = effectiveDepth + 1
+      depthStack[effectiveDepth] = id
+
+      return {
+        ...block,
+        id,
+        depth: effectiveDepth,
+        parentBlockId
+      }
+    })
   }
 
   private resyncLinksForAllDocuments(): void {
@@ -874,6 +929,48 @@ export class KnowbookStore {
     if (!columns.some((column) => column.name === 'depth')) {
       this.db.exec('ALTER TABLE blocks ADD COLUMN depth INTEGER NOT NULL DEFAULT 0')
     }
+  }
+
+  private ensureBlockParentRelationships(): void {
+    const rows = this.db.prepare(`
+      SELECT id, document_id, type, depth, parent_block_id
+      FROM blocks
+      ORDER BY document_id ASC, sort_order ASC
+    `).all() as BlockTreeRow[]
+
+    const updateBlock = this.db.prepare(`
+      UPDATE blocks
+      SET parent_block_id = ?, depth = ?
+      WHERE id = ?
+    `)
+
+    const transaction = this.db.transaction(() => {
+      let currentDocumentId: string | null = null
+      let depthStack: Array<string | null> = []
+
+      for (const row of rows) {
+        if (row.document_id !== currentDocumentId) {
+          currentDocumentId = row.document_id
+          depthStack = []
+        }
+
+        let effectiveDepth = this.normalizeNestableDepth(row.type, row.depth ?? 0)
+        while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
+          effectiveDepth -= 1
+        }
+
+        const parentBlockId = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] ?? null : null
+
+        depthStack.length = effectiveDepth + 1
+        depthStack[effectiveDepth] = row.id
+
+        if ((row.parent_block_id ?? null) !== parentBlockId || row.depth !== effectiveDepth) {
+          updateBlock.run(parentBlockId, effectiveDepth, row.id)
+        }
+      }
+    })
+
+    transaction()
   }
 
   private readSetting(key: string): string | null {

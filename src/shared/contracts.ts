@@ -52,6 +52,7 @@ export interface DocumentBlock {
   content: string
   checked: boolean
   depth: number
+  parentBlockId: string | null
   sortOrder: number
 }
 
