@@ -457,6 +457,66 @@ dt,
   margin-top: 12px;
 }
 
+.block-tree-panel {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 251, 245, 0.9);
+  border: 1px solid rgba(91, 72, 44, 0.08);
+}
+
+.block-tree-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.block-tree-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.block-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(246, 240, 228, 0.76);
+}
+
+.block-tree-type {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(47, 111, 237, 0.1);
+  color: #1f4fa9;
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.block-tree-text {
+  flex: 1;
+  color: #2a241b;
+  word-break: break-word;
+}
+
+.block-tree-meta {
+  color: #776b58;
+  font-size: 0.78rem;
+}
+
+.block-tree-children {
+  margin-left: 18px;
+  padding-left: 14px;
+  border-left: 1px dashed rgba(91, 72, 44, 0.18);
+}
+
 .block-editor-list {
   display: flex;
   flex-direction: column;

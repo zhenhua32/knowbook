@@ -48,6 +48,7 @@ export interface WorkspaceGraphEdge {
 }
 
 export interface DocumentBlock {
+  id: string
   type: string
   content: string
   checked: boolean

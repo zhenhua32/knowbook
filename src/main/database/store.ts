@@ -89,6 +89,7 @@ interface ExportDocumentRow {
 }
 
 interface ExportBlockRow {
+  id: string
   type: string
   content: string
   checked: number
@@ -192,7 +193,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT type, content, checked, depth, parent_block_id, sort_order
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -228,6 +229,7 @@ export class KnowbookStore {
       summary: document.summary,
       updatedAt: document.updated_at,
       blocks: blocks.map((block) => ({
+        id: block.id,
         type: block.type,
         content: block.content,
         checked: Boolean(block.checked),
@@ -544,7 +546,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT type, content, checked, depth, parent_block_id, sort_order
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC

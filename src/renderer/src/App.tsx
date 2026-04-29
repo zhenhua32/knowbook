@@ -1649,13 +1649,16 @@ export function App() {
                       )}
                     </div>
                   ) : (
-                    <div className="block-preview-list">
-                      {selectedDocument.blocks.map((block, index) => (
-                        <div className="block-preview" key={`${selectedDocument.id}-${block.sortOrder}`}>
-                          {renderBlock(block, setSelectedDocumentId, documentReferences, (checked) => toggleTodoBlockChecked(index, checked))}
-                        </div>
-                      ))}
-                    </div>
+                    <>
+                      <div className="block-preview-list">
+                        {selectedDocument.blocks.map((block, index) => (
+                          <div className="block-preview" key={block.id}>
+                            {renderBlock(block, setSelectedDocumentId, documentReferences, (checked) => toggleTodoBlockChecked(index, checked))}
+                          </div>
+                        ))}
+                      </div>
+                      <BlockTreeOutline blocks={selectedDocument.blocks} />
+                    </>
                   )}
                 </div>
 
@@ -2018,6 +2021,52 @@ function RelationList({
   )
 }
 
+type DocumentBlockTreeNode = {
+  block: DocumentBlock
+  children: DocumentBlockTreeNode[]
+}
+
+function BlockTreeOutline({ blocks }: { blocks: DocumentBlock[] }) {
+  const roots = buildBlockTree(blocks)
+
+  return (
+    <div className="block-tree-panel">
+      <div className="panel-head compact-head">
+        <div>
+          <p className="panel-label">Block tree</p>
+          <h4>Saved hierarchy</h4>
+        </div>
+        <div className="toolbar-inline">
+          <span className="pill">{blocks.length} nodes</span>
+          <span className="pill">parent_block_id</span>
+        </div>
+      </div>
+      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">No block relationships yet.</p>}
+    </div>
+  )
+}
+
+function BlockTreeList({ nodes }: { nodes: DocumentBlockTreeNode[] }) {
+  return (
+    <ul className="block-tree-list">
+      {nodes.map((node) => (
+        <li className="block-tree-item" key={node.block.id}>
+          <div className="block-tree-node">
+            <span className="block-tree-type">{getBlockTypeLabel(node.block.type)}</span>
+            <span className="block-tree-text">{getBlockTreeText(node.block)}</span>
+            <small className="block-tree-meta">depth {node.block.depth}</small>
+          </div>
+          {node.children.length > 0 ? (
+            <div className="block-tree-children">
+              <BlockTreeList nodes={node.children} />
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function renderBlock(
   block: DocumentBlock,
   onSelectDocument: (documentId: string) => void,
@@ -2318,4 +2367,76 @@ function buildBoardColumns(documents: DocumentCatalogEntry[]) {
     ...column,
     items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
   }))
+}
+
+function buildBlockTree(blocks: DocumentBlock[]): DocumentBlockTreeNode[] {
+  const nodeMap = new Map<string, DocumentBlockTreeNode>()
+  const roots: DocumentBlockTreeNode[] = []
+
+  for (const block of blocks) {
+    nodeMap.set(block.id, {
+      block,
+      children: []
+    })
+  }
+
+  for (const block of blocks) {
+    const node = nodeMap.get(block.id)
+    if (!node) {
+      continue
+    }
+
+    const parent = block.parentBlockId ? nodeMap.get(block.parentBlockId) : null
+    if (parent) {
+      parent.children.push(node)
+    } else {
+      roots.push(node)
+    }
+  }
+
+  const sortNodes = (nodes: DocumentBlockTreeNode[]) => {
+    nodes.sort((left, right) => left.block.sortOrder - right.block.sortOrder)
+    nodes.forEach((node) => sortNodes(node.children))
+  }
+
+  sortNodes(roots)
+  return roots
+}
+
+function getBlockTypeLabel(type: string): string {
+  switch (type) {
+    case 'heading-1':
+      return 'H1'
+    case 'heading-2':
+      return 'H2'
+    case 'todo':
+      return 'Todo'
+    case 'code':
+      return 'Code'
+    case 'math':
+      return 'Math'
+    case 'quote':
+      return 'Quote'
+    case 'bulleted-list':
+      return 'Bullet'
+    case 'numbered-list':
+      return 'Number'
+    case 'divider':
+      return 'Divider'
+    default:
+      return 'Text'
+  }
+}
+
+function getBlockTreeText(block: DocumentBlock): string {
+  if (block.type === 'divider') {
+    return 'Horizontal divider'
+  }
+
+  const content = block.content.trim()
+  if (!content) {
+    return '(empty block)'
+  }
+
+  return content.length > 72 ? `${content.slice(0, 72)}...` : content
 }
