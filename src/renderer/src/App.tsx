@@ -52,7 +52,7 @@ type BlockSlashCommand = {
       }
     | {
         kind: 'action'
-      action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'duplicate' | 'delete'
+      action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete'
       }
   )
 
@@ -168,6 +168,22 @@ const blockSlashCommands: BlockSlashCommand[] = [
     keywords: ['reorder', 'after', 'lower'],
     kind: 'action',
     action: 'move-down'
+  },
+  {
+    id: 'indent',
+    label: 'Indent Block',
+    description: 'Increase nesting for todo and list blocks.',
+    keywords: ['nest', 'tab', 'right', 'depth'],
+    kind: 'action',
+    action: 'indent'
+  },
+  {
+    id: 'outdent',
+    label: 'Outdent Block',
+    description: 'Decrease nesting for todo and list blocks.',
+    keywords: ['shift-tab', 'left', 'unnest', 'depth'],
+    kind: 'action',
+    action: 'outdent'
   },
   {
     id: 'duplicate',
@@ -725,6 +741,11 @@ export function App() {
 
     const exitsToParagraph = ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list']
     if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
+      if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
+        adjustBlockDepth(index, -1, 0)
+        return
+      }
+
       updateDraftBlock(index, buildBlockTypePatch('paragraph', ''))
       setActiveBlockIndex(index)
       setActiveCursorPosition(0)
@@ -745,6 +766,11 @@ export function App() {
     }
 
     if (!['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+      return
+    }
+
+    if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
+      adjustBlockDepth(index, -1, 0)
       return
     }
 
@@ -856,6 +882,39 @@ export function App() {
       setActiveBlockIndex(targetIndex)
       setActiveCursorPosition(nextContent.length)
       setPendingFocusBlockIndex(targetIndex)
+      return
+    }
+
+    if (command.action === 'indent' || command.action === 'outdent') {
+      if (!isNestableBlock(currentBlock.type)) {
+        setDraftBlocks((previous) =>
+          previous.map((block, index) =>
+            index === activeBlockIndex
+              ? {
+                  ...block,
+                  content: nextContent
+                }
+              : block
+          )
+        )
+        setActiveCursorPosition(nextContent.length)
+        setPendingFocusBlockIndex(activeBlockIndex)
+        return
+      }
+
+      setDraftBlocks((previous) =>
+        previous.map((block, index) =>
+          index === activeBlockIndex
+            ? {
+                ...block,
+                content: nextContent,
+                depth: normalizeBlockDepth(block.type, block.depth + (command.action === 'indent' ? 1 : -1))
+              }
+            : block
+        )
+      )
+      setActiveCursorPosition(nextContent.length)
+      setPendingFocusBlockIndex(activeBlockIndex)
       return
     }
 
