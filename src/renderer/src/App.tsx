@@ -48,6 +48,11 @@ type BlockDropPreview = {
   parentText: string | null
 }
 
+type BlockSelectionRange = {
+  start: number
+  end: number
+}
+
 type BlockSlashCommand = {
   id: string
   label: string
@@ -328,6 +333,41 @@ function getBlockDropPreview(
   return null
 }
 
+function normalizeBlockSelectionRange(start: number, end: number): BlockSelectionRange {
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end)
+  }
+}
+
+function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): DocumentBlockDraft[] {
+  const movedBlocks = blocks.slice(range.start, range.end + 1)
+  const next = [...blocks]
+  next.splice(range.start, movedBlocks.length)
+  next.splice(delta === -1 ? range.start - 1 : range.start + 1, 0, ...movedBlocks)
+  return next
+}
+
+function moveIndexAfterRangeMove(index: number | null, range: BlockSelectionRange, delta: -1 | 1): number | null {
+  if (index === null) {
+    return index
+  }
+
+  if (index >= range.start && index <= range.end) {
+    return index + delta
+  }
+
+  if (delta === -1 && index === range.start - 1) {
+    return range.end
+  }
+
+  if (delta === 1 && index === range.end + 1) {
+    return range.start
+  }
+
+  return index
+}
+
 function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked' | 'depth'>): DocumentBlockDraft {
   return {
     type: block.type,
@@ -355,6 +395,8 @@ export function App() {
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
+  const [selectionAnchorBlockIndex, setSelectionAnchorBlockIndex] = useState<number | null>(null)
+  const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
@@ -396,6 +438,8 @@ export function App() {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
       setPendingFocusBlockIndex(null)
+      setSelectionAnchorBlockIndex(null)
+      setSelectedBlockRange(null)
       return
     }
 
@@ -410,6 +454,8 @@ export function App() {
         setDragOverBlockDepth(null)
         setPendingFocusBlockIndex(null)
         setActiveBlockIndex(null)
+        setSelectionAnchorBlockIndex(null)
+        setSelectedBlockRange(null)
         setActiveCursorPosition(0)
         setLinkSuggestions([])
         setMoveTargetId('')
@@ -447,6 +493,7 @@ export function App() {
       .includes(query)
   })
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
+  const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
 
   useEffect(() => {
     if (!activeSlashContext || filteredSlashCommands.length === 0) {
@@ -520,6 +567,8 @@ export function App() {
     setDraftSummary(detail?.summary ?? '')
     setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
     setPendingFocusBlockIndex(null)
+    setSelectionAnchorBlockIndex(null)
+    setSelectedBlockRange(null)
   }
 
   function startEdit() {
@@ -531,6 +580,8 @@ export function App() {
     setDraftSummary(selectedDocument.summary)
     setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     setPendingFocusBlockIndex(null)
+    setSelectionAnchorBlockIndex(null)
+    setSelectedBlockRange(null)
     setIsEditing(true)
   }
 
@@ -544,6 +595,8 @@ export function App() {
     setDraftSummary(selectedDocument.summary)
     setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     setPendingFocusBlockIndex(null)
+    setSelectionAnchorBlockIndex(null)
+    setSelectedBlockRange(null)
     setIsEditing(false)
   }
 
@@ -572,6 +625,8 @@ export function App() {
     setDragOverBlockIndex(null)
     setDragOverBlockDepth(null)
     setLinkSuggestions([])
+    setSelectionAnchorBlockIndex(null)
+    setSelectedBlockRange(null)
   }
 
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
@@ -750,6 +805,42 @@ export function App() {
     )
   }
 
+    function clearBlockSelection() {
+      setSelectionAnchorBlockIndex(null)
+      setSelectedBlockRange(null)
+    }
+
+    function isBlockSelected(index: number) {
+      return selectedBlockRange ? index >= selectedBlockRange.start && index <= selectedBlockRange.end : false
+    }
+
+    function selectBlockRange(index: number, extendSelection = false) {
+      const anchorIndex = extendSelection && selectionAnchorBlockIndex !== null ? selectionAnchorBlockIndex : index
+      setSelectionAnchorBlockIndex(anchorIndex)
+      setSelectedBlockRange(normalizeBlockSelectionRange(anchorIndex, index))
+      setActiveBlockIndex(index)
+    }
+
+    function moveSelectedBlocks(delta: -1 | 1) {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      if ((delta === -1 && selectedBlockRange.start === 0) || (delta === 1 && selectedBlockRange.end === draftBlocks.length - 1)) {
+        return
+      }
+
+      setDraftBlocks((previous) => moveBlockRange(previous, selectedBlockRange, delta))
+      setSelectedBlockRange({
+        start: selectedBlockRange.start + delta,
+        end: selectedBlockRange.end + delta
+      })
+      setSelectionAnchorBlockIndex((previous) => (previous === null ? null : previous + delta))
+      setActiveBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
+      setPendingFocusBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
+      endBlockDrag()
+    }
+
   function handleBlockContentChange(index: number, content: string) {
     const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
     if (shortcut) {
@@ -765,6 +856,7 @@ export function App() {
 
   function insertDraftBlockAt(index: number) {
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
+    clearBlockSelection()
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -788,6 +880,8 @@ export function App() {
     if (!currentBlock) {
       return
     }
+
+    clearBlockSelection()
 
     const childType = getDefaultChildBlockType(currentBlock.type)
     const childDepth = currentBlock.depth + 1
@@ -822,6 +916,8 @@ export function App() {
       return
     }
 
+    clearBlockSelection()
+
     const duplicated = {
       ...currentBlock,
       content: contentOverride ?? currentBlock.content,
@@ -851,6 +947,8 @@ export function App() {
     if (!currentBlock) {
       return
     }
+
+    clearBlockSelection()
 
     const safeStart = Math.max(0, Math.min(selectionStart, currentBlock.content.length))
     const safeEnd = Math.max(safeStart, Math.min(selectionEnd, currentBlock.content.length))
@@ -960,6 +1058,7 @@ export function App() {
   }
 
   function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null) {
+    clearBlockSelection()
     setDraftBlocks((previous) => {
       const subtreeEndIndex = getBlockSubtreeEndIndex(previous, sourceIndex)
       const movedBlocks = previous.slice(sourceIndex, subtreeEndIndex + 1)
@@ -1060,6 +1159,7 @@ export function App() {
     }
 
     if (command.action === 'insert-above') {
+      clearBlockSelection()
       setDraftBlocks((previous) => {
         const next = [...previous]
         next[activeBlockIndex] = {
@@ -1081,6 +1181,7 @@ export function App() {
     }
 
     if (command.action === 'insert-below') {
+      clearBlockSelection()
       setDraftBlocks((previous) => {
         const next = [...previous]
         next[activeBlockIndex] = {
@@ -1107,6 +1208,7 @@ export function App() {
     }
 
     if (command.action === 'move-up' || command.action === 'move-down') {
+      clearBlockSelection()
       const targetIndex =
         command.action === 'move-up'
           ? Math.max(0, activeBlockIndex - 1)
@@ -1166,6 +1268,7 @@ export function App() {
     }
 
     if (command.action === 'delete') {
+      clearBlockSelection()
       const nextIndex = draftBlocks.length > 1 ? Math.min(activeBlockIndex, draftBlocks.length - 2) : null
       setDraftBlocks((previous) => previous.filter((_, index) => index !== activeBlockIndex))
       setActiveBlockIndex(nextIndex)
@@ -1204,6 +1307,7 @@ export function App() {
   }
 
   function removeDraftBlock(index: number) {
+    clearBlockSelection()
     setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
     setActiveBlockIndex((previous) => {
       if (previous === null) {
@@ -1608,15 +1712,47 @@ export function App() {
                   <p className="panel-label">Blocks</p>
                   {isEditing ? (
                     <div className="block-editor-list">
+                      {selectedBlockRange ? (
+                        <div className="block-selection-toolbar">
+                          <div>
+                            <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
+                            <p className="mini-hint">
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range.
+                            </p>
+                          </div>
+                          <div className="block-selection-actions">
+                            <button
+                              className="secondary-button"
+                              disabled={selectedBlockRange.start === 0}
+                              onClick={() => moveSelectedBlocks(-1)}
+                              type="button"
+                            >
+                              Move Up
+                            </button>
+                            <button
+                              className="secondary-button"
+                              disabled={selectedBlockRange.end === draftBlocks.length - 1}
+                              onClick={() => moveSelectedBlocks(1)}
+                              type="button"
+                            >
+                              Move Down
+                            </button>
+                            <button className="secondary-button" onClick={clearBlockSelection} type="button">
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                       {draftBlocks.map((block, index) => {
                         const dropPreview =
                           draggingBlockIndex !== null && dragOverBlockIndex === index
                             ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
                             : null
+                        const isSelected = isBlockSelected(index)
 
                         return (
                           <div
-                            className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}`}
+                            className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
                             key={`${selectedDocument.id}-draft-${index}`}
                             onDragOver={(event) => {
                               event.preventDefault()
@@ -1779,6 +1915,13 @@ export function App() {
                             />
                           )}
                           <div className="block-editor-actions">
+                            <button
+                              className={`secondary-button block-select-button${isSelected ? ' block-select-button-active' : ''}`}
+                              onClick={(event) => selectBlockRange(index, event.shiftKey)}
+                              type="button"
+                            >
+                              {isSelected ? 'Selected' : 'Select'}
+                            </button>
                             {block.type === 'todo' ? (
                               <label className="block-todo-toggle">
                                 <input
@@ -1879,7 +2022,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
