@@ -155,6 +155,7 @@ export function App() {
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
+  const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
@@ -248,6 +249,16 @@ export function App() {
       .toLowerCase()
       .includes(query)
   })
+  const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
+
+  useEffect(() => {
+    if (!activeSlashContext || filteredSlashCommands.length === 0) {
+      setSelectedSlashCommandIndex(0)
+      return
+    }
+
+    setSelectedSlashCommandIndex((previous) => Math.min(previous, filteredSlashCommands.length - 1))
+  }, [activeBlockIndex, activeSlashContext?.query, filteredSlashCommands.length])
 
   useEffect(() => {
     if (!isEditing || !activeLinkContext) {
@@ -632,6 +643,31 @@ export function App() {
       setActiveCursorPosition(0)
       setPendingFocusBlockIndex(nextIndex)
     }
+  }
+
+  function dismissSlashCommand() {
+    if (activeBlockIndex === null || !activeSlashContext) {
+      return
+    }
+
+    const currentBlock = draftBlocks[activeBlockIndex]
+    if (!currentBlock) {
+      return
+    }
+
+    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
+    setDraftBlocks((previous) =>
+      previous.map((block, index) =>
+        index === activeBlockIndex
+          ? {
+              ...block,
+              content: nextContent
+            }
+          : block
+      )
+    )
+    setActiveCursorPosition(nextContent.length)
+    setPendingFocusBlockIndex(activeBlockIndex)
   }
 
   function addDraftBlock() {
@@ -1092,11 +1128,36 @@ export function App() {
                             onClick={(event) => captureBlockCursor(index, event.currentTarget)}
                             onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
                             onKeyDown={(event) => {
-                              if (activeBlockIndex === index && activeSlashContext && event.key === 'Enter' && !event.shiftKey) {
-                                const [firstCommand] = filteredSlashCommands
-                                if (firstCommand) {
+                              if (activeBlockIndex === index && activeSlashContext) {
+                                if (event.key === 'ArrowDown') {
                                   event.preventDefault()
-                                  applySlashCommand(firstCommand)
+                                  setSelectedSlashCommandIndex((previous) =>
+                                    filteredSlashCommands.length === 0 ? 0 : (previous + 1) % filteredSlashCommands.length
+                                  )
+                                  return
+                                }
+
+                                if (event.key === 'ArrowUp') {
+                                  event.preventDefault()
+                                  setSelectedSlashCommandIndex((previous) =>
+                                    filteredSlashCommands.length === 0
+                                      ? 0
+                                      : (previous - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
+                                  )
+                                  return
+                                }
+
+                                if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+                                  if (activeSlashCommand) {
+                                    event.preventDefault()
+                                    applySlashCommand(activeSlashCommand)
+                                    return
+                                  }
+                                }
+
+                                if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  dismissSlashCommand()
                                   return
                                 }
                               }
@@ -1133,8 +1194,14 @@ export function App() {
                           <p className="mini-hint">Current query: {activeSlashContext.query || '(all commands)'}</p>
                           <div className="relation-list">
                             {filteredSlashCommands.length > 0 ? (
-                              filteredSlashCommands.map((command) => (
-                                <button className="relation-chip" key={`slash-${command.id}`} onClick={() => applySlashCommand(command)} type="button">
+                              filteredSlashCommands.map((command, commandIndex) => (
+                                <button
+                                  className={`relation-chip${activeSlashCommand?.id === command.id ? ' relation-chip-active' : ''}`}
+                                  key={`slash-${command.id}`}
+                                  onClick={() => applySlashCommand(command)}
+                                  onMouseEnter={() => setSelectedSlashCommandIndex(commandIndex)}
+                                  type="button"
+                                >
                                   <strong>/{command.id}</strong>
                                   <span>{command.label}</span>
                                   <small>{command.description}</small>
@@ -1144,6 +1211,7 @@ export function App() {
                               <p className="empty-text">No matching commands.</p>
                             )}
                           </div>
+                          <p className="mini-hint">Use Up/Down to navigate, Tab or Enter to confirm, and Escape to dismiss.</p>
                         </div>
                       ) : activeLinkContext ? (
                         <div className="link-helper-panel">
