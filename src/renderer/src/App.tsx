@@ -37,18 +37,30 @@ const emptyState: HomeData = {
   initialDocumentId: null
 }
 
-const blockSlashCommands: Array<{
+type BlockSlashCommand = {
   id: string
   label: string
   description: string
   keywords: string[]
-  type: DocumentBlock['type']
-}> = [
+} &
+  (
+    | {
+        kind: 'type'
+        type: DocumentBlock['type']
+      }
+    | {
+        kind: 'action'
+        action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'delete'
+      }
+  )
+
+const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'text',
     label: 'Text',
     description: 'Convert the current block into a plain paragraph.',
     keywords: ['paragraph', 'plain', 'p'],
+    kind: 'type',
     type: 'paragraph'
   },
   {
@@ -56,6 +68,7 @@ const blockSlashCommands: Array<{
     label: 'Heading 1',
     description: 'Promote this block to a top-level heading.',
     keywords: ['title', 'heading-1', 'header'],
+    kind: 'type',
     type: 'heading-1'
   },
   {
@@ -63,6 +76,7 @@ const blockSlashCommands: Array<{
     label: 'Heading 2',
     description: 'Convert this block to a section heading.',
     keywords: ['subtitle', 'heading-2', 'section'],
+    kind: 'type',
     type: 'heading-2'
   },
   {
@@ -70,6 +84,7 @@ const blockSlashCommands: Array<{
     label: 'Todo',
     description: 'Turn this block into an unchecked todo item.',
     keywords: ['task', 'checkbox', 'checklist'],
+    kind: 'type',
     type: 'todo'
   },
   {
@@ -77,7 +92,48 @@ const blockSlashCommands: Array<{
     label: 'Code',
     description: 'Switch this block into a code block.',
     keywords: ['snippet', 'pre', 'terminal'],
+    kind: 'type',
     type: 'code'
+  },
+  {
+    id: 'above',
+    label: 'Insert Above',
+    description: 'Insert a new paragraph block above the current block.',
+    keywords: ['insert', 'before', 'up'],
+    kind: 'action',
+    action: 'insert-above'
+  },
+  {
+    id: 'below',
+    label: 'Insert Below',
+    description: 'Insert a new paragraph block below the current block.',
+    keywords: ['insert', 'after', 'down'],
+    kind: 'action',
+    action: 'insert-below'
+  },
+  {
+    id: 'up',
+    label: 'Move Up',
+    description: 'Move the current block one slot upward.',
+    keywords: ['reorder', 'before', 'raise'],
+    kind: 'action',
+    action: 'move-up'
+  },
+  {
+    id: 'down',
+    label: 'Move Down',
+    description: 'Move the current block one slot downward.',
+    keywords: ['reorder', 'after', 'lower'],
+    kind: 'action',
+    action: 'move-down'
+  },
+  {
+    id: 'delete',
+    label: 'Delete Block',
+    description: 'Remove the current block from the draft.',
+    keywords: ['remove', 'trash', 'clear'],
+    kind: 'action',
+    action: 'delete'
   }
 ]
 
@@ -481,7 +537,7 @@ export function App() {
     endBlockDrag()
   }
 
-  function applySlashCommand(command: (typeof blockSlashCommands)[number]) {
+  function applySlashCommand(command: BlockSlashCommand) {
     if (activeBlockIndex === null || !activeSlashContext) {
       return
     }
@@ -492,19 +548,90 @@ export function App() {
     }
 
     const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
-    setDraftBlocks((previous) =>
-      previous.map((block, index) =>
-        index === activeBlockIndex
-          ? {
-              ...block,
-              type: command.type,
-              content: nextContent
-            }
-          : block
+
+    if (command.kind === 'type') {
+      setDraftBlocks((previous) =>
+        previous.map((block, index) =>
+          index === activeBlockIndex
+            ? {
+                ...block,
+                type: command.type,
+                content: nextContent
+              }
+            : block
+        )
       )
-    )
-    setActiveCursorPosition(nextContent.length)
-    setPendingFocusBlockIndex(activeBlockIndex)
+      setActiveCursorPosition(nextContent.length)
+      setPendingFocusBlockIndex(activeBlockIndex)
+      return
+    }
+
+    if (command.action === 'insert-above') {
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        next[activeBlockIndex] = {
+          ...next[activeBlockIndex],
+          content: nextContent
+        }
+        next.splice(activeBlockIndex, 0, {
+          type: 'paragraph',
+          content: ''
+        })
+        return next
+      })
+      setActiveBlockIndex(activeBlockIndex)
+      setActiveCursorPosition(0)
+      setPendingFocusBlockIndex(activeBlockIndex)
+      return
+    }
+
+    if (command.action === 'insert-below') {
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        next[activeBlockIndex] = {
+          ...next[activeBlockIndex],
+          content: nextContent
+        }
+        next.splice(activeBlockIndex + 1, 0, {
+          type: 'paragraph',
+          content: ''
+        })
+        return next
+      })
+      setActiveBlockIndex(activeBlockIndex + 1)
+      setActiveCursorPosition(0)
+      setPendingFocusBlockIndex(activeBlockIndex + 1)
+      return
+    }
+
+    if (command.action === 'move-up' || command.action === 'move-down') {
+      const targetIndex =
+        command.action === 'move-up'
+          ? Math.max(0, activeBlockIndex - 1)
+          : Math.min(draftBlocks.length - 1, activeBlockIndex + 1)
+
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        const [moved] = next.splice(activeBlockIndex, 1)
+        next.splice(targetIndex, 0, {
+          ...moved,
+          content: nextContent
+        })
+        return next
+      })
+      setActiveBlockIndex(targetIndex)
+      setActiveCursorPosition(nextContent.length)
+      setPendingFocusBlockIndex(targetIndex)
+      return
+    }
+
+    if (command.action === 'delete') {
+      const nextIndex = draftBlocks.length > 1 ? Math.min(activeBlockIndex, draftBlocks.length - 2) : null
+      setDraftBlocks((previous) => previous.filter((_, index) => index !== activeBlockIndex))
+      setActiveBlockIndex(nextIndex)
+      setActiveCursorPosition(0)
+      setPendingFocusBlockIndex(nextIndex)
+    }
   }
 
   function addDraftBlock() {
@@ -1036,7 +1163,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / to switch block type, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
