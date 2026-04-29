@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type {
   BackupResult,
   DocumentBlock,
+  DocumentBlockDraft,
   DocumentCatalogEntry,
   DocumentDetail,
   DocumentSuggestion,
@@ -177,10 +178,19 @@ const blockSlashCommands: BlockSlashCommand[] = [
   }
 ]
 
-function buildBlockTypePatch(type: string, content: string) {
+function buildBlockTypePatch(type: string, content: string, checked = false): DocumentBlockDraft {
   return {
     type,
-    content: normalizeBlockContentForType(type, content)
+    content: normalizeBlockContentForType(type, content),
+    checked: type === 'todo' ? checked : false
+  }
+}
+
+function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked'>): DocumentBlockDraft {
+  return {
+    type: block.type,
+    content: block.content,
+    checked: Boolean(block.checked)
   }
 }
 
@@ -196,7 +206,7 @@ export function App() {
   const [isSaving, setIsSaving] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
-  const [draftBlocks, setDraftBlocks] = useState<Array<{ type: string; content: string }>>([])
+  const [draftBlocks, setDraftBlocks] = useState<DocumentBlockDraft[]>([])
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
@@ -261,12 +271,7 @@ export function App() {
         setIsEditing(false)
         setDraftTitle(detail?.title ?? '')
         setDraftSummary(detail?.summary ?? '')
-        setDraftBlocks(
-          detail?.blocks.map((block) => ({
-            type: block.type,
-            content: block.content
-          })) ?? []
-        )
+        setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
         setDetailLoading(false)
       }
     })
@@ -368,12 +373,7 @@ export function App() {
     setIsEditing(true)
     setDraftTitle(detail?.title ?? '')
     setDraftSummary(detail?.summary ?? '')
-    setDraftBlocks(
-      detail?.blocks.map((block) => ({
-        type: block.type,
-        content: block.content
-      })) ?? []
-    )
+    setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
     setPendingFocusBlockIndex(null)
   }
 
@@ -384,12 +384,7 @@ export function App() {
 
     setDraftTitle(selectedDocument.title)
     setDraftSummary(selectedDocument.summary)
-    setDraftBlocks(
-      selectedDocument.blocks.map((block) => ({
-        type: block.type,
-        content: block.content
-      }))
-    )
+    setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     setPendingFocusBlockIndex(null)
     setIsEditing(true)
   }
@@ -402,12 +397,7 @@ export function App() {
 
     setDraftTitle(selectedDocument.title)
     setDraftSummary(selectedDocument.summary)
-    setDraftBlocks(
-      selectedDocument.blocks.map((block) => ({
-        type: block.type,
-        content: block.content
-      }))
-    )
+    setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     setPendingFocusBlockIndex(null)
     setIsEditing(false)
   }
@@ -436,6 +426,43 @@ export function App() {
     setDraggingBlockIndex(null)
     setDragOverBlockIndex(null)
     setLinkSuggestions([])
+  }
+
+  async function toggleTodoBlockChecked(index: number, checked: boolean) {
+    if (!selectedDocument) {
+      return
+    }
+
+    setIsSaving(true)
+
+    try {
+      const nextBlocks = selectedDocument.blocks.map((block, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...block,
+              checked
+            }
+          : block
+      )
+
+      await window.knowbook.updateDocument(selectedDocument.id, {
+        title: selectedDocument.title,
+        summary: selectedDocument.summary,
+        blocks: nextBlocks.map(toDraftBlock)
+      })
+
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDocumentDetail(selectedDocument.id)
+      ])
+      setHomeData(refreshedHome)
+      setSelectedDocument(refreshedDetail)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Todo update failed.'
+      setBackupMessage(message)
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   async function deleteSelectedDocument() {

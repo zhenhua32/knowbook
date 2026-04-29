@@ -50,12 +50,14 @@ export interface WorkspaceGraphEdge {
 export interface DocumentBlock {
   type: string
   content: string
+  checked: boolean
   sortOrder: number
 }
 
 export interface DocumentBlockDraft {
   type: string
   content: string
+  checked: boolean
 }
 
 export interface LinkedDocument {

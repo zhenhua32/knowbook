@@ -91,7 +91,12 @@ interface ExportDocumentRow {
 interface ExportBlockRow {
   type: string
   content: string
+  checked: number
   sort_order: number
+}
+
+interface BlockTableInfoRow {
+  name: string
 }
 
 interface LinkedDocumentRow {
@@ -127,6 +132,7 @@ export interface ExportDocument {
   blocks: Array<{
     type: string
     content: string
+    checked: boolean
     sortOrder: number
   }>
 }
@@ -140,6 +146,7 @@ export class KnowbookStore {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.db.exec(appSchema)
+    this.ensureBlockCheckedColumn()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
@@ -172,7 +179,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT type, content, sort_order
+      SELECT type, content, checked, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -210,6 +217,7 @@ export class KnowbookStore {
       blocks: blocks.map((block) => ({
         type: block.type,
         content: block.content,
+        checked: Boolean(block.checked),
         sortOrder: block.sort_order
       })),
       children: children.map((child): DocumentChild => ({
@@ -247,14 +255,14 @@ export class KnowbookStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
       insertDocument.run(id, title, slug, parent?.id ?? null, path, 'New knowledge node ready for editing.', now, now)
-      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, now, now)
-      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', now, now)
+      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, now, now)
+      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, now, now)
     })
 
     transaction()
@@ -296,8 +304,8 @@ export class KnowbookStore {
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
@@ -309,7 +317,7 @@ export class KnowbookStore {
 
       deleteBlocksStatement.run(documentId)
       normalizedBlocks.forEach((block, index) => {
-        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, now, now)
+        insertBlockStatement.run(randomUUID(), documentId, null, index, block.type, block.content, block.checked ? 1 : 0, now, now)
       })
     })
 
@@ -510,7 +518,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT type, content, sort_order
+      SELECT type, content, checked, sort_order
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -525,6 +533,7 @@ export class KnowbookStore {
       blocks: (blocksStatement.all(document.id) as ExportBlockRow[]).map((block) => ({
         type: block.type,
         content: block.content,
+        checked: Boolean(block.checked),
         sortOrder: block.sort_order
       }))
     }))
@@ -714,9 +723,10 @@ export class KnowbookStore {
     const normalized = blocks
       .map((block) => ({
         type: block.type.trim() || 'paragraph',
-        content: block.content
+        content: block.content,
+        checked: block.type.trim() === 'todo' ? Boolean(block.checked) : false
       }))
-      .filter((block) => block.content.trim().length > 0)
+      .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
 
     if (normalized.length > 0) {
       return normalized
@@ -725,7 +735,8 @@ export class KnowbookStore {
     return [
       {
         type: 'paragraph',
-        content: 'Start writing here.'
+        content: 'Start writing here.',
+        checked: false
       }
     ]
   }
@@ -841,6 +852,13 @@ export class KnowbookStore {
     }
   }
 
+  private ensureBlockCheckedColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'checked')) {
+      this.db.exec('ALTER TABLE blocks ADD COLUMN checked INTEGER NOT NULL DEFAULT 0')
+    }
+  }
+
   private readSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value ?? null
@@ -862,8 +880,8 @@ export class KnowbookStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
@@ -875,12 +893,12 @@ export class KnowbookStore {
       insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
       insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)
 
-      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', now, now)
-      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', now, now)
-      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', now, now)
+      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, now, now)
+      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, now, now)
+      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, now, now)
 
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')

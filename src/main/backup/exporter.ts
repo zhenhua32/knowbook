@@ -44,13 +44,13 @@ export class MarkdownBackupService {
     ].join('\n')
 
     const body = document.blocks
-      .map((block) => this.renderBlock(block.type, block.content))
+      .map((block) => this.renderBlock(block.type, block.content, block.checked))
       .join('\n\n')
 
     return `${frontmatter}${body}\n`
   }
 
-  private renderBlock(type: string, content: string): string {
+  private renderBlock(type: string, content: string, checked: boolean): string {
     if (type === 'heading-1') {
       return `# ${content}`
     }
@@ -60,7 +60,7 @@ export class MarkdownBackupService {
     }
 
     if (type === 'todo') {
-      return `- [ ] ${content}`
+      return `- [${checked ? 'x' : ' '}] ${content}`
     }
 
     if (type === 'quote') {
