@@ -50,7 +50,7 @@ type BlockSlashCommand = {
       }
     | {
         kind: 'action'
-        action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'delete'
+      action: 'insert-above' | 'insert-below' | 'move-up' | 'move-down' | 'duplicate' | 'delete'
       }
   )
 
@@ -158,6 +158,14 @@ const blockSlashCommands: BlockSlashCommand[] = [
     keywords: ['reorder', 'after', 'lower'],
     kind: 'action',
     action: 'move-down'
+  },
+  {
+    id: 'duplicate',
+    label: 'Duplicate Block',
+    description: 'Clone the current block below the original.',
+    keywords: ['copy', 'clone', 'repeat'],
+    kind: 'action',
+    action: 'duplicate'
   },
   {
     id: 'delete',
@@ -329,11 +337,11 @@ export function App() {
     }
 
     textarea.focus()
-    const cursor = textarea.value.length
+    const cursor = Math.max(0, Math.min(activeCursorPosition, textarea.value.length))
     textarea.setSelectionRange(cursor, cursor)
     captureBlockCursor(pendingFocusBlockIndex, textarea)
     setPendingFocusBlockIndex(null)
-  }, [draftBlocks, pendingFocusBlockIndex])
+  }, [activeCursorPosition, draftBlocks, pendingFocusBlockIndex])
 
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
@@ -600,6 +608,60 @@ export function App() {
     endBlockDrag()
   }
 
+  function duplicateDraftBlock(index: number, contentOverride?: string) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return
+    }
+
+    const duplicated = {
+      ...currentBlock,
+      content: contentOverride ?? currentBlock.content
+    }
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      next.splice(index + 1, 0, duplicated)
+      if (contentOverride !== undefined) {
+        next[index] = {
+          ...next[index],
+          content: contentOverride
+        }
+      }
+      return next
+    })
+    setActiveBlockIndex(index + 1)
+    setActiveCursorPosition(duplicated.content.length)
+    setPendingFocusBlockIndex(index + 1)
+    endBlockDrag()
+  }
+
+  function splitDraftBlock(index: number, cursorPosition: number) {
+    const currentBlock = draftBlocks[index]
+    if (!currentBlock) {
+      return
+    }
+
+    const safeCursor = Math.max(0, Math.min(cursorPosition, currentBlock.content.length))
+    const leftContent = currentBlock.content.slice(0, safeCursor)
+    const rightContent = currentBlock.content.slice(safeCursor)
+    const nextType = currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      next[index] = {
+        ...next[index],
+        content: leftContent
+      }
+      next.splice(index + 1, 0, buildBlockTypePatch(nextType, rightContent))
+      return next
+    })
+    setActiveBlockIndex(index + 1)
+    setActiveCursorPosition(0)
+    setPendingFocusBlockIndex(index + 1)
+    endBlockDrag()
+  }
+
   function applySlashCommand(command: BlockSlashCommand) {
     if (activeBlockIndex === null || !activeSlashContext) {
       return
@@ -684,6 +746,11 @@ export function App() {
       setActiveBlockIndex(targetIndex)
       setActiveCursorPosition(nextContent.length)
       setPendingFocusBlockIndex(targetIndex)
+      return
+    }
+
+    if (command.action === 'duplicate') {
+      duplicateDraftBlock(activeBlockIndex, nextContent)
       return
     }
 
@@ -1220,6 +1287,18 @@ export function App() {
                                   }
                                 }
 
+                                if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+                                  event.preventDefault()
+                                  duplicateDraftBlock(index)
+                                  return
+                                }
+
+                                if (event.altKey && event.key === 'Enter') {
+                                  event.preventDefault()
+                                  splitDraftBlock(index, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                                  return
+                                }
+
                                 if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                                   event.preventDefault()
                                   insertDraftBlockAt(index + 1)
@@ -1237,6 +1316,9 @@ export function App() {
                             </button>
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1)} type="button">
                               + Below
+                            </button>
+                            <button className="secondary-button block-insert-button" onClick={() => duplicateDraftBlock(index)} type="button">
+                              Duplicate
                             </button>
                             <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
                               Remove
@@ -1290,7 +1372,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / --- / ``` for markdown shortcuts, press Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
