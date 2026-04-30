@@ -6,6 +6,7 @@ import type {
   BackupResult,
   DocumentDetail,
   DocumentSuggestion,
+  GlobalSearchResult,
   HomeData,
   UpdateAiConfigInput,
   UpdateDocumentInput
@@ -100,6 +101,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {
     clipboard.writeText(text)
+  })
+
+  ipcMain.handle('knowbook:search-documents', (_event, query: string): GlobalSearchResult[] => {
+    return store.searchDocuments(query)
   })
 }
 

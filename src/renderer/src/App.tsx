@@ -8,6 +8,7 @@ import type {
   DocumentDetail,
   DocumentSuggestion,
   DocumentTreeNode,
+  GlobalSearchResult,
   HomeData,
   LinkedDocument,
   WorkspaceGraphEdge,
@@ -693,7 +694,12 @@ export function App() {
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
   const [selectedBlockTags, setSelectedBlockTags] = useState<Set<string>>(new Set())
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('')
+  const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
+  const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
+  const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
+  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
 
   function getBlockSearchResults(): DocumentBlockDraft[] {
@@ -709,11 +715,56 @@ export function App() {
     })
   }
 
+  async function runGlobalSearch(query: string) {
+    if (!query.trim()) {
+      setGlobalSearchResults([])
+      return
+    }
+    setGlobalSearchLoading(true)
+    try {
+      const results = await window.knowbook.searchDocuments(query)
+      setGlobalSearchResults(results)
+    } finally {
+      setGlobalSearchLoading(false)
+    }
+  }
+
+  function openGlobalSearch() {
+    setIsGlobalSearchOpen(true)
+    setGlobalSearchQuery('')
+    setGlobalSearchResults([])
+  }
+
+  function closeGlobalSearch() {
+    setIsGlobalSearchOpen(false)
+    setGlobalSearchQuery('')
+    setGlobalSearchResults([])
+  }
+
+  function handleGlobalSearchNavigate(result: GlobalSearchResult) {
+    const document = homeData.documentCatalog.find((d: DocumentCatalogEntry) => d.id === result.documentId)
+    if (document) {
+      setSelectedDocumentId(document.id)
+      closeGlobalSearch()
+    }
+  }
+
   function updateBlockTags(index: number, tags: string[]) {
     updateDraftBlock(index, {
       ...draftBlocks[index],
       tags: tags.filter((tag) => tag.trim() !== '')
     })
+  }
+
+  function getDocumentStats() {
+    const blocks = isEditing ? draftBlocks : (selectedDocument?.blocks ?? [])
+    const blockCount = blocks.length
+    const allText = blocks.map((b) => b.content).join(' ')
+    const wordCount = allText.trim() === '' ? 0 : allText.trim().split(/\s+/).length
+    const charCount = allText.length
+    const codeBlockCount = blocks.filter((b) => b.type === 'code').length
+    const todoCount = blocks.filter((b) => b.type === 'todo').length
+    return { blockCount, wordCount, charCount, codeBlockCount, todoCount }
   }
 
   function addBlockTag(index: number, tag: string) {
@@ -880,6 +931,24 @@ export function App() {
       setDraftBlocks(normalizedDraftBlocks)
     }
   }, [draftBlocks])
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+        event.preventDefault()
+        if (isGlobalSearchOpen) {
+          closeGlobalSearch()
+        } else {
+          openGlobalSearch()
+        }
+      }
+      if (event.key === 'Escape' && isGlobalSearchOpen) {
+        closeGlobalSearch()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isGlobalSearchOpen])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -2587,6 +2656,9 @@ export function App() {
               </div>
               <div className="toolbar-inline">
                 <span className="pill">{homeData.documentTree.length} roots</span>
+                <button className="secondary-button" onClick={openGlobalSearch} title="全局搜索 (Ctrl+K)" type="button">
+                  🔍
+                </button>
                 <button className="secondary-button" onClick={() => handleCreateDocument(null)} type="button">
                   New root
                 </button>
@@ -2706,6 +2778,44 @@ export function App() {
                   )}
                   <p className="document-updated">Updated {new Date(selectedDocument.updatedAt).toLocaleString()}</p>
                 </div>
+
+                {(() => {
+                  const headingBlocks = (isEditing ? draftBlocks : selectedDocument.blocks).filter(
+                    (b) => b.type === 'heading-1' || b.type === 'heading-2'
+                  )
+                  if (headingBlocks.length === 0) return null
+                  return (
+                    <div className="toc-panel">
+                      <p className="panel-label">大纲</p>
+                      <nav className="toc-list">
+                        {headingBlocks.map((block, idx) => {
+                          const level = block.type === 'heading-1' ? 1 : 2
+                          const blockIndex = isEditing
+                            ? draftBlocks.indexOf(block as DocumentBlockDraft)
+                            : selectedDocument.blocks.indexOf(block as DocumentBlock)
+                          return (
+                            <button
+                              className={`toc-item toc-item-h${level}`}
+                              key={idx}
+                              type="button"
+                              onClick={() => {
+                                if (isEditing) {
+                                  setActiveBlockIndex(blockIndex)
+                                  setPendingFocusBlockIndex(blockIndex)
+                                } else {
+                                  setHighlightedBlockId((block as DocumentBlock).id)
+                                  setTimeout(() => setHighlightedBlockId(null), 2000)
+                                }
+                              }}
+                            >
+                              {block.content || (level === 1 ? '标题 1' : '标题 2')}
+                            </button>
+                          )
+                        })}
+                      </nav>
+                    </div>
+                  )
+                })()}
 
                 <div className="preview-section">
                   <p className="panel-label">Blocks</p>
@@ -3403,8 +3513,10 @@ export function App() {
                     <>
                       <div className="block-preview-list">
                         {selectedDocument.blocks.map((block, index) => (
-                          <div className="block-preview" key={block.id}>
-                            {renderBlock(
+                          <div
+                            className={`block-preview${highlightedBlockId === block.id ? ' block-preview-highlighted' : ''}`}
+                            key={block.id}
+                          >{renderBlock(
                               block,
                               setSelectedDocumentId,
                               documentReferences,
@@ -3471,6 +3583,31 @@ export function App() {
                     {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
                   </div>
                 </div>
+
+                {(() => {
+                  const stats = getDocumentStats()
+                  return (
+                    <div className="doc-stats-bar">
+                      <span className="doc-stat"><strong>{stats.blockCount}</strong> 块</span>
+                      <span className="doc-stat-divider">·</span>
+                      <span className="doc-stat"><strong>{stats.wordCount}</strong> 词</span>
+                      <span className="doc-stat-divider">·</span>
+                      <span className="doc-stat"><strong>{stats.charCount}</strong> 字符</span>
+                      {stats.codeBlockCount > 0 && (
+                        <>
+                          <span className="doc-stat-divider">·</span>
+                          <span className="doc-stat"><strong>{stats.codeBlockCount}</strong> 代码块</span>
+                        </>
+                      )}
+                      {stats.todoCount > 0 && (
+                        <>
+                          <span className="doc-stat-divider">·</span>
+                          <span className="doc-stat"><strong>{stats.todoCount}</strong> 待办</span>
+                        </>
+                      )}
+                    </div>
+                  )
+                })()}
               </>
             ) : (
               <div className="empty-preview">
@@ -3534,6 +3671,58 @@ export function App() {
           </article>
         </section>
       </main>
+
+      {isGlobalSearchOpen && (
+        <div className="global-search-overlay" onClick={closeGlobalSearch}>
+          <div className="global-search-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="global-search-header">
+              <input
+                autoFocus
+                className="global-search-input"
+                placeholder="搜索所有文档... (Ctrl+K 关闭)"
+                type="text"
+                value={globalSearchQuery}
+                onChange={(event) => {
+                  setGlobalSearchQuery(event.target.value)
+                  runGlobalSearch(event.target.value)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') closeGlobalSearch()
+                }}
+              />
+              <button className="secondary-button" onClick={closeGlobalSearch} type="button">✕</button>
+            </div>
+            <div className="global-search-results">
+              {globalSearchLoading && <p className="mini-hint">搜索中...</p>}
+              {!globalSearchLoading && globalSearchQuery && globalSearchResults.length === 0 && (
+                <p className="mini-hint">没有找到匹配的内容。</p>
+              )}
+              {!globalSearchLoading && !globalSearchQuery && (
+                <p className="mini-hint">输入关键字搜索所有文档标题和内容块。</p>
+              )}
+              {globalSearchResults.map((result, idx) => (
+                <button
+                  className="global-search-result"
+                  key={idx}
+                  onClick={() => handleGlobalSearchNavigate(result)}
+                  type="button"
+                >
+                  <div className="global-search-result-header">
+                    <span className="global-search-doc-path">{result.documentPath}</span>
+                    <span className={`global-search-match-badge ${result.matchType === 'title' ? 'global-search-match-title' : 'global-search-match-block'}`}>
+                      {result.matchType === 'title' ? '标题' : result.blockType ?? 'block'}
+                    </span>
+                  </div>
+                  <strong className="global-search-doc-title">{result.documentTitle}</strong>
+                  {result.snippet && (
+                    <p className="global-search-snippet">{result.snippet}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

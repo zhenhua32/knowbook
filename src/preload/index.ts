@@ -7,6 +7,7 @@ import type {
   DocumentDetail,
   DocumentSuggestion,
   ElectronApi,
+  GlobalSearchResult,
   HomeData,
   UpdateAiConfigInput,
   UpdateDocumentInput
@@ -23,7 +24,8 @@ const api: ElectronApi = {
   updateAiConfig: (input: UpdateAiConfigInput) => ipcRenderer.invoke('knowbook:update-ai-config', input) as Promise<void>,
   askAiAboutDocument: (input: AskAiInput) => ipcRenderer.invoke('knowbook:ask-ai-about-document', input) as Promise<AskAiResult>,
   triggerBackup: () => ipcRenderer.invoke('knowbook:trigger-backup') as Promise<BackupResult>,
-  writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>
+  writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
+  searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>
 }
 
 contextBridge.exposeInMainWorld('knowbook', api)

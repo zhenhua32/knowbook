@@ -84,6 +84,16 @@ export interface DocumentSuggestion {
   path: string
 }
 
+export interface GlobalSearchResult {
+  documentId: string
+  documentTitle: string
+  documentPath: string
+  matchType: 'title' | 'block'
+  snippet: string
+  blockId?: string
+  blockType?: string
+}
+
 export interface DocumentChild {
   id: string
   title: string
@@ -164,6 +174,7 @@ export interface ElectronApi {
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
+  searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>
 }

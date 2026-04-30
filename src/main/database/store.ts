@@ -18,7 +18,8 @@ import type {
   UpdateDocumentInput,
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
-  WorkspaceSummary
+  WorkspaceSummary,
+  GlobalSearchResult
 } from '@shared/contracts'
 import { appSchema } from './schema'
 
@@ -547,6 +548,67 @@ export class KnowbookStore {
       normalizedQuery,
       `${normalizedQuery}%`
     ) as DocumentSuggestion[]
+  }
+
+  searchDocuments(query: string): GlobalSearchResult[] {
+    const normalizedQuery = query.trim()
+    if (!normalizedQuery) {
+      return []
+    }
+    const likeQuery = `%${normalizedQuery}%`
+
+    const docMatches = this.db.prepare(`
+      SELECT id, title, path, summary
+      FROM documents
+      WHERE title LIKE ? OR summary LIKE ?
+      ORDER BY
+        CASE WHEN title LIKE ? THEN 0 ELSE 1 END,
+        LENGTH(path) ASC
+      LIMIT 5
+    `).all(likeQuery, likeQuery, `%${normalizedQuery}%`) as Array<{
+      id: string; title: string; path: string; summary: string
+    }>
+
+    const blockMatches = this.db.prepare(`
+      SELECT b.id AS block_id, b.type AS block_type, b.content AS block_content,
+             d.id AS document_id, d.title AS document_title, d.path AS document_path
+      FROM blocks AS b
+      INNER JOIN documents AS d ON d.id = b.document_id
+      WHERE b.content LIKE ?
+      ORDER BY LENGTH(b.content) ASC
+      LIMIT 20
+    `).all(likeQuery) as Array<{
+      block_id: string; block_type: string; block_content: string;
+      document_id: string; document_title: string; document_path: string
+    }>
+
+    const docResults: GlobalSearchResult[] = docMatches.map((doc) => ({
+      documentId: doc.id,
+      documentTitle: doc.title,
+      documentPath: doc.path,
+      matchType: 'title' as const,
+      snippet: doc.summary.slice(0, 120)
+    }))
+
+    const seenDocs = new Set(docResults.map((r) => r.documentId))
+    const blockResults: GlobalSearchResult[] = []
+    for (const row of blockMatches) {
+      const idx = row.block_content.toLowerCase().indexOf(normalizedQuery.toLowerCase())
+      const start = Math.max(0, idx - 40)
+      const snippet = (start > 0 ? '…' : '') + row.block_content.slice(start, start + 120) + (row.block_content.length > start + 120 ? '…' : '')
+      blockResults.push({
+        documentId: row.document_id,
+        documentTitle: row.document_title,
+        documentPath: row.document_path,
+        matchType: 'block' as const,
+        snippet,
+        blockId: row.block_id,
+        blockType: row.block_type
+      })
+      seenDocs.add(row.document_id)
+    }
+
+    return [...docResults, ...blockResults].slice(0, 30)
   }
 
   getExportDocuments(): ExportDocument[] {
