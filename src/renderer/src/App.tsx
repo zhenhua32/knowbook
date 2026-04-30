@@ -863,9 +863,26 @@ export function App() {
 
       try {
         await window.knowbook.writeClipboardText(text)
-        setBackupMessage(`Copied ${count} blocks to clipboard.`)
+        setBackupMessage(`Copied ${count} blocks as block sequence.`)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Copy failed.'
+        setBackupMessage(message)
+      }
+    }
+
+    async function copySelectedBlocksAsPlainText() {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const text = serializeDraftBlockRangeAsPlainText(draftBlocks, selectedBlockRange)
+      const count = selectedBlockRange.end - selectedBlockRange.start + 1
+
+      try {
+        await window.knowbook.writeClipboardText(text)
+        setBackupMessage(`Copied ${count} blocks as plain text.`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Copy text failed.'
         setBackupMessage(message)
       }
     }
@@ -1876,12 +1893,15 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete/duplicate the whole slice, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy blocks or plain text, cut/delete/duplicate the whole slice, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
                             <button className="secondary-button" onClick={copySelectedBlocks} type="button">
-                              Copy
+                              Copy Blocks
+                            </button>
+                            <button className="secondary-button" onClick={copySelectedBlocksAsPlainText} type="button">
+                              Copy Text
                             </button>
                             <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
                               Cut
@@ -2257,7 +2277,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy, cut, duplicate, or delete the selected slice from the toolbar or with Ctrl/Cmd + C/X/Shift + D and Delete/Backspace, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy the selected slice as blocks or plain text from the toolbar, or use Ctrl/Cmd + C/X/Shift + D and Delete/Backspace for block-sequence copy, cut, duplicate, and delete, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -2921,10 +2941,29 @@ function renderDraftBlockForClipboard(block: DocumentBlockDraft): string {
   return block.content
 }
 
+function renderDraftBlockAsPlainText(block: DocumentBlockDraft): string {
+  if (block.type === 'todo') {
+    return `${block.checked ? '[x]' : '[ ]'} ${block.content}`.trim()
+  }
+
+  if (block.type === 'divider') {
+    return ''
+  }
+
+  return block.content
+}
+
 function serializeDraftBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
   return blocks
     .slice(range.start, range.end + 1)
     .map((block) => renderDraftBlockForClipboard(block))
+    .join('\n\n')
+}
+
+function serializeDraftBlockRangeAsPlainText(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
+  return blocks
+    .slice(range.start, range.end + 1)
+    .map((block) => renderDraftBlockAsPlainText(block))
     .join('\n\n')
 }
 
