@@ -889,6 +889,17 @@ export function App() {
       }
     }
 
+    function deleteSelectedBlocks() {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const range = selectedBlockRange
+      const count = range.end - range.start + 1
+      removeSelectedBlockRange(range)
+      setBackupMessage(`Deleted ${count} blocks.`)
+    }
+
   function handleBlockContentChange(index: number, content: string) {
     const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
     if (shortcut) {
@@ -1834,7 +1845,7 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut the whole slice, or paste to replace it.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete the whole slice, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -1843,6 +1854,9 @@ export function App() {
                             </button>
                             <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
                               Cut
+                            </button>
+                            <button className="danger-button" onClick={deleteSelectedBlocks} type="button">
+                              Delete
                             </button>
                             <button
                               className="secondary-button"
