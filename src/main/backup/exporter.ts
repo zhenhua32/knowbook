@@ -44,13 +44,13 @@ export class MarkdownBackupService {
     ].join('\n')
 
     const body = document.blocks
-      .map((block) => this.renderBlock(block.type, block.content, block.checked, block.depth))
+      .map((block) => this.renderBlock(block.type, block.content, block.checked, block.depth, block.language))
       .join('\n\n')
 
     return `${frontmatter}${body}\n`
   }
 
-  private renderBlock(type: string, content: string, checked: boolean, depth: number): string {
+  private renderBlock(type: string, content: string, checked: boolean, depth: number, language?: string): string {
     const indent = '  '.repeat(Math.max(0, depth))
 
     if (type === 'heading-1') {
@@ -86,7 +86,7 @@ export class MarkdownBackupService {
     }
 
     if (type === 'code') {
-      return ['```txt', content, '```'].join('\n')
+      return ['```' + (language ?? 'txt'), content, '```'].join('\n')
     }
 
     return content

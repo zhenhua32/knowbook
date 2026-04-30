@@ -641,14 +641,15 @@ function remapIndexAfterSubtreeMove(
   return index
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId'>): DocumentBlockDraft {
+function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'language'>): DocumentBlockDraft {
   return {
     id: block.id,
     type: block.type,
     content: block.content,
     checked: Boolean(block.checked),
     depth: normalizeBlockDepth(block.type, block.depth),
-    parentBlockId: block.parentBlockId ?? null
+    parentBlockId: block.parentBlockId ?? null,
+    language: block.language
   }
 }
 
@@ -692,6 +693,7 @@ export function App() {
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
   const [selectedBlockTags, setSelectedBlockTags] = useState<Set<string>>(new Set())
+  const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
 
   function getBlockSearchResults(): DocumentBlockDraft[] {
@@ -757,6 +759,46 @@ export function App() {
       if (!block.tags) return false
       return block.tags.some((tag) => selectedBlockTags.has(tag))
     })
+  }
+
+  function blockHasChildren(blockIndex: number): boolean {
+    return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
+  }
+
+  function toggleBlockCollapse(blockId: string) {
+    const newCollapsed = new Set(collapsedBlockIds)
+    if (newCollapsed.has(blockId)) {
+      newCollapsed.delete(blockId)
+    } else {
+      newCollapsed.add(blockId)
+    }
+    setCollapsedBlockIds(newCollapsed)
+  }
+
+  function getVisibleBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+    if (collapsedBlockIds.size === 0) {
+      return blocks
+    }
+    const result: DocumentBlockDraft[] = []
+    let skipUntilDepthLessOrEqual: number | null = null
+    for (let i = 0; i < blocks.length; i++) {
+      const block = blocks[i]
+      if (skipUntilDepthLessOrEqual !== null) {
+        if (block.depth <= skipUntilDepthLessOrEqual) {
+          skipUntilDepthLessOrEqual = null
+        } else {
+          continue
+        }
+      }
+      result.push(block)
+      if (block.id && collapsedBlockIds.has(block.id)) {
+        const subtreeEnd = getBlockSubtreeEndIndex(draftBlocks, i)
+        if (subtreeEnd > i) {
+          skipUntilDepthLessOrEqual = block.depth
+        }
+      }
+    }
+    return result
   }
 
   function getBlockSuggestionsForLink(query: string): DocumentBlockDraft[] {
@@ -962,6 +1004,7 @@ export function App() {
     setPendingFocusBlockIndex(null)
     setSelectionAnchorBlockIndex(null)
     setSelectedBlockRange(null)
+    setCollapsedBlockIds(new Set())
     setIsEditing(true)
   }
 
@@ -977,6 +1020,7 @@ export function App() {
     setPendingFocusBlockIndex(null)
     setSelectionAnchorBlockIndex(null)
     setSelectedBlockRange(null)
+    setCollapsedBlockIds(new Set())
     setIsEditing(false)
   }
 
@@ -2847,7 +2891,7 @@ export function App() {
                           </div>
                         </div>
                       ) : null}
-                      {getFilteredBlocks(draftBlocks).map((block, filteredIndex) => {
+                      {getFilteredBlocks(getVisibleBlocks(draftBlocks)).map((block, filteredIndex) => {
                         const index = draftBlocks.indexOf(block)
                         const dropPreview =
                           draggingBlockIndex !== null && dragOverBlockIndex === index
@@ -2871,6 +2915,18 @@ export function App() {
                               dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
                             }}
                           >
+                          {block.id && blockHasChildren(index) ? (
+                            <button
+                              aria-label={collapsedBlockIds.has(block.id) ? 'Expand block' : 'Collapse block'}
+                              className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
+                              onClick={() => block.id && toggleBlockCollapse(block.id)}
+                              type="button"
+                            >
+                              {collapsedBlockIds.has(block.id) ? '▶' : '▼'}
+                            </button>
+                          ) : (
+                            <span className="block-collapse-toggle-placeholder" />
+                          )}
                           <button
                             aria-label="Drag block"
                             className="block-drag-handle"
@@ -2910,6 +2966,34 @@ export function App() {
                           {block.type === 'divider' ? (
                             <div className="block-divider-editor">Divider block</div>
                           ) : (
+                            <>
+                            {block.type === 'code' && (
+                              <select
+                                className="editor-select code-language-select"
+                                value={block.language ?? ''}
+                                onChange={(event) => {
+                                  updateDraftBlock(index, { ...block, language: event.target.value || undefined })
+                                }}
+                              >
+                                <option value="">Plain text</option>
+                                <option value="javascript">JavaScript</option>
+                                <option value="typescript">TypeScript</option>
+                                <option value="python">Python</option>
+                                <option value="rust">Rust</option>
+                                <option value="go">Go</option>
+                                <option value="java">Java</option>
+                                <option value="c">C</option>
+                                <option value="cpp">C++</option>
+                                <option value="csharp">C#</option>
+                                <option value="html">HTML</option>
+                                <option value="css">CSS</option>
+                                <option value="json">JSON</option>
+                                <option value="yaml">YAML</option>
+                                <option value="sql">SQL</option>
+                                <option value="bash">Bash</option>
+                                <option value="markdown">Markdown</option>
+                              </select>
+                            )}
                             <textarea
                               className="editor-textarea block-editor-textarea"
                               style={isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined}
@@ -3132,6 +3216,7 @@ export function App() {
                               rows={block.type === 'code' ? 5 : block.type === 'math' ? 3 : 2}
                               value={block.content}
                             />
+                            </>
                           )}
                           {block.tags && block.tags.length > 0 && (
                             <div className="block-tags-display">
@@ -3692,7 +3777,11 @@ function RelationList({
             <button className="relation-chip" key={`${title}-${link.id}`} onClick={() => onSelect(link.id)} type="button">
               <strong>{link.title}</strong>
               <span>{link.path}</span>
-              <small>{link.label}</small>
+              {link.contextSnippet ? (
+                <span className="relation-chip-context">{link.contextSnippet.slice(0, 120)}{link.contextSnippet.length > 120 ? '…' : ''}</span>
+              ) : (
+                <small>{link.label}</small>
+              )}
             </button>
           ))}
         </div>
@@ -3821,7 +3910,12 @@ function renderBlock(
   }
 
   if (block.type === 'code') {
-    return <pre className="block-code">{block.content}</pre>
+    return (
+      <div className="block-code-wrapper">
+        {block.language && <span className="block-code-language">{block.language}</span>}
+        <pre className="block-code">{block.content}</pre>
+      </div>
+    )
   }
 
   return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
@@ -3988,7 +4082,7 @@ function renderDraftBlockForClipboard(block: DocumentBlockDraft): string {
   }
 
   if (block.type === 'code') {
-    return ['```txt', block.content, '```'].join('\n')
+    return ['```' + (block.language ?? 'txt'), block.content, '```'].join('\n')
   }
 
   return block.content

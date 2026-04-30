@@ -96,6 +96,7 @@ interface ExportBlockRow {
   depth: number
   parent_block_id: string | null
   sort_order: number
+  language: string | null
 }
 
 interface BlockTreeRow {
@@ -115,6 +116,7 @@ interface LinkedDocumentRow {
   title: string
   path: string
   label: string
+  context_snippet?: string
 }
 
 interface DocumentChildRow {
@@ -146,6 +148,7 @@ export interface ExportDocument {
     checked: boolean
     depth: number
     sortOrder: number
+    language?: string
   }>
 }
 
@@ -160,6 +163,7 @@ export class KnowbookStore {
     this.db.exec(appSchema)
     this.ensureBlockCheckedColumn()
     this.ensureBlockDepthColumn()
+    this.ensureBlockLanguageColumn()
     this.ensureBlockParentRelationships()
     this.seed()
     this.resyncLinksForAllDocuments()
@@ -193,7 +197,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -208,10 +212,14 @@ export class KnowbookStore {
     `).all(documentId) as LinkedDocumentRow[]
 
     const backlinks = this.db.prepare(`
-      SELECT source.id, source.title, source.path, links.label
+      SELECT source.id, source.title, source.path, links.label,
+        SUBSTR(b.content, 1, 200) AS context_snippet
       FROM links
       INNER JOIN documents AS source ON source.id = links.source_document_id
+      LEFT JOIN blocks AS b ON b.document_id = links.source_document_id
+        AND b.content LIKE '%' || links.label || '%'
       WHERE links.target_document_id = ?
+      GROUP BY source.id
       ORDER BY source.path ASC
     `).all(documentId) as LinkedDocumentRow[]
 
@@ -235,7 +243,8 @@ export class KnowbookStore {
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
         parentBlockId: block.parent_block_id ?? null,
-        sortOrder: block.sort_order
+        sortOrder: block.sort_order,
+        language: block.language ?? undefined
       })),
       children: children.map((child): DocumentChild => ({
         id: child.id,
@@ -252,7 +261,8 @@ export class KnowbookStore {
         id: link.id,
         title: link.title,
         path: link.path,
-        label: link.label
+        label: link.label,
+        contextSnippet: link.context_snippet ?? undefined
       }))
     }
   }
@@ -321,8 +331,8 @@ export class KnowbookStore {
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, language, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
@@ -343,6 +353,7 @@ export class KnowbookStore {
           block.content,
           block.checked ? 1 : 0,
           block.depth,
+          block.language ?? null,
           now,
           now
         )
@@ -546,7 +557,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -563,7 +574,8 @@ export class KnowbookStore {
         content: block.content,
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
-        sortOrder: block.sort_order
+        sortOrder: block.sort_order,
+        language: block.language ?? undefined
       }))
     }))
   }
@@ -918,6 +930,13 @@ export class KnowbookStore {
       baseUrl: this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1',
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
       hasApiKey: Boolean(this.readSetting('ai.apiKey'))
+    }
+  }
+
+  private ensureBlockLanguageColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'language')) {
+      this.db.exec('ALTER TABLE blocks ADD COLUMN language TEXT')
     }
   }
 

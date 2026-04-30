@@ -56,6 +56,7 @@ export interface DocumentBlock {
   parentBlockId: string | null
   sortOrder: number
   tags?: string[]
+  language?: string
 }
 
 export interface DocumentBlockDraft {
@@ -66,6 +67,7 @@ export interface DocumentBlockDraft {
   depth: number
   parentBlockId?: string | null
   tags?: string[]
+  language?: string
 }
 
 export interface LinkedDocument {
@@ -73,6 +75,7 @@ export interface LinkedDocument {
   title: string
   path: string
   label: string
+  contextSnippet?: string
 }
 
 export interface DocumentSuggestion {
