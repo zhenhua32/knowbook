@@ -900,6 +900,37 @@ export function App() {
       setBackupMessage(`Deleted ${count} blocks.`)
     }
 
+    function duplicateSelectedBlocks() {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const range = selectedBlockRange
+      const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
+        ...block,
+        checked: block.type === 'todo' ? block.checked : false,
+        depth: normalizeBlockDepth(block.type, block.depth)
+      }))
+      const count = duplicatedBlocks.length
+      const duplicatedRange = {
+        start: range.end + 1,
+        end: range.end + count
+      }
+
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        next.splice(range.end + 1, 0, ...duplicatedBlocks)
+        return next
+      })
+      setSelectionAnchorBlockIndex(duplicatedRange.start)
+      setSelectedBlockRange(duplicatedRange)
+      setActiveBlockIndex(duplicatedRange.start)
+      setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
+      setPendingFocusBlockIndex(duplicatedRange.start)
+      endBlockDrag()
+      setBackupMessage(`Duplicated ${count} blocks.`)
+    }
+
   function handleBlockContentChange(index: number, content: string) {
     const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
     if (shortcut) {
@@ -1845,7 +1876,7 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete the whole slice, or paste to replace it.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete/duplicate the whole slice, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -1854,6 +1885,9 @@ export function App() {
                             </button>
                             <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
                               Cut
+                            </button>
+                            <button className="secondary-button" onClick={duplicateSelectedBlocks} type="button">
+                              Duplicate
                             </button>
                             <button className="danger-button" onClick={deleteSelectedBlocks} type="button">
                               Delete
@@ -2070,7 +2104,11 @@ export function App() {
 
                                 if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
                                   event.preventDefault()
-                                  duplicateDraftBlock(index)
+                                  if (selectedBlockRange && isSelected) {
+                                    duplicateSelectedBlocks()
+                                  } else {
+                                    duplicateDraftBlock(index)
+                                  }
                                   return
                                 }
 
@@ -2203,7 +2241,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy or cut the selected slice from the toolbar or with Ctrl/Cmd + C/X, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy, cut, or duplicate the selected slice from the toolbar or with Ctrl/Cmd + C/X/Shift + D, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
