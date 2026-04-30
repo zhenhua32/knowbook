@@ -395,6 +395,48 @@ function canChangeBlockType(fromType: string, toType: string, hasChildren: boole
   return true
 }
 
+function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: boolean; errors: string[] } {
+  const errors: string[] = []
+
+  if (blocks.length === 0) {
+    return { valid: true, errors: [] }
+  }
+
+  for (let i = 0; i < blocks.length; i += 1) {
+    const block = blocks[i]
+
+    if (block.depth < 0) {
+      errors.push(`Block ${i}: negative depth ${block.depth}`)
+    }
+
+    if (block.depth > 6) {
+      errors.push(`Block ${i}: depth ${block.depth} exceeds maximum 6`)
+    }
+
+    if (!isNestableBlock(block.type) && block.depth > 0) {
+      errors.push(`Block ${i}: non-nestable type "${block.type}" has depth ${block.depth} > 0`)
+    }
+
+    if (i > 0) {
+      const prevBlock = blocks[i - 1]
+      const depthDiff = block.depth - prevBlock.depth
+
+      if (depthDiff > 1) {
+        errors.push(`Block ${i}: depth jumps from ${prevBlock.depth} to ${block.depth} (gap of ${depthDiff})`)
+      }
+    }
+
+    if (block.depth > 0 && i === 0) {
+      errors.push(`Block ${i}: first block cannot have depth > 0`)
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors
+  }
+}
+
 function getBlockDropPreview(
   blocks: DocumentBlockDraft[],
   sourceIndex: number,
@@ -839,6 +881,13 @@ export function App() {
       return
     }
 
+    const validation = validateBlockTreeStructure(draftBlocks)
+    if (!validation.valid) {
+      console.error('Tree structure validation failed:', validation.errors)
+      setBackupMessage(`Cannot save: invalid block tree structure. ${validation.errors.join('; ')}`)
+      return
+    }
+
     setIsSaving(true)
     await window.knowbook.updateDocument(selectedDocumentId, {
       title: draftTitle,
@@ -1046,6 +1095,20 @@ export function App() {
 
     function isBlockSelected(index: number) {
       return selectedBlockRange ? index >= selectedBlockRange.start && index <= selectedBlockRange.end : false
+    }
+
+    function isSelectionCoherent(range: BlockSelectionRange): boolean {
+      if (range.start === range.end) {
+        return true
+      }
+
+      const blocks = draftBlocks.slice(range.start, range.end + 1)
+      if (blocks.length === 0) {
+        return true
+      }
+
+      const depthSet = new Set(blocks.map((b) => b.depth))
+      return depthSet.size === 1
     }
 
     function selectBlockRange(index: number, extendSelection = false) {
@@ -2328,11 +2391,15 @@ export function App() {
                             <strong>
                               {selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected
                               {selectedBlockActionCount > selectedBlockCount ? ` · subtree ${selectedBlockActionCount} blocks` : ''}
+                              {!isSelectionCoherent(selectedBlockRange) ? ' · ⚠ Mixed depths (incoherent)' : ''}
                             </strong>
                             <p className="mini-hint">
                               Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
                               {selectedBlockActionCount > selectedBlockCount
                                 ? ' For a single selected parent block, copy/cut/duplicate/delete and paste-replace expand to the full subtree.'
+                                : ''}
+                              {!isSelectionCoherent(selectedBlockRange)
+                                ? ' ⚠ This selection contains blocks at different nesting levels. Some operations may behave unexpectedly.'
                                 : ''}
                             </p>
                           </div>
