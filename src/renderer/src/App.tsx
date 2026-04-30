@@ -861,6 +861,29 @@ export function App() {
     }
 
     const normalizedText = pastedText.replace(/\r\n?/g, '\n')
+    const activeRange =
+      selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end ? selectedBlockRange : null
+
+    if (activeRange) {
+      const templateBlock = draftBlocks[activeRange.start] ?? currentBlock
+      const lines = normalizedText.split('\n')
+      const nextBlocks = lines.map((line) => normalizePastedLineBlock(templateBlock, line))
+
+      clearBlockSelection()
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        next.splice(activeRange.start, activeRange.end - activeRange.start + 1, ...nextBlocks)
+        return next
+      })
+
+      const focusIndex = activeRange.start + nextBlocks.length - 1
+      setActiveBlockIndex(focusIndex)
+      setActiveCursorPosition((lines[lines.length - 1] ?? '').length)
+      setPendingFocusBlockIndex(focusIndex)
+      endBlockDrag()
+      return true
+    }
+
     if (!normalizedText.includes('\n')) {
       return false
     }
@@ -1756,7 +1779,7 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, or paste to replace the whole slice.
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -2073,7 +2096,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
