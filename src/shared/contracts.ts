@@ -158,6 +158,7 @@ export interface ElectronApi {
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   triggerBackup: () => Promise<BackupResult>
+  writeClipboardText: (text: string) => Promise<void>
 }
 
 declare global {

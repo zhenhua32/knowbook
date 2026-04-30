@@ -841,6 +841,54 @@ export function App() {
       endBlockDrag()
     }
 
+    function removeSelectedBlockRange(range: BlockSelectionRange) {
+      const remainingCount = draftBlocks.length - (range.end - range.start + 1)
+      const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null
+
+      clearBlockSelection()
+      setDraftBlocks((previous) => previous.filter((_, index) => index < range.start || index > range.end))
+      setActiveBlockIndex(nextIndex)
+      setActiveCursorPosition(0)
+      setPendingFocusBlockIndex(nextIndex)
+      endBlockDrag()
+    }
+
+    async function copySelectedBlocks() {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const text = serializeDraftBlockRange(draftBlocks, selectedBlockRange)
+      const count = selectedBlockRange.end - selectedBlockRange.start + 1
+
+      try {
+        await window.knowbook.writeClipboardText(text)
+        setBackupMessage(`Copied ${count} blocks to clipboard.`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Copy failed.'
+        setBackupMessage(message)
+      }
+    }
+
+    async function cutSelectedBlocks() {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const range = selectedBlockRange
+      const text = serializeDraftBlockRange(draftBlocks, range)
+      const count = range.end - range.start + 1
+
+      try {
+        await window.knowbook.writeClipboardText(text)
+        removeSelectedBlockRange(range)
+        setBackupMessage(`Cut ${count} blocks to clipboard.`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Cut failed.'
+        setBackupMessage(message)
+      }
+    }
+
   function handleBlockContentChange(index: number, content: string) {
     const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
     if (shortcut) {
@@ -867,7 +915,13 @@ export function App() {
     if (activeRange) {
       const templateBlock = draftBlocks[activeRange.start] ?? currentBlock
       const lines = normalizedText.split('\n')
-      const nextBlocks = lines.map((line) => normalizePastedLineBlock(templateBlock, line))
+      const nextBlocks = looksLikeStructuredBlockPaste(normalizedText)
+        ? parseStructuredPastedBlocks(normalizedText)
+        : lines.map((line) => normalizePastedLineBlock(templateBlock, line))
+
+      if (nextBlocks.length === 0) {
+        return false
+      }
 
       clearBlockSelection()
       setDraftBlocks((previous) => {
@@ -877,8 +931,9 @@ export function App() {
       })
 
       const focusIndex = activeRange.start + nextBlocks.length - 1
+      const focusBlock = nextBlocks[nextBlocks.length - 1]
       setActiveBlockIndex(focusIndex)
-      setActiveCursorPosition((lines[lines.length - 1] ?? '').length)
+      setActiveCursorPosition(focusBlock?.content.length ?? 0)
       setPendingFocusBlockIndex(focusIndex)
       endBlockDrag()
       return true
@@ -1779,10 +1834,16 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, or paste to replace the whole slice.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut the whole slice, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
+                            <button className="secondary-button" onClick={copySelectedBlocks} type="button">
+                              Copy
+                            </button>
+                            <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
+                              Cut
+                            </button>
                             <button
                               className="secondary-button"
                               disabled={selectedBlockRange.start === 0}
@@ -1881,6 +1942,38 @@ export function App() {
                                 ) {
                                   event.preventDefault()
                                 }
+                              }}
+                              onCopy={(event) => {
+                                if (!selectedBlockRange || !isSelected) {
+                                  return
+                                }
+
+                                if (
+                                  selectedBlockCount === 1 &&
+                                  (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
+                                ) {
+                                  return
+                                }
+
+                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, selectedBlockRange))
+                                event.preventDefault()
+                              }}
+                              onCut={(event) => {
+                                if (!selectedBlockRange || !isSelected) {
+                                  return
+                                }
+
+                                if (
+                                  selectedBlockCount === 1 &&
+                                  (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
+                                ) {
+                                  return
+                                }
+
+                                const range = selectedBlockRange
+                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
+                                event.preventDefault()
+                                removeSelectedBlockRange(range)
                               }}
                               onClick={(event) => captureBlockCursor(index, event.currentTarget)}
                               onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
@@ -2096,7 +2189,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy or cut the selected slice from the toolbar or with Ctrl/Cmd + C/X, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
@@ -2713,6 +2806,183 @@ function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockD
 function normalizePastedLineBlock(template: DocumentBlockDraft, content: string): DocumentBlockDraft {
   const draft = buildBlockTypePatch(template.type, content, template.checked, template.depth)
   return resolveMarkdownBlockShortcut(draft) ?? draft
+}
+
+function renderDraftBlockForClipboard(block: DocumentBlockDraft): string {
+  const indent = '  '.repeat(Math.max(0, block.depth))
+
+  if (block.type === 'heading-1') {
+    return `# ${block.content}`
+  }
+
+  if (block.type === 'heading-2') {
+    return `## ${block.content}`
+  }
+
+  if (block.type === 'todo') {
+    return `${indent}- [${block.checked ? 'x' : ' '}] ${block.content}`
+  }
+
+  if (block.type === 'quote') {
+    return block.content
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n')
+  }
+
+  if (block.type === 'bulleted-list') {
+    return `${indent}- ${block.content}`
+  }
+
+  if (block.type === 'numbered-list') {
+    return `${indent}1. ${block.content}`
+  }
+
+  if (block.type === 'divider') {
+    return '---'
+  }
+
+  if (block.type === 'math') {
+    return ['$$', block.content, '$$'].join('\n')
+  }
+
+  if (block.type === 'code') {
+    return ['```txt', block.content, '```'].join('\n')
+  }
+
+  return block.content
+}
+
+function serializeDraftBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
+  return blocks
+    .slice(range.start, range.end + 1)
+    .map((block) => renderDraftBlockForClipboard(block))
+    .join('\n\n')
+}
+
+function looksLikeStructuredBlockPaste(text: string): boolean {
+  return (
+    /\n\s*\n/.test(text) ||
+    /(^|\n)\s*```/.test(text) ||
+    /(^|\n)\s*\$\$/.test(text) ||
+    /(^|\n)##\s/.test(text) ||
+    /(^|\n)#\s/.test(text) ||
+    /(^|\n)>\s/.test(text) ||
+    /(^|\n)\s*-\s\[[xX ]\]\s/.test(text) ||
+    /(^|\n)\s*-\s/.test(text) ||
+    /(^|\n)\s*\d+\.\s/.test(text) ||
+    /(^|\n)\s*---\s*(\n|$)/.test(text)
+  )
+}
+
+function parseStructuredPastedBlocks(text: string): DocumentBlockDraft[] {
+  const blocks: DocumentBlockDraft[] = []
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  let paragraphLines: string[] = []
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return
+    }
+
+    blocks.push(buildBlockTypePatch('paragraph', paragraphLines.join('\n')))
+    paragraphLines = []
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const trimmed = line.trim()
+
+    if (trimmed === '') {
+      flushParagraph()
+      continue
+    }
+
+    if (trimmed === '$$') {
+      flushParagraph()
+      const mathLines: string[] = []
+      index += 1
+      while (index < lines.length && lines[index].trim() !== '$$') {
+        mathLines.push(lines[index])
+        index += 1
+      }
+      blocks.push(buildBlockTypePatch('math', mathLines.join('\n')))
+      continue
+    }
+
+    if (trimmed.startsWith('```')) {
+      flushParagraph()
+      const codeLines: string[] = []
+      index += 1
+      while (index < lines.length && !lines[index].trim().startsWith('```')) {
+        codeLines.push(lines[index])
+        index += 1
+      }
+      blocks.push(buildBlockTypePatch('code', codeLines.join('\n')))
+      continue
+    }
+
+    if (trimmed === '---') {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('divider', ''))
+      continue
+    }
+
+    const todoMatch = line.match(/^(\s*)-\s\[([xX ])\]\s+(.*)$/)
+    if (todoMatch) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('todo', todoMatch[3], todoMatch[2].toLowerCase() === 'x', Math.floor(todoMatch[1].length / 2)))
+      continue
+    }
+
+    const bulletMatch = line.match(/^(\s*)-\s+(.*)$/)
+    if (bulletMatch) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('bulleted-list', bulletMatch[2], false, Math.floor(bulletMatch[1].length / 2)))
+      continue
+    }
+
+    const numberedMatch = line.match(/^(\s*)\d+\.\s+(.*)$/)
+    if (numberedMatch) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('numbered-list', numberedMatch[2], false, Math.floor(numberedMatch[1].length / 2)))
+      continue
+    }
+
+    if (line.startsWith('## ')) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('heading-2', line.slice(3).replace(/^\s/, '')))
+      continue
+    }
+
+    if (line.startsWith('# ')) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('heading-1', line.slice(2).replace(/^\s/, '')))
+      continue
+    }
+
+    if (line.startsWith('$$ ')) {
+      flushParagraph()
+      blocks.push(buildBlockTypePatch('math', line.slice(3).replace(/^\s/, '')))
+      continue
+    }
+
+    if (line.startsWith('> ')) {
+      flushParagraph()
+      const quoteLines = [line.slice(2)]
+      while (index + 1 < lines.length && lines[index + 1].startsWith('> ')) {
+        index += 1
+        quoteLines.push(lines[index].slice(2))
+      }
+      blocks.push(buildBlockTypePatch('quote', quoteLines.join('\n')))
+      continue
+    }
+
+    paragraphLines.push(line)
+  }
+
+  flushParagraph()
+  return blocks
 }
 
 function renderMathBlock(content: string): string {

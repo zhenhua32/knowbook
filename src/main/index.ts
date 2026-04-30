@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain } from 'electron'
 import type {
   AskAiInput,
   AskAiResult,
@@ -96,6 +96,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:trigger-backup', () => {
     const result: BackupResult = backupService.exportAll()
     return result
+  })
+
+  ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {
+    clipboard.writeText(text)
   })
 }
 
