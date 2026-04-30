@@ -447,12 +447,84 @@ function normalizeBlockSelectionRange(start: number, end: number): BlockSelectio
   }
 }
 
+function isValidSiblingRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): boolean {
+  if (range.start >= blocks.length || range.end >= blocks.length) {
+    return false
+  }
+
+  const referenceDepth = blocks[range.start].depth
+
+  for (let i = range.start; i <= range.end; i += 1) {
+    if (blocks[i].depth !== referenceDepth) {
+      return false
+    }
+  }
+
+  return true
+}
+
 function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): DocumentBlockDraft[] {
-  const movedBlocks = blocks.slice(range.start, range.end + 1)
-  const next = [...blocks]
-  next.splice(range.start, movedBlocks.length)
-  next.splice(delta === -1 ? range.start - 1 : range.start + 1, 0, ...movedBlocks)
-  return next
+  const isValidSiblings = isValidSiblingRange(blocks, range)
+  
+  if (!isValidSiblings) {
+    return blocks
+  }
+
+  const referenceDepth = blocks[range.start].depth
+
+  if (delta === -1) {
+    if (range.start === 0) {
+      return blocks
+    }
+
+    let prevSiblingIndex: number | null = null
+    for (let i = range.start - 1; i >= 0; i -= 1) {
+      if (blocks[i].depth === referenceDepth) {
+        prevSiblingIndex = i
+        break
+      }
+
+      if (blocks[i].depth < referenceDepth) {
+        return blocks
+      }
+    }
+
+    if (prevSiblingIndex === null) {
+      return blocks
+    }
+
+    const movedBlocks = blocks.slice(range.start, range.end + 1)
+    const next = [...blocks]
+    next.splice(range.start, movedBlocks.length)
+    next.splice(prevSiblingIndex, 0, ...movedBlocks)
+    return next
+  } else {
+    if (range.end >= blocks.length - 1) {
+      return blocks
+    }
+
+    let nextSiblingIndex: number | null = null
+    for (let i = range.end + 1; i < blocks.length; i += 1) {
+      if (blocks[i].depth === referenceDepth) {
+        nextSiblingIndex = i
+        break
+      }
+
+      if (blocks[i].depth < referenceDepth) {
+        return blocks
+      }
+    }
+
+    if (nextSiblingIndex === null) {
+      return blocks
+    }
+
+    const movedBlocks = blocks.slice(range.start, range.end + 1)
+    const next = [...blocks]
+    next.splice(range.start, movedBlocks.length)
+    next.splice(nextSiblingIndex - movedBlocks.length + 1, 0, ...movedBlocks)
+    return next
+  }
 }
 
 function moveIndexAfterRangeMove(index: number | null, range: BlockSelectionRange, delta: -1 | 1): number | null {
@@ -1008,18 +1080,49 @@ export function App() {
         return
       }
 
-      if ((delta === -1 && selectedBlockRange.start === 0) || (delta === 1 && selectedBlockRange.end === draftBlocks.length - 1)) {
+      if (!isValidSiblingRange(draftBlocks, selectedBlockRange)) {
         return
       }
 
-      setDraftBlocks((previous) => moveBlockRange(previous, selectedBlockRange, delta))
+      const previousBlocks = draftBlocks
+      const nextBlocks = moveBlockRange(previousBlocks, selectedBlockRange, delta)
+      
+      if (nextBlocks === previousBlocks) {
+        return
+      }
+
+      const isMovedUp = delta === -1
+      const referenceDepth = draftBlocks[selectedBlockRange.start].depth
+      
+      let newStartIndex = selectedBlockRange.start
+      let newEndIndex = selectedBlockRange.end
+      
+      if (isMovedUp) {
+        for (let i = selectedBlockRange.start - 1; i >= 0; i -= 1) {
+          if (nextBlocks[i].depth === referenceDepth) {
+            newStartIndex = i
+            newEndIndex = i + (selectedBlockRange.end - selectedBlockRange.start)
+            break
+          }
+        }
+      } else {
+        for (let i = selectedBlockRange.end + 1; i < nextBlocks.length; i += 1) {
+          if (nextBlocks[i].depth === referenceDepth) {
+            newStartIndex = i - (selectedBlockRange.end - selectedBlockRange.start)
+            newEndIndex = i
+            break
+          }
+        }
+      }
+
+      setDraftBlocks(nextBlocks)
       setSelectedBlockRange({
-        start: selectedBlockRange.start + delta,
-        end: selectedBlockRange.end + delta
+        start: newStartIndex,
+        end: newEndIndex
       })
-      setSelectionAnchorBlockIndex((previous) => (previous === null ? null : previous + delta))
-      setActiveBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
-      setPendingFocusBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
+      setSelectionAnchorBlockIndex((previous) => (previous === null ? null : previous))
+      setActiveBlockIndex(newEndIndex)
+      setPendingFocusBlockIndex(newEndIndex)
       endBlockDrag()
     }
 
