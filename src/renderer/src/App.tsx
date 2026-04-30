@@ -397,6 +397,7 @@ export function App() {
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [selectionAnchorBlockIndex, setSelectionAnchorBlockIndex] = useState<number | null>(null)
   const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
+  const [selectedBlockConversionType, setSelectedBlockConversionType] = useState<DocumentBlock['type']>('paragraph')
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
@@ -839,6 +840,71 @@ export function App() {
       setActiveBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
       setPendingFocusBlockIndex((previous) => moveIndexAfterRangeMove(previous, selectedBlockRange, delta))
       endBlockDrag()
+    }
+
+    function adjustSelectedBlocksDepth(delta: -1 | 1, focusIndex: number, cursorPosition = activeCursorPosition) {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const selectedNestableBlocks = draftBlocks
+        .slice(selectedBlockRange.start, selectedBlockRange.end + 1)
+        .filter((block) => isNestableBlock(block.type))
+
+      if (selectedNestableBlocks.length === 0) {
+        return
+      }
+
+      const appliedDelta =
+        delta === 1
+          ? Math.min(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth + 1) - block.depth))
+          : Math.max(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth - 1) - block.depth))
+
+      if (appliedDelta === 0) {
+        return
+      }
+
+      setDraftBlocks((previous) =>
+        previous.map((block, currentIndex) => {
+          if (currentIndex < selectedBlockRange.start || currentIndex > selectedBlockRange.end || !isNestableBlock(block.type)) {
+            return block
+          }
+
+          return {
+            ...block,
+            depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+          }
+        })
+      )
+      setActiveBlockIndex(focusIndex)
+      setActiveCursorPosition(cursorPosition)
+      setPendingFocusBlockIndex(focusIndex)
+      endBlockDrag()
+    }
+
+    function convertSelectedBlocks(nextType: DocumentBlock['type']) {
+      if (!selectedBlockRange) {
+        return
+      }
+
+      const focusIndex =
+        activeBlockIndex !== null && activeBlockIndex >= selectedBlockRange.start && activeBlockIndex <= selectedBlockRange.end
+          ? activeBlockIndex
+          : selectedBlockRange.start
+
+      setDraftBlocks((previous) =>
+        previous.map((block, currentIndex) => {
+          if (currentIndex < selectedBlockRange.start || currentIndex > selectedBlockRange.end) {
+            return block
+          }
+
+          return buildBlockTypePatch(nextType, block.content, nextType === 'todo' ? block.checked : false, block.depth)
+        })
+      )
+      setActiveBlockIndex(focusIndex)
+      setPendingFocusBlockIndex(focusIndex)
+      endBlockDrag()
+      setBackupMessage(`Converted ${selectedBlockCount} blocks to ${getBlockTypeLabel(nextType)}.`)
     }
 
     function removeSelectedBlockRange(range: BlockSelectionRange) {
@@ -1893,10 +1959,24 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
+                            <select
+                              className="editor-select compact-select"
+                              onChange={(event) => setSelectedBlockConversionType(event.target.value as DocumentBlock['type'])}
+                              value={selectedBlockConversionType}
+                            >
+                              <option value="paragraph">As Text</option>
+                              <option value="todo">As Todo</option>
+                              <option value="quote">As Quote</option>
+                              <option value="bulleted-list">As Bullet</option>
+                              <option value="numbered-list">As Numbered</option>
+                            </select>
+                            <button className="secondary-button" onClick={() => convertSelectedBlocks(selectedBlockConversionType)} type="button">
+                              Convert
+                            </button>
                             <button className="secondary-button" onClick={copySelectedBlocks} type="button">
                               Copy Blocks
                             </button>
@@ -2092,6 +2172,24 @@ export function App() {
                                     dismissSlashCommand()
                                     return
                                   }
+                                }
+
+                                if (
+                                  selectedBlockRange &&
+                                  selectedBlockCount > 1 &&
+                                  isSelected &&
+                                  !event.altKey &&
+                                  !event.metaKey &&
+                                  !event.ctrlKey &&
+                                  event.key === 'Tab'
+                                ) {
+                                  event.preventDefault()
+                                  adjustSelectedBlocksDepth(
+                                    event.shiftKey ? -1 : 1,
+                                    index,
+                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                                  )
+                                  return
                                 }
 
                                 if (event.key === 'Tab' && isNestableBlock(block.type)) {
@@ -2291,7 +2389,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy the selected slice as blocks or plain text from the toolbar, or use Ctrl/Cmd + C/X/Shift + D, Delete/Backspace, and Alt + ArrowUp/ArrowDown for block-sequence copy, cut, duplicate, delete, and keyboard move, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, convert the selected slice from the toolbar, copy the selected slice as blocks or plain text from the toolbar, or use Ctrl/Cmd + C/X/Shift + D, Delete/Backspace, Alt + ArrowUp/ArrowDown, and Tab / Shift+Tab for block-sequence copy, cut, duplicate, delete, keyboard move, and keyboard nesting, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
