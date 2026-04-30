@@ -475,6 +475,33 @@ function moveIndexAfterRangeMove(index: number | null, range: BlockSelectionRang
   return index
 }
 
+function remapIndexAfterSubtreeMove(
+  index: number | null,
+  sourceIndex: number,
+  subtreeEndIndex: number,
+  insertionIndex: number
+): number | null {
+  if (index === null) {
+    return index
+  }
+
+  const subtreeSize = subtreeEndIndex - sourceIndex + 1
+
+  if (index >= sourceIndex && index <= subtreeEndIndex) {
+    return insertionIndex + (index - sourceIndex)
+  }
+
+  if (sourceIndex < insertionIndex && index > subtreeEndIndex && index <= insertionIndex + subtreeSize - 1) {
+    return index - subtreeSize
+  }
+
+  if (sourceIndex > insertionIndex && index >= insertionIndex && index < sourceIndex) {
+    return index + subtreeSize
+  }
+
+  return index
+}
+
 function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId'>): DocumentBlockDraft {
   return {
     id: block.id,
@@ -1414,7 +1441,7 @@ export function App() {
     setPendingFocusBlockIndex(index)
   }
 
-  function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null) {
+  function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) {
     clearBlockSelection()
     setDraftBlocks((previous) => {
       const subtreeEndIndex = getBlockSubtreeEndIndex(previous, sourceIndex)
@@ -1447,44 +1474,43 @@ export function App() {
     const subtreeSize = subtreeEndIndex - sourceIndex + 1
     const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - subtreeSize + 1) : targetIndex
 
-    setActiveBlockIndex((previous) => {
-      if (previous === null) {
-        return previous
-      }
+    setActiveBlockIndex((previous) =>
+      remapIndexAfterSubtreeMove(
+        focusIndexOverride === undefined ? previous : focusIndexOverride,
+        sourceIndex,
+        subtreeEndIndex,
+        insertionIndex
+      )
+    )
+    setPendingFocusBlockIndex((previous) =>
+      remapIndexAfterSubtreeMove(
+        focusIndexOverride === undefined ? previous : focusIndexOverride,
+        sourceIndex,
+        subtreeEndIndex,
+        insertionIndex
+      )
+    )
+  }
 
-      if (previous >= sourceIndex && previous <= subtreeEndIndex) {
-        return insertionIndex + (previous - sourceIndex)
-      }
+  function moveDraftBlockBySibling(index: number, direction: -1 | 1, cursorPosition = activeCursorPosition, contentOverride?: string) {
+    const siblingIndex =
+      direction === -1 ? getPreviousSiblingSubtreeStartIndex(draftBlocks, index) : getNextSiblingSubtreeStartIndex(draftBlocks, index)
 
-      if (sourceIndex < insertionIndex && previous > subtreeEndIndex && previous <= targetIndex) {
-        return previous - subtreeSize
-      }
+    if (contentOverride !== undefined) {
+      updateDraftBlock(index, { content: contentOverride })
+    }
 
-      if (sourceIndex > insertionIndex && previous >= insertionIndex && previous < sourceIndex) {
-        return previous + subtreeSize
-      }
+    if (siblingIndex === null) {
+      setActiveBlockIndex(index)
+      setActiveCursorPosition(contentOverride?.length ?? cursorPosition)
+      setPendingFocusBlockIndex(index)
+      return false
+    }
 
-      return previous
-    })
-    setPendingFocusBlockIndex((previous) => {
-      if (previous === null) {
-        return previous
-      }
-
-      if (previous >= sourceIndex && previous <= subtreeEndIndex) {
-        return insertionIndex + (previous - sourceIndex)
-      }
-
-      if (sourceIndex < insertionIndex && previous > subtreeEndIndex && previous <= targetIndex) {
-        return previous - subtreeSize
-      }
-
-      if (sourceIndex > insertionIndex && previous >= insertionIndex && previous < sourceIndex) {
-        return previous + subtreeSize
-      }
-
-      return previous
-    })
+    const targetIndex = direction === -1 ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
+    moveDraftSubtree(index, targetIndex, null, index)
+    setActiveCursorPosition(contentOverride?.length ?? cursorPosition)
+    return true
   }
 
   function applySlashCommand(command: BlockSlashCommand) {
@@ -1555,33 +1581,7 @@ export function App() {
     }
 
     if (command.action === 'move-up' || command.action === 'move-down') {
-      const siblingIndex =
-        command.action === 'move-up'
-          ? getPreviousSiblingSubtreeStartIndex(draftBlocks, activeBlockIndex)
-          : getNextSiblingSubtreeStartIndex(draftBlocks, activeBlockIndex)
-
-      if (siblingIndex === null) {
-        updateDraftBlock(activeBlockIndex, { content: nextContent })
-        setActiveCursorPosition(nextContent.length)
-        setPendingFocusBlockIndex(activeBlockIndex)
-        return
-      }
-
-      setDraftBlocks((previous) =>
-        previous.map((block, index) =>
-          index === activeBlockIndex
-            ? {
-                ...block,
-                content: nextContent
-              }
-            : block
-        )
-      )
-
-      const targetIndex =
-        command.action === 'move-up' ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
-      moveDraftSubtree(activeBlockIndex, targetIndex, null)
-      setActiveCursorPosition(nextContent.length)
+      moveDraftBlockBySibling(activeBlockIndex, command.action === 'move-up' ? -1 : 1, nextContent.length, nextContent)
       return
     }
 
@@ -2242,8 +2242,6 @@ export function App() {
                               onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
                               onKeyDown={(event) => {
                                 if (
-                                  selectedBlockRange &&
-                                  isSelected &&
                                   event.altKey &&
                                   !event.shiftKey &&
                                   !event.metaKey &&
@@ -2251,7 +2249,15 @@ export function App() {
                                   (event.key === 'ArrowUp' || event.key === 'ArrowDown')
                                 ) {
                                   event.preventDefault()
-                                  moveSelectedBlocks(event.key === 'ArrowUp' ? -1 : 1)
+                                  if (selectedBlockRange && isSelected && selectedBlockCount > 1) {
+                                    moveSelectedBlocks(event.key === 'ArrowUp' ? -1 : 1)
+                                  } else {
+                                    moveDraftBlockBySibling(
+                                      index,
+                                      event.key === 'ArrowUp' ? -1 : 1,
+                                      event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                                    )
+                                  }
                                   return
                                 }
 
@@ -2435,6 +2441,22 @@ export function App() {
                             </button>
                             <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1, index)} type="button">
                               + Below
+                            </button>
+                            <button
+                              className="secondary-button block-insert-button"
+                              disabled={getPreviousSiblingSubtreeStartIndex(draftBlocks, index) === null}
+                              onClick={() => moveDraftBlockBySibling(index, -1)}
+                              type="button"
+                            >
+                              Move Up
+                            </button>
+                            <button
+                              className="secondary-button block-insert-button"
+                              disabled={getNextSiblingSubtreeStartIndex(draftBlocks, index) === null}
+                              onClick={() => moveDraftBlockBySibling(index, 1)}
+                              type="button"
+                            >
+                              Move Down
                             </button>
                             <button className="secondary-button block-insert-button" onClick={() => duplicateDraftBlock(index)} type="button">
                               Duplicate
