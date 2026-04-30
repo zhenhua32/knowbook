@@ -178,7 +178,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'up',
     label: 'Move Up',
-    description: 'Move the current block one slot upward.',
+    description: 'Move the current block subtree above the previous sibling subtree.',
     keywords: ['reorder', 'before', 'raise'],
     kind: 'action',
     action: 'move-up'
@@ -186,7 +186,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'down',
     label: 'Move Down',
-    description: 'Move the current block one slot downward.',
+    description: 'Move the current block subtree below the next sibling subtree.',
     keywords: ['reorder', 'after', 'lower'],
     kind: 'action',
     action: 'move-down'
@@ -210,7 +210,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'duplicate',
     label: 'Duplicate Block',
-    description: 'Clone the current block below the original.',
+    description: 'Clone the current block subtree below the original.',
     keywords: ['copy', 'clone', 'repeat'],
     kind: 'action',
     action: 'duplicate'
@@ -218,7 +218,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'delete',
     label: 'Delete Block',
-    description: 'Remove the current block from the draft.',
+    description: 'Remove the current block subtree from the draft.',
     keywords: ['remove', 'trash', 'clear'],
     kind: 'action',
     action: 'delete'
@@ -249,6 +249,45 @@ function getBlockSubtreeEndIndex(blocks: Array<{ depth: number }>, index: number
   }
 
   return endIndex
+}
+
+function getPreviousSiblingSubtreeStartIndex(blocks: Array<{ depth: number }>, index: number) {
+  const root = blocks[index]
+  if (!root) {
+    return null
+  }
+
+  for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
+    if (blocks[currentIndex].depth === root.depth) {
+      return currentIndex
+    }
+
+    if (blocks[currentIndex].depth < root.depth) {
+      break
+    }
+  }
+
+  return null
+}
+
+function getNextSiblingSubtreeStartIndex(blocks: Array<{ depth: number }>, index: number) {
+  const root = blocks[index]
+  if (!root) {
+    return null
+  }
+
+  const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
+  for (let currentIndex = subtreeEndIndex + 1; currentIndex < blocks.length; currentIndex += 1) {
+    if (blocks[currentIndex].depth === root.depth) {
+      return currentIndex
+    }
+
+    if (blocks[currentIndex].depth < root.depth) {
+      break
+    }
+  }
+
+  return null
 }
 
 function createDraftBlockId() {
@@ -1233,27 +1272,30 @@ export function App() {
 
     clearBlockSelection()
 
-    const duplicated = {
-      ...currentBlock,
-      content: contentOverride ?? currentBlock.content,
-      checked: currentBlock.type === 'todo' ? currentBlock.checked : false,
-      depth: normalizeBlockDepth(currentBlock.type, currentBlock.depth)
-    }
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+    const duplicatedRootIndex = subtreeEndIndex + 1
+    const duplicatedBlocks = draftBlocks.slice(index, subtreeEndIndex + 1).map((block, offset) => ({
+      ...block,
+      content: offset === 0 ? contentOverride ?? block.content : block.content,
+      checked: block.type === 'todo' ? block.checked : false,
+      depth: normalizeBlockDepth(block.type, block.depth)
+    }))
 
     setDraftBlocks((previous) => {
       const next = [...previous]
-      next.splice(index + 1, 0, duplicated)
       if (contentOverride !== undefined) {
         next[index] = {
           ...next[index],
           content: contentOverride
         }
       }
+
+      next.splice(duplicatedRootIndex, 0, ...duplicatedBlocks)
       return next
     })
-    setActiveBlockIndex(index + 1)
-    setActiveCursorPosition(duplicated.content.length)
-    setPendingFocusBlockIndex(index + 1)
+    setActiveBlockIndex(duplicatedRootIndex)
+    setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
+    setPendingFocusBlockIndex(duplicatedRootIndex)
     endBlockDrag()
   }
 
@@ -1513,24 +1555,33 @@ export function App() {
     }
 
     if (command.action === 'move-up' || command.action === 'move-down') {
-      clearBlockSelection()
-      const targetIndex =
+      const siblingIndex =
         command.action === 'move-up'
-          ? Math.max(0, activeBlockIndex - 1)
-          : Math.min(draftBlocks.length - 1, activeBlockIndex + 1)
+          ? getPreviousSiblingSubtreeStartIndex(draftBlocks, activeBlockIndex)
+          : getNextSiblingSubtreeStartIndex(draftBlocks, activeBlockIndex)
 
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        const [moved] = next.splice(activeBlockIndex, 1)
-        next.splice(targetIndex, 0, {
-          ...moved,
-          content: nextContent
-        })
-        return next
-      })
-      setActiveBlockIndex(targetIndex)
+      if (siblingIndex === null) {
+        updateDraftBlock(activeBlockIndex, { content: nextContent })
+        setActiveCursorPosition(nextContent.length)
+        setPendingFocusBlockIndex(activeBlockIndex)
+        return
+      }
+
+      setDraftBlocks((previous) =>
+        previous.map((block, index) =>
+          index === activeBlockIndex
+            ? {
+                ...block,
+                content: nextContent
+              }
+            : block
+        )
+      )
+
+      const targetIndex =
+        command.action === 'move-up' ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
+      moveDraftSubtree(activeBlockIndex, targetIndex, null)
       setActiveCursorPosition(nextContent.length)
-      setPendingFocusBlockIndex(targetIndex)
       return
     }
 
@@ -1573,12 +1624,7 @@ export function App() {
     }
 
     if (command.action === 'delete') {
-      clearBlockSelection()
-      const nextIndex = draftBlocks.length > 1 ? Math.min(activeBlockIndex, draftBlocks.length - 2) : null
-      setDraftBlocks((previous) => previous.filter((_, index) => index !== activeBlockIndex))
-      setActiveBlockIndex(nextIndex)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(nextIndex)
+      removeDraftBlock(activeBlockIndex)
     }
   }
 
@@ -1612,24 +1658,30 @@ export function App() {
   }
 
   function removeDraftBlock(index: number) {
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+    const removedCount = subtreeEndIndex - index + 1
+    const remainingCount = draftBlocks.length - removedCount
+    const nextIndex = remainingCount > 0 ? Math.min(index, remainingCount - 1) : null
+
     clearBlockSelection()
-    setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex !== index))
+    setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex < index || currentIndex > subtreeEndIndex))
     setActiveBlockIndex((previous) => {
       if (previous === null) {
         return previous
       }
 
-      if (previous === index) {
-        return null
+      if (previous < index) {
+        return previous
       }
 
-      if (previous > index) {
-        return previous - 1
+      if (previous <= subtreeEndIndex) {
+        return nextIndex
       }
 
-      return previous
+      return previous - removedCount
     })
-    setPendingFocusBlockIndex(null)
+    setActiveCursorPosition(0)
+    setPendingFocusBlockIndex(nextIndex)
     endBlockDrag()
   }
 
