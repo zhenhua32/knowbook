@@ -154,7 +154,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'above',
     label: 'Insert Above',
-    description: 'Insert a new paragraph block above the current block.',
+    description: 'Insert a new sibling block above the current block.',
     keywords: ['insert', 'before', 'up'],
     kind: 'action',
     action: 'insert-above'
@@ -162,7 +162,7 @@ const blockSlashCommands: BlockSlashCommand[] = [
   {
     id: 'below',
     label: 'Insert Below',
-    description: 'Insert a new paragraph block below the current block.',
+    description: 'Insert a new sibling block below the current block.',
     keywords: ['insert', 'after', 'down'],
     kind: 'action',
     action: 'insert-below'
@@ -318,6 +318,14 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
     checked: type === 'todo' ? checked : false,
     depth: normalizeBlockDepth(type, depth)
   }
+}
+
+function buildSiblingDraftBlock(anchorBlock?: DocumentBlockDraft): DocumentBlockDraft {
+  if (anchorBlock && isNestableBlock(anchorBlock.type)) {
+    return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth)
+  }
+
+  return buildBlockTypePatch('paragraph', '')
 }
 
 function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
@@ -1165,18 +1173,14 @@ export function App() {
     return true
   }
 
-  function insertDraftBlockAt(index: number) {
+  function insertDraftBlockAt(index: number, anchorIndex: number | null = null) {
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
     clearBlockSelection()
 
     setDraftBlocks((previous) => {
       const next = [...previous]
-      next.splice(nextIndex, 0, {
-        type: 'paragraph',
-        content: '',
-        checked: false,
-        depth: 0
-      })
+      const anchorBlock = anchorIndex !== null ? next[anchorIndex] : undefined
+      next.splice(nextIndex, 0, buildSiblingDraftBlock(anchorBlock))
       return next
     })
 
@@ -1477,12 +1481,7 @@ export function App() {
           ...next[activeBlockIndex],
           content: nextContent
         }
-        next.splice(activeBlockIndex, 0, {
-          type: 'paragraph',
-          content: '',
-          checked: false,
-          depth: 0
-        })
+        next.splice(activeBlockIndex, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
         return next
       })
       setActiveBlockIndex(activeBlockIndex)
@@ -1499,12 +1498,7 @@ export function App() {
           ...next[activeBlockIndex],
           content: nextContent
         }
-        next.splice(activeBlockIndex + 1, 0, {
-          type: 'paragraph',
-          content: '',
-          checked: false,
-          depth: 0
-        })
+        next.splice(activeBlockIndex + 1, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
         return next
       })
       setActiveBlockIndex(activeBlockIndex + 1)
@@ -2341,7 +2335,7 @@ export function App() {
 
                                 if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                                   event.preventDefault()
-                                  insertDraftBlockAt(index + 1)
+                                  insertDraftBlockAt(index + 1, index)
                                 }
                               }}
                               onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
@@ -2384,10 +2378,10 @@ export function App() {
                                 + Child
                               </button>
                             ) : null}
-                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index)} type="button">
+                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index, index)} type="button">
                               + Above
                             </button>
-                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1)} type="button">
+                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1, index)} type="button">
                               + Below
                             </button>
                             <button className="secondary-button block-insert-button" onClick={() => duplicateDraftBlock(index)} type="button">
