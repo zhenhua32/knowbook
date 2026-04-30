@@ -688,7 +688,22 @@ export function App() {
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
+  const [blockSearchQuery, setBlockSearchQuery] = useState('')
+  const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
+
+  function getBlockSearchResults(): DocumentBlockDraft[] {
+    if (!blockSearchQuery.trim() || draftBlocks.length === 0) {
+      return []
+    }
+
+    const query = blockSearchQuery.toLowerCase()
+    return draftBlocks.filter((block) => {
+      const content = block.content.toLowerCase()
+      const type = block.type.toLowerCase()
+      return content.includes(query) || type.includes(query)
+    })
+  }
 
   useEffect(() => {
     let mounted = true
@@ -2547,7 +2562,70 @@ export function App() {
                 <div className="preview-section">
                   <p className="panel-label">Blocks</p>
                   {isEditing ? (
-                    <div className="block-editor-list">
+                    <div
+                      className="block-editor-list"
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+                          event.preventDefault()
+                          setIsBlockSearchOpen(true)
+                        }
+                      }}
+                    >
+                      {isBlockSearchOpen && (
+                        <div className="block-search-panel">
+                          <div className="block-search-header">
+                            <input
+                              type="text"
+                              placeholder="Search blocks (Cmd+F to close)..."
+                              value={blockSearchQuery}
+                              onChange={(event) => setBlockSearchQuery(event.target.value)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Escape') {
+                                  event.preventDefault()
+                                  setIsBlockSearchOpen(false)
+                                  setBlockSearchQuery('')
+                                }
+                              }}
+                              className="block-search-input"
+                              autoFocus
+                            />
+                            <button
+                              className="secondary-button"
+                              onClick={() => {
+                                setIsBlockSearchOpen(false)
+                                setBlockSearchQuery('')
+                              }}
+                              type="button"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                          <div className="block-search-results">
+                            {getBlockSearchResults().map((block, idx) => {
+                              const blockIndex = draftBlocks.indexOf(block)
+                              const isHighlighted = activeBlockIndex === blockIndex
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`block-search-result${isHighlighted ? ' block-search-result-highlighted' : ''}`}
+                                  onClick={() => {
+                                    setActiveBlockIndex(blockIndex)
+                                    setIsBlockSearchOpen(false)
+                                    setBlockSearchQuery('')
+                                    setPendingFocusBlockIndex(blockIndex)
+                                  }}
+                                >
+                                  <span className="block-type-badge">{block.type}</span>
+                                  <span className="block-content">{block.content.slice(0, 100)}</span>
+                                </div>
+                              )
+                            })}
+                            {getBlockSearchResults().length === 0 && blockSearchQuery && (
+                              <p className="mini-hint">No blocks match your search.</p>
+                            )}
+                          </div>
+                        </div>
+                      )}
                       {selectedBlockRange ? (
                         <div className="block-selection-toolbar">
                           <div>
