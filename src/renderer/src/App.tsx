@@ -1876,7 +1876,7 @@ export function App() {
                           <div>
                             <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete/duplicate the whole slice, or paste to replace it.
+                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, copy/cut/delete/duplicate the whole slice, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -2071,6 +2071,22 @@ export function App() {
                                 }
 
                                 if (
+                                  selectedBlockRange &&
+                                  selectedBlockCount > 1 &&
+                                  isSelected &&
+                                  !event.shiftKey &&
+                                  !event.altKey &&
+                                  !event.metaKey &&
+                                  !event.ctrlKey &&
+                                  (event.key === 'Backspace' || event.key === 'Delete') &&
+                                  (event.currentTarget.selectionStart ?? 0) === (event.currentTarget.selectionEnd ?? 0)
+                                ) {
+                                  event.preventDefault()
+                                  deleteSelectedBlocks()
+                                  return
+                                }
+
+                                if (
                                   event.key === 'Enter' &&
                                   !event.shiftKey &&
                                   !event.altKey &&
@@ -2241,7 +2257,7 @@ export function App() {
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy, cut, or duplicate the selected slice from the toolbar or with Ctrl/Cmd + C/X/Shift + D, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, copy, cut, duplicate, or delete the selected slice from the toolbar or with Ctrl/Cmd + C/X/Shift + D and Delete/Backspace, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
                       )}
                     </div>
                   ) : (
