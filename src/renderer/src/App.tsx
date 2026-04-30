@@ -970,6 +970,31 @@ export function App() {
         return
       }
 
+      if (selectedBlockRange.start === selectedBlockRange.end) {
+        const rootIndex = selectedBlockRange.start
+        const siblingIndex =
+          delta === -1 ? getPreviousSiblingSubtreeStartIndex(draftBlocks, rootIndex) : getNextSiblingSubtreeStartIndex(draftBlocks, rootIndex)
+
+        if (siblingIndex === null) {
+          return
+        }
+
+        const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, rootIndex)
+        const targetIndex = delta === -1 ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
+        const subtreeSize = subtreeEndIndex - rootIndex + 1
+        const insertionIndex = rootIndex < targetIndex ? Math.max(0, targetIndex - subtreeSize + 1) : targetIndex
+        const nextIndex = remapIndexAfterSubtreeMove(rootIndex, rootIndex, subtreeEndIndex, insertionIndex) ?? rootIndex
+
+        moveDraftSubtree(rootIndex, targetIndex, null, rootIndex)
+        setSelectionAnchorBlockIndex(nextIndex)
+        setSelectedBlockRange({
+          start: nextIndex,
+          end: nextIndex
+        })
+        endBlockDrag()
+        return
+      }
+
       if ((delta === -1 && selectedBlockRange.start === 0) || (delta === 1 && selectedBlockRange.end === draftBlocks.length - 1)) {
         return
       }
@@ -2109,7 +2134,11 @@ export function App() {
                             </button>
                             <button
                               className="secondary-button"
-                              disabled={selectedBlockRange.start === 0}
+                              disabled={
+                                selectedBlockCount === 1
+                                  ? getPreviousSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
+                                  : selectedBlockRange.start === 0
+                              }
                               onClick={() => moveSelectedBlocks(-1)}
                               type="button"
                             >
@@ -2117,7 +2146,11 @@ export function App() {
                             </button>
                             <button
                               className="secondary-button"
-                              disabled={selectedBlockRange.end === draftBlocks.length - 1}
+                              disabled={
+                                selectedBlockCount === 1
+                                  ? getNextSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
+                                  : selectedBlockRange.end === draftBlocks.length - 1
+                              }
                               onClick={() => moveSelectedBlocks(1)}
                               type="button"
                             >
