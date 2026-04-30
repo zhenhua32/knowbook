@@ -58,10 +58,12 @@ export interface DocumentBlock {
 }
 
 export interface DocumentBlockDraft {
+  id?: string
   type: string
   content: string
   checked: boolean
   depth: number
+  parentBlockId?: string | null
 }
 
 export interface LinkedDocument {

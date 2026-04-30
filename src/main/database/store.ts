@@ -753,10 +753,12 @@ export class KnowbookStore {
       .map((block) => {
         const type = block.type.trim() || 'paragraph'
         return {
+          id: block.id,
           type,
           content: block.content,
           checked: type === 'todo' ? Boolean(block.checked) : false,
-          depth: this.normalizeNestableDepth(type, block.depth ?? 0)
+          depth: this.normalizeNestableDepth(type, block.depth ?? 0),
+          parentBlockId: block.parentBlockId ?? null
         }
       })
       .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
@@ -793,7 +795,7 @@ export class KnowbookStore {
         effectiveDepth -= 1
       }
 
-      const id = randomUUID()
+      const id = block.id?.trim() ? block.id : randomUUID()
       const parentBlockId = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] ?? null : null
 
       depthStack.length = effectiveDepth + 1

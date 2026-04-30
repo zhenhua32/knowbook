@@ -251,6 +251,66 @@ function getBlockSubtreeEndIndex(blocks: Array<{ depth: number }>, index: number
   return endIndex
 }
 
+function createDraftBlockId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+
+  return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+  const seenIds = new Set<string>()
+  const depthStack: Array<string | null> = []
+
+  return blocks.map((block) => {
+    const requestedId = block.id?.trim() ? block.id : null
+    const id = requestedId && !seenIds.has(requestedId) ? requestedId : createDraftBlockId()
+    seenIds.add(id)
+
+    const type = block.type.trim() || 'paragraph'
+    const checked = type === 'todo' ? Boolean(block.checked) : false
+
+    let depth = normalizeBlockDepth(type, block.depth ?? 0)
+    while (depth > 0 && !depthStack[depth - 1]) {
+      depth -= 1
+    }
+
+    const parentBlockId = depth > 0 ? depthStack[depth - 1] ?? null : null
+
+    depthStack.length = depth + 1
+    depthStack[depth] = id
+
+    return {
+      ...block,
+      id,
+      type,
+      checked,
+      depth,
+      parentBlockId
+    }
+  })
+}
+
+function areDraftBlocksEqual(left: DocumentBlockDraft[], right: DocumentBlockDraft[]) {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  return left.every((block, index) => {
+    const nextBlock = right[index]
+    return (
+      nextBlock !== undefined &&
+      block.id === nextBlock.id &&
+      block.type === nextBlock.type &&
+      block.content === nextBlock.content &&
+      block.checked === nextBlock.checked &&
+      block.depth === nextBlock.depth &&
+      (block.parentBlockId ?? null) === (nextBlock.parentBlockId ?? null)
+    )
+  })
+}
+
 function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0): DocumentBlockDraft {
   return {
     type,
@@ -368,12 +428,14 @@ function moveIndexAfterRangeMove(index: number | null, range: BlockSelectionRang
   return index
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'type' | 'content' | 'checked' | 'depth'>): DocumentBlockDraft {
+function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId'>): DocumentBlockDraft {
   return {
+    id: block.id,
     type: block.type,
     content: block.content,
     checked: Boolean(block.checked),
-    depth: normalizeBlockDepth(block.type, block.depth)
+    depth: normalizeBlockDepth(block.type, block.depth),
+    parentBlockId: block.parentBlockId ?? null
   }
 }
 
@@ -472,6 +534,13 @@ export function App() {
       mounted = false
     }
   }, [selectedDocumentId])
+
+  useEffect(() => {
+    const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
+    if (!areDraftBlocksEqual(draftBlocks, normalizedDraftBlocks)) {
+      setDraftBlocks(normalizedDraftBlocks)
+    }
+  }, [draftBlocks])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -2024,7 +2093,7 @@ export function App() {
                         return (
                           <div
                             className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
-                            key={`${selectedDocument.id}-draft-${index}`}
+                            key={block.id ?? `${selectedDocument.id}-draft-${index}`}
                             onDragOver={(event) => {
                               event.preventDefault()
                               if (draggingBlockIndex !== null) {
@@ -3376,33 +3445,49 @@ function buildBlockTree(blocks: DocumentBlock[]): BlockTreePreviewNode[] {
 }
 
 function buildDraftBlockTree(blocks: DocumentBlockDraft[]): BlockTreePreviewNode[] {
+  const normalizedBlocks = normalizeDraftBlocks(blocks)
+  const nodeMap = new Map<string, BlockTreePreviewNode>()
   const roots: BlockTreePreviewNode[] = []
-  const depthStack: Array<BlockTreePreviewNode | null> = []
 
-  for (const [index, block] of blocks.entries()) {
-    let effectiveDepth = normalizeBlockDepth(block.type, block.depth)
-    while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
-      effectiveDepth -= 1
+  for (const block of normalizedBlocks) {
+    if (!block.id) {
+      continue
     }
 
-    const node: BlockTreePreviewNode = {
-      id: `draft-${index}`,
+    nodeMap.set(block.id, {
+      id: block.id,
       type: block.type,
       content: block.content,
-      depth: effectiveDepth,
+      depth: block.depth,
       children: []
+    })
+  }
+
+  for (const block of normalizedBlocks) {
+    if (!block.id) {
+      continue
     }
 
-    const parent = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] : null
+    const node = nodeMap.get(block.id)
+    if (!node) {
+      continue
+    }
+
+    const parent = block.parentBlockId ? nodeMap.get(block.parentBlockId) : null
     if (parent) {
       parent.children.push(node)
     } else {
       roots.push(node)
     }
-
-    depthStack.length = effectiveDepth + 1
-    depthStack[effectiveDepth] = node
   }
+
+  const sortOrderMap = new Map(normalizedBlocks.map((block, index) => [block.id ?? `draft-${index}`, index]))
+  const sortNodes = (nodes: BlockTreePreviewNode[]) => {
+    nodes.sort((left, right) => (sortOrderMap.get(left.id) ?? 0) - (sortOrderMap.get(right.id) ?? 0))
+    nodes.forEach((node) => sortNodes(node.children))
+  }
+
+  sortNodes(roots)
 
   return roots
 }
