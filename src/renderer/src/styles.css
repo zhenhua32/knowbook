@@ -792,6 +792,137 @@ dt,
   display: inline-block;
 }
 
+.inline-code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(82, 66, 39, 0.08);
+  color: #2a241b;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.88em;
+}
+
+strong {
+  font-weight: 600;
+}
+
+em {
+  font-style: italic;
+}
+
+del {
+  text-decoration: line-through;
+  color: #8b7f73;
+}
+
+.block-tags-display {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.block-tag-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: rgba(47, 111, 237, 0.12);
+  color: #1f4fa9;
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.block-tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #1f4fa9;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.block-tag-remove:hover {
+  color: #a85020;
+}
+
+.block-tags-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(245, 240, 230, 0.92);
+  border: 1px solid rgba(91, 72, 44, 0.15);
+  margin-bottom: 14px;
+}
+
+.block-tags-filter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.block-tags-filter-header .panel-label {
+  margin: 0;
+}
+
+.block-tags-filter-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.block-tag-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid rgba(47, 111, 237, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #1f4fa9;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+
+.block-tag-filter:hover {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(47, 111, 237, 0.35);
+}
+
+.block-tag-filter-active {
+  background: rgba(47, 111, 237, 0.12);
+  border-color: rgba(47, 111, 237, 0.4);
+  font-weight: 600;
+}
+
+.block-tag-filter-name {
+  flex: 1;
+}
+
+.block-tag-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(47, 111, 237, 0.1);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
 .relation-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

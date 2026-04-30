@@ -55,6 +55,7 @@ export interface DocumentBlock {
   depth: number
   parentBlockId: string | null
   sortOrder: number
+  tags?: string[]
 }
 
 export interface DocumentBlockDraft {
@@ -64,6 +65,7 @@ export interface DocumentBlockDraft {
   checked: boolean
   depth: number
   parentBlockId?: string | null
+  tags?: string[]
 }
 
 export interface LinkedDocument {

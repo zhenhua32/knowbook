@@ -691,6 +691,7 @@ export function App() {
   const [aiAsking, setAiAsking] = useState(false)
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
+  const [selectedBlockTags, setSelectedBlockTags] = useState<Set<string>>(new Set())
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
 
   function getBlockSearchResults(): DocumentBlockDraft[] {
@@ -703,6 +704,58 @@ export function App() {
       const content = block.content.toLowerCase()
       const type = block.type.toLowerCase()
       return content.includes(query) || type.includes(query)
+    })
+  }
+
+  function updateBlockTags(index: number, tags: string[]) {
+    updateDraftBlock(index, {
+      ...draftBlocks[index],
+      tags: tags.filter((tag) => tag.trim() !== '')
+    })
+  }
+
+  function addBlockTag(index: number, tag: string) {
+    const currentTags = draftBlocks[index].tags ?? []
+    if (!currentTags.includes(tag) && tag.trim() !== '') {
+      updateBlockTags(index, [...currentTags, tag])
+    }
+  }
+
+  function removeBlockTag(index: number, tag: string) {
+    const currentTags = draftBlocks[index].tags ?? []
+    updateBlockTags(index, currentTags.filter((t) => t !== tag))
+  }
+
+  function getAllBlockTags(): string[] {
+    const tagsSet = new Set<string>()
+    for (const block of draftBlocks) {
+      if (block.tags) {
+        for (const tag of block.tags) {
+          tagsSet.add(tag)
+        }
+      }
+    }
+    return Array.from(tagsSet).sort()
+  }
+
+  function toggleTagFilter(tag: string) {
+    const newSelected = new Set(selectedBlockTags)
+    if (newSelected.has(tag)) {
+      newSelected.delete(tag)
+    } else {
+      newSelected.add(tag)
+    }
+    setSelectedBlockTags(newSelected)
+  }
+
+  function getFilteredBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+    if (selectedBlockTags.size === 0) {
+      return blocks
+    }
+
+    return blocks.filter((block) => {
+      if (!block.tags) return false
+      return block.tags.some((tag) => selectedBlockTags.has(tag))
     })
   }
 
@@ -2677,6 +2730,45 @@ export function App() {
                           </div>
                         </div>
                       )}
+                      {getAllBlockTags().length > 0 && (
+                        <div className="block-tags-filter-panel">
+                          <div className="block-tags-filter-header">
+                            <span className="panel-label">Filter by tags</span>
+                            {selectedBlockTags.size > 0 && (
+                              <button
+                                className="secondary-button"
+                                onClick={() => setSelectedBlockTags(new Set())}
+                                style={{ fontSize: '0.8rem', padding: '4px 8px' }}
+                                type="button"
+                              >
+                                Clear filters
+                              </button>
+                            )}
+                          </div>
+                          <div className="block-tags-filter-list">
+                            {getAllBlockTags().map((tag) => {
+                              const isSelected = selectedBlockTags.has(tag)
+                              const blockCount = draftBlocks.filter((b) => b.tags?.includes(tag)).length
+                              return (
+                                <button
+                                  key={tag}
+                                  className={`block-tag-filter${isSelected ? ' block-tag-filter-active' : ''}`}
+                                  onClick={() => toggleTagFilter(tag)}
+                                  type="button"
+                                >
+                                  <span className="block-tag-filter-name">{tag}</span>
+                                  <span className="block-tag-filter-count">{blockCount}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {selectedBlockTags.size > 0 && (
+                            <p className="mini-hint">
+                              Showing {getFilteredBlocks(draftBlocks).length} of {draftBlocks.length} blocks
+                            </p>
+                          )}
+                        </div>
+                      )}
                       {selectedBlockRange ? (
                         <div className="block-selection-toolbar">
                           <div>
@@ -2755,7 +2847,8 @@ export function App() {
                           </div>
                         </div>
                       ) : null}
-                      {draftBlocks.map((block, index) => {
+                      {getFilteredBlocks(draftBlocks).map((block, filteredIndex) => {
+                        const index = draftBlocks.indexOf(block)
                         const dropPreview =
                           draggingBlockIndex !== null && dragOverBlockIndex === index
                             ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
@@ -3040,6 +3133,23 @@ export function App() {
                               value={block.content}
                             />
                           )}
+                          {block.tags && block.tags.length > 0 && (
+                            <div className="block-tags-display">
+                              {block.tags.map((tag) => (
+                                <span key={`tag-${tag}`} className="block-tag-badge">
+                                  {tag}
+                                  <button
+                                    className="block-tag-remove"
+                                    onClick={() => removeBlockTag(index, tag)}
+                                    type="button"
+                                    title="Remove tag"
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                           <div className="block-editor-actions">
                             <button
                               className={`secondary-button block-select-button${isSelected ? ' block-select-button-active' : ''}`}
@@ -3098,6 +3208,18 @@ export function App() {
                             </button>
                             <button className="secondary-button block-insert-button" onClick={() => duplicateDraftBlock(index)} type="button">
                               Duplicate
+                            </button>
+                            <button
+                              className="secondary-button block-insert-button"
+                              onClick={() => {
+                                const newTag = prompt('Enter tag name (e.g., important, todo, review)')
+                                if (newTag) {
+                                  addBlockTag(index, newTag)
+                                }
+                              }}
+                              type="button"
+                            >
+                              + Tag
                             </button>
                             <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
                               Remove
@@ -3204,6 +3326,15 @@ export function App() {
                               (checked) => toggleTodoBlockChecked(index, checked),
                               selectedDocument.blocks,
                               selectedDocumentId
+                            )}
+                            {block.tags && block.tags.length > 0 && (
+                              <div className="block-tags-display">
+                                {block.tags.map((tag) => (
+                                  <span key={`preview-tag-${tag}`} className="block-tag-badge">
+                                    {tag}
+                                  </span>
+                                ))}
+                              </div>
                             )}
                           </div>
                         ))}
@@ -4076,6 +4207,108 @@ function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string;
   return references
 }
 
+type StyledSegment = 
+  | { type: 'text'; content: string }
+  | { type: 'bold'; content: string }
+  | { type: 'italic'; content: string }
+  | { type: 'code'; content: string }
+  | { type: 'strikethrough'; content: string }
+
+function parseMarkdownStyles(text: string): StyledSegment[] {
+  const segments: StyledSegment[] = []
+  let i = 0
+  let buffer = ''
+
+  while (i < text.length) {
+    // Check for **bold** or __bold__
+    if ((text[i] === '*' && text[i + 1] === '*') || (text[i] === '_' && text[i + 1] === '_')) {
+      const delimiter = text[i]
+      const closeIndex = text.indexOf(delimiter + delimiter, i + 2)
+      if (closeIndex !== -1) {
+        if (buffer) {
+          segments.push({ type: 'text', content: buffer })
+          buffer = ''
+        }
+        segments.push({ type: 'bold', content: text.slice(i + 2, closeIndex) })
+        i = closeIndex + 2
+        continue
+      }
+    }
+
+    // Check for ~~strikethrough~~
+    if (text[i] === '~' && text[i + 1] === '~') {
+      const closeIndex = text.indexOf('~~', i + 2)
+      if (closeIndex !== -1) {
+        if (buffer) {
+          segments.push({ type: 'text', content: buffer })
+          buffer = ''
+        }
+        segments.push({ type: 'strikethrough', content: text.slice(i + 2, closeIndex) })
+        i = closeIndex + 2
+        continue
+      }
+    }
+
+    // Check for `code`
+    if (text[i] === '`') {
+      const closeIndex = text.indexOf('`', i + 1)
+      if (closeIndex !== -1) {
+        if (buffer) {
+          segments.push({ type: 'text', content: buffer })
+          buffer = ''
+        }
+        segments.push({ type: 'code', content: text.slice(i + 1, closeIndex) })
+        i = closeIndex + 1
+        continue
+      }
+    }
+
+    // Check for *italic* or _italic_ (but not ** or __)
+    if ((text[i] === '*' && text[i + 1] !== '*') || (text[i] === '_' && text[i + 1] !== '_')) {
+      const delimiter = text[i]
+      let j = i + 1
+      while (j < text.length && text[j] !== delimiter) {
+        j++
+      }
+      if (j < text.length && text[j] === delimiter) {
+        if (buffer) {
+          segments.push({ type: 'text', content: buffer })
+          buffer = ''
+        }
+        segments.push({ type: 'italic', content: text.slice(i + 1, j) })
+        i = j + 1
+        continue
+      }
+    }
+
+    buffer += text[i]
+    i++
+  }
+
+  if (buffer) {
+    segments.push({ type: 'text', content: buffer })
+  }
+
+  return segments.length === 0 ? [{ type: 'text', content: text }] : segments
+}
+
+function renderStyledContent(segments: StyledSegment[]): React.ReactNode[] {
+  return segments.map((segment, index) => {
+    switch (segment.type) {
+      case 'bold':
+        return <strong key={`styled-${index}`}>{segment.content}</strong>
+      case 'italic':
+        return <em key={`styled-${index}`}>{segment.content}</em>
+      case 'code':
+        return <code key={`styled-${index}`} className="inline-code">{segment.content}</code>
+      case 'strikethrough':
+        return <del key={`styled-${index}`}>{segment.content}</del>
+      default:
+        return <span key={`styled-${index}`}>{segment.content}</span>
+    }
+  })
+}
+
 function renderInlineContent(
   content: string,
   onSelectDocument: (documentId: string) => void,
@@ -4129,12 +4362,12 @@ function renderInlineContent(
   }
 
   if (segments.length === 0) {
-    return content
+    return renderStyledContent(parseMarkdownStyles(content))
   }
 
   return segments.map((segment, index) => {
     if (typeof segment === 'string') {
-      return <span key={`text-${index}`}>{segment}</span>
+      return <span key={`text-${index}`}>{renderStyledContent(parseMarkdownStyles(segment))}</span>
     }
 
     if (segment.type === 'document') {
