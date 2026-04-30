@@ -1800,6 +1800,57 @@ export function App() {
     setPendingFocusBlockIndex(index)
   }
 
+  function mergeWithPreviousBlock(index: number) {
+    if (index === 0) {
+      return
+    }
+
+    const currentBlock = draftBlocks[index]
+    const previousBlock = draftBlocks[index - 1]
+
+    if (!currentBlock || !previousBlock) {
+      return
+    }
+
+    const previousSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, index - 1)
+    if (previousSubtreeEnd !== index - 1) {
+      console.warn('Cannot merge into a block with children. Please move or delete child blocks first.')
+      return
+    }
+
+    const currentSubtreeStart = index
+    const currentSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, index)
+
+    const isMergeable =
+      previousBlock.type === currentBlock.type &&
+      previousBlock.depth === currentBlock.depth &&
+      !['code', 'math', 'divider'].includes(currentBlock.type)
+
+    if (!isMergeable) {
+      return
+    }
+
+    const mergedContent = previousBlock.content + currentBlock.content
+    const focusPosition = previousBlock.content.length
+
+    clearBlockSelection()
+
+    setDraftBlocks((previous) => {
+      const next = [...previous]
+      next[index - 1] = {
+        ...previousBlock,
+        content: mergedContent
+      }
+      next.splice(currentSubtreeStart, currentSubtreeEnd - currentSubtreeStart + 1)
+      return next
+    })
+
+    setActiveBlockIndex(index - 1)
+    setActiveCursorPosition(focusPosition)
+    setPendingFocusBlockIndex(index - 1)
+    endBlockDrag()
+  }
+
   function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) {
     clearBlockSelection()
     setDraftBlocks((previous) => {
@@ -2817,11 +2868,15 @@ export function App() {
                                   !event.metaKey &&
                                   !event.ctrlKey &&
                                   (event.currentTarget.selectionStart ?? 0) === 0 &&
-                                  (event.currentTarget.selectionEnd ?? 0) === 0 &&
-                                  ['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)
+                                  (event.currentTarget.selectionEnd ?? 0) === 0
                                 ) {
                                   event.preventDefault()
-                                  downgradeBlockAt(index)
+                                  
+                                  if (['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                                    downgradeBlockAt(index)
+                                  } else if (index > 0) {
+                                    mergeWithPreviousBlock(index)
+                                  }
                                   return
                                 }
 
