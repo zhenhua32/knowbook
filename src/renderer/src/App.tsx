@@ -1328,13 +1328,15 @@ export function App() {
     if (activeRange) {
       const templateBlock = draftBlocks[activeRange.start] ?? currentBlock
       const lines = normalizedText.split('\n')
-      const nextBlocks = looksLikeStructuredBlockPaste(normalizedText)
+      let nextBlocks = looksLikeStructuredBlockPaste(normalizedText)
         ? parseStructuredPastedBlocks(normalizedText)
         : lines.map((line) => normalizePastedLineBlock(templateBlock, line))
 
       if (nextBlocks.length === 0) {
         return false
       }
+
+      nextBlocks = adjustPastedBlocksDepth(nextBlocks, templateBlock.depth)
 
       clearBlockSelection()
       setDraftBlocks((previous) => {
@@ -1474,6 +1476,12 @@ export function App() {
   function splitDraftBlock(index: number, selectionStart: number, selectionEnd = selectionStart, nextTypeOverride?: string) {
     const currentBlock = draftBlocks[index]
     if (!currentBlock) {
+      return
+    }
+
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+    if (subtreeEndIndex > index) {
+      console.warn('Cannot split a block with child blocks. Please delete or move child blocks first.')
       return
     }
 
@@ -3389,6 +3397,23 @@ function looksLikeStructuredBlockPaste(text: string): boolean {
     /(^|\n)\s*\d+\.\s/.test(text) ||
     /(^|\n)\s*---\s*(\n|$)/.test(text)
   )
+}
+
+function adjustPastedBlocksDepth(blocks: DocumentBlockDraft[], targetDepth: number): DocumentBlockDraft[] {
+  if (blocks.length === 0) {
+    return blocks
+  }
+
+  const minDepth = Math.min(...blocks.map((block) => block.depth))
+  if (minDepth === targetDepth) {
+    return blocks
+  }
+
+  const depthDelta = targetDepth - minDepth
+  return blocks.map((block) => ({
+    ...block,
+    depth: Math.max(0, block.depth + depthDelta)
+  }))
 }
 
 function parseStructuredPastedBlocks(text: string): DocumentBlockDraft[] {
