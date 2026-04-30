@@ -1218,7 +1218,9 @@ export function App() {
 
     const normalizedText = pastedText.replace(/\r\n?/g, '\n')
     const activeRange =
-      selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end ? selectedBlockRange : null
+      selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end
+        ? getSelectedBlockActionRange(selectedBlockRange)
+        : null
 
     if (activeRange) {
       const templateBlock = draftBlocks[activeRange.start] ?? currentBlock
@@ -2119,7 +2121,7 @@ export function App() {
                             <p className="mini-hint">
                               Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
                               {selectedBlockActionCount > selectedBlockCount
-                                ? ' For a single selected parent block, copy/cut/duplicate/delete expands to the full subtree.'
+                                ? ' For a single selected parent block, copy/cut/duplicate/delete and paste-replace expand to the full subtree.'
                                 : ''}
                             </p>
                           </div>
