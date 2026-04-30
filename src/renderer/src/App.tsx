@@ -402,8 +402,17 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
     return { valid: true, errors: [] }
   }
 
+  const seenIds = new Set<string>()
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i]
+
+    if (block.id) {
+      if (seenIds.has(block.id)) {
+        errors.push(`Block ${i}: duplicate ID "${block.id}"`)
+      } else {
+        seenIds.add(block.id)
+      }
+    }
 
     if (block.depth < 0) {
       errors.push(`Block ${i}: negative depth ${block.depth}`)
@@ -1283,6 +1292,25 @@ export function App() {
           console.warn(`Cannot indent to depth ${nextMinDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
           return
         }
+
+        for (let i = selectedBlockRange.start; i <= selectedBlockRange.end; i += 1) {
+          const block = draftBlocks[i]
+          if (!isNestableBlock(block.type)) {
+            continue
+          }
+
+          const nextBlockDepth = normalizeBlockDepth(block.type, block.depth + appliedDelta)
+
+          if (i === selectedBlockRange.start) {
+            continue
+          }
+
+          const prevBlock = draftBlocks[i - 1]
+          if (prevBlock.depth < nextBlockDepth - 1) {
+            console.warn(`Cannot indent multi-block range: block at index ${i} would have insufficient preceding block depth for its new depth ${nextBlockDepth}.`)
+            return
+          }
+        }
       }
 
       setDraftBlocks((previous) =>
@@ -2059,25 +2087,62 @@ export function App() {
       return
     }
 
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
-    const subtreeSize = subtreeEndIndex - draggingBlockIndex + 1
+    const isMultiBlockDrag = selectedBlockRange && draggingBlockIndex >= selectedBlockRange.start && draggingBlockIndex <= selectedBlockRange.end && selectedBlockRange.start !== selectedBlockRange.end
 
-    if (targetIndex >= draggingBlockIndex && targetIndex <= subtreeEndIndex) {
-      console.warn('Cannot drag a block into its own subtree.')
+    let dragSourceRange: BlockSelectionRange
+    let dragSubtreeSize: number
+
+    if (isMultiBlockDrag && selectedBlockRange) {
+      dragSourceRange = getMultiBlockOperationRange(selectedBlockRange)
+      dragSubtreeSize = dragSourceRange.end - dragSourceRange.start + 1
+    } else {
+      const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
+      dragSourceRange = { start: draggingBlockIndex, end: subtreeEndIndex }
+      dragSubtreeSize = dragSourceRange.end - dragSourceRange.start + 1
+    }
+
+    if (targetIndex >= dragSourceRange.start && targetIndex <= dragSourceRange.end) {
+      console.warn('Cannot drag a block range into its own subtree.')
       endBlockDrag()
       return
     }
 
-    if (targetIndex === draggingBlockIndex - 1 && targetDepth === sourceBlock.depth) {
+    if (targetIndex === dragSourceRange.start - 1 && targetDepth === sourceBlock.depth) {
       console.warn('Block is already at this position.')
       endBlockDrag()
       return
     }
 
-    if (targetIndex === subtreeEndIndex + 1 && targetDepth === sourceBlock.depth) {
+    if (targetIndex === dragSourceRange.end + 1 && targetDepth === sourceBlock.depth) {
       console.warn('Block is already at this position.')
       endBlockDrag()
       return
+    }
+
+    if (targetDepth !== null && isMultiBlockDrag) {
+      const nextRootDepth = normalizeBlockDepth(sourceBlock.type, targetDepth)
+      const appliedDelta = nextRootDepth - sourceBlock.depth
+
+      for (let i = dragSourceRange.start; i <= dragSourceRange.end; i += 1) {
+        const block = draftBlocks[i]
+        if (!isNestableBlock(block.type)) {
+          continue
+        }
+
+        const nextBlockDepth = normalizeBlockDepth(block.type, block.depth + appliedDelta)
+
+        if (i !== dragSourceRange.start && targetIndex > dragSourceRange.end) {
+          const precedingIndex = targetIndex - dragSubtreeSize + (i - dragSourceRange.start)
+          if (precedingIndex >= 0) {
+            const precedingBlock = draftBlocks[precedingIndex]
+            if (precedingBlock && precedingBlock.depth < nextBlockDepth - 1) {
+              console.warn(`Cannot drop multi-block range: block at index ${i} would lack sufficient preceding block depth at target location.`)
+              endBlockDrag()
+              return
+            }
+          }
+        }
+      }
     }
 
     if (targetDepth !== null) {
@@ -2087,7 +2152,11 @@ export function App() {
       }
     }
 
-    moveDraftSubtree(draggingBlockIndex, targetIndex, targetDepth)
+    if (isMultiBlockDrag) {
+      moveDraftSubtree(dragSourceRange.start, targetIndex, targetDepth)
+    } else {
+      moveDraftSubtree(draggingBlockIndex, targetIndex, targetDepth)
+    }
 
     endBlockDrag()
   }
@@ -3627,10 +3696,32 @@ function adjustPastedBlocksDepth(blocks: DocumentBlockDraft[], targetDepth: numb
   }
 
   const depthDelta = targetDepth - minDepth
-  return blocks.map((block) => ({
+  const adjusted = blocks.map((block) => ({
     ...block,
     depth: Math.max(0, block.depth + depthDelta)
   }))
+
+  const normalized: DocumentBlockDraft[] = []
+  for (const block of adjusted) {
+    if (normalized.length === 0) {
+      normalized.push(block)
+      continue
+    }
+
+    const prevBlock = normalized[normalized.length - 1]
+    const maxAllowedDepth = prevBlock.depth + 1
+
+    if (isNestableBlock(block.type) && block.depth > maxAllowedDepth) {
+      normalized.push({
+        ...block,
+        depth: maxAllowedDepth
+      })
+    } else {
+      normalized.push(block)
+    }
+  }
+
+  return normalized
 }
 
 function parseStructuredPastedBlocks(text: string): DocumentBlockDraft[] {
