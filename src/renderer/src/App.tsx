@@ -638,6 +638,8 @@ export function App() {
   })
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
   const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
+  const selectedBlockActionRange = selectedBlockRange ? getSelectedBlockActionRange(selectedBlockRange) : null
+  const selectedBlockActionCount = selectedBlockActionRange ? selectedBlockActionRange.end - selectedBlockActionRange.start + 1 : 0
 
   useEffect(() => {
     if (!activeSlashContext || filteredSlashCommands.length === 0) {
@@ -965,6 +967,17 @@ export function App() {
       setActiveBlockIndex(index)
     }
 
+    function getSelectedBlockActionRange(range: BlockSelectionRange): BlockSelectionRange {
+      if (range.start !== range.end) {
+        return range
+      }
+
+      return {
+        start: range.start,
+        end: getBlockSubtreeEndIndex(draftBlocks, range.start)
+      }
+    }
+
     function moveSelectedBlocks(delta: -1 | 1) {
       if (!selectedBlockRange) {
         return
@@ -1092,8 +1105,9 @@ export function App() {
         return
       }
 
-      const text = serializeDraftBlockRange(draftBlocks, selectedBlockRange)
-      const count = selectedBlockRange.end - selectedBlockRange.start + 1
+      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const text = serializeDraftBlockRange(draftBlocks, range)
+      const count = range.end - range.start + 1
 
       try {
         await window.knowbook.writeClipboardText(text)
@@ -1109,8 +1123,9 @@ export function App() {
         return
       }
 
-      const text = serializeDraftBlockRangeAsPlainText(draftBlocks, selectedBlockRange)
-      const count = selectedBlockRange.end - selectedBlockRange.start + 1
+      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const text = serializeDraftBlockRangeAsPlainText(draftBlocks, range)
+      const count = range.end - range.start + 1
 
       try {
         await window.knowbook.writeClipboardText(text)
@@ -1126,7 +1141,7 @@ export function App() {
         return
       }
 
-      const range = selectedBlockRange
+      const range = getSelectedBlockActionRange(selectedBlockRange)
       const text = serializeDraftBlockRange(draftBlocks, range)
       const count = range.end - range.start + 1
 
@@ -1145,7 +1160,7 @@ export function App() {
         return
       }
 
-      const range = selectedBlockRange
+      const range = getSelectedBlockActionRange(selectedBlockRange)
       const count = range.end - range.start + 1
       removeSelectedBlockRange(range)
       setBackupMessage(`Deleted ${count} blocks.`)
@@ -1156,7 +1171,7 @@ export function App() {
         return
       }
 
-      const range = selectedBlockRange
+      const range = getSelectedBlockActionRange(selectedBlockRange)
       const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
         ...block,
         checked: block.type === 'todo' ? block.checked : false,
@@ -2097,9 +2112,15 @@ export function App() {
                       {selectedBlockRange ? (
                         <div className="block-selection-toolbar">
                           <div>
-                            <strong>{selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected</strong>
+                            <strong>
+                              {selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected
+                              {selectedBlockActionCount > selectedBlockCount ? ` · subtree ${selectedBlockActionCount} blocks` : ''}
+                            </strong>
                             <p className="mini-hint">
                               Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
+                              {selectedBlockActionCount > selectedBlockCount
+                                ? ' For a single selected parent block, copy/cut/duplicate/delete expands to the full subtree.'
+                                : ''}
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -2251,7 +2272,8 @@ export function App() {
                                   return
                                 }
 
-                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, selectedBlockRange))
+                                const range = getSelectedBlockActionRange(selectedBlockRange)
+                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
                                 event.preventDefault()
                               }}
                               onCut={(event) => {
@@ -2266,7 +2288,7 @@ export function App() {
                                   return
                                 }
 
-                                const range = selectedBlockRange
+                                const range = getSelectedBlockActionRange(selectedBlockRange)
                                 event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
                                 event.preventDefault()
                                 removeSelectedBlockRange(range)
