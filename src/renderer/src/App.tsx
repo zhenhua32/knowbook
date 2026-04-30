@@ -1875,10 +1875,38 @@ export function App() {
       return
     }
 
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
-    if (targetIndex >= draggingBlockIndex && targetIndex <= subtreeEndIndex) {
+    const sourceBlock = draftBlocks[draggingBlockIndex]
+    if (!sourceBlock) {
       endBlockDrag()
       return
+    }
+
+    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
+    const subtreeSize = subtreeEndIndex - draggingBlockIndex + 1
+
+    if (targetIndex >= draggingBlockIndex && targetIndex <= subtreeEndIndex) {
+      console.warn('Cannot drag a block into its own subtree.')
+      endBlockDrag()
+      return
+    }
+
+    if (targetIndex === draggingBlockIndex - 1 && targetDepth === sourceBlock.depth) {
+      console.warn('Block is already at this position.')
+      endBlockDrag()
+      return
+    }
+
+    if (targetIndex === subtreeEndIndex + 1 && targetDepth === sourceBlock.depth) {
+      console.warn('Block is already at this position.')
+      endBlockDrag()
+      return
+    }
+
+    if (targetDepth !== null) {
+      const nextRootDepth = normalizeBlockDepth(sourceBlock.type, targetDepth)
+      if (nextRootDepth !== targetDepth) {
+        console.warn(`Invalid depth ${targetDepth} for block type ${sourceBlock.type}. Clamped to ${nextRootDepth}.`)
+      }
     }
 
     moveDraftSubtree(draggingBlockIndex, targetIndex, targetDepth)
