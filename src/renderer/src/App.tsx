@@ -379,6 +379,22 @@ function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
   return 'bulleted-list'
 }
 
+function canChangeBlockType(fromType: string, toType: string, hasChildren: boolean): boolean {
+  if (!hasChildren) {
+    return true
+  }
+
+  const fromNestable = isNestableBlock(fromType)
+  const toNestable = isNestableBlock(toType)
+
+  if (fromNestable && !toNestable) {
+    console.warn(`Cannot convert nestable block type "${fromType}" to non-nestable type "${toType}" when it has child blocks.`)
+    return false
+  }
+
+  return true
+}
+
 function getBlockDropPreview(
   blocks: DocumentBlockDraft[],
   sourceIndex: number,
@@ -1139,6 +1155,7 @@ export function App() {
         return
       }
 
+      const minDepth = Math.min(...selectedNestableBlocks.map((block) => block.depth))
       const appliedDelta =
         delta === 1
           ? Math.min(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth + 1) - block.depth))
@@ -1146,6 +1163,20 @@ export function App() {
 
       if (appliedDelta === 0) {
         return
+      }
+
+      if (appliedDelta > 0) {
+        const precedingBlock = selectedBlockRange.start > 0 ? draftBlocks[selectedBlockRange.start - 1] : null
+        if (!precedingBlock) {
+          console.warn('Cannot indent: no preceding block found as parent.')
+          return
+        }
+
+        const nextMinDepth = minDepth + appliedDelta
+        if (precedingBlock.depth < nextMinDepth) {
+          console.warn(`Cannot indent to depth ${nextMinDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
+          return
+        }
       }
 
       setDraftBlocks((previous) =>
@@ -1192,11 +1223,39 @@ export function App() {
     }
 
     function removeSelectedBlockRange(range: BlockSelectionRange) {
-      const remainingCount = draftBlocks.length - (range.end - range.start + 1)
+      const lastRemovedBlock = draftBlocks[range.end]
+      if (!lastRemovedBlock) {
+        return
+      }
+
+      const modifiedBlocks: DocumentBlockDraft[] = []
+      
+      for (let i = 0; i < draftBlocks.length; i += 1) {
+        const block = draftBlocks[i]
+        
+        if (i >= range.start && i <= range.end) {
+          continue
+        }
+
+        if (i > range.end) {
+          if (block.depth > lastRemovedBlock.depth) {
+            const depthDelta = lastRemovedBlock.depth - block.depth
+            modifiedBlocks.push({
+              ...block,
+              depth: normalizeBlockDepth(block.type, block.depth + depthDelta)
+            })
+            continue
+          }
+        }
+
+        modifiedBlocks.push(block)
+      }
+
+      const remainingCount = modifiedBlocks.length
       const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null
 
       clearBlockSelection()
-      setDraftBlocks((previous) => previous.filter((_, index) => index < range.start || index > range.end))
+      setDraftBlocks(modifiedBlocks)
       setActiveBlockIndex(nextIndex)
       setActiveCursorPosition(0)
       setPendingFocusBlockIndex(nextIndex)
@@ -1569,6 +1628,19 @@ export function App() {
     const appliedDelta = nextRootDepth - currentBlock.depth
     if (appliedDelta === 0) {
       return
+    }
+
+    if (appliedDelta > 0) {
+      const precedingBlock = index > 0 ? draftBlocks[index - 1] : null
+      if (!precedingBlock) {
+        console.warn('Cannot indent: no preceding block found as parent.')
+        return
+      }
+
+      if (precedingBlock.depth < nextRootDepth) {
+        console.warn(`Cannot indent to depth ${nextRootDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
+        return
+      }
     }
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -2362,7 +2434,14 @@ export function App() {
                           </button>
                           <select
                             className="editor-select"
-                            onChange={(event) => updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth))}
+                            onChange={(event) => {
+                              const hasChildren = getBlockSubtreeEndIndex(draftBlocks, index) > index
+                              if (canChangeBlockType(block.type, event.target.value, hasChildren)) {
+                                updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth))
+                              } else {
+                                event.currentTarget.value = block.type
+                              }
+                            }}
                             value={block.type}
                           >
                             <option value="paragraph">Paragraph</option>
