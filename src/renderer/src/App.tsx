@@ -701,8 +701,69 @@ export function App() {
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
+  const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
+  const editHistoryPointerRef = useRef<number>(-1)
+  const isRestoringHistoryRef = useRef<boolean>(false)
+  const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  function getBlockSearchResults(): DocumentBlockDraft[] {
+  function pushToHistory(blocks: DocumentBlockDraft[]) {
+    if (isRestoringHistoryRef.current) return
+    if (historyDebounceTimerRef.current) {
+      clearTimeout(historyDebounceTimerRef.current)
+      historyDebounceTimerRef.current = null
+    }
+    const history = editHistoryRef.current
+    const pointer = editHistoryPointerRef.current
+    const trimmed = history.slice(0, pointer + 1)
+    trimmed.push(blocks.map((b) => ({ ...b })))
+    editHistoryRef.current = trimmed.slice(-80)
+    editHistoryPointerRef.current = editHistoryRef.current.length - 1
+  }
+
+  function scheduleHistorySnapshot(blocks: DocumentBlockDraft[]) {
+    if (isRestoringHistoryRef.current) return
+    if (historyDebounceTimerRef.current) clearTimeout(historyDebounceTimerRef.current)
+    historyDebounceTimerRef.current = setTimeout(() => {
+      historyDebounceTimerRef.current = null
+      const history = editHistoryRef.current
+      const pointer = editHistoryPointerRef.current
+      const trimmed = history.slice(0, pointer + 1)
+      trimmed.push(blocks.map((b) => ({ ...b })))
+      editHistoryRef.current = trimmed.slice(-80)
+      editHistoryPointerRef.current = editHistoryRef.current.length - 1
+    }, 600)
+  }
+
+  function undoEdit() {
+    const pointer = editHistoryPointerRef.current
+    if (pointer <= 0) return
+    if (historyDebounceTimerRef.current) {
+      clearTimeout(historyDebounceTimerRef.current)
+      historyDebounceTimerRef.current = null
+    }
+    isRestoringHistoryRef.current = true
+    const newPointer = pointer - 1
+    editHistoryPointerRef.current = newPointer
+    setDraftBlocks(editHistoryRef.current[newPointer].map((b) => ({ ...b })))
+    setTimeout(() => { isRestoringHistoryRef.current = false }, 0)
+  }
+
+  function redoEdit() {
+    const history = editHistoryRef.current
+    const pointer = editHistoryPointerRef.current
+    if (pointer >= history.length - 1) return
+    if (historyDebounceTimerRef.current) {
+      clearTimeout(historyDebounceTimerRef.current)
+      historyDebounceTimerRef.current = null
+    }
+    isRestoringHistoryRef.current = true
+    const newPointer = pointer + 1
+    editHistoryPointerRef.current = newPointer
+    setDraftBlocks(history[newPointer].map((b) => ({ ...b })))
+    setTimeout(() => { isRestoringHistoryRef.current = false }, 0)
+  }
+
+  function getBlockSearchResults() {
     if (!blockSearchQuery.trim() || draftBlocks.length === 0) {
       return []
     }
@@ -929,6 +990,8 @@ export function App() {
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
     if (!areDraftBlocksEqual(draftBlocks, normalizedDraftBlocks)) {
       setDraftBlocks(normalizedDraftBlocks)
+    } else if (isEditing && !isRestoringHistoryRef.current) {
+      scheduleHistorySnapshot(draftBlocks)
     }
   }, [draftBlocks])
 
@@ -945,10 +1008,16 @@ export function App() {
       if (event.key === 'Escape' && isGlobalSearchOpen) {
         closeGlobalSearch()
       }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
+        if (isEditing) { event.preventDefault(); undoEdit() }
+      }
+      if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
+        if (isEditing) { event.preventDefault(); redoEdit() }
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isGlobalSearchOpen])
+  }, [isGlobalSearchOpen, isEditing, undoEdit, redoEdit])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -1067,14 +1136,18 @@ export function App() {
       return
     }
 
+    const initialBlocks = selectedDocument.blocks.map(toDraftBlock)
     setDraftTitle(selectedDocument.title)
     setDraftSummary(selectedDocument.summary)
-    setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
+    setDraftBlocks(initialBlocks)
     setPendingFocusBlockIndex(null)
     setSelectionAnchorBlockIndex(null)
     setSelectedBlockRange(null)
     setCollapsedBlockIds(new Set())
     setIsEditing(true)
+    editHistoryRef.current = [initialBlocks.map((b) => ({ ...b }))]
+    editHistoryPointerRef.current = 0
+    isRestoringHistoryRef.current = false
   }
 
   function cancelEdit() {
@@ -1091,6 +1164,8 @@ export function App() {
     setSelectedBlockRange(null)
     setCollapsedBlockIds(new Set())
     setIsEditing(false)
+    editHistoryRef.current = []
+    editHistoryPointerRef.current = -1
   }
 
   async function saveDocument() {
@@ -1393,6 +1468,7 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+      pushToHistory(draftBlocks)
 
       if (selectedBlockRange.start === selectedBlockRange.end) {
         const rootIndex = selectedBlockRange.start
@@ -1469,6 +1545,7 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+      pushToHistory(draftBlocks)
 
       const selectedNestableBlocks = draftBlocks
         .slice(selectedBlockRange.start, selectedBlockRange.end + 1)
@@ -1543,6 +1620,7 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+      pushToHistory(draftBlocks)
 
       const focusIndex =
         activeBlockIndex !== null && activeBlockIndex >= selectedBlockRange.start && activeBlockIndex <= selectedBlockRange.end
@@ -1565,6 +1643,7 @@ export function App() {
     }
 
     function removeSelectedBlockRange(range: BlockSelectionRange) {
+      pushToHistory(draftBlocks)
       const lastRemovedBlock = draftBlocks[range.end]
       if (!lastRemovedBlock) {
         return
@@ -1674,6 +1753,7 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+      pushToHistory(draftBlocks)
 
       const range = getMultiBlockOperationRange(selectedBlockRange)
       const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
@@ -1719,6 +1799,7 @@ export function App() {
     if (!currentBlock) {
       return false
     }
+    pushToHistory(draftBlocks)
 
     const normalizedText = pastedText.replace(/\r\n?/g, '\n')
     const activeRange =
@@ -1788,6 +1869,7 @@ export function App() {
   }
 
   function insertDraftBlockAt(index: number, anchorIndex: number | null = null) {
+    pushToHistory(draftBlocks)
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
     clearBlockSelection()
 
@@ -1840,6 +1922,7 @@ export function App() {
   }
 
   function duplicateDraftBlock(index: number, contentOverride?: string) {
+    pushToHistory(draftBlocks)
     const currentBlock = draftBlocks[index]
     if (!currentBlock) {
       return
@@ -2025,6 +2108,7 @@ export function App() {
       console.warn('Cannot merge into a block with children. Please move or delete child blocks first.')
       return
     }
+    pushToHistory(draftBlocks)
 
     const currentSubtreeStart = index
     const currentSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -2060,6 +2144,7 @@ export function App() {
   }
 
   function moveDraftSubtree(sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) {
+    pushToHistory(draftBlocks)
     clearBlockSelection()
     setDraftBlocks((previous) => {
       const subtreeEndIndex = getBlockSubtreeEndIndex(previous, sourceIndex)
@@ -2276,6 +2361,7 @@ export function App() {
   }
 
   function removeDraftBlock(index: number) {
+    pushToHistory(draftBlocks)
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
     const removedCount = subtreeEndIndex - index + 1
     const remainingCount = draftBlocks.length - removedCount
@@ -2339,6 +2425,7 @@ export function App() {
       endBlockDrag()
       return
     }
+    pushToHistory(draftBlocks)
 
     const sourceBlock = draftBlocks[draggingBlockIndex]
     if (!sourceBlock) {
@@ -2720,6 +2807,8 @@ export function App() {
                 ) : null}
                 {selectedDocument && isEditing ? (
                   <>
+                    <button className="secondary-button" disabled={editHistoryPointerRef.current <= 0} onClick={undoEdit} type="button" title="撤销 (Ctrl+Z)">↩</button>
+                    <button className="secondary-button" disabled={editHistoryPointerRef.current >= editHistoryRef.current.length - 1} onClick={redoEdit} type="button" title="重做 (Ctrl+Y)">↪</button>
                     <button className="secondary-button" disabled={isSaving} onClick={cancelEdit} type="button">
                       Cancel
                     </button>
