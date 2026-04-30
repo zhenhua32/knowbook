@@ -781,6 +781,17 @@ dt,
   cursor: pointer;
 }
 
+.inline-link-block {
+  border: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin: 0 2px;
+  background: rgba(203, 122, 32, 0.12);
+  color: #9a5b14;
+  cursor: default;
+  display: inline-block;
+}
+
 .relation-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -676,6 +676,7 @@ export function App() {
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
+  const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
@@ -703,6 +704,21 @@ export function App() {
       const type = block.type.toLowerCase()
       return content.includes(query) || type.includes(query)
     })
+  }
+
+  function getBlockSuggestionsForLink(query: string): DocumentBlockDraft[] {
+    if (!query.trim() || draftBlocks.length === 0) {
+      return draftBlocks.slice(0, 5) // Show first 5 blocks by default
+    }
+
+    const lowerQuery = query.toLowerCase()
+    const matches = draftBlocks.filter((block) => {
+      const content = block.content.toLowerCase()
+      const type = block.type.toLowerCase()
+      return content.includes(lowerQuery) || type.includes(lowerQuery)
+    })
+
+    return matches.slice(0, 5) // Limit to 5 suggestions
   }
 
   useEffect(() => {
@@ -807,20 +823,31 @@ export function App() {
   useEffect(() => {
     if (!isEditing || !activeLinkContext) {
       setLinkSuggestions([])
+      setBlockSuggestions([])
       return
     }
 
     let mounted = true
+    
+    // Get document suggestions
     window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
       if (mounted) {
         setLinkSuggestions(suggestions)
       }
     })
+    
+    // Get block suggestions from current document
+    if (isEditing && selectedDocument) {
+      const blockSuggs = getBlockSuggestionsForLink(activeLinkContext.query)
+      if (mounted) {
+        setBlockSuggestions(blockSuggs)
+      }
+    }
 
     return () => {
       mounted = false
     }
-  }, [activeLinkQuery, isEditing, selectedDocumentId])
+  }, [activeLinkQuery, isEditing, selectedDocumentId, selectedDocument, draftBlocks])
 
   useEffect(() => {
     if (pendingFocusBlockIndex === null) {
@@ -2252,6 +2279,30 @@ export function App() {
     )
     setActiveCursorPosition(activeLinkContext.start + replacement.length)
     setLinkSuggestions([])
+    setBlockSuggestions([])
+  }
+
+  function insertBlockSuggestion(block: DocumentBlockDraft) {
+    if (activeBlockIndex === null || !activeLinkContext || !block.id) {
+      return
+    }
+
+    const replacement = `[[${block.id}]]`
+    setDraftBlocks((previous) =>
+      previous.map((currentBlock, index) => {
+        if (index !== activeBlockIndex) {
+          return currentBlock
+        }
+
+        return {
+          ...currentBlock,
+          content: `${currentBlock.content.slice(0, activeLinkContext.start)}${replacement}${currentBlock.content.slice(activeCursorPosition)}`
+        }
+      })
+    )
+    setActiveCursorPosition(activeLinkContext.start + replacement.length)
+    setLinkSuggestions([])
+    setBlockSuggestions([])
   }
 
   const moveOptions = flattenTree(homeData.documentTree)
@@ -3098,17 +3149,42 @@ export function App() {
                       ) : activeLinkContext ? (
                         <div className="link-helper-panel">
                           <p className="panel-label">Link Suggestions</p>
-                          <p className="mini-hint">Current query: {activeLinkContext.query || '(all documents)'}</p>
+                          <p className="mini-hint">Current query: {activeLinkContext.query || '(all suggestions)'}</p>
                           <div className="relation-list">
-                            {linkSuggestions.length > 0 ? (
-                              linkSuggestions.map((suggestion) => (
-                                <button className="relation-chip" key={`suggestion-${suggestion.id}`} onClick={() => insertLinkSuggestion(suggestion)} type="button">
-                                  <strong>{suggestion.title}</strong>
-                                  <span>{suggestion.path}</span>
-                                </button>
-                              ))
-                            ) : (
-                              <p className="empty-text">No matching documents.</p>
+                            {blockSuggestions.length > 0 && (
+                              <>
+                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>Blocks in this document</p>
+                                {blockSuggestions.map((block) => (
+                                  <button
+                                    className="relation-chip"
+                                    key={`block-suggestion-${block.id}`}
+                                    onClick={() => insertBlockSuggestion(block)}
+                                    type="button"
+                                  >
+                                    <strong>{block.type}</strong>
+                                    <span>{block.content.slice(0, 60)}{block.content.length > 60 ? '...' : ''}</span>
+                                  </button>
+                                ))}
+                              </>
+                            )}
+                            {linkSuggestions.length > 0 && (
+                              <>
+                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>Linked documents</p>
+                                {linkSuggestions.map((suggestion) => (
+                                  <button
+                                    className="relation-chip"
+                                    key={`suggestion-${suggestion.id}`}
+                                    onClick={() => insertLinkSuggestion(suggestion)}
+                                    type="button"
+                                  >
+                                    <strong>{suggestion.title}</strong>
+                                    <span>{suggestion.path}</span>
+                                  </button>
+                                ))}
+                              </>
+                            )}
+                            {blockSuggestions.length === 0 && linkSuggestions.length === 0 && (
+                              <p className="empty-text">No matching suggestions.</p>
                             )}
                           </div>
                         </div>
@@ -3121,7 +3197,14 @@ export function App() {
                       <div className="block-preview-list">
                         {selectedDocument.blocks.map((block, index) => (
                           <div className="block-preview" key={block.id}>
-                            {renderBlock(block, setSelectedDocumentId, documentReferences, (checked) => toggleTodoBlockChecked(index, checked))}
+                            {renderBlock(
+                              block,
+                              setSelectedDocumentId,
+                              documentReferences,
+                              (checked) => toggleTodoBlockChecked(index, checked),
+                              selectedDocument.blocks,
+                              selectedDocumentId
+                            )}
                           </div>
                         ))}
                       </div>
@@ -3562,37 +3645,40 @@ function renderBlock(
   block: DocumentBlock,
   onSelectDocument: (documentId: string) => void,
   references: Array<{ id: string; title: string; path: string }>,
-  onToggleTodo?: (checked: boolean) => void
+  onToggleTodo?: (checked: boolean) => void,
+  allBlocks?: DocumentBlock[],
+  currentDocumentId?: string | null
 ) {
   const indentStyle = isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined
+  const blockReferences = allBlocks ? buildBlockReferencesMap(allBlocks) : new Map()
 
   if (block.type === 'heading-1') {
-    return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references)}</h4>
+    return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</h4>
   }
 
   if (block.type === 'heading-2') {
-    return <h5 className="block-heading">## {renderInlineContent(block.content, onSelectDocument, references)}</h5>
+    return <h5 className="block-heading">## {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</h5>
   }
 
   if (block.type === 'todo') {
     return (
       <label className={`block-todo${block.checked ? ' block-todo-checked' : ''}`} style={indentStyle}>
         <input checked={block.checked} onChange={(event) => onToggleTodo?.(event.target.checked)} type="checkbox" />
-        <span>{renderInlineContent(block.content, onSelectDocument, references)}</span>
+        <span>{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</span>
       </label>
     )
   }
 
   if (block.type === 'quote') {
-    return <blockquote className="block-quote">{renderInlineContent(block.content, onSelectDocument, references)}</blockquote>
+    return <blockquote className="block-quote">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</blockquote>
   }
 
   if (block.type === 'bulleted-list') {
-    return <p className="block-bulleted-list" style={indentStyle}>- {renderInlineContent(block.content, onSelectDocument, references)}</p>
+    return <p className="block-bulleted-list" style={indentStyle}>- {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
   }
 
   if (block.type === 'numbered-list') {
-    return <p className="block-numbered-list" style={indentStyle}>1. {renderInlineContent(block.content, onSelectDocument, references)}</p>
+    return <p className="block-numbered-list" style={indentStyle}>1. {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
   }
 
   if (block.type === 'divider') {
@@ -3607,7 +3693,7 @@ function renderBlock(
     return <pre className="block-code">{block.content}</pre>
   }
 
-  return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references)}</p>
+  return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
 }
 
 function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; title: string; depth: number }> {
@@ -3993,9 +4079,12 @@ function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string;
 function renderInlineContent(
   content: string,
   onSelectDocument: (documentId: string) => void,
-  references: Array<{ id: string; title: string; path: string }>
+  references: Array<{ id: string; title: string; path: string }>,
+  currentBlockId?: string,
+  blockReferences?: Map<string, DocumentBlock>,
+  currentDocumentId?: string | null
 ) {
-  const segments: Array<string | { id: string; label: string }> = []
+  const segments: Array<string | { type: 'document'; id: string; label: string } | { type: 'block'; id: string; blockId: string; label: string }> = []
   const matches = content.matchAll(/\[\[([^\]]+)\]\]/g)
   let lastIndex = 0
 
@@ -4006,12 +4095,28 @@ function renderInlineContent(
     }
 
     const token = match[1]?.trim() ?? ''
-    const target = resolveInlineReference(token, references)
-    if (target) {
+    
+    // Try to resolve as document reference first
+    const docTarget = resolveInlineReference(token, references)
+    if (docTarget) {
       segments.push({
-        id: target.id,
+        type: 'document',
+        id: docTarget.id,
         label: token
       })
+    } else if (blockReferences && blockReferences.size > 0) {
+      // Try to resolve as block reference
+      const blockTarget = resolveBlockReference(token, blockReferences, currentDocumentId)
+      if (blockTarget) {
+        segments.push({
+          type: 'block',
+          id: currentDocumentId || '',
+          blockId: blockTarget.id,
+          label: token
+        })
+      } else {
+        segments.push(match[0])
+      }
     } else {
       segments.push(match[0])
     }
@@ -4032,10 +4137,19 @@ function renderInlineContent(
       return <span key={`text-${index}`}>{segment}</span>
     }
 
+    if (segment.type === 'document') {
+      return (
+        <button className="inline-link" key={`link-${segment.id}-${index}`} onClick={() => onSelectDocument(segment.id)} type="button">
+          [[{segment.label}]]
+        </button>
+      )
+    }
+
+    // Block reference - needs special handling (currently just display as link)
     return (
-      <button className="inline-link" key={`link-${segment.id}-${index}`} onClick={() => onSelectDocument(segment.id)} type="button">
+      <span className="inline-link-block" key={`block-link-${segment.blockId}-${index}`} title="Block reference">
         [[{segment.label}]]
-      </button>
+      </span>
     )
   })
 }
@@ -4051,6 +4165,38 @@ function resolveInlineReference(token: string, references: Array<{ id: string; t
     return matchedByTitle[0]
   }
 
+  return null
+}
+
+function buildBlockReferencesMap(blocks: DocumentBlock[]): Map<string, DocumentBlock> {
+  const map = new Map<string, DocumentBlock>()
+  for (const block of blocks) {
+    map.set(block.id, block)
+  }
+  return map
+}
+
+function resolveBlockReference(token: string, blockReferences: Map<string, DocumentBlock>, currentDocumentId?: string | null): DocumentBlock | null {
+  // Support [[blockId]] or [[documentPath#blockId]] syntax
+  if (token.includes('#')) {
+    // Format: [[documentPath#blockId]] - would need cross-document lookup
+    // For now, just support same-document references
+    return null
+  }
+  
+  // Try direct block ID match
+  const block = blockReferences.get(token)
+  if (block) {
+    return block
+  }
+  
+  // Try to find by content prefix match
+  for (const [, block] of blockReferences) {
+    if (block.content.toLowerCase().startsWith(token.toLowerCase())) {
+      return block
+    }
+  }
+  
   return null
 }
 
