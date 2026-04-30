@@ -1129,6 +1129,49 @@ export function App() {
       }
     }
 
+    function getMultiBlockOperationRange(range: BlockSelectionRange): BlockSelectionRange {
+      if (range.start === range.end) {
+        return getSelectedBlockActionRange(range)
+      }
+
+      let expandedStart = range.start
+      let expandedEnd = range.end
+
+      const startBlockDepth = draftBlocks[expandedStart].depth
+      if (expandedStart > 0) {
+        const prevBlock = draftBlocks[expandedStart - 1]
+        if (prevBlock.depth < startBlockDepth) {
+          expandedStart = prevBlock.depth === 0 ? expandedStart : expandedStart
+        }
+      }
+
+      const endBlockSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, expandedEnd)
+      if (endBlockSubtreeEnd > expandedEnd) {
+        expandedEnd = endBlockSubtreeEnd
+      }
+
+      for (let i = expandedStart; i <= expandedEnd; i += 1) {
+        if (i > expandedStart) {
+          const block = draftBlocks[i]
+          const prevBlock = draftBlocks[i - 1]
+
+          if (block.depth > prevBlock.depth + 1) {
+            continue
+          }
+        }
+
+        const subtreeEnd = getBlockSubtreeEndIndex(draftBlocks, i)
+        if (subtreeEnd > expandedEnd) {
+          expandedEnd = subtreeEnd
+        }
+      }
+
+      return {
+        start: expandedStart,
+        end: expandedEnd
+      }
+    }
+
     function moveSelectedBlocks(delta: -1 | 1) {
       if (!selectedBlockRange) {
         return
@@ -1330,7 +1373,7 @@ export function App() {
         return
       }
 
-      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const range = getMultiBlockOperationRange(selectedBlockRange)
       const text = serializeDraftBlockRange(draftBlocks, range)
       const count = range.end - range.start + 1
 
@@ -1348,7 +1391,7 @@ export function App() {
         return
       }
 
-      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const range = getMultiBlockOperationRange(selectedBlockRange)
       const text = serializeDraftBlockRangeAsPlainText(draftBlocks, range)
       const count = range.end - range.start + 1
 
@@ -1366,7 +1409,7 @@ export function App() {
         return
       }
 
-      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const range = getMultiBlockOperationRange(selectedBlockRange)
       const text = serializeDraftBlockRange(draftBlocks, range)
       const count = range.end - range.start + 1
 
@@ -1385,7 +1428,7 @@ export function App() {
         return
       }
 
-      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const range = getMultiBlockOperationRange(selectedBlockRange)
       const count = range.end - range.start + 1
       removeSelectedBlockRange(range)
       setBackupMessage(`Deleted ${count} blocks.`)
@@ -1396,7 +1439,7 @@ export function App() {
         return
       }
 
-      const range = getSelectedBlockActionRange(selectedBlockRange)
+      const range = getMultiBlockOperationRange(selectedBlockRange)
       const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
         ...block,
         checked: block.type === 'todo' ? block.checked : false,
@@ -1444,7 +1487,7 @@ export function App() {
     const normalizedText = pastedText.replace(/\r\n?/g, '\n')
     const activeRange =
       selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end
-        ? getSelectedBlockActionRange(selectedBlockRange)
+        ? getMultiBlockOperationRange(selectedBlockRange)
         : null
 
     if (activeRange) {
@@ -2559,7 +2602,7 @@ export function App() {
                                   return
                                 }
 
-                                const range = getSelectedBlockActionRange(selectedBlockRange)
+                                const range = getMultiBlockOperationRange(selectedBlockRange)
                                 event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
                                 event.preventDefault()
                               }}
@@ -2575,7 +2618,7 @@ export function App() {
                                   return
                                 }
 
-                                const range = getSelectedBlockActionRange(selectedBlockRange)
+                                const range = getMultiBlockOperationRange(selectedBlockRange)
                                 event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
                                 event.preventDefault()
                                 removeSelectedBlockRange(range)
