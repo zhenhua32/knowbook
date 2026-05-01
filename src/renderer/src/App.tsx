@@ -1025,6 +1025,7 @@ export function App() {
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
+  const [aiAutomationsRunning, setAiAutomationsRunning] = useState(false)
   const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
   const [aiContextSearching, setAiContextSearching] = useState(false)
   const [aiContextError, setAiContextError] = useState('')
@@ -2124,6 +2125,45 @@ export function App() {
       setAiContextResults([])
     } finally {
       setAiAsking(false)
+    }
+  }
+
+  async function runEnabledAiAutomationsOnSelectedDocument() {
+    if (!selectedDocumentId) {
+      return
+    }
+
+    setAiAutomationsRunning(true)
+    try {
+      const result = await window.knowbook.runDocumentAiAutomations(selectedDocumentId)
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDocumentDetail(selectedDocumentId)
+      ])
+      setHomeData(refreshedHome)
+      setSelectedDocument(refreshedDetail)
+
+      const updates: string[] = []
+      if (result.summaryGenerated) {
+        updates.push('summary')
+      }
+      if (result.taggedBlocks > 0) {
+        updates.push(`${result.taggedBlocks} tagged block${result.taggedBlocks === 1 ? '' : 's'}`)
+      }
+      if (result.highlightedBlocks > 0) {
+        updates.push(`${result.highlightedBlocks} highlighted block${result.highlightedBlocks === 1 ? '' : 's'}`)
+      }
+
+      setBackupMessage(
+        updates.length > 0
+          ? `AI automations updated ${updates.join(', ')}.`
+          : 'Enabled AI automations found nothing new to update.'
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI automation run failed.'
+      setBackupMessage(message)
+    } finally {
+      setAiAutomationsRunning(false)
     }
   }
 
@@ -4699,6 +4739,14 @@ export function App() {
                       value={aiPromptDraft}
                     />
                     <div className="toolbar-inline ai-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
+                        onClick={runEnabledAiAutomationsOnSelectedDocument}
+                        type="button"
+                      >
+                        {aiAutomationsRunning ? 'Running automations...' : 'Run enabled automations'}
+                      </button>
                       <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
                         {aiContextSearching ? 'Searching...' : 'Find related notes'}
                       </button>
@@ -4706,6 +4754,7 @@ export function App() {
                         {aiAsking ? 'Thinking...' : 'Ask AI'}
                       </button>
                     </div>
+                    <p className="mini-hint">Manual run reuses the currently enabled summary, tag, and highlight automations for this document immediately.</p>
                     {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
                     {aiContextResults.length > 0 ? (
                       <div className="ai-context-list">

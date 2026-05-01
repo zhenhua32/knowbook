@@ -13,6 +13,7 @@ import type {
   HomeData,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
+  RunDocumentAiAutomationsResult,
   SearchSemanticNotesInput,
   SemanticSearchResult,
   UpdateDocumentDatabaseColumnOptionsInput,
@@ -336,6 +337,11 @@ function registerIpcHandlers(): void {
     return result
   })
 
+  ipcMain.handle('knowbook:run-document-ai-automations', async (_event, documentId: string) => {
+    const result = await runDocumentAiAutomations(documentId)
+    return result
+  })
+
   ipcMain.handle('knowbook:trigger-backup', () => {
     const result: BackupResult = backupService.exportAll()
     return result
@@ -444,6 +450,100 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
     answer,
     references: relatedNotes.map(({ content, contentHash, ...note }) => note)
   }
+}
+
+async function runDocumentAiAutomations(documentId: string): Promise<RunDocumentAiAutomationsResult> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    throw new Error('AI is disabled. Enable AI in settings first.')
+  }
+
+  if (!home.aiConfig.autoSummaryOnSave && !home.aiConfig.autoTagOnSave && !home.aiConfig.autoHighlightOnSave) {
+    throw new Error('No AI automations are enabled. Enable at least one automation in AI settings first.')
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    throw new Error('Missing API key. Save an API key in AI settings.')
+  }
+
+  let detail = store.getDocumentDetail(documentId)
+  if (!detail) {
+    throw new Error('Document not found.')
+  }
+
+  const result: RunDocumentAiAutomationsResult = {
+    summaryGenerated: false,
+    taggedBlocks: 0,
+    highlightedBlocks: 0
+  }
+
+  if (home.aiConfig.autoSummaryOnSave && shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+    const generatedSummary = await generateDocumentSummary(detail, home.aiConfig, apiKey)
+    if (generatedSummary && generatedSummary !== detail.summary.trim()) {
+      store.updateDocumentSummary(detail.id, generatedSummary)
+      detail = {
+        ...detail,
+        summary: generatedSummary
+      }
+      result.summaryGenerated = true
+      await workspaceEventBus.emit({
+        type: 'document.summary.generated',
+        createdAt: new Date().toISOString(),
+        documentId: detail.id,
+        documentTitle: detail.title,
+        path: detail.path,
+        summary: generatedSummary
+      })
+    }
+  }
+
+  if (home.aiConfig.autoTagOnSave) {
+    const tagUpdates = await generateMissingBlockTags(detail, home.aiConfig, apiKey)
+    if (tagUpdates.length > 0) {
+      store.updateDocumentBlockTags(detail.id, tagUpdates)
+      const tagsById = new Map(tagUpdates.map((update) => [update.blockId, update.tags]))
+      detail = {
+        ...detail,
+        blocks: detail.blocks.map((block) =>
+          tagsById.has(block.id)
+            ? {
+                ...block,
+                tags: tagsById.get(block.id)
+              }
+            : block
+        )
+      }
+      result.taggedBlocks = tagUpdates.length
+      await workspaceEventBus.emit({
+        type: 'document.tags.generated',
+        createdAt: new Date().toISOString(),
+        documentId: detail.id,
+        documentTitle: detail.title,
+        path: detail.path,
+        taggedBlocks: tagUpdates.length,
+        tagsAdded: tagUpdates.reduce((count, update) => count + update.tags.length, 0)
+      })
+    }
+  }
+
+  if (home.aiConfig.autoHighlightOnSave) {
+    const highlightUpdates = await generateMissingBlockHighlights(detail, home.aiConfig, apiKey)
+    if (highlightUpdates.length > 0) {
+      store.updateDocumentBlockHighlights(detail.id, highlightUpdates)
+      result.highlightedBlocks = highlightUpdates.length
+      await workspaceEventBus.emit({
+        type: 'document.highlights.generated',
+        createdAt: new Date().toISOString(),
+        documentId: detail.id,
+        documentTitle: detail.title,
+        path: detail.path,
+        highlightedBlocks: highlightUpdates.length
+      })
+    }
+  }
+
+  return result
 }
 
 async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<SemanticSearchResult[]> {

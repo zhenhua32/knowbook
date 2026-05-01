@@ -253,6 +253,12 @@ export interface AskAiResult {
   references: SemanticSearchResult[]
 }
 
+export interface RunDocumentAiAutomationsResult {
+  summaryGenerated: boolean
+  taggedBlocks: number
+  highlightedBlocks: number
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
@@ -269,6 +275,7 @@ export interface ElectronApi {
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   searchSemanticNotes: (input: SearchSemanticNotesInput) => Promise<SemanticSearchResult[]>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
+  runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   triggerBackup: () => Promise<BackupResult>
