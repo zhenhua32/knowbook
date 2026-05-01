@@ -26,6 +26,19 @@ export interface DocumentCatalogEntry {
   blockCount: number
   linkCount: number
   childCount: number
+  fieldValues: Record<string, DocumentDatabaseFieldValue>
+}
+
+export type DocumentDatabaseColumnType = 'text' | 'select' | 'multi-select' | 'date' | 'checkbox'
+
+export type DocumentDatabaseFieldValue = string | string[] | boolean | null
+
+export interface DocumentDatabaseColumn {
+  id: string
+  name: string
+  type: DocumentDatabaseColumnType
+  options: string[]
+  sortOrder: number
 }
 
 export interface DocumentTreeNode {
@@ -127,6 +140,7 @@ export interface HomeData {
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
   documentCatalog: DocumentCatalogEntry[]
+  databaseColumns: DocumentDatabaseColumn[]
   aiConfig: AiConfig
   documentTree: DocumentTreeNode[]
   graph: {
@@ -152,6 +166,18 @@ export interface UpdateDocumentInput {
   blocks: DocumentBlockDraft[]
 }
 
+export interface CreateDocumentDatabaseColumnInput {
+  name: string
+  type: DocumentDatabaseColumnType
+  options?: string[]
+}
+
+export interface UpdateDocumentDatabaseValueInput {
+  documentId: string
+  columnId: string
+  value: DocumentDatabaseFieldValue
+}
+
 export interface UpdateAiConfigInput {
   enabled: boolean
   baseUrl: string
@@ -172,6 +198,8 @@ export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
+  createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => Promise<DocumentDatabaseColumn>
+  updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => Promise<void>
   updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<void>
   deleteDocument: (documentId: string) => Promise<void>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>

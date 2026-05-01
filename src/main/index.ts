@@ -5,11 +5,14 @@ import type {
   AskAiInput,
   AskAiResult,
   BackupResult,
+  CreateDocumentDatabaseColumnInput,
+  DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
   GlobalSearchResult,
   HomeData,
   UpdateAiConfigInput,
+  UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
 } from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
@@ -72,6 +75,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:create-document', (_event, parentId: string | null) => {
     const id = store.createDocument(parentId)
     return { id }
+  })
+
+  ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {
+    const column: DocumentDatabaseColumn = store.createDocumentDatabaseColumn(input)
+    return column
+  })
+
+  ipcMain.handle('knowbook:update-document-database-value', (_event, input: UpdateDocumentDatabaseValueInput) => {
+    store.updateDocumentDatabaseValue(input)
   })
 
   ipcMain.handle('knowbook:update-document', (_event, documentId: string, input: UpdateDocumentInput) => {

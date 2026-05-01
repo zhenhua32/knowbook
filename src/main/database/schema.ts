@@ -40,6 +40,29 @@ CREATE TABLE IF NOT EXISTS links (
 CREATE INDEX IF NOT EXISTS idx_links_source_document_id ON links(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_links_target_document_id ON links(target_document_id);
 
+CREATE TABLE IF NOT EXISTS document_database_columns (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  options_json TEXT NOT NULL DEFAULT '[]',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_database_columns_sort_order ON document_database_columns(sort_order);
+
+CREATE TABLE IF NOT EXISTS document_database_values (
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,
+  value_text TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (document_id, column_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_database_values_document_id ON document_database_values(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_database_values_column_id ON document_database_values(column_id);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

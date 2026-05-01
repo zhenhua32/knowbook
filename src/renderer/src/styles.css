@@ -1096,6 +1096,15 @@ del {
   .block-editor-actions button {
     width: auto;
   }
+
+  .database-schema-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .database-schema-options,
+  .database-schema-actions {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1125,6 +1134,15 @@ del {
 
   .document-meta {
     text-align: left;
+  }
+
+  .database-schema-form {
+    grid-template-columns: 1fr;
+  }
+
+  .database-schema-options,
+  .database-schema-actions {
+    grid-column: span 1;
   }
 }
 
@@ -1205,6 +1223,48 @@ del {
   background: rgba(255, 251, 245, 0.82);
 }
 
+.database-schema-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(246, 240, 228, 0.82);
+}
+
+.database-schema-options {
+  grid-column: span 2;
+}
+
+.database-schema-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.database-schema-chip-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.database-schema-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 251, 245, 0.96);
+  border: 1px solid rgba(91, 72, 44, 0.12);
+}
+
+.database-schema-chip small {
+  color: #6b604d;
+  font-size: 0.76rem;
+}
+
 .catalog-table {
   width: 100%;
   border-collapse: collapse;
@@ -1223,6 +1283,36 @@ del {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #6d604b;
+}
+
+.catalog-cell-field {
+  min-width: 180px;
+}
+
+.catalog-cell-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(91, 72, 44, 0.14);
+  background: rgba(255, 251, 245, 0.96);
+  color: #2d251c;
+}
+
+.catalog-cell-multi-select {
+  min-height: 108px;
+}
+
+.catalog-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+.catalog-checkbox input {
+  width: 16px;
+  height: 16px;
 }
 
 .catalog-table tbody tr {

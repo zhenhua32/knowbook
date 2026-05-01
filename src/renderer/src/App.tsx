@@ -2,6 +2,9 @@ import { renderToString } from 'katex'
 import { useEffect, useRef, useState } from 'react'
 import type {
   BackupResult,
+  DocumentDatabaseColumn,
+  DocumentDatabaseColumnType,
+  DocumentDatabaseFieldValue,
   DocumentBlock,
   DocumentBlockDraft,
   DocumentCatalogEntry,
@@ -27,6 +30,7 @@ const emptyState: HomeData = {
   },
   recentDocuments: [],
   documentCatalog: [],
+  databaseColumns: [],
   aiConfig: {
     enabled: false,
     baseUrl: '',
@@ -39,6 +43,14 @@ const emptyState: HomeData = {
     edges: []
   },
   initialDocumentId: null
+}
+
+const databaseColumnTypeLabels: Record<DocumentDatabaseColumnType, string> = {
+  text: 'Text',
+  select: 'Select',
+  'multi-select': 'Multi-select',
+  date: 'Date',
+  checkbox: 'Checkbox'
 }
 
 const BLOCK_INDENT_SIZE = 24
@@ -391,6 +403,30 @@ function createDraftBlockId() {
   }
 
   return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function normalizeDatabaseColumnOptionsInput(input: string): string[] {
+  return [...new Set(input.split(',').map((option) => option.trim()).filter(Boolean))]
+}
+
+function formatDocumentDatabaseFieldValueForSearch(value: DocumentDatabaseFieldValue): string {
+  if (Array.isArray(value)) {
+    return value.join(' ')
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'checked true yes' : 'unchecked false no'
+  }
+
+  return value ?? ''
+}
+
+function formatDocumentDatabaseFieldValueForDraft(value: DocumentDatabaseFieldValue): string {
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+
+  return typeof value === 'string' ? value : ''
 }
 
 function resolveDraftBlockRelationship(
@@ -966,6 +1002,10 @@ export function App() {
   const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
   const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
+  const [isCreatingDatabaseColumn, setIsCreatingDatabaseColumn] = useState(false)
+  const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
+  const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
+  const [databaseColumnOptionsDraft, setDatabaseColumnOptionsDraft] = useState('')
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
@@ -1887,6 +1927,72 @@ export function App() {
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage('AI settings saved.')
+  }
+
+  async function createDatabaseColumn() {
+    try {
+      const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
+        name: databaseColumnNameDraft,
+        type: databaseColumnTypeDraft,
+        options: normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft)
+      })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setIsCreatingDatabaseColumn(false)
+      setDatabaseColumnNameDraft('')
+      setDatabaseColumnTypeDraft('text')
+      setDatabaseColumnOptionsDraft('')
+      setBackupMessage(`Added database column "${createdColumn.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create database column.'
+      setBackupMessage(message)
+    }
+  }
+
+  async function updateDocumentDatabaseValue(documentId: string, columnId: string, value: DocumentDatabaseFieldValue) {
+    const previousFieldValue = homeData.documentCatalog.find((document) => document.id === documentId)?.fieldValues[columnId]
+
+    setHomeData((previous) => ({
+      ...previous,
+      documentCatalog: previous.documentCatalog.map((document) =>
+        document.id === documentId
+          ? {
+              ...document,
+              fieldValues: {
+                ...document.fieldValues,
+                [columnId]: value
+              }
+            }
+          : document
+      )
+    }))
+
+    try {
+      await window.knowbook.updateDocumentDatabaseValue({ documentId, columnId, value })
+    } catch (error) {
+      setHomeData((previous) => ({
+        ...previous,
+        documentCatalog: previous.documentCatalog.map((document) => {
+          if (document.id !== documentId) {
+            return document
+          }
+
+          const nextFieldValues = { ...document.fieldValues }
+          if (previousFieldValue === undefined) {
+            delete nextFieldValues[columnId]
+          } else {
+            nextFieldValues[columnId] = previousFieldValue
+          }
+
+          return {
+            ...document,
+            fieldValues: nextFieldValues
+          }
+        })
+      }))
+      const message = error instanceof Error ? error.message : 'Failed to update database value.'
+      setBackupMessage(message)
+    }
   }
 
   async function askAiOnSelectedDocument() {
@@ -3174,7 +3280,11 @@ export function App() {
       return true
     }
 
-    return [document.title, document.path, document.summary]
+    const dynamicFieldSearchText = Object.values(document.fieldValues)
+      .map((value) => formatDocumentDatabaseFieldValueForSearch(value))
+      .join(' ')
+
+    return [document.title, document.path, document.summary, dynamicFieldSearchText]
       .join(' ')
       .toLowerCase()
       .includes(query)
@@ -3302,6 +3412,9 @@ export function App() {
                 <h3>Document catalog</h3>
               </div>
               <div className="toolbar-inline">
+                <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
+                  {isCreatingDatabaseColumn ? 'Close schema' : 'Add column'}
+                </button>
                 <input
                   className="editor-input table-search"
                   onChange={(event) => setCatalogQuery(event.target.value)}
@@ -3309,13 +3422,80 @@ export function App() {
                   type="text"
                   value={catalogQuery}
                 />
+                <span className="pill">{homeData.databaseColumns.length} custom columns</span>
                 <span className="pill">{filteredCatalog.length} rows</span>
               </div>
             </div>
 
+            {isCreatingDatabaseColumn ? (
+              <div className="database-schema-form">
+                <label className="editor-label">
+                  Column name
+                  <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
+                </label>
+                <label className="editor-label">
+                  Field type
+                  <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
+                    {Object.entries(databaseColumnTypeLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
+                  <label className="editor-label database-schema-options">
+                    Options
+                    <input
+                      className="editor-input"
+                      onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
+                      placeholder="Separate options with commas"
+                      type="text"
+                      value={databaseColumnOptionsDraft}
+                    />
+                  </label>
+                ) : null}
+                <div className="database-schema-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
+                    onClick={() => void createDatabaseColumn()}
+                    type="button"
+                  >
+                    Save column
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setIsCreatingDatabaseColumn(false)
+                      setDatabaseColumnNameDraft('')
+                      setDatabaseColumnTypeDraft('text')
+                      setDatabaseColumnOptionsDraft('')
+                    }}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {homeData.databaseColumns.length > 0 ? (
+              <div className="database-schema-chip-row">
+                {homeData.databaseColumns.map((column) => (
+                  <span className="database-schema-chip" key={column.id}>
+                    <strong>{column.name}</strong>
+                    <small>{databaseColumnTypeLabels[column.type]}</small>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mini-hint">No custom database columns yet. Add a column to start capturing structured metadata on each document.</p>
+            )}
+
             <DocumentCatalogTable
+              columns={homeData.databaseColumns}
               documents={filteredCatalog}
               onSelect={setSelectedDocumentId}
+              onUpdateField={updateDocumentDatabaseValue}
               selectedDocumentId={selectedDocumentId}
             />
           </article>
@@ -4633,12 +4813,16 @@ function WorkspaceGraph({
 }
 
 function DocumentCatalogTable({
+  columns,
   documents,
   onSelect,
+  onUpdateField,
   selectedDocumentId
 }: {
+  columns: DocumentDatabaseColumn[]
   documents: DocumentCatalogEntry[]
   onSelect: (documentId: string) => void
+  onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
   selectedDocumentId: string | null
 }) {
   return (
@@ -4648,6 +4832,9 @@ function DocumentCatalogTable({
           <tr>
             <th>Title</th>
             <th>Path</th>
+            {columns.map((column) => (
+              <th key={column.id}>{column.name}</th>
+            ))}
             <th>Blocks</th>
             <th>Links</th>
             <th>Children</th>
@@ -4666,6 +4853,16 @@ function DocumentCatalogTable({
                 <p className="catalog-summary">{document.summary}</p>
               </td>
               <td>{document.path}</td>
+              {columns.map((column) => (
+                <td className="catalog-cell-field" key={`${document.id}-${column.id}`}>
+                  <DocumentCatalogFieldCell
+                    column={column}
+                    documentId={document.id}
+                    onUpdateField={onUpdateField}
+                    value={document.fieldValues[column.id] ?? null}
+                  />
+                </td>
+              ))}
               <td>{document.blockCount}</td>
               <td>{document.linkCount}</td>
               <td>{document.childCount}</td>
@@ -4675,6 +4872,113 @@ function DocumentCatalogTable({
         </tbody>
       </table>
     </div>
+  )
+}
+
+function DocumentCatalogFieldCell({
+  column,
+  documentId,
+  onUpdateField,
+  value
+}: {
+  column: DocumentDatabaseColumn
+  documentId: string
+  onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
+  value: DocumentDatabaseFieldValue
+}) {
+  const [draftValue, setDraftValue] = useState('')
+
+  useEffect(() => {
+    setDraftValue(formatDocumentDatabaseFieldValueForDraft(value))
+  }, [value])
+
+  const stopRowSelection = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+  }
+
+  if (column.type === 'checkbox') {
+    return (
+      <label className="catalog-checkbox" onClick={stopRowSelection}>
+        <input
+          checked={value === true}
+          onChange={(event) => {
+            void onUpdateField(documentId, column.id, event.target.checked)
+          }}
+          type="checkbox"
+        />
+      </label>
+    )
+  }
+
+  if (column.type === 'select') {
+    return (
+      <select
+        className="catalog-cell-input"
+        onChange={(event) => {
+          void onUpdateField(documentId, column.id, event.target.value || null)
+        }}
+        onClick={stopRowSelection}
+        value={typeof value === 'string' ? value : ''}
+      >
+        <option value="">Select...</option>
+        {column.options.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    )
+  }
+
+  if (column.type === 'multi-select') {
+    return (
+      <select
+        className="catalog-cell-input catalog-cell-multi-select"
+        multiple
+        onChange={(event) => {
+          const nextValues = Array.from(event.target.selectedOptions, (option) => option.value)
+          void onUpdateField(documentId, column.id, nextValues)
+        }}
+        onClick={stopRowSelection}
+        size={Math.min(Math.max(column.options.length, 3), 5)}
+        value={Array.isArray(value) ? value : []}
+      >
+        {column.options.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+    )
+  }
+
+  if (column.type === 'date') {
+    return (
+      <input
+        className="catalog-cell-input"
+        onChange={(event) => {
+          void onUpdateField(documentId, column.id, event.target.value || null)
+        }}
+        onClick={stopRowSelection}
+        type="date"
+        value={typeof value === 'string' ? value : ''}
+      />
+    )
+  }
+
+  return (
+    <input
+      className="catalog-cell-input"
+      onBlur={() => {
+        void onUpdateField(documentId, column.id, draftValue.trim().length > 0 ? draftValue : null)
+      }}
+      onChange={(event) => setDraftValue(event.target.value)}
+      onClick={stopRowSelection}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.currentTarget.blur()
+        }
+      }}
+      placeholder="Value"
+      type="text"
+      value={draftValue}
+    />
   )
 }
 

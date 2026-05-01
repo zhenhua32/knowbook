@@ -5,6 +5,10 @@ import Database from 'better-sqlite3'
 import type {
   AiConfig,
   AskAiInput,
+  CreateDocumentDatabaseColumnInput,
+  DocumentDatabaseColumn,
+  DocumentDatabaseColumnType,
+  DocumentDatabaseFieldValue,
   DocumentBlockDraft,
   DocumentCatalogEntry,
   DocumentChild,
@@ -15,6 +19,7 @@ import type {
   LinkedDocument,
   RecentDocument,
   UpdateAiConfigInput,
+  UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
@@ -48,6 +53,20 @@ interface DocumentCatalogRow {
   block_count: number
   link_count: number
   child_count: number
+}
+
+interface DocumentDatabaseColumnRow {
+  id: string
+  name: string
+  type: string
+  options_json: string
+  sort_order: number
+}
+
+interface DocumentDatabaseValueRow {
+  document_id: string
+  column_id: string
+  value_text: string | null
 }
 
 interface DocumentTreeRow {
@@ -180,11 +199,13 @@ export class KnowbookStore {
     const recentDocuments = this.getRecentDocuments()
     const documentTree = this.getDocumentTree()
     const graph = this.getWorkspaceGraph()
+    const databaseColumns = this.getDocumentDatabaseColumns()
 
     return {
       summary: this.getSummary(backupRoot),
       recentDocuments,
-      documentCatalog: this.getDocumentCatalog(),
+      documentCatalog: this.getDocumentCatalog(databaseColumns),
+      databaseColumns,
       aiConfig: this.getAiConfig(),
       documentTree,
       graph,
@@ -479,6 +500,72 @@ export class KnowbookStore {
     }
   }
 
+  createDocumentDatabaseColumn(input: CreateDocumentDatabaseColumnInput): DocumentDatabaseColumn {
+    const name = input.name.trim()
+    if (!name) {
+      throw new Error('Column name is required.')
+    }
+
+    const type = this.normalizeDocumentDatabaseColumnType(input.type)
+    const options = this.normalizeDocumentDatabaseColumnOptions(type, input.options ?? [])
+    const now = new Date().toISOString()
+    const maxSortOrderRow = this.db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order
+      FROM document_database_columns
+    `).get() as { max_sort_order: number }
+    const sortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
+    const column: DocumentDatabaseColumn = {
+      id: randomUUID(),
+      name,
+      type,
+      options,
+      sortOrder
+    }
+
+    this.db.prepare(`
+      INSERT INTO document_database_columns (id, name, type, options_json, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(column.id, column.name, column.type, JSON.stringify(column.options), column.sortOrder, now, now)
+
+    return column
+  }
+
+  updateDocumentDatabaseValue(input: UpdateDocumentDatabaseValueInput): void {
+    const documentExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(input.documentId) as { id: string } | undefined
+    if (!documentExists) {
+      throw new Error('Document not found.')
+    }
+
+    const columnRow = this.db.prepare(`
+      SELECT id, name, type, options_json, sort_order
+      FROM document_database_columns
+      WHERE id = ?
+    `).get(input.columnId) as DocumentDatabaseColumnRow | undefined
+
+    if (!columnRow) {
+      throw new Error('Database column not found.')
+    }
+
+    const column = this.mapDocumentDatabaseColumnRow(columnRow)
+    const serializedValue = this.serializeDocumentDatabaseFieldValue(column, input.value)
+
+    if (serializedValue === null) {
+      this.db.prepare(`
+        DELETE FROM document_database_values
+        WHERE document_id = ? AND column_id = ?
+      `).run(input.documentId, input.columnId)
+      return
+    }
+
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO document_database_values (document_id, column_id, value_text, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(document_id, column_id)
+      DO UPDATE SET value_text = excluded.value_text, updated_at = excluded.updated_at
+    `).run(input.documentId, input.columnId, serializedValue, now)
+  }
+
   buildAiPrompt(input: AskAiInput): string {
     const detail = this.getDocumentDetail(input.documentId)
     if (!detail) {
@@ -705,7 +792,7 @@ export class KnowbookStore {
     }))
   }
 
-  private getDocumentCatalog(): DocumentCatalogEntry[] {
+  private getDocumentCatalog(databaseColumns: DocumentDatabaseColumn[]): DocumentCatalogEntry[] {
     const rows = this.db.prepare(`
       SELECT
         documents.id,
@@ -723,6 +810,25 @@ export class KnowbookStore {
       ORDER BY documents.path ASC
     `).all() as DocumentCatalogRow[]
 
+    const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
+    const fieldRows = this.db.prepare(`
+      SELECT document_id, column_id, value_text
+      FROM document_database_values
+      ORDER BY document_id ASC, column_id ASC
+    `).all() as DocumentDatabaseValueRow[]
+    const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+
+    for (const row of fieldRows) {
+      const column = columnById.get(row.column_id)
+      if (!column) {
+        continue
+      }
+
+      const fieldValues = fieldValuesByDocumentId.get(row.document_id) ?? {}
+      fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
+      fieldValuesByDocumentId.set(row.document_id, fieldValues)
+    }
+
     return rows.map((row) => ({
       id: row.id,
       title: row.title,
@@ -733,8 +839,19 @@ export class KnowbookStore {
       updatedAt: row.updated_at,
       blockCount: row.block_count,
       linkCount: row.link_count,
-      childCount: row.child_count
+      childCount: row.child_count,
+      fieldValues: fieldValuesByDocumentId.get(row.id) ?? {}
     }))
+  }
+
+  private getDocumentDatabaseColumns(): DocumentDatabaseColumn[] {
+    const rows = this.db.prepare(`
+      SELECT id, name, type, options_json, sort_order
+      FROM document_database_columns
+      ORDER BY sort_order ASC, name ASC
+    `).all() as DocumentDatabaseColumnRow[]
+
+    return rows.map((row) => this.mapDocumentDatabaseColumnRow(row))
   }
 
   private getDocumentTree(): DocumentTreeNode[] {
@@ -840,6 +957,137 @@ export class KnowbookStore {
     }
 
     return candidate
+  }
+
+  private mapDocumentDatabaseColumnRow(row: DocumentDatabaseColumnRow): DocumentDatabaseColumn {
+    const type = this.normalizeDocumentDatabaseColumnType(row.type)
+    return {
+      id: row.id,
+      name: row.name,
+      type,
+      options: this.normalizeDocumentDatabaseColumnOptions(type, this.parseDocumentDatabaseColumnOptions(row.options_json)),
+      sortOrder: row.sort_order
+    }
+  }
+
+  private normalizeDocumentDatabaseColumnType(type: string): DocumentDatabaseColumnType {
+    switch (type) {
+      case 'text':
+      case 'select':
+      case 'multi-select':
+      case 'date':
+      case 'checkbox':
+        return type
+      default:
+        throw new Error(`Unsupported database column type: ${type}`)
+    }
+  }
+
+  private parseDocumentDatabaseColumnOptions(optionsJson: string): string[] {
+    try {
+      const parsed = JSON.parse(optionsJson) as unknown
+      return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
+    } catch {
+      return []
+    }
+  }
+
+  private normalizeDocumentDatabaseColumnOptions(type: DocumentDatabaseColumnType, options: string[]): string[] {
+    const normalizedOptions = [...new Set(options.map((option) => option.trim()).filter(Boolean))]
+
+    if ((type === 'select' || type === 'multi-select') && normalizedOptions.length === 0) {
+      throw new Error(`${type === 'select' ? 'Select' : 'Multi-select'} columns require at least one option.`)
+    }
+
+    return normalizedOptions
+  }
+
+  private parseDocumentDatabaseFieldValue(column: DocumentDatabaseColumn, valueText: string | null): DocumentDatabaseFieldValue {
+    if (valueText === null) {
+      return null
+    }
+
+    switch (column.type) {
+      case 'checkbox':
+        return valueText === 'true'
+      case 'multi-select':
+        try {
+          const parsed = JSON.parse(valueText) as unknown
+          return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []
+        } catch {
+          return []
+        }
+      case 'text':
+      case 'select':
+      case 'date':
+      default:
+        return valueText
+    }
+  }
+
+  private serializeDocumentDatabaseFieldValue(column: DocumentDatabaseColumn, value: DocumentDatabaseFieldValue): string | null {
+    switch (column.type) {
+      case 'text': {
+        if (typeof value !== 'string') {
+          return null
+        }
+
+        return value.trim().length > 0 ? value : null
+      }
+      case 'select': {
+        if (typeof value !== 'string') {
+          return null
+        }
+
+        const nextValue = value.trim()
+        if (!nextValue) {
+          return null
+        }
+
+        if (!column.options.includes(nextValue)) {
+          throw new Error(`"${nextValue}" is not a valid option for ${column.name}.`)
+        }
+
+        return nextValue
+      }
+      case 'multi-select': {
+        if (!Array.isArray(value)) {
+          return null
+        }
+
+        const normalizedValues = [...new Set(value.map((item) => item.trim()).filter(Boolean))]
+        if (normalizedValues.length === 0) {
+          return null
+        }
+
+        const invalidOption = normalizedValues.find((option) => !column.options.includes(option))
+        if (invalidOption) {
+          throw new Error(`"${invalidOption}" is not a valid option for ${column.name}.`)
+        }
+
+        return JSON.stringify(normalizedValues)
+      }
+      case 'date': {
+        if (typeof value !== 'string') {
+          return null
+        }
+
+        const nextValue = value.trim()
+        if (!nextValue) {
+          return null
+        }
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(nextValue)) {
+          throw new Error('Date values must use YYYY-MM-DD format.')
+        }
+
+        return nextValue
+      }
+      case 'checkbox':
+        return value === true ? 'true' : 'false'
+      default:
+        return null
+    }
   }
 
   private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
