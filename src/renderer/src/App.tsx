@@ -403,6 +403,7 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
     return { valid: true, errors: [] }
   }
 
+  const knownIds = new Set(blocks.map((block) => block.id).filter((id): id is string => Boolean(id)))
   const seenIds = new Set<string>()
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i]
@@ -412,6 +413,17 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
         errors.push(`Block ${i}: duplicate ID "${block.id}"`)
       } else {
         seenIds.add(block.id)
+      }
+    }
+
+    const parentBlockId = block.parentBlockId?.trim() ? block.parentBlockId : null
+    if (parentBlockId) {
+      if (parentBlockId === block.id) {
+        errors.push(`Block ${i}: parentBlockId cannot reference itself`)
+      } else if (!knownIds.has(parentBlockId)) {
+        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" does not exist in this document`)
+      } else if (!seenIds.has(parentBlockId)) {
+        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" must appear before the child in flat order`)
       }
     }
 
@@ -1222,7 +1234,8 @@ export function App() {
       return
     }
 
-    const validation = validateBlockTreeStructure(draftBlocks)
+    const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
+    const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
       console.error('Tree structure validation failed:', validation.errors)
       setBackupMessage(`Cannot save: invalid block tree structure. ${validation.errors.join('; ')}`)
@@ -1233,7 +1246,7 @@ export function App() {
     await window.knowbook.updateDocument(selectedDocumentId, {
       title: draftTitle,
       summary: draftSummary,
-      blocks: draftBlocks
+      blocks: normalizedDraftBlocks
     })
 
     const [refreshedHome, refreshedDetail] = await Promise.all([
@@ -1258,13 +1271,14 @@ export function App() {
     if (!isEditing) return
     const interval = setInterval(async () => {
       if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) return
-      const validation = validateBlockTreeStructure(draftBlocks)
+      const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
+      const validation = validateBlockTreeStructure(normalizedDraftBlocks)
       if (!validation.valid) return
       setIsSaving(true)
       await window.knowbook.updateDocument(selectedDocumentId, {
         title: draftTitle,
         summary: draftSummary,
-        blocks: draftBlocks
+        blocks: normalizedDraftBlocks
       })
       const [refreshedHome, refreshedDetail] = await Promise.all([
         window.knowbook.getHomeData(),

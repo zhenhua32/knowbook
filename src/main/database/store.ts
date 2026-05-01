@@ -864,30 +864,68 @@ export class KnowbookStore {
     return ['todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
   }
 
+  private resolveBlockRelationship(
+    type: string,
+    requestedDepth: number,
+    requestedParentBlockId: string | null,
+    blockId: string,
+    resolvedDepthById: Map<string, number>,
+    depthStack: Array<string | null>
+  ): { depth: number; parentBlockId: string | null } {
+    const trimmedParentBlockId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
+    const explicitParentDepth = trimmedParentBlockId && trimmedParentBlockId !== blockId
+      ? resolvedDepthById.get(trimmedParentBlockId)
+      : undefined
+
+    if (explicitParentDepth !== undefined) {
+      const explicitDepth = this.normalizeNestableDepth(type, explicitParentDepth + 1)
+      if (explicitDepth > explicitParentDepth) {
+        return {
+          depth: explicitDepth,
+          parentBlockId: trimmedParentBlockId
+        }
+      }
+    }
+
+    let fallbackDepth = this.normalizeNestableDepth(type, requestedDepth)
+    while (fallbackDepth > 0 && !depthStack[fallbackDepth - 1]) {
+      fallbackDepth -= 1
+    }
+
+    return {
+      depth: fallbackDepth,
+      parentBlockId: fallbackDepth > 0 ? depthStack[fallbackDepth - 1] ?? null : null
+    }
+  }
+
   private buildPersistedBlocks(blocks: DocumentBlockDraft[]): Array<
     DocumentBlockDraft & {
       id: string
       parentBlockId: string | null
     }
   > {
+    const resolvedDepthById = new Map<string, number>()
     const depthStack: Array<string | null> = []
 
     return blocks.map((block) => {
-      let effectiveDepth = this.normalizeNestableDepth(block.type, block.depth)
-      while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
-        effectiveDepth -= 1
-      }
-
       const id = block.id?.trim() ? block.id : randomUUID()
-      const parentBlockId = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] ?? null : null
+      const { depth, parentBlockId } = this.resolveBlockRelationship(
+        block.type,
+        block.depth,
+        block.parentBlockId ?? null,
+        id,
+        resolvedDepthById,
+        depthStack
+      )
 
-      depthStack.length = effectiveDepth + 1
-      depthStack[effectiveDepth] = id
+      depthStack.length = depth + 1
+      depthStack[depth] = id
+      resolvedDepthById.set(id, depth)
 
       return {
         ...block,
         id,
-        depth: effectiveDepth,
+        depth,
         parentBlockId
       }
     })
@@ -1047,26 +1085,31 @@ export class KnowbookStore {
 
     const transaction = this.db.transaction(() => {
       let currentDocumentId: string | null = null
+      let resolvedDepthById = new Map<string, number>()
       let depthStack: Array<string | null> = []
 
       for (const row of rows) {
         if (row.document_id !== currentDocumentId) {
           currentDocumentId = row.document_id
+          resolvedDepthById = new Map<string, number>()
           depthStack = []
         }
 
-        let effectiveDepth = this.normalizeNestableDepth(row.type, row.depth ?? 0)
-        while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
-          effectiveDepth -= 1
-        }
+        const { depth, parentBlockId } = this.resolveBlockRelationship(
+          row.type,
+          row.depth ?? 0,
+          row.parent_block_id ?? null,
+          row.id,
+          resolvedDepthById,
+          depthStack
+        )
 
-        const parentBlockId = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] ?? null : null
+        depthStack.length = depth + 1
+        depthStack[depth] = row.id
+        resolvedDepthById.set(row.id, depth)
 
-        depthStack.length = effectiveDepth + 1
-        depthStack[effectiveDepth] = row.id
-
-        if ((row.parent_block_id ?? null) !== parentBlockId || row.depth !== effectiveDepth) {
-          updateBlock.run(parentBlockId, effectiveDepth, row.id)
+        if ((row.parent_block_id ?? null) !== parentBlockId || row.depth !== depth) {
+          updateBlock.run(parentBlockId, depth, row.id)
         }
       }
     })
