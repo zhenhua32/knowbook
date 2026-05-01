@@ -658,6 +658,50 @@ function normalizeBlockSelectionRange(start: number, end: number): BlockSelectio
   }
 }
 
+function findAdjacentSiblingIndexForRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): number | null {
+  if (!isValidSiblingRange(blocks, range)) {
+    return null
+  }
+
+  const referenceBlock = blocks[range.start]
+  if (!referenceBlock) {
+    return null
+  }
+
+  const referenceDepth = referenceBlock.depth
+  const referenceParentBlockId = getNormalizedParentBlockId(referenceBlock)
+
+  if (delta === -1) {
+    for (let i = range.start - 1; i >= 0; i -= 1) {
+      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
+        return i
+      }
+
+      if (blocks[i].depth < referenceDepth) {
+        return null
+      }
+    }
+
+    return null
+  }
+
+  for (let i = range.end + 1; i < blocks.length; i += 1) {
+    if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
+      return i
+    }
+
+    if (blocks[i].depth < referenceDepth) {
+      return null
+    }
+  }
+
+  return null
+}
+
+function canMoveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): boolean {
+  return findAdjacentSiblingIndexForRange(blocks, range, delta) !== null
+}
+
 function isValidSiblingRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): boolean {
   if (range.start >= blocks.length || range.end >= blocks.length) {
     return false
@@ -691,26 +735,8 @@ function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange
     return blocks
   }
 
-  const referenceDepth = blocks[range.start].depth
-  const referenceParentBlockId = getNormalizedParentBlockId(blocks[range.start])
-
   if (delta === -1) {
-    if (range.start === 0) {
-      return blocks
-    }
-
-    let prevSiblingIndex: number | null = null
-    for (let i = range.start - 1; i >= 0; i -= 1) {
-      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
-        prevSiblingIndex = i
-        break
-      }
-
-      if (blocks[i].depth < referenceDepth) {
-        return blocks
-      }
-    }
-
+    const prevSiblingIndex = findAdjacentSiblingIndexForRange(blocks, range, -1)
     if (prevSiblingIndex === null) {
       return blocks
     }
@@ -721,22 +747,7 @@ function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange
     next.splice(prevSiblingIndex, 0, ...movedBlocks)
     return next
   } else {
-    if (range.end >= blocks.length - 1) {
-      return blocks
-    }
-
-    let nextSiblingIndex: number | null = null
-    for (let i = range.end + 1; i < blocks.length; i += 1) {
-      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
-        nextSiblingIndex = i
-        break
-      }
-
-      if (blocks[i].depth < referenceDepth) {
-        return blocks
-      }
-    }
-
+    const nextSiblingIndex = findAdjacentSiblingIndexForRange(blocks, range, 1)
     if (nextSiblingIndex === null) {
       return blocks
     }
@@ -1051,6 +1062,53 @@ export function App() {
     })
   }
 
+  function getVisibleBlockEntries(blocks: DocumentBlockDraft[]): Array<{ block: DocumentBlockDraft; index: number }> {
+    const entries: Array<{ block: DocumentBlockDraft; index: number }> = []
+
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]
+      if (!block) {
+        continue
+      }
+
+      entries.push({ block, index })
+
+      const blockId = getNormalizedBlockId(block)
+      if (blockId && collapsedBlockIds.has(blockId)) {
+        const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
+        if (subtreeEndIndex > index) {
+          index = subtreeEndIndex
+        }
+      }
+    }
+
+    return entries
+  }
+
+  function getVisibleBlockCountInRange(range: BlockSelectionRange): number {
+    return getVisibleBlockEntries(draftBlocks).filter(({ index }) => index >= range.start && index <= range.end).length
+  }
+
+  function selectionIncludesHiddenCollapsedContent(range: BlockSelectionRange): boolean {
+    return getVisibleBlockCountInRange(range) < range.end - range.start + 1
+  }
+
+  function getMultiBlockInteractionGuard(range: BlockSelectionRange): string | null {
+    if (range.start === range.end) {
+      return null
+    }
+
+    if (selectionIncludesHiddenCollapsedContent(range)) {
+      return 'Cannot move or drag a multi-block range that crosses hidden rows inside collapsed subtrees. Expand the parent block first or move one subtree root at a time.'
+    }
+
+    if (!isValidSiblingRange(draftBlocks, range)) {
+      return 'Cannot move or drag a multi-block range across different parents or mixed sibling levels. Select sibling blocks under the same parent.'
+    }
+
+    return null
+  }
+
   function blockHasChildren(blockIndex: number): boolean {
     return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
   }
@@ -1066,29 +1124,7 @@ export function App() {
   }
 
   function getVisibleBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
-    if (collapsedBlockIds.size === 0) {
-      return blocks
-    }
-    const result: DocumentBlockDraft[] = []
-    let skipUntilDepthLessOrEqual: number | null = null
-    for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i]
-      if (skipUntilDepthLessOrEqual !== null) {
-        if (block.depth <= skipUntilDepthLessOrEqual) {
-          skipUntilDepthLessOrEqual = null
-        } else {
-          continue
-        }
-      }
-      result.push(block)
-      if (block.id && collapsedBlockIds.has(block.id)) {
-        const subtreeEnd = getBlockSubtreeEndIndex(draftBlocks, i)
-        if (subtreeEnd > i) {
-          skipUntilDepthLessOrEqual = block.depth
-        }
-      }
-    }
-    return result
+    return getVisibleBlockEntries(blocks).map(({ block }) => block)
   }
 
   function getBlockSuggestionsForLink(query: string): DocumentBlockDraft[] {
@@ -1249,8 +1285,11 @@ export function App() {
   })
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
   const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
+  const selectedVisibleBlockCount = selectedBlockRange ? getVisibleBlockCountInRange(selectedBlockRange) : 0
   const selectedBlockActionRange = selectedBlockRange ? getSelectedBlockActionRange(selectedBlockRange) : null
   const selectedBlockActionCount = selectedBlockActionRange ? selectedBlockActionRange.end - selectedBlockActionRange.start + 1 : 0
+  const selectedBlockHasHiddenCollapsedContent = selectedBlockRange ? selectionIncludesHiddenCollapsedContent(selectedBlockRange) : false
+  const selectedBlockInteractionIssue = selectedBlockRange ? getMultiBlockInteractionGuard(selectedBlockRange) : null
 
   useEffect(() => {
     if (!activeSlashContext || filteredSlashCommands.length === 0) {
@@ -1812,7 +1851,9 @@ export function App() {
         return
       }
 
-      if (!isValidSiblingRange(draftBlocks, selectedBlockRange)) {
+      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
+      if (interactionIssue) {
+        setBackupMessage(interactionIssue)
         return
       }
 
@@ -1825,13 +1866,14 @@ export function App() {
 
       const isMovedUp = delta === -1
       const referenceDepth = draftBlocks[selectedBlockRange.start].depth
+      const referenceParentBlockId = getNormalizedParentBlockId(draftBlocks[selectedBlockRange.start])
       
       let newStartIndex = selectedBlockRange.start
       let newEndIndex = selectedBlockRange.end
       
       if (isMovedUp) {
         for (let i = selectedBlockRange.start - 1; i >= 0; i -= 1) {
-          if (nextBlocks[i].depth === referenceDepth) {
+          if (nextBlocks[i].depth === referenceDepth && getNormalizedParentBlockId(nextBlocks[i]) === referenceParentBlockId) {
             newStartIndex = i
             newEndIndex = i + (selectedBlockRange.end - selectedBlockRange.start)
             break
@@ -1839,7 +1881,7 @@ export function App() {
         }
       } else {
         for (let i = selectedBlockRange.end + 1; i < nextBlocks.length; i += 1) {
-          if (nextBlocks[i].depth === referenceDepth) {
+          if (nextBlocks[i].depth === referenceDepth && getNormalizedParentBlockId(nextBlocks[i]) === referenceParentBlockId) {
             newStartIndex = i - (selectedBlockRange.end - selectedBlockRange.start)
             newEndIndex = i
             break
@@ -2716,6 +2758,19 @@ export function App() {
   }
 
   function beginBlockDrag(index: number) {
+    const activeMultiBlockRange =
+      selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end && selectedBlockRange.start !== selectedBlockRange.end
+        ? selectedBlockRange
+        : null
+
+    if (activeMultiBlockRange) {
+      const interactionIssue = getMultiBlockInteractionGuard(activeMultiBlockRange)
+      if (interactionIssue) {
+        setBackupMessage(interactionIssue)
+        return
+      }
+    }
+
     setDraggingBlockIndex(index)
     setDragOverBlockIndex(index)
     setDragOverBlockDepth(draftBlocks[index]?.depth ?? null)
@@ -2765,6 +2820,13 @@ export function App() {
     let dragSubtreeSize: number
 
     if (isMultiBlockDrag && selectedBlockRange) {
+      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
+      if (interactionIssue) {
+        setBackupMessage(interactionIssue)
+        endBlockDrag()
+        return
+      }
+
       dragSourceRange = getMultiBlockOperationRange(selectedBlockRange)
       dragSubtreeSize = dragSourceRange.end - dragSourceRange.start + 1
     } else {
@@ -3400,9 +3462,12 @@ export function App() {
                         <div className="block-selection-toolbar">
                           <div>
                             <strong>
-                              {selectedBlockCount} block{selectedBlockCount === 1 ? '' : 's'} selected
+                              {selectedVisibleBlockCount} visible block{selectedVisibleBlockCount === 1 ? '' : 's'} selected
+                              {selectedBlockCount > selectedVisibleBlockCount ? ` · raw ${selectedBlockCount} incl hidden` : ''}
                               {selectedBlockActionCount > selectedBlockCount ? ` · subtree ${selectedBlockActionCount} blocks` : ''}
                               {!isSelectionCoherent(selectedBlockRange) ? ' · ⚠ Mixed depths (incoherent)' : ''}
+                              {selectedBlockHasHiddenCollapsedContent ? ' · ⚠ Hidden rows inside collapsed subtrees' : ''}
+                              {selectedBlockCount > 1 && !selectedBlockInteractionIssue && !isValidSiblingRange(draftBlocks, selectedBlockRange) ? ' · ⚠ Cross-parent selection' : ''}
                             </strong>
                             <p className="mini-hint">
                               Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
@@ -3411,6 +3476,12 @@ export function App() {
                                 : ''}
                               {!isSelectionCoherent(selectedBlockRange)
                                 ? ' ⚠ This selection contains blocks at different nesting levels. Some operations may behave unexpectedly.'
+                                : ''}
+                              {selectedBlockHasHiddenCollapsedContent
+                                ? ' ⚠ This range crosses collapsed subtrees and includes hidden rows, so drag and move are disabled until you expand them.'
+                                : ''}
+                              {selectedBlockCount > 1 && selectedBlockInteractionIssue && !selectedBlockHasHiddenCollapsedContent
+                                ? ` ⚠ ${selectedBlockInteractionIssue}`
                                 : ''}
                             </p>
                           </div>
@@ -3449,7 +3520,7 @@ export function App() {
                               disabled={
                                 selectedBlockCount === 1
                                   ? getPreviousSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
-                                  : selectedBlockRange.start === 0
+                                  : selectedBlockHasHiddenCollapsedContent || !canMoveBlockRange(draftBlocks, selectedBlockRange, -1)
                               }
                               onClick={() => moveSelectedBlocks(-1)}
                               type="button"
@@ -3461,7 +3532,7 @@ export function App() {
                               disabled={
                                 selectedBlockCount === 1
                                   ? getNextSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
-                                  : selectedBlockRange.end === draftBlocks.length - 1
+                                  : selectedBlockHasHiddenCollapsedContent || !canMoveBlockRange(draftBlocks, selectedBlockRange, 1)
                               }
                               onClick={() => moveSelectedBlocks(1)}
                               type="button"
