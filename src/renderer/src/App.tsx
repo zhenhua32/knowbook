@@ -1,5 +1,12 @@
 import { renderToString } from 'katex'
 import { useEffect, useRef, useState } from 'react'
+import {
+  buildBoardColumns,
+  getBoardDropFieldValue,
+  isBoardGroupableColumn,
+  type BoardColumn,
+  type BoardDropTarget
+} from '@shared/board'
 import type {
   BackupResult,
   DocumentDatabaseColumn,
@@ -85,24 +92,6 @@ type BlockSelectionRange = {
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-
-type BoardDropTarget =
-  | {
-      kind: 'parent'
-      parentId: string | null
-    }
-  | {
-      kind: 'field'
-      columnId: string
-      value: string | boolean | null
-    }
-
-type BoardColumn = {
-  id: string
-  title: string
-  dropTarget: BoardDropTarget
-  items: DocumentCatalogEntry[]
-}
 
 type BlockSlashCommand = {
   id: string
@@ -435,10 +424,6 @@ function createDraftBlockId() {
 
 function normalizeDatabaseColumnOptionsInput(input: string): string[] {
   return [...new Set(input.split(',').map((option) => option.trim()).filter(Boolean))]
-}
-
-function isBoardGroupableColumn(column: DocumentDatabaseColumn): boolean {
-  return column.type === 'select' || column.type === 'multi-select' || column.type === 'checkbox'
 }
 
 function formatDocumentDatabaseFieldValueForSearch(value: DocumentDatabaseFieldValue): string {
@@ -1989,35 +1974,18 @@ export function App() {
       return
     }
 
-    if (targetColumn.type === 'multi-select') {
-      const rawFieldValue = draggingDocument.fieldValues[target.columnId]
-      const currentValues = Array.isArray(rawFieldValue)
-        ? rawFieldValue.filter((value): value is string => typeof value === 'string')
-        : []
-      const nextValues = typeof target.value === 'string'
-        ? [...new Set([...currentValues, target.value])]
-        : []
+    const nextFieldValue = getBoardDropFieldValue(
+      targetColumn,
+      draggingDocument.fieldValues[target.columnId] ?? null,
+      target.value
+    )
 
-      if (nextValues.length === currentValues.length && nextValues.every((value) => currentValues.includes(value))) {
-        endDrag()
-        return
-      }
-
-      await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, nextValues)
+    if (nextFieldValue === undefined) {
       endDrag()
       return
     }
 
-    const currentValue = target.value === true
-      ? draggingDocument.fieldValues[target.columnId] === true
-      : (draggingDocument.fieldValues[target.columnId] ?? null)
-
-    if (currentValue === target.value) {
-      endDrag()
-      return
-    }
-
-    await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, target.value)
+    await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, nextFieldValue)
     endDrag()
   }
 
@@ -6606,178 +6574,6 @@ function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: nu
       y: centerY + Math.sin(angle) * radius
     }
   })
-}
-
-function buildBoardColumns(documents: DocumentCatalogEntry[], groupByColumn: DocumentDatabaseColumn | null): BoardColumn[] {
-  if (groupByColumn?.type === 'select') {
-    const columns: BoardColumn[] = [
-      {
-        id: `${groupByColumn.id}:__unset__`,
-        title: `No ${groupByColumn.name}`,
-        dropTarget: {
-          kind: 'field',
-          columnId: groupByColumn.id,
-          value: null
-        },
-        items: []
-      },
-      ...groupByColumn.options.map((option) => ({
-        id: `${groupByColumn.id}:${option}`,
-        title: option,
-        dropTarget: {
-          kind: 'field' as const,
-          columnId: groupByColumn.id,
-          value: option
-        },
-        items: [] as DocumentCatalogEntry[]
-      }))
-    ]
-
-    const columnMap = new Map(columns.map((column) => [column.id, column]))
-    for (const document of documents) {
-      const fieldValue = document.fieldValues[groupByColumn.id]
-      const columnId = typeof fieldValue === 'string' && groupByColumn.options.includes(fieldValue)
-        ? `${groupByColumn.id}:${fieldValue}`
-        : `${groupByColumn.id}:__unset__`
-      columnMap.get(columnId)?.items.push(document)
-    }
-
-    return columns.map((column) => ({
-      ...column,
-      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
-    }))
-  }
-
-  if (groupByColumn?.type === 'multi-select') {
-    const columns: BoardColumn[] = [
-      {
-        id: `${groupByColumn.id}:__unset__`,
-        title: `No ${groupByColumn.name}`,
-        dropTarget: {
-          kind: 'field',
-          columnId: groupByColumn.id,
-          value: null
-        },
-        items: []
-      },
-      ...groupByColumn.options.map((option) => ({
-        id: `${groupByColumn.id}:${option}`,
-        title: option,
-        dropTarget: {
-          kind: 'field' as const,
-          columnId: groupByColumn.id,
-          value: option
-        },
-        items: [] as DocumentCatalogEntry[]
-      }))
-    ]
-
-    const emptyColumn = columns[0]
-    const columnMap = new Map(columns.map((column) => [column.id, column]))
-    for (const document of documents) {
-      const fieldValue = document.fieldValues[groupByColumn.id]
-      const values = Array.isArray(fieldValue)
-        ? fieldValue.filter((value): value is string => typeof value === 'string' && groupByColumn.options.includes(value))
-        : []
-
-      if (values.length === 0) {
-        emptyColumn.items.push(document)
-        continue
-      }
-
-      for (const value of [...new Set(values)]) {
-        columnMap.get(`${groupByColumn.id}:${value}`)?.items.push(document)
-      }
-    }
-
-    return columns.map((column) => ({
-      ...column,
-      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
-    }))
-  }
-
-  if (groupByColumn?.type === 'checkbox') {
-    const columns: BoardColumn[] = [
-      {
-        id: `${groupByColumn.id}:false`,
-        title: 'No',
-        dropTarget: {
-          kind: 'field',
-          columnId: groupByColumn.id,
-          value: false
-        },
-        items: []
-      },
-      {
-        id: `${groupByColumn.id}:true`,
-        title: 'Yes',
-        dropTarget: {
-          kind: 'field',
-          columnId: groupByColumn.id,
-          value: true
-        },
-        items: []
-      }
-    ]
-
-    for (const document of documents) {
-      const fieldValue = document.fieldValues[groupByColumn.id] === true
-      columns[fieldValue ? 1 : 0].items.push(document)
-    }
-
-    return columns.map((column) => ({
-      ...column,
-      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
-    }))
-  }
-
-  const rootColumnId = '__root__'
-  const columnMap = new Map<string, BoardColumn>([
-    [
-      rootColumnId,
-      {
-        id: rootColumnId,
-        title: 'Root',
-        dropTarget: {
-          kind: 'parent',
-          parentId: null
-        },
-        items: []
-      }
-    ]
-  ])
-
-  for (const document of documents) {
-    const key = document.parentId ?? rootColumnId
-    if (!columnMap.has(key)) {
-      columnMap.set(key, {
-        id: key,
-        title: document.parentTitle ?? 'Unknown parent',
-        dropTarget: {
-          kind: 'parent',
-          parentId: document.parentId ?? null
-        },
-        items: []
-      })
-    }
-
-    columnMap.get(key)?.items.push(document)
-  }
-
-  return [...columnMap.values()]
-    .map((column) => ({
-      ...column,
-      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
-    }))
-    .sort((left, right) => {
-      if (left.dropTarget.kind === 'parent' && left.dropTarget.parentId === null) {
-        return -1
-      }
-      if (right.dropTarget.kind === 'parent' && right.dropTarget.parentId === null) {
-        return 1
-      }
-      return left.title.localeCompare(right.title)
-    })
 }
 
 function buildBlockTree(blocks: DocumentBlock[]): BlockTreePreviewNode[] {
