@@ -98,6 +98,7 @@ interface ExportBlockRow {
   parent_block_id: string | null
   sort_order: number
   language: string | null
+  highlight: string | null
 }
 
 interface BlockTreeRow {
@@ -165,6 +166,7 @@ export class KnowbookStore {
     this.ensureBlockCheckedColumn()
     this.ensureBlockDepthColumn()
     this.ensureBlockLanguageColumn()
+    this.ensureBlockHighlightColumn()
     this.ensureBlockParentRelationships()
     this.seed()
     this.resyncLinksForAllDocuments()
@@ -198,7 +200,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language, highlight
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -245,7 +247,8 @@ export class KnowbookStore {
         depth: Math.max(0, block.depth ?? 0),
         parentBlockId: block.parent_block_id ?? null,
         sortOrder: block.sort_order,
-        language: block.language ?? undefined
+        language: block.language ?? undefined,
+        highlight: block.highlight ?? undefined
       })),
       children: children.map((child): DocumentChild => ({
         id: child.id,
@@ -332,8 +335,8 @@ export class KnowbookStore {
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, language, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, language, highlight, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
@@ -355,6 +358,7 @@ export class KnowbookStore {
           block.checked ? 1 : 0,
           block.depth,
           block.language ?? null,
+          block.highlight ?? null,
           now,
           now
         )
@@ -619,7 +623,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language
+      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language, highlight
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -637,7 +641,8 @@ export class KnowbookStore {
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
         sortOrder: block.sort_order,
-        language: block.language ?? undefined
+        language: block.language ?? undefined,
+        highlight: block.highlight ?? undefined
       }))
     }))
   }
@@ -1003,6 +1008,13 @@ export class KnowbookStore {
     const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
     if (!columns.some((column) => column.name === 'language')) {
       this.db.exec('ALTER TABLE blocks ADD COLUMN language TEXT')
+    }
+  }
+
+  private ensureBlockHighlightColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'highlight')) {
+      this.db.exec('ALTER TABLE blocks ADD COLUMN highlight TEXT')
     }
   }
 

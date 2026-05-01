@@ -642,7 +642,7 @@ function remapIndexAfterSubtreeMove(
   return index
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'language'>): DocumentBlockDraft {
+function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'language' | 'highlight'>): DocumentBlockDraft {
   return {
     id: block.id,
     type: block.type,
@@ -650,7 +650,8 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
     checked: Boolean(block.checked),
     depth: normalizeBlockDepth(block.type, block.depth),
     parentBlockId: block.parentBlockId ?? null,
-    language: block.language
+    language: block.language,
+    highlight: block.highlight
   }
 }
 
@@ -701,7 +702,13 @@ export function App() {
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const [autoSaveFlash, setAutoSaveFlash] = useState(false)
+  const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
+  const navHistoryRef = useRef<string[]>([])
+  const navPointerRef = useRef<number>(-1)
+  const isNavJumpRef = useRef<boolean>(false)
+  const [navCanGoBack, setNavCanGoBack] = useState(false)
+  const [navCanGoForward, setNavCanGoForward] = useState(false)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
   const editHistoryPointerRef = useRef<number>(-1)
@@ -816,6 +823,13 @@ export function App() {
     updateDraftBlock(index, {
       ...draftBlocks[index],
       tags: tags.filter((tag) => tag.trim() !== '')
+    })
+  }
+
+  function updateBlockHighlight(index: number, highlight: string | undefined) {
+    updateDraftBlock(index, {
+      ...draftBlocks[index],
+      highlight
     })
   }
 
@@ -997,6 +1011,24 @@ export function App() {
     }
   }, [selectedDocumentId])
 
+  // Track navigation history
+  useEffect(() => {
+    if (!selectedDocumentId) return
+    if (isNavJumpRef.current) {
+      isNavJumpRef.current = false
+      return
+    }
+    const history = navHistoryRef.current
+    const pointer = navPointerRef.current
+    // Trim forward history when navigating to a new doc
+    const trimmed = history.slice(0, pointer + 1)
+    trimmed.push(selectedDocumentId)
+    navHistoryRef.current = trimmed.slice(-50)
+    navPointerRef.current = navHistoryRef.current.length - 1
+    setNavCanGoBack(navPointerRef.current > 0)
+    setNavCanGoForward(false)
+  }, [selectedDocumentId])
+
   useEffect(() => {
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
     if (!areDraftBlocksEqual(draftBlocks, normalizedDraftBlocks)) {
@@ -1025,10 +1057,16 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
         if (isEditing) { event.preventDefault(); redoEdit() }
       }
+      if (event.altKey && event.key === 'ArrowLeft') {
+        event.preventDefault(); navBack()
+      }
+      if (event.altKey && event.key === 'ArrowRight') {
+        event.preventDefault(); navForward()
+      }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isGlobalSearchOpen, isEditing, undoEdit, redoEdit])
+  }, [isGlobalSearchOpen, isEditing, undoEdit, redoEdit, navBack, navForward])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -1252,6 +1290,54 @@ export function App() {
       window.knowbook.saveSetting('pinned_documents', JSON.stringify([...next]))
       return next
     })
+  }
+
+  function blocksToMarkdown(blocks: DocumentBlock[]): string {
+    return blocks.map((block) => {
+      switch (block.type) {
+        case 'heading-1': return `# ${block.content}`
+        case 'heading-2': return `## ${block.content}`
+        case 'todo': return `- [${block.checked ? 'x' : ' '}] ${block.content}`
+        case 'bulleted-list': return `${'  '.repeat(Math.max(0, block.depth))}* ${block.content}`
+        case 'numbered-list': return `${'  '.repeat(Math.max(0, block.depth))}1. ${block.content}`
+        case 'quote': return `> ${block.content}`
+        case 'code': return `\`\`\`${block.language ?? ''}\n${block.content}\n\`\`\``
+        case 'math': return `$$\n${block.content}\n$$`
+        case 'divider': return `---`
+        default: return block.content
+      }
+    }).join('\n\n')
+  }
+
+  async function copyDocumentAsMarkdown() {
+    if (!selectedDocument) return
+    const markdown = `# ${selectedDocument.title}\n\n${blocksToMarkdown(selectedDocument.blocks)}`
+    await window.knowbook.writeClipboardText(markdown)
+    setMdCopyFlash(true)
+    setTimeout(() => setMdCopyFlash(false), 2000)
+  }
+
+  function navBack() {
+    const pointer = navPointerRef.current
+    if (pointer <= 0) return
+    const newPointer = pointer - 1
+    navPointerRef.current = newPointer
+    isNavJumpRef.current = true
+    setSelectedDocumentId(navHistoryRef.current[newPointer])
+    setNavCanGoBack(newPointer > 0)
+    setNavCanGoForward(true)
+  }
+
+  function navForward() {
+    const history = navHistoryRef.current
+    const pointer = navPointerRef.current
+    if (pointer >= history.length - 1) return
+    const newPointer = pointer + 1
+    navPointerRef.current = newPointer
+    isNavJumpRef.current = true
+    setSelectedDocumentId(history[newPointer])
+    setNavCanGoBack(true)
+    setNavCanGoForward(newPointer < history.length - 1)
   }
 
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
@@ -2792,6 +2878,8 @@ export function App() {
                 <h3>Seeded documents</h3>
               </div>
               <div className="toolbar-inline">
+                <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={navBack} title="后退 (Alt+←)" type="button">←</button>
+                <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={navForward} title="前进 (Alt+→)" type="button">→</button>
                 <span className="pill">{homeData.documentTree.length} roots</span>
                 <button className="secondary-button" onClick={openGlobalSearch} title="全局搜索 (Ctrl+K)" type="button">
                   🔍
@@ -2878,6 +2966,12 @@ export function App() {
                   </button>
                 ) : null}
                 {autoSaveFlash ? <span className="autosave-flash">已自动保存</span> : null}
+                {mdCopyFlash ? <span className="autosave-flash">已复制 Markdown</span> : null}
+                {selectedDocument && !isEditing ? (
+                  <button className="secondary-button" onClick={copyDocumentAsMarkdown} type="button" title="复制为 Markdown">
+                    Copy MD
+                  </button>
+                ) : null}
                 {selectedDocument ? (
                   <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
                     Add child
@@ -3185,6 +3279,7 @@ export function App() {
                           <div
                             className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
                             key={block.id ?? `${selectedDocument.id}-draft-${index}`}
+                            style={block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined}
                             onDragOver={(event) => {
                               event.preventDefault()
                               if (draggingBlockIndex !== null) {
@@ -3588,6 +3683,18 @@ export function App() {
                             >
                               + Tag
                             </button>
+                            <div className="block-highlight-picker">
+                              {['', 'red', 'orange', 'yellow', 'green', 'blue', 'purple'].map((color) => (
+                                <button
+                                  key={color || 'none'}
+                                  className={`highlight-swatch${(draftBlocks[index]?.highlight ?? '') === color ? ' highlight-swatch-active' : ''}`}
+                                  style={{ background: color || 'transparent' }}
+                                  onClick={() => updateBlockHighlight(index, color || undefined)}
+                                  type="button"
+                                  title={color || '无背景色'}
+                                />
+                              ))}
+                            </div>
                             <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
                               Remove
                             </button>
@@ -3688,6 +3795,7 @@ export function App() {
                           <div
                             className={`block-preview${highlightedBlockId === block.id ? ' block-preview-highlighted' : ''}`}
                             key={block.id}
+                            style={block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined}
                           >{renderBlock(
                               block,
                               setSelectedDocumentId,

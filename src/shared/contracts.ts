@@ -57,6 +57,7 @@ export interface DocumentBlock {
   sortOrder: number
   tags?: string[]
   language?: string
+  highlight?: string
 }
 
 export interface DocumentBlockDraft {
@@ -68,6 +69,7 @@ export interface DocumentBlockDraft {
   parentBlockId?: string | null
   tags?: string[]
   language?: string
+  highlight?: string
 }
 
 export interface LinkedDocument {

@@ -1647,3 +1647,39 @@ del {
   text-overflow: ellipsis;
   max-width: 100%;
 }
+
+/* Block highlight colors */
+:root {
+  --highlight-red: rgba(255, 80, 80, 0.12);
+  --highlight-orange: rgba(255, 160, 40, 0.15);
+  --highlight-yellow: rgba(255, 230, 0, 0.18);
+  --highlight-green: rgba(60, 200, 80, 0.13);
+  --highlight-blue: rgba(47, 111, 237, 0.10);
+  --highlight-purple: rgba(140, 60, 220, 0.12);
+}
+
+.block-highlight-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.highlight-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.highlight-swatch:first-child {
+  border: 2px dashed #aaa;
+}
+
+.highlight-swatch-active {
+  border-color: #333 !important;
+}
+
