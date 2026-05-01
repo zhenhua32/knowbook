@@ -163,6 +163,42 @@ function registerWorkspaceEventHandlers(): void {
       tagsAdded: tagUpdates.reduce((count, update) => count + update.tags.length, 0)
     })
   })
+
+  workspaceEventBus.subscribe(async (event) => {
+    if (event.type !== 'document.updated') {
+      return
+    }
+
+    const aiConfig = store.getAiConfigPublic()
+    if (!aiConfig.enabled || !aiConfig.autoHighlightOnSave) {
+      return
+    }
+
+    const apiKey = store.getAiApiKey()
+    if (!apiKey) {
+      return
+    }
+
+    const detail = store.getDocumentDetail(event.documentId)
+    if (!detail) {
+      return
+    }
+
+    const highlightUpdates = await generateMissingBlockHighlights(detail, aiConfig, apiKey)
+    if (highlightUpdates.length === 0) {
+      return
+    }
+
+    store.updateDocumentBlockHighlights(detail.id, highlightUpdates)
+    await workspaceEventBus.emit({
+      type: 'document.highlights.generated',
+      createdAt: new Date().toISOString(),
+      documentId: detail.id,
+      documentTitle: detail.title,
+      path: detail.path,
+      highlightedBlocks: highlightUpdates.length
+    })
+  })
 }
 
 function registerIpcHandlers(): void {
@@ -610,6 +646,109 @@ async function generateMissingBlockTags(
   }
 
   return [...updates.entries()].map(([blockId, tags]) => ({ blockId, tags }))
+}
+
+async function generateMissingBlockHighlights(
+  detail: DocumentDetail,
+  aiConfig: HomeData['aiConfig'],
+  apiKey: string
+): Promise<Array<{ blockId: string, highlight: string }>> {
+  const allowedColors = new Set(['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'])
+  const candidates = detail.blocks
+    .filter((block) => !block.highlight)
+    .filter((block) => block.type !== 'divider')
+    .map((block) => ({
+      blockId: block.id,
+      type: block.type,
+      content: block.content.trim(),
+      tags: block.tags ?? []
+    }))
+    .filter((block) => block.content.length >= 18)
+    .slice(0, 14)
+
+  if (candidates.length === 0) {
+    return []
+  }
+
+  const endpoint = `${aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      messages: [
+        {
+          role: 'system',
+          content: 'You choose highlight colors for note blocks so a human can scan the most important content faster. Return strict JSON only with the shape {"blocks":[{"id":"block-id","highlight":"yellow"}]}. Use only the colors red, orange, yellow, green, blue, purple, gray. Return at most 6 blocks, skip unimportant blocks, reuse only the provided ids, and do not include explanations.'
+        },
+        {
+          role: 'user',
+          content: [
+            `Document title: ${detail.title}`,
+            `Document path: ${detail.path}`,
+            `Document summary: ${detail.summary}`,
+            '',
+            'Candidate blocks with no highlight:',
+            ...candidates.map((block) => `[${block.blockId}] (${block.type}) tags=${block.tags.join(', ') || 'none'} :: ${block.content}`),
+            '',
+            'Prefer highlights for key decisions, important references, warnings, action items, or high-signal ideas. Return JSON only.'
+          ].join('\n')
+        }
+      ],
+      temperature: 0.2
+    })
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`AI highlight request failed (${response.status}): ${errorBody}`)
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+  }
+  const rawContent = payload.choices?.[0]?.message?.content?.trim() ?? ''
+  if (!rawContent) {
+    return []
+  }
+
+  const cleanedJson = rawContent.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(cleanedJson)
+  } catch {
+    return []
+  }
+
+  const blocks = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' && parsed !== null && 'blocks' in parsed && Array.isArray((parsed as { blocks?: unknown }).blocks)
+      ? (parsed as { blocks: unknown[] }).blocks
+      : []
+
+  const candidateIds = new Set(candidates.map((block) => block.blockId))
+  const updates = new Map<string, string>()
+  for (const entry of blocks) {
+    if (!entry || typeof entry !== 'object') {
+      continue
+    }
+
+    const blockId = typeof (entry as { id?: unknown }).id === 'string' ? (entry as { id: string }).id : ''
+    const highlight = typeof (entry as { highlight?: unknown }).highlight === 'string'
+      ? (entry as { highlight: string }).highlight.trim().toLowerCase()
+      : ''
+
+    if (!candidateIds.has(blockId) || !allowedColors.has(highlight)) {
+      continue
+    }
+
+    updates.set(blockId, highlight)
+  }
+
+  return [...updates.entries()].map(([blockId, highlight]) => ({ blockId, highlight }))
 }
 
 async function buildSemanticContextNotes(

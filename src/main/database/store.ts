@@ -591,6 +591,7 @@ export class KnowbookStore {
     this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
     this.saveSetting('ai.autoTagOnSave', input.autoTagOnSave ? 'true' : 'false')
+    this.saveSetting('ai.autoHighlightOnSave', input.autoHighlightOnSave ? 'true' : 'false')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
@@ -616,6 +617,33 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       for (const update of updates) {
         updateBlockStatement.run(JSON.stringify(this.normalizeBlockTags(update.tags)), now, update.blockId, documentId)
+      }
+      updateDocumentStatement.run(now, documentId)
+    })
+
+    transaction()
+  }
+
+  updateDocumentBlockHighlights(documentId: string, updates: Array<{ blockId: string, highlight: string | null }>): void {
+    if (updates.length === 0) {
+      return
+    }
+
+    const now = new Date().toISOString()
+    const updateBlockStatement = this.db.prepare(`
+      UPDATE blocks
+      SET highlight = ?, updated_at = ?
+      WHERE id = ? AND document_id = ?
+    `)
+    const updateDocumentStatement = this.db.prepare(`
+      UPDATE documents
+      SET updated_at = ?
+      WHERE id = ?
+    `)
+
+    const transaction = this.db.transaction(() => {
+      for (const update of updates) {
+        updateBlockStatement.run(update.highlight, now, update.blockId, documentId)
       }
       updateDocumentStatement.run(now, documentId)
     })
@@ -1806,6 +1834,7 @@ export class KnowbookStore {
       embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
       autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
       autoTagOnSave: this.readSetting('ai.autoTagOnSave') === 'true',
+      autoHighlightOnSave: this.readSetting('ai.autoHighlightOnSave') === 'true',
       hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
@@ -1939,6 +1968,7 @@ export class KnowbookStore {
       this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
       this.saveSetting('ai.autoSummaryOnSave', 'false')
       this.saveSetting('ai.autoTagOnSave', 'false')
+      this.saveSetting('ai.autoHighlightOnSave', 'false')
     })
 
     seedTransaction()

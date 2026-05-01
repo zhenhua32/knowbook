@@ -40,6 +40,7 @@ const emptyState: HomeData = {
     embeddingModel: '',
     autoSummaryOnSave: false,
     autoTagOnSave: false,
+    autoHighlightOnSave: false,
     hasApiKey: false
   },
   documentTree: [],
@@ -1018,6 +1019,7 @@ export function App() {
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
   const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(false)
   const [aiAutoTagOnSaveDraft, setAiAutoTagOnSaveDraft] = useState(false)
+  const [aiAutoHighlightOnSaveDraft, setAiAutoHighlightOnSaveDraft] = useState(false)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
@@ -1393,6 +1395,7 @@ export function App() {
         setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
         setAiAutoSummaryOnSaveDraft(data.aiConfig.autoSummaryOnSave)
         setAiAutoTagOnSaveDraft(data.aiConfig.autoTagOnSave)
+        setAiAutoHighlightOnSaveDraft(data.aiConfig.autoHighlightOnSave)
         setAiApiKeyDraft('')
       }
     })
@@ -1941,6 +1944,7 @@ export function App() {
       embeddingModel: aiEmbeddingModelDraft,
       autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
       autoTagOnSave: aiAutoTagOnSaveDraft,
+      autoHighlightOnSave: aiAutoHighlightOnSaveDraft,
       apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()
@@ -1951,6 +1955,7 @@ export function App() {
     setAiEmbeddingModelDraft(refreshed.aiConfig.embeddingModel)
     setAiAutoSummaryOnSaveDraft(refreshed.aiConfig.autoSummaryOnSave)
     setAiAutoTagOnSaveDraft(refreshed.aiConfig.autoTagOnSave)
+    setAiAutoHighlightOnSaveDraft(refreshed.aiConfig.autoHighlightOnSave)
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage('AI settings saved.')
@@ -3442,6 +3447,10 @@ export function App() {
               <input checked={aiAutoTagOnSaveDraft} onChange={(event) => setAiAutoTagOnSaveDraft(event.target.checked)} type="checkbox" />
               <span>Auto-generate missing block tags on save</span>
             </label>
+            <label className="toggle-row">
+              <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
+              <span>Auto-highlight important blocks on save</span>
+            </label>
             <label className="editor-label">
               Base URL
               <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
@@ -3462,6 +3471,7 @@ export function App() {
             <p className="mini-hint">Chat model answers questions. Embedding model powers local semantic retrieval and RAG context caching.</p>
             <p className="mini-hint">Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.</p>
             <p className="mini-hint">Auto-tags only fill blocks that still have no tags, so manual tags stay untouched.</p>
+            <p className="mini-hint">Auto-highlights only fill blocks that still have no background color, so manual highlight choices stay untouched.</p>
             <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
               {aiSaving ? 'Saving...' : 'Save AI settings'}
             </button>
