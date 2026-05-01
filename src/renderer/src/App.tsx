@@ -244,15 +244,90 @@ function normalizeBlockDepth(type: string, depth: number) {
   return isNestableBlock(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
 }
 
-function getBlockSubtreeEndIndex(blocks: Array<{ depth: number }>, index: number) {
+type TreeAwareBlock = {
+  id?: string
+  parentBlockId?: string | null
+  depth: number
+}
+
+function getNormalizedBlockId(block: TreeAwareBlock | undefined): string | null {
+  return block?.id?.trim() ? block.id : null
+}
+
+function getNormalizedParentBlockId(block: TreeAwareBlock | undefined): string | null {
+  return block?.parentBlockId?.trim() ? block.parentBlockId : null
+}
+
+function buildTreeAwareBlockIndexById(blocks: TreeAwareBlock[]): Map<string, number> {
+  const indexById = new Map<string, number>()
+  for (let index = 0; index < blocks.length; index += 1) {
+    const blockId = getNormalizedBlockId(blocks[index])
+    if (blockId) {
+      indexById.set(blockId, index)
+    }
+  }
+  return indexById
+}
+
+function isBlockDescendantOf(rootId: string, blocks: TreeAwareBlock[], candidateIndex: number, indexById: Map<string, number>): boolean {
+  const candidate = blocks[candidateIndex]
+  if (!candidate) {
+    return false
+  }
+
+  const visitedParentIds = new Set<string>()
+  let currentParentId = getNormalizedParentBlockId(candidate)
+
+  while (currentParentId) {
+    if (currentParentId === rootId) {
+      return true
+    }
+
+    if (visitedParentIds.has(currentParentId)) {
+      return false
+    }
+
+    visitedParentIds.add(currentParentId)
+    const parentIndex = indexById.get(currentParentId)
+    if (parentIndex === undefined || parentIndex >= candidateIndex) {
+      return false
+    }
+
+    currentParentId = getNormalizedParentBlockId(blocks[parentIndex])
+  }
+
+  return false
+}
+
+function getBlockSubtreeEndIndex(blocks: TreeAwareBlock[], index: number) {
   const root = blocks[index]
   if (!root) {
     return index
   }
 
+  const rootId = getNormalizedBlockId(root)
+  if (!rootId) {
+    let fallbackEndIndex = index
+    for (let currentIndex = index + 1; currentIndex < blocks.length; currentIndex += 1) {
+      if (blocks[currentIndex].depth <= root.depth) {
+        break
+      }
+
+      fallbackEndIndex = currentIndex
+    }
+
+    return fallbackEndIndex
+  }
+
+  const indexById = buildTreeAwareBlockIndexById(blocks)
+
   let endIndex = index
   for (let currentIndex = index + 1; currentIndex < blocks.length; currentIndex += 1) {
     if (blocks[currentIndex].depth <= root.depth) {
+      break
+    }
+
+    if (!isBlockDescendantOf(rootId, blocks, currentIndex, indexById)) {
       break
     }
 
@@ -262,15 +337,20 @@ function getBlockSubtreeEndIndex(blocks: Array<{ depth: number }>, index: number
   return endIndex
 }
 
-function getPreviousSiblingSubtreeStartIndex(blocks: Array<{ depth: number }>, index: number) {
+function getPreviousSiblingSubtreeStartIndex(blocks: TreeAwareBlock[], index: number) {
   const root = blocks[index]
   if (!root) {
     return null
   }
 
+  const rootParentBlockId = getNormalizedParentBlockId(root)
+
   for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
     if (blocks[currentIndex].depth === root.depth) {
-      return currentIndex
+      if (getNormalizedParentBlockId(blocks[currentIndex]) === rootParentBlockId) {
+        return currentIndex
+      }
+      continue
     }
 
     if (blocks[currentIndex].depth < root.depth) {
@@ -281,16 +361,20 @@ function getPreviousSiblingSubtreeStartIndex(blocks: Array<{ depth: number }>, i
   return null
 }
 
-function getNextSiblingSubtreeStartIndex(blocks: Array<{ depth: number }>, index: number) {
+function getNextSiblingSubtreeStartIndex(blocks: TreeAwareBlock[], index: number) {
   const root = blocks[index]
   if (!root) {
     return null
   }
 
+  const rootParentBlockId = getNormalizedParentBlockId(root)
   const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
   for (let currentIndex = subtreeEndIndex + 1; currentIndex < blocks.length; currentIndex += 1) {
     if (blocks[currentIndex].depth === root.depth) {
-      return currentIndex
+      if (getNormalizedParentBlockId(blocks[currentIndex]) === rootParentBlockId) {
+        return currentIndex
+      }
+      continue
     }
 
     if (blocks[currentIndex].depth < root.depth) {
@@ -579,10 +663,20 @@ function isValidSiblingRange(blocks: DocumentBlockDraft[], range: BlockSelection
     return false
   }
 
-  const referenceDepth = blocks[range.start].depth
+  const referenceBlock = blocks[range.start]
+  if (!referenceBlock) {
+    return false
+  }
+
+  const referenceDepth = referenceBlock.depth
+  const referenceParentBlockId = getNormalizedParentBlockId(referenceBlock)
 
   for (let i = range.start; i <= range.end; i += 1) {
     if (blocks[i].depth !== referenceDepth) {
+      return false
+    }
+
+    if (getNormalizedParentBlockId(blocks[i]) !== referenceParentBlockId) {
       return false
     }
   }
@@ -598,6 +692,7 @@ function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange
   }
 
   const referenceDepth = blocks[range.start].depth
+  const referenceParentBlockId = getNormalizedParentBlockId(blocks[range.start])
 
   if (delta === -1) {
     if (range.start === 0) {
@@ -606,7 +701,7 @@ function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange
 
     let prevSiblingIndex: number | null = null
     for (let i = range.start - 1; i >= 0; i -= 1) {
-      if (blocks[i].depth === referenceDepth) {
+      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
         prevSiblingIndex = i
         break
       }
@@ -632,7 +727,7 @@ function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange
 
     let nextSiblingIndex: number | null = null
     for (let i = range.end + 1; i < blocks.length; i += 1) {
-      if (blocks[i].depth === referenceDepth) {
+      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
         nextSiblingIndex = i
         break
       }
