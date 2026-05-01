@@ -135,6 +135,7 @@ export interface AiConfig {
   model: string
   embeddingModel: string
   autoSummaryOnSave: boolean
+  autoTagOnSave: boolean
   hasApiKey: boolean
 }
 
@@ -151,6 +152,7 @@ export type WorkspaceEventType =
   | 'document.created'
   | 'document.updated'
   | 'document.summary.generated'
+  | 'document.tags.generated'
   | 'document.moved'
   | 'document.deleted'
   | 'ai.config.updated'
@@ -228,6 +230,7 @@ export interface UpdateAiConfigInput {
   model: string
   embeddingModel: string
   autoSummaryOnSave: boolean
+  autoTagOnSave: boolean
   apiKey?: string
 }
 
