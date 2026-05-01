@@ -19,6 +19,14 @@ export type WorkspaceEvent =
       pathChanged: boolean
     }
   | {
+      type: 'document.summary.generated'
+      createdAt: string
+      documentId: string
+      documentTitle: string
+      path: string
+      summary: string
+    }
+  | {
       type: 'document.moved'
       createdAt: string
       documentId: string
@@ -79,6 +87,8 @@ export function createWorkspaceEventRecord(event: WorkspaceEvent): Omit<Workspac
         : `Saved changes to "${event.documentTitle}".`
       return buildRecord(event.type, 'Document saved', description, event.documentId, event.createdAt)
     }
+    case 'document.summary.generated':
+      return buildRecord(event.type, 'Summary generated', `Generated an AI summary for "${event.documentTitle}".`, event.documentId, event.createdAt)
     case 'document.moved':
       return buildRecord(event.type, 'Document moved', `Moved "${event.documentTitle}" to ${event.newPath}.`, event.documentId, event.createdAt)
     case 'document.deleted': {

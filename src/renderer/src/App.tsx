@@ -38,6 +38,7 @@ const emptyState: HomeData = {
     baseUrl: '',
     model: '',
     embeddingModel: '',
+    autoSummaryOnSave: false,
     hasApiKey: false
   },
   documentTree: [],
@@ -1014,6 +1015,7 @@ export function App() {
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
+  const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(false)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
@@ -1387,6 +1389,7 @@ export function App() {
         setAiBaseUrlDraft(data.aiConfig.baseUrl)
         setAiModelDraft(data.aiConfig.model)
         setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
+        setAiAutoSummaryOnSaveDraft(data.aiConfig.autoSummaryOnSave)
         setAiApiKeyDraft('')
       }
     })
@@ -1933,6 +1936,7 @@ export function App() {
       baseUrl: aiBaseUrlDraft,
       model: aiModelDraft,
       embeddingModel: aiEmbeddingModelDraft,
+      autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
       apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()
@@ -1941,6 +1945,7 @@ export function App() {
     setAiBaseUrlDraft(refreshed.aiConfig.baseUrl)
     setAiModelDraft(refreshed.aiConfig.model)
     setAiEmbeddingModelDraft(refreshed.aiConfig.embeddingModel)
+    setAiAutoSummaryOnSaveDraft(refreshed.aiConfig.autoSummaryOnSave)
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage('AI settings saved.')
@@ -3424,6 +3429,10 @@ export function App() {
               <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
               <span>Enable AI features</span>
             </label>
+            <label className="toggle-row">
+              <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
+              <span>Auto-generate summary when summary is empty</span>
+            </label>
             <label className="editor-label">
               Base URL
               <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
@@ -3442,6 +3451,7 @@ export function App() {
             </label>
             <p className="mini-hint">Current key: {homeData.aiConfig.hasApiKey ? 'configured' : 'missing'}</p>
             <p className="mini-hint">Chat model answers questions. Embedding model powers local semantic retrieval and RAG context caching.</p>
+            <p className="mini-hint">Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.</p>
             <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
               {aiSaving ? 'Saving...' : 'Save AI settings'}
             </button>

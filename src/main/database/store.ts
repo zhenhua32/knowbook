@@ -36,6 +36,8 @@ import type {
 } from '@shared/contracts'
 import { appSchema } from './schema'
 
+export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
+
 type SqliteDatabase = InstanceType<typeof Database>
 
 interface CountRow {
@@ -387,7 +389,7 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      insertDocument.run(id, title, slug, parent?.id ?? null, path, 'New knowledge node ready for editing.', now, now)
+      insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, now, now)
       insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, now, now)
       insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, now, now)
     })
@@ -465,6 +467,16 @@ export class KnowbookStore {
     transaction()
     this.resyncLinksForAllDocuments()
     return newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]
+  }
+
+  updateDocumentSummary(documentId: string, summary: string): void {
+    const normalizedSummary = summary.trim()
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      UPDATE documents
+      SET summary = ?, updated_at = ?
+      WHERE id = ?
+    `).run(normalizedSummary, now, documentId)
   }
 
   deleteDocument(documentId: string): string[] {
@@ -577,6 +589,7 @@ export class KnowbookStore {
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
     this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
+    this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
@@ -1079,6 +1092,10 @@ export class KnowbookStore {
 
   getSettingPublic(key: string): string | null {
     return this.readSetting(key)
+  }
+
+  getAiConfigPublic(): AiConfig {
+    return this.getAiConfig()
   }
 
   recordWorkspaceEvent(input: {
@@ -1759,6 +1776,7 @@ export class KnowbookStore {
       baseUrl: this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1',
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
       embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
+      autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
       hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
@@ -1890,6 +1908,7 @@ export class KnowbookStore {
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')
       this.saveSetting('ai.model', 'gpt-4.1-mini')
       this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
+      this.saveSetting('ai.autoSummaryOnSave', 'false')
     })
 
     seedTransaction()

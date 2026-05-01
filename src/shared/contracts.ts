@@ -134,6 +134,7 @@ export interface AiConfig {
   baseUrl: string
   model: string
   embeddingModel: string
+  autoSummaryOnSave: boolean
   hasApiKey: boolean
 }
 
@@ -149,6 +150,7 @@ export interface SemanticSearchResult {
 export type WorkspaceEventType =
   | 'document.created'
   | 'document.updated'
+  | 'document.summary.generated'
   | 'document.moved'
   | 'document.deleted'
   | 'ai.config.updated'
@@ -225,6 +227,7 @@ export interface UpdateAiConfigInput {
   baseUrl: string
   model: string
   embeddingModel: string
+  autoSummaryOnSave: boolean
   apiKey?: string
 }
 

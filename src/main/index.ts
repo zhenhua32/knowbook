@@ -21,7 +21,7 @@ import type {
   UpdateDocumentInput
 } from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
-import { KnowbookStore, type SemanticSearchCandidate } from './database/store'
+import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
@@ -89,6 +89,42 @@ function registerWorkspaceEventHandlers(): void {
         queueEmbeddingBackfill(event.embeddingModelChanged ? event.previousEmbeddingModel : null)
         break
     }
+  })
+
+  workspaceEventBus.subscribe(async (event) => {
+    if (event.type !== 'document.updated') {
+      return
+    }
+
+    const aiConfig = store.getAiConfigPublic()
+    if (!aiConfig.enabled || !aiConfig.autoSummaryOnSave) {
+      return
+    }
+
+    const apiKey = store.getAiApiKey()
+    if (!apiKey) {
+      return
+    }
+
+    const detail = store.getDocumentDetail(event.documentId)
+    if (!detail || !shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+      return
+    }
+
+    const generatedSummary = await generateDocumentSummary(detail, aiConfig, apiKey)
+    if (!generatedSummary || generatedSummary === detail.summary.trim()) {
+      return
+    }
+
+    store.updateDocumentSummary(detail.id, generatedSummary)
+    await workspaceEventBus.emit({
+      type: 'document.summary.generated',
+      createdAt: new Date().toISOString(),
+      documentId: detail.id,
+      documentTitle: detail.title,
+      path: detail.path,
+      summary: generatedSummary
+    })
   })
 }
 
@@ -350,6 +386,87 @@ async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<Sem
 
   const notes = await buildSemanticContextNotes(input, home.aiConfig, apiKey)
   return notes.map(({ content, contentHash, ...note }) => note)
+}
+
+async function generateDocumentSummary(
+  detail: DocumentDetail,
+  aiConfig: HomeData['aiConfig'],
+  apiKey: string
+): Promise<string | null> {
+  const content = detail.blocks
+    .map((block) => block.content.trim())
+    .filter((blockContent) => blockContent.length > 0)
+    .slice(0, 24)
+    .join('\n')
+
+  if (content.length < 40) {
+    return null
+  }
+
+  const endpoint = `${aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: aiConfig.model,
+      messages: [
+        {
+          role: 'system',
+          content: 'You summarize notes for a knowledge management app. Produce one concise Chinese summary sentence with no markdown, no bullet points, and no surrounding quotes.'
+        },
+        {
+          role: 'user',
+          content: [
+            `Document title: ${detail.title}`,
+            `Document path: ${detail.path}`,
+            'Document content:',
+            content,
+            '',
+            'Return a compact summary in Chinese, ideally under 60 Chinese characters.'
+          ].join('\n')
+        }
+      ],
+      temperature: 0.2
+    })
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`AI summary request failed (${response.status}): ${errorBody}`)
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+  }
+  const summary = payload.choices?.[0]?.message?.content?.trim() ?? ''
+  const normalizedSummary = summary
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[“”"'`]/g, '')
+    .replace(/^[-*\d.\s]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+
+  return normalizedSummary || null
+}
+
+function shouldGenerateSummary(summary: string, blockContents: string[]): boolean {
+  const normalizedSummary = summary.trim()
+  if (normalizedSummary && normalizedSummary !== DEFAULT_DOCUMENT_SUMMARY) {
+    return false
+  }
+
+  const contentLength = blockContents
+    .map((content) => content.trim())
+    .filter((content) => content.length > 0)
+    .join(' ')
+    .trim()
+    .length
+
+  return contentLength >= 40
 }
 
 async function buildSemanticContextNotes(
