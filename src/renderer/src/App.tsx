@@ -2015,7 +2015,13 @@ export function App() {
 
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage(`Installed plugin "${result.plugin.name}".`)
+      if (result.operation === 'updated') {
+        setBackupMessage(`Updated plugin "${result.plugin.name}" from ${result.previousVersion ?? 'unknown'} to ${result.plugin.version}.`)
+      } else if (result.operation === 'reloaded') {
+        setBackupMessage(`Reloaded plugin "${result.plugin.name}" from its installed folder.`)
+      } else {
+        setBackupMessage(`Installed plugin "${result.plugin.name}".`)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to install plugin.'
       setBackupMessage(message)
@@ -3687,7 +3693,7 @@ export function App() {
             </div>
           ) : null}
           <p className="mini-hint">
-            Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root.
+            Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root and can replace an existing user-data plugin with the same id.
           </p>
           {pluginWritableRoot ? <p className="mini-hint">Writable install root: {pluginWritableRoot}</p> : null}
           {plugins.length > 0 ? (

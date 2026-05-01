@@ -161,6 +161,7 @@ export type WorkspaceEventType =
   | 'plugin.loaded'
   | 'plugin.reloaded'
   | 'plugin.installed'
+  | 'plugin.updated'
   | 'plugin.removed'
   | 'plugin.action.executed'
   | 'plugin.action.failed'
@@ -221,6 +222,8 @@ export interface PluginHostInfo {
 
 export interface InstallPluginResult {
   plugin: PluginDescriptor
+  operation: 'installed' | 'updated' | 'reloaded'
+  previousVersion: string | null
 }
 
 export interface HomeData {

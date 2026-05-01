@@ -87,6 +87,25 @@ type PluginApi = {
   log: (title: string, description: string, documentId?: string | null) => void
 }
 
+type InstallCandidate = {
+  manifest: PluginManifest
+  targetDirectory: string
+  sourceIsTarget: boolean
+  existingPlugin: RegisteredPlugin | null
+  targetExists: boolean
+}
+
+type InstallPluginOptions = {
+  replaceExisting?: boolean
+}
+
+export type PluginInstallPreview = {
+  manifest: PluginManifest
+  existingPlugin: PluginDescriptor | null
+  canReplace: boolean
+  sourceIsTarget: boolean
+}
+
 export class PluginHost {
   private readonly plugins = new Map<string, RegisteredPlugin>()
 
@@ -161,61 +180,80 @@ export class PluginHost {
     }
   }
 
-  async installPluginFromDirectory(sourceDirectory: string): Promise<InstallPluginResult> {
-    const sourceStats = statSync(sourceDirectory, { throwIfNoEntry: false })
-    if (!sourceStats?.isDirectory()) {
-      throw new Error('Selected plugin folder does not exist.')
-    }
+  previewInstallFromDirectory(sourceDirectory: string): PluginInstallPreview {
+    const candidate = this.resolveInstallCandidate(sourceDirectory)
+    const existingPlugin = candidate.existingPlugin ? this.toPluginDescriptor(candidate.existingPlugin) : null
 
-    const manifestPath = join(sourceDirectory, 'plugin.json')
-    if (!existsSync(manifestPath)) {
-      throw new Error('Selected folder does not contain plugin.json.')
+    return {
+      manifest: candidate.manifest,
+      existingPlugin,
+      canReplace: Boolean(existingPlugin && existingPlugin.source === 'user-data' && !candidate.sourceIsTarget),
+      sourceIsTarget: candidate.sourceIsTarget
     }
+  }
 
-    const manifest = this.parseManifest(manifestPath)
-    const writableRoot = this.getWritableRoot()
-    if (!writableRoot) {
-      throw new Error('No writable plugin root is configured.')
-    }
+  async installPluginFromDirectory(sourceDirectory: string, options: InstallPluginOptions = {}): Promise<InstallPluginResult> {
+    const candidate = this.resolveInstallCandidate(sourceDirectory)
 
-    mkdirSync(writableRoot, { recursive: true })
-    const targetDirectory = join(writableRoot, manifest.id)
-    if (resolve(sourceDirectory) === resolve(targetDirectory)) {
+    if (candidate.sourceIsTarget) {
       await this.reloadAll()
-      const installedPlugin = this.plugins.get(manifest.id)
+      const installedPlugin = this.plugins.get(candidate.manifest.id)
       if (!installedPlugin) {
         throw new Error('Plugin reload failed after install request.')
       }
       return {
-        plugin: this.toPluginDescriptor(installedPlugin)
+        plugin: this.toPluginDescriptor(installedPlugin),
+        operation: 'reloaded',
+        previousVersion: installedPlugin.manifest.version
       }
     }
 
-    if (existsSync(targetDirectory)) {
-      throw new Error(`A user-data plugin with id "${manifest.id}" is already installed.`)
+    if (candidate.existingPlugin?.source === 'workspace') {
+      throw new Error(`Plugin id "${candidate.manifest.id}" is already provided by the workspace plugin "${candidate.existingPlugin.manifest.name}". Remove or rename the workspace plugin before installing another copy.`)
     }
 
-    cpSync(sourceDirectory, targetDirectory, {
+    const existingUserPlugin = candidate.existingPlugin?.source === 'user-data' ? candidate.existingPlugin : null
+    if ((existingUserPlugin || candidate.targetExists) && !options.replaceExisting) {
+      throw new Error(`A user-data plugin with id "${candidate.manifest.id}" is already installed.`)
+    }
+
+    if (existingUserPlugin) {
+      await this.deactivatePlugin(existingUserPlugin)
+      this.plugins.delete(existingUserPlugin.manifest.id)
+    }
+
+    if (candidate.targetExists) {
+      rmSync(candidate.targetDirectory, { recursive: true, force: true })
+    }
+
+    cpSync(sourceDirectory, candidate.targetDirectory, {
       recursive: true,
-      errorOnExist: true,
+      errorOnExist: false,
       force: false
     })
 
     await this.reloadAll()
 
-    const installedPlugin = this.plugins.get(manifest.id)
+    const installedPlugin = this.plugins.get(candidate.manifest.id)
     if (!installedPlugin) {
       throw new Error('Installed plugin could not be discovered after reload.')
     }
 
+    const operation = existingUserPlugin || candidate.targetExists ? 'updated' : 'installed'
+    const previousVersion = existingUserPlugin?.manifest.version ?? null
     this.store.recordWorkspaceEvent({
-      type: 'plugin.installed',
-      title: `Plugin installed: ${installedPlugin.manifest.name}`,
-      description: `Installed plugin ${installedPlugin.manifest.name} into ${targetDirectory}.`
+      type: operation === 'updated' ? 'plugin.updated' : 'plugin.installed',
+      title: `${operation === 'updated' ? 'Plugin updated' : 'Plugin installed'}: ${installedPlugin.manifest.name}`,
+      description:
+        operation === 'updated'
+          ? `Updated plugin ${installedPlugin.manifest.name} from ${previousVersion ?? 'an unknown version'} to ${installedPlugin.manifest.version}.`
+          : `Installed plugin ${installedPlugin.manifest.name} into ${candidate.targetDirectory}.`
     })
 
     return {
-      plugin: this.toPluginDescriptor(installedPlugin)
+      plugin: this.toPluginDescriptor(installedPlugin),
+      operation,
+      previousVersion
     }
   }
 
@@ -413,6 +451,36 @@ export class PluginHost {
 
   private getWritableRoot(): string | null {
     return this.roots.find((root) => root.source === 'user-data')?.path ?? null
+  }
+
+  private resolveInstallCandidate(sourceDirectory: string): InstallCandidate {
+    const sourceStats = statSync(sourceDirectory, { throwIfNoEntry: false })
+    if (!sourceStats?.isDirectory()) {
+      throw new Error('Selected plugin folder does not exist.')
+    }
+
+    const manifestPath = join(sourceDirectory, 'plugin.json')
+    if (!existsSync(manifestPath)) {
+      throw new Error('Selected folder does not contain plugin.json.')
+    }
+
+    const manifest = this.parseManifest(manifestPath)
+    const writableRoot = this.getWritableRoot()
+    if (!writableRoot) {
+      throw new Error('No writable plugin root is configured.')
+    }
+
+    mkdirSync(writableRoot, { recursive: true })
+    const targetDirectory = join(writableRoot, manifest.id)
+    const existingPlugin = this.plugins.get(manifest.id) ?? null
+
+    return {
+      manifest,
+      targetDirectory,
+      sourceIsTarget: resolve(sourceDirectory) === resolve(targetDirectory),
+      existingPlugin,
+      targetExists: existsSync(targetDirectory)
+    }
   }
 
   private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {

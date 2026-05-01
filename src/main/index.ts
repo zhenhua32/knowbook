@@ -391,7 +391,41 @@ function registerIpcHandlers(): void {
       return null
     }
 
-    return pluginHost.installPluginFromDirectory(result.filePaths[0])
+    const preview = pluginHost.previewInstallFromDirectory(result.filePaths[0])
+    if (preview.existingPlugin?.source === 'workspace') {
+      throw new Error(`Plugin id "${preview.manifest.id}" is already provided by the workspace plugin "${preview.existingPlugin.name}".`)
+    }
+
+    let replaceExisting = false
+    if (preview.canReplace && preview.existingPlugin) {
+      const replaceResult = targetWindow
+        ? await dialog.showMessageBox(targetWindow, {
+            type: 'question',
+            title: 'Replace installed plugin?',
+            message: `Replace plugin "${preview.existingPlugin.name}"?`,
+            detail: `Installed version: ${preview.existingPlugin.version}\nNew version: ${preview.manifest.version}\n\nThis will replace the existing user-data plugin with the selected folder contents.`,
+            buttons: ['Replace', 'Cancel'],
+            defaultId: 0,
+            cancelId: 1
+          })
+        : await dialog.showMessageBox({
+            type: 'question',
+            title: 'Replace installed plugin?',
+            message: `Replace plugin "${preview.existingPlugin.name}"?`,
+            detail: `Installed version: ${preview.existingPlugin.version}\nNew version: ${preview.manifest.version}\n\nThis will replace the existing user-data plugin with the selected folder contents.`,
+            buttons: ['Replace', 'Cancel'],
+            defaultId: 0,
+            cancelId: 1
+          })
+
+      if (replaceResult.response !== 0) {
+        return null
+      }
+
+      replaceExisting = true
+    }
+
+    return pluginHost.installPluginFromDirectory(result.filePaths[0], { replaceExisting })
   })
 
   ipcMain.handle('knowbook:remove-plugin', async (_event, pluginId: string) => {
