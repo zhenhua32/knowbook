@@ -2188,11 +2188,12 @@ export function App() {
 
         if (i > range.end) {
           if (block.depth > lastRemovedBlock.depth) {
-            const depthDelta = lastRemovedBlock.depth - block.depth
+            const requestedDepth = normalizeBlockDepth(block.type, block.depth + (lastRemovedBlock.depth - block.depth))
+            const placement = resolveDraftInsertionPlacement(modifiedBlocks, modifiedBlocks.length, block.type, requestedDepth)
             modifiedBlocks.push({
               ...block,
-              depth: normalizeBlockDepth(block.type, block.depth + depthDelta),
-              parentBlockId: null
+              depth: placement.depth,
+              parentBlockId: placement.parentBlockId
             })
             continue
           }
