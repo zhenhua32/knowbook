@@ -649,26 +649,19 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
 
   const knownIds = new Set(blocks.map((block) => block.id).filter((id): id is string => Boolean(id)))
   const seenIds = new Set<string>()
+  const resolvedDepthById = new Map<string, number>()
+  const resolvedTypeById = new Map<string, string>()
+
   for (let i = 0; i < blocks.length; i += 1) {
     const block = blocks[i]
+    const blockId = getNormalizedBlockId(block)
 
-    if (block.id) {
-      if (seenIds.has(block.id)) {
-        errors.push(`Block ${i}: duplicate ID "${block.id}"`)
-      } else {
-        seenIds.add(block.id)
-      }
-    }
-
-    const parentBlockId = block.parentBlockId?.trim() ? block.parentBlockId : null
-    if (parentBlockId) {
-      if (parentBlockId === block.id) {
-        errors.push(`Block ${i}: parentBlockId cannot reference itself`)
-      } else if (!knownIds.has(parentBlockId)) {
-        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" does not exist in this document`)
-      } else if (!seenIds.has(parentBlockId)) {
-        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" must appear before the child in flat order`)
-      }
+    if (!blockId) {
+      errors.push(`Block ${i}: missing block id`)
+    } else if (seenIds.has(blockId)) {
+      errors.push(`Block ${i}: duplicate ID "${blockId}"`)
+    } else {
+      seenIds.add(blockId)
     }
 
     if (block.depth < 0) {
@@ -683,17 +676,43 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
       errors.push(`Block ${i}: non-nestable type "${block.type}" has depth ${block.depth} > 0`)
     }
 
-    if (i > 0) {
-      const prevBlock = blocks[i - 1]
-      const depthDiff = block.depth - prevBlock.depth
-
-      if (depthDiff > 1) {
-        errors.push(`Block ${i}: depth jumps from ${prevBlock.depth} to ${block.depth} (gap of ${depthDiff})`)
-      }
+    const parentBlockId = getNormalizedParentBlockId(block)
+    if (!isNestableBlock(block.type) && parentBlockId) {
+      errors.push(`Block ${i}: non-nestable type "${block.type}" cannot have parentBlockId "${parentBlockId}"`)
     }
 
-    if (block.depth > 0 && i === 0) {
-      errors.push(`Block ${i}: first block cannot have depth > 0`)
+    if (parentBlockId) {
+      if (!blockId) {
+        errors.push(`Block ${i}: child block is missing its own id`)
+      } else if (parentBlockId === blockId) {
+        errors.push(`Block ${i}: parentBlockId cannot reference itself`)
+      } else if (!knownIds.has(parentBlockId)) {
+        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" does not exist in this document`)
+      } else if (!seenIds.has(parentBlockId)) {
+        errors.push(`Block ${i}: parentBlockId "${parentBlockId}" must appear before the child in flat order`)
+      } else {
+        const parentDepth = resolvedDepthById.get(parentBlockId)
+        const parentType = resolvedTypeById.get(parentBlockId)
+
+        if (parentDepth === undefined) {
+          errors.push(`Block ${i}: parentBlockId "${parentBlockId}" could not be resolved`)
+        } else {
+          if (block.depth !== parentDepth + 1) {
+            errors.push(`Block ${i}: depth ${block.depth} does not match parent depth ${parentDepth} + 1`)
+          }
+
+          if (parentType && !isNestableBlock(parentType)) {
+            errors.push(`Block ${i}: parentBlockId "${parentBlockId}" points to non-nestable type "${parentType}"`)
+          }
+        }
+      }
+    } else if (block.depth > 0) {
+      errors.push(`Block ${i}: root block cannot have depth ${block.depth} without parentBlockId`)
+    }
+
+    if (blockId) {
+      resolvedDepthById.set(blockId, block.depth)
+      resolvedTypeById.set(blockId, block.type)
     }
   }
 
