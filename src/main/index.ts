@@ -27,6 +27,7 @@ const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
 let mainWindow: BrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
+let embeddingSyncQueue: Promise<void> = Promise.resolve()
 
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
@@ -84,6 +85,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:create-document', (_event, parentId: string | null) => {
     const id = store.createDocument(parentId)
+    queueEmbeddingSyncForDocument(id)
     return { id }
   })
 
@@ -113,19 +115,26 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:update-document', (_event, documentId: string, input: UpdateDocumentInput) => {
-    store.updateDocument(documentId, input)
+    const affectedDocumentIds = store.updateDocument(documentId, input)
+    queueEmbeddingSyncForDocuments(affectedDocumentIds)
   })
 
   ipcMain.handle('knowbook:delete-document', (_event, documentId: string) => {
-    store.deleteDocument(documentId)
+    store.deleteDocumentEmbeddings(documentId)
+    const affectedDocumentIds = store.deleteDocument(documentId)
+    queueEmbeddingSyncForDocuments(affectedDocumentIds)
   })
 
   ipcMain.handle('knowbook:move-document', (_event, documentId: string, newParentId: string | null) => {
-    store.moveDocument(documentId, newParentId)
+    const affectedDocumentIds = store.moveDocument(documentId, newParentId)
+    queueEmbeddingSyncForDocuments(affectedDocumentIds)
   })
 
   ipcMain.handle('knowbook:update-ai-config', (_event, input: UpdateAiConfigInput) => {
+    const previousConfig = store.getHomeData(backupRoot).aiConfig
     store.updateAiConfig(input)
+    const nextEmbeddingModel = input.embeddingModel.trim() || 'text-embedding-3-small'
+    queueEmbeddingBackfill(previousConfig.embeddingModel !== nextEmbeddingModel ? previousConfig.embeddingModel : null)
   })
 
   ipcMain.handle('knowbook:search-semantic-notes', async (_event, input: SearchSemanticNotesInput) => {
@@ -351,6 +360,107 @@ async function ensureDocumentEmbeddings(
       store.saveDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash, embedding)
     })
   }
+}
+
+function queueEmbeddingSyncForDocument(documentId: string): void {
+  embeddingSyncQueue = embeddingSyncQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await syncEmbeddingForDocument(documentId)
+      } catch (error) {
+        console.warn(`Failed to sync embedding for document ${documentId}.`, error)
+      }
+    })
+}
+
+function queueEmbeddingSyncForDocuments(documentIds: string[]): void {
+  const uniqueDocumentIds = [...new Set(documentIds.filter((documentId) => documentId.trim().length > 0))]
+  if (uniqueDocumentIds.length === 0) {
+    return
+  }
+
+  embeddingSyncQueue = embeddingSyncQueue
+    .catch(() => undefined)
+    .then(async () => {
+      for (const documentId of uniqueDocumentIds) {
+        try {
+          await syncEmbeddingForDocument(documentId)
+        } catch (error) {
+          console.warn(`Failed to sync embedding for document ${documentId}.`, error)
+        }
+      }
+    })
+}
+
+function queueEmbeddingBackfill(staleModel: string | null = null): void {
+  embeddingSyncQueue = embeddingSyncQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await backfillAllEmbeddings(staleModel)
+      } catch (error) {
+        console.warn('Failed to backfill embeddings after AI config change.', error)
+      }
+    })
+}
+
+async function syncEmbeddingForDocument(documentId: string): Promise<void> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    return
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    return
+  }
+
+  const candidate = store.getSemanticSearchCandidates().find((item) => item.documentId === documentId)
+  if (!candidate) {
+    store.deleteDocumentEmbeddings(documentId)
+    return
+  }
+
+  if (store.getCachedDocumentEmbedding(candidate.documentId, home.aiConfig.embeddingModel, candidate.contentHash)) {
+    return
+  }
+
+  const [embedding] = await createEmbeddings(
+    [candidate.content],
+    home.aiConfig.baseUrl,
+    apiKey,
+    home.aiConfig.embeddingModel
+  )
+
+  if (!embedding) {
+    return
+  }
+
+  store.saveDocumentEmbedding(candidate.documentId, home.aiConfig.embeddingModel, candidate.contentHash, embedding)
+}
+
+async function backfillAllEmbeddings(staleModel: string | null = null): Promise<void> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    return
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    return
+  }
+
+  if (staleModel && staleModel !== home.aiConfig.embeddingModel) {
+    store.deleteEmbeddingsByModel(staleModel)
+  }
+
+  const candidates = store.getSemanticSearchCandidates()
+  if (candidates.length === 0) {
+    return
+  }
+
+  await ensureDocumentEmbeddings(candidates, home.aiConfig, apiKey)
 }
 
 async function createEmbeddings(

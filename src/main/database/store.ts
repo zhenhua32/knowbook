@@ -361,7 +361,7 @@ export class KnowbookStore {
     return id
   }
 
-  updateDocument(documentId: string, input: UpdateDocumentInput): void {
+  updateDocument(documentId: string, input: UpdateDocumentInput): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
       SELECT id, path, parent_id
@@ -427,9 +427,10 @@ export class KnowbookStore {
 
     transaction()
     this.resyncLinksForAllDocuments()
+    return newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]
   }
 
-  deleteDocument(documentId: string): void {
+  deleteDocument(documentId: string): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
       SELECT id, path, title, parent_id
@@ -459,6 +460,12 @@ export class KnowbookStore {
       WHERE path LIKE ?
     `)
     const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
+    const affectedDescendantIds = this.db.prepare(`
+      SELECT id
+      FROM documents
+      WHERE path LIKE ?
+      ORDER BY path ASC
+    `).all(`${oldPrefix}%`) as Array<{ id: string }>
 
     const transaction = this.db.transaction(() => {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
@@ -468,9 +475,10 @@ export class KnowbookStore {
 
     transaction()
     this.resyncLinksForAllDocuments()
+    return affectedDescendantIds.map((row) => row.id)
   }
 
-  moveDocument(documentId: string, newParentId: string | null): void {
+  moveDocument(documentId: string, newParentId: string | null): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
       SELECT id, path, title, parent_id
@@ -500,7 +508,7 @@ export class KnowbookStore {
 
     const newPath = targetParent ? `${targetParent.path}/${document.title}` : document.title
     if (document.parent_id === (targetParent?.id ?? null) && newPath === document.path) {
-      return
+      return [document.id]
     }
 
     const oldPrefix = `${document.path}/`
@@ -524,6 +532,7 @@ export class KnowbookStore {
 
     transaction()
     this.resyncLinksForAllDocuments()
+    return this.getDocumentIdsInPathSubtree(newPath)
   }
 
   updateAiConfig(input: UpdateAiConfigInput): void {
@@ -836,6 +845,39 @@ export class KnowbookStore {
       ON CONFLICT(document_id, model)
       DO UPDATE SET content_hash = excluded.content_hash, embedding_json = excluded.embedding_json, updated_at = excluded.updated_at
     `).run(documentId, model, contentHash, JSON.stringify(embedding), now)
+  }
+
+  deleteDocumentEmbeddings(documentId: string, model?: string): void {
+    if (model) {
+      this.db.prepare(`
+        DELETE FROM document_embeddings
+        WHERE document_id = ? AND model = ?
+      `).run(documentId, model)
+      return
+    }
+
+    this.db.prepare(`
+      DELETE FROM document_embeddings
+      WHERE document_id = ?
+    `).run(documentId)
+  }
+
+  deleteEmbeddingsByModel(model: string): void {
+    this.db.prepare(`
+      DELETE FROM document_embeddings
+      WHERE model = ?
+    `).run(model)
+  }
+
+  private getDocumentIdsInPathSubtree(rootPath: string): string[] {
+    const rows = this.db.prepare(`
+      SELECT id
+      FROM documents
+      WHERE path = ? OR path LIKE ?
+      ORDER BY path ASC
+    `).all(rootPath, `${rootPath}/%`) as Array<{ id: string }>
+
+    return rows.map((row) => row.id)
   }
 
   getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
