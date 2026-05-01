@@ -11,6 +11,8 @@ import type {
   DocumentSuggestion,
   GlobalSearchResult,
   HomeData,
+  MoveDocumentDatabaseColumnInput,
+  RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
@@ -80,6 +82,18 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {
     const column: DocumentDatabaseColumn = store.createDocumentDatabaseColumn(input)
     return column
+  })
+
+  ipcMain.handle('knowbook:rename-document-database-column', (_event, input: RenameDocumentDatabaseColumnInput) => {
+    store.renameDocumentDatabaseColumn(input)
+  })
+
+  ipcMain.handle('knowbook:move-document-database-column', (_event, input: MoveDocumentDatabaseColumnInput) => {
+    store.moveDocumentDatabaseColumn(input)
+  })
+
+  ipcMain.handle('knowbook:delete-document-database-column', (_event, columnId: string) => {
+    store.deleteDocumentDatabaseColumn(columnId)
   })
 
   ipcMain.handle('knowbook:update-document-database-value', (_event, input: UpdateDocumentDatabaseValueInput) => {

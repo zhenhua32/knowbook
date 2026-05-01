@@ -172,6 +172,16 @@ export interface CreateDocumentDatabaseColumnInput {
   options?: string[]
 }
 
+export interface RenameDocumentDatabaseColumnInput {
+  columnId: string
+  name: string
+}
+
+export interface MoveDocumentDatabaseColumnInput {
+  columnId: string
+  direction: 'left' | 'right'
+}
+
 export interface UpdateDocumentDatabaseValueInput {
   documentId: string
   columnId: string
@@ -199,6 +209,9 @@ export interface ElectronApi {
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => Promise<DocumentDatabaseColumn>
+  renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => Promise<void>
+  moveDocumentDatabaseColumn: (input: MoveDocumentDatabaseColumnInput) => Promise<void>
+  deleteDocumentDatabaseColumn: (columnId: string) => Promise<void>
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => Promise<void>
   updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<void>
   deleteDocument: (documentId: string) => Promise<void>

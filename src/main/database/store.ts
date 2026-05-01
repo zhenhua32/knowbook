@@ -17,7 +17,9 @@ import type {
   DocumentTreeNode,
   HomeData,
   LinkedDocument,
+  MoveDocumentDatabaseColumnInput,
   RecentDocument,
+  RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
@@ -528,6 +530,69 @@ export class KnowbookStore {
     `).run(column.id, column.name, column.type, JSON.stringify(column.options), column.sortOrder, now, now)
 
     return column
+  }
+
+  renameDocumentDatabaseColumn(input: RenameDocumentDatabaseColumnInput): void {
+    const name = input.name.trim()
+    if (!name) {
+      throw new Error('Column name is required.')
+    }
+
+    const now = new Date().toISOString()
+    const result = this.db.prepare(`
+      UPDATE document_database_columns
+      SET name = ?, updated_at = ?
+      WHERE id = ?
+    `).run(name, now, input.columnId)
+
+    if (result.changes === 0) {
+      throw new Error('Database column not found.')
+    }
+  }
+
+  moveDocumentDatabaseColumn(input: MoveDocumentDatabaseColumnInput): void {
+    const rows = this.db.prepare(`
+      SELECT id, name, type, options_json, sort_order
+      FROM document_database_columns
+      ORDER BY sort_order ASC, name ASC
+    `).all() as DocumentDatabaseColumnRow[]
+
+    const currentIndex = rows.findIndex((row) => row.id === input.columnId)
+    if (currentIndex === -1) {
+      throw new Error('Database column not found.')
+    }
+
+    const targetIndex = input.direction === 'left' ? currentIndex - 1 : currentIndex + 1
+    if (targetIndex < 0 || targetIndex >= rows.length) {
+      return
+    }
+
+    const current = rows[currentIndex]
+    const target = rows[targetIndex]
+    const updateSortOrder = this.db.prepare(`
+      UPDATE document_database_columns
+      SET sort_order = ?, updated_at = ?
+      WHERE id = ?
+    `)
+
+    const transaction = this.db.transaction(() => {
+      const now = new Date().toISOString()
+      updateSortOrder.run(target.sort_order, now, current.id)
+      updateSortOrder.run(current.sort_order, now, target.id)
+    })
+
+    transaction()
+  }
+
+  deleteDocumentDatabaseColumn(columnId: string): void {
+    const result = this.db.prepare(`
+      DELETE FROM document_database_columns
+      WHERE id = ?
+    `).run(columnId)
+
+    if (result.changes === 0) {
+      throw new Error('Database column not found.')
+    }
   }
 
   updateDocumentDatabaseValue(input: UpdateDocumentDatabaseValueInput): void {

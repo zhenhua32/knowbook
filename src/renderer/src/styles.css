@@ -1265,6 +1265,45 @@ del {
   font-size: 0.76rem;
 }
 
+.database-schema-name-input {
+  min-width: 160px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #2d251c;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.database-schema-name-input:focus {
+  outline: none;
+}
+
+.database-schema-chip-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.database-schema-chip-button {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(91, 72, 44, 0.14);
+  background: rgba(255, 251, 245, 0.98);
+  color: #5b513f;
+  cursor: pointer;
+}
+
+.database-schema-chip-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.database-schema-chip-delete {
+  color: #9a3b2d;
+}
+
 .catalog-table {
   width: 100%;
   border-collapse: collapse;

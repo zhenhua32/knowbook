@@ -1949,6 +1949,46 @@ export function App() {
     }
   }
 
+  async function renameDatabaseColumn(columnId: string, name: string) {
+    try {
+      await window.knowbook.renameDocumentDatabaseColumn({ columnId, name })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(`Renamed column to "${name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to rename database column.'
+      setBackupMessage(message)
+    }
+  }
+
+  async function moveDatabaseColumn(columnId: string, direction: 'left' | 'right') {
+    try {
+      await window.knowbook.moveDocumentDatabaseColumn({ columnId, direction })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reorder database column.'
+      setBackupMessage(message)
+    }
+  }
+
+  async function deleteDatabaseColumn(columnId: string, columnName: string) {
+    const accepted = window.confirm(`Delete database column "${columnName}"? Existing values in this column will be removed.`)
+    if (!accepted) {
+      return
+    }
+
+    try {
+      await window.knowbook.deleteDocumentDatabaseColumn(columnId)
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(`Deleted column "${columnName}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete database column.'
+      setBackupMessage(message)
+    }
+  }
+
   async function updateDocumentDatabaseValue(documentId: string, columnId: string, value: DocumentDatabaseFieldValue) {
     const previousFieldValue = homeData.documentCatalog.find((document) => document.id === documentId)?.fieldValues[columnId]
 
@@ -3480,11 +3520,16 @@ export function App() {
 
             {homeData.databaseColumns.length > 0 ? (
               <div className="database-schema-chip-row">
-                {homeData.databaseColumns.map((column) => (
-                  <span className="database-schema-chip" key={column.id}>
-                    <strong>{column.name}</strong>
-                    <small>{databaseColumnTypeLabels[column.type]}</small>
-                  </span>
+                {homeData.databaseColumns.map((column, index) => (
+                  <DatabaseSchemaColumnCard
+                    column={column}
+                    isFirst={index === 0}
+                    isLast={index === homeData.databaseColumns.length - 1}
+                    key={column.id}
+                    onDelete={deleteDatabaseColumn}
+                    onMove={moveDatabaseColumn}
+                    onRename={renameDatabaseColumn}
+                  />
                 ))}
               </div>
             ) : (
@@ -4871,6 +4916,99 @@ function DocumentCatalogTable({
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function DatabaseSchemaColumnCard({
+  column,
+  isFirst,
+  isLast,
+  onDelete,
+  onMove,
+  onRename
+}: {
+  column: DocumentDatabaseColumn
+  isFirst: boolean
+  isLast: boolean
+  onDelete: (columnId: string, columnName: string) => Promise<void>
+  onMove: (columnId: string, direction: 'left' | 'right') => Promise<void>
+  onRename: (columnId: string, name: string) => Promise<void>
+}) {
+  const [draftName, setDraftName] = useState(column.name)
+
+  useEffect(() => {
+    setDraftName(column.name)
+  }, [column.id, column.name])
+
+  const commitRename = async () => {
+    const normalizedName = draftName.trim()
+    if (!normalizedName) {
+      setDraftName(column.name)
+      return
+    }
+
+    if (normalizedName === column.name) {
+      if (draftName !== column.name) {
+        setDraftName(column.name)
+      }
+      return
+    }
+
+    await onRename(column.id, normalizedName)
+  }
+
+  return (
+    <div className="database-schema-chip">
+      <input
+        className="database-schema-name-input"
+        onBlur={() => {
+          void commitRename()
+        }}
+        onChange={(event) => setDraftName(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur()
+          }
+        }}
+        type="text"
+        value={draftName}
+      />
+      <small>
+        {databaseColumnTypeLabels[column.type]}
+        {column.options.length > 0 ? ` · ${column.options.join(', ')}` : ''}
+      </small>
+      <div className="database-schema-chip-actions">
+        <button
+          className="database-schema-chip-button"
+          disabled={isFirst}
+          onClick={() => {
+            void onMove(column.id, 'left')
+          }}
+          type="button"
+        >
+          Left
+        </button>
+        <button
+          className="database-schema-chip-button"
+          disabled={isLast}
+          onClick={() => {
+            void onMove(column.id, 'right')
+          }}
+          type="button"
+        >
+          Right
+        </button>
+        <button
+          className="database-schema-chip-button database-schema-chip-delete"
+          onClick={() => {
+            void onDelete(column.id, column.name)
+          }}
+          type="button"
+        >
+          Delete
+        </button>
+      </div>
     </div>
   )
 }

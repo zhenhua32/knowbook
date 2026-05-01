@@ -11,6 +11,8 @@ import type {
   ElectronApi,
   GlobalSearchResult,
   HomeData,
+  MoveDocumentDatabaseColumnInput,
+  RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
@@ -22,6 +24,9 @@ const api: ElectronApi = {
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:create-document-database-column', input) as Promise<DocumentDatabaseColumn>,
+  renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:rename-document-database-column', input) as Promise<void>,
+  moveDocumentDatabaseColumn: (input: MoveDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:move-document-database-column', input) as Promise<void>,
+  deleteDocumentDatabaseColumn: (columnId: string) => ipcRenderer.invoke('knowbook:delete-document-database-column', columnId) as Promise<void>,
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => ipcRenderer.invoke('knowbook:update-document-database-value', input) as Promise<void>,
   updateDocument: (documentId: string, input: UpdateDocumentInput) => ipcRenderer.invoke('knowbook:update-document', documentId, input) as Promise<void>,
   deleteDocument: (documentId: string) => ipcRenderer.invoke('knowbook:delete-document', documentId) as Promise<void>,
