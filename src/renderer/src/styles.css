@@ -1656,6 +1656,7 @@ del {
   --highlight-green: rgba(60, 200, 80, 0.13);
   --highlight-blue: rgba(47, 111, 237, 0.10);
   --highlight-purple: rgba(140, 60, 220, 0.12);
+  --highlight-gray: rgba(150, 150, 150, 0.12);
 }
 
 .block-highlight-picker {

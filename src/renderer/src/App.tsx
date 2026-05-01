@@ -1294,12 +1294,14 @@ export function App() {
 
   function blocksToMarkdown(blocks: DocumentBlock[]): string {
     return blocks.map((block) => {
+      const indent = '  '.repeat(Math.max(0, block.depth))
+
       switch (block.type) {
         case 'heading-1': return `# ${block.content}`
         case 'heading-2': return `## ${block.content}`
-        case 'todo': return `- [${block.checked ? 'x' : ' '}] ${block.content}`
-        case 'bulleted-list': return `${'  '.repeat(Math.max(0, block.depth))}* ${block.content}`
-        case 'numbered-list': return `${'  '.repeat(Math.max(0, block.depth))}1. ${block.content}`
+        case 'todo': return `${indent}- [${block.checked ? 'x' : ' '}] ${block.content}`
+        case 'bulleted-list': return `${indent}- ${block.content}`
+        case 'numbered-list': return `${indent}1. ${block.content}`
         case 'quote': return `> ${block.content}`
         case 'code': return `\`\`\`${block.language ?? ''}\n${block.content}\n\`\`\``
         case 'math': return `$$\n${block.content}\n$$`
@@ -1309,12 +1311,28 @@ export function App() {
     }).join('\n\n')
   }
 
+  function buildDocumentMarkdown(document: Pick<DocumentDetail, 'title' | 'blocks'>): string {
+    const body = blocksToMarkdown(document.blocks)
+    return body.trim() === '' ? `# ${document.title}\n` : `# ${document.title}\n\n${body}`
+  }
+
   async function copyDocumentAsMarkdown() {
     if (!selectedDocument) return
-    const markdown = `# ${selectedDocument.title}\n\n${blocksToMarkdown(selectedDocument.blocks)}`
+    const markdown = buildDocumentMarkdown(selectedDocument)
     await window.knowbook.writeClipboardText(markdown)
     setMdCopyFlash(true)
     setTimeout(() => setMdCopyFlash(false), 2000)
+  }
+
+  async function saveDocumentAsMarkdown() {
+    if (!selectedDocument) return
+
+    const baseName = selectedDocument.path.split('/').filter(Boolean).at(-1) || selectedDocument.title || 'document'
+    const savedPath = await window.knowbook.saveMarkdownFile(`${baseName}.md`, buildDocumentMarkdown(selectedDocument))
+
+    if (savedPath) {
+      setBackupMessage(`已导出 Markdown：${savedPath}`)
+    }
   }
 
   function navBack() {
@@ -2972,6 +2990,11 @@ export function App() {
                     Copy MD
                   </button>
                 ) : null}
+                {selectedDocument && !isEditing ? (
+                  <button className="secondary-button" onClick={saveDocumentAsMarkdown} type="button" title="导出为 Markdown 文件">
+                    Save MD
+                  </button>
+                ) : null}
                 {selectedDocument ? (
                   <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
                     Add child
@@ -3684,7 +3707,7 @@ export function App() {
                               + Tag
                             </button>
                             <div className="block-highlight-picker">
-                              {['', 'red', 'orange', 'yellow', 'green', 'blue', 'purple'].map((color) => (
+                              {['', 'red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].map((color) => (
                                 <button
                                   key={color || 'none'}
                                   className={`highlight-swatch${(draftBlocks[index]?.highlight ?? '') === color ? ' highlight-swatch-active' : ''}`}

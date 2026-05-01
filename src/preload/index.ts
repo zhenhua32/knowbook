@@ -25,6 +25,7 @@ const api: ElectronApi = {
   askAiAboutDocument: (input: AskAiInput) => ipcRenderer.invoke('knowbook:ask-ai-about-document', input) as Promise<AskAiResult>,
   triggerBackup: () => ipcRenderer.invoke('knowbook:trigger-backup') as Promise<BackupResult>,
   writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
+  saveMarkdownFile: (defaultFileName: string, content: string) => ipcRenderer.invoke('knowbook:save-markdown-file', defaultFileName, content) as Promise<string | null>,
   searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   getSetting: (key: string) => ipcRenderer.invoke('knowbook:get-setting', key) as Promise<string | null>,
   saveSetting: (key: string, value: string) => ipcRenderer.invoke('knowbook:save-setting', key, value) as Promise<void>

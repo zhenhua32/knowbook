@@ -1,5 +1,6 @@
-import { join } from 'node:path'
-import { app, BrowserWindow, clipboard, ipcMain } from 'electron'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
 import type {
   AskAiInput,
   AskAiResult,
@@ -103,6 +104,28 @@ function registerIpcHandlers(): void {
     clipboard.writeText(text)
   })
 
+  ipcMain.handle('knowbook:save-markdown-file', async (event, defaultFileName: string, content: string): Promise<string | null> => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+    const saveDialogOptions = {
+      title: '导出 Markdown',
+      defaultPath: join(app.getPath('documents'), sanitizeMarkdownFileName(defaultFileName)),
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      showsTagField: false,
+      showOverwriteConfirmation: true
+    }
+    const result = targetWindow
+      ? await dialog.showSaveDialog(targetWindow, saveDialogOptions)
+      : await dialog.showSaveDialog(saveDialogOptions)
+
+    if (result.canceled || !result.filePath) {
+      return null
+    }
+
+    mkdirSync(dirname(result.filePath), { recursive: true })
+    writeFileSync(result.filePath, content, 'utf8')
+    return result.filePath
+  })
+
   ipcMain.handle('knowbook:search-documents', (_event, query: string): GlobalSearchResult[] => {
     return store.searchDocuments(query)
   })
@@ -166,6 +189,19 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
   }
 
   return { answer }
+}
+
+function sanitizeMarkdownFileName(fileName: string): string {
+  const normalized = fileName
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, ' ')
+
+  if (!normalized) {
+    return 'document.md'
+  }
+
+  return normalized.toLowerCase().endsWith('.md') ? normalized : `${normalized}.md`
 }
 
 function startBackupSchedule(): void {

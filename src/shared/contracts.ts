@@ -179,6 +179,7 @@ export interface ElectronApi {
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>
+  saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>
   getSetting: (key: string) => Promise<string | null>
   saveSetting: (key: string, value: string) => Promise<void>
 }
