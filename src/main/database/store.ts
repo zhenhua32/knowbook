@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
@@ -28,6 +28,9 @@ import type {
   WorkspaceGraphNode,
   WorkspaceSummary,
   GlobalSearchResult
+  ,
+  SearchSemanticNotesInput,
+  SemanticSearchResult
 } from '@shared/contracts'
 import { appSchema } from './schema'
 
@@ -160,6 +163,35 @@ interface DocumentLookupRow {
 interface BlockReferenceRow {
   document_id: string
   content: string
+}
+
+interface DocumentEmbeddingRow {
+  content_hash: string
+  embedding_json: string
+}
+
+interface SemanticSearchDocumentRow {
+  id: string
+  title: string
+  path: string
+  summary: string
+}
+
+interface SemanticSearchBlockRow {
+  document_id: string
+  type: string
+  content: string
+  sort_order: number
+}
+
+export interface SemanticSearchCandidate {
+  documentId: string
+  title: string
+  path: string
+  summary: string
+  snippet: string
+  content: string
+  contentHash: string
 }
 
 export interface ExportDocument {
@@ -498,6 +530,7 @@ export class KnowbookStore {
     this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
+    this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
@@ -666,13 +699,27 @@ export class KnowbookStore {
     `).run(input.documentId, input.columnId, serializedValue, now)
   }
 
-  buildAiPrompt(input: AskAiInput): string {
+  buildAiPrompt(
+    input: AskAiInput,
+    relatedNotes: Array<{ title: string; path: string; summary: string; content: string }> = []
+  ): string {
     const detail = this.getDocumentDetail(input.documentId)
     if (!detail) {
       throw new Error('Document not found')
     }
 
     const content = detail.blocks.map((block) => `- [${block.type}] ${block.content}`).join('\n')
+    const relatedContext = relatedNotes.length > 0
+      ? [
+          'Related workspace context:',
+          ...relatedNotes.map((note, index) => [
+            `Context ${index + 1}: ${note.title}`,
+            `Path: ${note.path}`,
+            `Summary: ${note.summary || '(empty)'}`,
+            note.content
+          ].join('\n'))
+        ]
+      : ['Related workspace context: none']
 
     return [
       `Document title: ${detail.title}`,
@@ -681,13 +728,114 @@ export class KnowbookStore {
       'Blocks:',
       content,
       '',
+      ...relatedContext,
+      '',
       `User request: ${input.prompt}`,
-      'Answer in concise Chinese with actionable suggestions.'
+      'Answer in concise Chinese with actionable suggestions. Use related workspace context when it is relevant, and mention note paths when you rely on them.'
     ].join('\n')
   }
 
   getAiApiKey(): string | null {
     return this.readSetting('ai.apiKey')
+  }
+
+  getSemanticSearchCandidates(input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> = {}): SemanticSearchCandidate[] {
+    const documents = input.excludeDocumentId
+      ? this.db.prepare(`
+        SELECT id, title, path, summary
+        FROM documents
+        WHERE id != ?
+        ORDER BY path ASC
+      `).all(input.excludeDocumentId) as SemanticSearchDocumentRow[]
+      : this.db.prepare(`
+        SELECT id, title, path, summary
+        FROM documents
+        ORDER BY path ASC
+      `).all() as SemanticSearchDocumentRow[]
+
+    if (documents.length === 0) {
+      return []
+    }
+
+    const documentIds = documents.map((document) => document.id)
+    const placeholders = documentIds.map(() => '?').join(', ')
+    const blockRows = this.db.prepare(`
+      SELECT document_id, type, content, sort_order
+      FROM blocks
+      WHERE document_id IN (${placeholders})
+      ORDER BY document_id ASC, sort_order ASC
+    `).all(...documentIds) as SemanticSearchBlockRow[]
+
+    const blocksByDocumentId = new Map<string, SemanticSearchBlockRow[]>()
+    blockRows.forEach((block) => {
+      const current = blocksByDocumentId.get(block.document_id)
+      if (current) {
+        current.push(block)
+        return
+      }
+      blocksByDocumentId.set(block.document_id, [block])
+    })
+
+    return documents.map((document) => {
+      const blocks = blocksByDocumentId.get(document.id) ?? []
+      const blockContent = blocks
+        .map((block) => `- [${block.type}] ${block.content}`)
+        .join('\n')
+      const content = [
+        `Title: ${document.title}`,
+        `Path: ${document.path}`,
+        `Summary: ${document.summary || '(empty)'}`,
+        'Blocks:',
+        blockContent || '- [empty] (no blocks yet)'
+      ].join('\n')
+      const snippet = blocks
+        .map((block) => block.content.trim())
+        .find((value) => value.length > 0)
+        ?? document.summary.trim()
+        ?? document.path
+
+      return {
+        documentId: document.id,
+        title: document.title,
+        path: document.path,
+        summary: document.summary,
+        snippet,
+        content,
+        contentHash: createHash('sha256').update(content).digest('hex')
+      }
+    })
+  }
+
+  getCachedDocumentEmbedding(documentId: string, model: string, contentHash: string): number[] | null {
+    const row = this.db.prepare(`
+      SELECT content_hash, embedding_json
+      FROM document_embeddings
+      WHERE document_id = ? AND model = ?
+    `).get(documentId, model) as DocumentEmbeddingRow | undefined
+
+    if (!row || row.content_hash !== contentHash) {
+      return null
+    }
+
+    try {
+      const embedding = JSON.parse(row.embedding_json) as unknown
+      if (!Array.isArray(embedding) || embedding.some((value) => typeof value !== 'number')) {
+        return null
+      }
+      return embedding
+    } catch {
+      return null
+    }
+  }
+
+  saveDocumentEmbedding(documentId: string, model: string, contentHash: string, embedding: number[]): void {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO document_embeddings (document_id, model, content_hash, embedding_json, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(document_id, model)
+      DO UPDATE SET content_hash = excluded.content_hash, embedding_json = excluded.embedding_json, updated_at = excluded.updated_at
+    `).run(documentId, model, contentHash, JSON.stringify(embedding), now)
   }
 
   getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
@@ -1449,6 +1597,7 @@ export class KnowbookStore {
       enabled: this.readSetting('ai.enabled') !== 'false',
       baseUrl: this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1',
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
+      embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
       hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
@@ -1572,6 +1721,7 @@ export class KnowbookStore {
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')
       this.saveSetting('ai.model', 'gpt-4.1-mini')
+      this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
     })
 
     seedTransaction()

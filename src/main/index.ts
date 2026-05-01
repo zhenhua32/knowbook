@@ -13,13 +13,15 @@ import type {
   HomeData,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
+  SearchSemanticNotesInput,
+  SemanticSearchResult,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
 } from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
-import { KnowbookStore } from './database/store'
+import { KnowbookStore, type SemanticSearchCandidate } from './database/store'
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
@@ -31,6 +33,11 @@ const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
+
+type SemanticContextNote = SemanticSearchResult & {
+  content: string
+  contentHash: string
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -121,6 +128,10 @@ function registerIpcHandlers(): void {
     store.updateAiConfig(input)
   })
 
+  ipcMain.handle('knowbook:search-semantic-notes', async (_event, input: SearchSemanticNotesInput) => {
+    return searchSemanticNotes(input)
+  })
+
   ipcMain.handle('knowbook:ask-ai-about-document', async (_event, input: AskAiInput) => {
     const result = await askAiAboutDocument(input)
     return result
@@ -181,7 +192,18 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
     throw new Error('Missing API key. Save an API key in AI settings.')
   }
 
-  const prompt = store.buildAiPrompt(input)
+  let relatedNotes: SemanticContextNote[] = []
+  try {
+    relatedNotes = await buildSemanticContextNotes({
+      query: input.prompt,
+      excludeDocumentId: input.documentId,
+      limit: 4
+    }, home.aiConfig, apiKey)
+  } catch (error) {
+    console.warn('Semantic retrieval failed. Falling back to current document only.', error)
+  }
+
+  const prompt = store.buildAiPrompt(input, relatedNotes)
   const endpoint = `${home.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -219,7 +241,185 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
     throw new Error('AI returned an empty response.')
   }
 
-  return { answer }
+  return {
+    answer,
+    references: relatedNotes.map(({ content, contentHash, ...note }) => note)
+  }
+}
+
+async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<SemanticSearchResult[]> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    throw new Error('AI is disabled. Enable AI in settings first.')
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    throw new Error('Missing API key. Save an API key in AI settings.')
+  }
+
+  const notes = await buildSemanticContextNotes(input, home.aiConfig, apiKey)
+  return notes.map(({ content, contentHash, ...note }) => note)
+}
+
+async function buildSemanticContextNotes(
+  input: SearchSemanticNotesInput,
+  aiConfig: HomeData['aiConfig'],
+  apiKey: string
+): Promise<SemanticContextNote[]> {
+  const query = input.query.trim()
+  if (!query) {
+    return []
+  }
+
+  const candidates = store.getSemanticSearchCandidates({
+    excludeDocumentId: input.excludeDocumentId ?? null
+  })
+  if (candidates.length === 0) {
+    return []
+  }
+
+  await ensureDocumentEmbeddings(candidates, aiConfig, apiKey)
+  const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel)
+  if (!queryEmbedding) {
+    return []
+  }
+
+  const normalizedLimit = Math.min(Math.max(input.limit ?? 4, 1), 8)
+  const scored = candidates
+    .map((candidate) => {
+      const embedding = store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
+      if (!embedding) {
+        return null
+      }
+
+      return {
+        ...candidate,
+        score: cosineSimilarity(queryEmbedding, embedding)
+      }
+    })
+    .filter((candidate): candidate is SemanticSearchCandidate & { score: number } => candidate !== null)
+    .sort((left, right) => right.score - left.score)
+
+  if (scored.length === 0) {
+    return []
+  }
+
+  const topMatches = scored.slice(0, normalizedLimit)
+  const filteredMatches = topMatches.filter((candidate) => candidate.score > 0.08)
+  const finalMatches = filteredMatches.length > 0 ? filteredMatches : topMatches.slice(0, 1).filter((candidate) => candidate.score > 0)
+
+  return finalMatches.map((candidate) => ({
+    documentId: candidate.documentId,
+    title: candidate.title,
+    path: candidate.path,
+    summary: candidate.summary,
+    snippet: candidate.snippet,
+    score: Number(candidate.score.toFixed(3)),
+    content: candidate.content,
+    contentHash: candidate.contentHash
+  }))
+}
+
+async function ensureDocumentEmbeddings(
+  candidates: SemanticSearchCandidate[],
+  aiConfig: HomeData['aiConfig'],
+  apiKey: string
+): Promise<void> {
+  const staleCandidates = candidates.filter((candidate) => {
+    return !store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
+  })
+
+  if (staleCandidates.length === 0) {
+    return
+  }
+
+  const chunks = chunkArray(staleCandidates, 20)
+  for (const chunk of chunks) {
+    const embeddings = await createEmbeddings(
+      chunk.map((candidate) => candidate.content),
+      aiConfig.baseUrl,
+      apiKey,
+      aiConfig.embeddingModel
+    )
+
+    embeddings.forEach((embedding, index) => {
+      const candidate = chunk[index]
+      if (!candidate) {
+        return
+      }
+      store.saveDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash, embedding)
+    })
+  }
+}
+
+async function createEmbeddings(
+  inputs: string[],
+  baseUrl: string,
+  apiKey: string,
+  embeddingModel: string
+): Promise<number[][]> {
+  if (inputs.length === 0) {
+    return []
+  }
+
+  const endpoint = `${baseUrl.replace(/\/$/, '')}/embeddings`
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: embeddingModel,
+      input: inputs
+    })
+  })
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`Embedding request failed (${response.status}): ${errorBody}`)
+  }
+
+  const payload = (await response.json()) as {
+    data?: Array<{ embedding?: number[] }>
+  }
+  const embeddings = payload.data?.map((item) => item.embedding ?? []) ?? []
+  if (embeddings.length !== inputs.length || embeddings.some((embedding) => embedding.length === 0)) {
+    throw new Error('Embedding response was incomplete.')
+  }
+
+  return embeddings
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
+    return 0
+  }
+
+  let dotProduct = 0
+  let leftNorm = 0
+  let rightNorm = 0
+
+  for (let index = 0; index < left.length; index += 1) {
+    dotProduct += left[index] * right[index]
+    leftNorm += left[index] * left[index]
+    rightNorm += right[index] * right[index]
+  }
+
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0
+  }
+
+  return dotProduct / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm))
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size))
+  }
+  return chunks
 }
 
 function sanitizeMarkdownFileName(fileName: string): string {

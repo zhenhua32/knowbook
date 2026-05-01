@@ -133,7 +133,17 @@ export interface AiConfig {
   enabled: boolean
   baseUrl: string
   model: string
+  embeddingModel: string
   hasApiKey: boolean
+}
+
+export interface SemanticSearchResult {
+  documentId: string
+  title: string
+  path: string
+  summary: string
+  snippet: string
+  score: number
 }
 
 export interface HomeData {
@@ -197,7 +207,14 @@ export interface UpdateAiConfigInput {
   enabled: boolean
   baseUrl: string
   model: string
+  embeddingModel: string
   apiKey?: string
+}
+
+export interface SearchSemanticNotesInput {
+  query: string
+  limit?: number
+  excludeDocumentId?: string | null
 }
 
 export interface AskAiInput {
@@ -207,6 +224,7 @@ export interface AskAiInput {
 
 export interface AskAiResult {
   answer: string
+  references: SemanticSearchResult[]
 }
 
 export interface ElectronApi {
@@ -223,6 +241,7 @@ export interface ElectronApi {
   deleteDocument: (documentId: string) => Promise<void>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
+  searchSemanticNotes: (input: SearchSemanticNotesInput) => Promise<SemanticSearchResult[]>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>

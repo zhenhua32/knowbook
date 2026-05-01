@@ -14,6 +14,7 @@ import type {
   GlobalSearchResult,
   HomeData,
   LinkedDocument,
+  SemanticSearchResult,
   WorkspaceGraphEdge,
   WorkspaceGraphNode
 } from '@shared/contracts'
@@ -35,6 +36,7 @@ const emptyState: HomeData = {
     enabled: false,
     baseUrl: '',
     model: '',
+    embeddingModel: '',
     hasApiKey: false
   },
   documentTree: [],
@@ -1009,11 +1011,15 @@ export function App() {
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
+  const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
+  const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
+  const [aiContextSearching, setAiContextSearching] = useState(false)
+  const [aiContextError, setAiContextError] = useState('')
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
   const [selectedBlockTags, setSelectedBlockTags] = useState<Set<string>>(new Set())
@@ -1378,6 +1384,7 @@ export function App() {
         setAiEnabledDraft(data.aiConfig.enabled)
         setAiBaseUrlDraft(data.aiConfig.baseUrl)
         setAiModelDraft(data.aiConfig.model)
+        setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
         setAiApiKeyDraft('')
       }
     })
@@ -1402,6 +1409,9 @@ export function App() {
       setPendingFocusBlockIndex(null)
       setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
+        setAiAnswer('')
+        setAiContextResults([])
+        setAiContextError('')
       return
     }
 
@@ -1425,6 +1435,9 @@ export function App() {
         setDraftTitle(detail?.title ?? '')
         setDraftSummary(detail?.summary ?? '')
         setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
+        setAiAnswer('')
+        setAiContextResults([])
+        setAiContextError('')
         setDetailLoading(false)
       }
     })
@@ -1917,6 +1930,7 @@ export function App() {
       enabled: aiEnabledDraft,
       baseUrl: aiBaseUrlDraft,
       model: aiModelDraft,
+      embeddingModel: aiEmbeddingModelDraft,
       apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()
@@ -1924,6 +1938,7 @@ export function App() {
     setAiEnabledDraft(refreshed.aiConfig.enabled)
     setAiBaseUrlDraft(refreshed.aiConfig.baseUrl)
     setAiModelDraft(refreshed.aiConfig.model)
+    setAiEmbeddingModelDraft(refreshed.aiConfig.embeddingModel)
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage('AI settings saved.')
@@ -2049,21 +2064,47 @@ export function App() {
     }
   }
 
+  async function findRelatedNotesForPrompt() {
+    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+      return
+    }
+
+    setAiContextSearching(true)
+    setAiContextError('')
+    try {
+      const results = await window.knowbook.searchSemanticNotes({
+        query: aiPromptDraft.trim(),
+        excludeDocumentId: selectedDocumentId,
+        limit: 4
+      })
+      setAiContextResults(results)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Semantic search failed.'
+      setAiContextResults([])
+      setAiContextError(message)
+    } finally {
+      setAiContextSearching(false)
+    }
+  }
+
   async function askAiOnSelectedDocument() {
     if (!selectedDocumentId || !aiPromptDraft.trim()) {
       return
     }
 
     setAiAsking(true)
+    setAiContextError('')
     try {
       const result = await window.knowbook.askAiAboutDocument({
         documentId: selectedDocumentId,
         prompt: aiPromptDraft.trim()
       })
       setAiAnswer(result.answer)
+      setAiContextResults(result.references)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI request failed.'
       setAiAnswer(message)
+      setAiContextResults([])
     } finally {
       setAiAsking(false)
     }
@@ -3390,10 +3431,15 @@ export function App() {
               <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
             </label>
             <label className="editor-label">
+              Embedding model
+              <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
+            </label>
+            <label className="editor-label">
               API Key (leave blank to keep current)
               <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
             </label>
             <p className="mini-hint">Current key: {homeData.aiConfig.hasApiKey ? 'configured' : 'missing'}</p>
+            <p className="mini-hint">Chat model answers questions. Embedding model powers local semantic retrieval and RAG context caching.</p>
             <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
               {aiSaving ? 'Saving...' : 'Save AI settings'}
             </button>
@@ -4590,9 +4636,36 @@ export function App() {
                       rows={3}
                       value={aiPromptDraft}
                     />
-                    <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
-                      {aiAsking ? 'Thinking...' : 'Ask AI'}
-                    </button>
+                    <div className="toolbar-inline ai-actions">
+                      <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
+                        {aiContextSearching ? 'Searching...' : 'Find related notes'}
+                      </button>
+                      <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
+                        {aiAsking ? 'Thinking...' : 'Ask AI'}
+                      </button>
+                    </div>
+                    {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
+                    {aiContextResults.length > 0 ? (
+                      <div className="ai-context-list">
+                        {aiContextResults.map((result) => (
+                          <button
+                            className="ai-context-card"
+                            key={`${result.documentId}-${result.path}`}
+                            onClick={() => setSelectedDocumentId(result.documentId)}
+                            type="button"
+                          >
+                            <div className="ai-context-head">
+                              <strong className="ai-context-title">{result.title}</strong>
+                              <span className="ai-context-score">{Math.round(result.score * 100)}% match</span>
+                            </div>
+                            <span className="ai-context-path">{result.path}</span>
+                            <span className="ai-context-snippet">{result.snippet || result.summary || 'No preview available.'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : aiPromptDraft.trim() ? (
+                      <p className="mini-hint">Semantic retrieval will search the rest of the workspace and feed the strongest matches into the AI prompt.</p>
+                    ) : null}
                     {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
                   </div>
                 </div>

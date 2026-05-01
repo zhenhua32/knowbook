@@ -63,6 +63,17 @@ CREATE TABLE IF NOT EXISTS document_database_values (
 CREATE INDEX IF NOT EXISTS idx_document_database_values_document_id ON document_database_values(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_database_values_column_id ON document_database_values(column_id);
 
+CREATE TABLE IF NOT EXISTS document_embeddings (
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  embedding_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (document_id, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_embeddings_model ON document_embeddings(model);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
