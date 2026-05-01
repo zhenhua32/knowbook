@@ -848,7 +848,7 @@ export function App() {
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
-  const [selectionAnchorBlockIndex, setSelectionAnchorBlockIndex] = useState<number | null>(null)
+  const [selectionAnchorBlockId, setSelectionAnchorBlockId] = useState<string | null>(null)
   const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
   const [selectedBlockConversionType, setSelectedBlockConversionType] = useState<DocumentBlock['type']>('paragraph')
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
@@ -1254,7 +1254,7 @@ export function App() {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
       setPendingFocusBlockIndex(null)
-      setSelectionAnchorBlockIndex(null)
+      setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
       return
     }
@@ -1270,7 +1270,7 @@ export function App() {
         setDragOverBlockDepth(null)
         setPendingFocusBlockIndex(null)
         setActiveBlockIndex(null)
-        setSelectionAnchorBlockIndex(null)
+        setSelectionAnchorBlockId(null)
         setSelectedBlockRange(null)
         setActiveCursorPosition(0)
         setLinkSuggestions([])
@@ -1453,7 +1453,7 @@ export function App() {
     setDraftSummary(detail?.summary ?? '')
     setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
     setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockIndex(null)
+    setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
   }
 
@@ -1467,7 +1467,7 @@ export function App() {
     setDraftSummary(selectedDocument.summary)
     setDraftBlocks(initialBlocks)
     setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockIndex(null)
+    setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
     setCollapsedBlockIds(new Set())
     setIsEditing(true)
@@ -1486,7 +1486,7 @@ export function App() {
     setDraftSummary(selectedDocument.summary)
     setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockIndex(null)
+    setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
     setCollapsedBlockIds(new Set())
     setIsEditing(false)
@@ -1527,7 +1527,7 @@ export function App() {
     setDragOverBlockIndex(null)
     setDragOverBlockDepth(null)
     setLinkSuggestions([])
-    setSelectionAnchorBlockIndex(null)
+    setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
   }
 
@@ -1816,7 +1816,7 @@ export function App() {
   }
 
     function clearBlockSelection() {
-      setSelectionAnchorBlockIndex(null)
+      setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
     }
 
@@ -1839,9 +1839,34 @@ export function App() {
     }
 
     function selectBlockRange(index: number, extendSelection = false) {
-      const anchorIndex = extendSelection && selectionAnchorBlockIndex !== null ? selectionAnchorBlockIndex : index
-      setSelectionAnchorBlockIndex(anchorIndex)
-      setSelectedBlockRange(normalizeBlockSelectionRange(anchorIndex, index))
+      const visibleEntries = getVisibleBlockEntries(draftBlocks)
+      const targetVisibleIndex = visibleEntries.findIndex((entry) => entry.index === index)
+      const targetBlockId = getNormalizedBlockId(draftBlocks[index])
+
+      if (!extendSelection || !selectionAnchorBlockId || targetVisibleIndex === -1) {
+        setSelectionAnchorBlockId(targetBlockId)
+        setSelectedBlockRange({ start: index, end: index })
+        setActiveBlockIndex(index)
+        return
+      }
+
+      const anchorVisibleIndex = visibleEntries.findIndex(({ block }) => getNormalizedBlockId(block) === selectionAnchorBlockId)
+      const resolvedAnchorVisibleIndex = anchorVisibleIndex === -1 ? targetVisibleIndex : anchorVisibleIndex
+      const rangeStartEntry = visibleEntries[Math.min(resolvedAnchorVisibleIndex, targetVisibleIndex)]
+      const rangeEndEntry = visibleEntries[Math.max(resolvedAnchorVisibleIndex, targetVisibleIndex)]
+
+      if (!rangeStartEntry || !rangeEndEntry) {
+        setSelectionAnchorBlockId(targetBlockId)
+        setSelectedBlockRange({ start: index, end: index })
+        setActiveBlockIndex(index)
+        return
+      }
+
+      setSelectionAnchorBlockId(selectionAnchorBlockId)
+      setSelectedBlockRange({
+        start: rangeStartEntry.index,
+        end: rangeEndEntry.index
+      })
       setActiveBlockIndex(index)
     }
 
@@ -1918,7 +1943,7 @@ export function App() {
         start: newStartIndex,
         end: newEndIndex
       })
-      setSelectionAnchorBlockIndex(newStartIndex)
+      setSelectionAnchorBlockId(getNormalizedBlockId(nextBlocks[newStartIndex]) ?? null)
       setActiveBlockIndex(nextFocusIndex)
       setPendingFocusBlockIndex(nextFocusIndex)
       endBlockDrag()
@@ -2143,6 +2168,7 @@ export function App() {
       const range = getMultiBlockOperationRange(selectedBlockRange)
       const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
         ...block,
+        id: createDraftBlockId(),
         checked: block.type === 'todo' ? block.checked : false,
         depth: normalizeBlockDepth(block.type, block.depth),
         parentBlockId: null
@@ -2158,7 +2184,7 @@ export function App() {
         next.splice(range.end + 1, 0, ...duplicatedBlocks)
         return next
       })
-      setSelectionAnchorBlockIndex(duplicatedRange.start)
+      setSelectionAnchorBlockId(duplicatedBlocks[0]?.id ?? null)
       setSelectedBlockRange(duplicatedRange)
       setActiveBlockIndex(duplicatedRange.start)
       setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
