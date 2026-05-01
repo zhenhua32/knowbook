@@ -529,6 +529,89 @@ function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParentBlockI
   })
 }
 
+function getFragmentLocalRootIds(blocks: DocumentBlockDraft[]): Set<string> {
+  const blockIds = new Set(blocks.map((block) => getNormalizedBlockId(block)).filter((id): id is string => Boolean(id)))
+  const rootIds = new Set<string>()
+
+  for (const block of blocks) {
+    const blockId = getNormalizedBlockId(block)
+    if (!blockId) {
+      continue
+    }
+
+    const parentBlockId = getNormalizedParentBlockId(block)
+    if (!parentBlockId || !blockIds.has(parentBlockId)) {
+      rootIds.add(blockId)
+    }
+  }
+
+  return rootIds
+}
+
+function resolveDraftInsertionPlacement(
+  blocks: DocumentBlockDraft[],
+  insertionIndex: number,
+  type: string,
+  requestedDepth: number
+): { depth: number; parentBlockId: string | null; parentText: string | null } {
+  const resolvedDepthById = new Map<string, number>()
+  const depthStack: Array<string | null> = []
+  const textById = new Map<string, string>()
+  const boundedInsertionIndex = Math.max(0, Math.min(insertionIndex, blocks.length))
+
+  for (let index = 0; index < boundedInsertionIndex; index += 1) {
+    const block = blocks[index]
+    const id = getNormalizedBlockId(block) ?? `__insertion-context-${index}`
+    const { depth, parentBlockId } = resolveDraftBlockRelationship(
+      block.type,
+      block.depth,
+      block.parentBlockId,
+      id,
+      resolvedDepthById,
+      depthStack
+    )
+
+    depthStack.length = depth + 1
+    depthStack[depth] = id
+    resolvedDepthById.set(id, depth)
+    textById.set(id, getBlockTreeText(block.type, block.content))
+  }
+
+  const placement = resolveDraftBlockRelationship(type, requestedDepth, null, '__insertion-candidate__', resolvedDepthById, depthStack)
+
+  return {
+    ...placement,
+    parentText: placement.parentBlockId ? textById.get(placement.parentBlockId) ?? null : null
+  }
+}
+
+function shiftDraftFragmentDepth(
+  blocks: DocumentBlockDraft[],
+  depthDelta: number,
+  rootParentBlockId: string | null,
+  rootIds: Set<string>
+): DocumentBlockDraft[] {
+  return blocks.map((block) => {
+    const blockId = getNormalizedBlockId(block)
+    const isRoot = blockId ? rootIds.has(blockId) : false
+
+    if (!isNestableBlock(block.type)) {
+      return isRoot
+        ? {
+            ...block,
+            parentBlockId: null
+          }
+        : block
+    }
+
+    return {
+      ...block,
+      depth: normalizeBlockDepth(block.type, block.depth + depthDelta),
+      parentBlockId: isRoot ? rootParentBlockId : block.parentBlockId ?? null
+    }
+  })
+}
+
 function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
   if (type === 'todo') {
     return 'todo'
@@ -641,44 +724,18 @@ function getBlockDropPreview(
   remainingBlocks.splice(sourceIndex, movedBlocks.length)
 
   const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
-  const nextRootDepth = targetDepth === null ? rootBlock.depth : normalizeBlockDepth(rootBlock.type, targetDepth)
-  const appliedDelta = nextRootDepth - rootBlock.depth
-  const normalizedMovedBlocks = movedBlocks.map((block) =>
-    isNestableBlock(block.type)
-      ? {
-          ...block,
-          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
-        }
-      : block
+  const placement = resolveDraftInsertionPlacement(
+    remainingBlocks,
+    insertionIndex,
+    rootBlock.type,
+    targetDepth === null ? rootBlock.depth : targetDepth
   )
 
-  const nextBlocks = [...remainingBlocks]
-  nextBlocks.splice(insertionIndex, 0, ...normalizedMovedBlocks)
-
-  const depthStack: Array<{ text: string } | null> = []
-
-  for (const [index, block] of nextBlocks.entries()) {
-    let effectiveDepth = normalizeBlockDepth(block.type, block.depth)
-    while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
-      effectiveDepth -= 1
-    }
-
-    const parent = effectiveDepth > 0 ? depthStack[effectiveDepth - 1] : null
-    if (index === insertionIndex) {
-      return {
-        positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
-        effectiveDepth,
-        parentText: parent?.text ?? null
-      }
-    }
-
-    depthStack.length = effectiveDepth + 1
-    depthStack[effectiveDepth] = {
-      text: getBlockTreeText(block.type, block.content)
-    }
+  return {
+    positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
+    effectiveDepth: placement.depth,
+    parentText: placement.parentText
   }
-
-  return null
 }
 
 function normalizeBlockSelectionRange(start: number, end: number): BlockSelectionRange {
@@ -2045,19 +2102,39 @@ export function App() {
         }
       }
 
-      setDraftBlocks((previous) =>
-        previous.map((block, currentIndex) => {
-          if (currentIndex < operationRange.start || currentIndex > operationRange.end || !isNestableBlock(block.type)) {
-            return block
-          }
-
-          return {
-            ...block,
-            depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
-            parentBlockId: null
-          }
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        const operationBlocks = next.slice(operationRange.start, operationRange.end + 1)
+        const rootIds = getFragmentLocalRootIds(operationBlocks)
+        const firstAdjustableRootOffset = operationBlocks.findIndex((block) => {
+          const blockId = getNormalizedBlockId(block)
+          return Boolean(blockId && rootIds.has(blockId) && isNestableBlock(block.type))
         })
-      )
+
+        if (firstAdjustableRootOffset === -1) {
+          return previous
+        }
+
+        const firstAdjustableRootIndex = operationRange.start + firstAdjustableRootOffset
+        const firstAdjustableRoot = next[firstAdjustableRootIndex]
+        if (!firstAdjustableRoot) {
+          return previous
+        }
+
+        const placement = resolveDraftInsertionPlacement(
+          next,
+          firstAdjustableRootIndex,
+          firstAdjustableRoot.type,
+          firstAdjustableRoot.depth + appliedDelta
+        )
+
+        next.splice(
+          operationRange.start,
+          operationBlocks.length,
+          ...shiftDraftFragmentDepth(operationBlocks, placement.depth - firstAdjustableRoot.depth, placement.parentBlockId, rootIds)
+        )
+        return next
+      })
       setActiveBlockIndex(focusIndex)
       setActiveCursorPosition(cursorPosition)
       setPendingFocusBlockIndex(focusIndex)
@@ -2525,23 +2602,16 @@ export function App() {
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
 
-    setDraftBlocks((previous) =>
-      previous.map((block, currentIndex) => {
-        if (currentIndex < index || currentIndex > subtreeEndIndex) {
-          return block
-        }
+    setDraftBlocks((previous) => {
+      const subtreeBlocks = previous.slice(index, subtreeEndIndex + 1)
+      const rootId = getNormalizedBlockId(previous[index])
+      const rootIds = new Set<string>(rootId ? [rootId] : [])
+      const placement = resolveDraftInsertionPlacement(previous, index, currentBlock.type, nextRootDepth)
+      const next = [...previous]
 
-        if (!isNestableBlock(block.type)) {
-          return block
-        }
-
-        return {
-          ...block,
-          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
-          parentBlockId: null
-        }
-      })
-    )
+      next.splice(index, subtreeBlocks.length, ...shiftDraftFragmentDepth(subtreeBlocks, placement.depth - currentBlock.depth, placement.parentBlockId, rootIds))
+      return next
+    })
     setActiveBlockIndex(index)
     setActiveCursorPosition(cursorPosition)
     setPendingFocusBlockIndex(index)
@@ -2614,19 +2684,17 @@ export function App() {
         return previous
       }
 
-      const nextRootDepth = targetDepth === null ? rootBlock.depth : normalizeBlockDepth(rootBlock.type, targetDepth)
-      const appliedDelta = nextRootDepth - rootBlock.depth
-      const normalizedMovedBlocks = movedBlocks.map((block) =>
-        isNestableBlock(block.type)
-          ? {
-              ...block,
-              depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
-              parentBlockId: null
-            }
-          : {
-              ...block,
-              parentBlockId: null
-            }
+      const placement = resolveDraftInsertionPlacement(
+        next,
+        insertionIndex,
+        rootBlock.type,
+        targetDepth === null ? rootBlock.depth : targetDepth
+      )
+      const normalizedMovedBlocks = shiftDraftFragmentDepth(
+        movedBlocks,
+        placement.depth - rootBlock.depth,
+        placement.parentBlockId,
+        getFragmentLocalRootIds(movedBlocks)
       )
 
       next.splice(insertionIndex, 0, ...normalizedMovedBlocks)
@@ -2766,15 +2834,50 @@ export function App() {
       }
 
       setDraftBlocks((previous) =>
-        previous.map((block, index) =>
-          index === activeBlockIndex
-            ? {
-                ...block,
-                content: nextContent,
-                depth: normalizeBlockDepth(block.type, block.depth + (command.action === 'indent' ? 1 : -1))
-              }
-            : block
-        )
+        {
+          const next = [...previous]
+          const current = next[activeBlockIndex]
+          if (!current) {
+            return previous
+          }
+
+          next[activeBlockIndex] = {
+            ...current,
+            content: nextContent
+          }
+
+          const nextRootDepth = normalizeBlockDepth(current.type, current.depth + (command.action === 'indent' ? 1 : -1))
+          const appliedDelta = nextRootDepth - current.depth
+          if (appliedDelta === 0) {
+            return next
+          }
+
+          if (appliedDelta > 0) {
+            const precedingBlock = activeBlockIndex > 0 ? next[activeBlockIndex - 1] : null
+            if (!precedingBlock) {
+              console.warn('Cannot indent: no preceding block found as parent.')
+              return next
+            }
+
+            if (precedingBlock.depth < nextRootDepth) {
+              console.warn(`Cannot indent to depth ${nextRootDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
+              return next
+            }
+          }
+
+          const subtreeEndIndex = getBlockSubtreeEndIndex(next, activeBlockIndex)
+          const subtreeBlocks = next.slice(activeBlockIndex, subtreeEndIndex + 1)
+          const rootId = getNormalizedBlockId(current)
+          const rootIds = new Set<string>(rootId ? [rootId] : [])
+          const placement = resolveDraftInsertionPlacement(next, activeBlockIndex, current.type, nextRootDepth)
+
+          next.splice(
+            activeBlockIndex,
+            subtreeBlocks.length,
+            ...shiftDraftFragmentDepth(subtreeBlocks, placement.depth - current.depth, placement.parentBlockId, rootIds)
+          )
+          return next
+        }
       )
       setActiveCursorPosition(nextContent.length)
       setPendingFocusBlockIndex(activeBlockIndex)
