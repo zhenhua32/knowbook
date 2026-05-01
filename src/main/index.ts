@@ -13,6 +13,7 @@ import type {
   HomeData,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
+  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
@@ -90,6 +91,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:move-document-database-column', (_event, input: MoveDocumentDatabaseColumnInput) => {
     store.moveDocumentDatabaseColumn(input)
+  })
+
+  ipcMain.handle('knowbook:update-document-database-column-options', (_event, input: UpdateDocumentDatabaseColumnOptionsInput) => {
+    store.updateDocumentDatabaseColumnOptions(input)
   })
 
   ipcMain.handle('knowbook:delete-document-database-column', (_event, columnId: string) => {

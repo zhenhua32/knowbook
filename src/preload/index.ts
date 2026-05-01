@@ -13,6 +13,7 @@ import type {
   HomeData,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
+  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
@@ -26,6 +27,7 @@ const api: ElectronApi = {
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:create-document-database-column', input) as Promise<DocumentDatabaseColumn>,
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:rename-document-database-column', input) as Promise<void>,
   moveDocumentDatabaseColumn: (input: MoveDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:move-document-database-column', input) as Promise<void>,
+  updateDocumentDatabaseColumnOptions: (input: UpdateDocumentDatabaseColumnOptionsInput) => ipcRenderer.invoke('knowbook:update-document-database-column-options', input) as Promise<void>,
   deleteDocumentDatabaseColumn: (columnId: string) => ipcRenderer.invoke('knowbook:delete-document-database-column', columnId) as Promise<void>,
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => ipcRenderer.invoke('knowbook:update-document-database-value', input) as Promise<void>,
   updateDocument: (documentId: string, input: UpdateDocumentInput) => ipcRenderer.invoke('knowbook:update-document', documentId, input) as Promise<void>,

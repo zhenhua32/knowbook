@@ -1972,6 +1972,20 @@ export function App() {
     }
   }
 
+  async function updateDatabaseColumnOptions(columnId: string, optionsInput: string) {
+    const options = normalizeDatabaseColumnOptionsInput(optionsInput)
+
+    try {
+      await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId, options })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage('Updated column options.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update database column options.'
+      setBackupMessage(message)
+    }
+  }
+
   async function deleteDatabaseColumn(columnId: string, columnName: string) {
     const accepted = window.confirm(`Delete database column "${columnName}"? Existing values in this column will be removed.`)
     if (!accepted) {
@@ -3528,6 +3542,7 @@ export function App() {
                     key={column.id}
                     onDelete={deleteDatabaseColumn}
                     onMove={moveDatabaseColumn}
+                    onUpdateOptions={updateDatabaseColumnOptions}
                     onRename={renameDatabaseColumn}
                   />
                 ))}
@@ -4926,6 +4941,7 @@ function DatabaseSchemaColumnCard({
   isLast,
   onDelete,
   onMove,
+  onUpdateOptions,
   onRename
 }: {
   column: DocumentDatabaseColumn
@@ -4933,13 +4949,19 @@ function DatabaseSchemaColumnCard({
   isLast: boolean
   onDelete: (columnId: string, columnName: string) => Promise<void>
   onMove: (columnId: string, direction: 'left' | 'right') => Promise<void>
+  onUpdateOptions: (columnId: string, optionsInput: string) => Promise<void>
   onRename: (columnId: string, name: string) => Promise<void>
 }) {
   const [draftName, setDraftName] = useState(column.name)
+  const [draftOptions, setDraftOptions] = useState(column.options.join(', '))
 
   useEffect(() => {
     setDraftName(column.name)
   }, [column.id, column.name])
+
+  useEffect(() => {
+    setDraftOptions(column.options.join(', '))
+  }, [column.id, column.options.join('\u0000')])
 
   const commitRename = async () => {
     const normalizedName = draftName.trim()
@@ -4956,6 +4978,26 @@ function DatabaseSchemaColumnCard({
     }
 
     await onRename(column.id, normalizedName)
+  }
+
+  const commitOptions = async () => {
+    const normalizedOptions = normalizeDatabaseColumnOptionsInput(draftOptions)
+    const currentOptionsKey = column.options.join('\u0000')
+    const nextOptionsKey = normalizedOptions.join('\u0000')
+
+    if (nextOptionsKey === currentOptionsKey) {
+      if (draftOptions !== column.options.join(', ')) {
+        setDraftOptions(column.options.join(', '))
+      }
+      return
+    }
+
+    if (normalizedOptions.length === 0) {
+      setDraftOptions(column.options.join(', '))
+      return
+    }
+
+    await onUpdateOptions(column.id, normalizedOptions.join(', '))
   }
 
   return (
@@ -4976,8 +5018,24 @@ function DatabaseSchemaColumnCard({
       />
       <small>
         {databaseColumnTypeLabels[column.type]}
-        {column.options.length > 0 ? ` · ${column.options.join(', ')}` : ''}
       </small>
+      {(column.type === 'select' || column.type === 'multi-select') ? (
+        <input
+          className="database-schema-options-input"
+          onBlur={() => {
+            void commitOptions()
+          }}
+          onChange={(event) => setDraftOptions(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.currentTarget.blur()
+            }
+          }}
+          placeholder="Option A, Option B"
+          type="text"
+          value={draftOptions}
+        />
+      ) : null}
       <div className="database-schema-chip-actions">
         <button
           className="database-schema-chip-button"

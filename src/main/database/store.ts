@@ -20,6 +20,7 @@ import type {
   MoveDocumentDatabaseColumnInput,
   RecentDocument,
   RenameDocumentDatabaseColumnInput,
+  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
@@ -584,6 +585,40 @@ export class KnowbookStore {
     transaction()
   }
 
+  updateDocumentDatabaseColumnOptions(input: UpdateDocumentDatabaseColumnOptionsInput): void {
+    const columnRow = this.db.prepare(`
+      SELECT id, name, type, options_json, sort_order
+      FROM document_database_columns
+      WHERE id = ?
+    `).get(input.columnId) as DocumentDatabaseColumnRow | undefined
+
+    if (!columnRow) {
+      throw new Error('Database column not found.')
+    }
+
+    const columnType = this.normalizeDocumentDatabaseColumnType(columnRow.type)
+    const options = this.normalizeDocumentDatabaseColumnOptions(columnType, input.options)
+    const now = new Date().toISOString()
+
+    const transaction = this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE document_database_columns
+        SET options_json = ?, updated_at = ?
+        WHERE id = ?
+      `).run(JSON.stringify(options), now, input.columnId)
+
+      if (columnType === 'select') {
+        this.pruneSelectDocumentDatabaseValues(input.columnId, options, now)
+      }
+
+      if (columnType === 'multi-select') {
+        this.pruneMultiSelectDocumentDatabaseValues(input.columnId, options, now)
+      }
+    })
+
+    transaction()
+  }
+
   deleteDocumentDatabaseColumn(columnId: string): void {
     const result = this.db.prepare(`
       DELETE FROM document_database_columns
@@ -1065,6 +1100,58 @@ export class KnowbookStore {
     }
 
     return normalizedOptions
+  }
+
+  private pruneSelectDocumentDatabaseValues(columnId: string, options: string[], now: string): void {
+    const placeholders = options.map(() => '?').join(', ')
+
+    this.db.prepare(`
+      DELETE FROM document_database_values
+      WHERE column_id = ?
+        AND value_text IS NOT NULL
+        AND value_text NOT IN (${placeholders})
+    `).run(columnId, ...options)
+  }
+
+  private pruneMultiSelectDocumentDatabaseValues(columnId: string, options: string[], now: string): void {
+    const rows = this.db.prepare(`
+      SELECT document_id, column_id, value_text
+      FROM document_database_values
+      WHERE column_id = ? AND value_text IS NOT NULL
+    `).all(columnId) as DocumentDatabaseValueRow[]
+
+    const deleteValue = this.db.prepare(`
+      DELETE FROM document_database_values
+      WHERE document_id = ? AND column_id = ?
+    `)
+    const updateValue = this.db.prepare(`
+      UPDATE document_database_values
+      SET value_text = ?, updated_at = ?
+      WHERE document_id = ? AND column_id = ?
+    `)
+
+    for (const row of rows) {
+      let parsedValue: unknown
+      try {
+        parsedValue = row.value_text ? JSON.parse(row.value_text) : []
+      } catch {
+        parsedValue = []
+      }
+
+      const normalizedValues = Array.isArray(parsedValue)
+        ? parsedValue.filter((value): value is string => typeof value === 'string' && options.includes(value))
+        : []
+
+      if (normalizedValues.length === 0) {
+        deleteValue.run(row.document_id, row.column_id)
+        continue
+      }
+
+      const nextValueText = JSON.stringify([...new Set(normalizedValues)])
+      if (nextValueText !== row.value_text) {
+        updateValue.run(nextValueText, now, row.document_id, row.column_id)
+      }
+    }
   }
 
   private parseDocumentDatabaseFieldValue(column: DocumentDatabaseColumn, valueText: string | null): DocumentDatabaseFieldValue {

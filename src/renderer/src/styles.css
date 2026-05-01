@@ -1279,6 +1279,21 @@ del {
   outline: none;
 }
 
+.database-schema-options-input {
+  min-width: 160px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(91, 72, 44, 0.14);
+  background: rgba(255, 251, 245, 0.98);
+  color: #5b513f;
+  font-size: 0.78rem;
+}
+
+.database-schema-options-input:focus {
+  outline: none;
+  border-color: rgba(91, 72, 44, 0.3);
+}
+
 .database-schema-chip-actions {
   display: flex;
   gap: 8px;
