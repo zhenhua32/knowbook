@@ -163,6 +163,12 @@ export class PluginHost {
 
     const dashboardCards = [...this.plugins.values()]
       .flatMap((plugin) => [...plugin.dashboardCards.values()])
+      .map((card): PluginDashboardCard => ({
+        pluginId: card.pluginId,
+        id: card.id,
+        title: card.title,
+        body: card.body
+      }))
       .sort((left, right) => left.title.localeCompare(right.title, 'zh-CN'))
 
     const documentActions = [...this.plugins.values()]
