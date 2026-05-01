@@ -13,9 +13,12 @@ import type {
   HomeData,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
+  RunPluginDocumentActionInput,
+  RunPluginDocumentActionResult,
   RunDocumentAiAutomationsResult,
   SearchSemanticNotesInput,
   SemanticSearchResult,
+  SetPluginEnabledInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
@@ -24,6 +27,7 @@ import type {
 import { MarkdownBackupService } from './backup/exporter'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
+import { PluginHost } from './plugin-host'
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
@@ -37,6 +41,10 @@ const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
 const workspaceEventBus = new WorkspaceEventBus()
+const pluginHost = new PluginHost(store, [
+  { path: join(process.cwd(), 'plugins'), source: 'workspace' },
+  { path: join(userDataRoot, 'plugins'), source: 'user-data' }
+])
 
 type SemanticContextNote = SemanticSearchResult & {
   content: string
@@ -74,6 +82,10 @@ function registerWorkspaceEventHandlers(): void {
   workspaceEventBus.subscribe((event) => {
     const record = createWorkspaceEventRecord(event)
     store.recordWorkspaceEvent(record)
+  })
+
+  workspaceEventBus.subscribe(async (event) => {
+    await pluginHost.handleWorkspaceEvent(event)
   })
 
   workspaceEventBus.subscribe((event) => {
@@ -204,7 +216,14 @@ function registerWorkspaceEventHandlers(): void {
 
 function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-home-data', () => {
-    const data: HomeData = store.getHomeData(backupRoot)
+    const pluginData = pluginHost.getHomeDataSnapshot()
+    const data: HomeData = {
+      ...store.getHomeData(backupRoot),
+      plugins: pluginData.plugins,
+      pluginDashboardCards: pluginData.dashboardCards,
+      pluginDocumentActions: pluginData.documentActions,
+      pluginHost: pluginData.host
+    }
     return data
   })
 
@@ -339,6 +358,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:run-document-ai-automations', async (_event, documentId: string) => {
     const result = await runDocumentAiAutomations(documentId)
+    return result
+  })
+
+  ipcMain.handle('knowbook:set-plugin-enabled', async (_event, input: SetPluginEnabledInput) => {
+    await pluginHost.setPluginEnabled(input.pluginId, input.enabled)
+  })
+
+  ipcMain.handle('knowbook:run-plugin-document-action', async (_event, input: RunPluginDocumentActionInput) => {
+    const result: RunPluginDocumentActionResult = await pluginHost.runDocumentAction(input)
     return result
   })
 
@@ -1120,7 +1148,8 @@ function startBackupSchedule(): void {
   }, BACKUP_INTERVAL_MS)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await pluginHost.loadAll()
   registerWorkspaceEventHandlers()
   registerIpcHandlers()
   createWindow()
@@ -1145,5 +1174,6 @@ app.on('before-quit', () => {
     clearInterval(backupTimer)
     backupTimer = null
   }
+  void pluginHost.destroy()
   store.destroy()
 })

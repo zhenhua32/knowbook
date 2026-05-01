@@ -158,6 +158,9 @@ export type WorkspaceEventType =
   | 'document.moved'
   | 'document.deleted'
   | 'ai.config.updated'
+  | 'plugin.loaded'
+  | 'plugin.action.executed'
+  | 'plugin.action.failed'
 
 export interface WorkspaceEventRecord {
   id: string
@@ -166,6 +169,50 @@ export interface WorkspaceEventRecord {
   description: string
   documentId: string | null
   createdAt: string
+}
+
+export type PluginSource = 'workspace' | 'user-data'
+
+export type PluginStatus = 'running' | 'disabled' | 'error'
+
+export interface PluginManifest {
+  id: string
+  name: string
+  version: string
+  description?: string
+  author?: string
+  entry?: string
+  enabledByDefault?: boolean
+}
+
+export interface PluginDescriptor {
+  id: string
+  name: string
+  version: string
+  description: string
+  author?: string
+  source: PluginSource
+  enabled: boolean
+  status: PluginStatus
+  error?: string
+}
+
+export interface PluginDashboardCard {
+  pluginId: string
+  id: string
+  title: string
+  body: string
+}
+
+export interface PluginDocumentAction {
+  pluginId: string
+  id: string
+  label: string
+  description?: string
+}
+
+export interface PluginHostInfo {
+  roots: string[]
 }
 
 export interface HomeData {
@@ -181,6 +228,10 @@ export interface HomeData {
     edges: WorkspaceGraphEdge[]
   }
   initialDocumentId: string | null
+  plugins?: PluginDescriptor[]
+  pluginDashboardCards?: PluginDashboardCard[]
+  pluginDocumentActions?: PluginDocumentAction[]
+  pluginHost?: PluginHostInfo
 }
 
 export interface BackupResult {
@@ -259,6 +310,22 @@ export interface RunDocumentAiAutomationsResult {
   highlightedBlocks: number
 }
 
+export interface SetPluginEnabledInput {
+  pluginId: string
+  enabled: boolean
+}
+
+export interface RunPluginDocumentActionInput {
+  pluginId: string
+  actionId: string
+  documentId: string
+}
+
+export interface RunPluginDocumentActionResult {
+  message: string
+  refreshDocument: boolean
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
@@ -276,6 +343,8 @@ export interface ElectronApi {
   searchSemanticNotes: (input: SearchSemanticNotesInput) => Promise<SemanticSearchResult[]>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
+  setPluginEnabled: (input: SetPluginEnabledInput) => Promise<void>
+  runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   triggerBackup: () => Promise<BackupResult>

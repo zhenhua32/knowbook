@@ -1,0 +1,9 @@
+{
+  "id": "activity-pulse",
+  "name": "Activity Pulse",
+  "version": "0.1.0",
+  "description": "Shows a lightweight dashboard card and adds a quick summary action for the current document.",
+  "author": "KnowBook",
+  "entry": "index.js",
+  "enabledByDefault": true
+}

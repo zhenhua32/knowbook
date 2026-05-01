@@ -14,6 +14,9 @@ import type {
   GlobalSearchResult,
   HomeData,
   LinkedDocument,
+  PluginDashboardCard,
+  PluginDescriptor,
+  PluginDocumentAction,
   SemanticSearchResult,
   WorkspaceGraphEdge,
   WorkspaceGraphNode
@@ -48,7 +51,13 @@ const emptyState: HomeData = {
     nodes: [],
     edges: []
   },
-  initialDocumentId: null
+  initialDocumentId: null,
+  plugins: [],
+  pluginDashboardCards: [],
+  pluginDocumentActions: [],
+  pluginHost: {
+    roots: []
+  }
 }
 
 const databaseColumnTypeLabels: Record<DocumentDatabaseColumnType, string> = {
@@ -1041,6 +1050,8 @@ export function App() {
   const [autoSaveFlash, setAutoSaveFlash] = useState(false)
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
+  const [pluginBusyId, setPluginBusyId] = useState<string | null>(null)
+  const [pluginActionBusyKey, setPluginActionBusyKey] = useState<string | null>(null)
   const navHistoryRef = useRef<string[]>([])
   const navPointerRef = useRef<number>(-1)
   const isNavJumpRef = useRef<boolean>(false)
@@ -1962,6 +1973,21 @@ export function App() {
     setBackupMessage('AI settings saved.')
   }
 
+  async function setPluginEnabled(plugin: PluginDescriptor, enabled: boolean) {
+    setPluginBusyId(plugin.id)
+    try {
+      await window.knowbook.setPluginEnabled({ pluginId: plugin.id, enabled })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(`${enabled ? 'Enabled' : 'Disabled'} plugin "${plugin.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update plugin status.'
+      setBackupMessage(message)
+    } finally {
+      setPluginBusyId(null)
+    }
+  }
+
   async function createDatabaseColumn() {
     try {
       const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
@@ -2164,6 +2190,39 @@ export function App() {
       setBackupMessage(message)
     } finally {
       setAiAutomationsRunning(false)
+    }
+  }
+
+  async function runPluginDocumentAction(action: PluginDocumentAction) {
+    if (!selectedDocumentId) {
+      return
+    }
+
+    const actionKey = `${action.pluginId}:${action.id}`
+    setPluginActionBusyKey(actionKey)
+
+    try {
+      const result = await window.knowbook.runPluginDocumentAction({
+        pluginId: action.pluginId,
+        actionId: action.id,
+        documentId: selectedDocumentId
+      })
+
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        result.refreshDocument ? window.knowbook.getDocumentDetail(selectedDocumentId) : Promise.resolve(selectedDocument)
+      ])
+
+      setHomeData(refreshedHome)
+      if (result.refreshDocument) {
+        setSelectedDocument(refreshedDetail)
+      }
+      setBackupMessage(result.message)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Plugin action failed.'
+      setBackupMessage(message)
+    } finally {
+      setPluginActionBusyKey(null)
     }
   }
 
@@ -3426,6 +3485,10 @@ export function App() {
       label: `${'  '.repeat(option.depth)}${option.title}`
     }))
   const documentReferences = buildDocumentReferences(homeData.documentTree)
+  const plugins = homeData.plugins ?? []
+  const pluginDashboardCards = homeData.pluginDashboardCards ?? []
+  const pluginDocumentActions = homeData.pluginDocumentActions ?? []
+  const pluginRoots = homeData.pluginHost?.roots ?? []
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -3456,18 +3519,18 @@ export function App() {
 
         <div className="panel panel-accent">
           <p className="panel-label">Implementation Slice</p>
-          <h2>Phase 1.5 workspace shell</h2>
+          <h2>Phase 6 plugin host</h2>
           <p>
-            The desktop shell now exposes a real document tree, detail preview, scheduled markdown exports, and API-driven AI configuration from the same SQLite source.
+            The desktop shell now hosts sandboxed workspace plugins that can contribute sidebar cards, document actions, and lifecycle listeners without changing renderer code.
           </p>
         </div>
 
         <div className="panel">
           <p className="panel-label">Next up</p>
           <ul className="panel-list">
-            <li>Editable block canvas backed by the existing document detail API</li>
-            <li>Document drag-to-reparent flow</li>
-            <li>AI provider settings and embeddings pipeline</li>
+            <li>Packaged plugin install / uninstall flow</li>
+            <li>More UI slots beyond cards and document actions</li>
+            <li>Typed external SDK for third-party plugin authors</li>
           </ul>
         </div>
 
@@ -3547,6 +3610,56 @@ export function App() {
             <p className="mini-hint">No automation events yet.</p>
           )}
         </div>
+
+        <div className="panel">
+          <p className="panel-label">Plugins</p>
+          <h3>Workspace extensions</h3>
+          {pluginRoots.length > 0 ? (
+            <div className="plugin-roots">
+              {pluginRoots.map((root) => (
+                <code className="plugin-root-path" key={root}>{root}</code>
+              ))}
+            </div>
+          ) : null}
+          <p className="mini-hint">Drop a folder containing plugin.json and index.js into one of the roots above, then restart or toggle the plugin.</p>
+          {plugins.length > 0 ? (
+            <div className="plugin-list">
+              {plugins.map((plugin) => {
+                const statusLabel = plugin.status === 'running' ? 'Running' : plugin.status === 'error' ? 'Error' : 'Disabled'
+                return (
+                  <div className="plugin-item" key={plugin.id}>
+                    <div className="plugin-item-head">
+                      <div>
+                        <strong>{plugin.name}</strong>
+                        <p className="mini-hint">{plugin.description}</p>
+                      </div>
+                      <span className={`plugin-status plugin-status-${plugin.status}`}>{statusLabel}</span>
+                    </div>
+                    <div className="plugin-item-meta">
+                      <span>{plugin.version}</span>
+                      <span>{plugin.source === 'workspace' ? 'workspace' : 'user-data'}</span>
+                      {plugin.author ? <span>{plugin.author}</span> : null}
+                    </div>
+                    {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
+                    <label className="toggle-row plugin-toggle-row">
+                      <input
+                        checked={plugin.enabled}
+                        disabled={pluginBusyId === plugin.id}
+                        onChange={(event) => {
+                          void setPluginEnabled(plugin, event.target.checked)
+                        }}
+                        type="checkbox"
+                      />
+                      <span>{pluginBusyId === plugin.id ? 'Updating...' : plugin.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="mini-hint">No plugins discovered yet.</p>
+          )}
+        </div>
       </aside>
 
       <main className="content">
@@ -3583,6 +3696,21 @@ export function App() {
             <strong>{homeData.aiConfig.enabled ? 'API ready' : 'Disabled'}</strong>
           </article>
         </section>
+
+        {pluginDashboardCards.length > 0 ? (
+          <section className="plugin-dashboard-grid">
+            {pluginDashboardCards.map((card: PluginDashboardCard) => (
+              <article className="panel plugin-dashboard-card" key={`${card.pluginId}:${card.id}`}>
+                <div className="plugin-dashboard-head">
+                  <p className="panel-label">Plugin card</p>
+                  <span className="pill">{card.pluginId}</span>
+                </div>
+                <h3>{card.title}</h3>
+                <p>{card.body}</p>
+              </article>
+            ))}
+          </section>
+        ) : null}
 
         <section className="graph-grid">
           <article className="panel graph-panel">
@@ -4729,6 +4857,32 @@ export function App() {
                 </div>
 
                 <div className="preview-section">
+                  {pluginDocumentActions.length > 0 ? (
+                    <>
+                      <p className="panel-label">Plugin actions</p>
+                      <div className="plugin-document-actions">
+                        {pluginDocumentActions.map((action) => {
+                          const actionKey = `${action.pluginId}:${action.id}`
+                          return (
+                            <button
+                              className="secondary-button plugin-action-button"
+                              disabled={isEditing || pluginActionBusyKey === actionKey}
+                              key={actionKey}
+                              onClick={() => {
+                                void runPluginDocumentAction(action)
+                              }}
+                              title={action.description}
+                              type="button"
+                            >
+                              {pluginActionBusyKey === actionKey ? 'Running...' : action.label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <p className="mini-hint">Plugin actions run against the saved document. Finish editing first if you want the plugin to see your latest draft.</p>
+                    </>
+                  ) : null}
+
                   <p className="panel-label">Ask AI</p>
                   <div className="ai-panel">
                     <textarea
