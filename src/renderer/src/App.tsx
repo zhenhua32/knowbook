@@ -1215,7 +1215,7 @@ export function App() {
   }
 
   function getDocumentStats() {
-    const blocks = isEditing ? draftBlocks : (selectedDocument?.blocks ?? [])
+    const blocks = draftBlocks
     const blockCount = blocks.length
     const allText = blocks.map((b) => b.content).join(' ')
     const wordCount = allText.trim() === '' ? 0 : allText.trim().split(/\s+/).length
@@ -1503,10 +1503,14 @@ export function App() {
         setActiveCursorPosition(0)
         setLinkSuggestions([])
         setMoveTargetId('')
-        setIsEditing(false)
         setDraftTitle(detail?.title ?? '')
         setDraftSummary(detail?.summary ?? '')
-        setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
+        const initialBlocks = detail?.blocks.map(toDraftBlock) ?? []
+        setDraftBlocks(initialBlocks)
+        setIsEditing(true)
+        editHistoryRef.current = [initialBlocks.map((b) => ({ ...b }))]
+        editHistoryPointerRef.current = 0
+        isRestoringHistoryRef.current = false
         setAiAnswer('')
         setAiContextResults([])
         setAiContextError('')
@@ -1658,6 +1662,17 @@ export function App() {
     setPendingFocusBlockIndex(null)
   }, [activeCursorPosition, draftBlocks, pendingFocusBlockIndex])
 
+  // Auto-resize textareas to fit content
+  useEffect(() => {
+    if (!isEditing) return
+    const textareas = blockTextareaRefs.current
+    for (const textarea of textareas) {
+      if (!textarea) continue
+      textarea.style.height = 'auto'
+      textarea.style.height = `${textarea.scrollHeight}px`
+    }
+  }, [draftBlocks, isEditing])
+
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
     const refreshed = await window.knowbook.getHomeData()
@@ -1752,22 +1767,17 @@ export function App() {
     ])
     setHomeData(refreshedHome)
     setSelectedDocument(refreshedDetail)
-    setIsEditing(false)
     setIsSaving(false)
-    setPendingFocusBlockIndex(null)
-    setDraggingBlockIndex(null)
-    setDragOverBlockIndex(null)
-    setDragOverBlockDepth(null)
-    setLinkSuggestions([])
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
+    setAutoSaveFlash(true)
+    setTimeout(() => setAutoSaveFlash(false), 2000)
   }
 
-  // Auto-save every 30 seconds while editing
+  // Debounced auto-save: saves 800ms after last change
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => {
-    if (!isEditing) return
-    const interval = setInterval(async () => {
-      if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) return
+    if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) return
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    autoSaveTimerRef.current = setTimeout(async () => {
       const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
       const validation = validateBlockTreeStructure(normalizedDraftBlocks)
       if (!validation.valid) return
@@ -1786,9 +1796,11 @@ export function App() {
       setIsSaving(false)
       setAutoSaveFlash(true)
       setTimeout(() => setAutoSaveFlash(false), 2000)
-    }, 30000)
-    return () => clearInterval(interval)
-  }, [isEditing, isSaving, selectedDocumentId, selectedDocument, draftBlocks, draftTitle, draftSummary])
+    }, 800)
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
+    }
+  }, [draftBlocks, draftTitle, draftSummary])
 
   function togglePinDocument(documentId: string) {
     setPinnedDocumentIds((prev) => {
@@ -4188,12 +4200,12 @@ export function App() {
                 ) : null}
                 {autoSaveFlash ? <span className="autosave-flash">{ui.autoSaved}</span> : null}
                 {mdCopyFlash ? <span className="autosave-flash">{ui.markdownCopied}</span> : null}
-                {selectedDocument && !isEditing ? (
+                {selectedDocument ? (
                   <button className="secondary-button" onClick={copyDocumentAsMarkdown} type="button" title={ui.copyMarkdown}>
                     {ui.copyMarkdown}
                   </button>
                 ) : null}
-                {selectedDocument && !isEditing ? (
+                {selectedDocument ? (
                   <button className="secondary-button" onClick={saveDocumentAsMarkdown} type="button" title={ui.saveMarkdown}>
                     {ui.saveMarkdown}
                   </button>
@@ -4203,29 +4215,21 @@ export function App() {
                     {ui.addChild}
                   </button>
                 ) : null}
-                {selectedDocument && !isEditing ? (
-                  <button className="secondary-button" onClick={startEdit} type="button">
-                    {ui.common.edit}
-                  </button>
-                ) : null}
-                {selectedDocument && isEditing ? (
+                {selectedDocument ? (
                   <>
                     <button className="secondary-button" disabled={editHistoryPointerRef.current <= 0} onClick={undoEdit} type="button" title="撤销 (Ctrl+Z)">↩</button>
                     <button className="secondary-button" disabled={editHistoryPointerRef.current >= editHistoryRef.current.length - 1} onClick={redoEdit} type="button" title="重做 (Ctrl+Y)">↪</button>
-                    <button className="secondary-button" disabled={isSaving} onClick={cancelEdit} type="button">
-                      {ui.common.cancel}
-                    </button>
                     <button className="secondary-button" disabled={isSaving} onClick={saveDocument} type="button">
                       {isSaving ? ui.common.saving : ui.common.save}
                     </button>
                   </>
                 ) : null}
-                {selectedDocument && !isEditing ? (
+                {selectedDocument ? (
                   <button className="danger-button" onClick={deleteSelectedDocument} type="button">
                     {ui.common.delete}
                   </button>
                 ) : null}
-                {selectedDocument && !isEditing ? (
+                {selectedDocument ? (
                   <>
                     <select className="editor-select compact-select" onChange={(event) => setMoveTargetId(event.target.value)} value={moveTargetId}>
                       <option value="">{ui.moveToPlaceholder}</option>
@@ -4241,7 +4245,7 @@ export function App() {
                     </button>
                   </>
                 ) : null}
-                {detailLoading ? <span className="pill">{ui.common.loading}</span> : <span className="pill">{isEditing ? ui.editing : ui.readOnly}</span>}
+                {detailLoading ? <span className="pill">{ui.common.loading}</span> : null}
               </div>
             </div>
 
@@ -4249,30 +4253,26 @@ export function App() {
               <>
                 <div className="document-summary-card">
                   <p className="document-path">{selectedDocument.path}</p>
-                  {isEditing ? (
-                    <div className="editor-fields">
-                      <label className="editor-label">
-                        {ui.common.title}
-                        <input className="editor-input" onChange={(event) => setDraftTitle(event.target.value)} type="text" value={draftTitle} />
-                      </label>
-                      <label className="editor-label">
-                        {ui.common.summary}
-                        <textarea
-                          className="editor-textarea"
-                          onChange={(event) => setDraftSummary(event.target.value)}
-                          rows={3}
-                          value={draftSummary}
-                        />
-                      </label>
-                    </div>
-                  ) : (
-                    <p className="document-summary">{selectedDocument.summary}</p>
-                  )}
+                  <div className="editor-fields">
+                    <label className="editor-label">
+                      {ui.common.title}
+                      <input className="editor-input" onChange={(event) => setDraftTitle(event.target.value)} type="text" value={draftTitle} />
+                    </label>
+                    <label className="editor-label">
+                      {ui.common.summary}
+                      <textarea
+                        className="editor-textarea"
+                        onChange={(event) => setDraftSummary(event.target.value)}
+                        rows={3}
+                        value={draftSummary}
+                      />
+                    </label>
+                  </div>
                   <p className="document-updated">{ui.updatedAt(selectedDocument.updatedAt)}</p>
                 </div>
 
                 {(() => {
-                  const headingBlocks = (isEditing ? draftBlocks : selectedDocument.blocks).filter(
+                  const headingBlocks = draftBlocks.filter(
                     (b) => b.type === 'heading-1' || b.type === 'heading-2'
                   )
                   if (headingBlocks.length === 0) return null
@@ -4282,22 +4282,15 @@ export function App() {
                       <nav className="toc-list">
                         {headingBlocks.map((block, idx) => {
                           const level = block.type === 'heading-1' ? 1 : 2
-                          const blockIndex = isEditing
-                            ? draftBlocks.indexOf(block as DocumentBlockDraft)
-                            : selectedDocument.blocks.indexOf(block as DocumentBlock)
+                          const blockIndex = draftBlocks.indexOf(block as DocumentBlockDraft)
                           return (
                             <button
                               className={`toc-item toc-item-h${level}`}
                               key={idx}
                               type="button"
                               onClick={() => {
-                                if (isEditing) {
-                                  setActiveBlockIndex(blockIndex)
+                                setActiveBlockIndex(blockIndex)
                                   setPendingFocusBlockIndex(blockIndex)
-                                } else {
-                                  setHighlightedBlockId((block as DocumentBlock).id)
-                                  setTimeout(() => setHighlightedBlockId(null), 2000)
-                                }
                               }}
                             >
                               {block.content || (level === 1 ? '标题 1' : '标题 2')}
@@ -4311,7 +4304,6 @@ export function App() {
 
                 <div className="preview-section">
                   <p className="panel-label">{ui.blocksPanelLabel}</p>
-                  {isEditing ? (
                     <div
                       className="block-editor-list"
                       onKeyDown={(event) => {
@@ -4508,12 +4500,28 @@ export function App() {
                             ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
                             : null
                         const isSelected = isBlockSelected(index)
+                        const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
+
+                        // Compute number label for numbered-list
+                        let numberLabel = ''
+                        if (block.type === 'numbered-list') {
+                          let count = 0
+                          for (let i = index; i >= 0; i--) {
+                            const b = draftBlocks[i]
+                            if (b.type !== 'numbered-list' || b.depth < block.depth) break
+                            if (b.depth === block.depth) count++
+                          }
+                          numberLabel = `${count}.`
+                        }
 
                         return (
                           <div
                             className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
                             key={block.id ?? `${selectedDocument.id}-draft-${index}`}
-                            style={block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined}
+                            style={{
+                              ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined),
+                              paddingLeft: `${indentPx}px`
+                            }}
                             onDragOver={(event) => {
                               event.preventDefault()
                               if (draggingBlockIndex !== null) {
@@ -4526,424 +4534,229 @@ export function App() {
                               dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
                             }}
                           >
-                          {block.id && blockHasChildren(index) ? (
-                            <button
-                              aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
-                              className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
-                              onClick={() => block.id && toggleBlockCollapse(block.id)}
-                              type="button"
-                            >
-                              {collapsedBlockIds.has(block.id) ? '▶' : '▼'}
-                            </button>
-                          ) : (
-                            <span className="block-collapse-toggle-placeholder" />
-                          )}
-                          <button
-                            aria-label={ui.dragBlock}
-                            className="block-drag-handle"
-                            draggable
-                            onDragEnd={endBlockDrag}
-                            onDragStart={(event) => {
-                              event.dataTransfer.effectAllowed = 'move'
-                              beginBlockDrag(index)
-                            }}
-                            type="button"
-                          >
-                            ⋮⋮
-                          </button>
-                          <select
-                            className="editor-select"
-                            onChange={(event) => {
-                              const hasChildren = getBlockSubtreeEndIndex(draftBlocks, index) > index
-                              if (canChangeBlockType(block.type, event.target.value, hasChildren)) {
-                                updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth, block.parentBlockId ?? null))
-                              } else {
-                                event.currentTarget.value = block.type
-                              }
-                            }}
-                            value={block.type}
-                          >
-                            <option value="paragraph">{getBlockTypeOptionLabel('paragraph')}</option>
-                            <option value="heading-1">{getBlockTypeOptionLabel('heading-1')}</option>
-                            <option value="heading-2">{getBlockTypeOptionLabel('heading-2')}</option>
-                            <option value="todo">{getBlockTypeOptionLabel('todo')}</option>
-                            <option value="code">{getBlockTypeOptionLabel('code')}</option>
-                            <option value="math">{getBlockTypeOptionLabel('math')}</option>
-                            <option value="quote">{getBlockTypeOptionLabel('quote')}</option>
-                            <option value="bulleted-list">{getBlockTypeOptionLabel('bulleted-list')}</option>
-                            <option value="numbered-list">{getBlockTypeOptionLabel('numbered-list')}</option>
-                            <option value="divider">{getBlockTypeOptionLabel('divider')}</option>
-                          </select>
-                          {block.type === 'divider' ? (
-                            <div className="block-divider-editor">{ui.dividerBlock}</div>
-                          ) : (
-                            <>
-                            {block.type === 'code' && (
-                              <select
-                                className="editor-select code-language-select"
-                                value={block.language ?? ''}
-                                onChange={(event) => {
-                                  updateDraftBlock(index, { ...block, language: event.target.value || undefined })
-                                }}
+                            {/* ── Left gutter: hover controls ── */}
+                            <div className="block-hover-controls">
+                              <button
+                                aria-label="Add block below"
+                                className="block-hover-add"
+                                onClick={() => insertDraftBlockAt(index + 1, index)}
+                                type="button"
                               >
-                                <option value="">{ui.plainText}</option>
-                                <option value="javascript">JavaScript</option>
-                                <option value="typescript">TypeScript</option>
-                                <option value="python">Python</option>
-                                <option value="rust">Rust</option>
-                                <option value="go">Go</option>
-                                <option value="java">Java</option>
-                                <option value="c">C</option>
-                                <option value="cpp">C++</option>
-                                <option value="csharp">C#</option>
-                                <option value="html">HTML</option>
-                                <option value="css">CSS</option>
-                                <option value="json">JSON</option>
-                                <option value="yaml">YAML</option>
-                                <option value="sql">SQL</option>
-                                <option value="bash">Bash</option>
-                                <option value="markdown">Markdown</option>
-                              </select>
-                            )}
-                            <textarea
-                              className="editor-textarea block-editor-textarea"
-                              style={isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined}
-                              ref={(element) => {
-                                blockTextareaRefs.current[index] = element
-                              }}
-                              onChange={(event) => {
-                                handleBlockContentChange(index, event.target.value)
-                                captureBlockCursor(index, event.target)
-                              }}
-                              onPaste={(event) => {
-                                if (
-                                  handleBlockPaste(
-                                    index,
-                                    event.clipboardData.getData('text/plain'),
-                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
-                                  )
-                                ) {
-                                  event.preventDefault()
-                                }
-                              }}
-                              onCopy={(event) => {
-                                if (!selectedBlockRange || !isSelected) {
-                                  return
-                                }
-
-                                if (
-                                  selectedBlockCount === 1 &&
-                                  (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
-                                ) {
-                                  return
-                                }
-
-                                const range = getMultiBlockOperationRange(selectedBlockRange)
-                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
-                                event.preventDefault()
-                              }}
-                              onCut={(event) => {
-                                if (!selectedBlockRange || !isSelected) {
-                                  return
-                                }
-
-                                if (
-                                  selectedBlockCount === 1 &&
-                                  (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
-                                ) {
-                                  return
-                                }
-
-                                const range = getMultiBlockOperationRange(selectedBlockRange)
-                                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
-                                event.preventDefault()
-                                removeSelectedBlockRange(range)
-                              }}
-                              onClick={(event) => captureBlockCursor(index, event.currentTarget)}
-                              onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
-                              onKeyDown={(event) => {
-                                if (
-                                  event.altKey &&
-                                  !event.shiftKey &&
-                                  !event.metaKey &&
-                                  !event.ctrlKey &&
-                                  (event.key === 'ArrowUp' || event.key === 'ArrowDown')
-                                ) {
-                                  event.preventDefault()
-                                  if (selectedBlockRange && isSelected && selectedBlockCount > 1) {
-                                    moveSelectedBlocks(event.key === 'ArrowUp' ? -1 : 1)
-                                  } else {
-                                    moveDraftBlockBySibling(
-                                      index,
-                                      event.key === 'ArrowUp' ? -1 : 1,
-                                      event.currentTarget.selectionStart ?? event.currentTarget.value.length
-                                    )
-                                  }
-                                  return
-                                }
-
-                                if (activeBlockIndex === index && activeSlashContext) {
-                                  if (event.key === 'ArrowDown') {
-                                    event.preventDefault()
-                                    setSelectedSlashCommandIndex((previous) =>
-                                      filteredSlashCommands.length === 0 ? 0 : (previous + 1) % filteredSlashCommands.length
-                                    )
-                                    return
-                                  }
-
-                                  if (event.key === 'ArrowUp') {
-                                    event.preventDefault()
-                                    setSelectedSlashCommandIndex((previous) =>
-                                      filteredSlashCommands.length === 0
-                                        ? 0
-                                        : (previous - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
-                                    )
-                                    return
-                                  }
-
-                                  if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-                                    if (activeSlashCommand) {
-                                      event.preventDefault()
-                                      applySlashCommand(activeSlashCommand)
-                                      return
-                                    }
-                                  }
-
-                                  if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    dismissSlashCommand()
-                                    return
-                                  }
-                                }
-
-                                if (
-                                  selectedBlockRange &&
-                                  selectedBlockCount > 1 &&
-                                  isSelected &&
-                                  !event.altKey &&
-                                  !event.metaKey &&
-                                  !event.ctrlKey &&
-                                  event.key === 'Tab'
-                                ) {
-                                  event.preventDefault()
-                                  adjustSelectedBlocksDepth(
-                                    event.shiftKey ? -1 : 1,
-                                    index,
-                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length
-                                  )
-                                  return
-                                }
-
-                                if (event.key === 'Tab' && isNestableBlock(block.type)) {
-                                  event.preventDefault()
-                                  adjustBlockDepth(
-                                    index,
-                                    event.shiftKey ? -1 : 1,
-                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length
-                                  )
-                                  return
-                                }
-
-                                if (
-                                  selectedBlockRange &&
-                                  selectedBlockCount > 1 &&
-                                  isSelected &&
-                                  !event.shiftKey &&
-                                  !event.altKey &&
-                                  !event.metaKey &&
-                                  !event.ctrlKey &&
-                                  (event.key === 'Backspace' || event.key === 'Delete') &&
-                                  (event.currentTarget.selectionStart ?? 0) === (event.currentTarget.selectionEnd ?? 0)
-                                ) {
-                                  event.preventDefault()
-                                  deleteSelectedBlocks()
-                                  return
-                                }
-
-                                if (
-                                  event.key === 'Enter' &&
-                                  !event.shiftKey &&
-                                  !event.altKey &&
-                                  !event.metaKey &&
-                                  !event.ctrlKey &&
-                                  ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)
-                                ) {
-                                  event.preventDefault()
-                                  continueBlockAt(
-                                    index,
-                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
-                                  )
-                                  return
-                                }
-
-                                if (
-                                  event.key === 'Backspace' &&
-                                  !event.shiftKey &&
-                                  !event.altKey &&
-                                  !event.metaKey &&
-                                  !event.ctrlKey &&
-                                  (event.currentTarget.selectionStart ?? 0) === 0 &&
-                                  (event.currentTarget.selectionEnd ?? 0) === 0
-                                ) {
-                                  event.preventDefault()
-                                  
-                                  if (['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
-                                    downgradeBlockAt(index)
-                                  } else if (index > 0) {
-                                    mergeWithPreviousBlock(index)
-                                  }
-                                  return
-                                }
-
-                                if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
-                                  event.preventDefault()
-                                  if (selectedBlockRange && isSelected) {
-                                    duplicateSelectedBlocks()
-                                  } else {
-                                    duplicateDraftBlock(index)
-                                  }
-                                  return
-                                }
-
-                                if (event.altKey && event.key === 'Enter') {
-                                  event.preventDefault()
-                                  splitDraftBlock(
-                                    index,
-                                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
-                                  )
-                                  return
-                                }
-
-                                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                                  event.preventDefault()
-                                  insertDraftBlockAt(index + 1, index)
-                                }
-                              }}
-                              onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
-                              onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
-                              rows={block.type === 'code' ? 5 : block.type === 'math' ? 3 : 2}
-                              value={block.content}
-                            />
-                            </>
-                          )}
-                          {block.tags && block.tags.length > 0 && (
-                            <div className="block-tags-display">
-                              {block.tags.map((tag) => (
-                                <span key={`tag-${tag}`} className="block-tag-badge">
-                                  {tag}
-                                  <button
-                                    className="block-tag-remove"
-                                    onClick={() => removeBlockTag(index, tag)}
-                                    type="button"
-                                    title={ui.removeTag}
-                                  >
-                                    ×
-                                  </button>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                          <div className="block-editor-actions">
-                            <button
-                              className={`secondary-button block-select-button${isSelected ? ' block-select-button-active' : ''}`}
-                              onClick={(event) => selectBlockRange(index, event.shiftKey)}
-                              type="button"
-                            >
-                              {isSelected ? 'Selected' : 'Select'}
-                            </button>
-                            {block.type === 'todo' ? (
-                              <label className="block-todo-toggle">
-                                <input
-                                  checked={block.checked}
-                                  onChange={(event) => updateDraftBlock(index, { checked: event.target.checked })}
-                                  type="checkbox"
-                                />
-                                <span>{block.checked ? 'Checked' : 'Unchecked'}</span>
-                              </label>
-                            ) : null}
-                            {isNestableBlock(block.type) ? (
-                              <>
-                                <span className="block-depth-indicator">Depth {block.depth}</span>
-                                <button className="secondary-button block-insert-button" onClick={() => adjustBlockDepth(index, -1)} type="button">
-                                  Outdent
-                                </button>
-                                <button className="secondary-button block-insert-button" onClick={() => adjustBlockDepth(index, 1)} type="button">
-                                  Indent
-                                </button>
-                              </>
-                            ) : null}
-                            {block.type !== 'divider' ? (
-                              <button className="secondary-button block-insert-button" onClick={() => insertChildDraftBlock(index)} type="button">
-                                + Child
+                                +
                               </button>
-                            ) : null}
-                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index, index)} type="button">
-                              + Above
-                            </button>
-                            <button className="secondary-button block-insert-button" onClick={() => insertDraftBlockAt(index + 1, index)} type="button">
-                              + Below
-                            </button>
-                            <button
-                              className="secondary-button block-insert-button"
-                              disabled={getPreviousSiblingSubtreeStartIndex(draftBlocks, index) === null}
-                              onClick={() => moveDraftBlockBySibling(index, -1)}
-                              type="button"
-                            >
-                              Move Up
-                            </button>
-                            <button
-                              className="secondary-button block-insert-button"
-                              disabled={getNextSiblingSubtreeStartIndex(draftBlocks, index) === null}
-                              onClick={() => moveDraftBlockBySibling(index, 1)}
-                              type="button"
-                            >
-                              Move Down
-                            </button>
-                            <button className="secondary-button block-insert-button" onClick={() => duplicateDraftBlock(index)} type="button">
-                              Duplicate
-                            </button>
-                            <button
-                              className="secondary-button block-insert-button"
-                              onClick={() => {
-                                const newTag = prompt('Enter tag name (e.g., important, todo, review)')
-                                if (newTag) {
-                                  addBlockTag(index, newTag)
-                                }
-                              }}
-                              type="button"
-                            >
-                              + Tag
-                            </button>
-                            <div className="block-highlight-picker">
-                              {['', 'red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].map((color) => (
+                              <button
+                                aria-label={ui.dragBlock}
+                                className="block-drag-handle"
+                                draggable
+                                onDragEnd={endBlockDrag}
+                                onDragStart={(event) => {
+                                  event.dataTransfer.effectAllowed = 'move'
+                                  beginBlockDrag(index)
+                                }}
+                                type="button"
+                              >
+                                ⋮⋮
+                              </button>
+                              {block.id && blockHasChildren(index) ? (
                                 <button
-                                  key={color || 'none'}
-                                  className={`highlight-swatch${(draftBlocks[index]?.highlight ?? '') === color ? ' highlight-swatch-active' : ''}`}
-                                  style={{ background: color || 'transparent' }}
-                                  onClick={() => updateBlockHighlight(index, color || undefined)}
+                                  aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
+                                  className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
+                                  onClick={() => block.id && toggleBlockCollapse(block.id)}
                                   type="button"
-                                  title={color || ui.noHighlight}
-                                />
-                              ))}
+                                >
+                                  {collapsedBlockIds.has(block.id) ? '▶' : '▼'}
+                                </button>
+                              ) : null}
                             </div>
-                            <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
-                              {ui.removeBlock}
-                            </button>
-                          </div>
-                          {dropPreview ? (
-                            <div
-                              className="block-drop-preview"
-                              style={{ marginInlineStart: `${dropPreview.effectiveDepth * BLOCK_INDENT_SIZE}px` }}
-                            >
-                              <span className="block-drop-preview-badge">{dropPreview.positionLabel}</span>
-                              <span className="block-drop-preview-meta">
-                                {ui.dropPreviewMeta(dropPreview.effectiveDepth, dropPreview.parentText)}
-                              </span>
+
+                            {/* ── Content area ── */}
+                            <div className="block-content-area">
+                              {block.type === 'divider' ? (
+                                <div className="block-divider-line" />
+                              ) : (
+                                <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                                  {/* Type-specific prefix */}
+                                  {block.type === 'todo' && (
+                                    <input
+                                      className="block-todo-checkbox"
+                                      type="checkbox"
+                                      checked={block.checked}
+                                      onChange={(event) => updateDraftBlock(index, { checked: event.target.checked })}
+                                    />
+                                  )}
+                                  {block.type === 'bulleted-list' && (
+                                    <span className="block-bullet-dot" />
+                                  )}
+                                  {block.type === 'numbered-list' && (
+                                    <span className="block-number-label">{numberLabel}</span>
+                                  )}
+                                  {block.type === 'code' && block.language && (
+                                    <span className="block-code-language-badge">{block.language}</span>
+                                  )}
+
+                                  {/* The textarea */}
+                                  <textarea
+                                    className={`block-inline-textarea type-${block.type}`}
+                                    ref={(element) => {
+                                      blockTextareaRefs.current[index] = element
+                                    }}
+                                    placeholder={
+                                      block.type === 'heading-1' ? '标题 1' :
+                                      block.type === 'heading-2' ? '标题 2' :
+                                      block.type === 'todo' ? '待办事项' :
+                                      block.type === 'quote' ? '引用' :
+                                      block.type === 'code' ? '代码' :
+                                      block.type === 'math' ? '公式' :
+                                      block.type === 'bulleted-list' ? '列表项' :
+                                      block.type === 'numbered-list' ? '列表项' :
+                                      '输入文字，或 / 唤出命令'
+                                    }
+                                    onChange={(event) => {
+                                      handleBlockContentChange(index, event.target.value)
+                                      captureBlockCursor(index, event.target)
+                                    }}
+                                    onPaste={(event) => {
+                                      if (
+                                        handleBlockPaste(
+                                          index,
+                                          event.clipboardData.getData('text/plain'),
+                                          event.currentTarget.selectionStart ?? event.currentTarget.value.length,
+                                          event.currentTarget.selectionEnd ?? event.currentTarget.value.length
+                                        )
+                                      ) {
+                                        event.preventDefault()
+                                      }
+                                    }}
+                                    onCopy={(event) => {
+                                      if (!selectedBlockRange || !isSelected) return
+                                      if (
+                                        selectedBlockCount === 1 &&
+                                        (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
+                                      ) return
+                                      const range = getMultiBlockOperationRange(selectedBlockRange)
+                                      event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
+                                      event.preventDefault()
+                                    }}
+                                    onCut={(event) => {
+                                      if (!selectedBlockRange || !isSelected) return
+                                      if (
+                                        selectedBlockCount === 1 &&
+                                        (event.currentTarget.selectionStart ?? 0) !== (event.currentTarget.selectionEnd ?? 0)
+                                      ) return
+                                      const range = getMultiBlockOperationRange(selectedBlockRange)
+                                      event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
+                                      event.preventDefault()
+                                      removeSelectedBlockRange(range)
+                                    }}
+                                    onClick={(event) => captureBlockCursor(index, event.currentTarget)}
+                                    onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
+                                    onKeyDown={(event) => {
+                                      if (
+                                        event.altKey && !event.shiftKey && !event.metaKey && !event.ctrlKey &&
+                                        (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+                                      ) {
+                                        event.preventDefault()
+                                        if (selectedBlockRange && isSelected && selectedBlockCount > 1) {
+                                          moveSelectedBlocks(event.key === 'ArrowUp' ? -1 : 1)
+                                        } else {
+                                          moveDraftBlockBySibling(index, event.key === 'ArrowUp' ? -1 : 1, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                                        }
+                                        return
+                                      }
+
+                                      if (activeBlockIndex === index && activeSlashContext) {
+                                        if (event.key === 'ArrowDown') {
+                                          event.preventDefault()
+                                          setSelectedSlashCommandIndex((p) => filteredSlashCommands.length === 0 ? 0 : (p + 1) % filteredSlashCommands.length)
+                                          return
+                                        }
+                                        if (event.key === 'ArrowUp') {
+                                          event.preventDefault()
+                                          setSelectedSlashCommandIndex((p) => filteredSlashCommands.length === 0 ? 0 : (p - 1 + filteredSlashCommands.length) % filteredSlashCommands.length)
+                                          return
+                                        }
+                                        if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+                                          if (activeSlashCommand) { event.preventDefault(); applySlashCommand(activeSlashCommand); return }
+                                        }
+                                        if (event.key === 'Escape') { event.preventDefault(); dismissSlashCommand(); return }
+                                      }
+
+                                      if (selectedBlockRange && selectedBlockCount > 1 && isSelected && !event.altKey && !event.metaKey && !event.ctrlKey && event.key === 'Tab') {
+                                        event.preventDefault()
+                                        adjustSelectedBlocksDepth(event.shiftKey ? -1 : 1, index, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                                        return
+                                      }
+
+                                      if (event.key === 'Tab' && isNestableBlock(block.type)) {
+                                        event.preventDefault()
+                                        adjustBlockDepth(index, event.shiftKey ? -1 : 1, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                                        return
+                                      }
+
+                                      if (selectedBlockRange && selectedBlockCount > 1 && isSelected && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && (event.key === 'Backspace' || event.key === 'Delete') && (event.currentTarget.selectionStart ?? 0) === (event.currentTarget.selectionEnd ?? 0)) {
+                                        event.preventDefault(); deleteSelectedBlocks(); return
+                                      }
+
+                                      if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                                        event.preventDefault()
+                                        continueBlockAt(index, event.currentTarget.selectionStart ?? event.currentTarget.value.length, event.currentTarget.selectionEnd ?? event.currentTarget.value.length)
+                                        return
+                                      }
+
+                                      if (event.key === 'Backspace' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey && (event.currentTarget.selectionStart ?? 0) === 0 && (event.currentTarget.selectionEnd ?? 0) === 0) {
+                                        event.preventDefault()
+                                        if (['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                                          downgradeBlockAt(index)
+                                        } else if (index > 0) {
+                                          mergeWithPreviousBlock(index)
+                                        }
+                                        return
+                                      }
+
+                                      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+                                        event.preventDefault()
+                                        if (selectedBlockRange && isSelected) { duplicateSelectedBlocks() } else { duplicateDraftBlock(index) }
+                                        return
+                                      }
+
+                                      if (event.altKey && event.key === 'Enter') {
+                                        event.preventDefault()
+                                        splitDraftBlock(index, event.currentTarget.selectionStart ?? event.currentTarget.value.length, event.currentTarget.selectionEnd ?? event.currentTarget.value.length)
+                                        return
+                                      }
+
+                                      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                                        event.preventDefault(); insertDraftBlockAt(index + 1, index)
+                                      }
+                                    }}
+                                    onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
+                                    onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
+                                    rows={1}
+                                    value={block.content}
+                                  />
+                                </div>
+                              )}
+
+                              {/* Tags */}
+                              {block.tags && block.tags.length > 0 && (
+                                <div className="block-tags-display">
+                                  {block.tags.map((tag) => (
+                                    <span key={`tag-${tag}`} className="block-tag-badge">
+                                      {tag}
+                                      <button className="block-tag-remove" onClick={() => removeBlockTag(index, tag)} type="button" title={ui.removeTag}>×</button>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Drop preview */}
+                              {dropPreview ? (
+                                <div className="block-drop-preview" style={{ marginInlineStart: `${dropPreview.effectiveDepth * BLOCK_INDENT_SIZE}px` }}>
+                                  <span className="block-drop-preview-badge">{dropPreview.positionLabel}</span>
+                                  <span className="block-drop-preview-meta">{ui.dropPreviewMeta(dropPreview.effectiveDepth, dropPreview.parentText)}</span>
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
                           </div>
                         )
                       })}
@@ -5022,37 +4835,6 @@ export function App() {
                         <p className="mini-hint">{ui.editorHelpText}</p>
                       )}
                     </div>
-                  ) : (
-                    <>
-                      <div className="block-preview-list">
-                        {selectedDocument.blocks.map((block, index) => (
-                          <div
-                            className={`block-preview${highlightedBlockId === block.id ? ' block-preview-highlighted' : ''}`}
-                            key={block.id}
-                            style={block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined}
-                          >{renderBlock(
-                              block,
-                              setSelectedDocumentId,
-                              documentReferences,
-                              (checked) => toggleTodoBlockChecked(index, checked),
-                              selectedDocument.blocks,
-                              selectedDocumentId
-                            )}
-                            {block.tags && block.tags.length > 0 && (
-                              <div className="block-tags-display">
-                                {block.tags.map((tag) => (
-                                  <span key={`preview-tag-${tag}`} className="block-tag-badge">
-                                    {tag}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      <BlockTreeOutline blocks={selectedDocument.blocks} />
-                    </>
-                  )}
                 </div>
 
                 <div className="relation-grid">
@@ -5091,7 +4873,7 @@ export function App() {
                           return (
                             <button
                               className="secondary-button plugin-action-button"
-                              disabled={isEditing || pluginActionBusyKey === actionKey}
+                              disabled={pluginActionBusyKey === actionKey}
                               key={actionKey}
                               onClick={() => {
                                 void runPluginDocumentAction(action)
