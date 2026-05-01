@@ -438,7 +438,7 @@ function normalizeDatabaseColumnOptionsInput(input: string): string[] {
 }
 
 function isBoardGroupableColumn(column: DocumentDatabaseColumn): boolean {
-  return column.type === 'select' || column.type === 'checkbox'
+  return column.type === 'select' || column.type === 'multi-select' || column.type === 'checkbox'
 }
 
 function formatDocumentDatabaseFieldValueForSearch(value: DocumentDatabaseFieldValue): string {
@@ -1980,6 +1980,31 @@ export function App() {
 
     if (target.kind === 'parent') {
       await dropOnBoardColumn(target.parentId)
+      return
+    }
+
+    const targetColumn = homeData.databaseColumns.find((column) => column.id === target.columnId)
+    if (!targetColumn) {
+      endDrag()
+      return
+    }
+
+    if (targetColumn.type === 'multi-select') {
+      const rawFieldValue = draggingDocument.fieldValues[target.columnId]
+      const currentValues = Array.isArray(rawFieldValue)
+        ? rawFieldValue.filter((value): value is string => typeof value === 'string')
+        : []
+      const nextValues = typeof target.value === 'string'
+        ? [...new Set([...currentValues, target.value])]
+        : []
+
+      if (nextValues.length === currentValues.length && nextValues.every((value) => currentValues.includes(value))) {
+        endDrag()
+        return
+      }
+
+      await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, nextValues)
+      endDrag()
       return
     }
 
@@ -4030,7 +4055,7 @@ export function App() {
                 <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
                   <option value={BOARD_GROUP_BY_PARENT}>Parent bucket</option>
                   {boardGroupableColumns.map((column) => (
-                    <option key={column.id} value={column.id}>{column.name} ({column.type === 'checkbox' ? 'Checkbox' : 'Select'})</option>
+                    <option key={column.id} value={column.id}>{column.name} ({databaseColumnTypeLabels[column.type]})</option>
                   ))}
                 </select>
                 <span className="pill">{boardColumns.length} columns</span>
@@ -4039,7 +4064,9 @@ export function App() {
 
             <p className="mini-hint">
               {boardGroupingColumn
-                ? `Dragging cards between columns will update the "${boardGroupingColumn.name}" field.`
+                ? boardGroupingColumn.type === 'multi-select'
+                  ? `Dragging cards into a column will add that option to "${boardGroupingColumn.name}". Drop into the empty column to clear all values.`
+                  : `Dragging cards between columns will update the "${boardGroupingColumn.name}" field.`
                 : 'Dragging cards between columns will reparent documents.'}
             </p>
 
@@ -6613,6 +6640,54 @@ function buildBoardColumns(documents: DocumentCatalogEntry[], groupByColumn: Doc
         ? `${groupByColumn.id}:${fieldValue}`
         : `${groupByColumn.id}:__unset__`
       columnMap.get(columnId)?.items.push(document)
+    }
+
+    return columns.map((column) => ({
+      ...column,
+      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
+    }))
+  }
+
+  if (groupByColumn?.type === 'multi-select') {
+    const columns: BoardColumn[] = [
+      {
+        id: `${groupByColumn.id}:__unset__`,
+        title: `No ${groupByColumn.name}`,
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: null
+        },
+        items: []
+      },
+      ...groupByColumn.options.map((option) => ({
+        id: `${groupByColumn.id}:${option}`,
+        title: option,
+        dropTarget: {
+          kind: 'field' as const,
+          columnId: groupByColumn.id,
+          value: option
+        },
+        items: [] as DocumentCatalogEntry[]
+      }))
+    ]
+
+    const emptyColumn = columns[0]
+    const columnMap = new Map(columns.map((column) => [column.id, column]))
+    for (const document of documents) {
+      const fieldValue = document.fieldValues[groupByColumn.id]
+      const values = Array.isArray(fieldValue)
+        ? fieldValue.filter((value): value is string => typeof value === 'string' && groupByColumn.options.includes(value))
+        : []
+
+      if (values.length === 0) {
+        emptyColumn.items.push(document)
+        continue
+      }
+
+      for (const value of [...new Set(values)]) {
+        columnMap.get(`${groupByColumn.id}:${value}`)?.items.push(document)
+      }
     }
 
     return columns.map((column) => ({
