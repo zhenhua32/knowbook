@@ -71,6 +71,7 @@ const databaseColumnTypeLabels: Record<DocumentDatabaseColumnType, string> = {
 
 const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
+const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type BlockDropPreview = {
   positionLabel: string
@@ -85,10 +86,21 @@ type BlockSelectionRange = {
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
+type BoardDropTarget =
+  | {
+      kind: 'parent'
+      parentId: string | null
+    }
+  | {
+      kind: 'field'
+      columnId: string
+      value: string | boolean | null
+    }
+
 type BoardColumn = {
   id: string
   title: string
-  parentId: string | null
+  dropTarget: BoardDropTarget
   items: DocumentCatalogEntry[]
 }
 
@@ -423,6 +435,10 @@ function createDraftBlockId() {
 
 function normalizeDatabaseColumnOptionsInput(input: string): string[] {
   return [...new Set(input.split(',').map((option) => option.trim()).filter(Boolean))]
+}
+
+function isBoardGroupableColumn(column: DocumentDatabaseColumn): boolean {
+  return column.type === 'select' || column.type === 'checkbox'
 }
 
 function formatDocumentDatabaseFieldValueForSearch(value: DocumentDatabaseFieldValue): string {
@@ -993,6 +1009,7 @@ export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
@@ -1947,6 +1964,36 @@ export function App() {
     }
 
     await handleMoveDocument(draggingDocumentId, parentId)
+  }
+
+  async function dropOnBoardTarget(target: BoardDropTarget) {
+    if (!draggingDocumentId) {
+      endDrag()
+      return
+    }
+
+    const draggingDocument = homeData.documentCatalog.find((document) => document.id === draggingDocumentId)
+    if (!draggingDocument) {
+      endDrag()
+      return
+    }
+
+    if (target.kind === 'parent') {
+      await dropOnBoardColumn(target.parentId)
+      return
+    }
+
+    const currentValue = target.value === true
+      ? draggingDocument.fieldValues[target.columnId] === true
+      : (draggingDocument.fieldValues[target.columnId] ?? null)
+
+    if (currentValue === target.value) {
+      endDrag()
+      return
+    }
+
+    await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, target.value)
+    endDrag()
   }
 
   async function saveAiConfig() {
@@ -3576,6 +3623,10 @@ export function App() {
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
   const pluginRoots = homeData.pluginHost?.roots ?? []
   const pluginWritableRoot = homeData.pluginHost?.writableRoot ?? null
+  const boardGroupableColumns = homeData.databaseColumns.filter(isBoardGroupableColumn)
+  const boardGroupingColumn = boardGroupBy === BOARD_GROUP_BY_PARENT
+    ? null
+    : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -3591,7 +3642,17 @@ export function App() {
       .toLowerCase()
       .includes(query)
   })
-  const boardColumns = buildBoardColumns(filteredCatalog)
+  const boardColumns = buildBoardColumns(filteredCatalog, boardGroupingColumn)
+
+  useEffect(() => {
+    if (boardGroupBy === BOARD_GROUP_BY_PARENT) {
+      return
+    }
+
+    if (!boardGroupableColumns.some((column) => column.id === boardGroupBy)) {
+      setBoardGroupBy(BOARD_GROUP_BY_PARENT)
+    }
+  }, [boardGroupBy, boardGroupableColumns])
 
   return (
     <div className="shell">
@@ -3963,10 +4024,24 @@ export function App() {
             <div className="panel-head compact-head">
               <div>
                 <p className="panel-label">Board view</p>
-                <h3>Grouped by parent bucket</h3>
+                <h3>{boardGroupingColumn ? `Grouped by ${boardGroupingColumn.name}` : 'Grouped by parent bucket'}</h3>
               </div>
-              <span className="pill">{boardColumns.length} columns</span>
+              <div className="toolbar-inline">
+                <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
+                  <option value={BOARD_GROUP_BY_PARENT}>Parent bucket</option>
+                  {boardGroupableColumns.map((column) => (
+                    <option key={column.id} value={column.id}>{column.name} ({column.type === 'checkbox' ? 'Checkbox' : 'Select'})</option>
+                  ))}
+                </select>
+                <span className="pill">{boardColumns.length} columns</span>
+              </div>
             </div>
+
+            <p className="mini-hint">
+              {boardGroupingColumn
+                ? `Dragging cards between columns will update the "${boardGroupingColumn.name}" field.`
+                : 'Dragging cards between columns will reparent documents.'}
+            </p>
 
             <DocumentBoard
               columns={boardColumns}
@@ -3983,7 +4058,7 @@ export function App() {
                   setDragOverRoot(false)
                 }
               }}
-              onDropOnColumn={dropOnBoardColumn}
+              onDropOnColumn={dropOnBoardTarget}
             />
           </article>
         </section>
@@ -5658,7 +5733,7 @@ function DocumentBoard({
   onDragStart: (documentId: string) => void
   onDragEnd: () => void
   onDragOverColumn: (columnId: string) => void
-  onDropOnColumn: (parentId: string | null) => Promise<void>
+  onDropOnColumn: (target: BoardDropTarget) => Promise<void>
 }) {
   return (
     <div className="board-wrap">
@@ -5674,7 +5749,7 @@ function DocumentBoard({
           }}
           onDrop={async (event) => {
             event.preventDefault()
-            await onDropOnColumn(column.parentId)
+            await onDropOnColumn(column.dropTarget)
           }}
         >
           <div className="board-column-head">
@@ -6506,7 +6581,81 @@ function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: nu
   })
 }
 
-function buildBoardColumns(documents: DocumentCatalogEntry[]): BoardColumn[] {
+function buildBoardColumns(documents: DocumentCatalogEntry[], groupByColumn: DocumentDatabaseColumn | null): BoardColumn[] {
+  if (groupByColumn?.type === 'select') {
+    const columns: BoardColumn[] = [
+      {
+        id: `${groupByColumn.id}:__unset__`,
+        title: `No ${groupByColumn.name}`,
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: null
+        },
+        items: []
+      },
+      ...groupByColumn.options.map((option) => ({
+        id: `${groupByColumn.id}:${option}`,
+        title: option,
+        dropTarget: {
+          kind: 'field' as const,
+          columnId: groupByColumn.id,
+          value: option
+        },
+        items: [] as DocumentCatalogEntry[]
+      }))
+    ]
+
+    const columnMap = new Map(columns.map((column) => [column.id, column]))
+    for (const document of documents) {
+      const fieldValue = document.fieldValues[groupByColumn.id]
+      const columnId = typeof fieldValue === 'string' && groupByColumn.options.includes(fieldValue)
+        ? `${groupByColumn.id}:${fieldValue}`
+        : `${groupByColumn.id}:__unset__`
+      columnMap.get(columnId)?.items.push(document)
+    }
+
+    return columns.map((column) => ({
+      ...column,
+      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
+    }))
+  }
+
+  if (groupByColumn?.type === 'checkbox') {
+    const columns: BoardColumn[] = [
+      {
+        id: `${groupByColumn.id}:false`,
+        title: 'No',
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: false
+        },
+        items: []
+      },
+      {
+        id: `${groupByColumn.id}:true`,
+        title: 'Yes',
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: true
+        },
+        items: []
+      }
+    ]
+
+    for (const document of documents) {
+      const fieldValue = document.fieldValues[groupByColumn.id] === true
+      columns[fieldValue ? 1 : 0].items.push(document)
+    }
+
+    return columns.map((column) => ({
+      ...column,
+      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
+    }))
+  }
+
   const rootColumnId = '__root__'
   const columnMap = new Map<string, BoardColumn>([
     [
@@ -6514,7 +6663,10 @@ function buildBoardColumns(documents: DocumentCatalogEntry[]): BoardColumn[] {
       {
         id: rootColumnId,
         title: 'Root',
-        parentId: null,
+        dropTarget: {
+          kind: 'parent',
+          parentId: null
+        },
         items: []
       }
     ]
@@ -6526,7 +6678,10 @@ function buildBoardColumns(documents: DocumentCatalogEntry[]): BoardColumn[] {
       columnMap.set(key, {
         id: key,
         title: document.parentTitle ?? 'Unknown parent',
-        parentId: document.parentId ?? null,
+        dropTarget: {
+          kind: 'parent',
+          parentId: document.parentId ?? null
+        },
         items: []
       })
     }
@@ -6540,10 +6695,10 @@ function buildBoardColumns(documents: DocumentCatalogEntry[]): BoardColumn[] {
       items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
     }))
     .sort((left, right) => {
-      if (left.parentId === null) {
+      if (left.dropTarget.kind === 'parent' && left.dropTarget.parentId === null) {
         return -1
       }
-      if (right.parentId === null) {
+      if (right.dropTarget.kind === 'parent' && right.dropTarget.parentId === null) {
         return 1
       }
       return left.title.localeCompare(right.title)
