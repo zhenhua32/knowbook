@@ -301,8 +301,41 @@ function createDraftBlockId() {
   return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+function resolveDraftBlockRelationship(
+  type: string,
+  requestedDepth: number,
+  requestedParentBlockId: string | null | undefined,
+  id: string,
+  resolvedDepthById: Map<string, number>,
+  depthStack: Array<string | null>
+) {
+  const trimmedParentBlockId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
+  const explicitParentDepth = trimmedParentBlockId && trimmedParentBlockId !== id ? resolvedDepthById.get(trimmedParentBlockId) : undefined
+
+  if (explicitParentDepth !== undefined) {
+    const explicitDepth = normalizeBlockDepth(type, explicitParentDepth + 1)
+    if (explicitDepth > explicitParentDepth) {
+      return {
+        depth: explicitDepth,
+        parentBlockId: trimmedParentBlockId
+      }
+    }
+  }
+
+  let depth = normalizeBlockDepth(type, requestedDepth)
+  while (depth > 0 && !depthStack[depth - 1]) {
+    depth -= 1
+  }
+
+  return {
+    depth,
+    parentBlockId: depth > 0 ? depthStack[depth - 1] ?? null : null
+  }
+}
+
 function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   const seenIds = new Set<string>()
+  const resolvedDepthById = new Map<string, number>()
   const depthStack: Array<string | null> = []
 
   return blocks.map((block) => {
@@ -313,15 +346,18 @@ function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[
     const type = block.type.trim() || 'paragraph'
     const checked = type === 'todo' ? Boolean(block.checked) : false
 
-    let depth = normalizeBlockDepth(type, block.depth ?? 0)
-    while (depth > 0 && !depthStack[depth - 1]) {
-      depth -= 1
-    }
-
-    const parentBlockId = depth > 0 ? depthStack[depth - 1] ?? null : null
+    const { depth, parentBlockId } = resolveDraftBlockRelationship(
+      type,
+      block.depth ?? 0,
+      block.parentBlockId,
+      id,
+      resolvedDepthById,
+      depthStack
+    )
 
     depthStack.length = depth + 1
     depthStack[depth] = id
+    resolvedDepthById.set(id, depth)
 
     return {
       ...block,
@@ -358,7 +394,8 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
     type,
     content: normalizeBlockContentForType(type, content),
     checked: type === 'todo' ? checked : false,
-    depth: normalizeBlockDepth(type, depth)
+    depth: normalizeBlockDepth(type, depth),
+    parentBlockId: isNestableBlock(type) ? undefined : null
   }
 }
 
@@ -1780,7 +1817,8 @@ export function App() {
 
           return {
             ...block,
-            depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+            depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
+            parentBlockId: null
           }
         })
       )
@@ -1837,7 +1875,8 @@ export function App() {
             const depthDelta = lastRemovedBlock.depth - block.depth
             modifiedBlocks.push({
               ...block,
-              depth: normalizeBlockDepth(block.type, block.depth + depthDelta)
+              depth: normalizeBlockDepth(block.type, block.depth + depthDelta),
+              parentBlockId: null
             })
             continue
           }
@@ -1933,7 +1972,8 @@ export function App() {
       const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
         ...block,
         checked: block.type === 'todo' ? block.checked : false,
-        depth: normalizeBlockDepth(block.type, block.depth)
+        depth: normalizeBlockDepth(block.type, block.depth),
+        parentBlockId: null
       }))
       const count = duplicatedBlocks.length
       const duplicatedRange = {
@@ -2110,7 +2150,8 @@ export function App() {
       ...block,
       content: offset === 0 ? contentOverride ?? block.content : block.content,
       checked: block.type === 'todo' ? block.checked : false,
-      depth: normalizeBlockDepth(block.type, block.depth)
+      depth: normalizeBlockDepth(block.type, block.depth),
+      parentBlockId: null
     }))
 
     setDraftBlocks((previous) => {
@@ -2256,7 +2297,8 @@ export function App() {
 
         return {
           ...block,
-          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+          depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
+          parentBlockId: null
         }
       })
     )
@@ -2338,9 +2380,13 @@ export function App() {
         isNestableBlock(block.type)
           ? {
               ...block,
-              depth: normalizeBlockDepth(block.type, block.depth + appliedDelta)
+              depth: normalizeBlockDepth(block.type, block.depth + appliedDelta),
+              parentBlockId: null
             }
-          : block
+          : {
+              ...block,
+              parentBlockId: null
+            }
       )
 
       next.splice(insertionIndex, 0, ...normalizedMovedBlocks)
