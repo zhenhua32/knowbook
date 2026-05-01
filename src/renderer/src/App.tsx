@@ -481,22 +481,52 @@ function areDraftBlocksEqual(left: DocumentBlockDraft[], right: DocumentBlockDra
   })
 }
 
-function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0): DocumentBlockDraft {
+function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0, parentBlockId?: string | null): DocumentBlockDraft {
   return {
     type,
     content: normalizeBlockContentForType(type, content),
     checked: type === 'todo' ? checked : false,
     depth: normalizeBlockDepth(type, depth),
-    parentBlockId: isNestableBlock(type) ? undefined : null
+    parentBlockId: isNestableBlock(type) ? (parentBlockId?.trim() ? parentBlockId : null) : null
   }
 }
 
 function buildSiblingDraftBlock(anchorBlock?: DocumentBlockDraft): DocumentBlockDraft {
   if (anchorBlock && isNestableBlock(anchorBlock.type)) {
-    return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth)
+    return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
   }
 
   return buildBlockTypePatch('paragraph', '')
+}
+
+function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParentBlockId: string | null): DocumentBlockDraft[] {
+  if (blocks.length === 0) {
+    return blocks
+  }
+
+  const minDepth = Math.min(...blocks.map((block) => normalizeBlockDepth(block.type, block.depth)))
+  const depthStack: Array<string | null> = []
+
+  return blocks.map((block) => {
+    const id = createDraftBlockId()
+    const depth = normalizeBlockDepth(block.type, block.depth)
+    const parentBlockId = isNestableBlock(block.type)
+      ? depth === minDepth
+        ? rootParentBlockId
+        : depthStack[depth - 1] ?? rootParentBlockId
+      : null
+
+    depthStack.length = depth + 1
+    depthStack[depth] = id
+
+    return {
+      ...block,
+      id,
+      checked: block.type === 'todo' ? Boolean(block.checked) : false,
+      depth,
+      parentBlockId
+    }
+  })
 }
 
 function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
@@ -1369,6 +1399,7 @@ export function App() {
   const selectedBlockActionCount = selectedBlockActionRange ? selectedBlockActionRange.end - selectedBlockActionRange.start + 1 : 0
   const selectedBlockHasHiddenCollapsedContent = selectedBlockRange ? selectionIncludesHiddenCollapsedContent(selectedBlockRange) : false
   const selectedBlockInteractionIssue = selectedBlockRange ? getMultiBlockInteractionGuard(selectedBlockRange) : null
+  const selectedVisibleSiblingSlice = selectedBlockRange ? getVisibleSiblingSelectionSlice(selectedBlockRange) : null
 
   useEffect(() => {
     if (!activeSlashContext || filteredSlashCommands.length === 0) {
@@ -1829,12 +1860,12 @@ export function App() {
         return true
       }
 
-      const blocks = draftBlocks.slice(range.start, range.end + 1)
-      if (blocks.length === 0) {
+      const visibleEntries = getSelectedVisibleBlockEntries(range)
+      if (visibleEntries.length === 0) {
         return true
       }
 
-      const depthSet = new Set(blocks.map((b) => b.depth))
+      const depthSet = new Set(visibleEntries.map(({ block }) => block.depth))
       return depthSet.size === 1
     }
 
@@ -1953,10 +1984,18 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+
+      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
+      if (interactionIssue) {
+        setBackupMessage(interactionIssue)
+        return
+      }
+
+      const operationRange = getMultiBlockOperationRange(selectedBlockRange)
       pushToHistory(draftBlocks)
 
       const selectedNestableBlocks = draftBlocks
-        .slice(selectedBlockRange.start, selectedBlockRange.end + 1)
+        .slice(operationRange.start, operationRange.end + 1)
         .filter((block) => isNestableBlock(block.type))
 
       if (selectedNestableBlocks.length === 0) {
@@ -1974,7 +2013,7 @@ export function App() {
       }
 
       if (appliedDelta > 0) {
-        const precedingBlock = selectedBlockRange.start > 0 ? draftBlocks[selectedBlockRange.start - 1] : null
+        const precedingBlock = operationRange.start > 0 ? draftBlocks[operationRange.start - 1] : null
         if (!precedingBlock) {
           console.warn('Cannot indent: no preceding block found as parent.')
           return
@@ -1986,7 +2025,7 @@ export function App() {
           return
         }
 
-        for (let i = selectedBlockRange.start; i <= selectedBlockRange.end; i += 1) {
+        for (let i = operationRange.start; i <= operationRange.end; i += 1) {
           const block = draftBlocks[i]
           if (!isNestableBlock(block.type)) {
             continue
@@ -2008,7 +2047,7 @@ export function App() {
 
       setDraftBlocks((previous) =>
         previous.map((block, currentIndex) => {
-          if (currentIndex < selectedBlockRange.start || currentIndex > selectedBlockRange.end || !isNestableBlock(block.type)) {
+          if (currentIndex < operationRange.start || currentIndex > operationRange.end || !isNestableBlock(block.type)) {
             return block
           }
 
@@ -2029,26 +2068,29 @@ export function App() {
       if (!selectedBlockRange) {
         return
       }
+
+      const operationRange = getMultiBlockOperationRange(selectedBlockRange)
+      const operationCount = operationRange.end - operationRange.start + 1
       pushToHistory(draftBlocks)
 
       const focusIndex =
-        activeBlockIndex !== null && activeBlockIndex >= selectedBlockRange.start && activeBlockIndex <= selectedBlockRange.end
+        activeBlockIndex !== null && activeBlockIndex >= operationRange.start && activeBlockIndex <= operationRange.end
           ? activeBlockIndex
-          : selectedBlockRange.start
+          : operationRange.start
 
       setDraftBlocks((previous) =>
         previous.map((block, currentIndex) => {
-          if (currentIndex < selectedBlockRange.start || currentIndex > selectedBlockRange.end) {
+          if (currentIndex < operationRange.start || currentIndex > operationRange.end) {
             return block
           }
 
-          return buildBlockTypePatch(nextType, block.content, nextType === 'todo' ? block.checked : false, block.depth)
+          return buildBlockTypePatch(nextType, block.content, nextType === 'todo' ? block.checked : false, block.depth, block.parentBlockId ?? null)
         })
       )
       setActiveBlockIndex(focusIndex)
       setPendingFocusBlockIndex(focusIndex)
       endBlockDrag()
-      setBackupMessage(`Converted ${selectedBlockCount} blocks to ${getBlockTypeLabel(nextType)}.`)
+      setBackupMessage(`Converted ${operationCount} blocks to ${getBlockTypeLabel(nextType)}.`)
     }
 
     function removeSelectedBlockRange(range: BlockSelectionRange) {
@@ -2166,13 +2208,10 @@ export function App() {
       pushToHistory(draftBlocks)
 
       const range = getMultiBlockOperationRange(selectedBlockRange)
-      const duplicatedBlocks = draftBlocks.slice(range.start, range.end + 1).map((block) => ({
-        ...block,
-        id: createDraftBlockId(),
-        checked: block.type === 'todo' ? block.checked : false,
-        depth: normalizeBlockDepth(block.type, block.depth),
-        parentBlockId: null
-      }))
+      const duplicatedBlocks = materializeDraftFragment(
+        draftBlocks.slice(range.start, range.end + 1),
+        getNormalizedParentBlockId(draftBlocks[range.start])
+      )
       const count = duplicatedBlocks.length
       const duplicatedRange = {
         start: range.end + 1,
@@ -2230,7 +2269,10 @@ export function App() {
         return false
       }
 
-      nextBlocks = adjustPastedBlocksDepth(nextBlocks, templateBlock.depth)
+      nextBlocks = materializeDraftFragment(
+        adjustPastedBlocksDepth(nextBlocks, templateBlock.depth),
+        getNormalizedParentBlockId(templateBlock)
+      )
 
       clearBlockSelection()
       setDraftBlocks((previous) => {
@@ -2260,11 +2302,11 @@ export function App() {
     const firstLine = lines[0] ?? ''
     const lastLine = lines[lines.length - 1] ?? ''
     const middleLines = lines.slice(1, -1)
-    const nextBlocks = [
+    const nextBlocks = materializeDraftFragment([
       normalizePastedLineBlock(currentBlock, `${before}${firstLine}`),
       ...middleLines.map((line) => normalizePastedLineBlock(currentBlock, line)),
       normalizePastedLineBlock(currentBlock, `${lastLine}${after}`)
-    ]
+    ], getNormalizedParentBlockId(currentBlock))
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -2323,7 +2365,7 @@ export function App() {
         }
       }
 
-      next.splice(subtreeEndIndex + 1, 0, buildBlockTypePatch(childType, '', false, childDepth))
+      next.splice(subtreeEndIndex + 1, 0, buildBlockTypePatch(childType, '', false, childDepth, currentBlock.id))
       return next
     })
 
@@ -2344,13 +2386,13 @@ export function App() {
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
     const duplicatedRootIndex = subtreeEndIndex + 1
-    const duplicatedBlocks = draftBlocks.slice(index, subtreeEndIndex + 1).map((block, offset) => ({
-      ...block,
-      content: offset === 0 ? contentOverride ?? block.content : block.content,
-      checked: block.type === 'todo' ? block.checked : false,
-      depth: normalizeBlockDepth(block.type, block.depth),
-      parentBlockId: null
-    }))
+    const duplicatedBlocks = materializeDraftFragment(
+      draftBlocks.slice(index, subtreeEndIndex + 1).map((block, offset) => ({
+        ...block,
+        content: offset === 0 ? contentOverride ?? block.content : block.content
+      })),
+      getNormalizedParentBlockId(currentBlock)
+    )
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -2399,7 +2441,7 @@ export function App() {
       next.splice(
         index + 1,
         0,
-        buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked, currentBlock.depth)
+        buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null)
       )
       return next
     })
@@ -2422,7 +2464,7 @@ export function App() {
         return
       }
 
-      updateDraftBlock(index, buildBlockTypePatch('paragraph', ''))
+      updateDraftBlock(index, buildBlockTypePatch('paragraph', '', false, currentBlock.depth, currentBlock.parentBlockId ?? null))
       setActiveBlockIndex(index)
       setActiveCursorPosition(0)
       setPendingFocusBlockIndex(index)
@@ -2450,7 +2492,7 @@ export function App() {
       return
     }
 
-    updateDraftBlock(index, buildBlockTypePatch('paragraph', currentBlock.content))
+    updateDraftBlock(index, buildBlockTypePatch('paragraph', currentBlock.content, false, currentBlock.depth, currentBlock.parentBlockId ?? null))
     setActiveBlockIndex(index)
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(index)
@@ -2652,7 +2694,7 @@ export function App() {
           index === activeBlockIndex
             ? {
                 ...block,
-                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false, currentBlock.depth)
+                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false, currentBlock.depth, currentBlock.parentBlockId ?? null)
               }
             : block
         )
@@ -3517,7 +3559,7 @@ export function App() {
                               {selectedBlockActionCount > selectedBlockCount ? ` · subtree ${selectedBlockActionCount} blocks` : ''}
                               {!isSelectionCoherent(selectedBlockRange) ? ' · ⚠ Mixed depths (incoherent)' : ''}
                               {selectedBlockHasHiddenCollapsedContent ? ' · includes folded subtree rows' : ''}
-                              {selectedBlockCount > 1 && !selectedBlockInteractionIssue && !isValidSiblingRange(draftBlocks, selectedBlockRange) ? ' · ⚠ Cross-parent selection' : ''}
+                              {selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice ? ' · ⚠ Cross-parent selection' : ''}
                             </strong>
                             <p className="mini-hint">
                               Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
@@ -3650,7 +3692,7 @@ export function App() {
                             onChange={(event) => {
                               const hasChildren = getBlockSubtreeEndIndex(draftBlocks, index) > index
                               if (canChangeBlockType(block.type, event.target.value, hasChildren)) {
-                                updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth))
+                                updateDraftBlock(index, buildBlockTypePatch(event.target.value, block.content, block.checked, block.depth, block.parentBlockId ?? null))
                               } else {
                                 event.currentTarget.value = block.type
                               }
@@ -4823,53 +4865,54 @@ function normalizeBlockContentForType(type: string, content: string) {
 
 function resolveMarkdownBlockShortcut(block: DocumentBlockDraft): DocumentBlockDraft | null {
   const { type, content } = block
+  const parentBlockId = block.parentBlockId ?? null
 
   if (content === '---') {
-    return buildBlockTypePatch('divider', '')
+    return buildBlockTypePatch('divider', '', false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('## ')) {
-    return buildBlockTypePatch('heading-2', content.slice(3).replace(/^\s/, ''))
+    return buildBlockTypePatch('heading-2', content.slice(3).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('# ')) {
-    return buildBlockTypePatch('heading-1', content.slice(2).replace(/^\s/, ''))
+    return buildBlockTypePatch('heading-1', content.slice(2).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('$$ ')) {
-    return buildBlockTypePatch('math', content.slice(3).replace(/^\s/, ''))
+    return buildBlockTypePatch('math', content.slice(3).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('- [x] ') || content.startsWith('- [X] ')) {
-    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true, block.depth)
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), true, block.depth, parentBlockId)
   }
 
   if (content.startsWith('- [ ] ')) {
-    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), false, block.depth)
+    return buildBlockTypePatch('todo', content.slice(6).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('> ')) {
-    return buildBlockTypePatch('quote', content.slice(2).replace(/^\s/, ''))
+    return buildBlockTypePatch('quote', content.slice(2).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('- ')) {
-    return buildBlockTypePatch('bulleted-list', content.slice(2).replace(/^\s/, ''), false, block.depth)
+    return buildBlockTypePatch('bulleted-list', content.slice(2).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   const orderedPrefix = content.match(/^\d+\.\s+/)?.[0]
   if (orderedPrefix) {
-    return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''), false, block.depth)
+    return buildBlockTypePatch('numbered-list', content.slice(orderedPrefix.length).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   if (content.startsWith('```') && ['paragraph', 'heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list', 'math'].includes(type)) {
-    return buildBlockTypePatch('code', content.slice(3).replace(/^\s/, ''))
+    return buildBlockTypePatch('code', content.slice(3).replace(/^\s/, ''), false, block.depth, parentBlockId)
   }
 
   return null
 }
 
 function normalizePastedLineBlock(template: DocumentBlockDraft, content: string): DocumentBlockDraft {
-  const draft = buildBlockTypePatch(template.type, content, template.checked, template.depth)
+  const draft = buildBlockTypePatch(template.type, content, template.checked, template.depth, template.parentBlockId ?? null)
   return resolveMarkdownBlockShortcut(draft) ?? draft
 }
 
