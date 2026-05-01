@@ -56,6 +56,13 @@ type BlockSelectionRange = {
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
+type BoardColumn = {
+  id: string
+  title: string
+  parentId: string | null
+  items: DocumentCatalogEntry[]
+}
+
 type BlockSlashCommand = {
   id: string
   label: string
@@ -734,6 +741,7 @@ export function App() {
   const [moveTargetId, setMoveTargetId] = useState('')
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
+  const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
@@ -1508,6 +1516,7 @@ export function App() {
     } finally {
       setDraggingDocumentId(null)
       setDragOverDocumentId(null)
+      setDragOverBoardColumnId(null)
       setDragOverRoot(false)
     }
   }
@@ -1519,6 +1528,7 @@ export function App() {
   function endDrag() {
     setDraggingDocumentId(null)
     setDragOverDocumentId(null)
+    setDragOverBoardColumnId(null)
     setDragOverRoot(false)
   }
 
@@ -1538,6 +1548,21 @@ export function App() {
     }
 
     await handleMoveDocument(draggingDocumentId, null)
+  }
+
+  async function dropOnBoardColumn(parentId: string | null) {
+    if (!draggingDocumentId) {
+      endDrag()
+      return
+    }
+
+    const draggingDocument = homeData.documentCatalog.find((document) => document.id === draggingDocumentId)
+    if (draggingDocument && (draggingDocument.parentId ?? null) === parentId) {
+      endDrag()
+      return
+    }
+
+    await handleMoveDocument(draggingDocumentId, parentId)
   }
 
   async function saveAiConfig() {
@@ -2950,6 +2975,18 @@ export function App() {
               columns={boardColumns}
               onSelect={setSelectedDocumentId}
               selectedDocumentId={selectedDocumentId}
+              draggingDocumentId={draggingDocumentId}
+              dragOverColumnId={dragOverBoardColumnId}
+              onDragStart={beginDrag}
+              onDragEnd={endDrag}
+              onDragOverColumn={(columnId) => {
+                if (draggingDocumentId) {
+                  setDragOverBoardColumnId(columnId)
+                  setDragOverDocumentId(null)
+                  setDragOverRoot(false)
+                }
+              }}
+              onDropOnColumn={dropOnBoardColumn}
             />
           </article>
         </section>
@@ -4277,16 +4314,41 @@ function DocumentCatalogTable({
 function DocumentBoard({
   columns,
   onSelect,
-  selectedDocumentId
+  selectedDocumentId,
+  draggingDocumentId,
+  dragOverColumnId,
+  onDragStart,
+  onDragEnd,
+  onDragOverColumn,
+  onDropOnColumn
 }: {
-  columns: Array<{ id: string; title: string; items: DocumentCatalogEntry[] }>
+  columns: BoardColumn[]
   onSelect: (documentId: string) => void
   selectedDocumentId: string | null
+  draggingDocumentId: string | null
+  dragOverColumnId: string | null
+  onDragStart: (documentId: string) => void
+  onDragEnd: () => void
+  onDragOverColumn: (columnId: string) => void
+  onDropOnColumn: (parentId: string | null) => Promise<void>
 }) {
   return (
     <div className="board-wrap">
       {columns.map((column) => (
-        <section className="board-column" key={column.id}>
+        <section
+          className={`board-column${dragOverColumnId === column.id ? ' board-column-drag-over' : ''}`}
+          key={column.id}
+          onDragOver={(event) => {
+            event.preventDefault()
+            if (draggingDocumentId) {
+              onDragOverColumn(column.id)
+            }
+          }}
+          onDrop={async (event) => {
+            event.preventDefault()
+            await onDropOnColumn(column.parentId)
+          }}
+        >
           <div className="board-column-head">
             <strong>{column.title}</strong>
             <span>{column.items.length}</span>
@@ -4295,10 +4357,17 @@ function DocumentBoard({
           <div className="board-card-list">
             {column.items.map((document) => (
               <button
-                className={`board-card${selectedDocumentId === document.id ? ' board-card-active' : ''}`}
+                className={`board-card${selectedDocumentId === document.id ? ' board-card-active' : ''}${draggingDocumentId === document.id ? ' board-card-dragging' : ''}`}
                 key={document.id}
                 onClick={() => onSelect(document.id)}
                 type="button"
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', document.id)
+                  onDragStart(document.id)
+                }}
+                onDragEnd={onDragEnd}
               >
                 <strong>{document.title}</strong>
                 <p>{document.path}</p>
@@ -4308,6 +4377,7 @@ function DocumentBoard({
                 </div>
               </button>
             ))}
+            {column.items.length === 0 ? <p className="board-column-drop-hint">Drop documents here</p> : null}
           </div>
         </section>
       ))}
@@ -5107,17 +5177,27 @@ function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: nu
   })
 }
 
-function buildBoardColumns(documents: DocumentCatalogEntry[]) {
-  const columnMap = new Map<string, { id: string; title: string; items: DocumentCatalogEntry[] }>()
+function buildBoardColumns(documents: DocumentCatalogEntry[]): BoardColumn[] {
+  const rootColumnId = '__root__'
+  const columnMap = new Map<string, BoardColumn>([
+    [
+      rootColumnId,
+      {
+        id: rootColumnId,
+        title: 'Root',
+        parentId: null,
+        items: []
+      }
+    ]
+  ])
 
   for (const document of documents) {
-    const segments = document.path.split('/')
-    const bucket = segments.length === 1 ? 'Root' : segments[segments.length - 2]
-    const key = bucket.toLowerCase()
+    const key = document.parentId ?? rootColumnId
     if (!columnMap.has(key)) {
       columnMap.set(key, {
         id: key,
-        title: bucket,
+        title: document.parentTitle ?? 'Unknown parent',
+        parentId: document.parentId ?? null,
         items: []
       })
     }
@@ -5125,10 +5205,20 @@ function buildBoardColumns(documents: DocumentCatalogEntry[]) {
     columnMap.get(key)?.items.push(document)
   }
 
-  return [...columnMap.values()].map((column) => ({
-    ...column,
-    items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
-  }))
+  return [...columnMap.values()]
+    .map((column) => ({
+      ...column,
+      items: [...column.items].sort((left, right) => left.path.localeCompare(right.path))
+    }))
+    .sort((left, right) => {
+      if (left.parentId === null) {
+        return -1
+      }
+      if (right.parentId === null) {
+        return 1
+      }
+      return left.title.localeCompare(right.title)
+    })
 }
 
 function buildBlockTree(blocks: DocumentBlock[]): BlockTreePreviewNode[] {

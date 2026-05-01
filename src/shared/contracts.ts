@@ -20,6 +20,8 @@ export interface DocumentCatalogEntry {
   title: string
   path: string
   summary: string
+  parentId: string | null
+  parentTitle: string | null
   updatedAt: string
   blockCount: number
   linkCount: number

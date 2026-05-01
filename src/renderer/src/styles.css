@@ -1252,6 +1252,14 @@ del {
   padding: 14px;
   border-radius: 18px;
   background: rgba(246, 240, 228, 0.68);
+  border: 1px solid transparent;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.board-column-drag-over {
+  background: rgba(227, 238, 255, 0.9);
+  border-color: rgba(47, 111, 237, 0.35);
+  transform: translateY(-2px);
 }
 
 .board-column-head {
@@ -1277,6 +1285,10 @@ del {
   cursor: pointer;
 }
 
+.board-card-dragging {
+  opacity: 0.5;
+}
+
 .board-card-active,
 .board-card:hover {
   background: rgba(47, 111, 237, 0.12);
@@ -1294,6 +1306,17 @@ del {
   margin-top: 10px;
   color: #6c624f;
   font-size: 12px;
+}
+
+.board-column-drop-hint {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed rgba(47, 111, 237, 0.28);
+  border-radius: 14px;
+  color: #5c6f98;
+  font-size: 13px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .block-search-panel {

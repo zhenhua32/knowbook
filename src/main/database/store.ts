@@ -42,6 +42,8 @@ interface DocumentCatalogRow {
   title: string
   path: string
   summary: string
+  parent_id: string | null
+  parent_title: string | null
   updated_at: string
   block_count: number
   link_count: number
@@ -706,11 +708,14 @@ export class KnowbookStore {
         documents.title,
         documents.path,
         documents.summary,
+        documents.parent_id,
+        parents.title AS parent_title,
         documents.updated_at,
         (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
         (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
         (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
       FROM documents
+      LEFT JOIN documents AS parents ON parents.id = documents.parent_id
       ORDER BY documents.path ASC
     `).all() as DocumentCatalogRow[]
 
@@ -719,6 +724,8 @@ export class KnowbookStore {
       title: row.title,
       path: row.path,
       summary: row.summary,
+      parentId: row.parent_id,
+      parentTitle: row.parent_title,
       updatedAt: row.updated_at,
       blockCount: row.block_count,
       linkCount: row.link_count,
