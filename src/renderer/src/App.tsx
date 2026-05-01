@@ -29,6 +29,15 @@ import type {
   WorkspaceGraphNode
 } from '@shared/contracts'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
+import {
+  UI_LANGUAGE_SETTING_KEY,
+  detectPreferredUiLanguage,
+  getActiveUiText,
+  getUiText,
+  isUiLanguage,
+  setActiveUiLanguage,
+  type UiLanguage
+} from './i18n'
 
 const emptyState: HomeData = {
   summary: {
@@ -68,14 +77,6 @@ const emptyState: HomeData = {
   }
 }
 
-const databaseColumnTypeLabels: Record<DocumentDatabaseColumnType, string> = {
-  text: 'Text',
-  select: 'Select',
-  'multi-select': 'Multi-select',
-  date: 'Date',
-  checkbox: 'Checkbox'
-}
-
 const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 const BOARD_GROUP_BY_PARENT = '__parent__'
@@ -110,160 +111,176 @@ type BlockSlashCommand = {
       }
   )
 
-const blockSlashCommands: BlockSlashCommand[] = [
-  {
-    id: 'text',
-    label: 'Text',
-    description: 'Convert the current block into a plain paragraph.',
-    keywords: ['paragraph', 'plain', 'p'],
-    kind: 'type',
-    type: 'paragraph'
-  },
-  {
-    id: 'h1',
-    label: 'Heading 1',
-    description: 'Promote this block to a top-level heading.',
-    keywords: ['title', 'heading-1', 'header'],
-    kind: 'type',
-    type: 'heading-1'
-  },
-  {
-    id: 'h2',
-    label: 'Heading 2',
-    description: 'Convert this block to a section heading.',
-    keywords: ['subtitle', 'heading-2', 'section'],
-    kind: 'type',
-    type: 'heading-2'
-  },
-  {
-    id: 'todo',
-    label: 'Todo',
-    description: 'Turn this block into an unchecked todo item.',
-    keywords: ['task', 'checkbox', 'checklist'],
-    kind: 'type',
-    type: 'todo'
-  },
-  {
-    id: 'code',
-    label: 'Code',
-    description: 'Switch this block into a code block.',
-    keywords: ['snippet', 'pre', 'terminal'],
-    kind: 'type',
-    type: 'code'
-  },
-  {
-    id: 'math',
-    label: 'Math Formula',
-    description: 'Render this block as a KaTeX display equation.',
-    keywords: ['latex', 'equation', 'formula', 'katex'],
-    kind: 'type',
-    type: 'math'
-  },
-  {
-    id: 'quote',
-    label: 'Quote',
-    description: 'Convert this block into a quoted callout.',
-    keywords: ['blockquote', 'callout', 'cite'],
-    kind: 'type',
-    type: 'quote'
-  },
-  {
-    id: 'bullet',
-    label: 'Bulleted List',
-    description: 'Turn this block into a bulleted list item.',
-    keywords: ['unordered', 'list', 'dash'],
-    kind: 'type',
-    type: 'bulleted-list'
-  },
-  {
-    id: 'numbered',
-    label: 'Numbered List',
-    description: 'Turn this block into an ordered list item.',
-    keywords: ['ordered', 'list', 'number'],
-    kind: 'type',
-    type: 'numbered-list'
-  },
-  {
-    id: 'divider',
-    label: 'Divider',
-    description: 'Insert a horizontal divider block.',
-    keywords: ['separator', 'rule', 'hr'],
-    kind: 'type',
-    type: 'divider'
-  },
-  {
-    id: 'above',
-    label: 'Insert Above',
-    description: 'Insert a new sibling block above the current block.',
-    keywords: ['insert', 'before', 'up'],
-    kind: 'action',
-    action: 'insert-above'
-  },
-  {
-    id: 'below',
-    label: 'Insert Below',
-    description: 'Insert a new sibling block below the current block.',
-    keywords: ['insert', 'after', 'down'],
-    kind: 'action',
-    action: 'insert-below'
-  },
-  {
-    id: 'child',
-    label: 'Insert Child',
-    description: 'Insert a nested child block below the current subtree.',
-    keywords: ['child', 'sub-block', 'nested', 'descendant'],
-    kind: 'action',
-    action: 'insert-child'
-  },
-  {
-    id: 'up',
-    label: 'Move Up',
-    description: 'Move the current block subtree above the previous sibling subtree.',
-    keywords: ['reorder', 'before', 'raise'],
-    kind: 'action',
-    action: 'move-up'
-  },
-  {
-    id: 'down',
-    label: 'Move Down',
-    description: 'Move the current block subtree below the next sibling subtree.',
-    keywords: ['reorder', 'after', 'lower'],
-    kind: 'action',
-    action: 'move-down'
-  },
-  {
-    id: 'indent',
-    label: 'Indent Block',
-    description: 'Increase nesting for todo and list blocks.',
-    keywords: ['nest', 'tab', 'right', 'depth'],
-    kind: 'action',
-    action: 'indent'
-  },
-  {
-    id: 'outdent',
-    label: 'Outdent Block',
-    description: 'Decrease nesting for todo and list blocks.',
-    keywords: ['shift-tab', 'left', 'unnest', 'depth'],
-    kind: 'action',
-    action: 'outdent'
-  },
-  {
-    id: 'duplicate',
-    label: 'Duplicate Block',
-    description: 'Clone the current block subtree below the original.',
-    keywords: ['copy', 'clone', 'repeat'],
-    kind: 'action',
-    action: 'duplicate'
-  },
-  {
-    id: 'delete',
-    label: 'Delete Block',
-    description: 'Remove the current block subtree from the draft.',
-    keywords: ['remove', 'trash', 'clear'],
-    kind: 'action',
-    action: 'delete'
-  }
-]
+function getDatabaseColumnTypeLabel(type: DocumentDatabaseColumnType): string {
+  return getActiveUiText().databaseColumnTypes[type]
+}
+
+function getBlockTypeOptionLabel(type: string): string {
+  return getActiveUiText().blockTypeOptions[type] ?? type
+}
+
+function getBlockConversionLabel(type: string): string {
+  return getActiveUiText().conversionOptions[type] ?? type
+}
+
+function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
+  const ui = getUiText(language)
+
+  return [
+    {
+      id: 'text',
+      label: getBlockTypeOptionLabel('paragraph'),
+      description: language === 'zh-CN' ? '把当前块转换为普通段落。' : 'Convert the current block into a plain paragraph.',
+      keywords: ['paragraph', 'plain', 'p', 'text', '文本', '段落'],
+      kind: 'type',
+      type: 'paragraph'
+    },
+    {
+      id: 'h1',
+      label: getBlockTypeOptionLabel('heading-1'),
+      description: language === 'zh-CN' ? '把当前块提升为一级标题。' : 'Promote this block to a top-level heading.',
+      keywords: ['title', 'heading-1', 'header', '标题', '一级'],
+      kind: 'type',
+      type: 'heading-1'
+    },
+    {
+      id: 'h2',
+      label: getBlockTypeOptionLabel('heading-2'),
+      description: language === 'zh-CN' ? '把当前块转换为二级标题。' : 'Convert this block to a section heading.',
+      keywords: ['subtitle', 'heading-2', 'section', '标题', '二级'],
+      kind: 'type',
+      type: 'heading-2'
+    },
+    {
+      id: 'todo',
+      label: getBlockTypeOptionLabel('todo'),
+      description: language === 'zh-CN' ? '把当前块转换为未勾选的待办项。' : 'Turn this block into an unchecked todo item.',
+      keywords: ['task', 'checkbox', 'checklist', 'todo', '待办'],
+      kind: 'type',
+      type: 'todo'
+    },
+    {
+      id: 'code',
+      label: getBlockTypeOptionLabel('code'),
+      description: language === 'zh-CN' ? '把当前块切换成代码块。' : 'Switch this block into a code block.',
+      keywords: ['snippet', 'pre', 'terminal', 'code', '代码'],
+      kind: 'type',
+      type: 'code'
+    },
+    {
+      id: 'math',
+      label: getBlockTypeOptionLabel('math'),
+      description: language === 'zh-CN' ? '把当前块渲染为 KaTeX 公式。' : 'Render this block as a KaTeX display equation.',
+      keywords: ['latex', 'equation', 'formula', 'katex', '公式'],
+      kind: 'type',
+      type: 'math'
+    },
+    {
+      id: 'quote',
+      label: getBlockTypeOptionLabel('quote'),
+      description: language === 'zh-CN' ? '把当前块转换为引用块。' : 'Convert this block into a quoted callout.',
+      keywords: ['blockquote', 'callout', 'cite', 'quote', '引用'],
+      kind: 'type',
+      type: 'quote'
+    },
+    {
+      id: 'bullet',
+      label: getBlockTypeOptionLabel('bulleted-list'),
+      description: language === 'zh-CN' ? '把当前块转换为无序列表项。' : 'Turn this block into a bulleted list item.',
+      keywords: ['unordered', 'list', 'dash', 'bullet', '列表', '无序'],
+      kind: 'type',
+      type: 'bulleted-list'
+    },
+    {
+      id: 'numbered',
+      label: getBlockTypeOptionLabel('numbered-list'),
+      description: language === 'zh-CN' ? '把当前块转换为有序列表项。' : 'Turn this block into an ordered list item.',
+      keywords: ['ordered', 'list', 'number', '列表', '有序'],
+      kind: 'type',
+      type: 'numbered-list'
+    },
+    {
+      id: 'divider',
+      label: getBlockTypeOptionLabel('divider'),
+      description: language === 'zh-CN' ? '插入一个水平分隔线块。' : 'Insert a horizontal divider block.',
+      keywords: ['separator', 'rule', 'hr', 'divider', '分隔线'],
+      kind: 'type',
+      type: 'divider'
+    },
+    {
+      id: 'above',
+      label: language === 'zh-CN' ? '在上方插入' : 'Insert Above',
+      description: language === 'zh-CN' ? '在当前块上方插入一个同级块。' : 'Insert a new sibling block above the current block.',
+      keywords: ['insert', 'before', 'up', '上方', '插入'],
+      kind: 'action',
+      action: 'insert-above'
+    },
+    {
+      id: 'below',
+      label: language === 'zh-CN' ? '在下方插入' : 'Insert Below',
+      description: language === 'zh-CN' ? '在当前块下方插入一个同级块。' : 'Insert a new sibling block below the current block.',
+      keywords: ['insert', 'after', 'down', '下方', '插入'],
+      kind: 'action',
+      action: 'insert-below'
+    },
+    {
+      id: 'child',
+      label: language === 'zh-CN' ? '插入子块' : 'Insert Child',
+      description: language === 'zh-CN' ? '在当前子树下方插入一个嵌套子块。' : 'Insert a nested child block below the current subtree.',
+      keywords: ['child', 'sub-block', 'nested', 'descendant', '子块', '嵌套'],
+      kind: 'action',
+      action: 'insert-child'
+    },
+    {
+      id: 'up',
+      label: ui.moveUp,
+      description: language === 'zh-CN' ? '把当前块子树移动到上一个同级子树之前。' : 'Move the current block subtree above the previous sibling subtree.',
+      keywords: ['reorder', 'before', 'raise', '上移', '移动'],
+      kind: 'action',
+      action: 'move-up'
+    },
+    {
+      id: 'down',
+      label: ui.moveDown,
+      description: language === 'zh-CN' ? '把当前块子树移动到下一个同级子树之后。' : 'Move the current block subtree below the next sibling subtree.',
+      keywords: ['reorder', 'after', 'lower', '下移', '移动'],
+      kind: 'action',
+      action: 'move-down'
+    },
+    {
+      id: 'indent',
+      label: language === 'zh-CN' ? '增加缩进' : 'Indent Block',
+      description: language === 'zh-CN' ? '增加待办和列表块的嵌套层级。' : 'Increase nesting for todo and list blocks.',
+      keywords: ['nest', 'tab', 'right', 'depth', '缩进', '嵌套'],
+      kind: 'action',
+      action: 'indent'
+    },
+    {
+      id: 'outdent',
+      label: language === 'zh-CN' ? '减少缩进' : 'Outdent Block',
+      description: language === 'zh-CN' ? '降低待办和列表块的嵌套层级。' : 'Decrease nesting for todo and list blocks.',
+      keywords: ['shift-tab', 'left', 'unnest', 'depth', '取消缩进', '提升'],
+      kind: 'action',
+      action: 'outdent'
+    },
+    {
+      id: 'duplicate',
+      label: ui.duplicate,
+      description: language === 'zh-CN' ? '在原块下方复制一份当前块子树。' : 'Clone the current block subtree below the original.',
+      keywords: ['copy', 'clone', 'repeat', '复制', '克隆'],
+      kind: 'action',
+      action: 'duplicate'
+    },
+    {
+      id: 'delete',
+      label: ui.common.delete,
+      description: language === 'zh-CN' ? '删除当前块子树。' : 'Remove the current block subtree.',
+      keywords: ['remove', 'trash', 'del', 'delete', '删除'],
+      kind: 'action',
+      action: 'delete'
+    }
+  ]
+}
 
 function isNestableBlock(type: string) {
   return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
@@ -991,6 +1008,8 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
 }
 
 export function App() {
+  const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
+  const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
   const [catalogQuery, setCatalogQuery] = useState('')
@@ -1066,6 +1085,9 @@ export function App() {
   const editHistoryPointerRef = useRef<number>(-1)
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  setActiveUiLanguage(uiLanguage)
+  const ui = getUiText(uiLanguage)
+  const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
 
   function setDraftBlocks(next: DraftBlockUpdater) {
     setDraftBlocksState((previous) => {
@@ -1342,7 +1364,7 @@ export function App() {
     }
 
     if (!getVisibleSiblingSelectionSlice(range)) {
-      return 'Cannot move or drag a visible block slice across different parents or mixed sibling levels. Select sibling roots under the same parent.'
+      return ui.visibleSliceCrossParentGuard
     }
 
     return null
@@ -1425,10 +1447,33 @@ export function App() {
       }
     })
 
+    window.knowbook.getSetting(UI_LANGUAGE_SETTING_KEY).then((value) => {
+      if (!mounted) {
+        return
+      }
+
+      if (isUiLanguage(value)) {
+        setUiLanguage(value)
+      }
+      setUiLanguageHydrated(true)
+    })
+
     return () => {
       mounted = false
     }
   }, [])
+
+  useEffect(() => {
+    document.documentElement.lang = uiLanguage
+  }, [uiLanguage])
+
+  useEffect(() => {
+    if (!uiLanguageHydrated) {
+      return
+    }
+
+    void window.knowbook.saveSetting(UI_LANGUAGE_SETTING_KEY, uiLanguage)
+  }, [uiLanguage, uiLanguageHydrated])
 
   useEffect(() => {
     if (!selectedDocumentId) {
@@ -1625,7 +1670,7 @@ export function App() {
       const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
       setSelectedDocument(detail)
     }
-    setBackupMessage(`Exported ${result.exported} markdown files at ${new Date(result.at).toLocaleString()}.`)
+    setBackupMessage(ui.backupExported(result.exported, result.at))
   }
 
   async function handleCreateDocument(parentId: string | null) {
@@ -1690,7 +1735,7 @@ export function App() {
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
       console.error('Tree structure validation failed:', validation.errors)
-      setBackupMessage(`Cannot save: invalid block tree structure. ${validation.errors.join('; ')}`)
+      setBackupMessage(ui.cannotSaveInvalidBlockTree(validation.errors))
       return
     }
 
@@ -1782,7 +1827,7 @@ export function App() {
     const savedPath = await window.knowbook.saveMarkdownFile(`${baseName}.md`, buildDocumentMarkdown(selectedDocument))
 
     if (savedPath) {
-      setBackupMessage(`已导出 Markdown：${savedPath}`)
+      setBackupMessage(ui.markdownExportedPath(savedPath))
     }
   }
 
@@ -1839,7 +1884,7 @@ export function App() {
       setHomeData(refreshedHome)
       setSelectedDocument(refreshedDetail)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Todo update failed.'
+      const message = error instanceof Error ? error.message : ui.todoUpdateFailed
       setBackupMessage(message)
     } finally {
       setIsSaving(false)
@@ -1851,7 +1896,7 @@ export function App() {
       return
     }
 
-    const accepted = window.confirm(`Delete "${selectedDocument.title}"? Child documents will be kept and reparented.`)
+    const accepted = window.confirm(ui.confirmDeleteDocument(selectedDocument.title))
     if (!accepted) {
       return
     }
@@ -1878,7 +1923,7 @@ export function App() {
     }
 
     const newParentId = moveTargetId === '__root__' ? null : moveTargetId
-    await handleMoveDocument(selectedDocument.id, newParentId, `Moved "${selectedDocument.title}" successfully.`)
+    await handleMoveDocument(selectedDocument.id, newParentId, ui.movedDocumentSuccess(selectedDocument.title))
   }
 
   async function handleMoveDocument(documentId: string, newParentId: string | null, successMessage?: string) {
@@ -1897,7 +1942,7 @@ export function App() {
         setBackupMessage(successMessage)
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Move failed.'
+      const message = error instanceof Error ? error.message : ui.moveFailed
       setBackupMessage(message)
     } finally {
       setDraggingDocumentId(null)
@@ -2012,7 +2057,7 @@ export function App() {
     setAiAutoHighlightOnSaveDraft(refreshed.aiConfig.autoHighlightOnSave)
     setAiApiKeyDraft('')
     setAiSaving(false)
-    setBackupMessage('AI settings saved.')
+    setBackupMessage(ui.aiSettingsSaved)
   }
 
   async function setPluginEnabled(plugin: PluginDescriptor, enabled: boolean) {
@@ -2021,9 +2066,9 @@ export function App() {
       await window.knowbook.setPluginEnabled({ pluginId: plugin.id, enabled })
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage(`${enabled ? 'Enabled' : 'Disabled'} plugin "${plugin.name}".`)
+      setBackupMessage(ui.pluginStatusUpdated(plugin.name, enabled))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update plugin status.'
+      const message = error instanceof Error ? error.message : ui.pluginStatusUpdateFailed
       setBackupMessage(message)
     } finally {
       setPluginBusyId(null)
@@ -2036,9 +2081,9 @@ export function App() {
       await window.knowbook.reloadPlugins()
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage('Plugins reloaded.')
+      setBackupMessage(ui.pluginsReloaded)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to reload plugins.'
+      const message = error instanceof Error ? error.message : ui.pluginsReloadFailed
       setBackupMessage(message)
     } finally {
       setPluginInventoryBusy(false)
@@ -2056,14 +2101,14 @@ export function App() {
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
       if (result.operation === 'updated') {
-        setBackupMessage(`Updated plugin "${result.plugin.name}" from ${result.previousVersion ?? 'unknown'} to ${result.plugin.version}.`)
+        setBackupMessage(ui.pluginUpdated(result.plugin.name, result.previousVersion ?? (ui.language === 'zh-CN' ? '未知' : 'unknown'), result.plugin.version))
       } else if (result.operation === 'reloaded') {
-        setBackupMessage(`Reloaded plugin "${result.plugin.name}" from its installed folder.`)
+        setBackupMessage(ui.pluginReloadedFromFolder(result.plugin.name))
       } else {
-        setBackupMessage(`Installed plugin "${result.plugin.name}".`)
+        setBackupMessage(ui.pluginInstalled(result.plugin.name))
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to install plugin.'
+      const message = error instanceof Error ? error.message : ui.pluginInstallFailed
       setBackupMessage(message)
     } finally {
       setPluginInventoryBusy(false)
@@ -2071,7 +2116,7 @@ export function App() {
   }
 
   async function removePlugin(plugin: PluginDescriptor) {
-    const accepted = window.confirm(`Remove plugin "${plugin.name}" from the local user-data plugin root?`)
+    const accepted = window.confirm(ui.confirmRemovePlugin(plugin.name))
     if (!accepted) {
       return
     }
@@ -2081,9 +2126,9 @@ export function App() {
       await window.knowbook.removePlugin(plugin.id)
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage(`Removed plugin "${plugin.name}".`)
+      setBackupMessage(ui.pluginRemoved(plugin.name))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to remove plugin.'
+      const message = error instanceof Error ? error.message : ui.pluginRemoveFailed
       setBackupMessage(message)
     } finally {
       setPluginBusyId(null)
@@ -2098,16 +2143,16 @@ export function App() {
       setHomeData(refreshed)
       const refreshedPlugin = (refreshed.plugins ?? []).find((candidate) => candidate.id === plugin.id)
       if (!refreshedPlugin) {
-        setBackupMessage(`Plugin "${plugin.name}" was reloaded, but it is no longer listed.`)
+        setBackupMessage(ui.pluginMissingAfterReload(plugin.name))
       } else if (refreshedPlugin.status === 'error') {
-        setBackupMessage(`Plugin "${refreshedPlugin.name}" still has errors after reload: ${refreshedPlugin.error ?? 'unknown error'}`)
+        setBackupMessage(ui.pluginStillHasErrorsAfterReload(refreshedPlugin.name, refreshedPlugin.error ?? (ui.language === 'zh-CN' ? '未知错误' : 'unknown error')))
       } else if (refreshedPlugin.status === 'disabled') {
-        setBackupMessage(`Reloaded metadata for disabled plugin "${refreshedPlugin.name}".`)
+        setBackupMessage(ui.disabledPluginMetadataReloaded(refreshedPlugin.name))
       } else {
-        setBackupMessage(`Reloaded plugin "${refreshedPlugin.name}".`)
+        setBackupMessage(ui.pluginReloadedSingle(refreshedPlugin.name))
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to reload plugin.'
+      const message = error instanceof Error ? error.message : ui.pluginReloadFailed
       setBackupMessage(message)
     } finally {
       setPluginBusyId(null)
@@ -2127,9 +2172,9 @@ export function App() {
       setDatabaseColumnNameDraft('')
       setDatabaseColumnTypeDraft('text')
       setDatabaseColumnOptionsDraft('')
-      setBackupMessage(`Added database column "${createdColumn.name}".`)
+      setBackupMessage(ui.databaseColumnAdded(createdColumn.name))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create database column.'
+      const message = error instanceof Error ? error.message : ui.databaseColumnCreateFailed
       setBackupMessage(message)
     }
   }
@@ -2139,9 +2184,9 @@ export function App() {
       await window.knowbook.renameDocumentDatabaseColumn({ columnId, name })
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage(`Renamed column to "${name}".`)
+      setBackupMessage(ui.databaseColumnRenamed(name))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to rename database column.'
+      const message = error instanceof Error ? error.message : ui.databaseColumnRenameFailed
       setBackupMessage(message)
     }
   }
@@ -2152,7 +2197,7 @@ export function App() {
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to reorder database column.'
+      const message = error instanceof Error ? error.message : ui.databaseColumnReorderFailed
       setBackupMessage(message)
     }
   }
@@ -2164,15 +2209,15 @@ export function App() {
       await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId, options })
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage('Updated column options.')
+      setBackupMessage(ui.databaseColumnOptionsUpdated)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update database column options.'
+      const message = error instanceof Error ? error.message : ui.databaseColumnOptionsUpdateFailed
       setBackupMessage(message)
     }
   }
 
   async function deleteDatabaseColumn(columnId: string, columnName: string) {
-    const accepted = window.confirm(`Delete database column "${columnName}"? Existing values in this column will be removed.`)
+    const accepted = window.confirm(ui.confirmDeleteDatabaseColumn(columnName))
     if (!accepted) {
       return
     }
@@ -2181,9 +2226,9 @@ export function App() {
       await window.knowbook.deleteDocumentDatabaseColumn(columnId)
       const refreshed = await window.knowbook.getHomeData()
       setHomeData(refreshed)
-      setBackupMessage(`Deleted column "${columnName}".`)
+      setBackupMessage(ui.databaseColumnDeleted(columnName))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete database column.'
+      const message = error instanceof Error ? error.message : ui.databaseColumnDeleteFailed
       setBackupMessage(message)
     }
   }
@@ -2249,7 +2294,7 @@ export function App() {
       })
       setAiContextResults(results)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Semantic search failed.'
+      const message = error instanceof Error ? error.message : ui.semanticSearchFailed
       setAiContextResults([])
       setAiContextError(message)
     } finally {
@@ -2272,7 +2317,7 @@ export function App() {
       setAiAnswer(result.answer)
       setAiContextResults(result.references)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI request failed.'
+      const message = error instanceof Error ? error.message : ui.aiRequestFailed
       setAiAnswer(message)
       setAiContextResults([])
     } finally {
@@ -2295,24 +2340,9 @@ export function App() {
       setHomeData(refreshedHome)
       setSelectedDocument(refreshedDetail)
 
-      const updates: string[] = []
-      if (result.summaryGenerated) {
-        updates.push('summary')
-      }
-      if (result.taggedBlocks > 0) {
-        updates.push(`${result.taggedBlocks} tagged block${result.taggedBlocks === 1 ? '' : 's'}`)
-      }
-      if (result.highlightedBlocks > 0) {
-        updates.push(`${result.highlightedBlocks} highlighted block${result.highlightedBlocks === 1 ? '' : 's'}`)
-      }
-
-      setBackupMessage(
-        updates.length > 0
-          ? `AI automations updated ${updates.join(', ')}.`
-          : 'Enabled AI automations found nothing new to update.'
-      )
+      setBackupMessage(ui.aiAutomationResult(result))
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI automation run failed.'
+      const message = error instanceof Error ? error.message : ui.aiAutomationFailed
       setBackupMessage(message)
     } finally {
       setAiAutomationsRunning(false)
@@ -2345,7 +2375,7 @@ export function App() {
       }
       setBackupMessage(result.message)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Plugin action failed.'
+      const message = error instanceof Error ? error.message : ui.pluginActionFailed
       setBackupMessage(message)
     } finally {
       setPluginActionBusyKey(null)
@@ -2452,7 +2482,7 @@ export function App() {
 
       const visibleSiblingSlice = getVisibleSiblingSelectionSlice(selectedBlockRange)
       if (!visibleSiblingSlice) {
-        setBackupMessage('The current selection cannot be interpreted as a movable visible tree slice.')
+        setBackupMessage(ui.invalidVisibleTreeSlice)
         return
       }
 
@@ -2629,7 +2659,7 @@ export function App() {
       setActiveBlockIndex(focusIndex)
       setPendingFocusBlockIndex(focusIndex)
       endBlockDrag()
-      setBackupMessage(`Converted ${operationCount} blocks to ${getBlockTypeLabel(nextType)}.`)
+      setBackupMessage(ui.convertedBlocks(operationCount, getBlockTypeLabel(nextType)))
     }
 
     function removeSelectedBlockRange(range: BlockSelectionRange) {
@@ -2686,9 +2716,9 @@ export function App() {
 
       try {
         await window.knowbook.writeClipboardText(text)
-        setBackupMessage(`Copied ${count} blocks as block sequence.`)
+        setBackupMessage(ui.copiedBlocks(count))
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Copy failed.'
+        const message = error instanceof Error ? error.message : ui.copyFailed
         setBackupMessage(message)
       }
     }
@@ -2704,9 +2734,9 @@ export function App() {
 
       try {
         await window.knowbook.writeClipboardText(text)
-        setBackupMessage(`Copied ${count} blocks as plain text.`)
+        setBackupMessage(ui.copiedPlainText(count))
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Copy text failed.'
+        const message = error instanceof Error ? error.message : ui.copyTextFailed
         setBackupMessage(message)
       }
     }
@@ -2723,9 +2753,9 @@ export function App() {
       try {
         await window.knowbook.writeClipboardText(text)
         removeSelectedBlockRange(range)
-        setBackupMessage(`Cut ${count} blocks to clipboard.`)
+        setBackupMessage(ui.cutBlocks(count))
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Cut failed.'
+        const message = error instanceof Error ? error.message : ui.cutFailed
         setBackupMessage(message)
       }
     }
@@ -2738,7 +2768,7 @@ export function App() {
       const range = getMultiBlockOperationRange(selectedBlockRange)
       const count = range.end - range.start + 1
       removeSelectedBlockRange(range)
-      setBackupMessage(`Deleted ${count} blocks.`)
+      setBackupMessage(ui.deletedBlocks(count))
     }
 
     function duplicateSelectedBlocks() {
@@ -2769,7 +2799,7 @@ export function App() {
       setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
       setPendingFocusBlockIndex(duplicatedRange.start)
       endBlockDrag()
-      setBackupMessage(`Duplicated ${count} blocks.`)
+      setBackupMessage(ui.duplicatedBlocks(count))
     }
 
   function handleBlockContentChange(index: number, content: string) {
@@ -3653,78 +3683,87 @@ export function App() {
         <div className="brand">
           <span className="brand-mark">KB</span>
           <div>
-            <p className="eyebrow">Local-first knowledge OS</p>
+            <p className="eyebrow">{ui.brandEyebrow}</p>
             <h1>KnowBook</h1>
           </div>
         </div>
 
+        <div className="panel">
+          <p className="panel-label">{ui.languageSwitchLabel}</p>
+          <label className="editor-label">
+            {ui.languageSwitchLabel}
+            <select className="editor-input" onChange={(event) => setUiLanguage(event.target.value as UiLanguage)} value={uiLanguage}>
+              <option value="zh-CN">{ui.languageOptionZh}</option>
+              <option value="en-US">{ui.languageOptionEn}</option>
+            </select>
+          </label>
+        </div>
+
         <div className="panel panel-accent">
-          <p className="panel-label">Implementation Slice</p>
-          <h2>Phase 6 plugin host</h2>
-          <p>
-            The desktop shell now hosts sandboxed workspace plugins that can contribute sidebar cards, document actions, and lifecycle listeners without changing renderer code.
-          </p>
+          <p className="panel-label">{ui.implementationSliceLabel}</p>
+          <h2>{ui.implementationSliceTitle}</h2>
+          <p>{ui.implementationSliceBody}</p>
         </div>
 
         <div className="panel">
-          <p className="panel-label">Next up</p>
+          <p className="panel-label">{ui.nextUpLabel}</p>
           <ul className="panel-list">
-            <li>Packaged plugin install / uninstall flow</li>
-            <li>More UI slots beyond cards and document actions</li>
-            <li>Typed external SDK for third-party plugin authors</li>
+            {ui.nextUpItems.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
           </ul>
         </div>
 
         <div className="panel">
-          <p className="panel-label">AI settings</p>
-          <h3>Cloud API configuration</h3>
+          <p className="panel-label">{ui.aiSettingsLabel}</p>
+          <h3>{ui.aiSettingsTitle}</h3>
           <div className="editor-fields">
             <label className="toggle-row">
               <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
-              <span>Enable AI features</span>
+              <span>{ui.enableAiFeatures}</span>
             </label>
             <label className="toggle-row">
               <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>Auto-generate summary when summary is empty</span>
+              <span>{ui.autoSummaryWhenEmpty}</span>
             </label>
             <label className="toggle-row">
               <input checked={aiAutoTagOnSaveDraft} onChange={(event) => setAiAutoTagOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>Auto-generate missing block tags on save</span>
+              <span>{ui.autoTagOnSave}</span>
             </label>
             <label className="toggle-row">
               <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>Auto-highlight important blocks on save</span>
+              <span>{ui.autoHighlightOnSave}</span>
             </label>
             <label className="editor-label">
-              Base URL
+              {ui.baseUrl}
               <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
             </label>
             <label className="editor-label">
-              Model
+              {ui.model}
               <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
             </label>
             <label className="editor-label">
-              Embedding model
+              {ui.embeddingModel}
               <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
             </label>
             <label className="editor-label">
-              API Key (leave blank to keep current)
+              {ui.apiKeyLabel}
               <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
             </label>
-            <p className="mini-hint">Current key: {homeData.aiConfig.hasApiKey ? 'configured' : 'missing'}</p>
-            <p className="mini-hint">Chat model answers questions. Embedding model powers local semantic retrieval and RAG context caching.</p>
-            <p className="mini-hint">Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.</p>
-            <p className="mini-hint">Auto-tags only fill blocks that still have no tags, so manual tags stay untouched.</p>
-            <p className="mini-hint">Auto-highlights only fill blocks that still have no background color, so manual highlight choices stay untouched.</p>
+            <p className="mini-hint">{ui.currentKey(homeData.aiConfig.hasApiKey)}</p>
+            <p className="mini-hint">{ui.aiHintOverview}</p>
+            <p className="mini-hint">{ui.aiHintSummary}</p>
+            <p className="mini-hint">{ui.aiHintTags}</p>
+            <p className="mini-hint">{ui.aiHintHighlights}</p>
             <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
-              {aiSaving ? 'Saving...' : 'Save AI settings'}
+              {aiSaving ? ui.common.saving : ui.saveAiSettings}
             </button>
           </div>
         </div>
 
         <div className="panel">
-          <p className="panel-label">Automation feed</p>
-          <h3>Recent events</h3>
+          <p className="panel-label">{ui.automationFeedLabel}</p>
+          <h3>{ui.recentEventsTitle}</h3>
           {homeData.recentEvents.length > 0 ? (
             <div className="event-feed">
               {homeData.recentEvents.map((event) => (
@@ -3741,26 +3780,26 @@ export function App() {
                 >
                   <div className="event-feed-head">
                     <strong>{event.title}</strong>
-                    <span>{new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    <span>{new Date(event.createdAt).toLocaleTimeString(ui.locale, { hour: '2-digit', minute: '2-digit' })}</span>
                   </div>
                   <span className="event-feed-description">{event.description}</span>
                 </button>
               ))}
             </div>
           ) : (
-            <p className="mini-hint">No automation events yet.</p>
+            <p className="mini-hint">{ui.noAutomationEvents}</p>
           )}
         </div>
 
         <div className="panel">
-          <p className="panel-label">Plugins</p>
-          <h3>Workspace extensions</h3>
+          <p className="panel-label">{ui.pluginsLabel}</p>
+          <h3>{ui.pluginsTitle}</h3>
           <div className="plugin-toolbar">
             <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void reloadPlugins()} type="button">
-              {pluginInventoryBusy ? 'Reloading...' : 'Reload'}
+              {pluginInventoryBusy ? ui.common.reloading : ui.common.reload}
             </button>
             <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void installPluginFromFolder()} type="button">
-              {pluginInventoryBusy ? 'Working...' : 'Install Folder'}
+              {pluginInventoryBusy ? ui.common.working : ui.installFolder}
             </button>
           </div>
           {pluginRoots.length > 0 ? (
@@ -3770,15 +3809,13 @@ export function App() {
               ))}
             </div>
           ) : null}
-          <p className="mini-hint">
-            Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root and can replace an existing user-data plugin with the same id.
-          </p>
-          <p className="mini-hint">Each plugin row also supports Reload, and error-state plugins expose the same action as Recover.</p>
-          {pluginWritableRoot ? <p className="mini-hint">Writable install root: {pluginWritableRoot}</p> : null}
+          <p className="mini-hint">{ui.pluginRootsHint}</p>
+          <p className="mini-hint">{ui.pluginRecoverHint}</p>
+          {pluginWritableRoot ? <p className="mini-hint">{ui.writableInstallRoot(pluginWritableRoot)}</p> : null}
           {plugins.length > 0 ? (
             <div className="plugin-list">
               {plugins.map((plugin) => {
-                const statusLabel = plugin.status === 'running' ? 'Running' : plugin.status === 'error' ? 'Error' : 'Disabled'
+                const statusLabel = ui.pluginStatusLabel(plugin.status)
                 return (
                   <div className="plugin-item" key={plugin.id}>
                     <div className="plugin-item-head">
@@ -3790,7 +3827,7 @@ export function App() {
                     </div>
                     <div className="plugin-item-meta">
                       <span>{plugin.version}</span>
-                      <span>{plugin.source === 'workspace' ? 'workspace' : 'user-data'}</span>
+                      <span>{ui.pluginSourceLabel(plugin.source)}</span>
                       {plugin.author ? <span>{plugin.author}</span> : null}
                     </div>
                     {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
@@ -3803,7 +3840,7 @@ export function App() {
                         }}
                         type="button"
                       >
-                        {pluginBusyId === plugin.id ? 'Working...' : plugin.status === 'error' ? 'Recover' : 'Reload'}
+                        {pluginBusyId === plugin.id ? ui.common.working : plugin.status === 'error' ? ui.recover : ui.common.reload}
                       </button>
                       <label className="toggle-row plugin-toggle-row">
                         <input
@@ -3814,7 +3851,7 @@ export function App() {
                           }}
                           type="checkbox"
                         />
-                        <span>{pluginBusyId === plugin.id ? 'Updating...' : plugin.enabled ? 'Enabled' : 'Disabled'}</span>
+                        <span>{ui.pluginToggleLabel(pluginBusyId === plugin.id, plugin.enabled)}</span>
                       </label>
                       {plugin.source === 'user-data' ? (
                         <button
@@ -3834,7 +3871,7 @@ export function App() {
               })}
             </div>
           ) : (
-            <p className="mini-hint">No plugins discovered yet.</p>
+            <p className="mini-hint">{ui.noPluginsDiscovered}</p>
           )}
         </div>
       </aside>
@@ -3842,14 +3879,12 @@ export function App() {
       <main className="content">
         <section className="hero">
           <div>
-            <p className="eyebrow">Workspace status</p>
-            <h2>Workspace navigation is alive</h2>
-            <p className="hero-copy">
-              SQLite remains the source of truth, markdown backups export into a nested tree, and the renderer can now browse document hierarchy and inspect document relationships over the preload bridge.
-            </p>
+            <p className="eyebrow">{ui.workspaceStatusEyebrow}</p>
+            <h2>{ui.workspaceStatusTitle}</h2>
+            <p className="hero-copy">{ui.workspaceStatusBody}</p>
           </div>
           <button className="primary-button" onClick={handleBackup} type="button">
-            Run backup now
+            {ui.runBackupNow}
           </button>
         </section>
 
@@ -3857,20 +3892,20 @@ export function App() {
 
         <section className="stats-grid">
           <article className="stat-card">
-            <span className="stat-label">Documents</span>
+            <span className="stat-label">{ui.documentsLabel}</span>
             <strong>{homeData.summary.documents}</strong>
           </article>
           <article className="stat-card">
-            <span className="stat-label">Blocks</span>
+            <span className="stat-label">{ui.blocksLabel}</span>
             <strong>{homeData.summary.blocks}</strong>
           </article>
           <article className="stat-card">
-            <span className="stat-label">Links</span>
+            <span className="stat-label">{ui.linksLabel}</span>
             <strong>{homeData.summary.links}</strong>
           </article>
           <article className="stat-card">
-            <span className="stat-label">AI</span>
-            <strong>{homeData.aiConfig.enabled ? 'API ready' : 'Disabled'}</strong>
+            <span className="stat-label">{ui.aiLabel}</span>
+            <strong>{ui.aiReadyState(homeData.aiConfig.enabled)}</strong>
           </article>
         </section>
 
@@ -3879,7 +3914,7 @@ export function App() {
             {pluginDashboardCards.map((card: PluginDashboardCard) => (
               <article className="panel plugin-dashboard-card" key={`${card.pluginId}:${card.id}`}>
                 <div className="plugin-dashboard-head">
-                  <p className="panel-label">Plugin card</p>
+                  <p className="panel-label">{ui.pluginCardLabel}</p>
                   <span className="pill">{card.pluginId}</span>
                 </div>
                 <h3>{card.title}</h3>
@@ -3893,8 +3928,8 @@ export function App() {
           <article className="panel graph-panel">
             <div className="panel-head compact-head">
               <div>
-                <p className="panel-label">Knowledge graph</p>
-                <h3>Workspace topology</h3>
+                <p className="panel-label">{ui.knowledgeGraphLabel}</p>
+                <h3>{ui.knowledgeGraphTitle}</h3>
               </div>
               <div className="toolbar-inline">
                 <span className="pill">{homeData.graph.nodes.length} nodes</span>
@@ -3915,46 +3950,46 @@ export function App() {
           <article className="panel database-panel">
             <div className="panel-head compact-head">
               <div>
-                <p className="panel-label">Database view</p>
-                <h3>Document catalog</h3>
+                <p className="panel-label">{ui.databaseViewLabel}</p>
+                <h3>{ui.documentCatalogTitle}</h3>
               </div>
               <div className="toolbar-inline">
                 <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
-                  {isCreatingDatabaseColumn ? 'Close schema' : 'Add column'}
+                  {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
                 </button>
                 <input
                   className="editor-input table-search"
                   onChange={(event) => setCatalogQuery(event.target.value)}
-                  placeholder="Search documents..."
+                  placeholder={ui.searchDocumentsPlaceholder}
                   type="text"
                   value={catalogQuery}
                 />
-                <span className="pill">{homeData.databaseColumns.length} custom columns</span>
-                <span className="pill">{filteredCatalog.length} rows</span>
+                <span className="pill">{ui.customColumnsCount(homeData.databaseColumns.length)}</span>
+                <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
               </div>
             </div>
 
             {isCreatingDatabaseColumn ? (
               <div className="database-schema-form">
                 <label className="editor-label">
-                  Column name
+                  {ui.columnName}
                   <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
                 </label>
                 <label className="editor-label">
-                  Field type
+                  {ui.fieldType}
                   <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
-                    {Object.entries(databaseColumnTypeLabels).map(([value, label]) => (
+                    {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
                       <option key={value} value={value}>{label}</option>
                     ))}
                   </select>
                 </label>
                 {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
                   <label className="editor-label database-schema-options">
-                    Options
+                    {ui.options}
                     <input
                       className="editor-input"
                       onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
-                      placeholder="Separate options with commas"
+                      placeholder={ui.optionsCommaHint}
                       type="text"
                       value={databaseColumnOptionsDraft}
                     />
@@ -3967,7 +4002,7 @@ export function App() {
                     onClick={() => void createDatabaseColumn()}
                     type="button"
                   >
-                    Save column
+                    {ui.saveColumn}
                   </button>
                   <button
                     className="secondary-button"
@@ -3979,7 +4014,7 @@ export function App() {
                     }}
                     type="button"
                   >
-                    Cancel
+                    {ui.common.cancel}
                   </button>
                 </div>
               </div>
@@ -4001,7 +4036,7 @@ export function App() {
                 ))}
               </div>
             ) : (
-              <p className="mini-hint">No custom database columns yet. Add a column to start capturing structured metadata on each document.</p>
+              <p className="mini-hint">{ui.noCustomColumnsYet}</p>
             )}
 
             <DocumentCatalogTable
@@ -4016,26 +4051,24 @@ export function App() {
           <article className="panel board-panel">
             <div className="panel-head compact-head">
               <div>
-                <p className="panel-label">Board view</p>
-                <h3>{boardGroupingColumn ? `Grouped by ${boardGroupingColumn.name}` : 'Grouped by parent bucket'}</h3>
+                <p className="panel-label">{ui.boardViewLabel}</p>
+                <h3>{ui.boardGroupedBy(boardGroupingColumn?.name ?? null)}</h3>
               </div>
               <div className="toolbar-inline">
                 <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
-                  <option value={BOARD_GROUP_BY_PARENT}>Parent bucket</option>
+                  <option value={BOARD_GROUP_BY_PARENT}>{ui.parentBucket}</option>
                   {boardGroupableColumns.map((column) => (
-                    <option key={column.id} value={column.id}>{column.name} ({databaseColumnTypeLabels[column.type]})</option>
+                    <option key={column.id} value={column.id}>{column.name} ({getDatabaseColumnTypeLabel(column.type)})</option>
                   ))}
                 </select>
-                <span className="pill">{boardColumns.length} columns</span>
+                <span className="pill">{ui.boardColumnsCount(boardColumns.length)}</span>
               </div>
             </div>
 
             <p className="mini-hint">
               {boardGroupingColumn
-                ? boardGroupingColumn.type === 'multi-select'
-                  ? `Dragging cards into a column will add that option to "${boardGroupingColumn.name}". Drop into the empty column to clear all values.`
-                  : `Dragging cards between columns will update the "${boardGroupingColumn.name}" field.`
-                : 'Dragging cards between columns will reparent documents.'}
+                ? ui.boardHintForColumn(boardGroupingColumn.name, boardGroupingColumn.type === 'multi-select')
+                : ui.boardHintForParent}
             </p>
 
             <DocumentBoard
@@ -4062,18 +4095,18 @@ export function App() {
           <article className="panel tree-panel">
             <div className="panel-head compact-head">
               <div>
-                <p className="panel-label">Workspace tree</p>
-                <h3>Seeded documents</h3>
+                <p className="panel-label">{ui.workspaceTreeLabel}</p>
+                <h3>{ui.seededDocumentsTitle}</h3>
               </div>
               <div className="toolbar-inline">
-                <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={navBack} title="后退 (Alt+←)" type="button">←</button>
-                <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={navForward} title="前进 (Alt+→)" type="button">→</button>
-                <span className="pill">{homeData.documentTree.length} roots</span>
-                <button className="secondary-button" onClick={openGlobalSearch} title="全局搜索 (Ctrl+K)" type="button">
+                <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={navBack} title={`${ui.back} (Alt+←)`} type="button">←</button>
+                <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={navForward} title={`${ui.forward} (Alt+→)`} type="button">→</button>
+                <span className="pill">{ui.rootsCount(homeData.documentTree.length)}</span>
+                <button className="secondary-button" onClick={openGlobalSearch} title={`${ui.globalSearch} (Ctrl+K)`} type="button">
                   🔍
                 </button>
                 <button className="secondary-button" onClick={() => handleCreateDocument(null)} type="button">
-                  New root
+                  {ui.newRoot}
                 </button>
               </div>
             </div>
@@ -4093,7 +4126,7 @@ export function App() {
                 await dropToRoot()
               }}
             >
-              Drop here to move document to root
+              {ui.dropToRoot}
             </div>
 
             {pinnedDocumentIds.size > 0 && (() => {
@@ -4102,7 +4135,7 @@ export function App() {
               if (pinnedDocs.length === 0) return null
               return (
                 <div className="pinned-section">
-                  <p className="pinned-section-label">★ 收藏</p>
+                  <p className="pinned-section-label">{ui.pinnedSectionLabel}</p>
                   {pinnedDocs.map((doc) => (
                     <button
                       key={doc.id}
@@ -4139,8 +4172,8 @@ export function App() {
           <article className="panel preview-panel">
             <div className="panel-head">
               <div>
-                <p className="panel-label">Document preview</p>
-                <h3>{selectedDocument?.title ?? 'Select a document'}</h3>
+                <p className="panel-label">{ui.documentPreviewLabel}</p>
+                <h3>{selectedDocument?.title ?? ui.selectDocument}</h3>
               </div>
               <div className="toolbar-inline">
                 {selectedDocument ? (
@@ -4148,31 +4181,31 @@ export function App() {
                     className={`secondary-button pin-button${pinnedDocumentIds.has(selectedDocument.id) ? ' pin-button-active' : ''}`}
                     onClick={() => togglePinDocument(selectedDocument.id)}
                     type="button"
-                    title={pinnedDocumentIds.has(selectedDocument.id) ? '取消收藏' : '收藏文档'}
+                    title={pinnedDocumentIds.has(selectedDocument.id) ? ui.unpinDocument : ui.pinDocument}
                   >
                     {pinnedDocumentIds.has(selectedDocument.id) ? '★' : '☆'}
                   </button>
                 ) : null}
-                {autoSaveFlash ? <span className="autosave-flash">已自动保存</span> : null}
-                {mdCopyFlash ? <span className="autosave-flash">已复制 Markdown</span> : null}
+                {autoSaveFlash ? <span className="autosave-flash">{ui.autoSaved}</span> : null}
+                {mdCopyFlash ? <span className="autosave-flash">{ui.markdownCopied}</span> : null}
                 {selectedDocument && !isEditing ? (
-                  <button className="secondary-button" onClick={copyDocumentAsMarkdown} type="button" title="复制为 Markdown">
-                    Copy MD
+                  <button className="secondary-button" onClick={copyDocumentAsMarkdown} type="button" title={ui.copyMarkdown}>
+                    {ui.copyMarkdown}
                   </button>
                 ) : null}
                 {selectedDocument && !isEditing ? (
-                  <button className="secondary-button" onClick={saveDocumentAsMarkdown} type="button" title="导出为 Markdown 文件">
-                    Save MD
+                  <button className="secondary-button" onClick={saveDocumentAsMarkdown} type="button" title={ui.saveMarkdown}>
+                    {ui.saveMarkdown}
                   </button>
                 ) : null}
                 {selectedDocument ? (
                   <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
-                    Add child
+                    {ui.addChild}
                   </button>
                 ) : null}
                 {selectedDocument && !isEditing ? (
                   <button className="secondary-button" onClick={startEdit} type="button">
-                    Edit
+                    {ui.common.edit}
                   </button>
                 ) : null}
                 {selectedDocument && isEditing ? (
@@ -4180,23 +4213,23 @@ export function App() {
                     <button className="secondary-button" disabled={editHistoryPointerRef.current <= 0} onClick={undoEdit} type="button" title="撤销 (Ctrl+Z)">↩</button>
                     <button className="secondary-button" disabled={editHistoryPointerRef.current >= editHistoryRef.current.length - 1} onClick={redoEdit} type="button" title="重做 (Ctrl+Y)">↪</button>
                     <button className="secondary-button" disabled={isSaving} onClick={cancelEdit} type="button">
-                      Cancel
+                      {ui.common.cancel}
                     </button>
                     <button className="secondary-button" disabled={isSaving} onClick={saveDocument} type="button">
-                      {isSaving ? 'Saving...' : 'Save'}
+                      {isSaving ? ui.common.saving : ui.common.save}
                     </button>
                   </>
                 ) : null}
                 {selectedDocument && !isEditing ? (
                   <button className="danger-button" onClick={deleteSelectedDocument} type="button">
-                    Delete
+                    {ui.common.delete}
                   </button>
                 ) : null}
                 {selectedDocument && !isEditing ? (
                   <>
                     <select className="editor-select compact-select" onChange={(event) => setMoveTargetId(event.target.value)} value={moveTargetId}>
-                      <option value="">Move to...</option>
-                      <option value="__root__">(Root)</option>
+                      <option value="">{ui.moveToPlaceholder}</option>
+                      <option value="__root__">{ui.rootOption}</option>
                       {moveOptions.map((option) => (
                         <option key={option.id} value={option.id}>
                           {option.label}
@@ -4204,11 +4237,11 @@ export function App() {
                       ))}
                     </select>
                     <button className="secondary-button" disabled={!moveTargetId} onClick={moveSelectedDocument} type="button">
-                      Move
+                      {ui.common.move}
                     </button>
                   </>
                 ) : null}
-                {detailLoading ? <span className="pill">Loading...</span> : <span className="pill">{isEditing ? 'Editing' : 'Read only'}</span>}
+                {detailLoading ? <span className="pill">{ui.common.loading}</span> : <span className="pill">{isEditing ? ui.editing : ui.readOnly}</span>}
               </div>
             </div>
 
@@ -4219,11 +4252,11 @@ export function App() {
                   {isEditing ? (
                     <div className="editor-fields">
                       <label className="editor-label">
-                        Title
+                        {ui.common.title}
                         <input className="editor-input" onChange={(event) => setDraftTitle(event.target.value)} type="text" value={draftTitle} />
                       </label>
                       <label className="editor-label">
-                        Summary
+                        {ui.common.summary}
                         <textarea
                           className="editor-textarea"
                           onChange={(event) => setDraftSummary(event.target.value)}
@@ -4235,7 +4268,7 @@ export function App() {
                   ) : (
                     <p className="document-summary">{selectedDocument.summary}</p>
                   )}
-                  <p className="document-updated">Updated {new Date(selectedDocument.updatedAt).toLocaleString()}</p>
+                  <p className="document-updated">{ui.updatedAt(selectedDocument.updatedAt)}</p>
                 </div>
 
                 {(() => {
@@ -4277,7 +4310,7 @@ export function App() {
                 })()}
 
                 <div className="preview-section">
-                  <p className="panel-label">Blocks</p>
+                  <p className="panel-label">{ui.blocksPanelLabel}</p>
                   {isEditing ? (
                     <div
                       className="block-editor-list"
@@ -4293,7 +4326,7 @@ export function App() {
                           <div className="block-search-header">
                             <input
                               type="text"
-                              placeholder="Search blocks (Cmd+F to close)..."
+                              placeholder={ui.searchBlocksPlaceholder}
                               value={blockSearchQuery}
                               onChange={(event) => setBlockSearchQuery(event.target.value)}
                               onKeyDown={(event) => {
@@ -4338,7 +4371,7 @@ export function App() {
                               )
                             })}
                             {getBlockSearchResults().length === 0 && blockSearchQuery && (
-                              <p className="mini-hint">No blocks match your search.</p>
+                              <p className="mini-hint">{ui.noBlocksMatchSearch}</p>
                             )}
                           </div>
                         </div>
@@ -4346,7 +4379,7 @@ export function App() {
                       {getAllBlockTags().length > 0 && (
                         <div className="block-tags-filter-panel">
                           <div className="block-tags-filter-header">
-                            <span className="panel-label">Filter by tags</span>
+                            <span className="panel-label">{ui.filterByTags}</span>
                             {selectedBlockTags.size > 0 && (
                               <button
                                 className="secondary-button"
@@ -4386,27 +4419,26 @@ export function App() {
                         <div className="block-selection-toolbar">
                           <div>
                             <strong>
-                              {selectedVisibleBlockCount} visible block{selectedVisibleBlockCount === 1 ? '' : 's'} selected
-                              {selectedBlockCount > selectedVisibleBlockCount ? ` · raw ${selectedBlockCount} incl hidden` : ''}
-                              {selectedBlockActionCount > selectedBlockCount ? ` · subtree ${selectedBlockActionCount} blocks` : ''}
-                              {!isSelectionCoherent(selectedBlockRange) ? ' · ⚠ Mixed depths (incoherent)' : ''}
-                              {selectedBlockHasHiddenCollapsedContent ? ' · includes folded subtree rows' : ''}
-                              {selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice ? ' · ⚠ Cross-parent selection' : ''}
+                              {ui.blockSelectionSummary({
+                                visibleCount: selectedVisibleBlockCount,
+                                selectedCount: selectedBlockCount,
+                                actionCount: selectedBlockActionCount,
+                                incoherent: !isSelectionCoherent(selectedBlockRange),
+                                hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+                                selectedBlockInteractionIssue,
+                                hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
+                              })}
                             </strong>
                             <p className="mini-hint">
-                              Rows {selectedBlockRange.start + 1}-{selectedBlockRange.end + 1}. Use Shift + Select to extend a contiguous range, convert the whole slice to a shared block type, copy blocks or plain text, cut/delete/duplicate the whole slice, use Alt + ArrowUp/ArrowDown to move it, Tab / Shift+Tab to adjust nesting, use Delete or Backspace to remove it from the keyboard, or paste to replace it.
-                              {selectedBlockActionCount > selectedBlockCount
-                                ? ' For a single selected parent block, copy/cut/duplicate/delete and paste-replace expand to the full subtree.'
-                                : ''}
-                              {!isSelectionCoherent(selectedBlockRange)
-                                ? ' ⚠ This selection contains blocks at different nesting levels. Some operations may behave unexpectedly.'
-                                : ''}
-                              {selectedBlockHasHiddenCollapsedContent
-                                ? ' Folded subtree descendants are treated as part of the selected visible root slice.'
-                                : ''}
-                              {selectedBlockCount > 1 && selectedBlockInteractionIssue
-                                ? ` ⚠ ${selectedBlockInteractionIssue}`
-                                : ''}
+                              {ui.blockSelectionHint({
+                                start: selectedBlockRange.start,
+                                end: selectedBlockRange.end,
+                                actionCount: selectedBlockActionCount,
+                                selectedCount: selectedBlockCount,
+                                incoherent: !isSelectionCoherent(selectedBlockRange),
+                                hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+                                selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
+                              })}
                             </p>
                           </div>
                           <div className="block-selection-actions">
@@ -4415,29 +4447,29 @@ export function App() {
                               onChange={(event) => setSelectedBlockConversionType(event.target.value as DocumentBlock['type'])}
                               value={selectedBlockConversionType}
                             >
-                              <option value="paragraph">As Text</option>
-                              <option value="todo">As Todo</option>
-                              <option value="quote">As Quote</option>
-                              <option value="bulleted-list">As Bullet</option>
-                              <option value="numbered-list">As Numbered</option>
+                              <option value="paragraph">{getBlockConversionLabel('paragraph')}</option>
+                              <option value="todo">{getBlockConversionLabel('todo')}</option>
+                              <option value="quote">{getBlockConversionLabel('quote')}</option>
+                              <option value="bulleted-list">{getBlockConversionLabel('bulleted-list')}</option>
+                              <option value="numbered-list">{getBlockConversionLabel('numbered-list')}</option>
                             </select>
                             <button className="secondary-button" onClick={() => convertSelectedBlocks(selectedBlockConversionType)} type="button">
-                              Convert
+                              {ui.convert}
                             </button>
                             <button className="secondary-button" onClick={copySelectedBlocks} type="button">
-                              Copy Blocks
+                              {ui.copyBlocks}
                             </button>
                             <button className="secondary-button" onClick={copySelectedBlocksAsPlainText} type="button">
-                              Copy Text
+                              {ui.copyText}
                             </button>
                             <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
-                              Cut
+                              {ui.cut}
                             </button>
                             <button className="secondary-button" onClick={duplicateSelectedBlocks} type="button">
-                              Duplicate
+                              {ui.duplicate}
                             </button>
                             <button className="danger-button" onClick={deleteSelectedBlocks} type="button">
-                              Delete
+                              {ui.common.delete}
                             </button>
                             <button
                               className="secondary-button"
@@ -4449,7 +4481,7 @@ export function App() {
                               onClick={() => moveSelectedBlocks(-1)}
                               type="button"
                             >
-                              Move Up
+                              {ui.moveUp}
                             </button>
                             <button
                               className="secondary-button"
@@ -4461,10 +4493,10 @@ export function App() {
                               onClick={() => moveSelectedBlocks(1)}
                               type="button"
                             >
-                              Move Down
+                              {ui.moveDown}
                             </button>
                             <button className="secondary-button" onClick={clearBlockSelection} type="button">
-                              Clear
+                              {ui.clear}
                             </button>
                           </div>
                         </div>
@@ -4496,7 +4528,7 @@ export function App() {
                           >
                           {block.id && blockHasChildren(index) ? (
                             <button
-                              aria-label={collapsedBlockIds.has(block.id) ? 'Expand block' : 'Collapse block'}
+                              aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
                               className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
                               onClick={() => block.id && toggleBlockCollapse(block.id)}
                               type="button"
@@ -4507,7 +4539,7 @@ export function App() {
                             <span className="block-collapse-toggle-placeholder" />
                           )}
                           <button
-                            aria-label="Drag block"
+                            aria-label={ui.dragBlock}
                             className="block-drag-handle"
                             draggable
                             onDragEnd={endBlockDrag}
@@ -4531,19 +4563,19 @@ export function App() {
                             }}
                             value={block.type}
                           >
-                            <option value="paragraph">Paragraph</option>
-                            <option value="heading-1">Heading 1</option>
-                            <option value="heading-2">Heading 2</option>
-                            <option value="todo">Todo</option>
-                            <option value="code">Code</option>
-                            <option value="math">Math Formula</option>
-                            <option value="quote">Quote</option>
-                            <option value="bulleted-list">Bulleted List</option>
-                            <option value="numbered-list">Numbered List</option>
-                            <option value="divider">Divider</option>
+                            <option value="paragraph">{getBlockTypeOptionLabel('paragraph')}</option>
+                            <option value="heading-1">{getBlockTypeOptionLabel('heading-1')}</option>
+                            <option value="heading-2">{getBlockTypeOptionLabel('heading-2')}</option>
+                            <option value="todo">{getBlockTypeOptionLabel('todo')}</option>
+                            <option value="code">{getBlockTypeOptionLabel('code')}</option>
+                            <option value="math">{getBlockTypeOptionLabel('math')}</option>
+                            <option value="quote">{getBlockTypeOptionLabel('quote')}</option>
+                            <option value="bulleted-list">{getBlockTypeOptionLabel('bulleted-list')}</option>
+                            <option value="numbered-list">{getBlockTypeOptionLabel('numbered-list')}</option>
+                            <option value="divider">{getBlockTypeOptionLabel('divider')}</option>
                           </select>
                           {block.type === 'divider' ? (
-                            <div className="block-divider-editor">Divider block</div>
+                            <div className="block-divider-editor">{ui.dividerBlock}</div>
                           ) : (
                             <>
                             {block.type === 'code' && (
@@ -4554,7 +4586,7 @@ export function App() {
                                   updateDraftBlock(index, { ...block, language: event.target.value || undefined })
                                 }}
                               >
-                                <option value="">Plain text</option>
+                                <option value="">{ui.plainText}</option>
                                 <option value="javascript">JavaScript</option>
                                 <option value="typescript">TypeScript</option>
                                 <option value="python">Python</option>
@@ -4806,7 +4838,7 @@ export function App() {
                                     className="block-tag-remove"
                                     onClick={() => removeBlockTag(index, tag)}
                                     type="button"
-                                    title="Remove tag"
+                                    title={ui.removeTag}
                                   >
                                     ×
                                   </button>
@@ -4893,12 +4925,12 @@ export function App() {
                                   style={{ background: color || 'transparent' }}
                                   onClick={() => updateBlockHighlight(index, color || undefined)}
                                   type="button"
-                                  title={color || '无背景色'}
+                                  title={color || ui.noHighlight}
                                 />
                               ))}
                             </div>
                             <button className="danger-button" onClick={() => removeDraftBlock(index)} type="button">
-                              Remove
+                              {ui.removeBlock}
                             </button>
                           </div>
                           {dropPreview ? (
@@ -4908,7 +4940,7 @@ export function App() {
                             >
                               <span className="block-drop-preview-badge">{dropPreview.positionLabel}</span>
                               <span className="block-drop-preview-meta">
-                                Depth {dropPreview.effectiveDepth} · {dropPreview.parentText ? `Child of ${dropPreview.parentText}` : 'Root level'}
+                                {ui.dropPreviewMeta(dropPreview.effectiveDepth, dropPreview.parentText)}
                               </span>
                             </div>
                           ) : null}
@@ -4916,13 +4948,13 @@ export function App() {
                         )
                       })}
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
-                        Add block
+                        {ui.addBlock}
                       </button>
                       <DraftBlockTreeOutline blocks={draftBlocks} />
                       {activeSlashContext ? (
                         <div className="link-helper-panel">
-                          <p className="panel-label">Slash Commands</p>
-                          <p className="mini-hint">Current query: {activeSlashContext.query || '(all commands)'}</p>
+                          <p className="panel-label">{ui.slashCommandsLabel}</p>
+                          <p className="mini-hint">{ui.slashQuery(activeSlashContext.query)}</p>
                           <div className="relation-list">
                             {filteredSlashCommands.length > 0 ? (
                               filteredSlashCommands.map((command, commandIndex) => (
@@ -4939,19 +4971,19 @@ export function App() {
                                 </button>
                               ))
                             ) : (
-                              <p className="empty-text">No matching commands.</p>
+                              <p className="empty-text">{ui.noMatchingCommands}</p>
                             )}
                           </div>
-                          <p className="mini-hint">Use Up/Down to navigate, Tab or Enter to confirm, and Escape to dismiss.</p>
+                          <p className="mini-hint">{ui.slashCommandHint}</p>
                         </div>
                       ) : activeLinkContext ? (
                         <div className="link-helper-panel">
-                          <p className="panel-label">Link Suggestions</p>
-                          <p className="mini-hint">Current query: {activeLinkContext.query || '(all suggestions)'}</p>
+                          <p className="panel-label">{ui.linkSuggestionsLabel}</p>
+                          <p className="mini-hint">{ui.linkQuery(activeLinkContext.query)}</p>
                           <div className="relation-list">
                             {blockSuggestions.length > 0 && (
                               <>
-                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>Blocks in this document</p>
+                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{ui.blocksInDocument}</p>
                                 {blockSuggestions.map((block) => (
                                   <button
                                     className="relation-chip"
@@ -4967,7 +4999,7 @@ export function App() {
                             )}
                             {linkSuggestions.length > 0 && (
                               <>
-                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>Linked documents</p>
+                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{ui.linkedDocuments}</p>
                                 {linkSuggestions.map((suggestion) => (
                                   <button
                                     className="relation-chip"
@@ -4982,12 +5014,12 @@ export function App() {
                               </>
                             )}
                             {blockSuggestions.length === 0 && linkSuggestions.length === 0 && (
-                              <p className="empty-text">No matching suggestions.</p>
+                              <p className="empty-text">{ui.noMatchingSuggestions}</p>
                             )}
                           </div>
                         </div>
                       ) : (
-                        <p className="mini-hint">Type / for block commands, use # / ## / &gt; / - / 1. / - [ ] / - [x] / $$ / --- / ``` for markdown shortcuts, paste multi-line text to split it into multiple blocks, or paste over a selected block range to replace the whole slice, use Select then Shift + Select to create a contiguous multi-block range, convert the selected slice from the toolbar, copy the selected slice as blocks or plain text from the toolbar, or use Ctrl/Cmd + C/X/Shift + D, Delete/Backspace, Alt + ArrowUp/ArrowDown, and Tab / Shift+Tab for block-sequence copy, cut, duplicate, delete, keyboard move, and keyboard nesting, use /child or the Child button to append nested child blocks, press Enter to continue headings/lists/todos, Tab or Shift+Tab to indent list-like blocks, drag blocks left or right while moving to adjust list nesting and preview the resulting parent/depth, Backspace at block start to downgrade format, Ctrl/Cmd + Shift + D to duplicate, Alt + Enter to split at cursor, [[文档名]] or [[路径]] to create a bidirectional link, and press Ctrl/Cmd + Enter to insert a block below.</p>
+                        <p className="mini-hint">{ui.editorHelpText}</p>
                       )}
                     </div>
                   ) : (
@@ -5025,8 +5057,8 @@ export function App() {
 
                 <div className="relation-grid">
                   <RelationList
-                    title="Children"
-                    emptyText="No child documents yet"
+                    title={ui.relationChildrenTitle}
+                    emptyText={ui.relationChildrenEmpty}
                     links={selectedDocument.children.map((child) => ({
                       id: child.id,
                       title: child.title,
@@ -5036,14 +5068,14 @@ export function App() {
                     onSelect={setSelectedDocumentId}
                   />
                   <RelationList
-                    title="Outgoing links"
-                    emptyText="No outgoing links yet"
+                    title={ui.relationOutgoingTitle}
+                    emptyText={ui.relationOutgoingEmpty}
                     links={selectedDocument.outgoingLinks}
                     onSelect={setSelectedDocumentId}
                   />
                   <RelationList
-                    title="Backlinks"
-                    emptyText="No backlinks yet"
+                    title={ui.relationBacklinksTitle}
+                    emptyText={ui.relationBacklinksEmpty}
                     links={selectedDocument.backlinks}
                     onSelect={setSelectedDocumentId}
                   />
@@ -5052,7 +5084,7 @@ export function App() {
                 <div className="preview-section">
                   {pluginDocumentActions.length > 0 ? (
                     <>
-                      <p className="panel-label">Plugin actions</p>
+                      <p className="panel-label">{ui.pluginActionsLabel}</p>
                       <div className="plugin-document-actions">
                         {pluginDocumentActions.map((action) => {
                           const actionKey = `${action.pluginId}:${action.id}`
@@ -5067,21 +5099,21 @@ export function App() {
                               title={action.description}
                               type="button"
                             >
-                              {pluginActionBusyKey === actionKey ? 'Running...' : action.label}
+                              {pluginActionBusyKey === actionKey ? ui.runningAutomations : action.label}
                             </button>
                           )
                         })}
                       </div>
-                      <p className="mini-hint">Plugin actions run against the saved document. Finish editing first if you want the plugin to see your latest draft.</p>
+                      <p className="mini-hint">{ui.pluginActionsHint}</p>
                     </>
                   ) : null}
 
-                  <p className="panel-label">Ask AI</p>
+                  <p className="panel-label">{ui.askAiLabel}</p>
                   <div className="ai-panel">
                     <textarea
                       className="editor-textarea"
                       onChange={(event) => setAiPromptDraft(event.target.value)}
-                      placeholder="例如：基于当前文档，给我 3 条结构优化建议"
+                      placeholder={ui.askAiPlaceholder}
                       rows={3}
                       value={aiPromptDraft}
                     />
@@ -5092,16 +5124,16 @@ export function App() {
                         onClick={runEnabledAiAutomationsOnSelectedDocument}
                         type="button"
                       >
-                        {aiAutomationsRunning ? 'Running automations...' : 'Run enabled automations'}
+                        {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
                       </button>
                       <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
-                        {aiContextSearching ? 'Searching...' : 'Find related notes'}
+                        {aiContextSearching ? ui.searching : ui.findRelatedNotes}
                       </button>
                       <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
-                        {aiAsking ? 'Thinking...' : 'Ask AI'}
+                        {aiAsking ? ui.thinking : ui.askAiLabel}
                       </button>
                     </div>
-                    <p className="mini-hint">Manual run reuses the currently enabled summary, tag, and highlight automations for this document immediately.</p>
+                    <p className="mini-hint">{ui.manualAiHint}</p>
                     {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
                     {aiContextResults.length > 0 ? (
                       <div className="ai-context-list">
@@ -5114,15 +5146,15 @@ export function App() {
                           >
                             <div className="ai-context-head">
                               <strong className="ai-context-title">{result.title}</strong>
-                              <span className="ai-context-score">{Math.round(result.score * 100)}% match</span>
+                              <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
                             </div>
                             <span className="ai-context-path">{result.path}</span>
-                            <span className="ai-context-snippet">{result.snippet || result.summary || 'No preview available.'}</span>
+                            <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
                           </button>
                         ))}
                       </div>
                     ) : aiPromptDraft.trim() ? (
-                      <p className="mini-hint">Semantic retrieval will search the rest of the workspace and feed the strongest matches into the AI prompt.</p>
+                      <p className="mini-hint">{ui.semanticHint}</p>
                     ) : null}
                     {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
                   </div>
@@ -5132,21 +5164,21 @@ export function App() {
                   const stats = getDocumentStats()
                   return (
                     <div className="doc-stats-bar">
-                      <span className="doc-stat"><strong>{stats.blockCount}</strong> 块</span>
+                      <span className="doc-stat"><strong>{stats.blockCount}</strong> {ui.docStatBlocks}</span>
                       <span className="doc-stat-divider">·</span>
-                      <span className="doc-stat"><strong>{stats.wordCount}</strong> 词</span>
+                      <span className="doc-stat"><strong>{stats.wordCount}</strong> {ui.docStatWords}</span>
                       <span className="doc-stat-divider">·</span>
-                      <span className="doc-stat"><strong>{stats.charCount}</strong> 字符</span>
+                      <span className="doc-stat"><strong>{stats.charCount}</strong> {ui.docStatCharacters}</span>
                       {stats.codeBlockCount > 0 && (
                         <>
                           <span className="doc-stat-divider">·</span>
-                          <span className="doc-stat"><strong>{stats.codeBlockCount}</strong> 代码块</span>
+                          <span className="doc-stat"><strong>{stats.codeBlockCount}</strong> {ui.docStatCodeBlocks}</span>
                         </>
                       )}
                       {stats.todoCount > 0 && (
                         <>
                           <span className="doc-stat-divider">·</span>
-                          <span className="doc-stat"><strong>{stats.todoCount}</strong> 待办</span>
+                          <span className="doc-stat"><strong>{stats.todoCount}</strong> {ui.docStatTodos}</span>
                         </>
                       )}
                     </div>
@@ -5155,7 +5187,7 @@ export function App() {
               </>
             ) : (
               <div className="empty-preview">
-                <p>Select a document from the tree or recent list to inspect its blocks and relationships.</p>
+                <p>{ui.emptyDocumentState}</p>
               </div>
             )}
           </article>
@@ -5165,26 +5197,26 @@ export function App() {
           <article className="panel large-panel">
             <div className="panel-head">
               <div>
-                <p className="panel-label">Storage</p>
-                <h3>SQLite and nested markdown backup</h3>
+                <p className="panel-label">{ui.storageLabel}</p>
+                <h3>{ui.storageTitle}</h3>
               </div>
-              {loading ? <span className="pill">Loading...</span> : <span className="pill">Ready</span>}
+              {loading ? <span className="pill">{ui.common.loading}</span> : <span className="pill">{ui.common.ready}</span>}
             </div>
             <dl className="meta-grid">
               <div>
-                <dt>Database path</dt>
-                <dd>{homeData.summary.databasePath || 'Initializing...'}</dd>
+                <dt>{ui.databasePath}</dt>
+                <dd>{homeData.summary.databasePath || ui.initializing}</dd>
               </div>
               <div>
-                <dt>Backup root</dt>
-                <dd>{homeData.summary.backupRoot || 'Initializing...'}</dd>
+                <dt>{ui.backupRoot}</dt>
+                <dd>{homeData.summary.backupRoot || ui.initializing}</dd>
               </div>
               <div>
-                <dt>Last backup</dt>
-                <dd>{homeData.summary.lastBackupAt ? new Date(homeData.summary.lastBackupAt).toLocaleString() : 'Not yet exported'}</dd>
+                <dt>{ui.lastBackup}</dt>
+                <dd>{homeData.summary.lastBackupAt ? new Date(homeData.summary.lastBackupAt).toLocaleString(ui.locale) : ui.notYetExported}</dd>
               </div>
               <div>
-                <dt>AI endpoint</dt>
+                <dt>{ui.aiEndpoint}</dt>
                 <dd>{homeData.aiConfig.baseUrl}</dd>
               </div>
             </dl>
@@ -5193,8 +5225,8 @@ export function App() {
           <article className="panel large-panel">
             <div className="panel-head">
               <div>
-                <p className="panel-label">Recent documents</p>
-                <h3>Seeded from the bootstrap store</h3>
+                <p className="panel-label">{ui.recentDocumentsLabel}</p>
+                <h3>{ui.recentDocumentsTitle}</h3>
               </div>
             </div>
 
@@ -5206,8 +5238,8 @@ export function App() {
                     <p>{document.path}</p>
                   </div>
                   <div className="document-meta">
-                    <span>{document.blockCount} blocks</span>
-                    <span>{new Date(document.updatedAt).toLocaleDateString()}</span>
+                    <span>{document.blockCount} {ui.docStatBlocks}</span>
+                    <span>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</span>
                   </div>
                 </button>
               ))}
@@ -5223,7 +5255,7 @@ export function App() {
               <input
                 autoFocus
                 className="global-search-input"
-                placeholder="搜索所有文档... (Ctrl+K 关闭)"
+                placeholder={ui.globalSearchPlaceholder}
                 type="text"
                 value={globalSearchQuery}
                 onChange={(event) => {
@@ -5237,12 +5269,12 @@ export function App() {
               <button className="secondary-button" onClick={closeGlobalSearch} type="button">✕</button>
             </div>
             <div className="global-search-results">
-              {globalSearchLoading && <p className="mini-hint">搜索中...</p>}
+              {globalSearchLoading && <p className="mini-hint">{ui.globalSearchLoading}</p>}
               {!globalSearchLoading && globalSearchQuery && globalSearchResults.length === 0 && (
-                <p className="mini-hint">没有找到匹配的内容。</p>
+                <p className="mini-hint">{ui.globalSearchNoResults}</p>
               )}
               {!globalSearchLoading && !globalSearchQuery && (
-                <p className="mini-hint">输入关键字搜索所有文档标题和内容块。</p>
+                <p className="mini-hint">{ui.globalSearchPrompt}</p>
               )}
               {globalSearchResults.map((result, idx) => (
                 <button
@@ -5254,7 +5286,7 @@ export function App() {
                   <div className="global-search-result-header">
                     <span className="global-search-doc-path">{result.documentPath}</span>
                     <span className={`global-search-match-badge ${result.matchType === 'title' ? 'global-search-match-title' : 'global-search-match-block'}`}>
-                      {result.matchType === 'title' ? '标题' : result.blockType ?? 'block'}
+                      {result.matchType === 'title' ? ui.titleMatchLabel : result.blockType ?? ui.blockMatchFallback}
                     </span>
                   </div>
                   <strong className="global-search-doc-title">{result.documentTitle}</strong>
@@ -5292,6 +5324,8 @@ function DocumentTree({
   onDragOverNode: (documentId: string) => void
   onDropOnNode: (documentId: string) => Promise<void>
 }) {
+  const ui = getActiveUiText()
+
   return (
     <ul className="tree-list">
       {nodes.map((node) => (
@@ -5319,7 +5353,7 @@ function DocumentTree({
             }}
           >
             <span>{node.title}</span>
-            <small>{new Date(node.updatedAt).toLocaleDateString()}</small>
+            <small>{new Date(node.updatedAt).toLocaleDateString(ui.locale)}</small>
           </button>
           <p className="tree-path">{node.path}</p>
           {node.children.length > 0 ? (
@@ -5354,6 +5388,7 @@ function WorkspaceGraph({
   selectedDocumentId: string | null
   onSelect: (documentId: string) => void
 }) {
+  const ui = getActiveUiText()
   const width = 920
   const height = 320
   const layout = buildGraphLayout(nodes, width, height)
@@ -5396,8 +5431,8 @@ function WorkspaceGraph({
         ))}
       </svg>
       <div className="graph-legend">
-        <span><i className="legend-swatch legend-swatch-tree" /> Tree edge</span>
-        <span><i className="legend-swatch legend-swatch-link" /> Reference link</span>
+        <span><i className="legend-swatch legend-swatch-tree" /> {ui.graphLegendTree}</span>
+        <span><i className="legend-swatch legend-swatch-link" /> {ui.graphLegendLink}</span>
       </div>
     </div>
   )
@@ -5416,20 +5451,22 @@ function DocumentCatalogTable({
   onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
   selectedDocumentId: string | null
 }) {
+  const ui = getActiveUiText()
+
   return (
     <div className="catalog-table-wrap">
       <table className="catalog-table">
         <thead>
           <tr>
-            <th>Title</th>
-            <th>Path</th>
+            <th>{ui.common.title}</th>
+            <th>{ui.common.path}</th>
             {columns.map((column) => (
               <th key={column.id}>{column.name}</th>
             ))}
-            <th>Blocks</th>
-            <th>Links</th>
-            <th>Children</th>
-            <th>Updated</th>
+            <th>{ui.tableHeaderBlocks}</th>
+            <th>{ui.tableHeaderLinks}</th>
+            <th>{ui.tableHeaderChildren}</th>
+            <th>{ui.tableHeaderUpdated}</th>
           </tr>
         </thead>
         <tbody>
@@ -5457,7 +5494,7 @@ function DocumentCatalogTable({
               <td>{document.blockCount}</td>
               <td>{document.linkCount}</td>
               <td>{document.childCount}</td>
-              <td>{new Date(document.updatedAt).toLocaleDateString()}</td>
+              <td>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</td>
             </tr>
           ))}
         </tbody>
@@ -5483,6 +5520,7 @@ function DatabaseSchemaColumnCard({
   onUpdateOptions: (columnId: string, optionsInput: string) => Promise<void>
   onRename: (columnId: string, name: string) => Promise<void>
 }) {
+  const ui = getActiveUiText()
   const [draftName, setDraftName] = useState(column.name)
   const [draftOptions, setDraftOptions] = useState(column.options.join(', '))
 
@@ -5548,7 +5586,7 @@ function DatabaseSchemaColumnCard({
         value={draftName}
       />
       <small>
-        {databaseColumnTypeLabels[column.type]}
+        {getDatabaseColumnTypeLabel(column.type)}
       </small>
       {(column.type === 'select' || column.type === 'multi-select') ? (
         <input
@@ -5562,7 +5600,7 @@ function DatabaseSchemaColumnCard({
               event.currentTarget.blur()
             }
           }}
-          placeholder="Option A, Option B"
+          placeholder={ui.optionPlaceholder}
           type="text"
           value={draftOptions}
         />
@@ -5576,7 +5614,7 @@ function DatabaseSchemaColumnCard({
           }}
           type="button"
         >
-          Left
+          {ui.left}
         </button>
         <button
           className="database-schema-chip-button"
@@ -5586,7 +5624,7 @@ function DatabaseSchemaColumnCard({
           }}
           type="button"
         >
-          Right
+          {ui.right}
         </button>
         <button
           className="database-schema-chip-button database-schema-chip-delete"
@@ -5595,7 +5633,7 @@ function DatabaseSchemaColumnCard({
           }}
           type="button"
         >
-          Delete
+          {ui.common.delete}
         </button>
       </div>
     </div>
@@ -5613,6 +5651,7 @@ function DocumentCatalogFieldCell({
   onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
   value: DocumentDatabaseFieldValue
 }) {
+  const ui = getActiveUiText()
   const [draftValue, setDraftValue] = useState('')
 
   useEffect(() => {
@@ -5647,7 +5686,7 @@ function DocumentCatalogFieldCell({
         onClick={stopRowSelection}
         value={typeof value === 'string' ? value : ''}
       >
-        <option value="">Select...</option>
+        <option value="">{ui.common.select}</option>
         {column.options.map((option) => (
           <option key={option} value={option}>{option}</option>
         ))}
@@ -5702,7 +5741,7 @@ function DocumentCatalogFieldCell({
           event.currentTarget.blur()
         }
       }}
-      placeholder="Value"
+      placeholder={ui.common.value}
       type="text"
       value={draftValue}
     />
@@ -5730,6 +5769,8 @@ function DocumentBoard({
   onDragOverColumn: (columnId: string) => void
   onDropOnColumn: (target: BoardDropTarget) => Promise<void>
 }) {
+  const ui = getActiveUiText()
+
   return (
     <div className="board-wrap">
       {columns.map((column) => (
@@ -5770,12 +5811,12 @@ function DocumentBoard({
                 <strong>{document.title}</strong>
                 <p>{document.path}</p>
                 <div className="board-card-meta">
-                  <span>{document.blockCount} blocks</span>
-                  <span>{document.linkCount} links</span>
+                  <span>{document.blockCount} {ui.docStatBlocks}</span>
+                  <span>{document.linkCount} {ui.common.links}</span>
                 </div>
               </button>
             ))}
-            {column.items.length === 0 ? <p className="board-column-drop-hint">Drop documents here</p> : null}
+            {column.items.length === 0 ? <p className="board-column-drop-hint">{ui.boardDropHint}</p> : null}
           </div>
         </section>
       ))}
@@ -5827,46 +5868,50 @@ type BlockTreePreviewNode = {
 }
 
 function BlockTreeOutline({ blocks }: { blocks: DocumentBlock[] }) {
+  const ui = getActiveUiText()
   const roots = buildBlockTree(blocks)
 
   return (
     <div className="block-tree-panel">
       <div className="panel-head compact-head">
         <div>
-          <p className="panel-label">Block tree</p>
-          <h4>Saved hierarchy</h4>
+          <p className="panel-label">{ui.blockTreeLabel}</p>
+          <h4>{ui.savedHierarchy}</h4>
         </div>
         <div className="toolbar-inline">
-          <span className="pill">{blocks.length} nodes</span>
+          <span className="pill">{ui.language === 'zh-CN' ? `${blocks.length} 个节点` : `${blocks.length} nodes`}</span>
           <span className="pill">parent_block_id</span>
         </div>
       </div>
-      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">No block relationships yet.</p>}
+      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">{ui.noBlockRelationships}</p>}
     </div>
   )
 }
 
 function DraftBlockTreeOutline({ blocks }: { blocks: DocumentBlockDraft[] }) {
+  const ui = getActiveUiText()
   const roots = buildDraftBlockTree(blocks)
 
   return (
     <div className="block-tree-panel">
       <div className="panel-head compact-head">
         <div>
-          <p className="panel-label">Draft tree</p>
-          <h4>Draft hierarchy</h4>
+          <p className="panel-label">{ui.draftTreeLabel}</p>
+          <h4>{ui.draftHierarchy}</h4>
         </div>
         <div className="toolbar-inline">
-          <span className="pill">{blocks.length} nodes</span>
-          <span className="pill">depth preview</span>
+          <span className="pill">{ui.language === 'zh-CN' ? `${blocks.length} 个节点` : `${blocks.length} nodes`}</span>
+          <span className="pill">{ui.depthPreview}</span>
         </div>
       </div>
-      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">No draft blocks yet.</p>}
+      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">{ui.noDraftBlocks}</p>}
     </div>
   )
 }
 
 function BlockTreeList({ nodes }: { nodes: BlockTreePreviewNode[] }) {
+  const ui = getActiveUiText()
+
   return (
     <ul className="block-tree-list">
       {nodes.map((node) => (
@@ -5874,7 +5919,7 @@ function BlockTreeList({ nodes }: { nodes: BlockTreePreviewNode[] }) {
           <div className="block-tree-node">
             <span className="block-tree-type">{getBlockTypeLabel(node.type)}</span>
             <span className="block-tree-text">{getBlockTreeText(node.type, node.content)}</span>
-            <small className="block-tree-meta">depth {node.depth}</small>
+            <small className="block-tree-meta">{ui.depthLabel(node.depth)}</small>
           </div>
           {node.children.length > 0 ? (
             <div className="block-tree-children">
@@ -6501,7 +6546,7 @@ function renderInlineContent(
 
     // Block reference - needs special handling (currently just display as link)
     return (
-      <span className="inline-link-block" key={`block-link-${segment.blockId}-${index}`} title="Block reference">
+      <span className="inline-link-block" key={`block-link-${segment.blockId}-${index}`} title={getActiveUiText().blockReference}>
         [[{segment.label}]]
       </span>
     )
@@ -6663,38 +6708,17 @@ function buildDraftBlockTree(blocks: DocumentBlockDraft[]): BlockTreePreviewNode
 }
 
 function getBlockTypeLabel(type: string): string {
-  switch (type) {
-    case 'heading-1':
-      return 'H1'
-    case 'heading-2':
-      return 'H2'
-    case 'todo':
-      return 'Todo'
-    case 'code':
-      return 'Code'
-    case 'math':
-      return 'Math'
-    case 'quote':
-      return 'Quote'
-    case 'bulleted-list':
-      return 'Bullet'
-    case 'numbered-list':
-      return 'Number'
-    case 'divider':
-      return 'Divider'
-    default:
-      return 'Text'
-  }
+  return getActiveUiText().blockTypeBadges[type] ?? getActiveUiText().blockTypeBadges.paragraph
 }
 
 function getBlockTreeText(type: string, content: string): string {
   if (type === 'divider') {
-    return 'Horizontal divider'
+    return getActiveUiText().horizontalDivider
   }
 
   const normalizedContent = content.trim()
   if (!normalizedContent) {
-    return '(empty block)'
+    return getActiveUiText().emptyBlock
   }
 
   return normalizedContent.length > 72 ? `${normalizedContent.slice(0, 72)}...` : normalizedContent
