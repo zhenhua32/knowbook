@@ -74,6 +74,17 @@ CREATE TABLE IF NOT EXISTS document_embeddings (
 
 CREATE INDEX IF NOT EXISTS idx_document_embeddings_model ON document_embeddings(model);
 
+CREATE TABLE IF NOT EXISTS workspace_events (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_events_created_at ON workspace_events(created_at);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

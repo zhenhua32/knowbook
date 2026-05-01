@@ -30,6 +30,7 @@ const emptyState: HomeData = {
     lastBackupAt: null
   },
   recentDocuments: [],
+  recentEvents: [],
   documentCatalog: [],
   databaseColumns: [],
   aiConfig: {
@@ -3444,6 +3445,36 @@ export function App() {
               {aiSaving ? 'Saving...' : 'Save AI settings'}
             </button>
           </div>
+        </div>
+
+        <div className="panel">
+          <p className="panel-label">Automation feed</p>
+          <h3>Recent events</h3>
+          {homeData.recentEvents.length > 0 ? (
+            <div className="event-feed">
+              {homeData.recentEvents.map((event) => (
+                <button
+                  className="event-feed-item"
+                  disabled={!event.documentId}
+                  key={event.id}
+                  onClick={() => {
+                    if (event.documentId) {
+                      setSelectedDocumentId(event.documentId)
+                    }
+                  }}
+                  type="button"
+                >
+                  <div className="event-feed-head">
+                    <strong>{event.title}</strong>
+                    <span>{new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                  <span className="event-feed-description">{event.description}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="mini-hint">No automation events yet.</p>
+          )}
         </div>
       </aside>
 

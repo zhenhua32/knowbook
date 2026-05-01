@@ -24,6 +24,8 @@ import type {
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
+  WorkspaceEventRecord,
+  WorkspaceEventType,
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
   WorkspaceSummary,
@@ -170,6 +172,15 @@ interface DocumentEmbeddingRow {
   embedding_json: string
 }
 
+interface WorkspaceEventRow {
+  id: string
+  type: WorkspaceEventType
+  title: string
+  description: string
+  document_id: string | null
+  created_at: string
+}
+
 interface SemanticSearchDocumentRow {
   id: string
   title: string
@@ -232,6 +243,7 @@ export class KnowbookStore {
 
   getHomeData(backupRoot: string): HomeData {
     const recentDocuments = this.getRecentDocuments()
+    const recentEvents = this.getRecentWorkspaceEvents()
     const documentTree = this.getDocumentTree()
     const graph = this.getWorkspaceGraph()
     const databaseColumns = this.getDocumentDatabaseColumns()
@@ -239,6 +251,7 @@ export class KnowbookStore {
     return {
       summary: this.getSummary(backupRoot),
       recentDocuments,
+      recentEvents,
       documentCatalog: this.getDocumentCatalog(databaseColumns),
       databaseColumns,
       aiConfig: this.getAiConfig(),
@@ -328,6 +341,25 @@ export class KnowbookStore {
         label: link.label,
         contextSnippet: link.context_snippet ?? undefined
       }))
+    }
+  }
+
+  getDocumentSnapshot(documentId: string): { id: string; title: string; path: string; parentId: string | null } | null {
+    const row = this.db.prepare(`
+      SELECT id, title, path, parent_id
+      FROM documents
+      WHERE id = ?
+    `).get(documentId) as DocumentPathRow | undefined
+
+    if (!row) {
+      return null
+    }
+
+    return {
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      parentId: row.parent_id ?? null
     }
   }
 
@@ -1043,6 +1075,37 @@ export class KnowbookStore {
     return this.readSetting(key)
   }
 
+  recordWorkspaceEvent(input: {
+    type: WorkspaceEventType
+    title: string
+    description: string
+    documentId?: string | null
+    createdAt?: string
+  }): void {
+    const now = input.createdAt ?? new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO workspace_events (id, type, title, description, document_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      input.type,
+      input.title.trim(),
+      input.description.trim(),
+      input.documentId ?? null,
+      now
+    )
+
+    this.db.prepare(`
+      DELETE FROM workspace_events
+      WHERE id NOT IN (
+        SELECT id
+        FROM workspace_events
+        ORDER BY created_at DESC
+        LIMIT 40
+      )
+    `).run()
+  }
+
   destroy(): void {
     this.db.close()
   }
@@ -1079,6 +1142,24 @@ export class KnowbookStore {
       path: row.path,
       updatedAt: row.updated_at,
       blockCount: row.block_count
+    }))
+  }
+
+  private getRecentWorkspaceEvents(limit = 8): WorkspaceEventRecord[] {
+    const rows = this.db.prepare(`
+      SELECT id, type, title, description, document_id, created_at
+      FROM workspace_events
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit) as WorkspaceEventRow[]
+
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      title: row.title,
+      description: row.description,
+      documentId: row.document_id ?? null,
+      createdAt: row.created_at
     }))
   }
 

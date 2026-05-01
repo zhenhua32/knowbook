@@ -146,9 +146,26 @@ export interface SemanticSearchResult {
   score: number
 }
 
+export type WorkspaceEventType =
+  | 'document.created'
+  | 'document.updated'
+  | 'document.moved'
+  | 'document.deleted'
+  | 'ai.config.updated'
+
+export interface WorkspaceEventRecord {
+  id: string
+  type: WorkspaceEventType
+  title: string
+  description: string
+  documentId: string | null
+  createdAt: string
+}
+
 export interface HomeData {
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
+  recentEvents: WorkspaceEventRecord[]
   documentCatalog: DocumentCatalogEntry[]
   databaseColumns: DocumentDatabaseColumn[]
   aiConfig: AiConfig

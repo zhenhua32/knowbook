@@ -22,6 +22,7 @@ import type {
 } from '@shared/contracts'
 import { MarkdownBackupService } from './backup/exporter'
 import { KnowbookStore, type SemanticSearchCandidate } from './database/store'
+import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
@@ -34,6 +35,7 @@ const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
+const workspaceEventBus = new WorkspaceEventBus()
 
 type SemanticContextNote = SemanticSearchResult & {
   content: string
@@ -67,6 +69,29 @@ function createWindow(): void {
   }
 }
 
+function registerWorkspaceEventHandlers(): void {
+  workspaceEventBus.subscribe((event) => {
+    const record = createWorkspaceEventRecord(event)
+    store.recordWorkspaceEvent(record)
+  })
+
+  workspaceEventBus.subscribe((event) => {
+    switch (event.type) {
+      case 'document.created':
+        queueEmbeddingSyncForDocuments([event.documentId])
+        break
+      case 'document.updated':
+      case 'document.moved':
+      case 'document.deleted':
+        queueEmbeddingSyncForDocuments(event.affectedDocumentIds)
+        break
+      case 'ai.config.updated':
+        queueEmbeddingBackfill(event.embeddingModelChanged ? event.previousEmbeddingModel : null)
+        break
+    }
+  })
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-home-data', () => {
     const data: HomeData = store.getHomeData(backupRoot)
@@ -83,9 +108,19 @@ function registerIpcHandlers(): void {
     return suggestions
   })
 
-  ipcMain.handle('knowbook:create-document', (_event, parentId: string | null) => {
+  ipcMain.handle('knowbook:create-document', async (_event, parentId: string | null) => {
     const id = store.createDocument(parentId)
-    queueEmbeddingSyncForDocument(id)
+    const document = store.getDocumentSnapshot(id)
+    if (document) {
+      await workspaceEventBus.emit({
+        type: 'document.created',
+        createdAt: new Date().toISOString(),
+        documentId: document.id,
+        documentTitle: document.title,
+        path: document.path,
+        parentId: document.parentId
+      })
+    }
     return { id }
   })
 
@@ -114,27 +149,73 @@ function registerIpcHandlers(): void {
     store.updateDocumentDatabaseValue(input)
   })
 
-  ipcMain.handle('knowbook:update-document', (_event, documentId: string, input: UpdateDocumentInput) => {
+  ipcMain.handle('knowbook:update-document', async (_event, documentId: string, input: UpdateDocumentInput) => {
+    const beforeDocument = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.updateDocument(documentId, input)
-    queueEmbeddingSyncForDocuments(affectedDocumentIds)
+    const afterDocument = store.getDocumentSnapshot(documentId)
+
+    if (beforeDocument && afterDocument) {
+      await workspaceEventBus.emit({
+        type: 'document.updated',
+        createdAt: new Date().toISOString(),
+        documentId: afterDocument.id,
+        documentTitle: afterDocument.title,
+        path: afterDocument.path,
+        affectedDocumentIds,
+        pathChanged: beforeDocument.path !== afterDocument.path
+      })
+    }
   })
 
-  ipcMain.handle('knowbook:delete-document', (_event, documentId: string) => {
-    store.deleteDocumentEmbeddings(documentId)
+  ipcMain.handle('knowbook:delete-document', async (_event, documentId: string) => {
+    const document = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.deleteDocument(documentId)
-    queueEmbeddingSyncForDocuments(affectedDocumentIds)
+
+    if (document) {
+      await workspaceEventBus.emit({
+        type: 'document.deleted',
+        createdAt: new Date().toISOString(),
+        documentId: document.id,
+        documentTitle: document.title,
+        oldPath: document.path,
+        affectedDocumentIds
+      })
+    }
   })
 
-  ipcMain.handle('knowbook:move-document', (_event, documentId: string, newParentId: string | null) => {
+  ipcMain.handle('knowbook:move-document', async (_event, documentId: string, newParentId: string | null) => {
+    const beforeDocument = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.moveDocument(documentId, newParentId)
-    queueEmbeddingSyncForDocuments(affectedDocumentIds)
+    const afterDocument = store.getDocumentSnapshot(documentId)
+
+    if (beforeDocument && afterDocument) {
+      await workspaceEventBus.emit({
+        type: 'document.moved',
+        createdAt: new Date().toISOString(),
+        documentId: afterDocument.id,
+        documentTitle: afterDocument.title,
+        oldPath: beforeDocument.path,
+        newPath: afterDocument.path,
+        affectedDocumentIds
+      })
+    }
   })
 
-  ipcMain.handle('knowbook:update-ai-config', (_event, input: UpdateAiConfigInput) => {
+  ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
     const previousConfig = store.getHomeData(backupRoot).aiConfig
     store.updateAiConfig(input)
     const nextEmbeddingModel = input.embeddingModel.trim() || 'text-embedding-3-small'
-    queueEmbeddingBackfill(previousConfig.embeddingModel !== nextEmbeddingModel ? previousConfig.embeddingModel : null)
+    const nextModel = input.model.trim() || 'gpt-4.1-mini'
+
+    await workspaceEventBus.emit({
+      type: 'ai.config.updated',
+      createdAt: new Date().toISOString(),
+      model: nextModel,
+      embeddingModel: nextEmbeddingModel,
+      previousEmbeddingModel: previousConfig.embeddingModel,
+      embeddingModelChanged: previousConfig.embeddingModel !== nextEmbeddingModel,
+      aiEnabled: input.enabled
+    })
   })
 
   ipcMain.handle('knowbook:search-semantic-notes', async (_event, input: SearchSemanticNotesInput) => {
@@ -362,18 +443,6 @@ async function ensureDocumentEmbeddings(
   }
 }
 
-function queueEmbeddingSyncForDocument(documentId: string): void {
-  embeddingSyncQueue = embeddingSyncQueue
-    .catch(() => undefined)
-    .then(async () => {
-      try {
-        await syncEmbeddingForDocument(documentId)
-      } catch (error) {
-        console.warn(`Failed to sync embedding for document ${documentId}.`, error)
-      }
-    })
-}
-
 function queueEmbeddingSyncForDocuments(documentIds: string[]): void {
   const uniqueDocumentIds = [...new Set(documentIds.filter((documentId) => documentId.trim().length > 0))]
   if (uniqueDocumentIds.length === 0) {
@@ -553,6 +622,7 @@ function startBackupSchedule(): void {
 }
 
 app.whenReady().then(() => {
+  registerWorkspaceEventHandlers()
   registerIpcHandlers()
   createWindow()
   startBackupSchedule()
