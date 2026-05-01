@@ -46,6 +46,7 @@ const api: ElectronApi = {
   runDocumentAiAutomations: (documentId: string) => ipcRenderer.invoke('knowbook:run-document-ai-automations', documentId) as Promise<RunDocumentAiAutomationsResult>,
   setPluginEnabled: (input: SetPluginEnabledInput) => ipcRenderer.invoke('knowbook:set-plugin-enabled', input) as Promise<void>,
   reloadPlugins: () => ipcRenderer.invoke('knowbook:reload-plugins') as Promise<void>,
+  reloadPlugin: (pluginId: string) => ipcRenderer.invoke('knowbook:reload-plugin', pluginId) as Promise<void>,
   installPluginFromFolder: () => ipcRenderer.invoke('knowbook:install-plugin-from-folder') as Promise<InstallPluginResult | null>,
   removePlugin: (pluginId: string) => ipcRenderer.invoke('knowbook:remove-plugin', pluginId) as Promise<void>,
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => ipcRenderer.invoke('knowbook:run-plugin-document-action', input) as Promise<RunPluginDocumentActionResult>,

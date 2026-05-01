@@ -376,6 +376,10 @@ function registerIpcHandlers(): void {
     })
   })
 
+  ipcMain.handle('knowbook:reload-plugin', async (_event, pluginId: string) => {
+    await pluginHost.reloadPlugin(pluginId)
+  })
+
   ipcMain.handle('knowbook:install-plugin-from-folder', async (event): Promise<InstallPluginResult | null> => {
     const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
     const openDialogOptions: OpenDialogOptions = {

@@ -2050,6 +2050,30 @@ export function App() {
     }
   }
 
+  async function reloadPlugin(plugin: PluginDescriptor) {
+    setPluginBusyId(plugin.id)
+    try {
+      await window.knowbook.reloadPlugin(plugin.id)
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      const refreshedPlugin = (refreshed.plugins ?? []).find((candidate) => candidate.id === plugin.id)
+      if (!refreshedPlugin) {
+        setBackupMessage(`Plugin "${plugin.name}" was reloaded, but it is no longer listed.`)
+      } else if (refreshedPlugin.status === 'error') {
+        setBackupMessage(`Plugin "${refreshedPlugin.name}" still has errors after reload: ${refreshedPlugin.error ?? 'unknown error'}`)
+      } else if (refreshedPlugin.status === 'disabled') {
+        setBackupMessage(`Reloaded metadata for disabled plugin "${refreshedPlugin.name}".`)
+      } else {
+        setBackupMessage(`Reloaded plugin "${refreshedPlugin.name}".`)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reload plugin.'
+      setBackupMessage(message)
+    } finally {
+      setPluginBusyId(null)
+    }
+  }
+
   async function createDatabaseColumn() {
     try {
       const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
@@ -3695,6 +3719,7 @@ export function App() {
           <p className="mini-hint">
             Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root and can replace an existing user-data plugin with the same id.
           </p>
+          <p className="mini-hint">Each plugin row also supports Reload, and error-state plugins expose the same action as Recover.</p>
           {pluginWritableRoot ? <p className="mini-hint">Writable install root: {pluginWritableRoot}</p> : null}
           {plugins.length > 0 ? (
             <div className="plugin-list">
@@ -3716,6 +3741,16 @@ export function App() {
                     </div>
                     {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
                     <div className="plugin-item-actions">
+                      <button
+                        className="secondary-button plugin-reload-button"
+                        disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                        onClick={() => {
+                          void reloadPlugin(plugin)
+                        }}
+                        type="button"
+                      >
+                        {pluginBusyId === plugin.id ? 'Working...' : plugin.status === 'error' ? 'Recover' : 'Reload'}
+                      </button>
                       <label className="toggle-row plugin-toggle-row">
                         <input
                           checked={plugin.enabled}

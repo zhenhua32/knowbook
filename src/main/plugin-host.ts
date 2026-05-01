@@ -278,6 +278,58 @@ export class PluginHost {
     })
   }
 
+  async reloadPlugin(pluginId: string): Promise<void> {
+    const plugin = this.plugins.get(pluginId)
+    if (!plugin) {
+      throw new Error('Plugin not found.')
+    }
+
+    await this.deactivatePlugin(plugin)
+
+    const manifestPath = join(plugin.directory, 'plugin.json')
+    if (!existsSync(manifestPath)) {
+      plugin.status = 'error'
+      plugin.error = `Missing manifest file: ${manifestPath}`
+      this.store.recordWorkspaceEvent({
+        type: 'plugin.reloaded',
+        title: `Plugin reload failed: ${plugin.manifest.name}`,
+        description: plugin.error
+      })
+      return
+    }
+
+    const nextManifest = this.parseManifest(manifestPath)
+    if (nextManifest.id !== pluginId) {
+      plugin.status = 'error'
+      plugin.error = `Plugin manifest id changed from ${pluginId} to ${nextManifest.id}. Use full reload to re-index plugin ids.`
+      this.store.recordWorkspaceEvent({
+        type: 'plugin.reloaded',
+        title: `Plugin reload failed: ${plugin.manifest.name}`,
+        description: plugin.error
+      })
+      return
+    }
+
+    plugin.manifest = nextManifest
+    plugin.enabled = this.readPluginEnabled(nextManifest)
+    plugin.error = undefined
+
+    if (plugin.enabled) {
+      await this.activatePlugin(plugin, false)
+    } else {
+      plugin.status = 'disabled'
+    }
+
+    this.store.recordWorkspaceEvent({
+      type: 'plugin.reloaded',
+      title: `Plugin reloaded: ${plugin.manifest.name}`,
+      description:
+        plugin.status === 'running'
+          ? `Reloaded plugin ${plugin.manifest.name} (${plugin.manifest.version}).`
+          : `Reloaded metadata for disabled plugin ${plugin.manifest.name}.`
+    })
+  }
+
   async setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
     const plugin = this.plugins.get(pluginId)
     if (!plugin) {

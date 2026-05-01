@@ -356,6 +356,7 @@ export interface ElectronApi {
   runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
   setPluginEnabled: (input: SetPluginEnabledInput) => Promise<void>
   reloadPlugins: () => Promise<void>
+  reloadPlugin: (pluginId: string) => Promise<void>
   installPluginFromFolder: () => Promise<InstallPluginResult | null>
   removePlugin: (pluginId: string) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>

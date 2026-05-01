@@ -213,6 +213,10 @@ dt,
   gap: 12px;
 }
 
+.plugin-reload-button {
+  flex: 0 0 auto;
+}
+
 .plugin-remove-button {
   flex: 0 0 auto;
 }
