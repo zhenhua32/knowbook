@@ -54,6 +54,8 @@ type BlockSelectionRange = {
   end: number
 }
 
+type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
+
 type BlockSlashCommand = {
   id: string
   label: string
@@ -679,7 +681,7 @@ export function App() {
   const [isSaving, setIsSaving] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
-  const [draftBlocks, setDraftBlocks] = useState<DocumentBlockDraft[]>([])
+  const [draftBlocks, setDraftBlocksState] = useState<DocumentBlockDraft[]>([])
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
@@ -726,6 +728,13 @@ export function App() {
   const editHistoryPointerRef = useRef<number>(-1)
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function setDraftBlocks(next: DraftBlockUpdater) {
+    setDraftBlocksState((previous) => {
+      const resolved = typeof next === 'function' ? next(previous) : next
+      return normalizeDraftBlocks(resolved)
+    })
+  }
 
   function pushToHistory(blocks: DocumentBlockDraft[]) {
     if (isRestoringHistoryRef.current) return
@@ -1042,13 +1051,10 @@ export function App() {
   }, [selectedDocumentId])
 
   useEffect(() => {
-    const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
-    if (!areDraftBlocksEqual(draftBlocks, normalizedDraftBlocks)) {
-      setDraftBlocks(normalizedDraftBlocks)
-    } else if (isEditing && !isRestoringHistoryRef.current) {
+    if (isEditing && !isRestoringHistoryRef.current) {
       scheduleHistorySnapshot(draftBlocks)
     }
-  }, [draftBlocks])
+  }, [draftBlocks, isEditing])
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
