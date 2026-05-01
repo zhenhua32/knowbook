@@ -1570,3 +1570,80 @@ del {
   outline: 2px solid rgba(47,111,237,0.35);
   transition: background 0.3s, outline 0.3s;
 }
+
+/* Wave 31: Auto-save flash */
+.autosave-flash {
+  font-size: 12px;
+  color: #4caf50;
+  font-weight: 500;
+  animation: fadeInOut 2s ease forwards;
+}
+@keyframes fadeInOut {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Wave 32: Pin button & pinned section */
+.pin-button {
+  font-size: 16px;
+  padding: 2px 8px;
+  color: #888;
+  transition: color 0.15s;
+}
+.pin-button-active {
+  color: #f5a623;
+}
+.pin-button:hover {
+  color: #f5a623;
+}
+.pinned-section {
+  padding: 6px 8px 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.pinned-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #888;
+  margin: 0 0 4px 4px;
+  font-weight: 600;
+}
+.pinned-doc-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+.pinned-doc-item:hover {
+  background: var(--hover);
+}
+.pinned-doc-item-active {
+  background: var(--active);
+}
+.pinned-doc-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.pinned-doc-path {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}

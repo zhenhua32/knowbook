@@ -106,6 +106,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:search-documents', (_event, query: string): GlobalSearchResult[] => {
     return store.searchDocuments(query)
   })
+
+  ipcMain.handle('knowbook:get-setting', (_event, key: string): string | null => {
+    return store.getSettingPublic(key)
+  })
+
+  ipcMain.handle('knowbook:save-setting', (_event, key: string, value: string): void => {
+    store.saveSetting(key, value)
+  })
 }
 
 async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {

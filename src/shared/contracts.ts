@@ -177,6 +177,8 @@ export interface ElectronApi {
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>
+  getSetting: (key: string) => Promise<string | null>
+  saveSetting: (key: string, value: string) => Promise<void>
 }
 
 declare global {

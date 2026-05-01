@@ -700,6 +700,8 @@ export function App() {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
+  const [autoSaveFlash, setAutoSaveFlash] = useState(false)
+  const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
   const editHistoryPointerRef = useRef<number>(-1)
@@ -940,6 +942,15 @@ export function App() {
         setAiBaseUrlDraft(data.aiConfig.baseUrl)
         setAiModelDraft(data.aiConfig.model)
         setAiApiKeyDraft('')
+      }
+    })
+
+    window.knowbook.getSetting('pinned_documents').then((value) => {
+      if (mounted && value) {
+        try {
+          const ids: string[] = JSON.parse(value)
+          setPinnedDocumentIds(new Set(ids))
+        } catch { /* ignore */ }
       }
     })
 
@@ -1202,6 +1213,45 @@ export function App() {
     setLinkSuggestions([])
     setSelectionAnchorBlockIndex(null)
     setSelectedBlockRange(null)
+  }
+
+  // Auto-save every 30 seconds while editing
+  useEffect(() => {
+    if (!isEditing) return
+    const interval = setInterval(async () => {
+      if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) return
+      const validation = validateBlockTreeStructure(draftBlocks)
+      if (!validation.valid) return
+      setIsSaving(true)
+      await window.knowbook.updateDocument(selectedDocumentId, {
+        title: draftTitle,
+        summary: draftSummary,
+        blocks: draftBlocks
+      })
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDocumentDetail(selectedDocumentId)
+      ])
+      setHomeData(refreshedHome)
+      setSelectedDocument(refreshedDetail)
+      setIsSaving(false)
+      setAutoSaveFlash(true)
+      setTimeout(() => setAutoSaveFlash(false), 2000)
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [isEditing, isSaving, selectedDocumentId, selectedDocument, draftBlocks, draftTitle, draftSummary])
+
+  function togglePinDocument(documentId: string) {
+    setPinnedDocumentIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(documentId)) {
+        next.delete(documentId)
+      } else {
+        next.add(documentId)
+      }
+      window.knowbook.saveSetting('pinned_documents', JSON.stringify([...next]))
+      return next
+    })
   }
 
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
@@ -2770,6 +2820,28 @@ export function App() {
               Drop here to move document to root
             </div>
 
+            {pinnedDocumentIds.size > 0 && (() => {
+              const allDocs = homeData.documentCatalog
+              const pinnedDocs = allDocs.filter((d) => pinnedDocumentIds.has(d.id))
+              if (pinnedDocs.length === 0) return null
+              return (
+                <div className="pinned-section">
+                  <p className="pinned-section-label">★ 收藏</p>
+                  {pinnedDocs.map((doc) => (
+                    <button
+                      key={doc.id}
+                      className={`pinned-doc-item${selectedDocumentId === doc.id ? ' pinned-doc-item-active' : ''}`}
+                      onClick={() => setSelectedDocumentId(doc.id)}
+                      type="button"
+                    >
+                      <span className="pinned-doc-title">{doc.title}</span>
+                      <span className="pinned-doc-path">{doc.path}</span>
+                    </button>
+                  ))}
+                </div>
+              )
+            })()}
+
             <DocumentTree
               nodes={homeData.documentTree}
               selectedDocumentId={selectedDocumentId}
@@ -2795,6 +2867,17 @@ export function App() {
                 <h3>{selectedDocument?.title ?? 'Select a document'}</h3>
               </div>
               <div className="toolbar-inline">
+                {selectedDocument ? (
+                  <button
+                    className={`secondary-button pin-button${pinnedDocumentIds.has(selectedDocument.id) ? ' pin-button-active' : ''}`}
+                    onClick={() => togglePinDocument(selectedDocument.id)}
+                    type="button"
+                    title={pinnedDocumentIds.has(selectedDocument.id) ? '取消收藏' : '收藏文档'}
+                  >
+                    {pinnedDocumentIds.has(selectedDocument.id) ? '★' : '☆'}
+                  </button>
+                ) : null}
+                {autoSaveFlash ? <span className="autosave-flash">已自动保存</span> : null}
                 {selectedDocument ? (
                   <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
                     Add child

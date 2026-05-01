@@ -651,6 +651,10 @@ export class KnowbookStore {
     `).run(key, value, now)
   }
 
+  getSettingPublic(key: string): string | null {
+    return this.readSetting(key)
+  }
+
   destroy(): void {
     this.db.close()
   }
