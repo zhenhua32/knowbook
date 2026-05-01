@@ -56,7 +56,8 @@ const emptyState: HomeData = {
   pluginDashboardCards: [],
   pluginDocumentActions: [],
   pluginHost: {
-    roots: []
+    roots: [],
+    writableRoot: null
   }
 }
 
@@ -1052,6 +1053,7 @@ export function App() {
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
   const [pluginBusyId, setPluginBusyId] = useState<string | null>(null)
   const [pluginActionBusyKey, setPluginActionBusyKey] = useState<string | null>(null)
+  const [pluginInventoryBusy, setPluginInventoryBusy] = useState(false)
   const navHistoryRef = useRef<string[]>([])
   const navPointerRef = useRef<number>(-1)
   const isNavJumpRef = useRef<boolean>(false)
@@ -1982,6 +1984,60 @@ export function App() {
       setBackupMessage(`${enabled ? 'Enabled' : 'Disabled'} plugin "${plugin.name}".`)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update plugin status.'
+      setBackupMessage(message)
+    } finally {
+      setPluginBusyId(null)
+    }
+  }
+
+  async function reloadPlugins() {
+    setPluginInventoryBusy(true)
+    try {
+      await window.knowbook.reloadPlugins()
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage('Plugins reloaded.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to reload plugins.'
+      setBackupMessage(message)
+    } finally {
+      setPluginInventoryBusy(false)
+    }
+  }
+
+  async function installPluginFromFolder() {
+    setPluginInventoryBusy(true)
+    try {
+      const result = await window.knowbook.installPluginFromFolder()
+      if (!result) {
+        return
+      }
+
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(`Installed plugin "${result.plugin.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to install plugin.'
+      setBackupMessage(message)
+    } finally {
+      setPluginInventoryBusy(false)
+    }
+  }
+
+  async function removePlugin(plugin: PluginDescriptor) {
+    const accepted = window.confirm(`Remove plugin "${plugin.name}" from the local user-data plugin root?`)
+    if (!accepted) {
+      return
+    }
+
+    setPluginBusyId(plugin.id)
+    try {
+      await window.knowbook.removePlugin(plugin.id)
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(`Removed plugin "${plugin.name}".`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to remove plugin.'
       setBackupMessage(message)
     } finally {
       setPluginBusyId(null)
@@ -3489,6 +3545,7 @@ export function App() {
   const pluginDashboardCards = homeData.pluginDashboardCards ?? []
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
   const pluginRoots = homeData.pluginHost?.roots ?? []
+  const pluginWritableRoot = homeData.pluginHost?.writableRoot ?? null
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -3614,6 +3671,14 @@ export function App() {
         <div className="panel">
           <p className="panel-label">Plugins</p>
           <h3>Workspace extensions</h3>
+          <div className="plugin-toolbar">
+            <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void reloadPlugins()} type="button">
+              {pluginInventoryBusy ? 'Reloading...' : 'Reload'}
+            </button>
+            <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void installPluginFromFolder()} type="button">
+              {pluginInventoryBusy ? 'Working...' : 'Install Folder'}
+            </button>
+          </div>
           {pluginRoots.length > 0 ? (
             <div className="plugin-roots">
               {pluginRoots.map((root) => (
@@ -3621,7 +3686,10 @@ export function App() {
               ))}
             </div>
           ) : null}
-          <p className="mini-hint">Drop a folder containing plugin.json and index.js into one of the roots above, then restart or toggle the plugin.</p>
+          <p className="mini-hint">
+            Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root.
+          </p>
+          {pluginWritableRoot ? <p className="mini-hint">Writable install root: {pluginWritableRoot}</p> : null}
           {plugins.length > 0 ? (
             <div className="plugin-list">
               {plugins.map((plugin) => {
@@ -3641,17 +3709,31 @@ export function App() {
                       {plugin.author ? <span>{plugin.author}</span> : null}
                     </div>
                     {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
-                    <label className="toggle-row plugin-toggle-row">
-                      <input
-                        checked={plugin.enabled}
-                        disabled={pluginBusyId === plugin.id}
-                        onChange={(event) => {
-                          void setPluginEnabled(plugin, event.target.checked)
-                        }}
-                        type="checkbox"
-                      />
-                      <span>{pluginBusyId === plugin.id ? 'Updating...' : plugin.enabled ? 'Enabled' : 'Disabled'}</span>
-                    </label>
+                    <div className="plugin-item-actions">
+                      <label className="toggle-row plugin-toggle-row">
+                        <input
+                          checked={plugin.enabled}
+                          disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                          onChange={(event) => {
+                            void setPluginEnabled(plugin, event.target.checked)
+                          }}
+                          type="checkbox"
+                        />
+                        <span>{pluginBusyId === plugin.id ? 'Updating...' : plugin.enabled ? 'Enabled' : 'Disabled'}</span>
+                      </label>
+                      {plugin.source === 'user-data' ? (
+                        <button
+                          className="danger-button plugin-remove-button"
+                          disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                          onClick={() => {
+                            void removePlugin(plugin)
+                          }}
+                          type="button"
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 )
               })}

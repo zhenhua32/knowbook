@@ -140,6 +140,13 @@ dt,
   margin-top: 14px;
 }
 
+.plugin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
 .plugin-item {
   display: flex;
   flex-direction: column;
@@ -197,6 +204,17 @@ dt,
 
 .plugin-toggle-row {
   justify-content: space-between;
+}
+
+.plugin-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plugin-remove-button {
+  flex: 0 0 auto;
 }
 
 .plugin-error {

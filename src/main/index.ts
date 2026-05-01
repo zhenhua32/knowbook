@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
+import type { OpenDialogOptions } from 'electron'
 import type {
   AskAiInput,
   AskAiResult,
@@ -11,6 +12,7 @@ import type {
   DocumentSuggestion,
   GlobalSearchResult,
   HomeData,
+  InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
   RenameDocumentDatabaseColumnInput,
   RunPluginDocumentActionInput,
@@ -363,6 +365,37 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:set-plugin-enabled', async (_event, input: SetPluginEnabledInput) => {
     await pluginHost.setPluginEnabled(input.pluginId, input.enabled)
+  })
+
+  ipcMain.handle('knowbook:reload-plugins', async () => {
+    await pluginHost.reloadAll()
+    store.recordWorkspaceEvent({
+      type: 'plugin.reloaded',
+      title: 'Plugins reloaded',
+      description: 'Rescanned plugin roots and refreshed active plugin contributions.'
+    })
+  })
+
+  ipcMain.handle('knowbook:install-plugin-from-folder', async (event): Promise<InstallPluginResult | null> => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+    const openDialogOptions: OpenDialogOptions = {
+      title: '选择插件文件夹',
+      buttonLabel: '安装插件',
+      properties: ['openDirectory']
+    }
+    const result = targetWindow
+      ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
+      : await dialog.showOpenDialog(openDialogOptions)
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return pluginHost.installPluginFromDirectory(result.filePaths[0])
+  })
+
+  ipcMain.handle('knowbook:remove-plugin', async (_event, pluginId: string) => {
+    await pluginHost.removePlugin(pluginId)
   })
 
   ipcMain.handle('knowbook:run-plugin-document-action', async (_event, input: RunPluginDocumentActionInput) => {

@@ -159,6 +159,9 @@ export type WorkspaceEventType =
   | 'document.deleted'
   | 'ai.config.updated'
   | 'plugin.loaded'
+  | 'plugin.reloaded'
+  | 'plugin.installed'
+  | 'plugin.removed'
   | 'plugin.action.executed'
   | 'plugin.action.failed'
 
@@ -213,6 +216,11 @@ export interface PluginDocumentAction {
 
 export interface PluginHostInfo {
   roots: string[]
+  writableRoot: string | null
+}
+
+export interface InstallPluginResult {
+  plugin: PluginDescriptor
 }
 
 export interface HomeData {
@@ -344,6 +352,9 @@ export interface ElectronApi {
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
   setPluginEnabled: (input: SetPluginEnabledInput) => Promise<void>
+  reloadPlugins: () => Promise<void>
+  installPluginFromFolder: () => Promise<InstallPluginResult | null>
+  removePlugin: (pluginId: string) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>

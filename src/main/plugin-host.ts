@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import vm from 'node:vm'
 import type {
   DocumentDetail,
+  InstallPluginResult,
   PluginDashboardCard,
   PluginDescriptor,
   PluginDocumentAction,
@@ -104,6 +105,23 @@ export class PluginHost {
     }
   }
 
+  async reloadAll(): Promise<void> {
+    const currentPlugins = [...this.plugins.values()]
+    for (const plugin of currentPlugins) {
+      await this.deactivatePlugin(plugin)
+    }
+
+    this.plugins.clear()
+
+    const discovered = this.discoverPlugins()
+    for (const plugin of discovered) {
+      this.plugins.set(plugin.manifest.id, plugin)
+      if (plugin.enabled) {
+        await this.activatePlugin(plugin, false)
+      }
+    }
+  }
+
   getHomeDataSnapshot(): {
     plugins: PluginDescriptor[]
     dashboardCards: PluginDashboardCard[]
@@ -137,9 +155,89 @@ export class PluginHost {
       dashboardCards,
       documentActions,
       host: {
-        roots: this.roots.map((root) => root.path)
+        roots: this.roots.map((root) => root.path),
+        writableRoot: this.getWritableRoot()
       }
     }
+  }
+
+  async installPluginFromDirectory(sourceDirectory: string): Promise<InstallPluginResult> {
+    const sourceStats = statSync(sourceDirectory, { throwIfNoEntry: false })
+    if (!sourceStats?.isDirectory()) {
+      throw new Error('Selected plugin folder does not exist.')
+    }
+
+    const manifestPath = join(sourceDirectory, 'plugin.json')
+    if (!existsSync(manifestPath)) {
+      throw new Error('Selected folder does not contain plugin.json.')
+    }
+
+    const manifest = this.parseManifest(manifestPath)
+    const writableRoot = this.getWritableRoot()
+    if (!writableRoot) {
+      throw new Error('No writable plugin root is configured.')
+    }
+
+    mkdirSync(writableRoot, { recursive: true })
+    const targetDirectory = join(writableRoot, manifest.id)
+    if (resolve(sourceDirectory) === resolve(targetDirectory)) {
+      await this.reloadAll()
+      const installedPlugin = this.plugins.get(manifest.id)
+      if (!installedPlugin) {
+        throw new Error('Plugin reload failed after install request.')
+      }
+      return {
+        plugin: this.toPluginDescriptor(installedPlugin)
+      }
+    }
+
+    if (existsSync(targetDirectory)) {
+      throw new Error(`A user-data plugin with id "${manifest.id}" is already installed.`)
+    }
+
+    cpSync(sourceDirectory, targetDirectory, {
+      recursive: true,
+      errorOnExist: true,
+      force: false
+    })
+
+    await this.reloadAll()
+
+    const installedPlugin = this.plugins.get(manifest.id)
+    if (!installedPlugin) {
+      throw new Error('Installed plugin could not be discovered after reload.')
+    }
+
+    this.store.recordWorkspaceEvent({
+      type: 'plugin.installed',
+      title: `Plugin installed: ${installedPlugin.manifest.name}`,
+      description: `Installed plugin ${installedPlugin.manifest.name} into ${targetDirectory}.`
+    })
+
+    return {
+      plugin: this.toPluginDescriptor(installedPlugin)
+    }
+  }
+
+  async removePlugin(pluginId: string): Promise<void> {
+    const plugin = this.plugins.get(pluginId)
+    if (!plugin) {
+      throw new Error('Plugin not found.')
+    }
+
+    if (plugin.source !== 'user-data') {
+      throw new Error('Only plugins installed into the user-data root can be removed here.')
+    }
+
+    await this.deactivatePlugin(plugin)
+    this.plugins.delete(pluginId)
+    rmSync(plugin.directory, { recursive: true, force: true })
+    await this.reloadAll()
+    this.store.recordWorkspaceEvent({
+      type: 'plugin.removed',
+      title: `Plugin removed: ${plugin.manifest.name}`,
+      description: `Removed plugin ${plugin.manifest.name} from ${plugin.directory}.`
+    })
   }
 
   async setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
@@ -263,7 +361,7 @@ export class PluginHost {
             directory: directoryPath,
             source: root.source,
             enabled: this.readPluginEnabled(manifest),
-            status: this.readPluginEnabled(manifest) ? 'disabled' : 'disabled',
+            status: 'disabled',
             dashboardCards: new Map(),
             documentActions: new Map(),
             eventHandlers: []
@@ -313,7 +411,11 @@ export class PluginHost {
     return `plugin.enabled.${pluginId}`
   }
 
-  private async activatePlugin(plugin: RegisteredPlugin): Promise<void> {
+  private getWritableRoot(): string | null {
+    return this.roots.find((root) => root.source === 'user-data')?.path ?? null
+  }
+
+  private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {
     await this.deactivatePlugin(plugin)
 
     plugin.dashboardCards.clear()
@@ -364,11 +466,13 @@ export class PluginHost {
       const dispose = await activate(api)
       plugin.dispose = typeof dispose === 'function' ? dispose : undefined
       plugin.status = 'running'
-      this.store.recordWorkspaceEvent({
-        type: 'plugin.loaded',
-        title: `Plugin loaded: ${plugin.manifest.name}`,
-        description: `${plugin.manifest.name} is now active.`
-      })
+      if (recordLoadEvent) {
+        this.store.recordWorkspaceEvent({
+          type: 'plugin.loaded',
+          title: `Plugin loaded: ${plugin.manifest.name}`,
+          description: `${plugin.manifest.name} is now active.`
+        })
+      }
     } catch (error) {
       this.handlePluginError(plugin, 'activation', error)
     }
@@ -479,6 +583,20 @@ export class PluginHost {
     plugin.documentActions.clear()
     plugin.eventHandlers = []
     console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, error)
+  }
+
+  private toPluginDescriptor(plugin: RegisteredPlugin): PluginDescriptor {
+    return {
+      id: plugin.manifest.id,
+      name: plugin.manifest.name,
+      version: plugin.manifest.version,
+      description: plugin.manifest.description?.trim() || 'No description provided.',
+      author: plugin.manifest.author?.trim() || undefined,
+      source: plugin.source,
+      enabled: plugin.enabled,
+      status: plugin.status,
+      error: plugin.error
+    }
   }
 }
 
