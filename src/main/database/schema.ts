@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS blocks (
   content TEXT NOT NULL,
   checked INTEGER NOT NULL DEFAULT 0,
   depth INTEGER NOT NULL DEFAULT 0,
+  tags_json TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

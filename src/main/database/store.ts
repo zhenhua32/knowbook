@@ -124,6 +124,7 @@ interface ExportBlockRow {
   content: string
   checked: number
   depth: number
+  tags_json?: string | null
   parent_block_id: string | null
   sort_order: number
   language: string | null
@@ -217,6 +218,7 @@ export interface ExportDocument {
     content: string
     checked: boolean
     depth: number
+    tags?: string[]
     parentBlockId: string | null
     sortOrder: number
     language?: string
@@ -234,6 +236,7 @@ export class KnowbookStore {
     this.db.exec(appSchema)
     this.ensureBlockCheckedColumn()
     this.ensureBlockDepthColumn()
+    this.ensureBlockTagsColumn()
     this.ensureBlockLanguageColumn()
     this.ensureBlockHighlightColumn()
     this.ensureBlockParentRelationships()
@@ -273,7 +276,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language, highlight
+      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -318,6 +321,7 @@ export class KnowbookStore {
         content: block.content,
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
+        tags: this.parseBlockTags(block.tags_json),
         parentBlockId: block.parent_block_id ?? null,
         sortOrder: block.sort_order,
         language: block.language ?? undefined,
@@ -427,8 +431,8 @@ export class KnowbookStore {
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, language, highlight, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
@@ -449,6 +453,7 @@ export class KnowbookStore {
           block.content,
           block.checked ? 1 : 0,
           block.depth,
+          JSON.stringify(this.normalizeBlockTags(block.tags)),
           block.language ?? null,
           block.highlight ?? null,
           now,
@@ -1036,7 +1041,7 @@ export class KnowbookStore {
     `).all() as ExportDocumentRow[]
 
     const blocksStatement = this.db.prepare(`
-      SELECT id, type, content, checked, depth, parent_block_id, sort_order, language, highlight
+      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -1054,6 +1059,7 @@ export class KnowbookStore {
         content: block.content,
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
+        tags: this.parseBlockTags(block.tags_json),
         parentBlockId: block.parent_block_id ?? null,
         sortOrder: block.sort_order,
         language: block.language ?? undefined,
@@ -1523,7 +1529,8 @@ export class KnowbookStore {
           content: block.content,
           checked: type === 'todo' ? Boolean(block.checked) : false,
           depth: this.normalizeNestableDepth(type, block.depth ?? 0),
-          parentBlockId: block.parentBlockId ?? null
+          parentBlockId: block.parentBlockId ?? null,
+          tags: this.normalizeBlockTags(block.tags)
         }
       })
       .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
@@ -1537,9 +1544,40 @@ export class KnowbookStore {
         type: 'paragraph',
         content: 'Start writing here.',
         checked: false,
-        depth: 0
+        depth: 0,
+        tags: []
       }
     ]
+  }
+
+  private normalizeBlockTags(tags: string[] | undefined): string[] {
+    if (!Array.isArray(tags) || tags.length === 0) {
+      return []
+    }
+
+    const uniqueTags = new Set<string>()
+    for (const rawTag of tags) {
+      const tag = rawTag.trim()
+      if (tag) {
+        uniqueTags.add(tag)
+      }
+    }
+
+    return [...uniqueTags]
+  }
+
+  private parseBlockTags(tagsJson: string | null | undefined): string[] | undefined {
+    if (!tagsJson) {
+      return undefined
+    }
+
+    try {
+      const parsed = JSON.parse(tagsJson) as unknown
+      const normalized = this.normalizeBlockTags(Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === 'string') : [])
+      return normalized.length > 0 ? normalized : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private normalizeNestableDepth(type: string, depth: number): number {
@@ -1729,6 +1767,13 @@ export class KnowbookStore {
     const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
     if (!columns.some((column) => column.name === 'language')) {
       this.db.exec('ALTER TABLE blocks ADD COLUMN language TEXT')
+    }
+  }
+
+  private ensureBlockTagsColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(blocks)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'tags_json')) {
+      this.db.exec(`ALTER TABLE blocks ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'`)
     }
   }
 

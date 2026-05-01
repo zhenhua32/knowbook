@@ -962,7 +962,7 @@ function remapIndexAfterSubtreeMove(
   return index
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'language' | 'highlight'>): DocumentBlockDraft {
+function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'tags' | 'language' | 'highlight'>): DocumentBlockDraft {
   return {
     id: block.id,
     type: block.type,
@@ -970,6 +970,7 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
     checked: Boolean(block.checked),
     depth: normalizeBlockDepth(block.type, block.depth),
     parentBlockId: block.parentBlockId ?? null,
+    tags: block.tags,
     language: block.language,
     highlight: block.highlight
   }
