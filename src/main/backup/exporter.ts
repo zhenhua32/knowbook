@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { BackupResult } from '@shared/contracts'
+import { serializeBlocksToMarkdown } from '@shared/markdown'
 import type { ExportDocument, KnowbookStore } from '../database/store'
 
 export class MarkdownBackupService {
@@ -43,52 +44,10 @@ export class MarkdownBackupService {
       ''
     ].join('\n')
 
-    const body = document.blocks
-      .map((block) => this.renderBlock(block.type, block.content, block.checked, block.depth, block.language))
-      .join('\n\n')
+    const body = serializeBlocksToMarkdown(document.blocks, {
+      fallbackCodeLanguage: 'txt'
+    })
 
     return `${frontmatter}${body}\n`
-  }
-
-  private renderBlock(type: string, content: string, checked: boolean, depth: number, language?: string): string {
-    const indent = '  '.repeat(Math.max(0, depth))
-
-    if (type === 'heading-1') {
-      return `# ${content}`
-    }
-
-    if (type === 'heading-2') {
-      return `## ${content}`
-    }
-
-    if (type === 'todo') {
-      return `${indent}- [${checked ? 'x' : ' '}] ${content}`
-    }
-
-    if (type === 'quote') {
-      return `> ${content}`
-    }
-
-    if (type === 'bulleted-list') {
-      return `${indent}- ${content}`
-    }
-
-    if (type === 'numbered-list') {
-      return `${indent}1. ${content}`
-    }
-
-    if (type === 'divider') {
-      return '---'
-    }
-
-    if (type === 'math') {
-      return ['$$', content, '$$'].join('\n')
-    }
-
-    if (type === 'code') {
-      return ['```' + (language ?? 'txt'), content, '```'].join('\n')
-    }
-
-    return content
   }
 }

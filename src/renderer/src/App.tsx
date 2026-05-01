@@ -14,6 +14,7 @@ import type {
   WorkspaceGraphEdge,
   WorkspaceGraphNode
 } from '@shared/contracts'
+import { serializeBlocksToMarkdown } from '@shared/markdown'
 
 const emptyState: HomeData = {
   summary: {
@@ -1358,22 +1359,7 @@ export function App() {
   }
 
   function blocksToMarkdown(blocks: DocumentBlock[]): string {
-    return blocks.map((block) => {
-      const indent = '  '.repeat(Math.max(0, block.depth))
-
-      switch (block.type) {
-        case 'heading-1': return `# ${block.content}`
-        case 'heading-2': return `## ${block.content}`
-        case 'todo': return `${indent}- [${block.checked ? 'x' : ' '}] ${block.content}`
-        case 'bulleted-list': return `${indent}- ${block.content}`
-        case 'numbered-list': return `${indent}1. ${block.content}`
-        case 'quote': return `> ${block.content}`
-        case 'code': return `\`\`\`${block.language ?? ''}\n${block.content}\n\`\`\``
-        case 'math': return `$$\n${block.content}\n$$`
-        case 'divider': return `---`
-        default: return block.content
-      }
-    }).join('\n\n')
+    return serializeBlocksToMarkdown(blocks)
   }
 
   function buildDocumentMarkdown(document: Pick<DocumentDetail, 'title' | 'blocks'>): string {

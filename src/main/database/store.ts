@@ -147,10 +147,12 @@ export interface ExportDocument {
   summary: string
   updatedAt: string
   blocks: Array<{
+    id: string
     type: string
     content: string
     checked: boolean
     depth: number
+    parentBlockId: string | null
     sortOrder: number
     language?: string
   }>
@@ -638,10 +640,12 @@ export class KnowbookStore {
       summary: document.summary,
       updatedAt: document.updated_at,
       blocks: (blocksStatement.all(document.id) as ExportBlockRow[]).map((block) => ({
+        id: block.id,
         type: block.type,
         content: block.content,
         checked: Boolean(block.checked),
         depth: Math.max(0, block.depth ?? 0),
+        parentBlockId: block.parent_block_id ?? null,
         sortOrder: block.sort_order,
         language: block.language ?? undefined,
         highlight: block.highlight ?? undefined
