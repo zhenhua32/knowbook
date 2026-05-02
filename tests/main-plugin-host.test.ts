@@ -532,3 +532,104 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost reloadPlugin reports error when manifest is missing', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-reload-missing-manifest-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const pluginRoot = join(workspaceRoot, 'broken-reload')
+
+  mkdirSync(pluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'broken-reload',
+        name: 'Broken Reload',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(join(pluginRoot, 'index.js'), 'module.exports.activate = function activate() { return undefined }\n', 'utf8')
+
+  const events: Array<{ type: string; title: string; description: string }> = []
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: (input: { type: string; title: string; description: string }) => {
+      events.push(input)
+    }
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    rmSync(join(pluginRoot, 'plugin.json'), { force: true })
+
+    await host.reloadPlugin('broken-reload')
+
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'broken-reload')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').includes('Missing manifest file'), true)
+    assert.equal(events.some((event) => event.type === 'plugin.reloaded' && event.title.includes('reload failed')), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost setPluginEnabled persists setting and can re-enable plugin', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-enable-toggle-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  const sourcePluginDir = join(process.cwd(), 'plugins', 'activity-pulse')
+  cpSync(sourcePluginDir, join(workspaceRoot, 'activity-pulse'), { recursive: true })
+
+  const settings: Array<{ key: string; value: string }> = []
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: (key: string, value: string) => {
+      settings.push({ key, value })
+    },
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    await host.setPluginEnabled('activity-pulse', false)
+    await host.setPluginEnabled('activity-pulse', true)
+
+    assert.equal(settings.some((item) => item.key === 'plugin.enabled.activity-pulse' && item.value === 'false'), true)
+    assert.equal(settings.some((item) => item.key === 'plugin.enabled.activity-pulse' && item.value === 'true'), true)
+
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'activity-pulse')
+    assert.equal(plugin?.status, 'running')
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
