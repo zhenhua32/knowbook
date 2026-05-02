@@ -40,6 +40,9 @@ import {
 } from './i18n'
 import { PageRail } from './components/PageRail'
 import { DocumentsSidebar } from './components/DocumentsSidebar'
+import { DocumentPreviewHeader } from './components/DocumentPreviewHeader'
+import { DocumentsAuxPanel } from './components/DocumentsAuxPanel'
+import { DocumentStatsBar } from './components/DocumentStatsBar'
 
 const emptyState: HomeData = {
   summary: {
@@ -4090,81 +4093,51 @@ export function App() {
           />
 
           <article className="panel preview-panel">
-            <div className="panel-head">
-              <div>
-                <p className="panel-label">{ui.documentPreviewLabel}</p>
-                <h3>{selectedDocument?.title ?? ui.selectDocument}</h3>
-              </div>
-              <div className="toolbar-inline">
-                {selectedDocument ? (
-                  <button
-                    className={`secondary-button pin-button${pinnedDocumentIds.has(selectedDocument.id) ? ' pin-button-active' : ''}`}
-                    onClick={() => togglePinDocument(selectedDocument.id)}
-                    type="button"
-                    title={pinnedDocumentIds.has(selectedDocument.id) ? ui.unpinDocument : ui.pinDocument}
-                  >
-                    {pinnedDocumentIds.has(selectedDocument.id) ? '★' : '☆'}
-                  </button>
-                ) : null}
-                {autoSaveFlash ? <span className="autosave-flash">{ui.autoSaved}</span> : null}
-                {mdCopyFlash ? <span className="autosave-flash">{ui.markdownCopied}</span> : null}
-                {selectedDocument ? (
-                  <button className="secondary-button" onClick={copyDocumentAsMarkdown} type="button" title={ui.copyMarkdown}>
-                    {ui.copyMarkdown}
-                  </button>
-                ) : null}
-                {selectedDocument ? (
-                  <button className="secondary-button" onClick={saveDocumentAsMarkdown} type="button" title={ui.saveMarkdown}>
-                    {ui.saveMarkdown}
-                  </button>
-                ) : null}
-                {selectedDocument ? (
-                  <button className="secondary-button" onClick={() => handleCreateDocument(selectedDocument.id)} type="button">
-                    {ui.addChild}
-                  </button>
-                ) : null}
-                {selectedDocument ? (
-                  <>
-                    <button className="secondary-button" disabled={editHistoryPointerRef.current <= 0} onClick={undoEdit} type="button" title="撤销 (Ctrl+Z)">↩</button>
-                    <button className="secondary-button" disabled={editHistoryPointerRef.current >= editHistoryRef.current.length - 1} onClick={redoEdit} type="button" title="重做 (Ctrl+Y)">↪</button>
-                    <button className="secondary-button" disabled={isSaving} onClick={saveDocument} type="button">
-                      {isSaving ? ui.common.saving : ui.common.save}
-                    </button>
-                  </>
-                ) : null}
-                {selectedDocument ? (
-                  <button className="danger-button" onClick={deleteSelectedDocument} type="button">
-                    {ui.common.delete}
-                  </button>
-                ) : null}
-                {selectedDocument ? (
-                  <>
-                    <select className="editor-select compact-select" onChange={(event) => setMoveTargetId(event.target.value)} value={moveTargetId}>
-                      <option value="">{ui.moveToPlaceholder}</option>
-                      <option value="__root__">{ui.rootOption}</option>
-                      {moveOptions.map((option) => (
-                        <option key={option.id} value={option.id}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                    <button className="secondary-button" disabled={!moveTargetId} onClick={moveSelectedDocument} type="button">
-                      {ui.common.move}
-                    </button>
-                    <button
-                      className="secondary-button"
-                      onClick={() => setDocumentsAuxPanelOpen((previous) => !previous)}
-                      type="button"
-                    >
-                      {documentsAuxPanelOpen
-                        ? (isZh ? '收起辅助区' : 'Hide auxiliary')
-                        : (isZh ? '展开辅助区' : 'Show auxiliary')}
-                    </button>
-                  </>
-                ) : null}
-                {detailLoading ? <span className="pill">{ui.common.loading}</span> : null}
-              </div>
-            </div>
+            <DocumentPreviewHeader
+              autoSaveFlash={autoSaveFlash}
+              canRedo={editHistoryPointerRef.current < editHistoryRef.current.length - 1}
+              canUndo={editHistoryPointerRef.current > 0}
+              detailLoading={detailLoading}
+              documentsAuxPanelOpen={documentsAuxPanelOpen}
+              isPinned={selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false}
+              isSaving={isSaving}
+              isZh={isZh}
+              mdCopyFlash={mdCopyFlash}
+              moveOptions={moveOptions}
+              moveTargetId={moveTargetId}
+              onAddChild={() => {
+                if (selectedDocument) {
+                  void handleCreateDocument(selectedDocument.id)
+                }
+              }}
+              onCopyMarkdown={() => {
+                void copyDocumentAsMarkdown()
+              }}
+              onDelete={() => {
+                void deleteSelectedDocument()
+              }}
+              onMove={() => {
+                void moveSelectedDocument()
+              }}
+              onMoveTargetChange={setMoveTargetId}
+              onRedo={redoEdit}
+              onSave={() => {
+                void saveDocument()
+              }}
+              onSaveMarkdown={() => {
+                void saveDocumentAsMarkdown()
+              }}
+              onToggleAuxPanel={() => setDocumentsAuxPanelOpen((previous) => !previous)}
+              onTogglePin={() => {
+                if (selectedDocument) {
+                  togglePinDocument(selectedDocument.id)
+                }
+              }}
+              onUndo={undoEdit}
+              selectedDocumentId={selectedDocumentId}
+              selectedDocumentTitle={selectedDocument?.title ?? null}
+              ui={ui}
+            />
 
             {selectedDocument ? (
               <>
@@ -4754,8 +4727,35 @@ export function App() {
                     </div>
                 </div>
 
-                {documentsAuxPanelOpen ? (
-                  <>
+                <DocumentsAuxPanel
+                  aiAnswer={aiAnswer}
+                  aiAsking={aiAsking}
+                  aiAutomationsRunning={aiAutomationsRunning}
+                  aiContextError={aiContextError}
+                  aiContextResults={aiContextResults}
+                  aiContextSearching={aiContextSearching}
+                  aiEnabled={homeData.aiConfig.enabled}
+                  aiPromptDraft={aiPromptDraft}
+                  hasApiKey={homeData.aiConfig.hasApiKey}
+                  isOpen={documentsAuxPanelOpen}
+                  isZh={isZh}
+                  onAiPromptChange={setAiPromptDraft}
+                  onAskAi={() => {
+                    void askAiOnSelectedDocument()
+                  }}
+                  onFindRelatedNotes={() => {
+                    void findRelatedNotesForPrompt()
+                  }}
+                  onOpenDocument={openDocumentInDocumentsPage}
+                  onRunEnabledAutomations={() => {
+                    void runEnabledAiAutomationsOnSelectedDocument()
+                  }}
+                  onRunPluginAction={(action) => {
+                    void runPluginDocumentAction(action)
+                  }}
+                  pluginActionBusyKey={pluginActionBusyKey}
+                  pluginDocumentActions={pluginDocumentActions}
+                  relationContent={(
                     <div className="relation-grid">
                       <RelationList
                         title={ui.relationChildrenTitle}
@@ -4781,112 +4781,25 @@ export function App() {
                         onSelect={openDocumentInDocumentsPage}
                       />
                     </div>
-
-                    <div className="preview-section">
-                      {pluginDocumentActions.length > 0 ? (
-                        <>
-                          <p className="panel-label">{ui.pluginActionsLabel}</p>
-                          <div className="plugin-document-actions">
-                            {pluginDocumentActions.map((action) => {
-                              const actionKey = `${action.pluginId}:${action.id}`
-                              return (
-                                <button
-                                  className="secondary-button plugin-action-button"
-                                  disabled={pluginActionBusyKey === actionKey}
-                                  key={actionKey}
-                                  onClick={() => {
-                                    void runPluginDocumentAction(action)
-                                  }}
-                                  title={action.description}
-                                  type="button"
-                                >
-                                  {pluginActionBusyKey === actionKey ? ui.runningAutomations : action.label}
-                                </button>
-                              )
-                            })}
-                          </div>
-                          <p className="mini-hint">{ui.pluginActionsHint}</p>
-                        </>
-                      ) : null}
-
-                      <p className="panel-label">{ui.askAiLabel}</p>
-                      <div className="ai-panel">
-                        <textarea
-                          className="editor-textarea"
-                          onChange={(event) => setAiPromptDraft(event.target.value)}
-                          placeholder={ui.askAiPlaceholder}
-                          rows={3}
-                          value={aiPromptDraft}
-                        />
-                        <div className="toolbar-inline ai-actions">
-                          <button
-                            className="secondary-button"
-                            disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
-                            onClick={runEnabledAiAutomationsOnSelectedDocument}
-                            type="button"
-                          >
-                            {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
-                          </button>
-                          <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
-                            {aiContextSearching ? ui.searching : ui.findRelatedNotes}
-                          </button>
-                          <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
-                            {aiAsking ? ui.thinking : ui.askAiLabel}
-                          </button>
-                        </div>
-                        <p className="mini-hint">{ui.manualAiHint}</p>
-                        {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
-                        {aiContextResults.length > 0 ? (
-                          <div className="ai-context-list">
-                            {aiContextResults.map((result) => (
-                              <button
-                                className="ai-context-card"
-                                key={`${result.documentId}-${result.path}`}
-                                onClick={() => openDocumentInDocumentsPage(result.documentId)}
-                                type="button"
-                              >
-                                <div className="ai-context-head">
-                                  <strong className="ai-context-title">{result.title}</strong>
-                                  <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
-                                </div>
-                                <span className="ai-context-path">{result.path}</span>
-                                <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
-                              </button>
-                            ))}
-                          </div>
-                        ) : aiPromptDraft.trim() ? (
-                          <p className="mini-hint">{ui.semanticHint}</p>
-                        ) : null}
-                        {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <p className="mini-hint">{isZh ? '辅助区已收起：可点击“展开辅助区”查看关系、插件动作与 AI 面板。' : 'Auxiliary panel is hidden. Click "Show auxiliary" to open relations, plugin actions, and AI panel.'}</p>
-                )}
+                  )}
+                  ui={ui}
+                />
 
                 {(() => {
                   const stats = getDocumentStats()
                   return (
-                    <div className="doc-stats-bar">
-                      <span className="doc-stat"><strong>{stats.blockCount}</strong> {ui.docStatBlocks}</span>
-                      <span className="doc-stat-divider">·</span>
-                      <span className="doc-stat"><strong>{stats.wordCount}</strong> {ui.docStatWords}</span>
-                      <span className="doc-stat-divider">·</span>
-                      <span className="doc-stat"><strong>{stats.charCount}</strong> {ui.docStatCharacters}</span>
-                      {stats.codeBlockCount > 0 && (
-                        <>
-                          <span className="doc-stat-divider">·</span>
-                          <span className="doc-stat"><strong>{stats.codeBlockCount}</strong> {ui.docStatCodeBlocks}</span>
-                        </>
-                      )}
-                      {stats.todoCount > 0 && (
-                        <>
-                          <span className="doc-stat-divider">·</span>
-                          <span className="doc-stat"><strong>{stats.todoCount}</strong> {ui.docStatTodos}</span>
-                        </>
-                      )}
-                    </div>
+                    <DocumentStatsBar
+                      blockCount={stats.blockCount}
+                      blocksLabel={ui.docStatBlocks}
+                      charCount={stats.charCount}
+                      charsLabel={ui.docStatCharacters}
+                      codeBlockCount={stats.codeBlockCount}
+                      codeBlocksLabel={ui.docStatCodeBlocks}
+                      todoCount={stats.todoCount}
+                      todosLabel={ui.docStatTodos}
+                      wordCount={stats.wordCount}
+                      wordsLabel={ui.docStatWords}
+                    />
                   )
                 })()}
               </>
