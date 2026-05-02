@@ -183,3 +183,107 @@ test('embedding cache supports save/get/delete lifecycle', () => {
     assert.equal(store.getCachedDocumentEmbedding(home.id, 'text-embedding-3-small', 'hash-1'), null)
   })
 })
+
+test('links are re-synced after target title change', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const product = byPath(catalog, 'Home/Product')
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+
+    const productBefore = store.getDocumentDetail(product.id)
+    assert.ok(productBefore)
+    assert.equal(productBefore.outgoingLinks.some((item) => item.id === roadmap.id), true)
+
+    store.updateDocument(roadmap.id, {
+      title: 'Execution Plan',
+      summary: 'Renamed roadmap',
+      blocks: [
+        { type: 'heading-1', content: 'Execution Plan', checked: false, depth: 0 }
+      ]
+    })
+
+    const productAfter = store.getDocumentDetail(product.id)
+    assert.ok(productAfter)
+    assert.equal(productAfter.outgoingLinks.some((item) => item.id === roadmap.id), false)
+  })
+})
+
+test('document suggestions and global search return expected ranked matches', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+
+    const draftId = store.createDocument(home.id)
+    store.updateDocument(draftId, {
+      title: 'Alpha Note',
+      summary: 'Contains keyword zeta',
+      blocks: [
+        { type: 'paragraph', content: 'zeta appears in block body', checked: false, depth: 0 }
+      ]
+    })
+
+    const suggestions = store.getDocumentSuggestions('Alpha')
+    assert.equal(suggestions.some((item) => item.id === draftId), true)
+
+    const excludedSuggestions = store.getDocumentSuggestions('Alpha', draftId)
+    assert.equal(excludedSuggestions.some((item) => item.id === draftId), false)
+
+    const searchResults = store.searchDocuments('zeta')
+    assert.equal(searchResults.length > 0, true)
+    assert.equal(searchResults.some((item) => item.documentId === draftId && item.matchType === 'title'), true)
+    assert.equal(searchResults.some((item) => item.documentId === draftId && item.matchType === 'block'), true)
+  })
+})
+
+test('buildAiPrompt includes document context and optional related notes', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+
+    const prompt = store.buildAiPrompt(
+      {
+        documentId: home.id,
+        prompt: 'Summarize key points'
+      },
+      [
+        {
+          title: 'Reference',
+          path: 'Home/Reference',
+          summary: 'Reference summary',
+          content: 'Reference content body'
+        }
+      ]
+    )
+
+    assert.equal(prompt.includes('Document title: Home'), true)
+    assert.equal(prompt.includes('Related workspace context:'), true)
+    assert.equal(prompt.includes('Context 1: Reference'), true)
+    assert.equal(prompt.includes('User request: Summarize key points'), true)
+    assert.equal(prompt.includes('Answer in concise Chinese'), true)
+  })
+})
+
+test('database field serialization handles text/date/checkbox nullability and validation', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+
+    const textColumn = store.createDocumentDatabaseColumn({ name: 'Notes', type: 'text' })
+    const dateColumn = store.createDocumentDatabaseColumn({ name: 'Due', type: 'date' })
+    const checkboxColumn = store.createDocumentDatabaseColumn({ name: 'Done', type: 'checkbox' })
+
+    store.updateDocumentDatabaseValue({ documentId: home.id, columnId: textColumn.id, value: '  ' })
+    store.updateDocumentDatabaseValue({ documentId: home.id, columnId: checkboxColumn.id, value: false })
+    store.updateDocumentDatabaseValue({ documentId: home.id, columnId: dateColumn.id, value: '2026-05-02' })
+
+    assert.throws(() => {
+      store.updateDocumentDatabaseValue({ documentId: home.id, columnId: dateColumn.id, value: '05/02/2026' })
+    }, /YYYY-MM-DD/)
+
+    const updatedHome = store.getHomeData(backupRoot).documentCatalog.find((entry) => entry.id === home.id)
+    assert.ok(updatedHome)
+    assert.equal(updatedHome.fieldValues[textColumn.id], undefined)
+    assert.equal(updatedHome.fieldValues[checkboxColumn.id], false)
+    assert.equal(updatedHome.fieldValues[dateColumn.id], '2026-05-02')
+  })
+})
