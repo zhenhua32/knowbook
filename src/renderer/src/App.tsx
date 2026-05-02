@@ -48,6 +48,9 @@ import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
+import { SlashCommandPanel } from './components/SlashCommandPanel'
+import { LinkSuggestionPanel } from './components/LinkSuggestionPanel'
+import { BlockEditorRow } from './components/BlockEditorRow'
 
 const emptyState: HomeData = {
   summary: {
@@ -4575,72 +4578,38 @@ export function App() {
                       </button>
                       <DraftBlockTreeOutline blocks={draftBlocks} />
                       {activeSlashContext ? (
-                        <div className="link-helper-panel">
-                          <p className="panel-label">{ui.slashCommandsLabel}</p>
-                          <p className="mini-hint">{ui.slashQuery(activeSlashContext.query)}</p>
-                          <div className="relation-list">
-                            {filteredSlashCommands.length > 0 ? (
-                              filteredSlashCommands.map((command, commandIndex) => (
-                                <button
-                                  className={`relation-chip${activeSlashCommand?.id === command.id ? ' relation-chip-active' : ''}`}
-                                  key={`slash-${command.id}`}
-                                  onClick={() => applySlashCommand(command)}
-                                  onMouseEnter={() => setSelectedSlashCommandIndex(commandIndex)}
-                                  type="button"
-                                >
-                                  <strong>/{command.id}</strong>
-                                  <span>{command.label}</span>
-                                  <small>{command.description}</small>
-                                </button>
-                              ))
-                            ) : (
-                              <p className="empty-text">{ui.noMatchingCommands}</p>
-                            )}
-                          </div>
-                          <p className="mini-hint">{ui.slashCommandHint}</p>
-                        </div>
+                        <SlashCommandPanel
+                          activeCommandId={activeSlashCommand?.id}
+                          commands={filteredSlashCommands.map((cmd) => ({
+                            id: cmd.id,
+                            label: cmd.label,
+                            description: cmd.description
+                          }))}
+                          commandsLabel={ui.slashCommandsLabel}
+                          hintLabel={ui.slashCommandHint}
+                          noMatchingLabel={ui.noMatchingCommands}
+                          onHoverCommand={setSelectedSlashCommandIndex}
+                          onSelectCommand={(cmd) => {
+                            const fullCommand = filteredSlashCommands.find((c) => c.id === cmd.id)
+                            if (fullCommand) {
+                              applySlashCommand(fullCommand)
+                            }
+                          }}
+                          query={activeSlashContext.query}
+                          queryLabel={ui.slashQuery}
+                        />
                       ) : activeLinkContext ? (
-                        <div className="link-helper-panel">
-                          <p className="panel-label">{ui.linkSuggestionsLabel}</p>
-                          <p className="mini-hint">{ui.linkQuery(activeLinkContext.query)}</p>
-                          <div className="relation-list">
-                            {blockSuggestions.length > 0 && (
-                              <>
-                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{ui.blocksInDocument}</p>
-                                {blockSuggestions.map((block) => (
-                                  <button
-                                    className="relation-chip"
-                                    key={`block-suggestion-${block.id}`}
-                                    onClick={() => insertBlockSuggestion(block)}
-                                    type="button"
-                                  >
-                                    <strong>{block.type}</strong>
-                                    <span>{block.content.slice(0, 60)}{block.content.length > 60 ? '...' : ''}</span>
-                                  </button>
-                                ))}
-                              </>
-                            )}
-                            {linkSuggestions.length > 0 && (
-                              <>
-                                <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{ui.linkedDocuments}</p>
-                                {linkSuggestions.map((suggestion) => (
-                                  <button
-                                    className="relation-chip"
-                                    key={`suggestion-${suggestion.id}`}
-                                    onClick={() => insertLinkSuggestion(suggestion)}
-                                    type="button"
-                                  >
-                                    <strong>{suggestion.title}</strong>
-                                    <span>{suggestion.path}</span>
-                                  </button>
-                                ))}
-                              </>
-                            )}
-                            {blockSuggestions.length === 0 && linkSuggestions.length === 0 && (
-                              <p className="empty-text">{ui.noMatchingSuggestions}</p>
-                            )}
-                          </div>
-                        </div>
+                        <LinkSuggestionPanel
+                          blockSuggestions={blockSuggestions}
+                          blocksLabel={ui.blocksInDocument}
+                          linkedDocsLabel={ui.linkedDocuments}
+                          linkSuggestions={linkSuggestions}
+                          noMatchingLabel={ui.noMatchingSuggestions}
+                          onSelectBlockSuggestion={insertBlockSuggestion}
+                          onSelectLinkSuggestion={insertLinkSuggestion}
+                          query={activeLinkContext.query}
+                          queryLabel={ui.linkQuery}
+                        />
                       ) : (
                         <p className="mini-hint">{ui.editorHelpText}</p>
                       )}
