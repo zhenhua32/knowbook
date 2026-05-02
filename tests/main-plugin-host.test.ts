@@ -391,3 +391,144 @@ test('PluginHost refuses removing workspace-scoped plugins', async () => {
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost install from target directory triggers reload operation', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-reload-op-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const installedRoot = join(userDataRoot, 'quick-note')
+
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(installedRoot, { recursive: true })
+
+  writeFileSync(
+    join(installedRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'quick-note',
+        name: 'Quick Note',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(installedRoot, 'index.js'),
+    'module.exports.activate = function activate() { return undefined }\n',
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    const result = await host.installPluginFromDirectory(installedRoot)
+    assert.equal(result.operation, 'reloaded')
+    assert.equal(result.plugin.id, 'quick-note')
+    assert.equal(result.previousVersion, '0.1.0')
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost supports replacing existing user-data plugin when replaceExisting is true', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-replace-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const installedRoot = join(userDataRoot, 'quick-note')
+  const sourceRoot = join(tempRoot, 'source-plugin')
+
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(installedRoot, { recursive: true })
+  mkdirSync(sourceRoot, { recursive: true })
+
+  writeFileSync(
+    join(installedRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'quick-note',
+        name: 'Quick Note',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(installedRoot, 'index.js'),
+    'module.exports.activate = function activate() { return undefined }\n',
+    'utf8'
+  )
+
+  writeFileSync(
+    join(sourceRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'quick-note',
+        name: 'Quick Note',
+        version: '0.2.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(sourceRoot, 'index.js'),
+    'module.exports.activate = function activate() { return undefined }\n',
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+
+    const preview = host.previewInstallFromDirectory(sourceRoot)
+    assert.equal(preview.sourceIsTarget, false)
+    assert.equal(preview.canReplace, true)
+    assert.equal(preview.existingPlugin?.version, '0.1.0')
+
+    await assert.rejects(() => host.installPluginFromDirectory(sourceRoot), /already installed/)
+
+    const updated = await host.installPluginFromDirectory(sourceRoot, { replaceExisting: true })
+    assert.equal(updated.operation, 'updated')
+    assert.equal(updated.previousVersion, '0.1.0')
+    assert.equal(updated.plugin.version, '0.2.0')
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
