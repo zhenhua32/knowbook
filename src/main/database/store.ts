@@ -434,14 +434,14 @@ export class KnowbookStore {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
       insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, now, now)
-      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, now, now)
-      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, now, now)
+      insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, '[]', null, null, now, now)
     })
 
     transaction()
@@ -1990,6 +1990,9 @@ export class KnowbookStore {
       this.db.prepare(`
         UPDATE document_database_columns SET database_id = ? WHERE database_id IS NULL
       `).run(defaultDbId)
+
+      // Create index after column is added
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id)')
     }
   }
 
@@ -2050,11 +2053,11 @@ export class KnowbookStore {
 
     const insertDocument = this.db.prepare(`
       INSERT INTO documents (id, title, slug, parent_id, path, summary, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
@@ -2066,55 +2069,12 @@ export class KnowbookStore {
       insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
       insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)
 
-      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, now, now)
-      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, 0, now, now)
-
-      this.saveSetting('ai.enabled', 'true')
-      this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')
-      this.saveSetting('ai.model', 'gpt-4.1-mini')
-      this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
-      this.saveSetting('ai.autoSummaryOnSave', 'false')
-      this.saveSetting('ai.autoTagOnSave', 'false')
-      this.saveSetting('ai.autoHighlightOnSave', 'false')
-    })
-
-    seedTransaction()
-  }
-}
-
-    const now = new Date().toISOString()
-    const homeId = randomUUID()
-    const productId = randomUUID()
-    const roadmapId = randomUUID()
-
-    const insertDocument = this.db.prepare(`
-      INSERT INTO documents (id, title, slug, parent_id, path, summary, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    const insertBlock = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    const insertLink = this.db.prepare(`
-      INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `)
-
-    const seedTransaction = this.db.transaction(() => {
-      insertDocument.run(homeId, 'Home', 'home', null, 'Home', 'Workspace bootstrap document.', now, now)
-      insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
-      insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)
-
-      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, now, now)
-      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, 0, now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, 0, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, 0, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, 0, '[]', null, null, now, now)
 
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')

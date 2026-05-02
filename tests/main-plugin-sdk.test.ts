@@ -1,6 +1,12 @@
-const test = require('node:test').test
-const assert = require('node:assert').strict
-const { createManifest, validatePluginManifest } = require('../src/main/plugin-market')
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { createManifest, validatePluginManifest } from '../src/main/plugin-market'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 test('createManifest creates valid manifest', () => {
   const manifest = createManifest({
@@ -121,12 +127,8 @@ test('createManifest creates manifest with engines', () => {
 })
 
 test('Plugin SDK - KnowBookPlugin base class exists', () => {
-  // Just verify the module can be imported
-  const fs = require('fs')
-  const path = require('path')
   const sdkPath = path.join(__dirname, '..', 'src', 'main', 'plugin-sdk.ts')
   
-  // This is a structural test
   assert.equal(fs.existsSync(sdkPath), true)
   
   const content = fs.readFileSync(sdkPath, 'utf8')
@@ -135,8 +137,6 @@ test('Plugin SDK - KnowBookPlugin base class exists', () => {
 })
 
 test('Plugin SDK - PluginApi type is exported', () => {
-  const fs = require('fs')
-  const path = require('path')
   const sdkPath = path.join(__dirname, '..', 'src', 'main', 'plugin-sdk.ts')
   
   const content = fs.readFileSync(sdkPath, 'utf8')

@@ -65,17 +65,15 @@ export function validatePluginManifest(manifest: unknown): manifest is PluginMan
   return true
 }
 
-export function createPluginScaffold(id: string, name: string): PluginManifest {
+export function createManifest(manifest: Partial<PluginManifest> & { id: string; name: string; version: string }): PluginManifest {
   return {
-    id: id.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-    name,
-    version: '0.1.0',
-    description: `A plugin for ${name}`,
-    author: 'Your Name',
-    entry: 'index.js',
-    enabledByDefault: false,
-    engines: {
-      knowbook: '>=0.1.0'
-    }
+    id: manifest.id,
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    author: manifest.author,
+    entry: manifest.entry,
+    enabledByDefault: manifest.enabledByDefault ?? false,
+    engines: manifest.engines
   }
 }

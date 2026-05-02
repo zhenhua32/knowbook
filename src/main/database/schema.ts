@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS blocks (
   checked INTEGER NOT NULL DEFAULT 0,
   depth INTEGER NOT NULL DEFAULT 0,
   tags_json TEXT NOT NULL DEFAULT '[]',
+  language TEXT,
+  highlight TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -60,7 +62,6 @@ CREATE TABLE IF NOT EXISTS document_database_columns (
   updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id);
 CREATE INDEX IF NOT EXISTS idx_document_database_columns_sort_order ON document_database_columns(sort_order);
 
 CREATE TABLE IF NOT EXISTS database_entities (
@@ -70,9 +71,6 @@ CREATE TABLE IF NOT EXISTS database_entities (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_database_entities_database_id ON database_entities(database_id);
-CREATE INDEX IF NOT EXISTS idx_database_entities_document_id ON database_entities(document_id);
 
 CREATE TABLE IF NOT EXISTS document_database_values (
   document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
@@ -85,7 +83,6 @@ CREATE TABLE IF NOT EXISTS document_database_values (
 
 CREATE INDEX IF NOT EXISTS idx_document_database_values_document_id ON document_database_values(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_database_values_column_id ON document_database_values(column_id);
-CREATE INDEX IF NOT EXISTS idx_document_database_values_entity_id ON document_database_values(entity_id);
 
 CREATE TABLE IF NOT EXISTS document_embeddings (
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
