@@ -472,17 +472,21 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                   }
                 }
 
-                // Multi-block Tab
-                if (selectedBlockRange && selectedBlockCount > 1 && isSelected && !event.altKey && !event.metaKey && !event.ctrlKey && event.key === 'Tab') {
-                  event.preventDefault()
-                  adjustSelectedBlocksDepth(event.shiftKey ? -1 : 1, index, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
-                  return
-                }
 
-                // Single block Tab
-                if (event.key === 'Tab' && isNestableBlock(block.type)) {
+                // Tab: insert spaces to prevent focus jump
+                if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey) {
                   event.preventDefault()
-                  adjustBlockDepth(index, event.shiftKey ? -1 : 1, event.currentTarget.selectionStart ?? event.currentTarget.value.length)
+                  const el = event.currentTarget
+                  const start = el.selectionStart ?? 0
+                  const end = el.selectionEnd ?? 0
+                  const spaces = '  '
+                  const newValue = el.value.slice(0, start) + spaces + el.value.slice(end)
+                  handleBlockContentChange(index, newValue)
+                  // restore cursor after React re-render
+                  requestAnimationFrame(() => {
+                    el.selectionStart = start + spaces.length
+                    el.selectionEnd = start + spaces.length
+                  })
                   return
                 }
 
