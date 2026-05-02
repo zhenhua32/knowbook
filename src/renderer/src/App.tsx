@@ -2957,7 +2957,7 @@ export function App() {
       const lines = normalizedText.split('\n')
       let nextBlocks = looksLikeStructuredBlockPaste(normalizedText)
         ? parseStructuredPastedBlocks(normalizedText)
-        : lines.map((line) => normalizePastedLineBlock(templateBlock, line))
+        : lines.filter((line) => line.trim() !== '').map((line) => normalizePastedLineBlock(templateBlock, line))
 
       if (nextBlocks.length === 0) {
         return false
@@ -2995,7 +2995,7 @@ export function App() {
     const lines = normalizedText.split('\n')
     const firstLine = lines[0] ?? ''
     const lastLine = lines[lines.length - 1] ?? ''
-    const middleLines = lines.slice(1, -1)
+    const middleLines = lines.slice(1, -1).filter((line) => line.trim() !== '')
     const nextBlocks = materializeDraftFragment([
       normalizePastedLineBlock(currentBlock, `${before}${firstLine}`),
       ...middleLines.map((line) => normalizePastedLineBlock(currentBlock, line)),
