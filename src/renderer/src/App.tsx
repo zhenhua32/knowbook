@@ -38,6 +38,8 @@ import {
   setActiveUiLanguage,
   type UiLanguage
 } from './i18n'
+import { PageRail } from './components/PageRail'
+import { DocumentsSidebar } from './components/DocumentsSidebar'
 
 const emptyState: HomeData = {
   summary: {
@@ -3766,38 +3768,17 @@ export function App() {
 
   return (
     <div className="shell">
-      <aside className="rail">
-        <div className="brand">
-          <span className="brand-mark">KB</span>
-          <div>
-            <p className="eyebrow">{ui.brandEyebrow}</p>
-            <h1>KnowBook</h1>
-          </div>
-        </div>
-        <div className="panel">
-          <p className="panel-label">{isZh ? '页面导航' : 'Navigation'}</p>
-          <div className="page-nav-list">
-            {pageItems.map((item) => (
-              <button
-                className={`page-nav-item${activePage === item.id ? ' page-nav-item-active' : ''}`}
-                key={item.id}
-                onClick={() => setActivePage(item.id)}
-                type="button"
-              >
-                <strong>{item.label}</strong>
-                <span>{item.description}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="panel panel-accent">
-          <p className="panel-label">{isZh ? '当前页面' : 'Current page'}</p>
-          <h2>{pageTitle}</h2>
-          <p>{pageDescription}</p>
-          <p className="mini-hint">{isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}</p>
-        </div>
-      </aside>
+      <PageRail
+        activePage={activePage}
+        brandEyebrow={ui.brandEyebrow}
+        currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
+        currentPageLabel={isZh ? '当前页面' : 'Current page'}
+        navLabel={isZh ? '页面导航' : 'Navigation'}
+        onSelectPage={(pageId) => setActivePage(pageId as PageId)}
+        pageDescription={pageDescription}
+        pageItems={pageItems}
+        pageTitle={pageTitle}
+      />
 
       <main className="content">
         {activePage === 'dashboard' ? (
@@ -4058,82 +4039,55 @@ export function App() {
         </section> : null}
 
         {activePage === 'documents' ? <section className="workspace-grid">
-          <article className="panel tree-panel">
-            <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.workspaceTreeLabel}</p>
-                <h3>{ui.seededDocumentsTitle}</h3>
-              </div>
-              <div className="toolbar-inline">
-                <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={navBack} title={`${ui.back} (Alt+←)`} type="button">←</button>
-                <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={navForward} title={`${ui.forward} (Alt+→)`} type="button">→</button>
-                <span className="pill">{ui.rootsCount(homeData.documentTree.length)}</span>
-                <button className="secondary-button" onClick={openGlobalSearch} title={`${ui.globalSearch} (Ctrl+K)`} type="button">
-                  🔍
-                </button>
-                <button className="secondary-button" onClick={() => handleCreateDocument(null)} type="button">
-                  {ui.newRoot}
-                </button>
-              </div>
-            </div>
-
-            <div
-              className={`root-drop-zone${dragOverRoot ? ' root-drop-zone-active' : ''}`}
-              onDragOver={(event) => {
-                event.preventDefault()
-                if (draggingDocumentId) {
-                  setDragOverRoot(true)
-                  setDragOverDocumentId(null)
-                }
-              }}
-              onDragLeave={() => setDragOverRoot(false)}
-              onDrop={async (event) => {
-                event.preventDefault()
-                await dropToRoot()
-              }}
-            >
-              {ui.dropToRoot}
-            </div>
-
-            {pinnedDocumentIds.size > 0 && (() => {
-              const allDocs = homeData.documentCatalog
-              const pinnedDocs = allDocs.filter((d) => pinnedDocumentIds.has(d.id))
-              if (pinnedDocs.length === 0) return null
-              return (
-                <div className="pinned-section">
-                  <p className="pinned-section-label">{ui.pinnedSectionLabel}</p>
-                  {pinnedDocs.map((doc) => (
-                    <button
-                      key={doc.id}
-                      className={`pinned-doc-item${selectedDocumentId === doc.id ? ' pinned-doc-item-active' : ''}`}
-                      onClick={() => setSelectedDocumentId(doc.id)}
-                      type="button"
-                    >
-                      <span className="pinned-doc-title">{doc.title}</span>
-                      <span className="pinned-doc-path">{doc.path}</span>
-                    </button>
-                  ))}
-                </div>
-              )
-            })()}
-
-            <DocumentTree
-              nodes={homeData.documentTree}
-              selectedDocumentId={selectedDocumentId}
-              onSelect={openDocumentInDocumentsPage}
-              draggingDocumentId={draggingDocumentId}
-              dragOverDocumentId={dragOverDocumentId}
-              onDragStart={beginDrag}
-              onDragEnd={endDrag}
-              onDragOverNode={(documentId) => {
-                if (draggingDocumentId && draggingDocumentId !== documentId) {
-                  setDragOverDocumentId(documentId)
-                  setDragOverRoot(false)
-                }
-              }}
-              onDropOnNode={dropOnDocument}
-            />
-          </article>
+          <DocumentsSidebar
+            backTitle={`${ui.back} (Alt+←)`}
+            dragOverRoot={dragOverRoot}
+            dropToRootLabel={ui.dropToRoot}
+            forwardTitle={`${ui.forward} (Alt+→)`}
+            globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
+            navCanGoBack={navCanGoBack}
+            navCanGoForward={navCanGoForward}
+            newRootLabel={ui.newRoot}
+            onCreateRoot={() => handleCreateDocument(null)}
+            onDropToRoot={() => {
+              void dropToRoot()
+            }}
+            onNavBack={navBack}
+            onNavForward={navForward}
+            onOpenGlobalSearch={openGlobalSearch}
+            onRootDragLeave={() => setDragOverRoot(false)}
+            onRootDragOver={() => {
+              if (draggingDocumentId) {
+                setDragOverRoot(true)
+                setDragOverDocumentId(null)
+              }
+            }}
+            onSelectDocument={openDocumentInDocumentsPage}
+            panelLabel={ui.workspaceTreeLabel}
+            pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
+            pinnedSectionLabel={ui.pinnedSectionLabel}
+            rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
+            selectedDocumentId={selectedDocumentId}
+            title={ui.seededDocumentsTitle}
+            tree={(
+              <DocumentTree
+                nodes={homeData.documentTree}
+                selectedDocumentId={selectedDocumentId}
+                onSelect={openDocumentInDocumentsPage}
+                draggingDocumentId={draggingDocumentId}
+                dragOverDocumentId={dragOverDocumentId}
+                onDragStart={beginDrag}
+                onDragEnd={endDrag}
+                onDragOverNode={(documentId) => {
+                  if (draggingDocumentId && draggingDocumentId !== documentId) {
+                    setDragOverDocumentId(documentId)
+                    setDragOverRoot(false)
+                  }
+                }}
+                onDropOnNode={dropOnDocument}
+              />
+            )}
+          />
 
           <article className="panel preview-panel">
             <div className="panel-head">
