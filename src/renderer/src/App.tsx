@@ -1607,6 +1607,14 @@ export function App() {
       }
       if (event.key === 'Escape' && isGlobalSearchOpen && activePage === 'documents') {
         closeGlobalSearch()
+        return
+      }
+      if (event.key === 'Escape' && activePage === 'documents' && selectedBlockRange) {
+        event.preventDefault()
+        setIsBlockRangeSelecting(false)
+        setSelectionAnchorBlockId(null)
+        setSelectedBlockRange(null)
+        return
       }
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
         if (isEditing && activePage === 'documents') { event.preventDefault(); undoEdit() }
@@ -1627,7 +1635,7 @@ export function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activePage, isGlobalSearchOpen, isEditing, undoEdit, redoEdit, navBack, navForward])
+  }, [activePage, isGlobalSearchOpen, isEditing, navBack, navForward, redoEdit, selectedBlockRange, undoEdit])
 
   useEffect(() => {
     function handleMouseUp() {
