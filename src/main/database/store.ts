@@ -6,7 +6,12 @@ import type {
   AiConfig,
   AskAiInput,
   BlockReferenceResult,
+  CreateDatabaseEntityInput,
+  CreateDatabaseInput,
   CreateDocumentDatabaseColumnInput,
+  DatabaseEntity,
+  DeleteDatabaseEntityInput,
+  DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
   DocumentDatabaseFieldValue,
@@ -21,8 +26,9 @@ import type {
   MoveDocumentDatabaseColumnInput,
   RecentDocument,
   RenameDocumentDatabaseColumnInput,
-  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
+  UpdateDatabaseEntityInput,
+  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
   WorkspaceEventRecord,
@@ -30,8 +36,7 @@ import type {
   WorkspaceGraphEdge,
   WorkspaceGraphNode,
   WorkspaceSummary,
-  GlobalSearchResult
-  ,
+  GlobalSearchResult,
   SearchSemanticNotesInput,
   SemanticSearchResult
 } from '@shared/contracts'
@@ -2009,13 +2014,15 @@ export class KnowbookStore {
     transaction()
   }
 
-  private ensureDatabaseEntities(): void {
+   private ensureDatabaseEntities(): void {
     // Check if database_id column exists in document_database_columns
     const columns = this.db.prepare('PRAGMA table_info(document_database_columns)').all() as BlockTableInfoRow[]
     if (!columns.some((column) => column.name === 'database_id')) {
       // Add database_id column
-      this.db.exec('ALTER TABLE document_database_columns ADD COLUMN database_id TEXT REFERENCES databases(id) ON DELETE CASCADE')
-      
+      this.db.exec(
+        'ALTER TABLE document_database_columns ADD COLUMN database_id TEXT REFERENCES databases(id) ON DELETE CASCADE'
+      )
+
       // Create default database
       const now = new Date().toISOString()
       const defaultDbId = randomUUID()
@@ -2023,14 +2030,27 @@ export class KnowbookStore {
         INSERT INTO databases (id, name, description, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(defaultDbId, 'Default', 'Default database', now, now)
-      
+
       // Update existing columns to use default database
       this.db.prepare(`
         UPDATE document_database_columns SET database_id = ? WHERE database_id IS NULL
       `).run(defaultDbId)
 
       // Create index after column is added
-      this.db.exec('CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id)')
+      this.db.exec(
+        'CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id)'
+      )
+    }
+
+    // Check if entity_id column exists in document_database_values
+    const valueColumns = this.db
+      .prepare('PRAGMA table_info(document_database_values)')
+      .all() as BlockTableInfoRow[]
+    if (!valueColumns.some((column) => column.name === 'entity_id')) {
+      // Add entity_id column
+      this.db.exec(
+        'ALTER TABLE document_database_values ADD COLUMN entity_id TEXT REFERENCES database_entities(id) ON DELETE CASCADE'
+      )
     }
   }
 
@@ -2055,8 +2075,8 @@ export class KnowbookStore {
     }))
   }
 
-  createDatabase(name: string, description?: string): { id: string; name: string; description: string; createdAt: string; updatedAt: string } {
-    const trimmedName = name.trim()
+  createDatabase(input: CreateDatabaseInput): DocumentDatabase {
+    const trimmedName = input.name.trim()
     if (!trimmedName) {
       throw new Error('Database name is required.')
     }
@@ -2067,12 +2087,12 @@ export class KnowbookStore {
     this.db.prepare(`
       INSERT INTO databases (id, name, description, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(id, trimmedName, description?.trim() ?? '', now, now)
+    `).run(id, trimmedName, (input.description ?? '').trim(), now, now)
 
     return {
       id,
       name: trimmedName,
-      description: description?.trim() ?? '',
+      description: (input.description ?? '').trim(),
       createdAt: now,
       updatedAt: now
     }
@@ -2155,13 +2175,21 @@ export class KnowbookStore {
     
     const fieldValues: Record<string, DocumentDatabaseFieldValue> = {}
     for (const fvRow of fieldRows) {
-      const column = this.db.prepare('SELECT type FROM document_database_columns WHERE id = ?').get(fvRow.column_id) as
-        | { type: DocumentDatabaseColumnType }
+      const column = this.db.prepare('SELECT type, options_json FROM document_database_columns WHERE id = ?').get(fvRow.column_id) as
+        | { type: DocumentDatabaseColumnType; options_json: string }
         | undefined
       
       if (!column) continue
       
-      fieldValues[fvRow.column_id] = this.parseDocumentDatabaseFieldValue(column, fvRow.value_text)
+      const columnForParsing: DocumentDatabaseColumn = {
+        id: fvRow.column_id,
+        name: '',
+        type: column.type,
+        options: JSON.parse(column.options_json || '[]'),
+        sortOrder: 0
+      }
+      
+      fieldValues[fvRow.column_id] = this.parseDocumentDatabaseFieldValue(columnForParsing, fvRow.value_text)
     }
     
     return {
@@ -2279,6 +2307,7 @@ export class KnowbookStore {
     `)
 
     const seedTransaction = this.db.transaction(() => {
+      const now = new Date().toISOString()
       insertDocument.run(homeId, 'Home', 'home', null, 'Home', 'Workspace bootstrap document.', now, now)
       insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
       insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)

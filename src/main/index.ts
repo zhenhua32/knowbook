@@ -6,7 +6,12 @@ import type {
   AskAiInput,
   AskAiResult,
   BackupResult,
+  CreateDatabaseInput,
+  CreateDatabaseEntityInput,
   CreateDocumentDatabaseColumnInput,
+  DatabaseEntity,
+  DeleteDatabaseEntityInput,
+  DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
@@ -21,8 +26,9 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
-  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
+  UpdateDatabaseEntityInput,
+  UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
 } from '@shared/contracts'
