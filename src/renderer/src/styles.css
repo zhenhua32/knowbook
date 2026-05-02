@@ -32,7 +32,7 @@ select {
 
 .shell {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: auto 1fr;
   min-height: 100vh;
 }
 
@@ -42,6 +42,359 @@ select {
   height: 100vh;
   overflow-y: auto;
   border-right: 1px solid rgba(71, 55, 32, 0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.rail-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.tree-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+}
+
+.resize-handle:hover {
+  background: rgba(71, 55, 32, 0.3);
+}
+
+.rail {
+  width: 220px;
+  padding: 12px 10px;
+  border-right: 1px solid rgba(71, 55, 32, 0.08);
+  background: rgba(255, 249, 241, 0.72);
+  backdrop-filter: blur(18px);
+  flex-shrink: 0;
+  transition: width 0.1s ease;
+  position: relative;
+  z-index: 1;
+}
+
+.rail .brand {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.brand-mark {
+  width: 36px !important;
+  height: 36px !important;
+  font-size: 12px !important;
+  letter-spacing: 0.06em !important;
+}
+
+.rail .eyebrow {
+  font-size: 9px !important;
+  margin: 0 !important;
+  letter-spacing: 0.05em !important;
+}
+
+.rail h1 {
+  font-size: 14px !important;
+  margin: 0 !important;
+}
+
+.rail .panel {
+  padding: 8px 6px;
+  margin-top: 6px;
+  border-radius: 12px;
+}
+
+.rail .page-nav-item {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.rail .page-nav-item span {
+  font-size: 11px;
+}
+
+.rail .panel-accent {
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.rail .panel-label {
+  font-size: 10px;
+}
+
+.rail .mini-hint {
+  font-size: 10px;
+  margin: 4px 0 0;
+}
+
+.tree-panel {
+  padding: 10px 8px;
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 0;
+  border: none;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.tree-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tree-panel::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.tree-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.rail-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.tree-wrapper {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.resize-handle {
+  width: 100%;
+  height: 6px;
+  cursor: row-resize;
+  background: rgba(71, 55, 32, 0.08);
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.resize-handle:hover {
+  background: rgba(71, 55, 32, 0.2);
+}
+
+.rail {
+  width: 220px;
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(71, 55, 32, 0.08);
+  background: rgba(255, 249, 241, 0.72);
+  backdrop-filter: blur(18px);
+  flex-shrink: 0;
+  transition: width 0.15s ease;
+}
+
+.rail .brand {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.brand-mark {
+  width: 36px !important;
+  height: 36px !important;
+  font-size: 12px !important;
+  letter-spacing: 0.06em !important;
+}
+
+.rail .eyebrow {
+  font-size: 9px !important;
+  margin: 0 !important;
+  letter-spacing: 0.05em !important;
+}
+
+.rail h1 {
+  font-size: 14px !important;
+  margin: 0 !important;
+}
+
+.rail .panel {
+  padding: 8px 6px;
+  margin-top: 6px;
+  border-radius: 12px;
+}
+
+.rail .page-nav-item {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.rail .page-nav-item span {
+  font-size: 11px;
+}
+
+.rail .panel-accent {
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.rail .panel-label {
+  font-size: 10px;
+}
+
+.rail .mini-hint {
+  font-size: 10px;
+  margin: 4px 0 0;
+}
+
+.tree-panel {
+  padding: 10px 8px;
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 0;
+  border: none;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.tree-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tree-panel::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.tree-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.tree-panel {
+  padding: 10px 8px;
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 0;
+  border: none;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.tree-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.tree-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tree-panel::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.2);
+  border-radius: 3px;
+}
+
+.tree-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.4);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 32px;
+}
+
+.preview-panel {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.preview-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.preview-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.preview-panel::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.15);
+  border-radius: 4px;
+}
+
+.preview-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.3);
 }
 
 .rail {
