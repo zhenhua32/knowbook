@@ -557,29 +557,15 @@ export class PluginHost {
     }
 
     try {
-      const api = this.buildPluginApi()
-      const activateResult = await this.loadPluginModule(plugin, api)
-
-      if (typeof activateResult === 'function') {
-        plugin.dispose = activateResult
+      const api = this.createPluginApi(plugin)
+      const entryPath = join(plugin.directory, plugin.manifest.entry ?? 'index.js')
+      
+      if (!existsSync(entryPath)) {
+        plugin.status = 'error'
+        plugin.error = `Missing entry file: ${entryPath}`
+        return
       }
 
-      if (recordLoadEvent) {
-        this.store.recordWorkspaceEvent({
-          type: 'plugin.loaded',
-          title: `Plugin loaded: ${plugin.manifest.name}`,
-          description: `Plugin ${plugin.manifest.name} v${plugin.manifest.version} loaded from ${plugin.directory}.`
-        })
-      }
-
-      plugin.status = 'running'
-    } catch (error) {
-      plugin.status = 'error'
-      plugin.error = String(error)
-    }
-  }
-
-    try {
       const source = readFileSync(entryPath, 'utf8')
       const module: PluginCommonJsModule = { exports: {} }
       const exports = module.exports
@@ -611,19 +597,26 @@ export class PluginHost {
         return
       }
 
-      const api = this.createPluginApi(plugin)
-      const dispose = await activate(api)
-      plugin.dispose = typeof dispose === 'function' ? dispose : undefined
-      plugin.status = 'running'
+      // activate is PluginActivateFunction, call it with api
+      const result = await activate(api)
+
+      // result could be dispose function or void/Promise
+      if (typeof result === 'function') {
+        plugin.dispose = result as () => void | Promise<void>
+      }
+      
       if (recordLoadEvent) {
         this.store.recordWorkspaceEvent({
           type: 'plugin.loaded',
           title: `Plugin loaded: ${plugin.manifest.name}`,
-          description: `${plugin.manifest.name} is now active.`
+          description: `Plugin ${plugin.manifest.name} v${plugin.manifest.version} loaded from ${plugin.directory}.`
         })
       }
+
+      plugin.status = 'running'
     } catch (error) {
-      this.handlePluginError(plugin, 'activation', error)
+      plugin.status = 'error'
+      plugin.error = String(error)
     }
   }
 

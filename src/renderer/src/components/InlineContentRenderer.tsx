@@ -202,7 +202,7 @@ export function renderInlineContent(
   })
 }
 
-function resolveInlineReference(token: string, references: Array<{ id: string; title: string; path: string }>) {
+export function resolveInlineReference(token: string, references: Array<{ id: string; title: string; path: string }>) {
   const byPath = references.find((reference) => reference.path === token)
   if (byPath) {
     return byPath
@@ -216,7 +216,7 @@ function resolveInlineReference(token: string, references: Array<{ id: string; t
   return null
 }
 
-function resolveBlockReference(token: string, blockReferences: Map<string, DocumentBlock>, currentDocumentId?: string | null): DocumentBlock | null {
+export function resolveBlockReference(token: string, blockReferences: Map<string, DocumentBlock>, currentDocumentId?: string | null): DocumentBlock | null {
   // Support [[blockId]] or [[documentPath#blockId]] syntax
   if (token.includes('#')) {
     // Format: [[documentPath#blockId]] - handled by CrossDocumentBlockReference
