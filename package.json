@@ -9,7 +9,7 @@
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
     "preview": "electron-vite preview",
-    "test": "node --test \"tests/**/*.test.ts\"",
+    "test": "tsx --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
@@ -31,6 +31,7 @@
     "@vitejs/plugin-react": "^4.4.1",
     "electron": "^35.1.5",
     "electron-vite": "^3.1.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"
   }
