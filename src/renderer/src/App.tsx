@@ -82,6 +82,7 @@ const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
+const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
 type BlockDropPreview = {
   positionLabel: string
@@ -1015,6 +1016,7 @@ export function App() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
   const [activePage, setActivePage] = useState<PageId>('documents')
+  const [documentsAuxPanelOpen, setDocumentsAuxPanelOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -1198,9 +1200,14 @@ export function App() {
   function handleGlobalSearchNavigate(result: GlobalSearchResult) {
     const document = homeData.documentCatalog.find((d: DocumentCatalogEntry) => d.id === result.documentId)
     if (document) {
-      setSelectedDocumentId(document.id)
+      openDocumentInDocumentsPage(document.id)
       closeGlobalSearch()
     }
+  }
+
+  function openDocumentInDocumentsPage(documentId: string) {
+    setSelectedDocumentId(documentId)
+    setActivePage('documents')
   }
 
   function updateBlockTags(index: number, tags: string[]) {
@@ -1551,8 +1558,28 @@ export function App() {
   }, [draftBlocks, isEditing])
 
   useEffect(() => {
+    if (activePage !== 'documents') {
+      setIsGlobalSearchOpen(false)
+      setIsBlockSearchOpen(false)
+    }
+  }, [activePage])
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
+        const pageIndex = Number(event.key) - 1
+        const targetPage = PAGE_ORDER[pageIndex]
+        if (targetPage) {
+          event.preventDefault()
+          setActivePage(targetPage)
+        }
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+        if (activePage !== 'documents') {
+          return
+        }
+
         event.preventDefault()
         if (isGlobalSearchOpen) {
           closeGlobalSearch()
@@ -1560,25 +1587,29 @@ export function App() {
           openGlobalSearch()
         }
       }
-      if (event.key === 'Escape' && isGlobalSearchOpen) {
+      if (event.key === 'Escape' && isGlobalSearchOpen && activePage === 'documents') {
         closeGlobalSearch()
       }
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
-        if (isEditing) { event.preventDefault(); undoEdit() }
+        if (isEditing && activePage === 'documents') { event.preventDefault(); undoEdit() }
       }
       if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
-        if (isEditing) { event.preventDefault(); redoEdit() }
+        if (isEditing && activePage === 'documents') { event.preventDefault(); redoEdit() }
       }
       if (event.altKey && event.key === 'ArrowLeft') {
-        event.preventDefault(); navBack()
+        if (activePage === 'documents') {
+          event.preventDefault(); navBack()
+        }
       }
       if (event.altKey && event.key === 'ArrowRight') {
-        event.preventDefault(); navForward()
+        if (activePage === 'documents') {
+          event.preventDefault(); navForward()
+        }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isGlobalSearchOpen, isEditing, undoEdit, redoEdit, navBack, navForward])
+  }, [activePage, isGlobalSearchOpen, isEditing, undoEdit, redoEdit, navBack, navForward])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -3876,7 +3907,7 @@ export function App() {
               edges={homeData.graph.edges}
               nodes={homeData.graph.nodes}
               selectedDocumentId={selectedDocumentId}
-              onSelect={setSelectedDocumentId}
+              onSelect={openDocumentInDocumentsPage}
             />
           </article>
         </section> : null}
@@ -3977,7 +4008,7 @@ export function App() {
             <DocumentCatalogTable
               columns={homeData.databaseColumns}
               documents={filteredCatalog}
-              onSelect={setSelectedDocumentId}
+              onSelect={openDocumentInDocumentsPage}
               onUpdateField={updateDocumentDatabaseValue}
               selectedDocumentId={selectedDocumentId}
             />
@@ -4008,7 +4039,7 @@ export function App() {
 
             <DocumentBoard
               columns={boardColumns}
-              onSelect={setSelectedDocumentId}
+              onSelect={openDocumentInDocumentsPage}
               selectedDocumentId={selectedDocumentId}
               draggingDocumentId={draggingDocumentId}
               dragOverColumnId={dragOverBoardColumnId}
@@ -4089,7 +4120,7 @@ export function App() {
             <DocumentTree
               nodes={homeData.documentTree}
               selectedDocumentId={selectedDocumentId}
-              onSelect={setSelectedDocumentId}
+              onSelect={openDocumentInDocumentsPage}
               draggingDocumentId={draggingDocumentId}
               dragOverDocumentId={dragOverDocumentId}
               onDragStart={beginDrag}
@@ -4165,6 +4196,15 @@ export function App() {
                     </select>
                     <button className="secondary-button" disabled={!moveTargetId} onClick={moveSelectedDocument} type="button">
                       {ui.common.move}
+                    </button>
+                    <button
+                      className="secondary-button"
+                      onClick={() => setDocumentsAuxPanelOpen((previous) => !previous)}
+                      type="button"
+                    >
+                      {documentsAuxPanelOpen
+                        ? (isZh ? '收起辅助区' : 'Hide auxiliary')
+                        : (isZh ? '展开辅助区' : 'Show auxiliary')}
                     </button>
                   </>
                 ) : null}
@@ -4760,110 +4800,116 @@ export function App() {
                     </div>
                 </div>
 
-                <div className="relation-grid">
-                  <RelationList
-                    title={ui.relationChildrenTitle}
-                    emptyText={ui.relationChildrenEmpty}
-                    links={selectedDocument.children.map((child) => ({
-                      id: child.id,
-                      title: child.title,
-                      path: child.path,
-                      label: 'child'
-                    }))}
-                    onSelect={setSelectedDocumentId}
-                  />
-                  <RelationList
-                    title={ui.relationOutgoingTitle}
-                    emptyText={ui.relationOutgoingEmpty}
-                    links={selectedDocument.outgoingLinks}
-                    onSelect={setSelectedDocumentId}
-                  />
-                  <RelationList
-                    title={ui.relationBacklinksTitle}
-                    emptyText={ui.relationBacklinksEmpty}
-                    links={selectedDocument.backlinks}
-                    onSelect={setSelectedDocumentId}
-                  />
-                </div>
-
-                <div className="preview-section">
-                  {pluginDocumentActions.length > 0 ? (
-                    <>
-                      <p className="panel-label">{ui.pluginActionsLabel}</p>
-                      <div className="plugin-document-actions">
-                        {pluginDocumentActions.map((action) => {
-                          const actionKey = `${action.pluginId}:${action.id}`
-                          return (
-                            <button
-                              className="secondary-button plugin-action-button"
-                              disabled={pluginActionBusyKey === actionKey}
-                              key={actionKey}
-                              onClick={() => {
-                                void runPluginDocumentAction(action)
-                              }}
-                              title={action.description}
-                              type="button"
-                            >
-                              {pluginActionBusyKey === actionKey ? ui.runningAutomations : action.label}
-                            </button>
-                          )
-                        })}
-                      </div>
-                      <p className="mini-hint">{ui.pluginActionsHint}</p>
-                    </>
-                  ) : null}
-
-                  <p className="panel-label">{ui.askAiLabel}</p>
-                  <div className="ai-panel">
-                    <textarea
-                      className="editor-textarea"
-                      onChange={(event) => setAiPromptDraft(event.target.value)}
-                      placeholder={ui.askAiPlaceholder}
-                      rows={3}
-                      value={aiPromptDraft}
-                    />
-                    <div className="toolbar-inline ai-actions">
-                      <button
-                        className="secondary-button"
-                        disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
-                        onClick={runEnabledAiAutomationsOnSelectedDocument}
-                        type="button"
-                      >
-                        {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
-                      </button>
-                      <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
-                        {aiContextSearching ? ui.searching : ui.findRelatedNotes}
-                      </button>
-                      <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
-                        {aiAsking ? ui.thinking : ui.askAiLabel}
-                      </button>
+                {documentsAuxPanelOpen ? (
+                  <>
+                    <div className="relation-grid">
+                      <RelationList
+                        title={ui.relationChildrenTitle}
+                        emptyText={ui.relationChildrenEmpty}
+                        links={selectedDocument.children.map((child) => ({
+                          id: child.id,
+                          title: child.title,
+                          path: child.path,
+                          label: 'child'
+                        }))}
+                        onSelect={openDocumentInDocumentsPage}
+                      />
+                      <RelationList
+                        title={ui.relationOutgoingTitle}
+                        emptyText={ui.relationOutgoingEmpty}
+                        links={selectedDocument.outgoingLinks}
+                        onSelect={openDocumentInDocumentsPage}
+                      />
+                      <RelationList
+                        title={ui.relationBacklinksTitle}
+                        emptyText={ui.relationBacklinksEmpty}
+                        links={selectedDocument.backlinks}
+                        onSelect={openDocumentInDocumentsPage}
+                      />
                     </div>
-                    <p className="mini-hint">{ui.manualAiHint}</p>
-                    {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
-                    {aiContextResults.length > 0 ? (
-                      <div className="ai-context-list">
-                        {aiContextResults.map((result) => (
+
+                    <div className="preview-section">
+                      {pluginDocumentActions.length > 0 ? (
+                        <>
+                          <p className="panel-label">{ui.pluginActionsLabel}</p>
+                          <div className="plugin-document-actions">
+                            {pluginDocumentActions.map((action) => {
+                              const actionKey = `${action.pluginId}:${action.id}`
+                              return (
+                                <button
+                                  className="secondary-button plugin-action-button"
+                                  disabled={pluginActionBusyKey === actionKey}
+                                  key={actionKey}
+                                  onClick={() => {
+                                    void runPluginDocumentAction(action)
+                                  }}
+                                  title={action.description}
+                                  type="button"
+                                >
+                                  {pluginActionBusyKey === actionKey ? ui.runningAutomations : action.label}
+                                </button>
+                              )
+                            })}
+                          </div>
+                          <p className="mini-hint">{ui.pluginActionsHint}</p>
+                        </>
+                      ) : null}
+
+                      <p className="panel-label">{ui.askAiLabel}</p>
+                      <div className="ai-panel">
+                        <textarea
+                          className="editor-textarea"
+                          onChange={(event) => setAiPromptDraft(event.target.value)}
+                          placeholder={ui.askAiPlaceholder}
+                          rows={3}
+                          value={aiPromptDraft}
+                        />
+                        <div className="toolbar-inline ai-actions">
                           <button
-                            className="ai-context-card"
-                            key={`${result.documentId}-${result.path}`}
-                            onClick={() => setSelectedDocumentId(result.documentId)}
+                            className="secondary-button"
+                            disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
+                            onClick={runEnabledAiAutomationsOnSelectedDocument}
                             type="button"
                           >
-                            <div className="ai-context-head">
-                              <strong className="ai-context-title">{result.title}</strong>
-                              <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
-                            </div>
-                            <span className="ai-context-path">{result.path}</span>
-                            <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
+                            {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
                           </button>
-                        ))}
+                          <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
+                            {aiContextSearching ? ui.searching : ui.findRelatedNotes}
+                          </button>
+                          <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
+                            {aiAsking ? ui.thinking : ui.askAiLabel}
+                          </button>
+                        </div>
+                        <p className="mini-hint">{ui.manualAiHint}</p>
+                        {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
+                        {aiContextResults.length > 0 ? (
+                          <div className="ai-context-list">
+                            {aiContextResults.map((result) => (
+                              <button
+                                className="ai-context-card"
+                                key={`${result.documentId}-${result.path}`}
+                                onClick={() => openDocumentInDocumentsPage(result.documentId)}
+                                type="button"
+                              >
+                                <div className="ai-context-head">
+                                  <strong className="ai-context-title">{result.title}</strong>
+                                  <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
+                                </div>
+                                <span className="ai-context-path">{result.path}</span>
+                                <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
+                              </button>
+                            ))}
+                          </div>
+                        ) : aiPromptDraft.trim() ? (
+                          <p className="mini-hint">{ui.semanticHint}</p>
+                        ) : null}
+                        {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
                       </div>
-                    ) : aiPromptDraft.trim() ? (
-                      <p className="mini-hint">{ui.semanticHint}</p>
-                    ) : null}
-                    {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
-                  </div>
-                </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mini-hint">{isZh ? '辅助区已收起：可点击“展开辅助区”查看关系、插件动作与 AI 面板。' : 'Auxiliary panel is hidden. Click "Show auxiliary" to open relations, plugin actions, and AI panel.'}</p>
+                )}
 
                 {(() => {
                   const stats = getDocumentStats()
@@ -5123,7 +5169,7 @@ export function App() {
 
             <div className="document-list">
               {homeData.recentDocuments.map((document) => (
-                <button className="document-row document-button" key={document.id} onClick={() => setSelectedDocumentId(document.id)} type="button">
+                <button className="document-row document-button" key={document.id} onClick={() => openDocumentInDocumentsPage(document.id)} type="button">
                   <div>
                     <strong>{document.title}</strong>
                     <p>{document.path}</p>
@@ -5140,7 +5186,7 @@ export function App() {
         ) : null}
       </main>
 
-      {isGlobalSearchOpen && (
+      {activePage === 'documents' && isGlobalSearchOpen && (
         <div className="global-search-overlay" onClick={closeGlobalSearch}>
           <div className="global-search-modal" onClick={(e) => e.stopPropagation()}>
             <div className="global-search-header">
