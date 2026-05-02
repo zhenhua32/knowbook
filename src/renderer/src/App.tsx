@@ -47,6 +47,7 @@ import { DocumentSummaryCard } from './components/DocumentSummaryCard'
 import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
+import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 
 const emptyState: HomeData = {
   summary: {
@@ -1665,6 +1666,16 @@ export function App() {
   const selectedBlockHasHiddenCollapsedContent = selectedBlockRange ? selectionIncludesHiddenCollapsedContent(selectedBlockRange) : false
   const selectedBlockInteractionIssue = selectedBlockRange ? getMultiBlockInteractionGuard(selectedBlockRange) : null
   const selectedVisibleSiblingSlice = selectedBlockRange ? getVisibleSiblingSelectionSlice(selectedBlockRange) : null
+  const canMoveSelectionUp = selectedBlockRange ? (
+    selectedBlockCount === 1
+      ? getPreviousSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) !== null
+      : selectedBlockInteractionIssue === null && canMoveSelectedRange(selectedBlockRange, -1)
+  ) : false
+  const canMoveSelectionDown = selectedBlockRange ? (
+    selectedBlockCount === 1
+      ? getNextSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) !== null
+      : selectedBlockInteractionIssue === null && canMoveSelectedRange(selectedBlockRange, 1)
+  ) : false
 
   useEffect(() => {
     if (!activeSlashContext || filteredSlashCommands.length === 0) {
@@ -4233,90 +4244,64 @@ export function App() {
                         totalCount={draftBlocks.length}
                       />
                       {selectedBlockRange ? (
-                        <div className="block-selection-toolbar">
-                          <div>
-                            <strong>
-                              {ui.blockSelectionSummary({
-                                visibleCount: selectedVisibleBlockCount,
-                                selectedCount: selectedBlockCount,
-                                actionCount: selectedBlockActionCount,
-                                incoherent: !isSelectionCoherent(selectedBlockRange),
-                                hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-                                selectedBlockInteractionIssue,
-                                hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
-                              })}
-                            </strong>
-                            <p className="mini-hint">
-                              {ui.blockSelectionHint({
-                                start: selectedBlockRange.start,
-                                end: selectedBlockRange.end,
-                                actionCount: selectedBlockActionCount,
-                                selectedCount: selectedBlockCount,
-                                incoherent: !isSelectionCoherent(selectedBlockRange),
-                                hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-                                selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
-                              })}
-                            </p>
-                          </div>
-                          <div className="block-selection-actions">
-                            <select
-                              className="editor-select compact-select"
-                              onChange={(event) => setSelectedBlockConversionType(event.target.value as DocumentBlock['type'])}
-                              value={selectedBlockConversionType}
-                            >
-                              <option value="paragraph">{getBlockConversionLabel('paragraph')}</option>
-                              <option value="todo">{getBlockConversionLabel('todo')}</option>
-                              <option value="quote">{getBlockConversionLabel('quote')}</option>
-                              <option value="bulleted-list">{getBlockConversionLabel('bulleted-list')}</option>
-                              <option value="numbered-list">{getBlockConversionLabel('numbered-list')}</option>
-                            </select>
-                            <button className="secondary-button" onClick={() => convertSelectedBlocks(selectedBlockConversionType)} type="button">
-                              {ui.convert}
-                            </button>
-                            <button className="secondary-button" onClick={copySelectedBlocks} type="button">
-                              {ui.copyBlocks}
-                            </button>
-                            <button className="secondary-button" onClick={copySelectedBlocksAsPlainText} type="button">
-                              {ui.copyText}
-                            </button>
-                            <button className="secondary-button" onClick={cutSelectedBlocks} type="button">
-                              {ui.cut}
-                            </button>
-                            <button className="secondary-button" onClick={duplicateSelectedBlocks} type="button">
-                              {ui.duplicate}
-                            </button>
-                            <button className="danger-button" onClick={deleteSelectedBlocks} type="button">
-                              {ui.common.delete}
-                            </button>
-                            <button
-                              className="secondary-button"
-                              disabled={
-                                selectedBlockCount === 1
-                                  ? getPreviousSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
-                                  : selectedBlockInteractionIssue !== null || !canMoveSelectedRange(selectedBlockRange, -1)
-                              }
-                              onClick={() => moveSelectedBlocks(-1)}
-                              type="button"
-                            >
-                              {ui.moveUp}
-                            </button>
-                            <button
-                              className="secondary-button"
-                              disabled={
-                                selectedBlockCount === 1
-                                  ? getNextSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) === null
-                                  : selectedBlockInteractionIssue !== null || !canMoveSelectedRange(selectedBlockRange, 1)
-                              }
-                              onClick={() => moveSelectedBlocks(1)}
-                              type="button"
-                            >
-                              {ui.moveDown}
-                            </button>
-                            <button className="secondary-button" onClick={clearBlockSelection} type="button">
-                              {ui.clear}
-                            </button>
-                          </div>
-                        </div>
+                        <BlockSelectionToolbar
+                          canMoveDown={canMoveSelectionDown}
+                          canMoveUp={canMoveSelectionUp}
+                          clearLabel={ui.clear}
+                          conversionOptions={{
+                            paragraph: getBlockConversionLabel('paragraph'),
+                            todo: getBlockConversionLabel('todo'),
+                            quote: getBlockConversionLabel('quote'),
+                            'bulleted-list': getBlockConversionLabel('bulleted-list'),
+                            'numbered-list': getBlockConversionLabel('numbered-list')
+                          }}
+                          convertLabel={ui.convert}
+                          copyBlocksLabel={ui.copyBlocks}
+                          copyTextLabel={ui.copyText}
+                          cutLabel={ui.cut}
+                          deleteLabel={ui.common.delete}
+                          duplicateLabel={ui.duplicate}
+                          hasCrossParent={selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice}
+                          hasHiddenCollapsedContent={selectedBlockHasHiddenCollapsedContent}
+                          hintLabel={ui.blockSelectionHint({
+                            start: selectedBlockRange.start,
+                            end: selectedBlockRange.end,
+                            actionCount: selectedBlockActionCount,
+                            selectedCount: selectedBlockCount,
+                            incoherent: !isSelectionCoherent(selectedBlockRange),
+                            hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+                            selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
+                          })}
+                          interactionIssue={selectedBlockInteractionIssue}
+                          isIncoherent={!isSelectionCoherent(selectedBlockRange)}
+                          moveDownLabel={ui.moveDown}
+                          moveUpLabel={ui.moveUp}
+                          onClear={clearBlockSelection}
+                          onConvert={() => convertSelectedBlocks(selectedBlockConversionType)}
+                          onConversionTypeChange={setSelectedBlockConversionType}
+                          onCopyBlocks={copySelectedBlocks}
+                          onCopyText={copySelectedBlocksAsPlainText}
+                          onCut={cutSelectedBlocks}
+                          onDelete={deleteSelectedBlocks}
+                          onDuplicate={duplicateSelectedBlocks}
+                          onMoveDown={() => moveSelectedBlocks(1)}
+                          onMoveUp={() => moveSelectedBlocks(-1)}
+                          rangeEnd={selectedBlockRange.end}
+                          rangeStart={selectedBlockRange.start}
+                          selectedBlockActionCount={selectedBlockActionCount}
+                          selectedBlockConversionType={selectedBlockConversionType}
+                          selectedBlockCount={selectedBlockCount}
+                          selectedVisibleBlockCount={selectedVisibleBlockCount}
+                          summaryLabel={ui.blockSelectionSummary({
+                            visibleCount: selectedVisibleBlockCount,
+                            selectedCount: selectedBlockCount,
+                            actionCount: selectedBlockActionCount,
+                            incoherent: !isSelectionCoherent(selectedBlockRange),
+                            hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+                            selectedBlockInteractionIssue,
+                            hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
+                          })}
+                        />
                       ) : null}
                       {getFilteredBlocks(getVisibleBlocks(draftBlocks)).map((block, filteredIndex) => {
                         const index = draftBlocks.indexOf(block)
