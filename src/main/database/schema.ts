@@ -75,15 +75,17 @@ CREATE INDEX IF NOT EXISTS idx_database_entities_database_id ON database_entitie
 CREATE INDEX IF NOT EXISTS idx_database_entities_document_id ON database_entities(document_id);
 
 CREATE TABLE IF NOT EXISTS document_database_values (
-  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
   column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,
   value_text TEXT,
   updated_at TEXT NOT NULL,
+  entity_id TEXT REFERENCES database_entities(id) ON DELETE CASCADE,
   PRIMARY KEY (document_id, column_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_document_database_values_document_id ON document_database_values(document_id);
 CREATE INDEX IF NOT EXISTS idx_document_database_values_column_id ON document_database_values(column_id);
+CREATE INDEX IF NOT EXISTS idx_document_database_values_entity_id ON document_database_values(entity_id);
 
 CREATE TABLE IF NOT EXISTS document_embeddings (
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
