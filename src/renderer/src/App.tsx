@@ -50,6 +50,7 @@ import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
 import { CrossDocumentBlockReference } from './components/BlockReference'
+import { renderInlineContent, renderStyledContent, parseMarkdownStyles, resolveInlineReference, resolveBlockReference } from './components/InlineContentRenderer'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPanel'
@@ -5965,101 +5966,6 @@ type StyledSegment =
   | { type: 'italic'; content: string }
   | { type: 'code'; content: string }
   | { type: 'strikethrough'; content: string }
-
-function parseMarkdownStyles(text: string): StyledSegment[] {
-  const segments: StyledSegment[] = []
-  let i = 0
-  let buffer = ''
-
-  while (i < text.length) {
-    // Check for **bold** or __bold__
-    if ((text[i] === '*' && text[i + 1] === '*') || (text[i] === '_' && text[i + 1] === '_')) {
-      const delimiter = text[i]
-      const closeIndex = text.indexOf(delimiter + delimiter, i + 2)
-      if (closeIndex !== -1) {
-        if (buffer) {
-          segments.push({ type: 'text', content: buffer })
-          buffer = ''
-        }
-        segments.push({ type: 'bold', content: text.slice(i + 2, closeIndex) })
-        i = closeIndex + 2
-        continue
-      }
-    }
-
-    // Check for ~~strikethrough~~
-    if (text[i] === '~' && text[i + 1] === '~') {
-      const closeIndex = text.indexOf('~~', i + 2)
-      if (closeIndex !== -1) {
-        if (buffer) {
-          segments.push({ type: 'text', content: buffer })
-          buffer = ''
-        }
-        segments.push({ type: 'strikethrough', content: text.slice(i + 2, closeIndex) })
-        i = closeIndex + 2
-        continue
-      }
-    }
-
-    // Check for `code`
-    if (text[i] === '`') {
-      const closeIndex = text.indexOf('`', i + 1)
-      if (closeIndex !== -1) {
-        if (buffer) {
-          segments.push({ type: 'text', content: buffer })
-          buffer = ''
-        }
-        segments.push({ type: 'code', content: text.slice(i + 1, closeIndex) })
-        i = closeIndex + 1
-        continue
-      }
-    }
-
-    // Check for *italic* or _italic_ (but not ** or __)
-    if ((text[i] === '*' && text[i + 1] !== '*') || (text[i] === '_' && text[i + 1] !== '_')) {
-      const delimiter = text[i]
-      let j = i + 1
-      while (j < text.length && text[j] !== delimiter) {
-        j++
-      }
-      if (j < text.length && text[j] === delimiter) {
-        if (buffer) {
-          segments.push({ type: 'text', content: buffer })
-          buffer = ''
-        }
-        segments.push({ type: 'italic', content: text.slice(i + 1, j) })
-        i = j + 1
-        continue
-      }
-    }
-
-    buffer += text[i]
-    i++
-  }
-
-  if (buffer) {
-    segments.push({ type: 'text', content: buffer })
-  }
-
-  return segments.length === 0 ? [{ type: 'text', content: text }] : segments
-}
-
-function renderStyledContent(segments: StyledSegment[]): React.ReactNode[] {
-  return segments.map((segment, index) => {
-    switch (segment.type) {
-      case 'bold':
-        return <strong key={`styled-${index}`}>{segment.content}</strong>
-      case 'italic':
-        return <em key={`styled-${index}`}>{segment.content}</em>
-      case 'code':
-        return <code key={`styled-${index}`} className="inline-code">{segment.content}</code>
-      case 'strikethrough':
-        return <del key={`styled-${index}`}>{segment.content}</del>
-      default:
-        return <span key={`styled-${index}`}>{segment.content}</span>
-    }
-  })
-}
 
 function renderInlineContent(
   content: string,

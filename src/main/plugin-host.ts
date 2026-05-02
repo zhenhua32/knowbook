@@ -16,6 +16,7 @@ import type {
 } from '@shared/contracts'
 import type { KnowbookStore } from './database/store'
 import type { WorkspaceEvent } from './event-bus'
+import { isPluginVersionCompatible, getVersionCompatibilityMessage } from './plugin-version'
 
 type PluginDashboardCardInput = {
   id: string
@@ -542,19 +543,41 @@ export class PluginHost {
   }
 
   private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {
-    await this.deactivatePlugin(plugin)
-
-    plugin.dashboardCards.clear()
-    plugin.documentActions.clear()
-    plugin.eventHandlers = []
-    plugin.error = undefined
-
-    const entryPath = join(plugin.directory, plugin.manifest.entry ?? 'index.js')
-    if (!existsSync(entryPath)) {
-      plugin.status = 'error'
-      plugin.error = `Missing entry file: ${entryPath}`
+    if (plugin.status === 'error') {
       return
     }
+
+    // Check version compatibility
+    const currentVersion = '0.1.0' // This should come from package.json or a config
+    if (!isPluginVersionCompatible(plugin.manifest, currentVersion)) {
+      const message = getVersionCompatibilityMessage(plugin.manifest, currentVersion)
+      plugin.status = 'error'
+      plugin.error = message ?? 'Version compatibility check failed'
+      return
+    }
+
+    try {
+      const api = this.buildPluginApi()
+      const activateResult = await this.loadPluginModule(plugin, api)
+
+      if (typeof activateResult === 'function') {
+        plugin.dispose = activateResult
+      }
+
+      if (recordLoadEvent) {
+        this.store.recordWorkspaceEvent({
+          type: 'plugin.loaded',
+          title: `Plugin loaded: ${plugin.manifest.name}`,
+          description: `Plugin ${plugin.manifest.name} v${plugin.manifest.version} loaded from ${plugin.directory}.`
+        })
+      }
+
+      plugin.status = 'running'
+    } catch (error) {
+      plugin.status = 'error'
+      plugin.error = String(error)
+    }
+  }
 
     try {
       const source = readFileSync(entryPath, 'utf8')
