@@ -14,6 +14,8 @@ import type {
   RunPluginDocumentActionResult,
   WorkspaceEventType
 } from '@shared/contracts'
+
+export type { PluginApi } from './plugin-sdk'
 import type { KnowbookStore } from './database/store'
 import type { WorkspaceEvent } from './event-bus'
 import { isPluginVersionCompatible, getVersionCompatibilityMessage } from './plugin-version'
