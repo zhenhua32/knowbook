@@ -633,3 +633,162 @@ test('PluginHost setPluginEnabled persists setting and can re-enable plugin', as
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost reloadPlugin reports error when manifest id changes', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-reload-id-change-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const pluginRoot = join(workspaceRoot, 'id-change')
+  mkdirSync(pluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify({ id: 'id-change', name: 'ID Change', version: '0.1.0', entry: 'index.js', enabledByDefault: true }, null, 2),
+    'utf8'
+  )
+  writeFileSync(join(pluginRoot, 'index.js'), 'module.exports.activate = function activate() { return undefined }\n', 'utf8')
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    writeFileSync(
+      join(pluginRoot, 'plugin.json'),
+      JSON.stringify({ id: 'id-change-new', name: 'ID Change', version: '0.2.0', entry: 'index.js', enabledByDefault: true }, null, 2),
+      'utf8'
+    )
+
+    await host.reloadPlugin('id-change')
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'id-change')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').includes('manifest id changed'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost normalizes document action return values', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-action-normalize-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const pluginRoot = join(workspaceRoot, 'normalize-action')
+  mkdirSync(pluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify({ id: 'normalize-action', name: 'Normalize Action', version: '0.1.0', entry: 'index.js', enabledByDefault: true }, null, 2),
+    'utf8'
+  )
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    [
+      'module.exports.activate = function activate(api) {',
+      '  api.contributeDocumentAction({ id: "void-action", label: "Void Action" }, function runVoid() {})',
+      '  api.contributeDocumentAction({ id: "string-action", label: "String Action" }, function runString() { return "done" })',
+      '}'
+    ].join('\n'),
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    const voidResult = await host.runDocumentAction({ pluginId: 'normalize-action', actionId: 'void-action', documentId: 'doc-1' })
+    const stringResult = await host.runDocumentAction({ pluginId: 'normalize-action', actionId: 'string-action', documentId: 'doc-1' })
+
+    assert.equal(voidResult.message, 'Void Action completed.')
+    assert.equal(voidResult.refreshDocument, false)
+    assert.equal(stringResult.message, 'done')
+    assert.equal(stringResult.refreshDocument, false)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost marks plugin as error when workspace event handler throws', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-event-error-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const pluginRoot = join(workspaceRoot, 'event-error')
+  mkdirSync(pluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify({ id: 'event-error', name: 'Event Error', version: '0.1.0', entry: 'index.js', enabledByDefault: true }, null, 2),
+    'utf8'
+  )
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    [
+      'module.exports.activate = function activate(api) {',
+      '  api.onWorkspaceEvent("document.updated", function onEvent() {',
+      '    throw new Error("event-boom")',
+      '  })',
+      '}'
+    ].join('\n'),
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    await host.handleWorkspaceEvent({
+      type: 'document.updated',
+      createdAt: '2026-05-02T00:00:00.000Z',
+      documentId: 'doc-1',
+      documentTitle: 'Doc 1',
+      path: 'Doc 1',
+      affectedDocumentIds: ['doc-1'],
+      pathChanged: false
+    })
+
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'event-error')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').length > 0, true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

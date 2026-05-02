@@ -351,3 +351,61 @@ test('workspace event stream keeps recent items and preserves latest order', () 
     assert.equal(recentEvents[7]?.title, 'event 42')
   })
 })
+
+test('deleteDocument reparents descendants and rewrites paths', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+
+    const parentId = store.createDocument(home.id)
+    const childId = store.createDocument(parentId)
+
+    store.updateDocument(parentId, {
+      title: 'ToDelete',
+      summary: '',
+      blocks: [{ type: 'paragraph', content: 'p', checked: false, depth: 0 }]
+    })
+    store.updateDocument(childId, {
+      title: 'Leaf',
+      summary: '',
+      blocks: [{ type: 'paragraph', content: 'c', checked: false, depth: 0 }]
+    })
+
+    const affected = store.deleteDocument(parentId)
+    assert.equal(affected.includes(childId), true)
+
+    const child = store.getDocumentSnapshot(childId)
+    assert.ok(child)
+    assert.equal(child.parentId, home.id)
+    assert.equal(child.path, 'Home/Leaf')
+  })
+})
+
+test('updateDocumentBlockTags and updateDocumentBlockHighlights persist to document detail', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+    const detail = store.getDocumentDetail(home.id)
+    assert.ok(detail)
+
+    const target = detail.blocks.find((block) => block.type === 'paragraph')
+    assert.ok(target)
+
+    store.updateDocumentBlockTags(home.id, [{ blockId: target.id, tags: ['a', 'a', 'b'] }])
+    store.updateDocumentBlockHighlights(home.id, [{ blockId: target.id, highlight: 'yellow' }])
+
+    const updated = store.getDocumentDetail(home.id)
+    assert.ok(updated)
+    const updatedBlock = updated.blocks.find((block) => block.id === target.id)
+    assert.ok(updatedBlock)
+    assert.deepEqual(updatedBlock.tags, ['a', 'b'])
+    assert.equal(updatedBlock.highlight, 'yellow')
+  })
+})
+
+test('store throws expected errors for missing entities', () => {
+  withStore((store) => {
+    assert.throws(() => store.deleteDocument('missing-id'), /Document not found/)
+    assert.throws(() => store.moveDocument('missing-id', null), /Document not found/)
+    assert.throws(() => store.buildAiPrompt({ documentId: 'missing-id', prompt: 'x' }), /Document not found/)
+  })
+})
