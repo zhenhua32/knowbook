@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildBoardColumns, getBoardDropFieldValue, isBoardGroupableColumn } from '../src/shared/board.ts'
+import { detectCodeLanguage, normalizeCodeLanguage } from '../src/shared/code.ts'
 import type { DocumentCatalogEntry, DocumentDatabaseColumn } from '../src/shared/contracts.ts'
 import { serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
 
@@ -136,4 +137,28 @@ test('getBoardDropFieldValue respects select, multi-select, and checkbox semanti
 
   assert.equal(getBoardDropFieldValue(checkboxColumn, false, false), undefined)
   assert.equal(getBoardDropFieldValue(checkboxColumn, false, true), true)
+})
+
+test('normalizeCodeLanguage maps common aliases to canonical names', () => {
+  assert.equal(normalizeCodeLanguage('ts'), 'typescript')
+  assert.equal(normalizeCodeLanguage('JS'), 'javascript')
+  assert.equal(normalizeCodeLanguage('c#'), 'csharp')
+  assert.equal(normalizeCodeLanguage('html'), 'html')
+  assert.equal(normalizeCodeLanguage(''), null)
+})
+
+test('detectCodeLanguage respects explicit language preference first', () => {
+  const detected = detectCodeLanguage('const answer = 42', 'ts')
+  assert.equal(detected, 'typescript')
+})
+
+test('detectCodeLanguage identifies common language snippets', () => {
+  assert.equal(detectCodeLanguage('const answer: number = 42\nexport default answer'), 'typescript')
+  assert.equal(detectCodeLanguage('const answer = 42\nconsole.log(answer)'), 'javascript')
+  assert.equal(detectCodeLanguage('def greet(name):\n    print(name)'), 'python')
+  assert.equal(detectCodeLanguage('SELECT id, name FROM users WHERE active = true'), 'sql')
+  assert.equal(detectCodeLanguage('<div class="hero">Hello</div>'), 'html')
+  assert.equal(detectCodeLanguage('.hero { color: red; margin: 4px; }'), 'css')
+  assert.equal(detectCodeLanguage('{"name":"knowbook","enabled":true}'), 'json')
+  assert.equal(detectCodeLanguage('---\nname: knowbook\nenabled: true'), 'yaml')
 })

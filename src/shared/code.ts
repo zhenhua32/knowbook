@@ -14,6 +14,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   rb: 'ruby',
   yml: 'yaml',
   md: 'markdown',
+  html: 'html',
   htm: 'html'
 }
 
@@ -72,7 +73,7 @@ export function detectCodeLanguage(content: string, preferredLanguage?: string |
     scoreLanguage(scores, 'python', 5)
   }
 
-  if (/\binterface\s+\w+\b|\btype\s+\w+\s*=|\bimplements\b|\breadonly\b|\bunknown\b|\bas\s+const\b|:\s*[A-Z][A-Za-z0-9_<>, [\]|?]+(?=\s*[=;)])/m.test(sample)) {
+  if (/\binterface\s+\w+\b|\btype\s+\w+\s*=|\bimplements\b|\breadonly\b|\bunknown\b|\bas\s+const\b|:\s*(?:string|number|boolean|unknown|any|never|void|object|Record<[^>]+>|Array<[^>]+>|[A-Z][A-Za-z0-9_<>, [\]|?]+)(?=\s*[=;)])/m.test(sample)) {
     scoreLanguage(scores, 'typescript', 5)
   }
 
