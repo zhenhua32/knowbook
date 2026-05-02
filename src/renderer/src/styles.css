@@ -1325,6 +1325,7 @@ dt,
 .block-code-wrapper .block-code {
   border-radius: 0;
   margin: 0;
+  white-space: pre-wrap;
 }
 
 .block-code-language {
@@ -1335,6 +1336,38 @@ dt,
   font-size: 0.78rem;
   font-family: monospace;
   letter-spacing: 0.04em;
+}
+
+.block-code-language-auto {
+  color: rgba(245, 240, 232, 0.78);
+}
+
+.block-code-line {
+  display: inline;
+}
+
+.block-code-token-comment {
+  color: #8ea174;
+}
+
+.block-code-token-keyword {
+  color: #f4a261;
+}
+
+.block-code-token-string {
+  color: #8ad6c9;
+}
+
+.block-code-token-number {
+  color: #d4a5ff;
+}
+
+.block-code-token-property {
+  color: #7cc6fe;
+}
+
+.block-code-token-operator {
+  color: #f6d365;
 }
 
 .code-language-select {

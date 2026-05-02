@@ -1,5 +1,5 @@
 import { renderToString } from 'katex'
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   buildBoardColumns,
   getBoardDropFieldValue,
@@ -28,6 +28,7 @@ import type {
   WorkspaceGraphEdge,
   WorkspaceGraphNode
 } from '@shared/contracts'
+import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import {
   UI_LANGUAGE_SETTING_KEY,
@@ -543,6 +544,7 @@ function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[
       id,
       type,
       checked,
+      language: type === 'code' ? (detectCodeLanguage(block.content, block.language) ?? undefined) : undefined,
       depth,
       parentBlockId
     }
@@ -2915,7 +2917,11 @@ export function App() {
     }
 
   function handleBlockContentChange(index: number, content: string) {
-    const shortcut = resolveMarkdownBlockShortcut(draftBlocks[index] ?? buildBlockTypePatch('paragraph', ''))
+    const currentBlock = draftBlocks[index] ?? buildBlockTypePatch('paragraph', '')
+    const shortcut = resolveMarkdownBlockShortcut({
+      ...currentBlock,
+      content
+    })
     if (shortcut) {
       updateDraftBlock(index, shortcut)
       setActiveBlockIndex(index)
@@ -2924,7 +2930,12 @@ export function App() {
       return
     }
 
-    updateDraftBlock(index, { content })
+    updateDraftBlock(index, {
+      content,
+      ...(currentBlock.type === 'code' && !normalizeCodeLanguage(currentBlock.language)
+        ? { language: detectCodeLanguage(content) ?? undefined }
+        : {})
+    })
   }
 
   function handleBlockPaste(index: number, pastedText: string, selectionStart: number, selectionEnd: number) {
@@ -5518,10 +5529,16 @@ function renderBlock(
   }
 
   if (block.type === 'code') {
+    const effectiveLanguage = detectCodeLanguage(block.content, block.language)
     return (
       <div className="block-code-wrapper">
-        {block.language && <span className="block-code-language">{block.language}</span>}
-        <pre className="block-code">{block.content}</pre>
+        {effectiveLanguage && (
+          <span className={`block-code-language${block.language ? '' : ' block-code-language-auto'}`}>
+            {effectiveLanguage}
+            {block.language ? '' : ' auto'}
+          </span>
+        )}
+        <pre className="block-code">{renderHighlightedCode(block.content, effectiveLanguage)}</pre>
       </div>
     )
   }
@@ -5814,13 +5831,17 @@ function parseStructuredPastedBlocks(text: string): DocumentBlockDraft[] {
 
     if (trimmed.startsWith('```')) {
       flushParagraph()
+      const fencedLanguage = normalizeCodeLanguage(trimmed.slice(3).trim())
       const codeLines: string[] = []
       index += 1
       while (index < lines.length && !lines[index].trim().startsWith('```')) {
         codeLines.push(lines[index])
         index += 1
       }
-      blocks.push(buildBlockTypePatch('code', codeLines.join('\n')))
+      blocks.push({
+        ...buildBlockTypePatch('code', codeLines.join('\n')),
+        language: fencedLanguage ?? undefined
+      })
       continue
     }
 
@@ -5893,6 +5914,101 @@ function renderMathBlock(content: string): string {
     throwOnError: false,
     strict: 'ignore'
   })
+}
+
+type CodeTokenKind = 'text' | 'keyword' | 'string' | 'comment' | 'number' | 'property' | 'operator'
+
+type CodeToken = {
+  kind: CodeTokenKind
+  value: string
+}
+
+function getCodeHighlightPattern(language: string): RegExp {
+  if (language === 'json') {
+    return /("(?:\\.|[^"])*"\s*:)|(\"(?:\\.|[^\"])*\")|(\b-?\d+(?:\.\d+)?\b)|(\btrue\b|\bfalse\b|\bnull\b)|([{}\[\],:])/g
+  }
+
+  if (language === 'html') {
+    return /(<!--.*?-->)|(<\/?[a-zA-Z][^>]*>)|("(?:\\.|[^"])*"|'(?:\\.|[^'])*')/g
+  }
+
+  if (language === 'css') {
+    return /(\/\*[\s\S]*?\*\/)|(\.[-_a-zA-Z][-_a-zA-Z0-9]*|#[-_a-zA-Z][-_a-zA-Z0-9]*|[a-zA-Z-]+(?=\s*\{))|([a-z-]+(?=\s*:))|("(?:\\.|[^"])*"|'(?:\\.|[^'])*')|(\b\d+(?:\.\d+)?(?:px|em|rem|vh|vw|%)?\b)/g
+  }
+
+  if (language === 'sql') {
+    return /(--.*$)|(\b(?:select|from|where|join|left|right|inner|outer|group|by|order|insert|into|values|update|set|delete|create|table|alter|drop|and|or|as|limit)\b)|("(?:\\.|[^"])*"|'(?:\\.|[^'])*')|(\b\d+(?:\.\d+)?\b)/gim
+  }
+
+  if (language === 'python') {
+    return /(#.*$)|(\b(?:def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|as|pass|yield|lambda|True|False|None|self|in|not|and|or|is)\b)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"])*"|'(?:\\.|[^'])*')|(\b\d+(?:\.\d+)?\b)/gm
+  }
+
+  if (language === 'bash') {
+    return /(#.*$)|(\b(?:if|then|fi|for|do|done|case|esac|function|export|local|echo|cat|grep|sed|awk|npm|yarn|pnpm|cd|ls|mkdir|rm)\b)|(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[^}]+\})|("(?:\\.|[^"])*"|'(?:\\.|[^'])*')|(\b\d+(?:\.\d+)?\b)/gm
+  }
+
+  return /(\/\/.*$|\/\*[\s\S]*?\*\/)|(\b(?:const|let|var|function|return|if|else|switch|case|break|continue|for|while|do|try|catch|finally|throw|new|class|extends|implements|interface|type|enum|import|from|export|default|async|await|public|private|protected|readonly|static|this|super|true|false|null|undefined)\b)|("(?:\\.|[^"])*"|'(?:\\.|[^'])*'|`(?:\\.|[^`])*`)|(\b\d+(?:\.\d+)?\b)|([{}()[\].,:;=+\-*/<>!?&|]+)/gm
+}
+
+function tokenizeCodeLine(line: string, language: string): CodeToken[] {
+  const tokens: CodeToken[] = []
+  const pattern = getCodeHighlightPattern(language)
+  let cursor = 0
+
+  for (const match of line.matchAll(pattern)) {
+    const matchedText = match[0]
+    if (!matchedText) {
+      continue
+    }
+
+    const matchIndex = match.index ?? 0
+    if (matchIndex > cursor) {
+      tokens.push({ kind: 'text', value: line.slice(cursor, matchIndex) })
+    }
+
+    let kind: CodeTokenKind = 'text'
+    if (language === 'json') {
+      kind = match[1] ? 'property' : match[2] ? 'string' : match[3] ? 'number' : match[4] ? 'keyword' : 'operator'
+    } else if (language === 'html') {
+      kind = match[1] ? 'comment' : match[2] ? 'keyword' : 'string'
+    } else if (language === 'css') {
+      kind = match[1] ? 'comment' : match[2] ? 'keyword' : match[3] ? 'property' : match[4] ? 'string' : 'number'
+    } else if (['sql', 'python', 'bash'].includes(language)) {
+      kind = match[1] ? 'comment' : match[2] ? 'keyword' : match[3] ? (language === 'bash' ? 'property' : 'string') : 'number'
+    } else {
+      kind = match[1] ? 'comment' : match[2] ? 'keyword' : match[3] ? 'string' : match[4] ? 'number' : 'operator'
+    }
+
+    tokens.push({ kind, value: matchedText })
+    cursor = matchIndex + matchedText.length
+  }
+
+  if (cursor < line.length) {
+    tokens.push({ kind: 'text', value: line.slice(cursor) })
+  }
+
+  return tokens
+}
+
+function renderHighlightedCode(content: string, language: string | null): ReactNode {
+  if (!language) {
+    return content
+  }
+
+  const lines = content.split('\n')
+  return lines.map((line, lineIndex) => (
+    <Fragment key={`code-line-${lineIndex}`}>
+      <span className="block-code-line">
+        {tokenizeCodeLine(line, language).map((token, tokenIndex) => (
+          <span className={`block-code-token block-code-token-${token.kind}`} key={`code-token-${lineIndex}-${tokenIndex}`}>
+            {token.value}
+          </span>
+        ))}
+      </span>
+      {lineIndex < lines.length - 1 ? '\n' : null}
+    </Fragment>
+  ))
 }
 
 function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {

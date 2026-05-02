@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
 import { BlockContextMenu } from './BlockContextMenu'
@@ -151,6 +152,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
   } = props
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -312,7 +314,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
             {block.type === 'code' && (
               editingLanguage ? (
                 <CodeBlockLanguageSelector
-                  currentLanguage={block.language}
+                  currentLanguage={block.language ?? effectiveCodeLanguage ?? undefined}
                   onChange={(lang) => updateDraftBlock(index, { language: lang })}
                   onBlur={() => setEditingLanguage(false)}
                   isZh={isZh}
@@ -328,7 +330,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                   role="button"
                   title={isZh ? '点击修改语言' : 'Click to edit language'}
                 >
-                  {block.language || (isZh ? '语言' : 'Language')}
+                  {effectiveCodeLanguage || (isZh ? '自动检测' : 'Auto detect')}
                 </span>
               )
             )}
