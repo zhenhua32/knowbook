@@ -1052,6 +1052,7 @@ export function App() {
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [selectionAnchorBlockId, setSelectionAnchorBlockId] = useState<string | null>(null)
   const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
+  const [isBlockRangeSelecting, setIsBlockRangeSelecting] = useState(false)
   const [selectedBlockConversionType, setSelectedBlockConversionType] = useState<DocumentBlock['type']>('paragraph')
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
@@ -1627,6 +1628,19 @@ export function App() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activePage, isGlobalSearchOpen, isEditing, undoEdit, redoEdit, navBack, navForward])
+
+  useEffect(() => {
+    function handleMouseUp() {
+      setIsBlockRangeSelecting(false)
+    }
+
+    window.addEventListener('mouseup', handleMouseUp)
+    window.addEventListener('blur', handleMouseUp)
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp)
+      window.removeEventListener('blur', handleMouseUp)
+    }
+  }, [])
 
   const activeLinkContext =
     activeBlockIndex !== null
@@ -2511,8 +2525,26 @@ export function App() {
   }
 
     function clearBlockSelection() {
+      setIsBlockRangeSelecting(false)
       setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
+    }
+
+    function beginBlockRangeSelection(index: number) {
+      setIsBlockRangeSelecting(true)
+      selectBlockRange(index, false)
+    }
+
+    function extendBlockRangeSelection(index: number) {
+      if (!isBlockRangeSelecting) {
+        return
+      }
+
+      selectBlockRange(index, true)
+    }
+
+    function endBlockRangeSelection() {
+      setIsBlockRangeSelecting(false)
     }
 
     function isBlockSelected(index: number) {
@@ -2538,14 +2570,18 @@ export function App() {
       const targetVisibleIndex = visibleEntries.findIndex((entry) => entry.index === index)
       const targetBlockId = getNormalizedBlockId(draftBlocks[index])
 
-      if (!extendSelection || !selectionAnchorBlockId || targetVisibleIndex === -1) {
+      // When extending but no anchor set, fall back to activeBlockIndex as the anchor
+      const resolvedAnchorId = selectionAnchorBlockId ??
+        (activeBlockIndex !== null ? getNormalizedBlockId(draftBlocks[activeBlockIndex]) : null)
+
+      if (!extendSelection || !resolvedAnchorId || targetVisibleIndex === -1) {
         setSelectionAnchorBlockId(targetBlockId)
         setSelectedBlockRange({ start: index, end: index })
         setActiveBlockIndex(index)
         return
       }
 
-      const anchorVisibleIndex = visibleEntries.findIndex(({ block }) => getNormalizedBlockId(block) === selectionAnchorBlockId)
+      const anchorVisibleIndex = visibleEntries.findIndex(({ block }) => getNormalizedBlockId(block) === resolvedAnchorId)
       const resolvedAnchorVisibleIndex = anchorVisibleIndex === -1 ? targetVisibleIndex : anchorVisibleIndex
       const rangeStartEntry = visibleEntries[Math.min(resolvedAnchorVisibleIndex, targetVisibleIndex)]
       const rangeEndEntry = visibleEntries[Math.max(resolvedAnchorVisibleIndex, targetVisibleIndex)]
@@ -2557,12 +2593,20 @@ export function App() {
         return
       }
 
-      setSelectionAnchorBlockId(selectionAnchorBlockId)
+      setSelectionAnchorBlockId(resolvedAnchorId)
       setSelectedBlockRange({
         start: rangeStartEntry.index,
         end: rangeEndEntry.index
       })
       setActiveBlockIndex(index)
+    }
+
+    function selectAllBlocks() {
+      if (draftBlocks.length === 0) return
+      const firstBlockId = getNormalizedBlockId(draftBlocks[0])
+      setSelectionAnchorBlockId(firstBlockId)
+      setSelectedBlockRange({ start: 0, end: draftBlocks.length - 1 })
+      setActiveBlockIndex(0)
     }
 
     function getSelectedBlockActionRange(range: BlockSelectionRange): BlockSelectionRange {
@@ -4375,6 +4419,7 @@ export function App() {
                             adjustSelectedBlocksDepth={adjustSelectedBlocksDepth}
                             applySlashCommand={applySlashCommand}
                             beginBlockDrag={beginBlockDrag}
+                            beginBlockRangeSelection={beginBlockRangeSelection}
                             block={block}
                             blockHasChildren={blockHasChildren}
                             blockTextareaRefs={blockTextareaRefs}
@@ -4391,6 +4436,7 @@ export function App() {
                             duplicateDraftBlock={duplicateDraftBlock}
                             duplicateSelectedBlocks={duplicateSelectedBlocks}
                             endBlockDrag={endBlockDrag}
+                            endBlockRangeSelection={endBlockRangeSelection}
                             filteredSlashCommands={filteredSlashCommands}
                             getDraggedBlockDepthPreview={getDraggedBlockDepthPreview}
                             getMultiBlockOperationRange={getMultiBlockOperationRange}
@@ -4401,6 +4447,7 @@ export function App() {
                             handleBlockPaste={handleBlockPaste}
                             indentPx={indentPx}
                             index={index}
+                            isBlockRangeSelecting={isBlockRangeSelecting}
                             isSelected={isSelected}
                             isSelectionCoherent={isSelectionCoherent}
                             isZh={uiLanguage === 'zh-CN'}
@@ -4410,6 +4457,9 @@ export function App() {
                             numberLabel={numberLabel}
                             removeBlockTag={removeBlockTag}
                             removeSelectedBlockRange={removeSelectedBlockRange}
+                            extendBlockRangeSelection={extendBlockRangeSelection}
+                            selectBlockRange={selectBlockRange}
+                            selectAllBlocks={selectAllBlocks}
                             selectedBlockCount={selectedBlockCount}
                             selectedBlockRange={selectedBlockRange}
                             selectedDocument={selectedDocument}

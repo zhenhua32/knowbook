@@ -65,6 +65,12 @@ export type BlockEditorRowProps = {
   deleteSelectedBlocks: () => void
   duplicateSelectedBlocks: () => void
   duplicateDraftBlock: (index: number) => void
+  selectBlockRange: (index: number, extendSelection?: boolean) => void
+  selectAllBlocks: () => void
+  beginBlockRangeSelection: (index: number) => void
+  extendBlockRangeSelection: (index: number) => void
+  endBlockRangeSelection: () => void
+  isBlockRangeSelecting: boolean
 
   // Callbacks: block structure
   continueBlockAt: (index: number, start: number, end: number) => void
@@ -132,6 +138,12 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     deleteSelectedBlocks,
     duplicateSelectedBlocks,
     duplicateDraftBlock,
+    selectBlockRange,
+    selectAllBlocks,
+    beginBlockRangeSelection,
+    extendBlockRangeSelection,
+    endBlockRangeSelection,
+    isBlockRangeSelecting,
     continueBlockAt,
     downgradeBlockAt,
     mergeWithPreviousBlock,
@@ -182,6 +194,37 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
         paddingLeft: `${indentPx}px`
       }}
       onContextMenu={handleContextMenu}
+      onMouseDown={(event) => {
+        if (event.button !== 0) {
+          return
+        }
+
+        const target = event.target as HTMLElement
+        // Do not hijack native interactions inside editor controls.
+        if (target.closest('textarea,button,input,select,option,a,[contenteditable="true"]')) {
+          return
+        }
+
+        event.preventDefault()
+        beginBlockRangeSelection(index)
+      }}
+      onMouseEnter={(event) => {
+        if (!isBlockRangeSelecting) {
+          return
+        }
+
+        if ((event.buttons & 1) !== 1) {
+          endBlockRangeSelection()
+          return
+        }
+
+        extendBlockRangeSelection(index)
+      }}
+      onMouseUp={(event) => {
+        if (event.button === 0) {
+          endBlockRangeSelection()
+        }
+      }}
       onDragOver={(event) => {
         event.preventDefault()
         setDragOverBlockIndex(index)
@@ -418,9 +461,45 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                 event.preventDefault()
                 removeSelectedBlockRange(range)
               }}
+              onMouseDown={(event) => {
+                // Shift+Click: manually extend block selection to this row
+                if (event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+                  event.preventDefault()
+                  selectBlockRange(index, true)
+                }
+              }}
               onClick={(event) => captureBlockCursor(index, event.currentTarget)}
               onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
               onKeyDown={(event) => {
+                // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
+                if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
+                  const el = event.currentTarget
+                  const isEmpty = el.value.trim() === ''
+                  const allSelected = el.selectionStart === 0 && el.selectionEnd === el.value.length
+                  if (isEmpty || allSelected) {
+                    event.preventDefault()
+                    selectAllBlocks()
+                    return
+                  }
+                }
+
+                // Shift+ArrowUp/Down: extend block selection
+                if (event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+                    (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+                  const el = event.currentTarget
+                  const atTop = el.selectionStart === 0 && el.selectionEnd === 0
+                  const atBottom = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+                  const wouldLeaveBounds = (event.key === 'ArrowUp' && atTop) || (event.key === 'ArrowDown' && atBottom)
+                  if (wouldLeaveBounds || (selectedBlockRange && selectedBlockRange.start !== selectedBlockRange.end)) {
+                    event.preventDefault()
+                    const targetIndex = event.key === 'ArrowUp' ? index - 1 : index + 1
+                    if (targetIndex >= 0 && targetIndex < draftBlocks.length) {
+                      selectBlockRange(targetIndex, true)
+                    }
+                    return
+                  }
+                }
+
                 // Alt+Arrow: move block
                 if (
                   event.altKey &&
