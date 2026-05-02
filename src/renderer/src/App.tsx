@@ -81,6 +81,8 @@ const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 const BOARD_GROUP_BY_PARENT = '__parent__'
 
+type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
+
 type BlockDropPreview = {
   positionLabel: string
   effectiveDepth: number
@@ -1012,6 +1014,7 @@ export function App() {
   const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [loading, setLoading] = useState(true)
+  const [activePage, setActivePage] = useState<PageId>('documents')
   const [catalogQuery, setCatalogQuery] = useState('')
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -3678,6 +3681,47 @@ export function App() {
       .includes(query)
   })
   const boardColumns = buildBoardColumns(filteredCatalog, boardGroupingColumn)
+  const isZh = uiLanguage === 'zh-CN'
+  const pageItems: Array<{ id: PageId; label: string; description: string }> = [
+    {
+      id: 'documents',
+      label: isZh ? '文档' : 'Documents',
+      description: isZh ? '目录树 + 编辑器' : 'Tree + editor'
+    },
+    {
+      id: 'dashboard',
+      label: isZh ? '总览' : 'Dashboard',
+      description: isZh ? '工作区状态与统计' : 'Workspace summary'
+    },
+    {
+      id: 'database',
+      label: isZh ? '数据库' : 'Database',
+      description: isZh ? '表格与看板视图' : 'Table + board views'
+    },
+    {
+      id: 'graph',
+      label: isZh ? '图谱' : 'Graph',
+      description: isZh ? '知识关系拓扑' : 'Knowledge topology'
+    },
+    {
+      id: 'ai',
+      label: isZh ? 'AI 助手' : 'AI Assistant',
+      description: isZh ? '问答与检索增强' : 'Q&A and semantic retrieval'
+    },
+    {
+      id: 'plugins',
+      label: isZh ? '插件中心' : 'Plugins',
+      description: isZh ? '插件安装与管理' : 'Plugin management'
+    },
+    {
+      id: 'settings',
+      label: isZh ? '配置中心' : 'Settings',
+      description: isZh ? '语言、AI、备份' : 'Language, AI, backup'
+    }
+  ]
+
+  const pageTitle = pageItems.find((item) => item.id === activePage)?.label ?? ''
+  const pageDescription = pageItems.find((item) => item.id === activePage)?.description ?? ''
 
   useEffect(() => {
     if (boardGroupBy === BOARD_GROUP_BY_PARENT) {
@@ -3699,229 +3743,108 @@ export function App() {
             <h1>KnowBook</h1>
           </div>
         </div>
-
         <div className="panel">
-          <p className="panel-label">{ui.languageSwitchLabel}</p>
-          <label className="editor-label">
-            {ui.languageSwitchLabel}
-            <select className="editor-input" onChange={(event) => setUiLanguage(event.target.value as UiLanguage)} value={uiLanguage}>
-              <option value="zh-CN">{ui.languageOptionZh}</option>
-              <option value="en-US">{ui.languageOptionEn}</option>
-            </select>
-          </label>
+          <p className="panel-label">{isZh ? '页面导航' : 'Navigation'}</p>
+          <div className="page-nav-list">
+            {pageItems.map((item) => (
+              <button
+                className={`page-nav-item${activePage === item.id ? ' page-nav-item-active' : ''}`}
+                key={item.id}
+                onClick={() => setActivePage(item.id)}
+                type="button"
+              >
+                <strong>{item.label}</strong>
+                <span>{item.description}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="panel panel-accent">
-          <p className="panel-label">{ui.implementationSliceLabel}</p>
-          <h2>{ui.implementationSliceTitle}</h2>
-          <p>{ui.implementationSliceBody}</p>
-        </div>
-
-        <div className="panel">
-          <p className="panel-label">{ui.nextUpLabel}</p>
-          <ul className="panel-list">
-            {ui.nextUpItems.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="panel">
-          <p className="panel-label">{ui.aiSettingsLabel}</p>
-          <h3>{ui.aiSettingsTitle}</h3>
-          <div className="editor-fields">
-            <label className="toggle-row">
-              <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
-              <span>{ui.enableAiFeatures}</span>
-            </label>
-            <label className="toggle-row">
-              <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>{ui.autoSummaryWhenEmpty}</span>
-            </label>
-            <label className="toggle-row">
-              <input checked={aiAutoTagOnSaveDraft} onChange={(event) => setAiAutoTagOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>{ui.autoTagOnSave}</span>
-            </label>
-            <label className="toggle-row">
-              <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
-              <span>{ui.autoHighlightOnSave}</span>
-            </label>
-            <label className="editor-label">
-              {ui.baseUrl}
-              <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
-            </label>
-            <label className="editor-label">
-              {ui.model}
-              <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
-            </label>
-            <label className="editor-label">
-              {ui.embeddingModel}
-              <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
-            </label>
-            <label className="editor-label">
-              {ui.apiKeyLabel}
-              <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
-            </label>
-            <p className="mini-hint">{ui.currentKey(homeData.aiConfig.hasApiKey)}</p>
-            <p className="mini-hint">{ui.aiHintOverview}</p>
-            <p className="mini-hint">{ui.aiHintSummary}</p>
-            <p className="mini-hint">{ui.aiHintTags}</p>
-            <p className="mini-hint">{ui.aiHintHighlights}</p>
-            <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
-              {aiSaving ? ui.common.saving : ui.saveAiSettings}
-            </button>
-          </div>
-        </div>
-
-        <div className="panel">
-          <p className="panel-label">{ui.automationFeedLabel}</p>
-          <h3>{ui.recentEventsTitle}</h3>
-          {homeData.recentEvents.length > 0 ? (
-            <div className="event-feed">
-              {homeData.recentEvents.map((event) => (
-                <button
-                  className="event-feed-item"
-                  disabled={!event.documentId}
-                  key={event.id}
-                  onClick={() => {
-                    if (event.documentId) {
-                      setSelectedDocumentId(event.documentId)
-                    }
-                  }}
-                  type="button"
-                >
-                  <div className="event-feed-head">
-                    <strong>{event.title}</strong>
-                    <span>{new Date(event.createdAt).toLocaleTimeString(ui.locale, { hour: '2-digit', minute: '2-digit' })}</span>
-                  </div>
-                  <span className="event-feed-description">{event.description}</span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="mini-hint">{ui.noAutomationEvents}</p>
-          )}
-        </div>
-
-        <div className="panel">
-          <p className="panel-label">{ui.pluginsLabel}</p>
-          <h3>{ui.pluginsTitle}</h3>
-          <div className="plugin-toolbar">
-            <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void reloadPlugins()} type="button">
-              {pluginInventoryBusy ? ui.common.reloading : ui.common.reload}
-            </button>
-            <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void installPluginFromFolder()} type="button">
-              {pluginInventoryBusy ? ui.common.working : ui.installFolder}
-            </button>
-          </div>
-          {pluginRoots.length > 0 ? (
-            <div className="plugin-roots">
-              {pluginRoots.map((root) => (
-                <code className="plugin-root-path" key={root}>{root}</code>
-              ))}
-            </div>
-          ) : null}
-          <p className="mini-hint">{ui.pluginRootsHint}</p>
-          <p className="mini-hint">{ui.pluginRecoverHint}</p>
-          {pluginWritableRoot ? <p className="mini-hint">{ui.writableInstallRoot(pluginWritableRoot)}</p> : null}
-          {plugins.length > 0 ? (
-            <div className="plugin-list">
-              {plugins.map((plugin) => {
-                const statusLabel = ui.pluginStatusLabel(plugin.status)
-                return (
-                  <div className="plugin-item" key={plugin.id}>
-                    <div className="plugin-item-head">
-                      <div>
-                        <strong>{plugin.name}</strong>
-                        <p className="mini-hint">{plugin.description}</p>
-                      </div>
-                      <span className={`plugin-status plugin-status-${plugin.status}`}>{statusLabel}</span>
-                    </div>
-                    <div className="plugin-item-meta">
-                      <span>{plugin.version}</span>
-                      <span>{ui.pluginSourceLabel(plugin.source)}</span>
-                      {plugin.author ? <span>{plugin.author}</span> : null}
-                    </div>
-                    {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
-                    <div className="plugin-item-actions">
-                      <button
-                        className="secondary-button plugin-reload-button"
-                        disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                        onClick={() => {
-                          void reloadPlugin(plugin)
-                        }}
-                        type="button"
-                      >
-                        {pluginBusyId === plugin.id ? ui.common.working : plugin.status === 'error' ? ui.recover : ui.common.reload}
-                      </button>
-                      <label className="toggle-row plugin-toggle-row">
-                        <input
-                          checked={plugin.enabled}
-                          disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                          onChange={(event) => {
-                            void setPluginEnabled(plugin, event.target.checked)
-                          }}
-                          type="checkbox"
-                        />
-                        <span>{ui.pluginToggleLabel(pluginBusyId === plugin.id, plugin.enabled)}</span>
-                      </label>
-                      {plugin.source === 'user-data' ? (
-                        <button
-                          className="danger-button plugin-remove-button"
-                          disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                          onClick={() => {
-                            void removePlugin(plugin)
-                          }}
-                          type="button"
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="mini-hint">{ui.noPluginsDiscovered}</p>
-          )}
+          <p className="panel-label">{isZh ? '当前页面' : 'Current page'}</p>
+          <h2>{pageTitle}</h2>
+          <p>{pageDescription}</p>
+          <p className="mini-hint">{isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}</p>
         </div>
       </aside>
 
       <main className="content">
-        <section className="hero">
-          <div>
-            <p className="eyebrow">{ui.workspaceStatusEyebrow}</p>
-            <h2>{ui.workspaceStatusTitle}</h2>
-            <p className="hero-copy">{ui.workspaceStatusBody}</p>
-          </div>
-          <button className="primary-button" onClick={handleBackup} type="button">
-            {ui.runBackupNow}
-          </button>
-        </section>
+        {activePage === 'dashboard' ? (
+          <section className="hero">
+            <div>
+              <p className="eyebrow">{ui.workspaceStatusEyebrow}</p>
+              <h2>{ui.workspaceStatusTitle}</h2>
+              <p className="hero-copy">{ui.workspaceStatusBody}</p>
+            </div>
+            <button className="primary-button" onClick={handleBackup} type="button">
+              {ui.runBackupNow}
+            </button>
+          </section>
+        ) : null}
 
         {backupMessage ? <p className="flash-message">{backupMessage}</p> : null}
 
-        <section className="stats-grid">
-          <article className="stat-card">
-            <span className="stat-label">{ui.documentsLabel}</span>
-            <strong>{homeData.summary.documents}</strong>
-          </article>
-          <article className="stat-card">
-            <span className="stat-label">{ui.blocksLabel}</span>
-            <strong>{homeData.summary.blocks}</strong>
-          </article>
-          <article className="stat-card">
-            <span className="stat-label">{ui.linksLabel}</span>
-            <strong>{homeData.summary.links}</strong>
-          </article>
-          <article className="stat-card">
-            <span className="stat-label">{ui.aiLabel}</span>
-            <strong>{ui.aiReadyState(homeData.aiConfig.enabled)}</strong>
-          </article>
-        </section>
+        {activePage === 'dashboard' ? (
+          <section className="stats-grid">
+            <article className="stat-card">
+              <span className="stat-label">{ui.documentsLabel}</span>
+              <strong>{homeData.summary.documents}</strong>
+            </article>
+            <article className="stat-card">
+              <span className="stat-label">{ui.blocksLabel}</span>
+              <strong>{homeData.summary.blocks}</strong>
+            </article>
+            <article className="stat-card">
+              <span className="stat-label">{ui.linksLabel}</span>
+              <strong>{homeData.summary.links}</strong>
+            </article>
+            <article className="stat-card">
+              <span className="stat-label">{ui.aiLabel}</span>
+              <strong>{ui.aiReadyState(homeData.aiConfig.enabled)}</strong>
+            </article>
+          </section>
+        ) : null}
 
-        {pluginDashboardCards.length > 0 ? (
+        {activePage === 'dashboard' ? (
+          <section className="detail-grid">
+            <article className="panel large-panel">
+              <div className="panel-head">
+                <div>
+                  <p className="panel-label">{ui.automationFeedLabel}</p>
+                  <h3>{ui.recentEventsTitle}</h3>
+                </div>
+              </div>
+              {homeData.recentEvents.length > 0 ? (
+                <div className="event-feed">
+                  {homeData.recentEvents.map((event) => (
+                    <button
+                      className="event-feed-item"
+                      disabled={!event.documentId}
+                      key={event.id}
+                      onClick={() => {
+                        if (event.documentId) {
+                          setSelectedDocumentId(event.documentId)
+                          setActivePage('documents')
+                        }
+                      }}
+                      type="button"
+                    >
+                      <div className="event-feed-head">
+                        <strong>{event.title}</strong>
+                        <span>{new Date(event.createdAt).toLocaleTimeString(ui.locale, { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      <span className="event-feed-description">{event.description}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="mini-hint">{ui.noAutomationEvents}</p>
+              )}
+            </article>
+          </section>
+        ) : null}
+
+        {activePage === 'dashboard' && pluginDashboardCards.length > 0 ? (
           <section className="plugin-dashboard-grid">
             {pluginDashboardCards.map((card: PluginDashboardCard) => (
               <article className="panel plugin-dashboard-card" key={`${card.pluginId}:${card.id}`}>
@@ -3936,7 +3859,7 @@ export function App() {
           </section>
         ) : null}
 
-        <section className="graph-grid">
+        {activePage === 'graph' ? <section className="graph-grid">
           <article className="panel graph-panel">
             <div className="panel-head compact-head">
               <div>
@@ -3956,9 +3879,9 @@ export function App() {
               onSelect={setSelectedDocumentId}
             />
           </article>
-        </section>
+        </section> : null}
 
-        <section className="database-grid">
+        {activePage === 'database' ? <section className="database-grid">
           <article className="panel database-panel">
             <div className="panel-head compact-head">
               <div>
@@ -4101,9 +4024,9 @@ export function App() {
               onDropOnColumn={dropOnBoardTarget}
             />
           </article>
-        </section>
+        </section> : null}
 
-        <section className="workspace-grid">
+        {activePage === 'documents' ? <section className="workspace-grid">
           <article className="panel tree-panel">
             <div className="panel-head compact-head">
               <div>
@@ -4973,9 +4896,143 @@ export function App() {
               </div>
             )}
           </article>
-        </section>
+        </section> : null}
 
-        <section className="detail-grid">
+        {activePage === 'ai' ? (
+          <section className="detail-grid">
+            <article className="panel large-panel">
+              <div className="panel-head">
+                <div>
+                  <p className="panel-label">{ui.askAiLabel}</p>
+                  <h3>{isZh ? '文档智能助手' : 'Document AI assistant'}</h3>
+                </div>
+                {selectedDocument ? <span className="pill">{selectedDocument.title}</span> : null}
+              </div>
+              {selectedDocument ? (
+                <div className="ai-panel">
+                  <textarea
+                    className="editor-textarea"
+                    onChange={(event) => setAiPromptDraft(event.target.value)}
+                    placeholder={ui.askAiPlaceholder}
+                    rows={4}
+                    value={aiPromptDraft}
+                  />
+                  <div className="toolbar-inline ai-actions">
+                    <button
+                      className="secondary-button"
+                      disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
+                      onClick={runEnabledAiAutomationsOnSelectedDocument}
+                      type="button"
+                    >
+                      {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
+                    </button>
+                    <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
+                      {aiContextSearching ? ui.searching : ui.findRelatedNotes}
+                    </button>
+                    <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
+                      {aiAsking ? ui.thinking : ui.askAiLabel}
+                    </button>
+                  </div>
+                  {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : <p className="mini-hint">{ui.manualAiHint}</p>}
+                </div>
+              ) : (
+                <p className="mini-hint">{isZh ? '请先在文档页选择一个文档。' : 'Please select a document from the documents page first.'}</p>
+              )}
+            </article>
+          </section>
+        ) : null}
+
+        {activePage === 'plugins' ? (
+          <section className="detail-grid">
+            <article className="panel large-panel">
+              <div className="panel-head">
+                <div>
+                  <p className="panel-label">{ui.pluginsLabel}</p>
+                  <h3>{ui.pluginsTitle}</h3>
+                </div>
+                <div className="plugin-toolbar">
+                  <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void reloadPlugins()} type="button">
+                    {pluginInventoryBusy ? ui.common.reloading : ui.common.reload}
+                  </button>
+                  <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void installPluginFromFolder()} type="button">
+                    {pluginInventoryBusy ? ui.common.working : ui.installFolder}
+                  </button>
+                </div>
+              </div>
+              {pluginRoots.length > 0 ? (
+                <div className="plugin-roots">
+                  {pluginRoots.map((root) => (
+                    <code className="plugin-root-path" key={root}>{root}</code>
+                  ))}
+                </div>
+              ) : null}
+              {plugins.length > 0 ? (
+                <div className="plugin-list">
+                  {plugins.map((plugin) => {
+                    const statusLabel = ui.pluginStatusLabel(plugin.status)
+                    return (
+                      <div className="plugin-item" key={plugin.id}>
+                        <div className="plugin-item-head">
+                          <div>
+                            <strong>{plugin.name}</strong>
+                            <p className="mini-hint">{plugin.description}</p>
+                          </div>
+                          <span className={`plugin-status plugin-status-${plugin.status}`}>{statusLabel}</span>
+                        </div>
+                        <div className="plugin-item-meta">
+                          <span>{plugin.version}</span>
+                          <span>{ui.pluginSourceLabel(plugin.source)}</span>
+                          {plugin.author ? <span>{plugin.author}</span> : null}
+                        </div>
+                        {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
+                        <div className="plugin-item-actions">
+                          <button
+                            className="secondary-button plugin-reload-button"
+                            disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                            onClick={() => {
+                              void reloadPlugin(plugin)
+                            }}
+                            type="button"
+                          >
+                            {pluginBusyId === plugin.id ? ui.common.working : plugin.status === 'error' ? ui.recover : ui.common.reload}
+                          </button>
+                          <label className="toggle-row plugin-toggle-row">
+                            <input
+                              checked={plugin.enabled}
+                              disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                              onChange={(event) => {
+                                void setPluginEnabled(plugin, event.target.checked)
+                              }}
+                              type="checkbox"
+                            />
+                            <span>{ui.pluginToggleLabel(pluginBusyId === plugin.id, plugin.enabled)}</span>
+                          </label>
+                          {plugin.source === 'user-data' ? (
+                            <button
+                              className="danger-button plugin-remove-button"
+                              disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
+                              onClick={() => {
+                                void removePlugin(plugin)
+                              }}
+                              type="button"
+                            >
+                              Remove
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="mini-hint">{ui.noPluginsDiscovered}</p>
+              )}
+            </article>
+          </section>
+        ) : null}
+
+        {activePage === 'dashboard' || activePage === 'settings' ? (
+          <section className="detail-grid">
           <article className="panel large-panel">
             <div className="panel-head">
               <div>
@@ -5002,6 +5059,58 @@ export function App() {
                 <dd>{homeData.aiConfig.baseUrl}</dd>
               </div>
             </dl>
+            {activePage === 'settings' ? (
+              <div className="editor-fields" style={{ marginTop: '16px' }}>
+                <label className="editor-label">
+                  {ui.languageSwitchLabel}
+                  <select className="editor-input" onChange={(event) => setUiLanguage(event.target.value as UiLanguage)} value={uiLanguage}>
+                    <option value="zh-CN">{ui.languageOptionZh}</option>
+                    <option value="en-US">{ui.languageOptionEn}</option>
+                  </select>
+                </label>
+                <label className="toggle-row">
+                  <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
+                  <span>{ui.enableAiFeatures}</span>
+                </label>
+                <label className="toggle-row">
+                  <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
+                  <span>{ui.autoSummaryWhenEmpty}</span>
+                </label>
+                <label className="toggle-row">
+                  <input checked={aiAutoTagOnSaveDraft} onChange={(event) => setAiAutoTagOnSaveDraft(event.target.checked)} type="checkbox" />
+                  <span>{ui.autoTagOnSave}</span>
+                </label>
+                <label className="toggle-row">
+                  <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
+                  <span>{ui.autoHighlightOnSave}</span>
+                </label>
+                <label className="editor-label">
+                  {ui.baseUrl}
+                  <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
+                </label>
+                <label className="editor-label">
+                  {ui.model}
+                  <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
+                </label>
+                <label className="editor-label">
+                  {ui.embeddingModel}
+                  <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
+                </label>
+                <label className="editor-label">
+                  {ui.apiKeyLabel}
+                  <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
+                </label>
+                <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
+                  {aiSaving ? ui.common.saving : ui.saveAiSettings}
+                </button>
+                <button className="secondary-button" onClick={() => setActivePage('plugins')} type="button">
+                  {isZh ? '打开插件中心' : 'Open plugin center'}
+                </button>
+                <button className="primary-button" onClick={handleBackup} type="button">
+                  {ui.runBackupNow}
+                </button>
+              </div>
+            ) : null}
           </article>
 
           <article className="panel large-panel">
@@ -5028,6 +5137,7 @@ export function App() {
             </div>
           </article>
         </section>
+        ) : null}
       </main>
 
       {isGlobalSearchOpen && (

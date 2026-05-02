@@ -117,6 +117,43 @@ dt,
   margin: 12px 0 0;
 }
 
+.page-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.page-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  border: 1px solid rgba(82, 66, 39, 0.14);
+  border-radius: 14px;
+  background: rgba(246, 240, 228, 0.5);
+  padding: 10px 12px;
+  color: #4e4333;
+  cursor: pointer;
+  text-align: left;
+}
+
+.page-nav-item strong {
+  font-size: 14px;
+}
+
+.page-nav-item span {
+  font-size: 12px;
+  color: #6f634f;
+}
+
+.page-nav-item-active {
+  border-color: rgba(47, 111, 237, 0.42);
+  background: rgba(47, 111, 237, 0.12);
+  box-shadow: 0 8px 18px rgba(47, 111, 237, 0.16);
+}
+
 .plugin-roots {
   display: flex;
   flex-direction: column;
