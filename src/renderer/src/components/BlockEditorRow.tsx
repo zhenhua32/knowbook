@@ -338,6 +338,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
             {/* The textarea */}
             <textarea
               className={`block-inline-textarea type-${block.type}`}
+              spellCheck={false}
               ref={(element) => {
                 blockTextareaRefs.current[index] = element
               }}

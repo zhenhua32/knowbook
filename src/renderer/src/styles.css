@@ -1324,34 +1324,21 @@ dt,
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.block-code-html {
-  overflow-x: auto;
-}
-
-.block-code-html .shiki,
-.block-code-fallback {
+.block-code-hljs {
   margin: 0;
   padding: 14px 16px;
-  min-width: 100%;
   font-size: 0.88rem;
   line-height: 1.65;
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  border-radius: 0 0 14px 14px;
+  overflow-x: auto;
+  background: transparent;
 }
 
-.block-code-html .shiki {
-  border-radius: 0;
-  background: #0d1117 !important;
-}
-
-.block-code-html .shiki code,
-.block-code-fallback code {
+.block-code-hljs code {
   display: block;
   white-space: pre;
-}
-
-.block-code-fallback {
-  background: #0d1117;
-  color: #e6edf3;
+  background: transparent;
 }
 
 .block-code-language {
