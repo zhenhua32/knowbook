@@ -23,6 +23,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",
+    "@playwright/test": "^1.59.1",
     "@swc/core": "^1.11.24",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.3",

@@ -95,6 +95,13 @@ export interface LinkedDocument {
   contextSnippet?: string
 }
 
+export interface BlockReferenceResult {
+  block: DocumentBlock
+  documentId: string
+  documentPath: string
+  documentTitle: string
+}
+
 export interface DocumentSuggestion {
   id: string
   title: string
@@ -187,6 +194,9 @@ export interface PluginManifest {
   author?: string
   entry?: string
   enabledByDefault?: boolean
+  engines?: {
+    knowbook?: string
+  }
 }
 
 export interface PluginDescriptor {
@@ -362,6 +372,7 @@ export interface ElectronApi {
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
+  getBlockReference: (documentPath: string, blockId: string) => Promise<BlockReferenceResult | null>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>
   saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>

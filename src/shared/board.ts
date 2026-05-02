@@ -19,7 +19,7 @@ export type BoardColumn = {
 }
 
 export function isBoardGroupableColumn(column: DocumentDatabaseColumn): boolean {
-  return column.type === 'select' || column.type === 'multi-select' || column.type === 'checkbox'
+  return column.type === 'select' || column.type === 'multi-select' || column.type === 'checkbox' || column.type === 'date' || column.type === 'text'
 }
 
 export function getBoardDropFieldValue(
@@ -46,6 +46,20 @@ export function getBoardDropFieldValue(
   if (column.type === 'checkbox') {
     const normalizedCurrentValue = currentValue === true
     const normalizedTargetValue = targetValue === true
+
+    return normalizedCurrentValue === normalizedTargetValue ? undefined : normalizedTargetValue
+  }
+
+  if (column.type === 'date') {
+    const normalizedCurrentValue = typeof currentValue === 'string' && currentValue ? currentValue : null
+    const normalizedTargetValue = typeof targetValue === 'string' && targetValue ? targetValue : null
+
+    return normalizedCurrentValue === normalizedTargetValue ? undefined : normalizedTargetValue
+  }
+
+  if (column.type === 'text') {
+    const normalizedCurrentValue = typeof currentValue === 'string' ? currentValue : null
+    const normalizedTargetValue = typeof targetValue === 'string' ? targetValue : null
 
     return normalizedCurrentValue === normalizedTargetValue ? undefined : normalizedTargetValue
   }
@@ -158,7 +172,90 @@ export function buildBoardColumns(documents: DocumentCatalogEntry[], groupByColu
 
     for (const document of documents) {
       const fieldValue = document.fieldValues[groupByColumn.id] === true
-      columns[fieldValue ? 1 : 0].items.push(document)
+      columns[fieldValue ? 1 :0].items.push(document)
+    }
+
+    return sortBoardColumns(columns)
+  }
+
+  if (groupByColumn?.type === 'date') {
+    // Collect unique date values
+    const dateValues = new Set<string>()
+    for (const document of documents) {
+      const value = document.fieldValues[groupByColumn.id]
+      if (typeof value === 'string' && value) {
+        dateValues.add(value)
+      }
+    }
+
+    const sortedDates = [...dateValues].sort()
+
+    const columns: BoardColumn[] = [
+      {
+        id: `${groupByColumn.id}:__unset__`,
+        title: `No ${groupByColumn.name}`,
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: null
+        },
+        items: []
+      },
+      ...sortedDates.map((date) => ({
+        id: `${groupByColumn.id}:${date}`,
+        title: date,
+        dropTarget: {
+          kind: 'field' as const,
+          columnId: groupByColumn.id,
+          value: date
+        },
+        items: [] as DocumentCatalogEntry[]
+      }))
+    ]
+
+    const columnMap = new Map(columns.map((column) => [column.id, column]))
+    for (const document of documents) {
+      const fieldValue = document.fieldValues[groupByColumn.id]
+      const columnId = typeof fieldValue === 'string' && fieldValue && dateValues.has(fieldValue)
+        ? `${groupByColumn.id}:${fieldValue}`
+        : `${groupByColumn.id}:__unset__`
+      columnMap.get(columnId)?.items.push(document)
+    }
+
+    return sortBoardColumns(columns)
+  }
+
+  if (groupByColumn?.type === 'text') {
+    const columns: BoardColumn[] = [
+      {
+        id: `${groupByColumn.id}:__empty__`,
+        title: `Empty ${groupByColumn.name}`,
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: ''
+        },
+        items: []
+      },
+      {
+        id: `${groupByColumn.id}:__non_empty__`,
+        title: `With ${groupByColumn.name}`,
+        dropTarget: {
+          kind: 'field',
+          columnId: groupByColumn.id,
+          value: 'Sample text'
+        },
+        items: []
+      }
+    ]
+
+    const columnMap = new Map(columns.map((column) => [column.id, column]))
+    for (const document of documents) {
+      const fieldValue = document.fieldValues[groupByColumn.id]
+      const columnId = typeof fieldValue === 'string' && fieldValue
+        ? `${groupByColumn.id}:__non_empty__`
+        : `${groupByColumn.id}:__empty__`
+      columnMap.get(columnId)?.items.push(document)
     }
 
     return sortBoardColumns(columns)

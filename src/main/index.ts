@@ -234,6 +234,11 @@ function registerIpcHandlers(): void {
     return document
   })
 
+  ipcMain.handle('knowbook:get-block-reference', (_event, documentPath: string, blockId: string) => {
+    const result = store.getBlockReference(documentPath, blockId)
+    return result
+  })
+
   ipcMain.handle('knowbook:get-document-suggestions', (_event, query: string, excludeDocumentId: string | null = null) => {
     const suggestions: DocumentSuggestion[] = store.getDocumentSuggestions(query, excludeDocumentId)
     return suggestions

@@ -9,6 +9,7 @@ import {
 } from '@shared/board'
 import type {
   BackupResult,
+  BlockReferenceResult,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
   DocumentDatabaseFieldValue,
@@ -48,6 +49,7 @@ import { DocumentSummaryCard } from './components/DocumentSummaryCard'
 import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
+import { CrossDocumentBlockReference } from './components/BlockReference'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPanel'
@@ -6067,7 +6069,12 @@ function renderInlineContent(
   blockReferences?: Map<string, DocumentBlock>,
   currentDocumentId?: string | null
 ) {
-  const segments: Array<string | { type: 'document'; id: string; label: string } | { type: 'block'; id: string; blockId: string; label: string }> = []
+  const segments: Array<
+    string | 
+    { type: 'document'; id: string; label: string } | 
+    { type: 'block'; id: string; blockId: string; label: string } |
+    { type: 'cross-block'; documentPath: string; blockId: string; label: string }
+  > = []
   const matches = content.matchAll(/\[\[([^\]]+)\]\]/g)
   let lastIndex = 0
 
@@ -6078,6 +6085,21 @@ function renderInlineContent(
     }
 
     const token = match[1]?.trim() ?? ''
+    
+    // Check for cross-document block reference [[documentPath#blockId]]
+    if (token.includes('#')) {
+      const [documentPath, blockId] = token.split('#')
+      if (documentPath && blockId) {
+        segments.push({
+          type: 'cross-block',
+          documentPath,
+          blockId,
+          label: token
+        })
+        lastIndex = start + match[0].length
+        continue
+      }
+    }
     
     // Try to resolve as document reference first
     const docTarget = resolveInlineReference(token, references)
@@ -6126,6 +6148,10 @@ function renderInlineContent(
           [[{segment.label}]]
         </button>
       )
+    }
+
+    if (segment.type === 'cross-block') {
+      return <CrossDocumentBlockReference key={`cross-${index}`} documentPath={segment.documentPath} blockId={segment.blockId} />
     }
 
     // Block reference - needs special handling (currently just display as link)

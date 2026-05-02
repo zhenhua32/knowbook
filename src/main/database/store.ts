@@ -5,6 +5,7 @@ import Database from 'better-sqlite3'
 import type {
   AiConfig,
   AskAiInput,
+  BlockReferenceResult,
   CreateDocumentDatabaseColumnInput,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
@@ -242,6 +243,7 @@ export class KnowbookStore {
     this.ensureBlockLanguageColumn()
     this.ensureBlockHighlightColumn()
     this.ensureBlockParentRelationships()
+    this.ensureDatabaseEntities()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
@@ -347,6 +349,54 @@ export class KnowbookStore {
         label: link.label,
         contextSnippet: link.context_snippet ?? undefined
       }))
+    }
+  }
+
+  getBlockReference(documentPath: string, blockId: string): BlockReferenceResult | null {
+    const row = this.db.prepare(`
+      SELECT
+        b.id, b.type, b.content, b.checked, b.depth, b.tags_json,
+        b.parent_block_id, b.sort_order, b.language, b.highlight,
+        d.id AS doc_id, d.title AS doc_title, d.path AS doc_path
+      FROM blocks b
+      INNER JOIN documents d ON d.id = b.document_id
+      WHERE d.path = ? AND b.id = ?
+    `).get(documentPath, blockId) as {
+      id: string
+      type: string
+      content: string
+      checked: number
+      depth: number
+      tags_json: string
+      parent_block_id: string | null
+      sort_order: number
+      language: string | null
+      highlight: string | null
+      doc_id: string
+      doc_title: string
+      doc_path: string
+    } | undefined
+
+    if (!row) {
+      return null
+    }
+
+    return {
+      block: {
+        id: row.id,
+        type: row.type,
+        content: row.content,
+        checked: Boolean(row.checked),
+        depth: Math.max(0, row.depth ?? 0),
+        tags: this.parseBlockTags(row.tags_json),
+        parentBlockId: row.parent_block_id ?? null,
+        sortOrder: row.sort_order,
+        language: row.language ?? undefined,
+        highlight: row.highlight ?? undefined
+      },
+      documentId: row.doc_id,
+      documentPath: row.doc_path,
+      documentTitle: row.doc_title
     }
   }
 
@@ -1919,6 +1969,28 @@ export class KnowbookStore {
     })
 
     transaction()
+  }
+
+  private ensureDatabaseEntities(): void {
+    // Check if database_id column exists in document_database_columns
+    const columns = this.db.prepare('PRAGMA table_info(document_database_columns)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'database_id')) {
+      // Add database_id column
+      this.db.exec('ALTER TABLE document_database_columns ADD COLUMN database_id TEXT REFERENCES databases(id) ON DELETE CASCADE')
+      
+      // Create default database
+      const now = new Date().toISOString()
+      const defaultDbId = randomUUID()
+      this.db.prepare(`
+        INSERT INTO databases (id, name, description, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(defaultDbId, 'Default', 'Default database', now, now)
+      
+      // Update existing columns to use default database
+      this.db.prepare(`
+        UPDATE document_database_columns SET database_id = ? WHERE database_id IS NULL
+      `).run(defaultDbId)
+    }
   }
 
   private readSetting(key: string): string | null {
