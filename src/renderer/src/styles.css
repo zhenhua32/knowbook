@@ -32,18 +32,88 @@ select {
 
 .shell {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 220px 1fr;
   min-height: 100vh;
 }
 
-.rail {
+.sidebar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 32px 24px;
+  height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid rgba(71, 55, 32, 0.08);
+}
+
+.rail {
+  padding: 12px 10px;
+  border-right: none;
   background: rgba(255, 249, 241, 0.72);
   backdrop-filter: blur(18px);
-  border-right: 1px solid rgba(71, 55, 32, 0.08);
+  flex-shrink: 0;
+}
+
+.rail .brand {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.brand-mark {
+  width: 36px !important;
+  height: 36px !important;
+  font-size: 12px !important;
+  letter-spacing: 0.06em !important;
+}
+
+.rail .eyebrow {
+  font-size: 9px !important;
+  margin: 0 !important;
+  letter-spacing: 0.05em !important;
+}
+
+.rail h1 {
+  font-size: 14px !important;
+  margin: 0 !important;
+}
+
+.rail .panel {
+  padding: 8px 6px;
+  margin-top: 6px;
+  border-radius: 12px;
+}
+
+.rail .page-nav-item {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.rail .page-nav-item span {
+  font-size: 11px;
+}
+
+.rail .panel-accent {
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.rail .panel-label {
+  font-size: 10px;
+}
+
+.rail .mini-hint {
+  font-size: 10px;
+  margin: 4px 0 0;
+}
+
+.tree-panel {
+  padding: 10px 8px;
+  flex: 1;
+  overflow-y: auto;
+  border-radius: 0;
+  border: none;
+  min-height: 0;
 }
 
 .content {
@@ -411,7 +481,7 @@ dt,
 }
 
 .workspace-grid {
-  grid-template-columns: minmax(280px, 340px) 1fr;
+  grid-template-columns: 1fr;
   align-items: start;
 }
 

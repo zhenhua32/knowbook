@@ -3991,19 +3991,71 @@ export function App() {
 
   return (
      <div className="shell" data-testid="shell">
-       <PageRail
-         activePage={activePage}
-         brandEyebrow={ui.brandEyebrow}
-         currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
-         currentPageLabel={isZh ? '当前页面' : 'Current page'}
-         navLabel={isZh ? '页面导航' : 'Navigation'}
-         onSelectPage={(pageId) => setActivePage(pageId as PageId)}
-         pageDescription={pageDescription}
-         pageItems={pageItems}
-         pageTitle={pageTitle}
-       />
+        <div className="sidebar">
+          <PageRail
+            activePage={activePage}
+            brandEyebrow={ui.brandEyebrow}
+            currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
+            currentPageLabel={isZh ? '当前页面' : 'Current page'}
+            navLabel={isZh ? '页面导航' : 'Navigation'}
+            onSelectPage={(pageId) => setActivePage(pageId as PageId)}
+            pageDescription={pageDescription}
+            pageItems={pageItems}
+            pageTitle={pageTitle}
+          />
 
-      <main className="content">
+          {activePage === 'documents' ? (
+            <DocumentsSidebar
+              backTitle={`${ui.back} (Alt+←)`}
+              dragOverRoot={dragOverRoot}
+              dropToRootLabel={ui.dropToRoot}
+              forwardTitle={`${ui.forward} (Alt+→)`}
+              globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
+              navCanGoBack={navCanGoBack}
+              navCanGoForward={navCanGoForward}
+              newRootLabel={ui.newRoot}
+              onCreateRoot={() => handleCreateDocument(null)}
+              onDropToRoot={() => { void dropToRoot() }}
+              onNavBack={navBack}
+              onNavForward={navForward}
+              onOpenGlobalSearch={openGlobalSearch}
+              onRootDragLeave={() => setDragOverRoot(false)}
+              onRootDragOver={() => {
+                if (draggingDocumentId) {
+                  setDragOverRoot(true)
+                  setDragOverDocumentId(null)
+                }
+              }}
+              onSelectDocument={openDocumentInDocumentsPage}
+              panelLabel={ui.workspaceTreeLabel}
+              pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
+              pinnedSectionLabel={ui.pinnedSectionLabel}
+              rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
+              selectedDocumentId={selectedDocumentId}
+              title={ui.seededDocumentsTitle}
+              tree={(
+                <DocumentTree
+                  nodes={homeData.documentTree}
+                  selectedDocumentId={selectedDocumentId}
+                  onSelect={openDocumentInDocumentsPage}
+                  draggingDocumentId={draggingDocumentId}
+                  dragOverDocumentId={dragOverDocumentId}
+                  onDragStart={beginDrag}
+                  onDragEnd={endDrag}
+                  onDragOverNode={(documentId) => {
+                    if (draggingDocumentId && draggingDocumentId !== documentId) {
+                      setDragOverDocumentId(documentId)
+                      setDragOverRoot(false)
+                    }
+                  }}
+                  onDropOnNode={dropOnDocument}
+                />
+              )}
+            />
+          ) : null}
+        </div>
+
+       <main className="content">
         {activePage === 'dashboard' ? (
           <section className="hero">
             <div>
@@ -4315,57 +4367,7 @@ export function App() {
         </section> : null}
 
          {activePage === 'documents' ? <section className="workspace-grid" data-testid="workspace-grid">
-           <DocumentsSidebar
-            backTitle={`${ui.back} (Alt+←)`}
-            dragOverRoot={dragOverRoot}
-            dropToRootLabel={ui.dropToRoot}
-            forwardTitle={`${ui.forward} (Alt+→)`}
-            globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-            navCanGoBack={navCanGoBack}
-            navCanGoForward={navCanGoForward}
-            newRootLabel={ui.newRoot}
-            onCreateRoot={() => handleCreateDocument(null)}
-            onDropToRoot={() => {
-              void dropToRoot()
-            }}
-            onNavBack={navBack}
-            onNavForward={navForward}
-            onOpenGlobalSearch={openGlobalSearch}
-            onRootDragLeave={() => setDragOverRoot(false)}
-            onRootDragOver={() => {
-              if (draggingDocumentId) {
-                setDragOverRoot(true)
-                setDragOverDocumentId(null)
-              }
-            }}
-            onSelectDocument={openDocumentInDocumentsPage}
-            panelLabel={ui.workspaceTreeLabel}
-            pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
-            pinnedSectionLabel={ui.pinnedSectionLabel}
-            rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
-            selectedDocumentId={selectedDocumentId}
-            title={ui.seededDocumentsTitle}
-            tree={(
-              <DocumentTree
-                nodes={homeData.documentTree}
-                selectedDocumentId={selectedDocumentId}
-                onSelect={openDocumentInDocumentsPage}
-                draggingDocumentId={draggingDocumentId}
-                dragOverDocumentId={dragOverDocumentId}
-                onDragStart={beginDrag}
-                onDragEnd={endDrag}
-                onDragOverNode={(documentId) => {
-                  if (draggingDocumentId && draggingDocumentId !== documentId) {
-                    setDragOverDocumentId(documentId)
-                    setDragOverRoot(false)
-                  }
-                }}
-                onDropOnNode={dropOnDocument}
-              />
-            )}
-          />
-
-          <article className="panel preview-panel">
+           <article className="panel preview-panel">
             <DocumentPreviewHeader
               autoSaveFlash={autoSaveFlash}
               canRedo={editHistoryPointerRef.current < editHistoryRef.current.length - 1}
