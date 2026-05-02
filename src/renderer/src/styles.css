@@ -1320,17 +1320,43 @@ dt,
   position: relative;
   border-radius: 14px;
   overflow: hidden;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.block-code-wrapper .block-code {
-  border-radius: 0;
+.block-code-html {
+  overflow-x: auto;
+}
+
+.block-code-html .shiki,
+.block-code-fallback {
   margin: 0;
-  white-space: pre-wrap;
+  padding: 14px 16px;
+  min-width: 100%;
+  font-size: 0.88rem;
+  line-height: 1.65;
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.block-code-html .shiki {
+  border-radius: 0;
+  background: #0d1117 !important;
+}
+
+.block-code-html .shiki code,
+.block-code-fallback code {
+  display: block;
+  white-space: pre;
+}
+
+.block-code-fallback {
+  background: #0d1117;
+  color: #e6edf3;
 }
 
 .block-code-language {
   display: inline-block;
-  padding: 3px 12px;
+  padding: 6px 12px;
   background: rgba(255, 255, 255, 0.08);
   color: rgba(245, 240, 232, 0.55);
   font-size: 0.78rem;
@@ -1340,34 +1366,6 @@ dt,
 
 .block-code-language-auto {
   color: rgba(245, 240, 232, 0.78);
-}
-
-.block-code-line {
-  display: inline;
-}
-
-.block-code-token-comment {
-  color: #8ea174;
-}
-
-.block-code-token-keyword {
-  color: #f4a261;
-}
-
-.block-code-token-string {
-  color: #8ad6c9;
-}
-
-.block-code-token-number {
-  color: #d4a5ff;
-}
-
-.block-code-token-property {
-  color: #7cc6fe;
-}
-
-.block-code-token-operator {
-  color: #f6d365;
 }
 
 .code-language-select {
