@@ -1070,7 +1070,10 @@ export function App() {
   const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
   const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
   const [databaseColumnOptionsDraft, setDatabaseColumnOptionsDraft] = useState('')
-  const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
+  const [isCreatingDatabaseEntity, setIsCreatingDatabaseEntity] = useState(false)
+  const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
+  const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
+  const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
@@ -2358,7 +2361,7 @@ export function App() {
     }
   }
 
-  async function deleteDatabaseColumn(columnId: string, columnName: string) {
+   async function deleteDatabaseColumn(columnId: string, columnName: string) {
     const accepted = window.confirm(ui.confirmDeleteDatabaseColumn(columnName))
     if (!accepted) {
       return
@@ -2375,7 +2378,52 @@ export function App() {
     }
   }
 
-  async function updateDocumentDatabaseValue(documentId: string, columnId: string, value: DocumentDatabaseFieldValue) {
+  async function createDatabaseEntity() {
+    try {
+      const createdEntity = await window.knowbook.createDatabaseEntity({
+        databaseId: databaseEntityDatabaseId,
+        documentId: databaseEntityDocumentId || undefined,
+        fieldValues: databaseEntityFieldValues
+      })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setIsCreatingDatabaseEntity(false)
+      setDatabaseEntityDatabaseId('')
+      setDatabaseEntityDocumentId('')
+      setDatabaseEntityFieldValues({})
+      setBackupMessage('Database entity created successfully')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create database entity'
+      setBackupMessage(message)
+    }
+  }
+
+  async function updateDatabaseEntity(entityId: string, fieldValues: Record<string, DocumentDatabaseFieldValue>) {
+    try {
+      await window.knowbook.updateDatabaseEntity({ entityId, fieldValues })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage('Database entity updated')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update database entity'
+      setBackupMessage(message)
+    }
+  }
+
+  async function deleteDatabaseEntity(entityId: string) {
+    if (!window.confirm('Are you sure you want to delete this database entity?')) {
+      return
+    }
+    try {
+      await window.knowbook.deleteDatabaseEntity(entityId)
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage('Database entity deleted')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete database entity'
+      setBackupMessage(message)
+    }
+  }
     const previousFieldValue = homeData.documentCatalog.find((document) => document.id === documentId)?.fieldValues[columnId]
 
     setHomeData((previous) => ({
@@ -4072,11 +4120,14 @@ export function App() {
                 <p className="panel-label">{ui.databaseViewLabel}</p>
                 <h3>{ui.documentCatalogTitle}</h3>
               </div>
-              <div className="toolbar-inline">
-                <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
-                  {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
-                </button>
-                <input
+               <div className="toolbar-inline">
+                 <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
+                   {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
+                 </button>
+                 <button className="secondary-button" onClick={() => setIsCreatingDatabaseEntity((previous) => !previous)} type="button">
+                   {isCreatingDatabaseEntity ? ui.common.cancel : 'Add Database'}
+                 </button>
+                 <input
                   className="editor-input table-search"
                   onChange={(event) => setCatalogQuery(event.target.value)}
                   placeholder={ui.searchDocumentsPlaceholder}
@@ -4130,6 +4181,56 @@ export function App() {
                       setDatabaseColumnNameDraft('')
                       setDatabaseColumnTypeDraft('text')
                       setDatabaseColumnOptionsDraft('')
+                    }}
+                    type="button"
+                  >
+                    {ui.common.cancel}
+                  </button>
+                </div>
+              </div>
+             ) : null}
+
+            {isCreatingDatabaseEntity ? (
+              <div className="database-schema-form">
+                <label className="editor-label">
+                  Database
+                  <select
+                    className="editor-input"
+                    onChange={(event) => setDatabaseEntityDatabaseId(event.target.value)}
+                    value={databaseEntityDatabaseId}
+                  >
+                    <option value="">Select a database...</option>
+                    {homeData.databaseColumns.length > 0 && homeData.databaseColumns.map((col) => (
+                      <option key={col.id} value={col.id}>{col.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="editor-label">
+                  Link to Document (optional)
+                  <input
+                    className="editor-input"
+                    type="text"
+                    placeholder="Document ID"
+                    onChange={(event) => setDatabaseEntityDocumentId(event.target.value)}
+                    value={databaseEntityDocumentId}
+                  />
+                </label>
+                <div className="database-schema-actions">
+                  <button
+                    className="secondary-button"
+                    onClick={() => void createDatabaseEntity()}
+                    type="button"
+                    disabled={!databaseEntityDatabaseId}
+                  >
+                    Create Entity
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setIsCreatingDatabaseEntity(false)
+                      setDatabaseEntityDatabaseId('')
+                      setDatabaseEntityDocumentId('')
+                      setDatabaseEntityFieldValues({})
                     }}
                     type="button"
                   >

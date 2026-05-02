@@ -41,6 +41,67 @@ export interface DocumentDatabaseColumn {
   sortOrder: number
 }
 
+export interface DocumentDatabase {
+  id: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DatabaseEntity {
+  id: string
+  databaseId: string
+  documentId: string | null  // 可选关联到文档
+  createdAt: string
+  updatedAt: string
+  fieldValues: Record<string, DocumentDatabaseFieldValue>
+}
+
+export interface CreateDatabaseInput {
+  name: string
+  description?: string
+}
+
+export interface CreateDocumentDatabaseColumnInput {
+  name: string
+  type: DocumentDatabaseColumnType
+  options?: string[]
+}
+
+export interface RenameDocumentDatabaseColumnInput {
+  columnId: string
+  name: string
+}
+
+export interface MoveDocumentDatabaseColumnInput {
+  columnId: string
+  direction: 'left' | 'right'
+}
+
+export interface UpdateDocumentDatabaseColumnOptionsInput {
+  columnId: string
+  options: string[]
+}
+
+export interface UpdateDocumentDatabaseValueInput {
+  documentId: string
+  columnId: string
+  value: DocumentDatabaseFieldValue
+}
+
+export interface CreateDatabaseEntityInput {
+  databaseId: string
+  documentId?: string
+  fieldValues?: Record<string, DocumentDatabaseFieldValue>
+}
+
+export interface UpdateDatabaseEntityInput {
+  entityId: string
+  fieldValues?: Record<string, DocumentDatabaseFieldValue>
+  documentId?: string | null
+}
+
 export interface DocumentTreeNode {
   id: string
   title: string

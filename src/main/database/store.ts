@@ -1293,7 +1293,8 @@ export class KnowbookStore {
   }
 
   private getDocumentCatalog(databaseColumns: DocumentDatabaseColumn[]): DocumentCatalogEntry[] {
-    const rows = this.db.prepare(`
+    // 获取普通的文档条目
+    const documentRows = this.db.prepare(`
       SELECT
         documents.id,
         documents.title,
@@ -1309,27 +1310,64 @@ export class KnowbookStore {
       LEFT JOIN documents AS parents ON parents.id = documents.parent_id
       ORDER BY documents.path ASC
     `).all() as DocumentCatalogRow[]
+    
+    // 获取数据库条目（没有关联文档的实体）
+    const entityRows = this.db.prepare(`
+      SELECT
+        de.id,
+        d.name AS title,
+        d.name AS path,
+        d.description AS summary,
+        NULL AS parent_id,
+        NULL AS parent_title,
+        de.updated_at,
+        0 AS block_count,
+        0 AS link_count,
+        0 AS child_count
+      FROM database_entities de
+      JOIN databases d ON d.id = de.database_id
+      WHERE de.document_id IS NULL
+      ORDER BY de.updated_at DESC
+    `).all() as Array<{
+      id: string
+      title: string
+      path: string
+      summary: string
+      parent_id: string | null
+      parent_title: string | null
+      updated_at: string
+      block_count: number
+      link_count: number
+      child_count: number
+    }>
+    
+    const allRows = [...documentRows, ...entityRows]
 
     const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
     const fieldRows = this.db.prepare(`
-      SELECT document_id, column_id, value_text
+      SELECT entity_id, column_id, value_text
       FROM document_database_values
-      ORDER BY document_id ASC, column_id ASC
-    `).all() as DocumentDatabaseValueRow[]
+      ORDER BY entity_id ASC, column_id ASC
+    `).all() as Array<{
+      entity_id: string | null
+      column_id: string
+      value_text: string | null
+    }>
     const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
 
     for (const row of fieldRows) {
+      if (!row.entity_id) continue
       const column = columnById.get(row.column_id)
       if (!column) {
         continue
       }
 
-      const fieldValues = fieldValuesByDocumentId.get(row.document_id) ?? {}
+      const fieldValues = fieldValuesByDocumentId.get(row.entity_id) ?? {}
       fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
-      fieldValuesByDocumentId.set(row.document_id, fieldValues)
+      fieldValuesByDocumentId.set(row.entity_id, fieldValues)
     }
 
-    return rows.map((row) => ({
+    return allRows.map((row) => ({
       id: row.id,
       title: row.title,
       path: row.path,
@@ -2040,13 +2078,189 @@ export class KnowbookStore {
     }
   }
 
+  createDatabaseEntity(input: CreateDatabaseEntityInput): DatabaseEntity {
+    const { databaseId, documentId = null, fieldValues = {} } = input
+    
+    const entityId = randomUUID()
+    const now = new Date().toISOString()
+    
+    // 验证数据库是否存在
+    const dbExists = this.db.prepare('SELECT id FROM databases WHERE id = ?').get(databaseId)
+    if (!dbExists) {
+      throw new Error('Database not found.')
+    }
+    
+    // 验证文档是否存在（如果提供了 documentId）
+    if (documentId) {
+      const docExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId)
+      if (!docExists) {
+        throw new Error('Document not found.')
+      }
+    }
+    
+    // 验证 documentId 在此数据库中是否唯一（如果提供了）
+    if (documentId) {
+      const existing = this.db.prepare(
+        'SELECT id FROM database_entities WHERE database_id = ? AND document_id = ?'
+      ).get(databaseId, documentId)
+      if (existing) {
+        throw new Error('A database entity already exists for this document in this database.')
+      }
+    }
+    
+    this.db.prepare(`
+      INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(entityId, databaseId, documentId, now, now)
+    
+    // 插入字段值
+    const valueInsert = this.db.prepare(
+      'INSERT INTO document_database_values (document_id, column_id, value_text, updated_at, entity_id) VALUES (?, ?, ?, ?, ?)'
+    )
+    
+    for (const [columnId, value] of Object.entries(fieldValues)) {
+      let valueText: string | null = null
+      if (value !== null && value !== undefined) {
+        valueText = typeof value === 'string' ? value : JSON.stringify(value)
+      }
+      
+      valueInsert.run(documentId, columnId, valueText, now, entityId)
+    }
+    
+    // 获取完整的实体数据
+    return this.getDatabaseEntity(entityId)
+  }
+  
+  private getDatabaseEntity(entityId: string): DatabaseEntity {
+    const row = this.db.prepare(`
+      SELECT id, database_id, document_id, created_at, updated_at
+      FROM database_entities
+      WHERE id = ?
+    `).get(entityId) as {
+      id: string
+      database_id: string
+      document_id: string | null
+      created_at: string
+      updated_at: string
+    } | undefined
+    
+    if (!row) {
+      throw new Error('Database entity not found.')
+    }
+    
+    // 获取字段值
+    const fieldRows = this.db.prepare(
+      'SELECT column_id, value_text FROM document_database_values WHERE entity_id = ?'
+    ).all(entityId) as Array<{ column_id: string; value_text: string | null }>
+    
+    const fieldValues: Record<string, DocumentDatabaseFieldValue> = {}
+    for (const fvRow of fieldRows) {
+      const column = this.db.prepare('SELECT type FROM document_database_columns WHERE id = ?').get(fvRow.column_id) as
+        | { type: DocumentDatabaseColumnType }
+        | undefined
+      
+      if (!column) continue
+      
+      fieldValues[fvRow.column_id] = this.parseDocumentDatabaseFieldValue(column, fvRow.value_text)
+    }
+    
+    return {
+      id: row.id,
+      databaseId: row.database_id,
+      documentId: row.document_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      fieldValues
+    }
+  }
+  
+  updateDatabaseEntity(input: UpdateDatabaseEntityInput): void {
+    const { entityId, fieldValues, documentId } = input
+    
+    // 验证实体存在
+    const entity = this.db.prepare('SELECT * FROM database_entities WHERE id = ?').get(entityId) as
+      | { id: string; database_id: string; document_id: string | null }
+      | undefined
+    
+    if (!entity) {
+      throw new Error('Database entity not found.')
+    }
+    
+    const now = new Date().toISOString()
+    
+    // 如果提供了 documentId，验证并更新
+    if (documentId !== undefined) {
+      if (documentId) {
+        const docExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId)
+        if (!docExists) {
+          throw new Error('Document not found.')
+        }
+        
+        // 验证在该数据库中是否唯一
+        const existing = this.db.prepare(
+          'SELECT id FROM database_entities WHERE database_id = ? AND document_id = ? AND id != ?'
+        ).get(entity.database_id, documentId, entityId)
+        if (existing) {
+          throw new Error('A database entity already exists for this document in this database.')
+        }
+      }
+      
+      this.db.prepare('UPDATE database_entities SET document_id = ?, updated_at = ? WHERE id = ?').run(
+        documentId,
+        now,
+        entityId
+      )
+    }
+    
+    // 更新字段值（如果提供了）
+    if (fieldValues) {
+      for (const [columnId, value] of Object.entries(fieldValues)) {
+        let valueText: string | null = null
+        if (value !== null && value !== undefined) {
+          valueText = typeof value === 'string' ? value : JSON.stringify(value)
+        }
+        
+        const entityRow = this.db.prepare('SELECT id FROM database_entities WHERE id = ?').get(entityId)
+        if (!entityRow) continue
+        
+        // 使用 document_id 来自实体记录（可能是 null）
+        const currentEntity = this.db.prepare('SELECT document_id FROM database_entities WHERE id = ?').get(entityId) as
+          | { document_id: string | null }
+          | undefined
+        
+        this.db.prepare(
+          `INSERT OR REPLACE INTO document_database_values (document_id, column_id, value_text, updated_at, entity_id)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(currentEntity?.document_id ?? null, columnId, valueText, now, entityId)
+      }
+    }
+  }
+  
+  deleteDatabaseEntity(entityId: string): void {
+    this.db.prepare('DELETE FROM database_entities WHERE id = ?').run(entityId)
+    this.db.prepare('DELETE FROM document_database_values WHERE entity_id = ?').run(entityId)
+  }
+  
+  getDatabaseEntities(databaseId: string): DatabaseEntity[] {
+    const rows = this.db.prepare(
+      'SELECT id, database_id, document_id, created_at, updated_at FROM database_entities WHERE database_id = ? ORDER BY updated_at DESC'
+    ).all(databaseId) as Array<{
+      id: string
+      database_id: string
+      document_id: string | null
+      created_at: string
+      updated_at: string
+    }>
+    
+    return rows.map((row) => this.getDatabaseEntity(row.id))
+  }
+
   private seed(): void {
     const documentCount = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
     if (documentCount > 0) {
       return
     }
 
-    const now = new Date().toISOString()
     const homeId = randomUUID()
     const productId = randomUUID()
     const roadmapId = randomUUID()
