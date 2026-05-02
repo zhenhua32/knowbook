@@ -1108,6 +1108,7 @@ export function App() {
   const editHistoryPointerRef = useRef<number>(-1)
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const blockMouseDownOrigin = useRef<number | null>(null)
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
@@ -1639,6 +1640,7 @@ export function App() {
 
   useEffect(() => {
     function handleMouseUp() {
+      blockMouseDownOrigin.current = null
       setIsBlockRangeSelecting(false)
     }
 
@@ -2552,7 +2554,46 @@ export function App() {
     }
 
     function endBlockRangeSelection() {
+      blockMouseDownOrigin.current = null
       setIsBlockRangeSelecting(false)
+    }
+
+    function notifyBlockMouseDown(index: number) {
+      blockMouseDownOrigin.current = index
+    }
+
+    function handleBlockMouseEnter(index: number, buttonsHeld: boolean) {
+      const origin = blockMouseDownOrigin.current
+
+      if (!buttonsHeld) {
+        blockMouseDownOrigin.current = null
+        if (isBlockRangeSelecting) setIsBlockRangeSelecting(false)
+        return
+      }
+
+      if (origin === null || index === origin) return
+
+      if (!isBlockRangeSelecting) {
+        // First entry into a different block while mouse is held — start drag range selection
+        const originBlockId = getNormalizedBlockId(draftBlocks[origin])
+        const visibleEntries = getVisibleBlockEntries(draftBlocks)
+        const originVIdx = visibleEntries.findIndex((e) => e.index === origin)
+        const targetVIdx = visibleEntries.findIndex((e) => e.index === index)
+
+        if (originVIdx !== -1 && targetVIdx !== -1) {
+          const startEntry = visibleEntries[Math.min(originVIdx, targetVIdx)]
+          const endEntry = visibleEntries[Math.max(originVIdx, targetVIdx)]
+          if (startEntry && endEntry) {
+            setIsBlockRangeSelecting(true)
+            setSelectionAnchorBlockId(originBlockId ?? null)
+            setSelectedBlockRange({ start: startEntry.index, end: endEntry.index })
+            setActiveBlockIndex(index)
+          }
+        }
+      } else {
+        // Already in drag-select, extend from existing anchor
+        selectBlockRange(index, true)
+      }
     }
 
     function isBlockSelected(index: number) {
@@ -4427,7 +4468,8 @@ export function App() {
                             adjustSelectedBlocksDepth={adjustSelectedBlocksDepth}
                             applySlashCommand={applySlashCommand}
                             beginBlockDrag={beginBlockDrag}
-                            beginBlockRangeSelection={beginBlockRangeSelection}
+                            notifyBlockMouseDown={notifyBlockMouseDown}
+                            handleBlockMouseEnter={handleBlockMouseEnter}
                             block={block}
                             blockHasChildren={blockHasChildren}
                             blockTextareaRefs={blockTextareaRefs}
@@ -4465,7 +4507,6 @@ export function App() {
                             numberLabel={numberLabel}
                             removeBlockTag={removeBlockTag}
                             removeSelectedBlockRange={removeSelectedBlockRange}
-                            extendBlockRangeSelection={extendBlockRangeSelection}
                             selectBlockRange={selectBlockRange}
                             selectAllBlocks={selectAllBlocks}
                             selectedBlockCount={selectedBlockCount}

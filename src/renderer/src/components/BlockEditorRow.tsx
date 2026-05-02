@@ -67,8 +67,8 @@ export type BlockEditorRowProps = {
   duplicateDraftBlock: (index: number) => void
   selectBlockRange: (index: number, extendSelection?: boolean) => void
   selectAllBlocks: () => void
-  beginBlockRangeSelection: (index: number) => void
-  extendBlockRangeSelection: (index: number) => void
+  notifyBlockMouseDown: (index: number) => void
+  handleBlockMouseEnter: (index: number, buttonsHeld: boolean) => void
   endBlockRangeSelection: () => void
   isBlockRangeSelecting: boolean
 
@@ -140,8 +140,8 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     duplicateDraftBlock,
     selectBlockRange,
     selectAllBlocks,
-    beginBlockRangeSelection,
-    extendBlockRangeSelection,
+    notifyBlockMouseDown,
+    handleBlockMouseEnter,
     endBlockRangeSelection,
     isBlockRangeSelecting,
     continueBlockAt,
@@ -187,7 +187,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
 
   return (
     <div
-      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
+      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
         ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined),
@@ -200,25 +200,17 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
         }
 
         const target = event.target as HTMLElement
-        // Do not hijack native interactions inside editor controls.
-        if (target.closest('textarea,button,input,select,option,a,[contenteditable="true"]')) {
+        // Keep button interactions native (add block / drag handle / collapse toggle).
+        if (target.closest('button')) {
           return
         }
 
-        event.preventDefault()
-        beginBlockRangeSelection(index)
+        // Record the block where mouse was pressed; actual range selection only starts
+        // if the pointer moves to a different block while the button remains held.
+        notifyBlockMouseDown(index)
       }}
       onMouseEnter={(event) => {
-        if (!isBlockRangeSelecting) {
-          return
-        }
-
-        if ((event.buttons & 1) !== 1) {
-          endBlockRangeSelection()
-          return
-        }
-
-        extendBlockRangeSelection(index)
+        handleBlockMouseEnter(index, (event.buttons & 1) === 1)
       }}
       onMouseUp={(event) => {
         if (event.button === 0) {
