@@ -1,4 +1,8 @@
+import { useState } from 'react'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
+import { BlockEditToolbar } from './BlockEditToolbar'
+import { BlockContextMenu } from './BlockContextMenu'
+import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -148,6 +152,25 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
 
+  // 状态管理
+  const [showContextMenu, setShowContextMenu] = useState(false)
+  const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
+  const [editingLanguage, setEditingLanguage] = useState(false)
+
+  const handleBlockTypeChange = (newType: string) => {
+    if (newType === 'divider') {
+      updateDraftBlock(index, { type: newType, content: '' })
+    } else {
+      updateDraftBlock(index, { type: newType })
+    }
+  }
+
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setContextMenuPos({ x: e.clientX, y: e.clientY })
+    setShowContextMenu(true)
+  }
+
   return (
     <div
       className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected ? ' block-editor-row-selected' : ''}`}
@@ -156,6 +179,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
         ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined),
         paddingLeft: `${indentPx}px`
       }}
+      onContextMenu={handleContextMenu}
       onDragOver={(event) => {
         event.preventDefault()
         setDragOverBlockIndex(index)
@@ -201,6 +225,73 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
         ) : null}
       </div>
 
+      {/* ── Block Edit Toolbar (Notion style) ── */}
+      <BlockEditToolbar
+        block={block}
+        index={index}
+        isActive={activeBlockIndex === index}
+        onTypeChange={handleBlockTypeChange}
+        onDuplicate={() => duplicateDraftBlock(index)}
+        onDelete={() => {
+          if (selectedBlockRange && isSelected) {
+            deleteSelectedBlocks()
+          } else {
+            if (index > 0) {
+              mergeWithPreviousBlock(index)
+            } else {
+              updateDraftBlock(index, { content: '', type: 'paragraph' })
+            }
+          }
+        }}
+        typeOptions={{
+          paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
+          'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
+          'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+          todo: ui.blockTypeOptions?.todo || 'Todo',
+          code: ui.blockTypeOptions?.code || 'Code',
+          math: ui.blockTypeOptions?.math || 'Math',
+          quote: ui.blockTypeOptions?.quote || 'Quote',
+          'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
+          'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+          divider: ui.blockTypeOptions?.divider || 'Divider'
+        }}
+        ui={ui}
+        isZh={isZh}
+      />
+
+      {/* ── Context Menu ── */}
+      {showContextMenu && (
+        <BlockContextMenu
+          x={contextMenuPos.x}
+          y={contextMenuPos.y}
+          blockType={block.type}
+          onTypeChange={handleBlockTypeChange}
+          onDuplicate={() => duplicateDraftBlock(index)}
+          onDelete={() => {
+            if (index > 0) {
+              mergeWithPreviousBlock(index)
+            } else {
+              updateDraftBlock(index, { content: '', type: 'paragraph' })
+            }
+          }}
+          onClose={() => setShowContextMenu(false)}
+          typeOptions={{
+            paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
+            'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
+            'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+            todo: ui.blockTypeOptions?.todo || 'Todo',
+            code: ui.blockTypeOptions?.code || 'Code',
+            math: ui.blockTypeOptions?.math || 'Math',
+            quote: ui.blockTypeOptions?.quote || 'Quote',
+            'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
+            'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+            divider: ui.blockTypeOptions?.divider || 'Divider'
+          }}
+          ui={ui}
+          isZh={isZh}
+        />
+      )}
+
       {/* ── Content area ── */}
       <div className="block-content-area">
         {block.type === 'divider' ? (
@@ -218,7 +309,29 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
             )}
             {block.type === 'bulleted-list' && <span className="block-bullet-dot" />}
             {block.type === 'numbered-list' && <span className="block-number-label">{numberLabel}</span>}
-            {block.type === 'code' && block.language && <span className="block-code-language-badge">{block.language}</span>}
+            {block.type === 'code' && (
+              editingLanguage ? (
+                <CodeBlockLanguageSelector
+                  currentLanguage={block.language}
+                  onChange={(lang) => updateDraftBlock(index, { language: lang })}
+                  onBlur={() => setEditingLanguage(false)}
+                  isZh={isZh}
+                />
+              ) : (
+                <span
+                  className="block-code-language-badge"
+                  onClick={() => setEditingLanguage(true)}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setEditingLanguage(true)
+                  }}
+                  role="button"
+                  title={isZh ? '点击修改语言' : 'Click to edit language'}
+                >
+                  {block.language || (isZh ? '语言' : 'Language')}
+                </span>
+              )
+            )}
 
             {/* The textarea */}
             <textarea

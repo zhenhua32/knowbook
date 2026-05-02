@@ -49,6 +49,7 @@ import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
+import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from './components/LinkSuggestionPanel'
 import { BlockEditorRow } from './components/BlockEditorRow'
 
@@ -1746,6 +1747,31 @@ export function App() {
       textarea.style.height = `${textarea.scrollHeight}px`
     }
   }, [draftBlocks, isEditing])
+
+  // 计算浮动斜杠面板的位置
+  const slashPanelPos = (() => {
+    if (!activeSlashContext || activeBlockIndex === null) {
+      return null
+    }
+
+    const textarea = blockTextareaRefs.current[activeBlockIndex]
+    if (!textarea) return null
+
+    // 获取 textarea 在屏幕中的位置
+    const rect = textarea.getBoundingClientRect()
+
+    // 计算光标在 textarea 中的坐标（粗略估计）
+    // 实际应用中可能需要更精确的计算
+    const lineHeight = parseInt(window.getComputedStyle(textarea).lineHeight)
+    const lines = textarea.value.substring(0, activeCursorPosition).split('\n')
+    const currentLine = lines.length - 1
+    const offsetX = lines[currentLine].length * 8 // 粗略估计字符宽度
+
+    return {
+      x: rect.left + offsetX,
+      y: rect.top + currentLine * lineHeight + lineHeight + 10 // 在光标下方显示
+    }
+  })()
 
   async function handleBackup() {
     const result: BackupResult = await window.knowbook.triggerBackup()
@@ -4392,28 +4418,7 @@ export function App() {
                         {ui.addBlock}
                       </button>
                       <DraftBlockTreeOutline blocks={draftBlocks} />
-                      {activeSlashContext ? (
-                        <SlashCommandPanel
-                          activeCommandId={activeSlashCommand?.id}
-                          commands={filteredSlashCommands.map((cmd) => ({
-                            id: cmd.id,
-                            label: cmd.label,
-                            description: cmd.description
-                          }))}
-                          commandsLabel={ui.slashCommandsLabel}
-                          hintLabel={ui.slashCommandHint}
-                          noMatchingLabel={ui.noMatchingCommands}
-                          onHoverCommand={setSelectedSlashCommandIndex}
-                          onSelectCommand={(cmd) => {
-                            const fullCommand = filteredSlashCommands.find((c) => c.id === cmd.id)
-                            if (fullCommand) {
-                              applySlashCommand(fullCommand)
-                            }
-                          }}
-                          query={activeSlashContext.query}
-                          queryLabel={ui.slashQuery}
-                        />
-                      ) : activeLinkContext ? (
+                      {activeLinkContext ? (
                         <LinkSuggestionPanel
                           blockSuggestions={blockSuggestions}
                           blocksLabel={ui.blocksInDocument}
@@ -4430,6 +4435,29 @@ export function App() {
                       )}
                     </div>
                 </div>
+
+                {/* ── Floating Slash Command Panel ── */}
+                {activeSlashContext && slashPanelPos ? (
+                  <FloatingSlashCommandPanel
+                    x={slashPanelPos.x}
+                    y={slashPanelPos.y}
+                    query={activeSlashContext.query}
+                    commands={filteredSlashCommands.map((cmd) => ({
+                      id: cmd.id,
+                      label: cmd.label,
+                      description: cmd.description
+                    }))}
+                    activeCommandId={activeSlashCommand?.id}
+                    noMatchingLabel={ui.noMatchingCommands}
+                    onSelectCommand={(cmd) => {
+                      const fullCommand = filteredSlashCommands.find((c) => c.id === cmd.id)
+                      if (fullCommand) {
+                        applySlashCommand(fullCommand)
+                      }
+                    }}
+                    onHoverCommand={setSelectedSlashCommandIndex}
+                  />
+                ) : null}
 
                 <DocumentsAuxPanel
                   aiAnswer={aiAnswer}
@@ -4454,7 +4482,7 @@ export function App() {
                   onRunEnabledAutomations={() => {
                     void runEnabledAiAutomationsOnSelectedDocument()
                   }}
-                  onRunPluginAction={(action) => {
+                  onRunPluginAction={(action: PluginDocumentAction) => {
                     void runPluginDocumentAction(action)
                   }}
                   pluginActionBusyKey={pluginActionBusyKey}

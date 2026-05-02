@@ -501,7 +501,12 @@ function createUiText(language: UiLanguage) {
     copyFailed: zh ? '复制失败。' : 'Copy failed.',
     copyTextFailed: zh ? '复制文本失败。' : 'Copy text failed.',
     cutFailed: zh ? '剪切失败。' : 'Cut failed.',
-    visibleSliceCrossParentGuard: zh ? '当前可见块片段跨越了不同父级或混合的同级层级，不能移动或拖拽。请只选择同一父级下的同级根块。' : 'Cannot move or drag a visible block slice across different parents or mixed sibling levels. Select sibling roots under the same parent.'
+    visibleSliceCrossParentGuard: zh ? '当前可见块片段跨越了不同父级或混合的同级层级，不能移动或拖拽。请只选择同一父级下的同级根块。' : 'Cannot move or drag a visible block slice across different parents or mixed sibling levels. Select sibling roots under the same parent.',
+    blockTypeChangeHint: zh ? '改变块类型' : 'Change block type',
+    blockToolbarDuplicate: zh ? '复制' : 'Duplicate',
+    blockToolbarDelete: zh ? '删除' : 'Delete',
+    codeBlockLanguageLabel: zh ? '语言' : 'Language',
+    codeBlockLanguageHint: zh ? '点击修改代码块的编程语言' : 'Click to edit the programming language'
   }
 }
 
