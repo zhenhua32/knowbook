@@ -69,7 +69,11 @@ export function detectCodeLanguage(content: string, preferredLanguage?: string |
     scoreLanguage(scores, 'bash', 4)
   }
 
-  if (/\bdef\s+\w+\s*\(|\bimport\s+\w+|\bfrom\s+\w+\s+import\b|\bself\b|\belif\b|__name__|print\(/.test(sample)) {
+  if (
+    /\bdef\s+\w+\s*\(|\bself\b|\belif\b|__name__|print\(/.test(sample)
+    || /(^|\n)\s*from\s+[A-Za-z_][\w.]*\s+import\s+.+$/m.test(sample)
+    || /(^|\n)\s*import\s+[A-Za-z_][\w.]*(\s*,\s*[A-Za-z_][\w.]*)*\s*$/m.test(sample)
+  ) {
     scoreLanguage(scores, 'python', 5)
   }
 
@@ -81,12 +85,12 @@ export function detectCodeLanguage(content: string, preferredLanguage?: string |
     scoreLanguage(scores, 'javascript', 4)
   }
 
-  if (/\busing\s+System\b|\bnamespace\s+\w+|Console\.Write(Line)?\(|\bpublic\s+(class|record|interface)\b/.test(sample)) {
-    scoreLanguage(scores, 'csharp', 5)
+  if (/\bpackage\s+[a-z0-9_.]+\s*;|System\.out\.print|import\s+java\.|\bpublic\s+static\s+void\s+main\s*\(/.test(sample)) {
+    scoreLanguage(scores, 'java', 5)
   }
 
-  if (/\bpackage\s+[a-z0-9_.]+\s*;|\bpublic\s+class\b|System\.out\.print|import\s+java\./.test(sample)) {
-    scoreLanguage(scores, 'java', 5)
+  if (/\busing\s+System\b|\bnamespace\s+\w+|Console\.Write(Line)?\(|\bpublic\s+(class|record|interface)\b/.test(sample)) {
+    scoreLanguage(scores, 'csharp', 5)
   }
 
   if (/\bpackage\s+main\b|\bfunc\s+\w+\s*\(|fmt\.Print|:=/.test(sample)) {

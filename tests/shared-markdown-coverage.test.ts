@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
+
+test('serializeBlocksToMarkdown renders all major block types', () => {
+  const output = serializeBlocksToMarkdown([
+    { type: 'heading-1', content: 'H1' },
+    { type: 'heading-2', content: 'H2' },
+    { type: 'todo', content: 'Task', checked: true, depth: 0 },
+    { type: 'quote', content: 'line1\nline2' },
+    { type: 'bulleted-list', content: 'Bullet', depth: 1 },
+    { type: 'numbered-list', content: 'Number', depth: 2 },
+    { type: 'divider', content: '' },
+    { type: 'math', content: 'a^2+b^2=c^2' },
+    { type: 'code', content: 'const a = 1', language: 'typescript' },
+    { type: 'paragraph', content: 'Plain text' }
+  ])
+
+  assert.equal(
+    output,
+    [
+      '# H1',
+      '## H2',
+      '- [x] Task',
+      '> line1\n> line2',
+      '- Bullet',
+      '1. Number',
+      '---',
+      '$$\na^2+b^2=c^2\n$$',
+      '```typescript\nconst a = 1\n```',
+      'Plain text'
+    ].join('\n\n')
+  )
+})
+
+test('serializeBlocksToMarkdown uses fallback code language when block language is missing', () => {
+  const output = serializeBlocksToMarkdown(
+    [{ type: 'code', content: 'SELECT 1', language: null }],
+    { fallbackCodeLanguage: 'txt' }
+  )
+
+  assert.equal(output, '```txt\nSELECT 1\n```')
+})
+
+test('serializeBlocksToMarkdown resolves depth from parentBlockId and caps excessive depth', () => {
+  const output = serializeBlocksToMarkdown([
+    { id: 'root', type: 'bulleted-list', content: 'Root', depth: 0 },
+    { id: 'child', type: 'bulleted-list', content: 'Child', depth: 6, parentBlockId: 'root' },
+    { id: 'deep', type: 'bulleted-list', content: 'Deep', depth: 99, parentBlockId: 'child' }
+  ])
+
+  assert.equal(output, '- Root\n\n  - Child\n\n    - Deep')
+})
+
+test('serializeBlocksToMarkdown ignores list depth for non-nestable blocks', () => {
+  const output = serializeBlocksToMarkdown([
+    { type: 'paragraph', content: 'Loose', depth: 4 },
+    { type: 'quote', content: 'Q', depth: 3 }
+  ])
+
+  assert.equal(output, 'Loose\n\n> Q')
+})
+
+test('serializeBlocksToMarkdown falls back to root-level when parent references are missing', () => {
+  const output = serializeBlocksToMarkdown([
+    { type: 'bulleted-list', content: 'Top', depth: 0 },
+    { type: 'bulleted-list', content: 'Broken parent but still nested', depth: 2, parentBlockId: 'missing' },
+    { type: 'bulleted-list', content: 'Keeps nesting from stack', depth: 3 }
+  ])
+
+  assert.equal(output, '- Top\n\n- Broken parent but still nested\n\n- Keeps nesting from stack')
+})
