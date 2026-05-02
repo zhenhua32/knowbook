@@ -3,7 +3,7 @@ import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 export type BlockDropPreview = {
   positionLabel: string
   effectiveDepth: number
-  parentText: string
+  parentText: string | null
 }
 
 export type BlockEditorRowProps = {
@@ -44,7 +44,7 @@ export type BlockEditorRowProps = {
   // Callbacks: drag/drop
   beginBlockDrag: (index: number) => void
   endBlockDrag: () => void
-  getDraggedBlockDepthPreview: (index: number, clientX: number, target: Element) => number | null
+  getDraggedBlockDepthPreview: (targetIndex: number, clientX: number, element: HTMLDivElement) => number | null
   dropBlockAt: (index: number, depth: number | null) => void
   setDragOverBlockIndex: (index: number | null) => void
   setDragOverBlockDepth: (depth: number | null) => void
@@ -53,7 +53,7 @@ export type BlockEditorRowProps = {
   moveSelectedBlocks: (delta: -1 | 1) => void
   moveDraftBlockBySibling: (index: number, delta: -1 | 1, cursorPos: number) => void
   setSelectedSlashCommandIndex: (fn: (prev: number) => number) => void
-  applySlashCommand: (command: { id: string; label: string; description: string }) => void
+  applySlashCommand: (command: any) => void
   dismissSlashCommand: () => void
   adjustSelectedBlocksDepth: (delta: -1 | 1, index: number, cursorPos: number) => void
   adjustBlockDepth: (index: number, delta: -1 | 1, cursorPos: number) => void
@@ -70,7 +70,6 @@ export type BlockEditorRowProps = {
   // Callbacks: helpers
   blockHasChildren: (index: number) => boolean
   toggleBlockCollapse: (blockId: string) => void
-  isBlockSelected: (index: number) => boolean
   isSelectionCoherent: (range: { start: number; end: number }) => boolean
   getVisibleBlockCountInRange: (range: { start: number; end: number }) => number
   getMultiBlockOperationRange: (range: { start: number; end: number }) => { start: number; end: number }
@@ -134,7 +133,6 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     splitDraftBlock,
     blockHasChildren,
     toggleBlockCollapse,
-    isBlockSelected,
     isSelectionCoherent,
     getVisibleBlockCountInRange,
     getMultiBlockOperationRange,
