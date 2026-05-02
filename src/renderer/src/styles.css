@@ -2322,7 +2322,7 @@ del {
 .block-edit-toolbar {
   position: absolute;
   left: auto;
-  right: calc(100% + 8px);
+  right: calc(100% + 12px);
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -2333,17 +2333,8 @@ del {
   border: 1px solid rgba(91, 72, 44, 0.15);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(30, 24, 15, 0.12);
-  opacity: 0;
-  pointer-events: none;
   white-space: nowrap;
-  transition: opacity 0.15s, right 0.15s;
   z-index: 100;
-}
-
-.block-editor-row:hover .block-edit-toolbar {
-  opacity: 1;
-  pointer-events: auto;
-  right: calc(100% + 12px);
 }
 
 .block-type-selector {
