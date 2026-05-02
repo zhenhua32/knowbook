@@ -43,6 +43,10 @@ import { DocumentsSidebar } from './components/DocumentsSidebar'
 import { DocumentPreviewHeader } from './components/DocumentPreviewHeader'
 import { DocumentsAuxPanel } from './components/DocumentsAuxPanel'
 import { DocumentStatsBar } from './components/DocumentStatsBar'
+import { DocumentSummaryCard } from './components/DocumentSummaryCard'
+import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
+import { BlockSearchPanel } from './components/BlockSearchPanel'
+import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
 
 const emptyState: HomeData = {
   summary: {
@@ -1637,6 +1641,23 @@ export function App() {
       .includes(query)
   })
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
+  const blockSearchItems = getBlockSearchResults().map((block) => {
+    const blockIndex = draftBlocks.indexOf(block)
+    return {
+      index: blockIndex,
+      type: block.type,
+      contentPreview: block.content.slice(0, 100),
+      isHighlighted: activeBlockIndex === blockIndex
+    }
+  })
+  const allBlockTags = getAllBlockTags()
+  const blockTagCounts = new Map<string, number>()
+  for (const block of draftBlocks) {
+    for (const tag of block.tags ?? []) {
+      blockTagCounts.set(tag, (blockTagCounts.get(tag) ?? 0) + 1)
+    }
+  }
+  const filteredBlockCount = getFilteredBlocks(draftBlocks).length
   const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
   const selectedVisibleBlockCount = selectedBlockRange ? getVisibleBlockCountInRange(selectedBlockRange) : 0
   const selectedBlockActionRange = selectedBlockRange ? getMultiBlockOperationRange(selectedBlockRange) : null
@@ -4141,56 +4162,34 @@ export function App() {
 
             {selectedDocument ? (
               <>
-                <div className="document-summary-card">
-                  <p className="document-path">{selectedDocument.path}</p>
-                  <div className="editor-fields">
-                    <label className="editor-label">
-                      {ui.common.title}
-                      <input className="editor-input" onChange={(event) => setDraftTitle(event.target.value)} type="text" value={draftTitle} />
-                    </label>
-                    <label className="editor-label">
-                      {ui.common.summary}
-                      <textarea
-                        className="editor-textarea"
-                        onChange={(event) => setDraftSummary(event.target.value)}
-                        rows={3}
-                        value={draftSummary}
-                      />
-                    </label>
-                  </div>
-                  <p className="document-updated">{ui.updatedAt(selectedDocument.updatedAt)}</p>
-                </div>
+                <DocumentSummaryCard
+                  onSummaryChange={setDraftSummary}
+                  onTitleChange={setDraftTitle}
+                  path={selectedDocument.path}
+                  summary={draftSummary}
+                  summaryLabel={ui.common.summary}
+                  title={draftTitle}
+                  titleLabel={ui.common.title}
+                  updatedText={ui.updatedAt(selectedDocument.updatedAt)}
+                />
 
-                {(() => {
-                  const headingBlocks = draftBlocks.filter(
-                    (b) => b.type === 'heading-1' || b.type === 'heading-2'
-                  )
-                  if (headingBlocks.length === 0) return null
-                  return (
-                    <div className="toc-panel">
-                      <p className="panel-label">大纲</p>
-                      <nav className="toc-list">
-                        {headingBlocks.map((block, idx) => {
-                          const level = block.type === 'heading-1' ? 1 : 2
-                          const blockIndex = draftBlocks.indexOf(block as DocumentBlockDraft)
-                          return (
-                            <button
-                              className={`toc-item toc-item-h${level}`}
-                              key={idx}
-                              type="button"
-                              onClick={() => {
-                                setActiveBlockIndex(blockIndex)
-                                  setPendingFocusBlockIndex(blockIndex)
-                              }}
-                            >
-                              {block.content || (level === 1 ? '标题 1' : '标题 2')}
-                            </button>
-                          )
-                        })}
-                      </nav>
-                    </div>
-                  )
-                })()}
+                <DocumentOutlinePanel
+                  emptyHeadingTitleLevel1={isZh ? '标题 1' : 'Heading 1'}
+                  emptyHeadingTitleLevel2={isZh ? '标题 2' : 'Heading 2'}
+                  items={draftBlocks
+                    .map((block, index) => ({ block, index }))
+                    .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
+                    .map(({ block, index }) => ({
+                      index,
+                      level: block.type === 'heading-1' ? 1 : 2,
+                      title: block.content
+                    }))}
+                  onSelect={(blockIndex) => {
+                    setActiveBlockIndex(blockIndex)
+                    setPendingFocusBlockIndex(blockIndex)
+                  }}
+                  title={isZh ? '大纲' : 'Outline'}
+                />
 
                 <div className="preview-section">
                   <p className="panel-label">{ui.blocksPanelLabel}</p>
@@ -4203,100 +4202,36 @@ export function App() {
                         }
                       }}
                     >
-                      {isBlockSearchOpen && (
-                        <div className="block-search-panel">
-                          <div className="block-search-header">
-                            <input
-                              type="text"
-                              placeholder={ui.searchBlocksPlaceholder}
-                              value={blockSearchQuery}
-                              onChange={(event) => setBlockSearchQuery(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Escape') {
-                                  event.preventDefault()
-                                  setIsBlockSearchOpen(false)
-                                  setBlockSearchQuery('')
-                                }
-                              }}
-                              className="block-search-input"
-                              autoFocus
-                            />
-                            <button
-                              className="secondary-button"
-                              onClick={() => {
-                                setIsBlockSearchOpen(false)
-                                setBlockSearchQuery('')
-                              }}
-                              type="button"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                          <div className="block-search-results">
-                            {getBlockSearchResults().map((block, idx) => {
-                              const blockIndex = draftBlocks.indexOf(block)
-                              const isHighlighted = activeBlockIndex === blockIndex
-                              return (
-                                <div
-                                  key={idx}
-                                  className={`block-search-result${isHighlighted ? ' block-search-result-highlighted' : ''}`}
-                                  onClick={() => {
-                                    setActiveBlockIndex(blockIndex)
-                                    setIsBlockSearchOpen(false)
-                                    setBlockSearchQuery('')
-                                    setPendingFocusBlockIndex(blockIndex)
-                                  }}
-                                >
-                                  <span className="block-type-badge">{block.type}</span>
-                                  <span className="block-content">{block.content.slice(0, 100)}</span>
-                                </div>
-                              )
-                            })}
-                            {getBlockSearchResults().length === 0 && blockSearchQuery && (
-                              <p className="mini-hint">{ui.noBlocksMatchSearch}</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                      {getAllBlockTags().length > 0 && (
-                        <div className="block-tags-filter-panel">
-                          <div className="block-tags-filter-header">
-                            <span className="panel-label">{ui.filterByTags}</span>
-                            {selectedBlockTags.size > 0 && (
-                              <button
-                                className="secondary-button"
-                                onClick={() => setSelectedBlockTags(new Set())}
-                                style={{ fontSize: '0.8rem', padding: '4px 8px' }}
-                                type="button"
-                              >
-                                Clear filters
-                              </button>
-                            )}
-                          </div>
-                          <div className="block-tags-filter-list">
-                            {getAllBlockTags().map((tag) => {
-                              const isSelected = selectedBlockTags.has(tag)
-                              const blockCount = draftBlocks.filter((b) => b.tags?.includes(tag)).length
-                              return (
-                                <button
-                                  key={tag}
-                                  className={`block-tag-filter${isSelected ? ' block-tag-filter-active' : ''}`}
-                                  onClick={() => toggleTagFilter(tag)}
-                                  type="button"
-                                >
-                                  <span className="block-tag-filter-name">{tag}</span>
-                                  <span className="block-tag-filter-count">{blockCount}</span>
-                                </button>
-                              )
-                            })}
-                          </div>
-                          {selectedBlockTags.size > 0 && (
-                            <p className="mini-hint">
-                              Showing {getFilteredBlocks(draftBlocks).length} of {draftBlocks.length} blocks
-                            </p>
-                          )}
-                        </div>
-                      )}
+                      <BlockSearchPanel
+                        isOpen={isBlockSearchOpen}
+                        items={blockSearchItems}
+                        noMatchText={ui.noBlocksMatchSearch}
+                        onClose={() => {
+                          setIsBlockSearchOpen(false)
+                          setBlockSearchQuery('')
+                        }}
+                        onQueryChange={setBlockSearchQuery}
+                        onSelect={(blockIndex) => {
+                          setActiveBlockIndex(blockIndex)
+                          setIsBlockSearchOpen(false)
+                          setBlockSearchQuery('')
+                          setPendingFocusBlockIndex(blockIndex)
+                        }}
+                        placeholder={ui.searchBlocksPlaceholder}
+                        query={blockSearchQuery}
+                      />
+                      <BlockTagFilterPanel
+                        allTags={allBlockTags}
+                        clearLabel={isZh ? '清除筛选' : 'Clear filters'}
+                        filteredCount={filteredBlockCount}
+                        onClear={() => setSelectedBlockTags(new Set())}
+                        onToggleTag={toggleTagFilter}
+                        selectedTags={selectedBlockTags}
+                        showingLabel={isZh ? '显示' : 'Showing'}
+                        tagCounts={blockTagCounts}
+                        title={ui.filterByTags}
+                        totalCount={draftBlocks.length}
+                      />
                       {selectedBlockRange ? (
                         <div className="block-selection-toolbar">
                           <div>
