@@ -6,9 +6,15 @@ import type {
   BlockReferenceResult,
   CreateDocumentDatabaseColumnInput,
   CreateDocumentResult,
+  DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
+  CreateDatabaseInput,
+  CreateDatabaseEntityInput,
+  UpdateDatabaseEntityInput,
+  DeleteDatabaseEntityInput,
+  DatabaseEntity,
   ElectronApi,
   GlobalSearchResult,
   HomeData,
@@ -55,9 +61,15 @@ const api: ElectronApi = {
   triggerBackup: () => ipcRenderer.invoke('knowbook:trigger-backup') as Promise<BackupResult>,
   writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
   saveMarkdownFile: (defaultFileName: string, content: string) => ipcRenderer.invoke('knowbook:save-markdown-file', defaultFileName, content) as Promise<string | null>,
-  searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   getSetting: (key: string) => ipcRenderer.invoke('knowbook:get-setting', key) as Promise<string | null>,
-  saveSetting: (key: string, value: string) => ipcRenderer.invoke('knowbook:save-setting', key, value) as Promise<void>
+  saveSetting: (key: string, value: string) => ipcRenderer.invoke('knowbook:save-setting', key, value) as Promise<void>,
+  searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
+  createDocumentDatabase: (input: CreateDatabaseInput) => ipcRenderer.invoke('knowbook:create-document-database', input) as Promise<DocumentDatabase>,
+  getDatabases: () => ipcRenderer.invoke('knowbook:get-databases') as Promise<DocumentDatabase[]>,
+  createDatabaseEntity: (input: CreateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:create-database-entity', input) as Promise<DatabaseEntity>,
+  updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:update-database-entity', input) as Promise<void>,
+  deleteDatabaseEntity: (entityId: string) => ipcRenderer.invoke('knowbook:delete-database-entity', entityId) as Promise<void>,
+  getDatabaseEntities: (databaseId: string) => ipcRenderer.invoke('knowbook:get-database-entities', databaseId) as Promise<DatabaseEntity[]>
 }
 
 contextBridge.exposeInMainWorld('knowbook', api)

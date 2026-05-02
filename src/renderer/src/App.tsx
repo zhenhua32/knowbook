@@ -1074,6 +1074,7 @@ export function App() {
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
+  const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
@@ -2424,6 +2425,8 @@ export function App() {
       setBackupMessage(message)
     }
   }
+
+  async function updateDocumentDatabaseValue(documentId: string, columnId: string, value: DocumentDatabaseFieldValue) {
     const previousFieldValue = homeData.documentCatalog.find((document) => document.id === documentId)?.fieldValues[columnId]
 
     setHomeData((previous) => ({

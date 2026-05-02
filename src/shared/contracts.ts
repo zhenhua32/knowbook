@@ -102,6 +102,14 @@ export interface UpdateDatabaseEntityInput {
   documentId?: string | null
 }
 
+export interface DeleteDatabaseEntityInput {
+  entityId: string
+}
+
+export interface GetDatabaseEntitiesInput {
+  databaseId: string
+}
+
 export interface DocumentTreeNode {
   id: string
   title: string
@@ -431,14 +439,20 @@ export interface ElectronApi {
   installPluginFromFolder: () => Promise<InstallPluginResult | null>
   removePlugin: (pluginId: string) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
-  getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
-  searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
-  getBlockReference: (documentPath: string, blockId: string) => Promise<BlockReferenceResult | null>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>
   saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>
   getSetting: (key: string) => Promise<string | null>
   saveSetting: (key: string, value: string) => Promise<void>
+  createDocumentDatabase: (input: CreateDatabaseInput) => Promise<DocumentDatabase>
+  getDatabases: () => Promise<DocumentDatabase[]>
+  createDatabaseEntity: (input: CreateDatabaseEntityInput) => Promise<DatabaseEntity>
+  updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => Promise<void>
+  deleteDatabaseEntity: (entityId: string) => Promise<void>
+  getDatabaseEntities: (databaseId: string) => Promise<DatabaseEntity[]>
+  searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
+  getBlockReference: (documentPath: string, blockId: string) => Promise<BlockReferenceResult | null>
+  getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
 }
 
 declare global {
