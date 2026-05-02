@@ -287,3 +287,67 @@ test('database field serialization handles text/date/checkbox nullability and va
     assert.equal(updatedHome.fieldValues[dateColumn.id], '2026-05-02')
   })
 })
+
+test('ai config persists defaults, api key, and automation flags', () => {
+  withStore((store) => {
+    store.updateAiConfig({
+      enabled: false,
+      baseUrl: 'https://example.ai/v1',
+      model: 'gpt-4.1-mini',
+      embeddingModel: 'text-embedding-3-small',
+      autoSummaryOnSave: true,
+      autoTagOnSave: true,
+      autoHighlightOnSave: false,
+      apiKey: 'secret-key'
+    })
+
+    const config = store.getAiConfigPublic()
+    assert.equal(config.enabled, false)
+    assert.equal(config.baseUrl, 'https://example.ai/v1')
+    assert.equal(config.autoSummaryOnSave, true)
+    assert.equal(config.autoTagOnSave, true)
+    assert.equal(config.autoHighlightOnSave, false)
+    assert.equal(config.hasApiKey, true)
+  })
+})
+
+test('semantic search candidates support exclusion and embedding deletion by model', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+
+    const candidates = store.getSemanticSearchCandidates({ excludeDocumentId: home.id })
+    assert.equal(candidates.some((item) => item.documentId === home.id), false)
+    assert.equal(candidates.length > 0, true)
+
+    const kept = candidates[0]
+    assert.ok(kept)
+    store.saveDocumentEmbedding(kept.documentId, 'm1', kept.contentHash, [0.2, 0.3])
+    store.saveDocumentEmbedding(kept.documentId, 'm2', kept.contentHash, [0.4, 0.5])
+    assert.deepEqual(store.getCachedDocumentEmbedding(kept.documentId, 'm1', kept.contentHash), [0.2, 0.3])
+
+    store.deleteEmbeddingsByModel('m1')
+    assert.equal(store.getCachedDocumentEmbedding(kept.documentId, 'm1', kept.contentHash), null)
+    assert.deepEqual(store.getCachedDocumentEmbedding(kept.documentId, 'm2', kept.contentHash), [0.4, 0.5])
+  })
+})
+
+test('workspace event stream keeps recent items and preserves latest order', () => {
+  withStore((store, backupRoot) => {
+    for (let i = 0; i < 50; i += 1) {
+      const second = String(i).padStart(2, '0')
+      store.recordWorkspaceEvent({
+        type: 'plugin.loaded',
+        title: ` event ${i} `,
+        description: ` description ${i} `,
+        createdAt: `2026-05-02T00:00:${second}.000Z`
+      })
+    }
+
+    const recentEvents = store.getHomeData(backupRoot).recentEvents
+    assert.equal(recentEvents.length, 8)
+    assert.equal(recentEvents[0]?.title, 'event 49')
+    assert.equal(recentEvents[0]?.description, 'description 49')
+    assert.equal(recentEvents[7]?.title, 'event 42')
+  })
+})

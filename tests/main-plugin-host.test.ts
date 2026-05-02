@@ -183,3 +183,113 @@ test('PluginHost installs and removes user-data plugins', async () => {
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost marks invalid plugin entry as error', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-invalid-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const badPluginRoot = join(workspaceRoot, 'broken-plugin')
+
+  mkdirSync(badPluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(badPluginRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'broken-plugin',
+        name: 'Broken Plugin',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(join(badPluginRoot, 'index.js'), 'module.exports = {}\n', 'utf8')
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'broken-plugin')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').includes('activate(api)'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost rejects install when plugin id conflicts with workspace plugin', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-conflict-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const sourceRoot = join(tempRoot, 'source-plugin')
+
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+  mkdirSync(sourceRoot, { recursive: true })
+
+  const activitySource = join(process.cwd(), 'plugins', 'activity-pulse')
+  cpSync(activitySource, join(workspaceRoot, 'activity-pulse'), { recursive: true })
+
+  writeFileSync(
+    join(sourceRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'activity-pulse',
+        name: 'Activity Pulse Local',
+        version: '0.1.1',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(sourceRoot, 'index.js'),
+    'module.exports.activate = function activate() { return undefined }\n',
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    await assert.rejects(
+      () => host.installPluginFromDirectory(sourceRoot),
+      /already provided by the workspace plugin/
+    )
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
