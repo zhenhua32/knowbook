@@ -293,3 +293,101 @@ test('PluginHost rejects install when plugin id conflicts with workspace plugin'
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost records failed document action when plugin handler throws', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-action-fail-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const failingPluginRoot = join(workspaceRoot, 'failing-plugin')
+
+  mkdirSync(failingPluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(failingPluginRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'failing-plugin',
+        name: 'Failing Plugin',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(failingPluginRoot, 'index.js'),
+    [
+      'module.exports.activate = function activate(api) {',
+      '  api.contributeDocumentAction({ id: "explode", label: "Explode" }, function runAction() {',
+      '    throw new Error("boom-action")',
+      '  })',
+      '}'
+    ].join('\n'),
+    'utf8'
+  )
+
+  const events: Array<{ type: string; title: string; description: string; documentId?: string | null }> = []
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: (input: { type: string; title: string; description: string; documentId?: string | null }) => {
+      events.push(input)
+    }
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    await assert.rejects(
+      () => host.runDocumentAction({ pluginId: 'failing-plugin', actionId: 'explode', documentId: 'doc-1' }),
+      /boom-action/
+    )
+
+    assert.equal(events.some((event) => event.type === 'plugin.action.failed' && event.title.includes('Explode')), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost refuses removing workspace-scoped plugins', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-remove-workspace-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  const sourcePluginDir = join(process.cwd(), 'plugins', 'activity-pulse')
+  cpSync(sourcePluginDir, join(workspaceRoot, 'activity-pulse'), { recursive: true })
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+    await assert.rejects(() => host.removePlugin('activity-pulse'), /Only plugins installed into the user-data root/)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
