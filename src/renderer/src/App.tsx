@@ -3939,18 +3939,18 @@ export function App() {
   }, [boardGroupBy, boardGroupableColumns])
 
   return (
-    <div className="shell">
-      <PageRail
-        activePage={activePage}
-        brandEyebrow={ui.brandEyebrow}
-        currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
-        currentPageLabel={isZh ? '当前页面' : 'Current page'}
-        navLabel={isZh ? '页面导航' : 'Navigation'}
-        onSelectPage={(pageId) => setActivePage(pageId as PageId)}
-        pageDescription={pageDescription}
-        pageItems={pageItems}
-        pageTitle={pageTitle}
-      />
+     <div className="shell" data-testid="shell">
+       <PageRail
+         activePage={activePage}
+         brandEyebrow={ui.brandEyebrow}
+         currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
+         currentPageLabel={isZh ? '当前页面' : 'Current page'}
+         navLabel={isZh ? '页面导航' : 'Navigation'}
+         onSelectPage={(pageId) => setActivePage(pageId as PageId)}
+         pageDescription={pageDescription}
+         pageItems={pageItems}
+         pageTitle={pageTitle}
+       />
 
       <main className="content">
         {activePage === 'dashboard' ? (
@@ -4043,8 +4043,8 @@ export function App() {
           </section>
         ) : null}
 
-        {activePage === 'graph' ? <section className="graph-grid">
-          <article className="panel graph-panel">
+         {activePage === 'graph' ? <section className="graph-grid" data-testid="graph-grid">
+           <article className="panel graph-panel">
             <div className="panel-head compact-head">
               <div>
                 <p className="panel-label">{ui.knowledgeGraphLabel}</p>
@@ -4065,8 +4065,8 @@ export function App() {
           </article>
         </section> : null}
 
-        {activePage === 'database' ? <section className="database-grid">
-          <article className="panel database-panel">
+         {activePage === 'database' ? <section className="database-grid" data-testid="database-grid">
+           <article className="panel database-panel">
             <div className="panel-head compact-head">
               <div>
                 <p className="panel-label">{ui.databaseViewLabel}</p>
@@ -4210,8 +4210,8 @@ export function App() {
           </article>
         </section> : null}
 
-        {activePage === 'documents' ? <section className="workspace-grid">
-          <DocumentsSidebar
+         {activePage === 'documents' ? <section className="workspace-grid" data-testid="workspace-grid">
+           <DocumentsSidebar
             backTitle={`${ui.back} (Alt+←)`}
             dragOverRoot={dragOverRoot}
             dropToRootLabel={ui.dropToRoot}
