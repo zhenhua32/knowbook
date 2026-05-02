@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS databases (
 
 CREATE TABLE IF NOT EXISTS document_database_columns (
   id TEXT PRIMARY KEY,
-  database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+  database_id TEXT REFERENCES databases(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   type TEXT NOT NULL,
   options_json TEXT NOT NULL DEFAULT '[]',
@@ -75,11 +75,11 @@ CREATE INDEX IF NOT EXISTS idx_database_entities_database_id ON database_entitie
 CREATE INDEX IF NOT EXISTS idx_database_entities_document_id ON database_entities(document_id);
 
 CREATE TABLE IF NOT EXISTS document_database_values (
-  entity_id TEXT NOT NULL REFERENCES database_entities(id) ON DELETE CASCADE,
+  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,
   value_text TEXT,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (entity_id, column_id)
+  PRIMARY KEY (document_id, column_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_document_database_values_document_id ON document_database_values(document_id);

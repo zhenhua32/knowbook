@@ -45,8 +45,8 @@ test('isBoardGroupableColumn only allows parent-compatible field types', () => {
   assert.equal(isBoardGroupableColumn(createColumn({ type: 'select' })), true)
   assert.equal(isBoardGroupableColumn(createColumn({ type: 'multi-select' })), true)
   assert.equal(isBoardGroupableColumn(createColumn({ type: 'checkbox' })), true)
-  assert.equal(isBoardGroupableColumn(createColumn({ type: 'date' })), false)
-  assert.equal(isBoardGroupableColumn(createColumn({ type: 'text' })), false)
+  assert.equal(isBoardGroupableColumn(createColumn({ type: 'date' })), true)
+  assert.equal(isBoardGroupableColumn(createColumn({ type: 'text' })), true)
 })
 
 test('buildBoardColumns groups by parent bucket and keeps root first', () => {
@@ -126,6 +126,8 @@ test('getBoardDropFieldValue respects select, multi-select, and checkbox semanti
   const selectColumn = createColumn({ id: 'status', type: 'select', options: ['Todo', 'Done'] })
   const multiSelectColumn = createColumn({ id: 'tags', type: 'multi-select', options: ['AI', 'UX'] })
   const checkboxColumn = createColumn({ id: 'done', type: 'checkbox' })
+  const dateColumn = createColumn({ id: 'date', type: 'date' })
+  const textColumn = createColumn({ id: 'notes', type: 'text' })
 
   assert.equal(getBoardDropFieldValue(selectColumn, 'Todo', 'Todo'), undefined)
   assert.equal(getBoardDropFieldValue(selectColumn, 'Todo', 'Done'), 'Done')
@@ -137,6 +139,16 @@ test('getBoardDropFieldValue respects select, multi-select, and checkbox semanti
 
   assert.equal(getBoardDropFieldValue(checkboxColumn, false, false), undefined)
   assert.equal(getBoardDropFieldValue(checkboxColumn, false, true), true)
+
+  // Date field: accepts valid date strings
+  assert.equal(getBoardDropFieldValue(dateColumn, '2024-01-01', '2024-01-01'), undefined)
+  assert.equal(getBoardDropFieldValue(dateColumn, '2024-01-01', '2024-02-01'), '2024-02-01')
+  assert.equal(getBoardDropFieldValue(dateColumn, '2024-01-01', null), null)
+
+  // Text field: accepts any string
+  assert.equal(getBoardDropFieldValue(textColumn, 'hello', 'hello'), undefined)
+  assert.equal(getBoardDropFieldValue(textColumn, 'hello', 'world'), 'world')
+  assert.equal(getBoardDropFieldValue(textColumn, 'hello', ''), '')
 })
 
 test('normalizeCodeLanguage maps common aliases to canonical names', () => {
