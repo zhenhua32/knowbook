@@ -4429,7 +4429,6 @@ export function App() {
                       <button className="secondary-button" onClick={addDraftBlock} type="button">
                         {ui.addBlock}
                       </button>
-                      <DraftBlockTreeOutline blocks={draftBlocks} />
                       {activeLinkContext ? (
                         <LinkSuggestionPanel
                           blockSuggestions={blockSuggestions}
@@ -5408,79 +5407,6 @@ function RelationList({
   )
 }
 
-type BlockTreePreviewNode = {
-  id: string
-  type: string
-  content: string
-  depth: number
-  children: BlockTreePreviewNode[]
-}
-
-function BlockTreeOutline({ blocks }: { blocks: DocumentBlock[] }) {
-  const ui = getActiveUiText()
-  const roots = buildBlockTree(blocks)
-
-  return (
-    <div className="block-tree-panel">
-      <div className="panel-head compact-head">
-        <div>
-          <p className="panel-label">{ui.blockTreeLabel}</p>
-          <h4>{ui.savedHierarchy}</h4>
-        </div>
-        <div className="toolbar-inline">
-          <span className="pill">{ui.language === 'zh-CN' ? `${blocks.length} 个节点` : `${blocks.length} nodes`}</span>
-          <span className="pill">parent_block_id</span>
-        </div>
-      </div>
-      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">{ui.noBlockRelationships}</p>}
-    </div>
-  )
-}
-
-function DraftBlockTreeOutline({ blocks }: { blocks: DocumentBlockDraft[] }) {
-  const ui = getActiveUiText()
-  const roots = buildDraftBlockTree(blocks)
-
-  return (
-    <div className="block-tree-panel">
-      <div className="panel-head compact-head">
-        <div>
-          <p className="panel-label">{ui.draftTreeLabel}</p>
-          <h4>{ui.draftHierarchy}</h4>
-        </div>
-        <div className="toolbar-inline">
-          <span className="pill">{ui.language === 'zh-CN' ? `${blocks.length} 个节点` : `${blocks.length} nodes`}</span>
-          <span className="pill">{ui.depthPreview}</span>
-        </div>
-      </div>
-      {roots.length > 0 ? <BlockTreeList nodes={roots} /> : <p className="empty-text">{ui.noDraftBlocks}</p>}
-    </div>
-  )
-}
-
-function BlockTreeList({ nodes }: { nodes: BlockTreePreviewNode[] }) {
-  const ui = getActiveUiText()
-
-  return (
-    <ul className="block-tree-list">
-      {nodes.map((node) => (
-        <li className="block-tree-item" key={node.id}>
-          <div className="block-tree-node">
-            <span className="block-tree-type">{getBlockTypeLabel(node.type)}</span>
-            <span className="block-tree-text">{getBlockTreeText(node.type, node.content)}</span>
-            <small className="block-tree-meta">{ui.depthLabel(node.depth)}</small>
-          </div>
-          {node.children.length > 0 ? (
-            <div className="block-tree-children">
-              <BlockTreeList nodes={node.children} />
-            </div>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
 function renderBlock(
   block: DocumentBlock,
   onSelectDocument: (documentId: string) => void,
@@ -6178,92 +6104,6 @@ function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: nu
       y: centerY + Math.sin(angle) * radius
     }
   })
-}
-
-function buildBlockTree(blocks: DocumentBlock[]): BlockTreePreviewNode[] {
-  const nodeMap = new Map<string, BlockTreePreviewNode>()
-  const roots: BlockTreePreviewNode[] = []
-
-  for (const block of blocks) {
-    nodeMap.set(block.id, {
-      id: block.id,
-      type: block.type,
-      content: block.content,
-      depth: block.depth,
-      children: []
-    })
-  }
-
-  for (const block of blocks) {
-    const node = nodeMap.get(block.id)
-    if (!node) {
-      continue
-    }
-
-    const parent = block.parentBlockId ? nodeMap.get(block.parentBlockId) : null
-    if (parent) {
-      parent.children.push(node)
-    } else {
-      roots.push(node)
-    }
-  }
-
-  const sortOrderMap = new Map(blocks.map((block) => [block.id, block.sortOrder]))
-  const sortNodes = (nodes: BlockTreePreviewNode[]) => {
-    nodes.sort((left, right) => (sortOrderMap.get(left.id) ?? 0) - (sortOrderMap.get(right.id) ?? 0))
-    nodes.forEach((node) => sortNodes(node.children))
-  }
-
-  sortNodes(roots)
-  return roots
-}
-
-function buildDraftBlockTree(blocks: DocumentBlockDraft[]): BlockTreePreviewNode[] {
-  const normalizedBlocks = normalizeDraftBlocks(blocks)
-  const nodeMap = new Map<string, BlockTreePreviewNode>()
-  const roots: BlockTreePreviewNode[] = []
-
-  for (const block of normalizedBlocks) {
-    if (!block.id) {
-      continue
-    }
-
-    nodeMap.set(block.id, {
-      id: block.id,
-      type: block.type,
-      content: block.content,
-      depth: block.depth,
-      children: []
-    })
-  }
-
-  for (const block of normalizedBlocks) {
-    if (!block.id) {
-      continue
-    }
-
-    const node = nodeMap.get(block.id)
-    if (!node) {
-      continue
-    }
-
-    const parent = block.parentBlockId ? nodeMap.get(block.parentBlockId) : null
-    if (parent) {
-      parent.children.push(node)
-    } else {
-      roots.push(node)
-    }
-  }
-
-  const sortOrderMap = new Map(normalizedBlocks.map((block, index) => [block.id ?? `draft-${index}`, index]))
-  const sortNodes = (nodes: BlockTreePreviewNode[]) => {
-    nodes.sort((left, right) => (sortOrderMap.get(left.id) ?? 0) - (sortOrderMap.get(right.id) ?? 0))
-    nodes.forEach((node) => sortNodes(node.children))
-  }
-
-  sortNodes(roots)
-
-  return roots
 }
 
 function getBlockTypeLabel(type: string): string {
