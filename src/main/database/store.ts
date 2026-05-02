@@ -1348,29 +1348,32 @@ export class KnowbookStore {
     
     const allRows = [...documentRows, ...entityRows]
 
-    const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
-    const fieldRows = this.db.prepare(`
-      SELECT entity_id, column_id, value_text
-      FROM document_database_values
-      ORDER BY entity_id ASC, column_id ASC
-    `).all() as Array<{
-      entity_id: string | null
-      column_id: string
-      value_text: string | null
-    }>
-    const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+     const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
+     const fieldRows = this.db.prepare(`
+       SELECT entity_id, document_id, column_id, value_text
+       FROM document_database_values
+       ORDER BY entity_id ASC, document_id ASC, column_id ASC
+     `).all() as Array<{
+       entity_id: string | null
+       document_id: string | null
+       column_id: string
+       value_text: string | null
+     }>
+     const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+     const allRowIds = new Set(allRows.map((row) => row.id))
 
-    for (const row of fieldRows) {
-      if (!row.entity_id) continue
-      const column = columnById.get(row.column_id)
-      if (!column) {
-        continue
-      }
+     for (const row of fieldRows) {
+       const targetId = row.entity_id ?? row.document_id
+       if (!targetId || !allRowIds.has(targetId)) continue
+       const column = columnById.get(row.column_id)
+       if (!column) {
+         continue
+       }
 
-      const fieldValues = fieldValuesByDocumentId.get(row.entity_id) ?? {}
-      fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
-      fieldValuesByDocumentId.set(row.entity_id, fieldValues)
-    }
+       const fieldValues = fieldValuesByDocumentId.get(targetId) ?? {}
+       fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
+       fieldValuesByDocumentId.set(targetId, fieldValues)
+     }
 
     return allRows.map((row) => ({
       id: row.id,
