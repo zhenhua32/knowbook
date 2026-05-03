@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: light;
   font-family: 'Segoe UI', 'PingFang SC', sans-serif;
   line-height: 1.5;
@@ -641,7 +641,7 @@ dt,
 }
 
 .document-summary-card {
-  padding: 18px;
+  padding: 12px 18px;
   border-radius: 20px;
   background: linear-gradient(160deg, rgba(245, 236, 220, 0.9) 0%, rgba(255, 251, 245, 0.95) 100%);
 }
@@ -727,7 +727,7 @@ dt,
 }
 
 .preview-section {
-  margin-top: 18px;
+  margin-top: 4px;
 }
 
 .plugin-document-actions {
@@ -773,7 +773,7 @@ dt,
   justify-content: flex-end;
 }
 
-/* ── Notion-style block editor row ── */
+/* 鈹€鈹€ Notion-style block editor row 鈹€鈹€ */
 .block-editor-row {
   display: flex;
   align-items: flex-start;
@@ -817,7 +817,7 @@ dt,
   background: linear-gradient(90deg, rgba(47, 111, 237, 0.24) 0%, rgba(47, 111, 237, 0.12) 100%);
 }
 
-/* ── Hover controls (left gutter) ── */
+/* 鈹€鈹€ Hover controls (left gutter) 鈹€鈹€ */
 .block-hover-controls {
   display: flex;
   align-items: center;
@@ -879,7 +879,7 @@ dt,
   cursor: grabbing;
 }
 
-/* ── Block content area ── */
+/* 鈹€鈹€ Block content area 鈹€鈹€ */
 .block-content-area {
   flex: 1;
   min-width: 0;
@@ -888,7 +888,7 @@ dt,
   gap: 2px;
 }
 
-/* ── Styled inline textarea per block type ── */
+/* 鈹€鈹€ Styled inline textarea per block type 鈹€鈹€ */
 .block-inline-textarea {
   width: 100%;
   border: none;
@@ -962,7 +962,7 @@ dt,
   padding-left: 4px;
 }
 
-/* ── Block type prefix indicators ── */
+/* 鈹€鈹€ Block type prefix indicators 鈹€鈹€ */
 .block-type-prefix {
   flex-shrink: 0;
   color: rgba(91, 72, 44, 0.45);
@@ -2241,10 +2241,11 @@ del {
   font-size: 0.8rem;
 }
 
-/* Wave 29: Document TOC / Outline Panel */
+/* Wave 29: Document TOC / Outline Panel */
 .toc-panel {
-  padding: 12px 20px;
-  border-bottom: 1px solid rgba(91,72,44,0.1);
+  padding: 8px 16px;
+  border-radius: 14px;
+  background: rgba(240, 247, 255, 0.5);
 }
 
 .toc-list {
@@ -3018,3 +3019,4 @@ del {
   padding: 32px;
 }
 
+\r\.toc-panel {\r\nn.toc-panel {
