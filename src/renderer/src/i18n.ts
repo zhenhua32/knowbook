@@ -204,7 +204,10 @@ function createUiText(language: UiLanguage) {
     aiReadyState: (enabled: boolean) => enabled ? (zh ? 'API 已就绪' : 'API ready') : (zh ? '已禁用' : 'Disabled'),
     pluginCardLabel: zh ? '插件卡片' : 'Plugin card',
     knowledgeGraphLabel: zh ? '知识图谱' : 'Knowledge graph',
+    treeView: zh ? '树视图' : 'Tree view',
+    graphView: zh ? '图谱视图' : 'Graph view',
     knowledgeGraphTitle: zh ? '工作区拓扑' : 'Workspace topology',
+    workspaceTopology: zh ? '工作区拓扑' : 'Workspace topology',
     databaseViewLabel: zh ? '数据库视图' : 'Database view',
     documentCatalogTitle: zh ? '文档目录' : 'Document catalog',
     addColumn: zh ? '新增列' : 'Add column',
@@ -237,6 +240,8 @@ function createUiText(language: UiLanguage) {
         ? `在列之间拖拽卡片会更新“${columnName}”字段。`
         : `Dragging cards between columns will update the "${columnName}" field.`
     },
+    nodes: zh ? '节点' : 'nodes',
+    edges: zh ? '边' : 'edges',
     boardHintForParent: zh ? '在列之间拖拽卡片会重新挂载文档父级。' : 'Dragging cards between columns will reparent documents.',
     workspaceTreeLabel: zh ? '工作区树' : 'Workspace tree',
     seededDocumentsTitle: zh ? '初始文档树' : 'Seeded documents',

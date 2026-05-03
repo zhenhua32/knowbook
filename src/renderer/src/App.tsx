@@ -42,6 +42,8 @@ import {
 } from './i18n'
 import { PageRail } from './components/PageRail'
 import { DocumentsSidebar } from './components/DocumentsSidebar'
+import { WorkspaceGraph } from './components/WorkspaceGraph'
+import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { DocumentPreviewHeader } from './components/DocumentPreviewHeader'
 import { DocumentsAuxPanel } from './components/DocumentsAuxPanel'
 import { DocumentStatsBar } from './components/DocumentStatsBar'
@@ -3989,98 +3991,59 @@ export function App() {
     }
   }, [boardGroupBy, boardGroupableColumns])
 
-  return (
+return (
      <div className="shell" data-testid="shell">
-        <div className="sidebar">
-          <div className="rail-wrapper">
-            <PageRail
-              activePage={activePage}
-              brandEyebrow={ui.brandEyebrow}
-              currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
-              currentPageLabel={isZh ? '当前页面' : 'Current page'}
-              navLabel={isZh ? '页面导航' : 'Navigation'}
-              onSelectPage={(pageId) => setActivePage(pageId as PageId)}
-              pageDescription={pageDescription}
-              pageItems={pageItems}
-              pageTitle={pageTitle}
-            />
-            <div
-              className="resize-handle"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                const railWrapper = (e.currentTarget.parentElement) as HTMLElement;
-                const rail = railWrapper.querySelector('.rail') as HTMLElement;
-                if (!rail) return;
-                const startX = e.clientX;
-                const startWidth = rail.offsetWidth;
-
-                function onMouseMove(e: MouseEvent) {
-                  const newWidth = Math.max(160, Math.min(400, startWidth + (e.clientX - startX)));
-                  rail.style.width = newWidth + 'px';
-                }
-
-                function onMouseUp() {
-                  document.removeEventListener('mousemove', onMouseMove);
-                  document.removeEventListener('mouseup', onMouseUp);
-                }
-
-                document.addEventListener('mousemove', onMouseMove);
-                document.addEventListener('mouseup', onMouseUp);
-              }}
-            />
-          </div>
-
-          {activePage === 'documents' ? (
-            <div className="tree-wrapper">
-              <DocumentsSidebar
-                backTitle={`${ui.back} (Alt+←)`}
-                dragOverRoot={dragOverRoot}
-                dropToRootLabel={ui.dropToRoot}
-                forwardTitle={`${ui.forward} (Alt+→)`}
-                globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-                navCanGoBack={navCanGoBack}
-                navCanGoForward={navCanGoForward}
-                newRootLabel={ui.newRoot}
-                onCreateRoot={() => handleCreateDocument(null)}
-                onDropToRoot={() => { void dropToRoot() }}
-                onNavBack={navBack}
-                onNavForward={navForward}
-                onOpenGlobalSearch={openGlobalSearch}
-                onRootDragLeave={() => setDragOverRoot(false)}
-                onRootDragOver={() => {
-                  if (draggingDocumentId) {
-                    setDragOverRoot(true)
-                    setDragOverDocumentId(null)
-                  }
-                }}
-                onSelectDocument={openDocumentInDocumentsPage}
-                panelLabel={ui.workspaceTreeLabel}
-                pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
-                pinnedSectionLabel={ui.pinnedSectionLabel}
-                rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
-                selectedDocumentId={selectedDocumentId}
-                title={ui.seededDocumentsTitle}
-                tree={(
-                  <DocumentTree
-                    nodes={homeData.documentTree}
-                    selectedDocumentId={selectedDocumentId}
-                    onSelect={openDocumentInDocumentsPage}
-                    draggingDocumentId={draggingDocumentId}
-                    dragOverDocumentId={dragOverDocumentId}
-                    onDragStart={beginDrag}
-                    onDragEnd={endDrag}
-                    onDragOverNode={(documentId) => {
-                      if (draggingDocumentId && draggingDocumentId !== documentId) {
-                        setDragOverDocumentId(documentId)
-                        setDragOverRoot(false)
-                      }
-                    }}
-                    onDropOnNode={dropOnDocument}
-                  />
-                )}
-              />
-            </div>
-          ) : null}
+       <div className="sidebar">
+         <PageNavWithWorkspaceTree
+           activePage={activePage}
+           pageItems={pageItems}
+           onSelectPage={(pageId) => setActivePage(pageId as PageId)}
+           pageTitle={pageTitle}
+           pageDescription={pageDescription}
+           brandEyebrow={ui.brandEyebrow}
+           navLabel={isZh ? '页面导航' : 'Navigation'}
+           currentPageLabel={isZh ? '当前页面' : 'Current page'}
+           currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
+           backTitle={`${ui.back} (Alt+←)`}
+           forwardTitle={`${ui.forward} (Alt+→)`}
+           rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
+           onOpenGlobalSearch={openGlobalSearch}
+           globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
+           onCreateRoot={() => handleCreateDocument(null)}
+           newRootLabel={ui.newRoot}
+           dropToRootLabel={ui.dropToRoot}
+           dragOverRoot={dragOverRoot}
+           onRootDragOver={() => {
+             if (draggingDocumentId) {
+               setDragOverRoot(true)
+               setDragOverDocumentId(null)
+             }
+           }}
+           onRootDragLeave={() => setDragOverRoot(false)}
+            onDropToRoot={() => { void dropToRoot() }}
+            pinnedSectionLabel={ui.pinnedSectionLabel}
+            pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
+            selectedDocumentId={selectedDocumentId}
+            onSelectDocument={openDocumentInDocumentsPage}
+            documentTreeNodes={homeData.documentTree}
+            workspaceGraphNodes={homeData.graph.nodes}
+            workspaceGraphEdges={homeData.graph.edges}
+            navCanGoBack={navCanGoBack}
+            navCanGoForward={navCanGoForward}
+            onNavBack={navBack}
+            onNavForward={navForward}
+            onSelectGraphNode={openDocumentInDocumentsPage}
+            onDragStart={beginDrag}
+            onDragEnd={endDrag}
+            onDragOverNode={(documentId) => {
+              if (draggingDocumentId && draggingDocumentId !== documentId) {
+                setDragOverDocumentId(documentId)
+                setDragOverRoot(false)
+              }
+            }}
+            onDropOnNode={dropOnDocument}
+            uiLanguage={uiLanguage}
+          />
         </div>
 
        <main className="content">
@@ -5083,141 +5046,6 @@ export function App() {
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function DocumentTree({
-  nodes,
-  selectedDocumentId,
-  onSelect,
-  draggingDocumentId,
-  dragOverDocumentId,
-  onDragStart,
-  onDragEnd,
-  onDragOverNode,
-  onDropOnNode
-}: {
-  nodes: DocumentTreeNode[]
-  selectedDocumentId: string | null
-  onSelect: (documentId: string) => void
-  draggingDocumentId: string | null
-  dragOverDocumentId: string | null
-  onDragStart: (documentId: string) => void
-  onDragEnd: () => void
-  onDragOverNode: (documentId: string) => void
-  onDropOnNode: (documentId: string) => Promise<void>
-}) {
-  const ui = getActiveUiText()
-
-  return (
-    <ul className="tree-list">
-      {nodes.map((node) => (
-        <li className="tree-node" key={node.id}>
-          <button
-            className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}${dragOverDocumentId === node.id ? ' tree-button-drag-over' : ''}`}
-            onClick={() => onSelect(node.id)}
-            type="button"
-            draggable
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = 'move'
-              event.dataTransfer.setData('text/plain', node.id)
-              onDragStart(node.id)
-            }}
-            onDragEnd={onDragEnd}
-            onDragOver={(event) => {
-              event.preventDefault()
-              if (draggingDocumentId !== node.id) {
-                onDragOverNode(node.id)
-              }
-            }}
-            onDrop={async (event) => {
-              event.preventDefault()
-              await onDropOnNode(node.id)
-            }}
-          >
-            <span>{node.title}</span>
-            <small>{new Date(node.updatedAt).toLocaleDateString(ui.locale)}</small>
-          </button>
-          <p className="tree-path">{node.path}</p>
-          {node.children.length > 0 ? (
-            <div className="tree-children">
-              <DocumentTree
-                nodes={node.children}
-                selectedDocumentId={selectedDocumentId}
-                onSelect={onSelect}
-                draggingDocumentId={draggingDocumentId}
-                dragOverDocumentId={dragOverDocumentId}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-                onDragOverNode={onDragOverNode}
-                onDropOnNode={onDropOnNode}
-              />
-            </div>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-function WorkspaceGraph({
-  nodes,
-  edges,
-  selectedDocumentId,
-  onSelect
-}: {
-  nodes: WorkspaceGraphNode[]
-  edges: WorkspaceGraphEdge[]
-  selectedDocumentId: string | null
-  onSelect: (documentId: string) => void
-}) {
-  const ui = getActiveUiText()
-  const width = 920
-  const height = 320
-  const layout = buildGraphLayout(nodes, width, height)
-  const positionMap = new Map(layout.map((node) => [node.id, node]))
-
-  return (
-    <div className="graph-surface">
-      <svg className="graph-svg" viewBox={`0 0 ${width} ${height}`}>
-        {edges.map((edge, index) => {
-          const source = positionMap.get(edge.sourceId)
-          const target = positionMap.get(edge.targetId)
-          if (!source || !target) {
-            return null
-          }
-
-          return (
-            <line
-              className={`graph-edge graph-edge-${edge.kind}`}
-              key={`edge-${edge.kind}-${index}`}
-              x1={source.x}
-              x2={target.x}
-              y1={source.y}
-              y2={target.y}
-            />
-          )
-        })}
-
-        {layout.map((node) => (
-          <g className="graph-node-group" key={node.id} onClick={() => onSelect(node.id)}>
-            <circle
-              className={`graph-node${selectedDocumentId === node.id ? ' graph-node-active' : ''}`}
-              cx={node.x}
-              cy={node.y}
-              r={selectedDocumentId === node.id ? 12 : 9}
-            />
-            <text className="graph-node-label" textAnchor="middle" x={node.x} y={node.y + 24}>
-              {node.title}
-            </text>
-          </g>
-        ))}
-      </svg>
-      <div className="graph-legend">
-        <span><i className="legend-swatch legend-swatch-tree" /> {ui.graphLegendTree}</span>
-        <span><i className="legend-swatch legend-swatch-link" /> {ui.graphLegendLink}</span>
-      </div>
     </div>
   )
 }

@@ -3003,3 +3003,119 @@ del {
   border-color: #2f6fed;
   box-shadow: 0 0 0 2px rgba(47, 111, 237, 0.1);
 }
+
+/* Combined Navigation Styles */
+.sidebar-combined {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.nav-rail-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.nav-rail-wrapper .rail {
+  width: 100%;
+}
+
+.workspace-nav-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.workspace-quick-actions {
+  display: flex;
+  padding: 4px 8px;
+  gap: 4px;
+  border-bottom: 1px solid rgba(71, 55, 32, 0.08);
+  background: rgba(255, 249, 241, 0.3);
+  flex-shrink: 0;
+}
+
+.quick-action-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b5b4a;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.quick-action-btn:hover {
+  background: rgba(71, 55, 32, 0.08);
+  border-color: rgba(71, 55, 32, 0.15);
+}
+
+.quick-action-btn.active {
+  background: rgba(203, 122, 32, 0.12);
+  border-color: rgba(203, 122, 32, 0.3);
+  color: #cb7a20;
+}
+
+.quick-action-btn.active:hover {
+  background: rgba(203, 122, 32, 0.2);
+}
+
+.workspace-graph-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.tree-nav-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.sidebar-combined .panel-head {
+  padding: 6px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-combined .pinned-section {
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-combined .root-drop-zone {
+  margin: 4px 8px;
+  flex-shrink: 0;
+}
+
+.sidebar-combined .tree-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.sidebar-combined.collapsed {
+  width: 200px;
+}
+
+.sidebar-combined.collapsed .tree-wrapper,
+.sidebar-combined.collapsed .workspace-graph-section,
+.sidebar-combined.collapsed .tree-nav-section {
+  display: none;
+}
+
