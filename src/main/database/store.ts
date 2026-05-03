@@ -248,6 +248,7 @@ export class KnowbookStore {
     this.ensureBlockLanguageColumn()
     this.ensureBlockHighlightColumn()
     this.ensureBlockParentRelationships()
+    this.ensureDocumentSortOrderColumn()
     this.ensureDatabaseEntities()
     this.seed()
     this.resyncLinksForAllDocuments()
@@ -429,14 +430,18 @@ export class KnowbookStore {
     const title = this.generateSiblingTitle(parentId, 'Untitled')
     const id = randomUUID()
     const slug = `doc-${id.slice(0, 8)}`
+
+    const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(parentId) as { max_sort_order: number }
+    const sortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
+
     const parent = parentId
       ? (this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined)
       : undefined
 
     const path = parent ? `${parent.path}/${title}` : title
     const insertDocument = this.db.prepare(`
-      INSERT INTO documents (id, title, slug, parent_id, path, summary, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
       INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
@@ -444,7 +449,7 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, now, now)
+      insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, sortOrder, now, now)
       insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, '[]', null, null, now, now)
       insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, '[]', null, null, now, now)
     })
@@ -618,9 +623,12 @@ export class KnowbookStore {
     const oldPrefix = `${document.path}/`
     const newPrefix = `${newPath}/`
 
+    const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(newParentId) as { max_sort_order: number }
+    const newSortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
+
     const updateDocumentStatement = this.db.prepare(`
       UPDATE documents
-      SET parent_id = ?, path = ?, updated_at = ?
+      SET parent_id = ?, path = ?, sort_order = ?, updated_at = ?
       WHERE id = ?
     `)
     const updateDescendantsStatement = this.db.prepare(`
@@ -630,7 +638,7 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      updateDocumentStatement.run(targetParent?.id ?? null, newPath, now, document.id)
+      updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${oldPrefix}%`)
     })
 
@@ -1403,13 +1411,14 @@ export class KnowbookStore {
   private getDocumentTree(): DocumentTreeNode[] {
     interface TreeBuilderNode extends DocumentTreeNode {
       parentId: string | null
+      sort_order: number
     }
 
     const rows = this.db.prepare(`
-      SELECT id, title, path, parent_id, updated_at
+      SELECT id, title, path, parent_id, updated_at, sort_order
       FROM documents
-      ORDER BY path ASC
-    `).all() as DocumentTreeRow[]
+      ORDER BY parent_id, sort_order ASC
+    `).all() as (DocumentTreeRow & { sort_order: number })[]
 
     const nodeMap = new Map<string, TreeBuilderNode>()
     const roots: TreeBuilderNode[] = []
@@ -1421,6 +1430,7 @@ export class KnowbookStore {
         path: row.path,
         updatedAt: row.updated_at,
         parentId: row.parent_id,
+        sort_order: row.sort_order,
         children: []
       })
     }
@@ -1440,7 +1450,7 @@ export class KnowbookStore {
     }
 
     const normalize = (nodes: TreeBuilderNode[]): DocumentTreeNode[] => {
-      nodes.sort((left, right) => left.path.localeCompare(right.path))
+      nodes.sort((left, right) => left.sort_order - right.sort_order)
       return nodes.map((node) => ({
         id: node.id,
         title: node.title,
@@ -2017,7 +2027,36 @@ export class KnowbookStore {
     transaction()
   }
 
-   private ensureDatabaseEntities(): void {
+   private ensureDocumentSortOrderColumn(): void {
+    const columns = this.db.prepare('PRAGMA table_info(documents)').all() as BlockTableInfoRow[]
+    if (!columns.some((column) => column.name === 'sort_order')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0')
+
+      const documents = this.db.prepare('SELECT id, parent_id, path FROM documents ORDER BY parent_id, path').all() as Array<{
+        id: string
+        parent_id: string | null
+        path: string
+      }>
+
+      let currentParentId: string | null | undefined = undefined
+      let sortOrder = 0
+
+      const updateStmt = this.db.prepare('UPDATE documents SET sort_order = ? WHERE id = ?')
+
+      for (const doc of documents) {
+        if (doc.parent_id !== currentParentId) {
+          currentParentId = doc.parent_id
+          sortOrder = 0
+        }
+        updateStmt.run(sortOrder, doc.id)
+        sortOrder++
+      }
+    }
+
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_documents_parent_sort_order ON documents(parent_id, sort_order)')
+  }
+
+  private ensureDatabaseEntities(): void {
     // Check if database_id column exists in document_database_columns
     const columns = this.db.prepare('PRAGMA table_info(document_database_columns)').all() as BlockTableInfoRow[]
     if (!columns.some((column) => column.name === 'database_id')) {
@@ -2297,8 +2336,8 @@ export class KnowbookStore {
     const roadmapId = randomUUID()
 
     const insertDocument = this.db.prepare(`
-      INSERT INTO documents (id, title, slug, parent_id, path, summary, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const insertBlock = this.db.prepare(`
       INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
@@ -2311,9 +2350,9 @@ export class KnowbookStore {
 
     const seedTransaction = this.db.transaction(() => {
       const now = new Date().toISOString()
-      insertDocument.run(homeId, 'Home', 'home', null, 'Home', 'Workspace bootstrap document.', now, now)
-      insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', now, now)
-      insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', now, now)
+      insertDocument.run(homeId, 'Home', 'home', null, 'Home', 'Workspace bootstrap document.', 0, now, now)
+      insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', 0, now, now)
+      insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', 0, now, now)
 
       insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, '[]', null, null, now, now)
       insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, '[]', null, null, now, now)
