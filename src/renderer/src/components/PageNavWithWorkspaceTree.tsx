@@ -128,37 +128,17 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
 
       {/* Workspace Tree and Graph Section */}
       <div className="workspace-nav-content">
-        {/* Quick Access Buttons */}
-        <div className="workspace-quick-actions">
-          <button
-            className={`quick-action-btn ${showWorkspaceGraph ? '' : 'active'}`}
-            onClick={() => setShowWorkspaceGraph(false)}
-            title={ui.workspaceTreeLabel}
-            type="button"
-          >
-            📂
-            <span>{ui.treeView}</span>
-          </button>
-          <button
-            className={`quick-action-btn ${showWorkspaceGraph ? 'active' : ''}`}
-            onClick={handleGraphToggle}
-            title={ui.knowledgeGraphLabel}
-            type="button"
-          >
-            🕸️
-            <span>{ui.graphView}</span>
-          </button>
-        </div>
-
         {/* Workspace Graph (Compact View) */}
         {showWorkspaceGraph && workspaceGraphNodes.length > 0 && (
           <div className="workspace-graph-section">
             <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.knowledgeGraphLabel}</p>
-                <h4>{ui.workspaceTopology}</h4>
-              </div>
-              <div className="toolbar-inline">
+              <div className="graph-toolbar">
+                <button
+                  className="icon-btn"
+                  onClick={() => setShowWorkspaceGraph(false)}
+                  title={ui.workspaceTreeLabel}
+                  type="button"
+                >📂</button>
                 <span className="pill">{workspaceGraphNodes.length} {ui.nodes}</span>
                 <span className="pill">{workspaceGraphEdges.length} {ui.edges}</span>
               </div>
@@ -176,27 +156,27 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         {/* Tree Navigation */}
         {!showWorkspaceGraph && (
           <div className="tree-nav-section">
-              <div className="panel-head compact-head">
-                <div>
-                  <p className="panel-label">{ui.workspaceTreeLabel}</p>
-                  <h4>{ui.seededDocumentsTitle}</h4>
-                </div>
-                <div className="toolbar-inline">
-                  <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
-                  <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
-                  <span className="pill">{rootsCountLabel}</span>
-                  {totalDocumentsCount !== undefined && (
-                    <span className="pill" title={isZh ? '所有文档总数' : 'Total documents'}>
-                      {isZh ? '全部' : 'All'}: {totalDocumentsCount}
-                    </span>
-                  )}
-                  <button className="secondary-button" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
-                  <button className="secondary-button" onClick={onCreateRoot} type="button">{newRootLabel}</button>
-                </div>
-              </div>
+            {/* Compact Single Row Toolbar */}
+            <div className="tree-toolbar-compact">
+              <button
+                className="icon-btn"
+                onClick={handleGraphToggle}
+                title={ui.knowledgeGraphLabel}
+                type="button"
+              >🕸️</button>
+              <div className="toolbar-divider" />
+              <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
+              <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
+              <span className="pill">{rootsCountLabel}</span>
+              {totalDocumentsCount !== undefined && (
+                <span className="pill">{totalDocumentsCount}</span>
+              )}
+              <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
+              <button className="compact-btn" onClick={onCreateRoot} type="button">+ {newRootLabel}</button>
+            </div>
 
             <div
-              className={`root-drop-zone${dragOverRoot ? ' root-drop-zone-active' : ''}`}
+              className={`root-drop-zone-compact${dragOverRoot ? ' root-drop-zone-active' : ''}`}
               onDragOver={(event) => {
                 event.preventDefault()
                 onRootDragOver()
@@ -211,17 +191,16 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
             </div>
 
             {pinnedDocuments.length > 0 && (
-              <div className="pinned-section">
-                <p className="pinned-section-label">{pinnedSectionLabel}</p>
+              <div className="pinned-section-compact">
                 {pinnedDocuments.map((document) => (
                   <button
                     key={document.id}
-                    className={`pinned-doc-item${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
+                    className={`pinned-doc-item-compact${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
                     onClick={() => onSelectDocument(document.id)}
                     type="button"
+                    title={document.title}
                   >
-                    <span className="pinned-doc-title">{document.title}</span>
-                    <span className="pinned-doc-path">{document.path}</span>
+                    <span className="pinned-doc-title-compact">{document.title}</span>
                   </button>
                 ))}
               </div>
