@@ -46,21 +46,50 @@ select {
   border-right:1px solid rgba(71, 55, 32, 0.08);
 }
 
-.sidebar::-webkit-scrollbar {
-  width: 6px;
+/* ===== Modern Scrollbar Styles ===== */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 55, 32, 0.3) transparent;
 }
 
-.sidebar::-webkit-scrollbar-track {
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.sidebar::-webkit-scrollbar-thumb {
-  background: rgba(71, 55, 32, 0.2);
-  border-radius: 3px;
+::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.3);
+  border-radius: 10px;
+  transition: background 0.2s ease, width 0.2s ease;
 }
 
-.sidebar::-webkit-scrollbar-thumb:hover {
-  background: rgba(71, 55, 32, 0.4);
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.5);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: rgba(71, 55, 32, 0.6);
+}
+
+/* Larger scrollbar for main content */
+.content::-webkit-scrollbar,
+.preview-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.content::-webkit-scrollbar-thumb,
+.preview-panel::-webkit-scrollbar-thumb {
+  background: rgba(71, 55, 32, 0.25);
+  border-radius: 10px;
+}
+
+.content::-webkit-scrollbar-thumb:hover,
+.preview-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 55, 32, 0.45);
 }
 
 .sidebar-combined {
