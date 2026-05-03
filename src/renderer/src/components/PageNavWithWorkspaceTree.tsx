@@ -55,6 +55,7 @@ type PageNavWithWorkspaceTreeProps = {
   uiLanguage: UiLanguage
   isNavCollapsed?: boolean
   onToggleNavCollapse?: () => void
+  totalDocumentsCount?: number
 }
 
 export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
@@ -98,7 +99,8 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     onSelectGraphNode,
     uiLanguage,
     isNavCollapsed = false,
-    onToggleNavCollapse
+    onToggleNavCollapse,
+    totalDocumentsCount
   } = props
 
   const [showWorkspaceGraph, setShowWorkspaceGraph] = useState(false)
@@ -200,19 +202,24 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         {/* Tree Navigation */}
         {!showWorkspaceGraph && (
           <div className="tree-nav-section">
-            <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.workspaceTreeLabel}</p>
-                <h4>{ui.seededDocumentsTitle}</h4>
+              <div className="panel-head compact-head">
+                <div>
+                  <p className="panel-label">{ui.workspaceTreeLabel}</p>
+                  <h4>{ui.seededDocumentsTitle}</h4>
+                </div>
+                <div className="toolbar-inline">
+                  <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
+                  <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
+                  <span className="pill">{rootsCountLabel}</span>
+                  {totalDocumentsCount !== undefined && (
+                    <span className="pill" title={isZh ? '所有文档总数' : 'Total documents'}>
+                      {isZh ? '全部' : 'All'}: {totalDocumentsCount}
+                    </span>
+                  )}
+                  <button className="secondary-button" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
+                  <button className="secondary-button" onClick={onCreateRoot} type="button">{newRootLabel}</button>
+                </div>
               </div>
-              <div className="toolbar-inline">
-                <button className="secondary-button nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
-                <button className="secondary-button nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
-                <span className="pill">{rootsCountLabel}</span>
-                <button className="secondary-button" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
-                <button className="secondary-button" onClick={onCreateRoot} type="button">{newRootLabel}</button>
-              </div>
-            </div>
 
             <div
               className={`root-drop-zone${dragOverRoot ? ' root-drop-zone-active' : ''}`}

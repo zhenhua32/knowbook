@@ -3107,6 +3107,8 @@ del {
   min-height: 0;
   overflow-y: auto;
   padding-bottom: 8px;
+  /* 增加最小高度以确保显示更多文档 */
+  min-height: 400px;
 }
 
 .sidebar-combined.collapsed {

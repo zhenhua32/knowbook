@@ -3994,56 +3994,57 @@ export function App() {
 return (
      <div className="shell" data-testid="shell">
        <div className="sidebar">
-         <PageNavWithWorkspaceTree
-           activePage={activePage}
-           pageItems={pageItems}
-           onSelectPage={(pageId) => setActivePage(pageId as PageId)}
-           pageTitle={pageTitle}
-           pageDescription={pageDescription}
-           brandEyebrow={ui.brandEyebrow}
-           navLabel={isZh ? '页面导航' : 'Navigation'}
-           currentPageLabel={isZh ? '当前页面' : 'Current page'}
-           currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
-           backTitle={`${ui.back} (Alt+←)`}
-           forwardTitle={`${ui.forward} (Alt+→)`}
-           rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
-           onOpenGlobalSearch={openGlobalSearch}
-           globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-           onCreateRoot={() => handleCreateDocument(null)}
-           newRootLabel={ui.newRoot}
-           dropToRootLabel={ui.dropToRoot}
-           dragOverRoot={dragOverRoot}
-           onRootDragOver={() => {
-             if (draggingDocumentId) {
-               setDragOverRoot(true)
-               setDragOverDocumentId(null)
-             }
-           }}
-           onRootDragLeave={() => setDragOverRoot(false)}
-            onDropToRoot={() => { void dropToRoot() }}
-            pinnedSectionLabel={ui.pinnedSectionLabel}
-            pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
-            selectedDocumentId={selectedDocumentId}
-            onSelectDocument={openDocumentInDocumentsPage}
-            documentTreeNodes={homeData.documentTree}
-            workspaceGraphNodes={homeData.graph.nodes}
-            workspaceGraphEdges={homeData.graph.edges}
-            navCanGoBack={navCanGoBack}
-            navCanGoForward={navCanGoForward}
-            onNavBack={navBack}
-            onNavForward={navForward}
-            onSelectGraphNode={openDocumentInDocumentsPage}
-            onDragStart={beginDrag}
-            onDragEnd={endDrag}
-            onDragOverNode={(documentId) => {
-              if (draggingDocumentId && draggingDocumentId !== documentId) {
-                setDragOverDocumentId(documentId)
-                setDragOverRoot(false)
+            <PageNavWithWorkspaceTree
+            activePage={activePage}
+            pageItems={pageItems}
+            onSelectPage={(pageId) => setActivePage(pageId as PageId)}
+            pageTitle={pageTitle}
+            pageDescription={pageDescription}
+            brandEyebrow={ui.brandEyebrow}
+            navLabel={isZh ? '页面导航' : 'Navigation'}
+            currentPageLabel={isZh ? '当前页面' : 'Current page'}
+            currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
+            backTitle={`${ui.back} (Alt+←)`}
+            forwardTitle={`${ui.forward} (Alt+→)`}
+            rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
+            onOpenGlobalSearch={openGlobalSearch}
+            globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
+            onCreateRoot={() => handleCreateDocument(null)}
+            newRootLabel={ui.newRoot}
+            dropToRootLabel={ui.dropToRoot}
+            dragOverRoot={dragOverRoot}
+            onRootDragOver={() => {
+              if (draggingDocumentId) {
+                setDragOverRoot(true)
+                setDragOverDocumentId(null)
               }
             }}
-            onDropOnNode={dropOnDocument}
-            uiLanguage={uiLanguage}
-          />
+            onRootDragLeave={() => setDragOverRoot(false)}
+             onDropToRoot={() => { void dropToRoot() }}
+             pinnedSectionLabel={ui.pinnedSectionLabel}
+             pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
+             selectedDocumentId={selectedDocumentId}
+             onSelectDocument={openDocumentInDocumentsPage}
+             documentTreeNodes={homeData.documentTree}
+             workspaceGraphNodes={homeData.graph.nodes}
+             workspaceGraphEdges={homeData.graph.edges}
+             navCanGoBack={navCanGoBack}
+             navCanGoForward={navCanGoForward}
+             onNavBack={navBack}
+             onNavForward={navForward}
+             onSelectGraphNode={openDocumentInDocumentsPage}
+             onDragStart={beginDrag}
+             onDragEnd={endDrag}
+             onDragOverNode={(documentId) => {
+               if (draggingDocumentId && draggingDocumentId !== documentId) {
+                 setDragOverDocumentId(documentId)
+                 setDragOverRoot(false)
+               }
+             }}
+             onDropOnNode={dropOnDocument}
+             uiLanguage={uiLanguage}
+             totalDocumentsCount={homeData.summary.documents}
+           />
         </div>
 
        <main className="content">
