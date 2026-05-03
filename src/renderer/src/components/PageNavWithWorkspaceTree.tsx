@@ -167,10 +167,6 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
               <div className="toolbar-divider" />
               <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
               <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
-              <span className="pill">{rootsCountLabel}</span>
-              {totalDocumentsCount !== undefined && (
-                <span className="pill">{totalDocumentsCount}</span>
-              )}
               <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
               <button className="icon-btn" onClick={onCreateRoot} title={newRootLabel} type="button">+</button>
             </div>
