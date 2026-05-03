@@ -56,7 +56,7 @@ export function DocumentTree({
             <span>{node.title}</span>
             <small>{new Date(node.updatedAt).toLocaleDateString(ui.locale)}</small>
           </button>
-          <p className="tree-path">{node.path}</p>
+          <p className="tree-path" title={node.path}>{node.path}</p>
           {node.children.length > 0 ? (
             <div className="tree-children">
               <DocumentTree

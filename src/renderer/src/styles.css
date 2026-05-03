@@ -40,8 +40,10 @@ select {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  overflow-y: auto;
-  border-right: 1px solid rgba(71, 55, 32, 0.08);
+  width: 280px;
+  flex-shrink:0;
+  overflow: hidden;
+  border-right:1px solid rgba(71, 55, 32, 0.08);
   scrollbar-width: thin;
   scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
 }
@@ -940,6 +942,8 @@ dt,
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .tree-button,
@@ -963,6 +967,7 @@ dt,
   color: #1f1d19;
   font-size: 13px;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .tree-button > span {
@@ -1002,10 +1007,13 @@ dt,
 }
 
 .tree-path {
-  margin: 0;
+  margin:0;
   padding-left: 10px;
   color: #6c624f;
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tree-children {
@@ -3237,10 +3245,15 @@ del {
 }
 
 .tree-wrapper {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex:1;
+  min-height:0;
+  overflow: hidden;
   padding-bottom: 8px;
+}
+
+.tree-wrapper > .tree-list {
+  height:100%;
+  overflow-y: auto;
 }
 
 /* Compact quick-actions */
