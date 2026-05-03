@@ -113,44 +113,18 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
 
   return (
     <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
-      {/* Main Navigation Rail */}
-      <div className="nav-rail-wrapper">
-        <PageRail
-          activePage={activePage}
-          brandEyebrow={brandEyebrow}
-          currentPageLabel={currentPageLabel}
-          currentPageHint={currentPageHint}
-          navLabel={navLabel}
-          pageDescription={pageDescription}
-          pageItems={pageItems}
-          pageTitle={pageTitle}
-          onSelectPage={onSelectPage}
-        />
-        <div
-          className="resize-handle"
-          onMouseDown={(e) => {
-            e.preventDefault()
-            const railWrapper = e.currentTarget.parentElement as HTMLElement
-            const rail = railWrapper.querySelector('.nav-rail') as HTMLElement
-            if (!rail) return
-            const startX = e.clientX
-            const startWidth = rail.offsetWidth
-
-            function onMouseMove(e: MouseEvent) {
-              const newWidth = Math.max(160, Math.min(400, startWidth + (e.clientX - startX)))
-              rail.style.width = newWidth + 'px'
-            }
-
-            function onMouseUp() {
-              document.removeEventListener('mousemove', onMouseMove)
-              document.removeEventListener('mouseup', onMouseUp)
-            }
-
-            document.addEventListener('mousemove', onMouseMove)
-            document.addEventListener('mouseup', onMouseUp)
-          }}
-        ></div>
-      </div>
+      {/* Compact Horizontal Navigation Rail */}
+      <PageRail
+        activePage={activePage}
+        brandEyebrow={brandEyebrow}
+        currentPageLabel={currentPageLabel}
+        currentPageHint={currentPageHint}
+        navLabel={navLabel}
+        pageDescription={pageDescription}
+        pageItems={pageItems}
+        pageTitle={pageTitle}
+        onSelectPage={onSelectPage}
+      />
 
       {/* Workspace Tree and Graph Section */}
       <div className="workspace-nav-content">

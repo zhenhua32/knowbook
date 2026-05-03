@@ -3032,8 +3032,8 @@ del {
 
 .workspace-quick-actions {
   display: flex;
-  padding: 4px 8px;
-  gap: 4px;
+  padding: 2px 6px;
+  gap: 2px;
   border-bottom: 1px solid rgba(71, 55, 32, 0.08);
   background: rgba(255, 249, 241, 0.3);
   flex-shrink: 0;
@@ -3088,17 +3088,17 @@ del {
 }
 
 .sidebar-combined .panel-head {
-  padding: 6px 8px;
-  flex-shrink: 0;
-}
-
-.sidebar-combined .pinned-section {
   padding: 4px 8px;
   flex-shrink: 0;
 }
 
+.sidebar-combined .pinned-section {
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
 .sidebar-combined .root-drop-zone {
-  margin: 4px 8px;
+  margin: 2px 8px;
   flex-shrink: 0;
 }
 
@@ -3108,7 +3108,7 @@ del {
   overflow-y: auto;
   padding-bottom: 8px;
   /* 增加最小高度以确保显示更多文档 */
-  min-height: 400px;
+  min-height: 800px;
 }
 
 .sidebar-combined.collapsed {
@@ -3119,5 +3119,152 @@ del {
 .sidebar-combined.collapsed .workspace-graph-section,
 .sidebar-combined.collapsed .tree-nav-section {
   display: none;
+}
+
+/* ===== New Horizontal Rail Styles ===== */
+.rail-horizontal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 249, 241, 0.72);
+  backdrop-filter: blur(18px);
+  border-bottom: 1px solid rgba(71, 55, 32, 0.08);
+  flex-shrink: 0;
+  height: 40px;
+}
+
+.brand-mini {
+  display: flex;
+  align-items: center;
+}
+
+.brand-mark-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #2f6fed 0%, #cb7a20 100%);
+  color: #fff;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.page-nav-horizontal {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  justify-content: center;
+}
+
+.nav-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.15s;
+}
+
+.nav-icon-btn:hover {
+  background: rgba(71, 55, 32, 0.08);
+}
+
+.nav-icon-btn.active {
+  background: rgba(47, 111, 237, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(47, 111, 237, 0.3);
+}
+
+.nav-icon {
+  display: inline-flex;
+}
+
+.current-page-mini {
+  flex-shrink: 0;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: #4e4435;
+  font-weight: 500;
+}
+
+.current-page-text {
+  display: block;
+}
+
+/* Adjust sidebar-combined for horizontal rail */
+.sidebar-combined {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+.workspace-nav-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tree-nav-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tree-wrapper {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+/* Compact quick-actions */
+.workspace-quick-actions {
+  padding: 2px 8px;
+  gap: 2px;
+  border-bottom: 1px solid rgba(71, 55, 32, 0.08);
+  background: rgba(255, 249, 241, 0.3);
+  flex-shrink: 0;
+}
+
+.quick-action-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* Compact panel-head */
+.sidebar-combined .panel-head {
+  padding: 4px 8px;
+  flex-shrink: 0;
+}
+
+/* Compact pinned-section */
+.sidebar-combined .pinned-section {
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+/* Compact root-drop-zone */
+.sidebar-combined .root-drop-zone {
+  margin: 2px 8px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  font-size: 12px;
 }
 

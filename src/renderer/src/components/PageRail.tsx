@@ -16,52 +16,46 @@ type PageRailProps = {
   currentPageHint: string
 }
 
+const pageIcons: Record<string, string> = {
+  documents: '📂',
+  dashboard: '📊',
+  database: '🗄️',
+  graph: '🕸️',
+  ai: '🤖',
+  plugins: '🔌',
+  settings: '⚙️'
+}
+
 export function PageRail(props: PageRailProps) {
   const {
-    brandEyebrow,
     activePage,
     pageItems,
     onSelectPage,
     pageTitle,
-    pageDescription,
-    navLabel,
-    currentPageLabel,
-    currentPageHint
+    brandEyebrow
   } = props
 
   return (
-    <aside className="rail">
-      <div className="brand">
-        <span className="brand-mark">KB</span>
-        <div>
-          <p className="eyebrow">{brandEyebrow}</p>
-          <h1>KnowBook</h1>
-        </div>
+    <div className="rail-horizontal">
+      <div className="brand-mini" title={brandEyebrow}>
+        <span className="brand-mark-mini">KB</span>
       </div>
-
-      <div className="panel">
-        <p className="panel-label">{navLabel}</p>
-        <div className="page-nav-list">
-          {pageItems.map((item) => (
-            <button
-              className={`page-nav-item${activePage === item.id ? ' page-nav-item-active' : ''}`}
-              key={item.id}
-              onClick={() => onSelectPage(item.id)}
-              type="button"
-            >
-              <strong>{item.label}</strong>
-              <span>{item.description}</span>
-            </button>
-          ))}
-        </div>
+      <div className="page-nav-horizontal">
+        {pageItems.map((item) => (
+          <button
+            className={`nav-icon-btn ${activePage === item.id ? 'active' : ''}`}
+            key={item.id}
+            onClick={() => onSelectPage(item.id)}
+            title={item.label}
+            type="button"
+          >
+            <span className="nav-icon">{pageIcons[item.id] || '📄'}</span>
+          </button>
+        ))}
       </div>
-
-      <div className="panel panel-accent">
-        <p className="panel-label">{currentPageLabel}</p>
-        <h2>{pageTitle}</h2>
-        <p>{pageDescription}</p>
-        <p className="mini-hint">{currentPageHint}</p>
+      <div className="current-page-mini" title={pageTitle}>
+        <span className="current-page-text">{pageTitle}</span>
       </div>
-    </aside>
+    </div>
   )
 }
