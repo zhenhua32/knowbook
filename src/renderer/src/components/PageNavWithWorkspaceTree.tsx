@@ -172,7 +172,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
                 <span className="pill">{totalDocumentsCount}</span>
               )}
               <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
-              <button className="compact-btn" onClick={onCreateRoot} type="button">+ {newRootLabel}</button>
+              <button className="icon-btn" onClick={onCreateRoot} title={newRootLabel} type="button">+</button>
             </div>
 
             <div
