@@ -37,15 +37,21 @@ select {
 }
 
 .sidebar {
-  display: flex;
-  flex-direction: column;
   height: 100vh;
   width: 280px;
   flex-shrink:0;
-  overflow: hidden;
+  overflow-y: auto;
   border-right:1px solid rgba(71, 55, 32, 0.08);
   scrollbar-width: thin;
   scrollbar-color: rgba(71, 55, 32, 0.2) transparent;
+}
+
+.sidebar-combined {
+  flex:1;
+  min-height:0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .sidebar::-webkit-scrollbar {
@@ -3118,12 +3124,11 @@ del {
 }
 
 .sidebar-combined .tree-wrapper {
-  flex: 1;
-  min-height: 0;
+  flex:1;
+  min-height:0;
+  height:0;
   overflow-y: auto;
   padding-bottom: 8px;
-  /* 增加最小高度以确保显示更多文档 */
-  min-height: 800px;
 }
 
 .sidebar-combined.collapsed {
@@ -3221,10 +3226,8 @@ del {
 .sidebar-combined {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  width: 280px;
-  flex-shrink: 0;
-  min-height: 0;
+  flex:1;
+  min-height:0;
   overflow: hidden;
 }
 
@@ -3247,13 +3250,9 @@ del {
 .tree-wrapper {
   flex:1;
   min-height:0;
-  overflow: hidden;
-  padding-bottom: 8px;
-}
-
-.tree-wrapper > .tree-list {
-  height:100%;
+  height:0;
   overflow-y: auto;
+  padding-bottom: 8px;
 }
 
 /* Compact quick-actions */
