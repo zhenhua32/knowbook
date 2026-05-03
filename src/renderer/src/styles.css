@@ -932,6 +932,8 @@ dt,
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .tree-node {
@@ -960,6 +962,18 @@ dt,
   background: rgba(246, 240, 228, 0.82);
   color: #1f1d19;
   font-size: 13px;
+  overflow: hidden;
+}
+
+.tree-button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tree-button > small {
+  flex-shrink: 0;
 }
 
 .tree-button-active {
@@ -3006,14 +3020,6 @@ del {
 }
 
 /* Combined Navigation Styles */
-.sidebar-combined {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  flex: 1;
-  min-height: 0;
-}
-
 .nav-rail-wrapper {
   position: relative;
   flex-shrink: 0;
@@ -3208,8 +3214,10 @@ del {
   display: flex;
   flex-direction: column;
   height: 100%;
-  flex: 1;
+  width: 280px;
+  flex-shrink: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .workspace-nav-content {
