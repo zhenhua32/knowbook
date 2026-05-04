@@ -487,6 +487,11 @@ dt,
   min-height: 520px;
 }
 
+.preview-panel {
+  padding: 32px;
+  overflow: visible;
+}
+
 .graph-panel {
   min-height: 420px;
 }
@@ -728,6 +733,7 @@ dt,
 
 .preview-section {
   margin-top: 4px;
+  padding: 20px;
 }
 
 .plugin-document-actions {
@@ -781,6 +787,7 @@ dt,
   padding: 2px 0;
   border-radius: 4px;
   position: relative;
+  overflow: visible;
 }
 
 .block-editor-row:hover {
@@ -2420,9 +2427,9 @@ del {
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid rgba(91, 72, 44, 0.15);
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(30, 24, 15, 0.12);
+  box-shadow: 0 4px 16px rgba(30, 24, 15, 0.18);
   white-space: nowrap;
-  z-index: 100;
+  z-index: 1001;
 }
 
 .block-type-selector {
@@ -2434,6 +2441,8 @@ del {
   font-size: 12px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
+  min-width: 110px;
+  flex-shrink: 0;
 }
 
 .block-type-selector:hover {
@@ -3017,6 +3026,11 @@ del {
   flex-direction: column;
   gap: 20px;
   padding: 32px;
+}
+
+.content.page-documents {
+  padding-top:0;
+  padding-bottom:0;
 }
 
 \r\.toc-panel {\r\nn.toc-panel {

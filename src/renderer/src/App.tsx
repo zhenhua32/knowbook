@@ -4047,7 +4047,7 @@ return (
            />
         </div>
 
-       <main className="content">
+        <main className={`content page-${activePage}`}>
         {activePage === 'dashboard' ? (
           <section className="hero">
             <div>
