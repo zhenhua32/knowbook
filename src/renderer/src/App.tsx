@@ -4755,7 +4755,7 @@ return (
         </section> : null}
 
         {activePage === 'ai' ? (
-          <section className="detail-grid">
+          <section className="detail-grid single-column">
             <article className="panel large-panel">
               <div className="panel-head">
                 <div>
