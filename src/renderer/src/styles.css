@@ -435,6 +435,26 @@ dt,
   border-radius: 18px;
   background: rgba(47, 111, 237, 0.1);
   color: #173f9f;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.flash-close {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.12s;
+}
+
+.flash-close:hover {
+  opacity: 1;
 }
 
 .stats-grid,

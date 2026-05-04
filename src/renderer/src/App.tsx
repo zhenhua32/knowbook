@@ -1043,6 +1043,12 @@ export function App() {
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  // 自动清除消息（3秒后）
+  useEffect(() => {
+    if (!backupMessage) return
+    const timer = setTimeout(() => setBackupMessage(null), 3000)
+    return () => clearTimeout(timer)
+  }, [backupMessage])
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -4061,7 +4067,12 @@ return (
           </section>
         ) : null}
 
-        {backupMessage ? <p className="flash-message">{backupMessage}</p> : null}
+        {backupMessage ? (
+          <p className="flash-message">
+            {backupMessage}
+            <button className="flash-close" onClick={() => setBackupMessage(null)} type="button">✕</button>
+          </p>
+        ) : null}
 
         {activePage === 'dashboard' ? (
           <section className="stats-grid">
