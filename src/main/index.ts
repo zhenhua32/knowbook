@@ -32,6 +32,7 @@ import type {
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
 } from '@shared/contracts'
+import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { MarkdownBackupService } from './backup/exporter'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
@@ -660,16 +661,11 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
 }
 
 async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<SemanticSearchResult[]> {
+  // 不检查 aiConfig.enabled 和 apiKey，因为文本搜索不需要它们
+  // 向量搜索会在 buildSemanticContextNotes 内部处理失败并降级
   const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
-    throw new Error('AI is disabled. Enable AI in settings first.')
-  }
-
-  const apiKey = store.getAiApiKey()
-  if (!apiKey) {
-    throw new Error('Missing API key. Save an API key in AI settings.')
-  }
-
+  const apiKey = store.getAiApiKey() ?? ''
+  
   const notes = await buildSemanticContextNotes(input, home.aiConfig, apiKey)
   return notes.map(({ content, contentHash, ...note }) => note)
 }
@@ -981,44 +977,64 @@ async function buildSemanticContextNotes(
     return []
   }
 
-  await ensureDocumentEmbeddings(candidates, aiConfig, apiKey)
-  const embeddingApiKey = store.getEmbeddingApiKey()
-  const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel, aiConfig.embeddingBaseUrl, embeddingApiKey ?? undefined)
-  if (!queryEmbedding) {
-    return []
+  const embeddingsSucceeded = await ensureDocumentEmbeddings(candidates, aiConfig, apiKey)
+  const normalizedLimit = Math.min(Math.max(input.limit ?? 4, 1), 8)
+
+  if (embeddingsSucceeded) {
+    const embeddingApiKey = store.getEmbeddingApiKey()
+    const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel, aiConfig.embeddingBaseUrl, embeddingApiKey ?? undefined).catch(() => [null])
+    if (queryEmbedding) {
+      const scored = candidates
+        .map((candidate) => {
+          const embedding = store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
+          if (!embedding) {
+            return null
+          }
+          return {
+            ...candidate,
+            score: cosineSimilarity(queryEmbedding, embedding)
+          }
+        })
+        .filter((candidate): candidate is SemanticSearchCandidate & { score: number } => candidate !== null)
+        .sort((left, right) => right.score - left.score)
+
+      if (scored.length > 0) {
+        const topMatches = scored.slice(0, normalizedLimit)
+        const filteredMatches = topMatches.filter((candidate) => candidate.score > 0.08)
+        const finalMatches = filteredMatches.length > 0 ? filteredMatches : topMatches.slice(0, 1).filter((candidate) => candidate.score > 0)
+        return finalMatches.map((candidate) => ({
+          documentId: candidate.documentId,
+          title: candidate.title,
+          path: candidate.path,
+          summary: candidate.summary,
+          snippet: candidate.snippet,
+          score: Number(candidate.score.toFixed(3)),
+          content: candidate.content,
+          contentHash: candidate.contentHash
+        }))
+      }
+      // If vector search produced no results, fall through to text-based search
+    }
   }
 
-  const normalizedLimit = Math.min(Math.max(input.limit ?? 4, 1), 8)
+  // Fallback to keyword-based text search when vector embeddings are unavailable
   const scored = candidates
     .map((candidate) => {
-      const embedding = store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
-      if (!embedding) {
-        return null
-      }
-
-      return {
-        ...candidate,
-        score: cosineSimilarity(queryEmbedding, embedding)
-      }
+      const text = (candidate.title + ' ' + candidate.summary + ' ' + candidate.content + ' ' + candidate.snippet).toLowerCase()
+      const score = scoreKeywordSearchCandidate(query, text)
+      return { ...candidate, score }
     })
-    .filter((candidate): candidate is SemanticSearchCandidate & { score: number } => candidate !== null)
+    .filter((candidate) => candidate.score > 0)
     .sort((left, right) => right.score - left.score)
 
-  if (scored.length === 0) {
-    return []
-  }
-
   const topMatches = scored.slice(0, normalizedLimit)
-  const filteredMatches = topMatches.filter((candidate) => candidate.score > 0.08)
-  const finalMatches = filteredMatches.length > 0 ? filteredMatches : topMatches.slice(0, 1).filter((candidate) => candidate.score > 0)
-
-  return finalMatches.map((candidate) => ({
+  return topMatches.map((candidate) => ({
     documentId: candidate.documentId,
     title: candidate.title,
     path: candidate.path,
     summary: candidate.summary,
     snippet: candidate.snippet,
-    score: Number(candidate.score.toFixed(3)),
+    score: candidate.score,
     content: candidate.content,
     contentHash: candidate.contentHash
   }))
@@ -1028,34 +1044,40 @@ async function ensureDocumentEmbeddings(
   candidates: SemanticSearchCandidate[],
   aiConfig: HomeData['aiConfig'],
   apiKey: string
-): Promise<void> {
+): Promise<boolean> {
   const staleCandidates = candidates.filter((candidate) => {
     return !store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
   })
 
   if (staleCandidates.length === 0) {
-    return
+    return true
   }
 
   const chunks = chunkArray(staleCandidates, 20)
   for (const chunk of chunks) {
-    const embeddings = await createEmbeddings(
-      chunk.map((candidate) => candidate.content),
-      aiConfig.baseUrl,
-      apiKey,
-      aiConfig.embeddingModel,
-      aiConfig.embeddingBaseUrl,
-      store.getEmbeddingApiKey() ?? undefined
-    )
+    try {
+      const embeddings = await createEmbeddings(
+        chunk.map((candidate) => candidate.content),
+        aiConfig.baseUrl,
+        apiKey,
+        aiConfig.embeddingModel,
+        aiConfig.embeddingBaseUrl,
+        store.getEmbeddingApiKey() ?? undefined
+      )
 
-    embeddings.forEach((embedding, index) => {
-      const candidate = chunk[index]
-      if (!candidate) {
-        return
-      }
-      store.saveDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash, embedding)
-    })
+      embeddings.forEach((embedding, index) => {
+        const candidate = chunk[index]
+        if (!candidate) {
+          return
+        }
+        store.saveDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash, embedding)
+      })
+    } catch (error) {
+      console.warn('Failed to generate embeddings, using text fallback:', error)
+      return false
+    }
   }
+  return true
 }
 
 function queueEmbeddingSyncForDocuments(documentIds: string[]): void {

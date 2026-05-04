@@ -4808,7 +4808,30 @@ return (
                       {aiAsking ? ui.thinking : ui.askAiLabel}
                     </button>
                   </div>
-                  {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : <p className="mini-hint">{ui.manualAiHint}</p>}
+                  <p className="mini-hint">{ui.manualAiHint}</p>
+                  {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
+                  {aiContextResults.length > 0 ? (
+                    <div className="ai-context-list">
+                      {aiContextResults.map((result) => (
+                        <button
+                          className="ai-context-card"
+                          key={`${result.documentId}-${result.path}`}
+                          onClick={() => setSelectedDocumentId(result.documentId)}
+                          type="button"
+                        >
+                          <div className="ai-context-head">
+                            <strong className="ai-context-title">{result.title}</strong>
+                            <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
+                          </div>
+                          <span className="ai-context-path">{result.path}</span>
+                          <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : aiPromptDraft.trim() ? (
+                    <p className="mini-hint">{ui.semanticHint}</p>
+                  ) : null}
+                  {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
                 </div>
               ) : (
                 <p className="mini-hint">{isZh ? '请先在文档页选择一个文档。' : 'Please select a document from the documents page first.'}</p>
