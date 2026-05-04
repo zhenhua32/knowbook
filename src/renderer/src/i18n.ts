@@ -306,7 +306,7 @@ function createUiText(language: UiLanguage) {
     findRelatedNotes: zh ? '查找相关笔记' : 'Find related notes',
     searching: zh ? '搜索中...' : 'Searching...',
     thinking: zh ? '思考中...' : 'Thinking...',
-    manualAiHint: zh ? '手动执行会立刻复用当前已启用的摘要、标签和高亮自动化。' : 'Manual run reuses the currently enabled summary, tag, and highlight automations for this document immediately.',
+    manualAiHint: zh ? '手动执行会立刻复用当前已启用的摘要自动化。' : 'Manual run reuses the currently enabled summary automation for this document immediately.',
     matchPercent: (score: number) => zh ? `${score}% 匹配` : `${score}% match`,
     semanticHint: zh ? '语义检索会扫描工作区内其他文档，并将最相关的结果送入 AI 提示词。' : 'Semantic retrieval will search the rest of the workspace and feed the strongest matches into the AI prompt.',
     emptyDocumentState: zh ? '从左侧树或最近文档列表中选择一个文档，以查看它的块内容和关联关系。' : 'Select a document from the tree or recent list to inspect its blocks and relationships.',
@@ -459,22 +459,11 @@ function createUiText(language: UiLanguage) {
     databaseColumnDeleteFailed: zh ? '删除数据库列失败。' : 'Failed to delete database column.',
     pluginActionFailed: zh ? '执行插件动作失败。' : 'Plugin action failed.',
     aiAutomationResult: (input: { summaryGenerated: boolean; taggedBlocks: number; highlightedBlocks: number }) => {
-      const updates: string[] = []
       if (input.summaryGenerated) {
-        updates.push(zh ? '摘要' : 'summary')
-      }
-      if (input.taggedBlocks > 0) {
-        updates.push(zh ? `${input.taggedBlocks} 个区块标签` : `${input.taggedBlocks} tagged block${input.taggedBlocks === 1 ? '' : 's'}`)
-      }
-      if (input.highlightedBlocks > 0) {
-        updates.push(zh ? `${input.highlightedBlocks} 个区块高亮` : `${input.highlightedBlocks} highlighted block${input.highlightedBlocks === 1 ? '' : 's'}`)
+        return zh ? 'AI 自动化已更新摘要。' : 'AI automation updated the summary.'
       }
 
-      if (updates.length === 0) {
-        return zh ? '已启用的 AI 自动化没有发现可更新内容。' : 'Enabled AI automations found nothing new to update.'
-      }
-
-      return zh ? `AI 自动化已更新：${updates.join('、')}。` : `AI automations updated ${updates.join(', ')}.`
+      return zh ? '摘要自动化没有发现可更新内容。' : 'Summary automation found nothing new to update.'
     },
     aiAutomationFailed: zh ? 'AI 自动化运行失败。' : 'AI automation run failed.',
     invalidVisibleTreeSlice: zh ? '当前选区无法识别为可移动的可见树片段。' : 'The current selection cannot be interpreted as a movable visible tree slice.',

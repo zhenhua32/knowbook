@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { BlockTagFilterPanel } from '../src/renderer/src/components/BlockTagFilterPanel.tsx'
+import { BlockEditToolbar } from '../src/renderer/src/components/BlockEditToolbar.tsx'
 import { CodeBlockLanguageSelector } from '../src/renderer/src/components/CodeBlockLanguageSelector.tsx'
 import { DocumentOutlinePanel } from '../src/renderer/src/components/DocumentOutlinePanel.tsx'
 import { DocumentStatsBar } from '../src/renderer/src/components/DocumentStatsBar.tsx'
@@ -72,45 +72,36 @@ test('DocumentSummaryCard SSR renders path, labels, and current values', () => {
   assert.equal(html.includes('Summary text'), true)
 })
 
-test('BlockTagFilterPanel SSR returns empty output without tags', () => {
+test('BlockEditToolbar SSR renders manual highlight controls when enabled', () => {
   const html = renderToStaticMarkup(
-    <BlockTagFilterPanel
-      title="Tags"
-      clearLabel="Clear"
-      showingLabel="Showing"
-      totalCount={10}
-      filteredCount={3}
-      allTags={[]}
-      selectedTags={new Set<string>()}
-      tagCounts={new Map<string, number>()}
-      onClear={() => undefined}
-      onToggleTag={() => undefined}
+    <BlockEditToolbar
+      block={{ type: 'paragraph', content: 'Hello', checked: false, depth: 0, highlight: 'yellow' }}
+      index={0}
+      isActive={true}
+      onDelete={() => undefined}
+      onDuplicate={() => undefined}
+      onHighlightChange={() => undefined}
+      onTypeChange={() => undefined}
+      typeOptions={{
+        paragraph: 'Paragraph',
+        'heading-1': 'Heading 1',
+        'heading-2': 'Heading 2',
+        todo: 'Todo',
+        code: 'Code',
+        math: 'Math',
+        quote: 'Quote',
+        'bulleted-list': 'Bulleted list',
+        'numbered-list': 'Numbered list',
+        divider: 'Divider'
+      }}
+      ui={{ noHighlight: 'No highlight' }}
+      isZh={false}
     />
   )
 
-  assert.equal(html, '')
-})
-
-test('BlockTagFilterPanel SSR shows clear button and selected summary when active', () => {
-  const html = renderToStaticMarkup(
-    <BlockTagFilterPanel
-      title="Tags"
-      clearLabel="Clear"
-      showingLabel="Showing"
-      totalCount={10}
-      filteredCount={3}
-      allTags={['AI', 'UX']}
-      selectedTags={new Set<string>(['AI'])}
-      tagCounts={new Map<string, number>([['AI', 2], ['UX', 1]])}
-      onClear={() => undefined}
-      onToggleTag={() => undefined}
-    />
-  )
-
-  assert.equal(html.includes('Clear'), true)
-  assert.equal(html.includes('AI'), true)
-  assert.equal(html.includes('UX'), true)
-  assert.equal(html.includes('Showing 3 / 10'), true)
+  assert.equal(html.includes('No highlight'), true)
+  assert.equal(html.includes('Block highlight'), true)
+  assert.equal(html.includes('highlight-swatch'), true)
 })
 
 test('DocumentOutlinePanel SSR uses empty heading fallback labels', () => {

@@ -50,7 +50,6 @@ import { DocumentStatsBar } from './components/DocumentStatsBar'
 import { DocumentSummaryCard } from './components/DocumentSummaryCard'
 import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
-import { BlockTagFilterPanel } from './components/BlockTagFilterPanel'
 import { CrossDocumentBlockReference } from './components/BlockReference'
 import { renderInlineContent, renderStyledContent, parseMarkdownStyles, resolveInlineReference, resolveBlockReference } from './components/InlineContentRenderer'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
@@ -1028,7 +1027,6 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
     checked: Boolean(block.checked),
     depth: normalizeBlockDepth(block.type, block.depth),
     parentBlockId: block.parentBlockId ?? null,
-    tags: block.tags,
     language: block.language,
     highlight: block.highlight
   }
@@ -1090,8 +1088,6 @@ export function App() {
   const [aiModelDraft, setAiModelDraft] = useState('')
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
   const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(false)
-  const [aiAutoTagOnSaveDraft, setAiAutoTagOnSaveDraft] = useState(false)
-  const [aiAutoHighlightOnSaveDraft, setAiAutoHighlightOnSaveDraft] = useState(false)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
@@ -1104,7 +1100,6 @@ export function App() {
   const [aiContextError, setAiContextError] = useState('')
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
-  const [selectedBlockTags, setSelectedBlockTags] = useState<Set<string>>(new Set())
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
@@ -1248,13 +1243,6 @@ export function App() {
     setActivePage('documents')
   }
 
-  function updateBlockTags(index: number, tags: string[]) {
-    updateDraftBlock(index, {
-      ...draftBlocks[index],
-      tags: tags.filter((tag) => tag.trim() !== '')
-    })
-  }
-
   function updateBlockHighlight(index: number, highlight: string | undefined) {
     updateDraftBlock(index, {
       ...draftBlocks[index],
@@ -1271,51 +1259,6 @@ export function App() {
     const codeBlockCount = blocks.filter((b) => b.type === 'code').length
     const todoCount = blocks.filter((b) => b.type === 'todo').length
     return { blockCount, wordCount, charCount, codeBlockCount, todoCount }
-  }
-
-  function addBlockTag(index: number, tag: string) {
-    const currentTags = draftBlocks[index].tags ?? []
-    if (!currentTags.includes(tag) && tag.trim() !== '') {
-      updateBlockTags(index, [...currentTags, tag])
-    }
-  }
-
-  function removeBlockTag(index: number, tag: string) {
-    const currentTags = draftBlocks[index].tags ?? []
-    updateBlockTags(index, currentTags.filter((t) => t !== tag))
-  }
-
-  function getAllBlockTags(): string[] {
-    const tagsSet = new Set<string>()
-    for (const block of draftBlocks) {
-      if (block.tags) {
-        for (const tag of block.tags) {
-          tagsSet.add(tag)
-        }
-      }
-    }
-    return Array.from(tagsSet).sort()
-  }
-
-  function toggleTagFilter(tag: string) {
-    const newSelected = new Set(selectedBlockTags)
-    if (newSelected.has(tag)) {
-      newSelected.delete(tag)
-    } else {
-      newSelected.add(tag)
-    }
-    setSelectedBlockTags(newSelected)
-  }
-
-  function getFilteredBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
-    if (selectedBlockTags.size === 0) {
-      return blocks
-    }
-
-    return blocks.filter((block) => {
-      if (!block.tags) return false
-      return block.tags.some((tag) => selectedBlockTags.has(tag))
-    })
   }
 
   function getVisibleBlockEntries(blocks: DocumentBlockDraft[]): Array<{ block: DocumentBlockDraft; index: number }> {
@@ -1482,8 +1425,6 @@ export function App() {
         setAiModelDraft(data.aiConfig.model)
         setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
         setAiAutoSummaryOnSaveDraft(data.aiConfig.autoSummaryOnSave)
-        setAiAutoTagOnSaveDraft(data.aiConfig.autoTagOnSave)
-        setAiAutoHighlightOnSaveDraft(data.aiConfig.autoHighlightOnSave)
         setAiApiKeyDraft('')
       }
     })
@@ -1703,14 +1644,6 @@ export function App() {
       isHighlighted: activeBlockIndex === blockIndex
     }
   })
-  const allBlockTags = getAllBlockTags()
-  const blockTagCounts = new Map<string, number>()
-  for (const block of draftBlocks) {
-    for (const tag of block.tags ?? []) {
-      blockTagCounts.set(tag, (blockTagCounts.get(tag) ?? 0) + 1)
-    }
-  }
-  const filteredBlockCount = getFilteredBlocks(draftBlocks).length
   const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
   const selectedVisibleBlockCount = selectedBlockRange ? getVisibleBlockCountInRange(selectedBlockRange) : 0
   const selectedBlockActionRange = selectedBlockRange ? getMultiBlockOperationRange(selectedBlockRange) : null
@@ -2204,8 +2137,8 @@ export function App() {
       model: aiModelDraft,
       embeddingModel: aiEmbeddingModelDraft,
       autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-      autoTagOnSave: aiAutoTagOnSaveDraft,
-      autoHighlightOnSave: aiAutoHighlightOnSaveDraft,
+      autoTagOnSave: false,
+      autoHighlightOnSave: false,
       apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()
@@ -2215,8 +2148,6 @@ export function App() {
     setAiModelDraft(refreshed.aiConfig.model)
     setAiEmbeddingModelDraft(refreshed.aiConfig.embeddingModel)
     setAiAutoSummaryOnSaveDraft(refreshed.aiConfig.autoSummaryOnSave)
-    setAiAutoTagOnSaveDraft(refreshed.aiConfig.autoTagOnSave)
-    setAiAutoHighlightOnSaveDraft(refreshed.aiConfig.autoHighlightOnSave)
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage(ui.aiSettingsSaved)
@@ -4485,18 +4416,6 @@ return (
                         placeholder={ui.searchBlocksPlaceholder}
                         query={blockSearchQuery}
                       />
-                      <BlockTagFilterPanel
-                        allTags={allBlockTags}
-                        clearLabel={isZh ? '清除筛选' : 'Clear filters'}
-                        filteredCount={filteredBlockCount}
-                        onClear={() => setSelectedBlockTags(new Set())}
-                        onToggleTag={toggleTagFilter}
-                        selectedTags={selectedBlockTags}
-                        showingLabel={isZh ? '显示' : 'Showing'}
-                        tagCounts={blockTagCounts}
-                        title={ui.filterByTags}
-                        totalCount={draftBlocks.length}
-                      />
                       {selectedBlockRange ? (
                         <BlockSelectionToolbar
                           canMoveDown={canMoveSelectionDown}
@@ -4557,7 +4476,7 @@ return (
                           })}
                         />
                       ) : null}
-                      {getFilteredBlocks(getVisibleBlocks(draftBlocks)).map((block, filteredIndex) => {
+                      {getVisibleBlocks(draftBlocks).map((block, filteredIndex) => {
                         const index = draftBlocks.indexOf(block)
                         const dropPreview =
                           draggingBlockIndex !== null && dragOverBlockIndex === index
@@ -4625,7 +4544,6 @@ return (
                             moveSelectedBlocks={moveSelectedBlocks}
                             moveDraftBlockBySibling={moveDraftBlockBySibling}
                             numberLabel={numberLabel}
-                            removeBlockTag={removeBlockTag}
                             removeSelectedBlockRange={removeSelectedBlockRange}
                             selectBlockRange={selectBlockRange}
                             selectAllBlocks={selectAllBlocks}
@@ -4640,6 +4558,7 @@ return (
                             toggleBlockCollapse={toggleBlockCollapse}
                             ui={ui}
                             updateDraftBlock={updateDraftBlock}
+                            updateBlockHighlight={updateBlockHighlight}
                             insertDraftBlockAt={insertDraftBlockAt}
                             collapsedBlockIds={collapsedBlockIds}
                           />
@@ -4973,14 +4892,6 @@ return (
                 <label className="toggle-row">
                   <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
                   <span>{ui.autoSummaryWhenEmpty}</span>
-                </label>
-                <label className="toggle-row">
-                  <input checked={aiAutoTagOnSaveDraft} onChange={(event) => setAiAutoTagOnSaveDraft(event.target.checked)} type="checkbox" />
-                  <span>{ui.autoTagOnSave}</span>
-                </label>
-                <label className="toggle-row">
-                  <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
-                  <span>{ui.autoHighlightOnSave}</span>
                 </label>
                 {/* 普通模型 */}
                 <label className="editor-label">

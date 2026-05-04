@@ -38,8 +38,8 @@ export type BlockEditorRowProps = {
 
   // Callbacks: block operations
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
+  updateBlockHighlight: (index: number, highlight: string | undefined) => void
   insertDraftBlockAt: (index: number, anchorIndex: number) => void
-  removeBlockTag: (index: number, tag: string) => void
 
   // Callbacks: block interactions
   handleBlockContentChange: (index: number, content: string) => void
@@ -126,8 +126,8 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     selectedBlockCount,
     blockTextareaRefs,
     updateDraftBlock,
+    updateBlockHighlight,
     insertDraftBlockAt,
-    removeBlockTag,
     handleBlockContentChange,
     captureBlockCursor,
     handleBlockPaste,
@@ -305,6 +305,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
           block={block}
           index={index}
           isActive={showBlockToolbar}
+          onHighlightChange={(highlight) => updateBlockHighlight(index, highlight)}
           onTypeChange={handleBlockTypeChange}
         onDuplicate={() => duplicateDraftBlock(index)}
         onDelete={() => {
@@ -693,20 +694,6 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
               rows={1}
               value={block.content}
             />
-          </div>
-        )}
-
-        {/* Tags */}
-        {block.tags && block.tags.length > 0 && (
-          <div className="block-tags-display">
-            {block.tags.map((tag) => (
-              <span key={`tag-${tag}`} className="block-tag-badge">
-                {tag}
-                <button className="block-tag-remove" onClick={() => removeBlockTag(index, tag)} type="button" title={ui.removeTag}>
-                  ×
-                </button>
-              </span>
-            ))}
           </div>
         )}
 
