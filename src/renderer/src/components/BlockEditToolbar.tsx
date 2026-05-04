@@ -51,7 +51,7 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
         title={isZh ? '复制块' : 'Duplicate block'}
         type="button"
       >
-        ✕✕
+        📋
       </button>
 
       <button
