@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
@@ -170,6 +170,22 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
   const [showContextMenu, setShowContextMenu] = useState(false)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
   const [editingLanguage, setEditingLanguage] = useState(false)
+  const [showBlockToolbar, setShowBlockToolbar] = useState(false)
+  const blockToolbarRef = useRef<HTMLDivElement>(null)
+
+  // 点击外部关闭工具栏
+  useEffect(() => {
+    if (!showBlockToolbar) return
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (blockToolbarRef.current && !blockToolbarRef.current.contains(event.target as Node)) {
+        setShowBlockToolbar(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showBlockToolbar])
 
   const handleBlockTypeChange = (newType: string) => {
     if (newType === 'divider') {
@@ -246,6 +262,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
             event.dataTransfer.effectAllowed = 'move'
             beginBlockDrag(index)
           }}
+          onClick={() => setShowBlockToolbar(prev => !prev)}
           type="button"
         >
           ⋮⋮
@@ -263,11 +280,12 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
       </div>
 
       {/* ── Block Edit Toolbar (Notion style) ── */}
-      <BlockEditToolbar
-        block={block}
-        index={index}
-        isActive={activeBlockIndex === index}
-        onTypeChange={handleBlockTypeChange}
+      <div ref={blockToolbarRef}>
+        <BlockEditToolbar
+          block={block}
+          index={index}
+          isActive={showBlockToolbar}
+          onTypeChange={handleBlockTypeChange}
         onDuplicate={() => duplicateDraftBlock(index)}
         onDelete={() => {
           if (selectedBlockRange && isSelected) {
@@ -295,6 +313,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
         ui={ui}
         isZh={isZh}
       />
+      </div>
 
       {/* ── Context Menu ── */}
       {showContextMenu && (
