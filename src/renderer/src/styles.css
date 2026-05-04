@@ -2416,10 +2416,9 @@ del {
 /* Wave 33: Block Edit Toolbar (Notion style) */
 .block-edit-toolbar {
   position: absolute;
-  left: auto;
-  right: calc(100% + 12px);
-  top: 50%;
-  transform: translateY(-50%);
+  left: 0;
+  top: 0;
+  transform: translateY(-100%) translateY(-8px);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2434,15 +2433,16 @@ del {
 
 .block-type-selector {
   padding: 4px 8px;
-  border: 1px solid rgba(91, 72, 44, 0.2);
+  border: 1px solid rgba(91, 72, 44, 0.3);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.95);
   color: #2a241b;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s;
-  min-width: 110px;
+  min-width: 120px;
   flex-shrink: 0;
+  font-weight: 500;
 }
 
 .block-type-selector:hover {

@@ -30,6 +30,7 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
         onChange={(e) => onTypeChange(e.target.value)}
         value={block.type}
         title={isZh ? '改变块类型' : 'Change block type'}
+        style={{ display: 'inline-block', visibility: 'visible' }}
       >
         <option value="paragraph">{typeOptions.paragraph}</option>
         <option value="heading-1">{typeOptions['heading-1']}</option>
