@@ -76,12 +76,14 @@ const emptyState: HomeData = {
   aiConfig: {
     enabled: false,
     baseUrl: '',
+    embeddingBaseUrl: '',
     model: '',
     embeddingModel: '',
     autoSummaryOnSave: false,
     autoTagOnSave: false,
     autoHighlightOnSave: false,
-    hasApiKey: false
+    hasApiKey: false,
+    hasEmbeddingApiKey: false
   },
   documentTree: [],
   graph: {
@@ -1084,12 +1086,14 @@ export function App() {
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
+  const [aiEmbeddingBaseUrlDraft, setAiEmbeddingBaseUrlDraft] = useState('')
   const [aiModelDraft, setAiModelDraft] = useState('')
   const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
   const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(false)
   const [aiAutoTagOnSaveDraft, setAiAutoTagOnSaveDraft] = useState(false)
   const [aiAutoHighlightOnSaveDraft, setAiAutoHighlightOnSaveDraft] = useState(false)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
+  const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
@@ -1473,6 +1477,8 @@ export function App() {
         setSelectedDocumentId((current) => current ?? data.initialDocumentId)
         setAiEnabledDraft(data.aiConfig.enabled)
         setAiBaseUrlDraft(data.aiConfig.baseUrl)
+        setAiEmbeddingBaseUrlDraft(data.aiConfig.embeddingBaseUrl || '')
+        setAiEmbeddingApiKeyDraft('')
         setAiModelDraft(data.aiConfig.model)
         setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
         setAiAutoSummaryOnSaveDraft(data.aiConfig.autoSummaryOnSave)
@@ -2193,6 +2199,8 @@ export function App() {
     await window.knowbook.updateAiConfig({
       enabled: aiEnabledDraft,
       baseUrl: aiBaseUrlDraft,
+      embeddingBaseUrl: aiEmbeddingBaseUrlDraft,
+      embeddingApiKey: aiEmbeddingApiKeyDraft,
       model: aiModelDraft,
       embeddingModel: aiEmbeddingModelDraft,
       autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
@@ -4951,6 +4959,7 @@ return (
                   <input checked={aiAutoHighlightOnSaveDraft} onChange={(event) => setAiAutoHighlightOnSaveDraft(event.target.checked)} type="checkbox" />
                   <span>{ui.autoHighlightOnSave}</span>
                 </label>
+                {/* 普通模型 */}
                 <label className="editor-label">
                   {ui.baseUrl}
                   <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
@@ -4960,12 +4969,21 @@ return (
                   <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
                 </label>
                 <label className="editor-label">
+                  {ui.apiKeyLabel}
+                  <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
+                </label>
+                {/* 向量模型 */}
+                <label className="editor-label">
+                  {ui.embeddingBaseUrl}
+                  <input className="editor-input" onChange={(event) => setAiEmbeddingBaseUrlDraft(event.target.value)} type="text" placeholder={isZh ? '留空则自动推导' : 'Leave blank to auto-derive'} value={aiEmbeddingBaseUrlDraft} />
+                </label>
+                <label className="editor-label">
                   {ui.embeddingModel}
                   <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
                 </label>
                 <label className="editor-label">
-                  {ui.apiKeyLabel}
-                  <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
+                  {ui.embeddingApiKeyLabel}
+                  <input className="editor-input" onChange={(event) => setAiEmbeddingApiKeyDraft(event.target.value)} type="password" placeholder={isZh ? '留空则使用上述 Key' : 'Leave blank to use above key'} value={aiEmbeddingApiKeyDraft} />
                 </label>
                 <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
                   {aiSaving ? ui.common.saving : ui.saveAiSettings}

@@ -982,7 +982,8 @@ async function buildSemanticContextNotes(
   }
 
   await ensureDocumentEmbeddings(candidates, aiConfig, apiKey)
-  const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel)
+  const embeddingApiKey = store.getEmbeddingApiKey()
+  const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel, aiConfig.embeddingBaseUrl, embeddingApiKey ?? undefined)
   if (!queryEmbedding) {
     return []
   }
@@ -1042,7 +1043,9 @@ async function ensureDocumentEmbeddings(
       chunk.map((candidate) => candidate.content),
       aiConfig.baseUrl,
       apiKey,
-      aiConfig.embeddingModel
+      aiConfig.embeddingModel,
+      aiConfig.embeddingBaseUrl,
+      store.getEmbeddingApiKey() ?? undefined
     )
 
     embeddings.forEach((embedding, index) => {
@@ -1111,7 +1114,9 @@ async function syncEmbeddingForDocument(documentId: string): Promise<void> {
     [candidate.content],
     home.aiConfig.baseUrl,
     apiKey,
-    home.aiConfig.embeddingModel
+    home.aiConfig.embeddingModel,
+    home.aiConfig.embeddingBaseUrl,
+    store.getEmbeddingApiKey() ?? undefined
   )
 
   if (!embedding) {
@@ -1148,18 +1153,32 @@ async function createEmbeddings(
   inputs: string[],
   baseUrl: string,
   apiKey: string,
-  embeddingModel: string
+  embeddingModel: string,
+  embeddingBaseUrl?: string,
+  embeddingApiKey?: string
 ): Promise<number[][]> {
   if (inputs.length === 0) {
     return []
   }
 
-  const endpoint = `${baseUrl.replace(/\/$/, '')}/embeddings`
+  // 使用 embeddingBaseUrl 或自动推导嵌入端点
+  let endpoint: string
+  if (embeddingBaseUrl && embeddingBaseUrl.trim()) {
+    endpoint = `${embeddingBaseUrl.replace(/\/$/, '')}/embeddings`
+  } else {
+    // 从 baseUrl 推导：移除可能的聊天路径（如 /chat/completions）
+    const normalizedBaseUrl = baseUrl.replace(/\/$/, '')
+    const baseUrlWithoutChat = normalizedBaseUrl.replace(/\/chat\/completions$/, '')
+    endpoint = `${baseUrlWithoutChat}/embeddings`
+  }
+
+  // 使用 embeddingApiKey 或默认 apiKey
+  const effectiveApiKey = embeddingApiKey && embeddingApiKey.trim() ? embeddingApiKey : apiKey
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
+      Authorization: `Bearer ${effectiveApiKey}`
     },
     body: JSON.stringify({
       model: embeddingModel,

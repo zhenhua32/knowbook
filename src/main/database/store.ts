@@ -650,6 +650,7 @@ export class KnowbookStore {
   updateAiConfig(input: UpdateAiConfigInput): void {
     this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
+    this.saveSetting('ai.embeddingBaseUrl', input.embeddingBaseUrl?.trim() ?? '')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
     this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
@@ -657,6 +658,9 @@ export class KnowbookStore {
     this.saveSetting('ai.autoHighlightOnSave', input.autoHighlightOnSave ? 'true' : 'false')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
+    }
+    if (typeof input.embeddingApiKey === 'string' && input.embeddingApiKey.trim().length > 0) {
+      this.saveSetting('ai.embeddingApiKey', input.embeddingApiKey.trim())
     }
   }
 
@@ -915,6 +919,10 @@ export class KnowbookStore {
 
   getAiApiKey(): string | null {
     return this.readSetting('ai.apiKey')
+  }
+
+  getEmbeddingApiKey(): string | null {
+    return this.readSetting('ai.embeddingApiKey')
   }
 
   getSemanticSearchCandidates(input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> = {}): SemanticSearchCandidate[] {
@@ -1933,15 +1941,19 @@ export class KnowbookStore {
   }
 
   private getAiConfig(): AiConfig {
+    const baseUrl = this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1'
+    const embeddingBaseUrl = this.readSetting('ai.embeddingBaseUrl') ?? ''
     return {
       enabled: this.readSetting('ai.enabled') !== 'false',
-      baseUrl: this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1',
+      baseUrl,
+      embeddingBaseUrl,
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
       embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
       autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
       autoTagOnSave: this.readSetting('ai.autoTagOnSave') === 'true',
       autoHighlightOnSave: this.readSetting('ai.autoHighlightOnSave') === 'true',
-      hasApiKey: Boolean(this.readSetting('ai.apiKey'))
+      hasApiKey: Boolean(this.readSetting('ai.apiKey')),
+      hasEmbeddingApiKey: Boolean(this.readSetting('ai.embeddingApiKey'))
     }
   }
 

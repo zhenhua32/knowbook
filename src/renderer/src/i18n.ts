@@ -145,9 +145,11 @@ function createUiText(language: UiLanguage) {
     autoTagOnSave: zh ? '保存时自动补齐缺失的块标签' : 'Auto-generate missing block tags on save',
     autoHighlightOnSave: zh ? '保存时自动高亮重要块' : 'Auto-highlight important blocks on save',
     baseUrl: zh ? '基础地址' : 'Base URL',
+    embeddingBaseUrl: zh ? '向量地址（留空则自动推导）' : 'Embedding Base URL (leave blank to auto-derive)',
     model: zh ? '模型' : 'Model',
     embeddingModel: zh ? '向量模型' : 'Embedding model',
     apiKeyLabel: zh ? 'API Key（留空表示保持当前值）' : 'API Key (leave blank to keep current)',
+    embeddingApiKeyLabel: zh ? '向量 API Key（留空则使用上述 Key）' : 'Embedding API Key (leave blank to use above)',
     currentKey: (configured: boolean) => zh
       ? `当前密钥：${configured ? '已配置' : '未配置'}`
       : `Current key: ${configured ? 'configured' : 'missing'}`,
