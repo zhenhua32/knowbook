@@ -98,6 +98,15 @@ export type BlockEditorRowProps = {
   isZh: boolean
 }
 
+function resizeBlockTextarea(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) {
+    return
+  }
+
+  textarea.style.height = '0px'
+  textarea.style.height = `${textarea.scrollHeight}px`
+}
+
 export function BlockEditorRow(props: BlockEditorRowProps) {
   const {
     block,
@@ -172,6 +181,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
   const [editingLanguage, setEditingLanguage] = useState(false)
   const [showBlockToolbar, setShowBlockToolbar] = useState(false)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // 点击外部关闭工具栏
   useEffect(() => {
@@ -186,6 +196,16 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showBlockToolbar])
+
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => resizeBlockTextarea(textarea))
+    return () => cancelAnimationFrame(frame)
+  }, [block.content, block.type])
 
   const handleBlockTypeChange = (newType: string) => {
     if (newType === 'divider') {
@@ -394,7 +414,9 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
               className={`block-inline-textarea type-${block.type}`}
               spellCheck={false}
               ref={(element) => {
+                textareaRef.current = element
                 blockTextareaRefs.current[index] = element
+                resizeBlockTextarea(element)
               }}
               placeholder={
                 block.type === 'heading-1'
@@ -434,6 +456,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                                   : 'Type text or / for commands'
               }
               onChange={(event) => {
+                resizeBlockTextarea(event.currentTarget)
                 handleBlockContentChange(index, event.target.value)
                 captureBlockCursor(index, event.target)
               }}
@@ -480,7 +503,10 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                 }
               }}
               onClick={(event) => captureBlockCursor(index, event.currentTarget)}
-              onFocus={(event) => captureBlockCursor(index, event.currentTarget)}
+              onFocus={(event) => {
+                resizeBlockTextarea(event.currentTarget)
+                captureBlockCursor(index, event.currentTarget)
+              }}
               onKeyDown={(event) => {
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
