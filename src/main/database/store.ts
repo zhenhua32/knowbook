@@ -1717,7 +1717,8 @@ export class KnowbookStore {
           checked: type === 'todo' ? Boolean(block.checked) : false,
           depth: this.normalizeNestableDepth(type, block.depth ?? 0),
           parentBlockId: block.parentBlockId ?? null,
-          tags: this.normalizeBlockTags(block.tags)
+          tags: this.normalizeBlockTags(block.tags),
+          highlight: this.normalizeBlockHighlight(block.highlight)
         }
       })
       .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
@@ -1732,9 +1733,25 @@ export class KnowbookStore {
         content: 'Start writing here.',
         checked: false,
         depth: 0,
-        tags: []
+        tags: [],
+        highlight: undefined
       }
     ]
+  }
+
+  private normalizeBlockHighlight(highlight: string | undefined): string | undefined {
+    if (typeof highlight !== 'string') {
+      return undefined
+    }
+
+    const normalized = highlight.trim().toLowerCase()
+    if (!normalized) {
+      return undefined
+    }
+
+    return ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].includes(normalized)
+      ? normalized
+      : undefined
   }
 
   private normalizeBlockTags(tags: string[] | undefined): string[] {

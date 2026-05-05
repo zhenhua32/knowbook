@@ -402,6 +402,30 @@ test('updateDocumentBlockTags and updateDocumentBlockHighlights persist to docum
   })
 })
 
+test('updateDocument persists manual block highlight from document input', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+    const detail = store.getDocumentDetail(home.id)
+    assert.ok(detail)
+
+    const blocks = detail.blocks.map((block, index) =>
+      index === 0
+        ? { ...block, highlight: 'blue' }
+        : block
+    )
+
+    store.updateDocument(home.id, {
+      title: detail.title,
+      summary: detail.summary,
+      blocks
+    })
+
+    const updated = store.getDocumentDetail(home.id)
+    assert.ok(updated)
+    assert.equal(updated.blocks[0]?.highlight, 'blue')
+  })
+})
+
 test('store throws expected errors for missing entities', () => {
   withStore((store) => {
     assert.throws(() => store.deleteDocument('missing-id'), /Document not found/)
