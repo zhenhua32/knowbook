@@ -21,6 +21,7 @@ test('appSchema preserves block tree and editor enhancement columns', () => {
   assert.equal(has('parent_block_id TEXT REFERENCES blocks(id) ON DELETE SET NULL'), true)
   assert.equal(has('depth INTEGER NOT NULL DEFAULT 0'), true)
   assert.equal(has("tags_json TEXT NOT NULL DEFAULT '[]'"), true)
+  assert.equal(has('database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE'), true)
 })
 
 test('appSchema includes indices for high-frequency queries', () => {

@@ -43,6 +43,9 @@ import type {
 import { appSchema } from './schema'
 
 export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
+const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
+const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
+const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 
 type SqliteDatabase = InstanceType<typeof Database>
 
@@ -73,6 +76,7 @@ interface DocumentCatalogRow {
 
 interface DocumentDatabaseColumnRow {
   id: string
+  database_id?: string | null
   name: string
   type: string
   options_json: string
@@ -255,17 +259,18 @@ export class KnowbookStore {
   }
 
   getHomeData(backupRoot: string): HomeData {
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     const recentDocuments = this.getRecentDocuments()
     const recentEvents = this.getRecentWorkspaceEvents()
     const documentTree = this.getDocumentTree()
     const graph = this.getWorkspaceGraph()
-    const databaseColumns = this.getDocumentDatabaseColumns()
+    const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
 
     return {
       summary: this.getSummary(backupRoot),
       recentDocuments,
       recentEvents,
-      documentCatalog: this.getDocumentCatalog(databaseColumns),
+      documentCatalog: this.getDocumentCatalog(databaseColumns, defaultDatabaseId),
       databaseColumns,
       aiConfig: this.getAiConfig(),
       documentTree,
@@ -717,9 +722,15 @@ export class KnowbookStore {
   }
 
   createDocumentDatabaseColumn(input: CreateDocumentDatabaseColumnInput): DocumentDatabaseColumn {
+    const databaseId = input.databaseId?.trim() || this.getDefaultDocumentDatabaseId()
     const name = input.name.trim()
     if (!name) {
       throw new Error('Column name is required.')
+    }
+
+    const databaseExists = this.db.prepare('SELECT id FROM databases WHERE id = ?').get(databaseId) as { id: string } | undefined
+    if (!databaseExists) {
+      throw new Error('Database not found.')
     }
 
     const type = this.normalizeDocumentDatabaseColumnType(input.type)
@@ -728,7 +739,8 @@ export class KnowbookStore {
     const maxSortOrderRow = this.db.prepare(`
       SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order
       FROM document_database_columns
-    `).get() as { max_sort_order: number }
+      WHERE database_id = ?
+    `).get(databaseId) as { max_sort_order: number }
     const sortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
     const column: DocumentDatabaseColumn = {
       id: randomUUID(),
@@ -739,9 +751,9 @@ export class KnowbookStore {
     }
 
     this.db.prepare(`
-      INSERT INTO document_database_columns (id, name, type, options_json, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(column.id, column.name, column.type, JSON.stringify(column.options), column.sortOrder, now, now)
+      INSERT INTO document_database_columns (id, database_id, name, type, options_json, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(column.id, databaseId, column.name, column.type, JSON.stringify(column.options), column.sortOrder, now, now)
 
     return column
   }
@@ -765,11 +777,22 @@ export class KnowbookStore {
   }
 
   moveDocumentDatabaseColumn(input: MoveDocumentDatabaseColumnInput): void {
-    const rows = this.db.prepare(`
-      SELECT id, name, type, options_json, sort_order
+    const currentRow = this.db.prepare(`
+      SELECT id, database_id, name, type, options_json, sort_order
       FROM document_database_columns
+      WHERE id = ?
+    `).get(input.columnId) as DocumentDatabaseColumnRow | undefined
+
+    if (!currentRow) {
+      throw new Error('Database column not found.')
+    }
+
+    const rows = this.db.prepare(`
+      SELECT id, database_id, name, type, options_json, sort_order
+      FROM document_database_columns
+      WHERE database_id = ?
       ORDER BY sort_order ASC, name ASC
-    `).all() as DocumentDatabaseColumnRow[]
+    `).all(currentRow.database_id) as DocumentDatabaseColumnRow[]
 
     const currentIndex = rows.findIndex((row) => row.id === input.columnId)
     if (currentIndex === -1) {
@@ -844,16 +867,17 @@ export class KnowbookStore {
   }
 
   updateDocumentDatabaseValue(input: UpdateDocumentDatabaseValueInput): void {
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     const documentExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(input.documentId) as { id: string } | undefined
     if (!documentExists) {
       throw new Error('Document not found.')
     }
 
     const columnRow = this.db.prepare(`
-      SELECT id, name, type, options_json, sort_order
+      SELECT id, database_id, name, type, options_json, sort_order
       FROM document_database_columns
-      WHERE id = ?
-    `).get(input.columnId) as DocumentDatabaseColumnRow | undefined
+      WHERE id = ? AND database_id = ?
+    `).get(input.columnId, defaultDatabaseId) as DocumentDatabaseColumnRow | undefined
 
     if (!columnRow) {
       throw new Error('Database column not found.')
@@ -1311,7 +1335,7 @@ export class KnowbookStore {
     }))
   }
 
-  private getDocumentCatalog(databaseColumns: DocumentDatabaseColumn[]): DocumentCatalogEntry[] {
+  private getDocumentCatalog(databaseColumns: DocumentDatabaseColumn[], defaultDatabaseId: string): DocumentCatalogEntry[] {
     // 获取普通的文档条目
     const documentRows = this.db.prepare(`
       SELECT
@@ -1345,9 +1369,9 @@ export class KnowbookStore {
         0 AS child_count
       FROM database_entities de
       JOIN databases d ON d.id = de.database_id
-      WHERE de.document_id IS NULL
+      WHERE de.document_id IS NULL AND de.database_id = ?
       ORDER BY de.updated_at DESC
-    `).all() as Array<{
+    `).all(defaultDatabaseId) as Array<{
       id: string
       title: string
       path: string
@@ -1404,12 +1428,13 @@ export class KnowbookStore {
     }))
   }
 
-  private getDocumentDatabaseColumns(): DocumentDatabaseColumn[] {
+  getDocumentDatabaseColumns(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentDatabaseColumn[] {
     const rows = this.db.prepare(`
-      SELECT id, name, type, options_json, sort_order
+      SELECT id, database_id, name, type, options_json, sort_order
       FROM document_database_columns
+      WHERE database_id = ?
       ORDER BY sort_order ASC, name ASC
-    `).all() as DocumentDatabaseColumnRow[]
+    `).all(databaseId) as DocumentDatabaseColumnRow[]
 
     return rows.map((row) => this.mapDocumentDatabaseColumnRow(row))
   }
@@ -2089,25 +2114,15 @@ export class KnowbookStore {
       this.db.exec(
         'ALTER TABLE document_database_columns ADD COLUMN database_id TEXT REFERENCES databases(id) ON DELETE CASCADE'
       )
-
-      // Create default database
-      const now = new Date().toISOString()
-      const defaultDbId = randomUUID()
-      this.db.prepare(`
-        INSERT INTO databases (id, name, description, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(defaultDbId, 'Default', 'Default database', now, now)
-
-      // Update existing columns to use default database
-      this.db.prepare(`
-        UPDATE document_database_columns SET database_id = ? WHERE database_id IS NULL
-      `).run(defaultDbId)
-
-      // Create index after column is added
-      this.db.exec(
-        'CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id)'
-      )
     }
+
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+    this.db.prepare(`
+      UPDATE document_database_columns SET database_id = ? WHERE database_id IS NULL
+    `).run(defaultDatabaseId)
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id)'
+    )
 
     // Check if entity_id column exists in document_database_values
     const valueColumns = this.db
@@ -2124,6 +2139,46 @@ export class KnowbookStore {
   private readSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value ?? null
+  }
+
+  private getDefaultDocumentDatabaseId(): string {
+    const storedId = this.readSetting(DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY)
+    if (storedId) {
+      const existing = this.db.prepare('SELECT id FROM databases WHERE id = ?').get(storedId) as { id: string } | undefined
+      if (existing) {
+        return existing.id
+      }
+    }
+
+    const columnDatabase = this.db.prepare(`
+      SELECT database_id
+      FROM document_database_columns
+      WHERE database_id IS NOT NULL AND database_id != ''
+      ORDER BY sort_order ASC
+      LIMIT 1
+    `).get() as { database_id: string } | undefined
+
+    const namedDefault = this.db.prepare(`
+      SELECT id
+      FROM databases
+      WHERE name = ? AND description = ?
+      ORDER BY created_at ASC
+      LIMIT 1
+    `).get(DEFAULT_DOCUMENT_DATABASE_NAME, DEFAULT_DOCUMENT_DATABASE_DESCRIPTION) as { id: string } | undefined
+
+    const defaultDatabaseId = columnDatabase?.database_id ?? namedDefault?.id ?? this.createDefaultDocumentDatabase()
+    this.saveSetting(DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY, defaultDatabaseId)
+    return defaultDatabaseId
+  }
+
+  private createDefaultDocumentDatabase(): string {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO databases (id, name, description, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, DEFAULT_DOCUMENT_DATABASE_NAME, DEFAULT_DOCUMENT_DATABASE_DESCRIPTION, now, now)
+    return id
   }
 
   getDatabases(): Array<{ id: string; name: string; description: string; createdAt: string; updatedAt: string }> {
@@ -2206,11 +2261,21 @@ export class KnowbookStore {
     )
     
     for (const [columnId, value] of Object.entries(fieldValues)) {
-      let valueText: string | null = null
-      if (value !== null && value !== undefined) {
-        valueText = typeof value === 'string' ? value : JSON.stringify(value)
+      const columnRow = this.db.prepare(`
+        SELECT id, database_id, name, type, options_json, sort_order
+        FROM document_database_columns
+        WHERE id = ? AND database_id = ?
+      `).get(columnId, databaseId) as DocumentDatabaseColumnRow | undefined
+
+      if (!columnRow) {
+        throw new Error('Database column not found.')
       }
-      
+
+      const valueText = this.serializeDocumentDatabaseFieldValue(this.mapDocumentDatabaseColumnRow(columnRow), value)
+      if (valueText === null) {
+        continue
+      }
+
       valueInsert.run(documentId, columnId, valueText, now, entityId)
     }
     
@@ -2310,19 +2375,28 @@ export class KnowbookStore {
     // 更新字段值（如果提供了）
     if (fieldValues) {
       for (const [columnId, value] of Object.entries(fieldValues)) {
-        let valueText: string | null = null
-        if (value !== null && value !== undefined) {
-          valueText = typeof value === 'string' ? value : JSON.stringify(value)
+        const columnRow = this.db.prepare(`
+          SELECT id, database_id, name, type, options_json, sort_order
+          FROM document_database_columns
+          WHERE id = ? AND database_id = ?
+        `).get(columnId, entity.database_id) as DocumentDatabaseColumnRow | undefined
+
+        if (!columnRow) {
+          throw new Error('Database column not found.')
         }
-        
-        const entityRow = this.db.prepare('SELECT id FROM database_entities WHERE id = ?').get(entityId)
-        if (!entityRow) continue
-        
+
+        const valueText = this.serializeDocumentDatabaseFieldValue(this.mapDocumentDatabaseColumnRow(columnRow), value)
+
         // 使用 document_id 来自实体记录（可能是 null）
         const currentEntity = this.db.prepare('SELECT document_id FROM database_entities WHERE id = ?').get(entityId) as
           | { document_id: string | null }
           | undefined
-        
+
+        if (valueText === null) {
+          this.db.prepare('DELETE FROM document_database_values WHERE entity_id = ? AND column_id = ?').run(entityId, columnId)
+          continue
+        }
+
         this.db.prepare(
           `INSERT OR REPLACE INTO document_database_values (document_id, column_id, value_text, updated_at, entity_id)
            VALUES (?, ?, ?, ?, ?)`

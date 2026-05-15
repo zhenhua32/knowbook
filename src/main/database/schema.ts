@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS databases (
 
 CREATE TABLE IF NOT EXISTS document_database_columns (
   id TEXT PRIMARY KEY,
+  database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   type TEXT NOT NULL,
   options_json TEXT NOT NULL DEFAULT '[]',
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS document_database_columns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_document_database_columns_sort_order ON document_database_columns(sort_order);
+CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id);
 
 CREATE TABLE IF NOT EXISTS database_entities (
   id TEXT PRIMARY KEY,

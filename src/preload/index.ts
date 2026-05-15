@@ -39,6 +39,7 @@ const api: ElectronApi = {
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
+  getDocumentDatabaseColumns: (databaseId?: string | null) => ipcRenderer.invoke('knowbook:get-document-database-columns', databaseId ?? null) as Promise<DocumentDatabaseColumn[]>,
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:create-document-database-column', input) as Promise<DocumentDatabaseColumn>,
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:rename-document-database-column', input) as Promise<void>,
   moveDocumentDatabaseColumn: (input: MoveDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:move-document-database-column', input) as Promise<void>,

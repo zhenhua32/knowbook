@@ -1152,6 +1152,7 @@ export function App() {
   const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
   const [databaseColumnOptionsDraft, setDatabaseColumnOptionsDraft] = useState('')
   const [databases, setDatabases] = useState<DocumentDatabase[]>([])
+  const [selectedDatabaseColumns, setSelectedDatabaseColumns] = useState<DocumentDatabaseColumn[]>([])
   const [databaseEntities, setDatabaseEntities] = useState<DatabaseEntity[]>([])
   const [isCreatingDatabase, setIsCreatingDatabase] = useState(false)
   const [databaseNameDraft, setDatabaseNameDraft] = useState('')
@@ -1602,15 +1603,22 @@ export function App() {
     let mounted = true
 
     if (!databaseEntityDatabaseId) {
+      setSelectedDatabaseColumns([])
       setDatabaseEntities([])
+      setDatabaseEntityFieldValues({})
       return () => {
         mounted = false
       }
     }
 
-    window.knowbook.getDatabaseEntities(databaseEntityDatabaseId).then((items) => {
+    Promise.all([
+      window.knowbook.getDatabaseEntities(databaseEntityDatabaseId),
+      window.knowbook.getDocumentDatabaseColumns(databaseEntityDatabaseId)
+    ]).then(([items, columns]) => {
       if (mounted) {
         setDatabaseEntities(items)
+        setSelectedDatabaseColumns(columns)
+        setDatabaseEntityFieldValues({})
       }
     })
 
@@ -2453,12 +2461,12 @@ export function App() {
   async function createDatabaseColumn() {
     try {
       const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
+        databaseId: selectedDatabase?.id,
         name: databaseColumnNameDraft,
         type: databaseColumnTypeDraft,
         options: normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft)
       })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      await refreshDatabasePageData()
       setIsCreatingDatabaseColumn(false)
       setDatabaseColumnNameDraft('')
       setDatabaseColumnTypeDraft('text')
@@ -2473,8 +2481,7 @@ export function App() {
   async function renameDatabaseColumn(columnId: string, name: string) {
     try {
       await window.knowbook.renameDocumentDatabaseColumn({ columnId, name })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      await refreshDatabasePageData()
       setBackupMessage(ui.databaseColumnRenamed(name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnRenameFailed
@@ -2485,8 +2492,7 @@ export function App() {
   async function moveDatabaseColumn(columnId: string, direction: 'left' | 'right') {
     try {
       await window.knowbook.moveDocumentDatabaseColumn({ columnId, direction })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      await refreshDatabasePageData()
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnReorderFailed
       setBackupMessage(message)
@@ -2498,8 +2504,7 @@ export function App() {
 
     try {
       await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId, options })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      await refreshDatabasePageData()
       setBackupMessage(ui.databaseColumnOptionsUpdated)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnOptionsUpdateFailed
@@ -2515,8 +2520,7 @@ export function App() {
 
     try {
       await window.knowbook.deleteDocumentDatabaseColumn(columnId)
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      await refreshDatabasePageData()
       setBackupMessage(ui.databaseColumnDeleted(columnName))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnDeleteFailed
@@ -2552,12 +2556,7 @@ export function App() {
         documentId: databaseEntityDocumentId || undefined,
         fieldValues: compactDocumentDatabaseFieldValues(databaseEntityFieldValues)
       })
-      const [refreshedHome, refreshedEntities] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDatabaseEntities(databaseEntityDatabaseId)
-      ])
-      setHomeData(refreshedHome)
-      setDatabaseEntities(refreshedEntities)
+      await refreshDatabasePageData(databaseEntityDatabaseId)
       setIsCreatingDatabaseEntity(false)
       setDatabaseEntityDocumentId('')
       setDatabaseEntityFieldValues({})
@@ -2576,12 +2575,7 @@ export function App() {
           Object.entries(fieldValues).map(([columnId, value]) => [columnId, normalizeDocumentDatabaseFieldValue(value)])
         )
       })
-      const [refreshedHome, refreshedEntities] = await Promise.all([
-        window.knowbook.getHomeData(),
-        databaseEntityDatabaseId ? window.knowbook.getDatabaseEntities(databaseEntityDatabaseId) : Promise.resolve([])
-      ])
-      setHomeData(refreshedHome)
-      setDatabaseEntities(refreshedEntities)
+      await refreshDatabasePageData(databaseEntityDatabaseId)
       setBackupMessage(ui.databaseEntityUpdated)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseEntityUpdateFailed
@@ -2602,12 +2596,7 @@ export function App() {
     }
     try {
       await window.knowbook.deleteDatabaseEntity(entityId)
-      const [refreshedHome, refreshedEntities] = await Promise.all([
-        window.knowbook.getHomeData(),
-        databaseEntityDatabaseId ? window.knowbook.getDatabaseEntities(databaseEntityDatabaseId) : Promise.resolve([])
-      ])
-      setHomeData(refreshedHome)
-      setDatabaseEntities(refreshedEntities)
+      await refreshDatabasePageData(databaseEntityDatabaseId)
       setBackupMessage(ui.databaseEntityDeleted)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseEntityDeleteFailed
@@ -2659,6 +2648,17 @@ export function App() {
       const message = error instanceof Error ? error.message : 'Failed to update database value.'
       setBackupMessage(message)
     }
+  }
+
+  async function refreshDatabasePageData(targetDatabaseId: string | null = databaseEntityDatabaseId) {
+    const [refreshedHome, refreshedEntities, refreshedColumns] = await Promise.all([
+      window.knowbook.getHomeData(),
+      targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve([]),
+      window.knowbook.getDocumentDatabaseColumns(targetDatabaseId)
+    ])
+    setHomeData(refreshedHome)
+    setDatabaseEntities(refreshedEntities)
+    setSelectedDatabaseColumns(refreshedColumns)
   }
 
   async function findRelatedNotesForPrompt() {
@@ -4111,6 +4111,7 @@ export function App() {
     ? null
     : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
   const selectedDatabase = databases.find((database) => database.id === databaseEntityDatabaseId) ?? null
+  const databasePageColumns = selectedDatabase ? selectedDatabaseColumns : homeData.databaseColumns
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -4377,7 +4378,7 @@ return (
                   type="text"
                   value={catalogQuery}
                 />
-                <span className="pill">{ui.customColumnsCount(homeData.databaseColumns.length)}</span>
+                <span className="pill">{ui.customColumnsCount(databasePageColumns.length)}</span>
                 <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
               </div>
             </div>
@@ -4492,9 +4493,9 @@ return (
                     value={databaseEntityDocumentId}
                   />
                 </label>
-                {homeData.databaseColumns.length > 0 ? (
+                {databasePageColumns.length > 0 ? (
                   <div className="database-entity-field-grid database-entity-field-grid-form">
-                    {homeData.databaseColumns.map((column) => (
+                    {databasePageColumns.map((column) => (
                       <label className="editor-label database-entity-field" key={`draft-${column.id}`}>
                         {column.name}
                         <DatabaseFieldEditor
@@ -4579,9 +4580,9 @@ return (
                                   </button>
                                 </div>
                               </div>
-                              {homeData.databaseColumns.length > 0 ? (
+                              {databasePageColumns.length > 0 ? (
                                 <div className="database-entity-field-grid">
-                                  {homeData.databaseColumns.map((column) => (
+                                  {databasePageColumns.map((column) => (
                                     <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
                                       {column.name}
                                       <DatabaseFieldEditor
@@ -4609,13 +4610,13 @@ return (
               <p className="mini-hint">{ui.noIndependentDatabasesYet}</p>
             )}
 
-            {homeData.databaseColumns.length > 0 ? (
+            {databasePageColumns.length > 0 ? (
               <div className="database-schema-chip-row">
-                {homeData.databaseColumns.map((column, index) => (
+                {databasePageColumns.map((column, index) => (
                   <DatabaseSchemaColumnCard
                     column={column}
                     isFirst={index === 0}
-                    isLast={index === homeData.databaseColumns.length - 1}
+                    isLast={index === databasePageColumns.length - 1}
                     key={column.id}
                     onDelete={deleteDatabaseColumn}
                     onMove={moveDatabaseColumn}

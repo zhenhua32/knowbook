@@ -167,6 +167,41 @@ test('document database values are validated and pruned when options change', ()
   })
 })
 
+test('document database columns and standalone entities stay isolated per database', () => {
+  withStore((store, backupRoot) => {
+    const initialHome = store.getHomeData(backupRoot)
+    const defaultCatalogCount = initialHome.documentCatalog.length
+    const defaultDatabaseColumnsBefore = initialHome.databaseColumns
+
+    const projectsDatabase = store.createDatabase({
+      name: 'Projects',
+      description: 'Project tracking'
+    })
+
+    const defaultColumn = store.createDocumentDatabaseColumn({ name: 'Status', type: 'text' })
+    const projectsColumn = store.createDocumentDatabaseColumn({
+      databaseId: projectsDatabase.id,
+      name: 'Owner',
+      type: 'text'
+    })
+
+    store.createDatabaseEntity({
+      databaseId: projectsDatabase.id,
+      fieldValues: { [projectsColumn.id]: 'Alice' }
+    })
+
+    const refreshedHome = store.getHomeData(backupRoot)
+    const projectColumns = store.getDocumentDatabaseColumns(projectsDatabase.id)
+
+    assert.equal(refreshedHome.databaseColumns.some((column) => column.id === defaultColumn.id), true)
+    assert.equal(refreshedHome.databaseColumns.some((column) => column.id === projectsColumn.id), false)
+    assert.equal(projectColumns.some((column) => column.id === projectsColumn.id), true)
+    assert.equal(projectColumns.some((column) => column.id === defaultColumn.id), false)
+    assert.equal(refreshedHome.documentCatalog.length, defaultCatalogCount)
+    assert.equal(refreshedHome.databaseColumns.length, defaultDatabaseColumnsBefore.length + 1)
+  })
+})
+
 test('embedding cache supports save/get/delete lifecycle', () => {
   withStore((store, backupRoot) => {
     const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')

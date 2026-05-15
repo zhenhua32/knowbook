@@ -194,6 +194,11 @@ function registerIpcHandlers(): void {
     return { id }
   })
 
+  ipcMain.handle('knowbook:get-document-database-columns', (_event, databaseId: string | null = null) => {
+    const columns: DocumentDatabaseColumn[] = store.getDocumentDatabaseColumns(databaseId ?? undefined)
+    return columns
+  })
+
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {
     const column: DocumentDatabaseColumn = store.createDocumentDatabaseColumn(input)
     return column

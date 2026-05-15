@@ -64,6 +64,7 @@ export interface CreateDatabaseInput {
 }
 
 export interface CreateDocumentDatabaseColumnInput {
+  databaseId?: string
   name: string
   type: DocumentDatabaseColumnType
   options?: string[]
@@ -416,6 +417,7 @@ export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
+  getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => Promise<DocumentDatabaseColumn>
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => Promise<void>
   moveDocumentDatabaseColumn: (input: MoveDocumentDatabaseColumnInput) => Promise<void>
