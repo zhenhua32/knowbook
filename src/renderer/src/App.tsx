@@ -53,7 +53,15 @@ import { DocumentSummaryCard } from './components/DocumentSummaryCard'
 import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
 import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { CrossDocumentBlockReference } from './components/BlockReference'
-import { renderInlineContent, renderStyledContent, parseMarkdownStyles, resolveInlineReference, resolveBlockReference } from './components/InlineContentRenderer'
+import {
+  getInlineReferenceTokenAtCursor,
+  renderInlineContent,
+  renderStyledContent,
+  parseMarkdownStyles,
+  resolveInlineReference,
+  resolveInlineReferenceTarget,
+  resolveBlockReference
+} from './components/InlineContentRenderer'
 import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPanel'
@@ -115,6 +123,11 @@ type BlockDropPreview = {
 type BlockSelectionRange = {
   start: number
   end: number
+}
+
+type PendingBlockNavigationTarget = {
+  documentId: string
+  blockId: string
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
@@ -338,6 +351,39 @@ function buildTreeAwareBlockIndexById(blocks: TreeAwareBlock[]): Map<string, num
     }
   }
   return indexById
+}
+
+function expandAncestorBlocks(
+  blocks: TreeAwareBlock[],
+  targetBlockId: string,
+  collapsedBlockIds: Set<string>
+): Set<string> {
+  const nextCollapsedBlockIds = new Set(collapsedBlockIds)
+  const indexById = buildTreeAwareBlockIndexById(blocks)
+  const visitedParentIds = new Set<string>()
+  let currentBlockId: string | null = targetBlockId
+
+  while (currentBlockId) {
+    if (visitedParentIds.has(currentBlockId)) {
+      break
+    }
+
+    visitedParentIds.add(currentBlockId)
+    const currentIndex = indexById.get(currentBlockId)
+    if (currentIndex === undefined) {
+      break
+    }
+
+    const parentBlockId = getNormalizedParentBlockId(blocks[currentIndex])
+    if (!parentBlockId) {
+      break
+    }
+
+    nextCollapsedBlockIds.delete(parentBlockId)
+    currentBlockId = parentBlockId
+  }
+
+  return nextCollapsedBlockIds
 }
 
 function isBlockDescendantOf(rootId: string, blocks: TreeAwareBlock[], candidateIndex: number, indexById: Map<string, number>): boolean {
@@ -1138,6 +1184,7 @@ export function App() {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
+  const [pendingBlockNavigationTarget, setPendingBlockNavigationTarget] = useState<PendingBlockNavigationTarget | null>(null)
   const [autoSaveFlash, setAutoSaveFlash] = useState(false)
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
@@ -1155,9 +1202,22 @@ export function App() {
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockMouseDownOrigin = useRef<number | null>(null)
+  const highlightedBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
+
+  function flashHighlightedBlock(blockId: string) {
+    setHighlightedBlockId(blockId)
+    if (highlightedBlockTimerRef.current) {
+      clearTimeout(highlightedBlockTimerRef.current)
+    }
+
+    highlightedBlockTimerRef.current = setTimeout(() => {
+      setHighlightedBlockId((current) => (current === blockId ? null : current))
+      highlightedBlockTimerRef.current = null
+    }, 2200)
+  }
 
   function setDraftBlocks(next: DraftBlockUpdater) {
     setDraftBlocksState((previous) => {
@@ -1271,8 +1331,53 @@ export function App() {
   }
 
   function openDocumentInDocumentsPage(documentId: string) {
+    setPendingBlockNavigationTarget(null)
+    setHighlightedBlockId(null)
     setSelectedDocumentId(documentId)
     setActivePage('documents')
+  }
+
+  function openDocumentBlockInDocumentsPage(documentId: string, blockId: string) {
+    setPendingBlockNavigationTarget({ documentId, blockId })
+    setActivePage('documents')
+    setSelectedDocumentId(documentId)
+  }
+
+  async function navigateInlineReferenceAtCursor(content: string, cursorPosition: number) {
+    const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
+    if (!token) {
+      return
+    }
+
+    const blockReferences = new Map(
+      draftBlocks
+        .filter((block): block is DocumentBlockDraft & { id: string } => Boolean(block.id?.trim()))
+        .map((block) => [block.id, { id: block.id, content: block.content }] as const)
+    )
+
+    const target = resolveInlineReferenceTarget(token, documentReferences, blockReferences, selectedDocumentId)
+    if (!target) {
+      setBackupMessage(ui.blockReferenceNotFound)
+      return
+    }
+
+    if (target.type === 'document') {
+      openDocumentInDocumentsPage(target.documentId)
+      return
+    }
+
+    if (target.type === 'block') {
+      openDocumentBlockInDocumentsPage(target.documentId, target.blockId)
+      return
+    }
+
+    const blockReference = await window.knowbook.getBlockReference(target.documentPath, target.blockId)
+    if (!blockReference) {
+      setBackupMessage(ui.blockReferenceNotFound)
+      return
+    }
+
+    openDocumentBlockInDocumentsPage(blockReference.documentId, blockReference.block.id)
   }
 
   function updateBlockHighlight(index: number, highlight: string | undefined) {
@@ -1532,6 +1637,8 @@ export function App() {
       setPendingFocusBlockIndex(null)
       setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
+      setPendingBlockNavigationTarget(null)
+      setHighlightedBlockId(null)
         setAiAnswer('')
         setAiContextResults([])
         setAiContextError('')
@@ -1573,6 +1680,39 @@ export function App() {
       mounted = false
     }
   }, [selectedDocumentId])
+
+  useEffect(() => {
+    if (!pendingBlockNavigationTarget || pendingBlockNavigationTarget.documentId !== selectedDocumentId) {
+      return
+    }
+
+    if (!selectedDocument) {
+      return
+    }
+
+    const targetIndex = draftBlocks.findIndex((block) => block.id === pendingBlockNavigationTarget.blockId)
+    if (targetIndex === -1) {
+      setPendingBlockNavigationTarget(null)
+      setBackupMessage(ui.blockReferenceNotFound)
+      return
+    }
+
+    setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, pendingBlockNavigationTarget.blockId, previous))
+    setSelectedBlockRange(null)
+    setSelectionAnchorBlockId(pendingBlockNavigationTarget.blockId)
+    setActiveBlockIndex(targetIndex)
+    setPendingFocusBlockIndex(targetIndex)
+    flashHighlightedBlock(pendingBlockNavigationTarget.blockId)
+    setPendingBlockNavigationTarget(null)
+  }, [draftBlocks, pendingBlockNavigationTarget, selectedDocument, selectedDocumentId, ui.blockReferenceNotFound])
+
+  useEffect(() => {
+    return () => {
+      if (highlightedBlockTimerRef.current) {
+        clearTimeout(highlightedBlockTimerRef.current)
+      }
+    }
+  }, [])
 
   // Track navigation history
   useEffect(() => {
@@ -4765,9 +4905,11 @@ return (
                             getPreviousSiblingSubtreeStartIndex={getPreviousSiblingSubtreeStartIndex}
                             getVisibleBlockCountInRange={getVisibleBlockCountInRange}
                             handleBlockContentChange={handleBlockContentChange}
+                            navigateInlineReferenceAtCursor={navigateInlineReferenceAtCursor}
                             handleBlockPaste={handleBlockPaste}
                             indentPx={indentPx}
                             index={index}
+                            isHighlighted={block.id === highlightedBlockId}
                             isBlockRangeSelecting={isBlockRangeSelecting}
                             isSelected={isSelected}
                             isSelectionCoherent={isSelectionCoherent}

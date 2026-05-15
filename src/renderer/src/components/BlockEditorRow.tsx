@@ -20,6 +20,7 @@ export type BlockEditorRowProps = {
 
   // Row state
   isSelected: boolean
+  isHighlighted: boolean
   dropPreview: BlockDropPreview | null
   indentPx: number
   numberLabel: string
@@ -43,6 +44,7 @@ export type BlockEditorRowProps = {
 
   // Callbacks: block interactions
   handleBlockContentChange: (index: number, content: string) => void
+  navigateInlineReferenceAtCursor: (content: string, cursorPosition: number) => void | Promise<void>
   captureBlockCursor: (index: number, target: HTMLTextAreaElement) => void
   handleBlockPaste: (index: number, text: string, start: number, end: number) => boolean
 
@@ -114,6 +116,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     draftBlocks,
     selectedDocument,
     isSelected,
+    isHighlighted,
     dropPreview,
     indentPx,
     numberLabel,
@@ -129,6 +132,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     updateBlockHighlight,
     insertDraftBlockAt,
     handleBlockContentChange,
+    navigateInlineReferenceAtCursor,
     captureBlockCursor,
     handleBlockPaste,
     beginBlockDrag,
@@ -223,7 +227,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
 
   return (
     <div
-      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}`}
+      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
         ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined),
@@ -503,7 +507,15 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                   selectBlockRange(index, true)
                 }
               }}
-              onClick={(event) => captureBlockCursor(index, event.currentTarget)}
+              onClick={(event) => {
+                captureBlockCursor(index, event.currentTarget)
+                if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey) {
+                  void navigateInlineReferenceAtCursor(
+                    block.content,
+                    event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                  )
+                }
+              }}
               onFocus={(event) => {
                 resizeBlockTextarea(event.currentTarget)
                 captureBlockCursor(index, event.currentTarget)
