@@ -10,6 +10,8 @@ import {
 import type {
   BackupResult,
   BlockReferenceResult,
+  DatabaseEntity,
+  DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
   DocumentDatabaseFieldValue,
@@ -1076,6 +1078,11 @@ export function App() {
   const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
   const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
   const [databaseColumnOptionsDraft, setDatabaseColumnOptionsDraft] = useState('')
+  const [databases, setDatabases] = useState<DocumentDatabase[]>([])
+  const [databaseEntities, setDatabaseEntities] = useState<DatabaseEntity[]>([])
+  const [isCreatingDatabase, setIsCreatingDatabase] = useState(false)
+  const [databaseNameDraft, setDatabaseNameDraft] = useState('')
+  const [databaseDescriptionDraft, setDatabaseDescriptionDraft] = useState('')
   const [isCreatingDatabaseEntity, setIsCreatingDatabaseEntity] = useState(false)
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
@@ -1427,6 +1434,13 @@ export function App() {
       }
     })
 
+    window.knowbook.getDatabases().then((items) => {
+      if (mounted) {
+        setDatabases(items)
+        setDatabaseEntityDatabaseId((current) => current || items[0]?.id || '')
+      }
+    })
+
     window.knowbook.getSetting('pinned_documents').then((value) => {
       if (mounted && value) {
         try {
@@ -1451,6 +1465,27 @@ export function App() {
       mounted = false
     }
   }, [])
+
+  useEffect(() => {
+    let mounted = true
+
+    if (!databaseEntityDatabaseId) {
+      setDatabaseEntities([])
+      return () => {
+        mounted = false
+      }
+    }
+
+    window.knowbook.getDatabaseEntities(databaseEntityDatabaseId).then((items) => {
+      if (mounted) {
+        setDatabaseEntities(items)
+      }
+    })
+
+    return () => {
+      mounted = false
+    }
+  }, [databaseEntityDatabaseId])
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage
@@ -2322,22 +2357,46 @@ export function App() {
     }
   }
 
+  async function createDatabase() {
+    try {
+      const createdDatabase = await window.knowbook.createDocumentDatabase({
+        name: databaseNameDraft,
+        description: databaseDescriptionDraft.trim() || undefined
+      })
+      const refreshedDatabases = await window.knowbook.getDatabases()
+      setDatabases(refreshedDatabases)
+      setDatabaseEntityDatabaseId(createdDatabase.id)
+      setDatabaseEntities([])
+      setIsCreatingDatabase(false)
+      setIsCreatingDatabaseEntity(true)
+      setDatabaseNameDraft('')
+      setDatabaseDescriptionDraft('')
+      setBackupMessage(ui.databaseCreated(createdDatabase.name))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseCreateFailed
+      setBackupMessage(message)
+    }
+  }
+
   async function createDatabaseEntity() {
     try {
-      const createdEntity = await window.knowbook.createDatabaseEntity({
+      await window.knowbook.createDatabaseEntity({
         databaseId: databaseEntityDatabaseId,
         documentId: databaseEntityDocumentId || undefined,
         fieldValues: databaseEntityFieldValues
       })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
+      const [refreshedHome, refreshedEntities] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDatabaseEntities(databaseEntityDatabaseId)
+      ])
+      setHomeData(refreshedHome)
+      setDatabaseEntities(refreshedEntities)
       setIsCreatingDatabaseEntity(false)
-      setDatabaseEntityDatabaseId('')
       setDatabaseEntityDocumentId('')
       setDatabaseEntityFieldValues({})
-      setBackupMessage('Database entity created successfully')
+      setBackupMessage(ui.databaseEntityCreated)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to create database entity'
+      const message = error instanceof Error ? error.message : ui.databaseEntityCreateFailed
       setBackupMessage(message)
     }
   }
@@ -2345,26 +2404,34 @@ export function App() {
   async function updateDatabaseEntity(entityId: string, fieldValues: Record<string, DocumentDatabaseFieldValue>) {
     try {
       await window.knowbook.updateDatabaseEntity({ entityId, fieldValues })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage('Database entity updated')
+      const [refreshedHome, refreshedEntities] = await Promise.all([
+        window.knowbook.getHomeData(),
+        databaseEntityDatabaseId ? window.knowbook.getDatabaseEntities(databaseEntityDatabaseId) : Promise.resolve([])
+      ])
+      setHomeData(refreshedHome)
+      setDatabaseEntities(refreshedEntities)
+      setBackupMessage(ui.databaseEntityUpdated)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to update database entity'
+      const message = error instanceof Error ? error.message : ui.databaseEntityUpdateFailed
       setBackupMessage(message)
     }
   }
 
   async function deleteDatabaseEntity(entityId: string) {
-    if (!window.confirm('Are you sure you want to delete this database entity?')) {
+    if (!window.confirm(ui.confirmDeleteDatabaseEntity)) {
       return
     }
     try {
       await window.knowbook.deleteDatabaseEntity(entityId)
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage('Database entity deleted')
+      const [refreshedHome, refreshedEntities] = await Promise.all([
+        window.knowbook.getHomeData(),
+        databaseEntityDatabaseId ? window.knowbook.getDatabaseEntities(databaseEntityDatabaseId) : Promise.resolve([])
+      ])
+      setHomeData(refreshedHome)
+      setDatabaseEntities(refreshedEntities)
+      setBackupMessage(ui.databaseEntityDeleted)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to delete database entity'
+      const message = error instanceof Error ? error.message : ui.databaseEntityDeleteFailed
       setBackupMessage(message)
     }
   }
@@ -3864,6 +3931,7 @@ export function App() {
   const boardGroupingColumn = boardGroupBy === BOARD_GROUP_BY_PARENT
     ? null
     : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
+  const selectedDatabase = databases.find((database) => database.id === databaseEntityDatabaseId) ?? null
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -4117,8 +4185,11 @@ return (
                  <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
                    {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
                  </button>
+                 <button className="secondary-button" onClick={() => setIsCreatingDatabase((previous) => !previous)} type="button">
+                   {isCreatingDatabase ? ui.common.cancel : ui.addDatabase}
+                 </button>
                  <button className="secondary-button" onClick={() => setIsCreatingDatabaseEntity((previous) => !previous)} type="button">
-                   {isCreatingDatabaseEntity ? ui.common.cancel : 'Add Database'}
+                   {isCreatingDatabaseEntity ? ui.common.cancel : ui.addEntity}
                  </button>
                  <input
                   className="editor-input table-search"
@@ -4183,6 +4254,40 @@ return (
               </div>
              ) : null}
 
+            {isCreatingDatabase ? (
+              <div className="database-schema-form">
+                <label className="editor-label">
+                  {ui.databaseName}
+                  <input className="editor-input" onChange={(event) => setDatabaseNameDraft(event.target.value)} type="text" value={databaseNameDraft} />
+                </label>
+                <label className="editor-label">
+                  {ui.databaseDescription}
+                  <input className="editor-input" onChange={(event) => setDatabaseDescriptionDraft(event.target.value)} type="text" value={databaseDescriptionDraft} />
+                </label>
+                <div className="database-schema-actions">
+                  <button
+                    className="secondary-button"
+                    disabled={databaseNameDraft.trim().length === 0}
+                    onClick={() => void createDatabase()}
+                    type="button"
+                  >
+                    {ui.createDatabase}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setIsCreatingDatabase(false)
+                      setDatabaseNameDraft('')
+                      setDatabaseDescriptionDraft('')
+                    }}
+                    type="button"
+                  >
+                    {ui.common.cancel}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {isCreatingDatabaseEntity ? (
               <div className="database-schema-form">
                 <label className="editor-label">
@@ -4192,14 +4297,14 @@ return (
                     onChange={(event) => setDatabaseEntityDatabaseId(event.target.value)}
                     value={databaseEntityDatabaseId}
                   >
-                    <option value="">Select a database...</option>
-                    {homeData.databaseColumns.length > 0 && homeData.databaseColumns.map((col) => (
-                      <option key={col.id} value={col.id}>{col.name}</option>
+                    <option value="">{ui.selectDatabasePlaceholder}</option>
+                    {databases.map((database) => (
+                      <option key={database.id} value={database.id}>{database.name}</option>
                     ))}
                   </select>
                 </label>
                 <label className="editor-label">
-                  Link to Document (optional)
+                  {ui.linkToDocumentOptional}
                   <input
                     className="editor-input"
                     type="text"
@@ -4215,13 +4320,12 @@ return (
                     type="button"
                     disabled={!databaseEntityDatabaseId}
                   >
-                    Create Entity
+                    {ui.createEntity}
                   </button>
                   <button
                     className="secondary-button"
                     onClick={() => {
                       setIsCreatingDatabaseEntity(false)
-                      setDatabaseEntityDatabaseId('')
                       setDatabaseEntityDocumentId('')
                       setDatabaseEntityFieldValues({})
                     }}
@@ -4232,6 +4336,54 @@ return (
                 </div>
               </div>
             ) : null}
+
+            {databases.length > 0 ? (
+              <>
+                <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
+                  {databases.map((database) => (
+                    <button
+                      className={database.id === databaseEntityDatabaseId ? 'primary-button' : 'secondary-button'}
+                      key={database.id}
+                      onClick={() => setDatabaseEntityDatabaseId(database.id)}
+                      type="button"
+                    >
+                      {database.name}
+                    </button>
+                  ))}
+                </div>
+
+                {selectedDatabase ? (
+                  databaseEntities.length > 0 ? (
+                    <div className="document-list" style={{ marginBottom: '16px' }}>
+                      {databaseEntities.map((entity) => {
+                        const linkedDocument = entity.documentId
+                          ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
+                          : null
+
+                        return (
+                          <div className="document-row" key={entity.id}>
+                            <div>
+                              <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
+                              <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                            </div>
+                            <div className="document-meta">
+                              <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
+                              <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
+                                {ui.common.delete}
+                              </button>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
+                  )
+                ) : null}
+              </>
+            ) : (
+              <p className="mini-hint">{ui.noIndependentDatabasesYet}</p>
+            )}
 
             {homeData.databaseColumns.length > 0 ? (
               <div className="database-schema-chip-row">

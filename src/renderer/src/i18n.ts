@@ -205,18 +205,33 @@ function createUiText(language: UiLanguage) {
     databaseViewLabel: zh ? '数据库视图' : 'Database view',
     documentCatalogTitle: zh ? '文档目录' : 'Document catalog',
     addColumn: zh ? '新增列' : 'Add column',
+    addDatabase: zh ? '新增数据库' : 'Add database',
+    addEntity: zh ? '新增实体' : 'Add entity',
     closeSchema: zh ? '关闭结构编辑' : 'Close schema',
     searchDocumentsPlaceholder: zh ? '搜索文档...' : 'Search documents...',
     customColumnsCount: (count: number) => zh ? `${count} 个自定义列` : `${count} custom columns`,
     rowsCount: (count: number) => zh ? `${count} 行` : `${count} rows`,
     columnName: zh ? '列名' : 'Column name',
+    databaseName: zh ? '数据库名称' : 'Database name',
+    databaseDescription: zh ? '描述' : 'Description',
+    createDatabase: zh ? '创建数据库' : 'Create database',
     fieldType: zh ? '字段类型' : 'Field type',
     options: zh ? '选项' : 'Options',
     optionsCommaHint: zh ? '使用逗号分隔多个选项' : 'Separate options with commas',
     saveColumn: zh ? '保存列' : 'Save column',
+    selectDatabasePlaceholder: zh ? '选择数据库...' : 'Select a database...',
+    linkToDocumentOptional: zh ? '关联文档（可选）' : 'Link to Document (optional)',
+    createEntity: zh ? '创建实体' : 'Create Entity',
     noCustomColumnsYet: zh
       ? '还没有自定义数据库列。先新增一列，再为每篇文档录入结构化元数据。'
       : 'No custom database columns yet. Add a column to start capturing structured metadata on each document.',
+    noIndependentDatabasesYet: zh
+      ? '还没有独立数据库。如需使用独立 database 实体，请先创建一个数据库。'
+      : 'No independent databases yet. Create one first if you want to use standalone database entities.',
+    noDatabaseEntitiesYet: (name: string) => zh
+      ? `数据库“${name}”下还没有实体。可以先创建一条关联文档的记录，或录入独立行。`
+      : `No entities yet for ${name}. Create one to link a document or store standalone rows.`,
+    noLinkedDocument: zh ? '未关联文档' : 'No linked document',
     boardViewLabel: zh ? '看板视图' : 'Board view',
     boardGroupedBy: (name: string | null) => name
       ? (zh ? `按 ${name} 分组` : `Grouped by ${name}`)
@@ -441,6 +456,8 @@ function createUiText(language: UiLanguage) {
     pluginReloadFailed: zh ? '重载单个插件失败。' : 'Failed to reload plugin.',
     databaseColumnAdded: (name: string) => zh ? `已新增数据库列“${name}”。` : `Added database column "${name}".`,
     databaseColumnCreateFailed: zh ? '创建数据库列失败。' : 'Failed to create database column.',
+    databaseCreated: (name: string) => zh ? `已创建数据库“${name}”。` : `Database "${name}" created successfully.`,
+    databaseCreateFailed: zh ? '创建数据库失败。' : 'Failed to create database.',
     databaseColumnRenamed: (name: string) => zh ? `已将列重命名为“${name}”。` : `Renamed column to "${name}".`,
     databaseColumnRenameFailed: zh ? '重命名数据库列失败。' : 'Failed to rename database column.',
     databaseColumnReorderFailed: zh ? '调整数据库列顺序失败。' : 'Failed to reorder database column.',
@@ -449,6 +466,13 @@ function createUiText(language: UiLanguage) {
     confirmDeleteDatabaseColumn: (name: string) => zh ? `确定删除数据库列“${name}”吗？该列已有值也会一并删除。` : `Delete database column "${name}"? Existing values in this column will be removed.`,
     databaseColumnDeleted: (name: string) => zh ? `已删除列“${name}”。` : `Deleted column "${name}".`,
     databaseColumnDeleteFailed: zh ? '删除数据库列失败。' : 'Failed to delete database column.',
+    databaseEntityCreated: zh ? '数据库实体已创建。' : 'Database entity created successfully.',
+    databaseEntityCreateFailed: zh ? '创建数据库实体失败。' : 'Failed to create database entity.',
+    databaseEntityUpdated: zh ? '数据库实体已更新。' : 'Database entity updated.',
+    databaseEntityUpdateFailed: zh ? '更新数据库实体失败。' : 'Failed to update database entity.',
+    confirmDeleteDatabaseEntity: zh ? '确定删除这条数据库实体吗？' : 'Are you sure you want to delete this database entity?',
+    databaseEntityDeleted: zh ? '数据库实体已删除。' : 'Database entity deleted.',
+    databaseEntityDeleteFailed: zh ? '删除数据库实体失败。' : 'Failed to delete database entity.',
     pluginActionFailed: zh ? '执行插件动作失败。' : 'Plugin action failed.',
     aiAutomationResult: (input: { summaryGenerated: boolean }) => {
       if (input.summaryGenerated) {
