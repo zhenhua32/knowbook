@@ -79,8 +79,6 @@ const emptyState: HomeData = {
     model: '',
     embeddingModel: '',
     autoSummaryOnSave: false,
-    autoTagOnSave: false,
-    autoHighlightOnSave: false,
     hasApiKey: false,
     hasEmbeddingApiKey: false
   },
@@ -2137,8 +2135,6 @@ export function App() {
       model: aiModelDraft,
       embeddingModel: aiEmbeddingModelDraft,
       autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-      autoTagOnSave: false,
-      autoHighlightOnSave: false,
       apiKey: aiApiKeyDraft
     })
     const refreshed = await window.knowbook.getHomeData()

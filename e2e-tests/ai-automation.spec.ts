@@ -60,29 +60,6 @@ test.describe('AI Automation Features', () => {
     await expect(summary).not.toContainText('New knowledge node ready for editing')
   })
 
-  test('should run document AI automations manually', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /ai settings/i }).click()
-    
-    // Enable automations
-    await page.getByRole('checkbox', { name: /auto summary when empty/i }).check()
-    await page.getByRole('checkbox', { name: /auto tag on save/i }).check()
-    await page.getByRole('checkbox', { name: /auto highlight on save/i }).check()
-    await page.getByRole('button', { name: /save ai settings/i }).click()
-    
-    // Select a document
-    await page.getByRole('link', { name: /documents/i }).click()
-    const doc = page.locator('[data-testid="document-tree-item"]').first()
-    await doc.click()
-    
-    // Run automations
-    const runAutomationsBtn = page.getByRole('button', { name: /run enabled automations/i })
-    await runAutomationsBtn.click()
-    
-    // Verify automation result
-    await expect(page.getByText(/ai automation updated:/i)).toBeVisible()
-  })
-
   test('should generate document summary via AI', async ({ page }) => {
     await page.goto('/')
     await page.getByRole('link', { name: /documents/i }).click()
@@ -109,58 +86,4 @@ test.describe('AI Automation Features', () => {
     await expect(page.locator('[data-testid="ai-response"]')).toBeVisible()
   })
 
-  test('should generate block tags automatically', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    
-    // Create document with untagged blocks
-    await page.getByRole('button', { name: /new root/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('This is a todo item about project planning\n- Another task about development')
-    
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    // Run automations
-    await page.getByRole('link', { name: /ai settings/i }).click()
-    await page.getByRole('checkbox', { name: /auto tag on save/i }).check()
-    await page.getByRole('button', { name: /save ai settings/i }).click()
-    
-    await page.getByRole('link', { name: /documents/i }).click()
-    const doc = page.locator('[data-testid="document-tree-item"]').first()
-    await doc.click()
-    await page.getByRole('button', { name: /run enabled automations/i }).click()
-    
-    // Verify tags were generated
-    await expect(page.locator('[data-testid="block-tag"]')).toBeVisible()
-  })
-
-  test('should generate block highlights', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    
-    // Create document
-    await page.getByRole('button', { name: /new root/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('This is an important point about the project.\nThis is less critical information.')
-    
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    // Run automations
-    await page.getByRole('link', { name: /ai settings/i }).click()
-    await page.getByRole('checkbox', { name: /auto highlight on save/i }).check()
-    await page.getByRole('button', { name: /save ai settings/i }).click()
-    
-    await page.getByRole('link', { name: /documents/i }).click()
-    const doc = page.locator('[data-testid="document-tree-item"]').first()
-    await doc.click()
-    await page.getByRole('button', { name: /run enabled automations/i }).click()
-    
-    // Verify highlights were generated
-    const highlightedBlocks = page.locator('[data-testid="block-item"]').filter({ has: page.locator('[data-testid="block-highlight"]') })
-    await expect(highlightedBlocks.first()).toBeVisible()
-  })
 })

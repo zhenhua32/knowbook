@@ -27,23 +27,6 @@ export type WorkspaceEvent =
       summary: string
     }
   | {
-      type: 'document.tags.generated'
-      createdAt: string
-      documentId: string
-      documentTitle: string
-      path: string
-      taggedBlocks: number
-      tagsAdded: number
-    }
-  | {
-      type: 'document.highlights.generated'
-      createdAt: string
-      documentId: string
-      documentTitle: string
-      path: string
-      highlightedBlocks: number
-    }
-  | {
       type: 'document.moved'
       createdAt: string
       documentId: string
@@ -106,22 +89,6 @@ export function createWorkspaceEventRecord(event: WorkspaceEvent): Omit<Workspac
     }
     case 'document.summary.generated':
       return buildRecord(event.type, 'Summary generated', `Generated an AI summary for "${event.documentTitle}".`, event.documentId, event.createdAt)
-    case 'document.tags.generated':
-      return buildRecord(
-        event.type,
-        'Tags generated',
-        `Generated ${event.tagsAdded} AI tag${event.tagsAdded === 1 ? '' : 's'} across ${event.taggedBlocks} block${event.taggedBlocks === 1 ? '' : 's'} in "${event.documentTitle}".`,
-        event.documentId,
-        event.createdAt
-      )
-    case 'document.highlights.generated':
-      return buildRecord(
-        event.type,
-        'Highlights generated',
-        `Applied AI highlight colors to ${event.highlightedBlocks} block${event.highlightedBlocks === 1 ? '' : 's'} in "${event.documentTitle}".`,
-        event.documentId,
-        event.createdAt
-      )
     case 'document.moved':
       return buildRecord(event.type, 'Document moved', `Moved "${event.documentTitle}" to ${event.newPath}.`, event.documentId, event.createdAt)
     case 'document.deleted': {

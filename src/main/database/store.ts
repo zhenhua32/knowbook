@@ -654,8 +654,6 @@ export class KnowbookStore {
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
     this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
-    this.saveSetting('ai.autoTagOnSave', input.autoTagOnSave ? 'true' : 'false')
-    this.saveSetting('ai.autoHighlightOnSave', input.autoHighlightOnSave ? 'true' : 'false')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
@@ -1967,8 +1965,6 @@ export class KnowbookStore {
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
       embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
       autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
-      autoTagOnSave: this.readSetting('ai.autoTagOnSave') === 'true',
-      autoHighlightOnSave: this.readSetting('ai.autoHighlightOnSave') === 'true',
       hasApiKey: Boolean(this.readSetting('ai.apiKey')),
       hasEmbeddingApiKey: Boolean(this.readSetting('ai.embeddingApiKey'))
     }
@@ -2395,8 +2391,6 @@ export class KnowbookStore {
       this.saveSetting('ai.model', 'gpt-4.1-mini')
       this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
       this.saveSetting('ai.autoSummaryOnSave', 'false')
-      this.saveSetting('ai.autoTagOnSave', 'false')
-      this.saveSetting('ai.autoHighlightOnSave', 'false')
     })
 
     seedTransaction()

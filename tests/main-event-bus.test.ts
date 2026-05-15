@@ -137,27 +137,6 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
   })
   assert.equal(summary.title, 'Summary generated')
 
-  const tags = createWorkspaceEventRecord({
-    type: 'document.tags.generated',
-    createdAt: '2026-05-02T00:00:00.000Z',
-    documentId: 'doc-1',
-    documentTitle: 'Alpha',
-    path: 'Root/Alpha',
-    taggedBlocks: 2,
-    tagsAdded: 3
-  })
-  assert.equal(tags.description.includes('3 AI tags across 2 blocks'), true)
-
-  const highlights = createWorkspaceEventRecord({
-    type: 'document.highlights.generated',
-    createdAt: '2026-05-02T00:00:00.000Z',
-    documentId: 'doc-1',
-    documentTitle: 'Alpha',
-    path: 'Root/Alpha',
-    highlightedBlocks: 1
-  })
-  assert.equal(highlights.description.includes('1 block'), true)
-
   const moved = createWorkspaceEventRecord({
     type: 'document.moved',
     createdAt: '2026-05-02T00:00:00.000Z',

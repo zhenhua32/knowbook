@@ -514,9 +514,7 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
   }
 
   const result: RunDocumentAiAutomationsResult = {
-    summaryGenerated: false,
-    taggedBlocks: 0,
-    highlightedBlocks: 0
+    summaryGenerated: false
   }
 
   if (home.aiConfig.autoSummaryOnSave && shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {

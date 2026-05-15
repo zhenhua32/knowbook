@@ -288,7 +288,7 @@ test('database field serialization handles text/date/checkbox nullability and va
   })
 })
 
-test('ai config persists defaults, api key, and automation flags', () => {
+test('ai config persists defaults, api key, and auto-summary flag', () => {
   withStore((store) => {
     store.updateAiConfig({
       enabled: false,
@@ -296,8 +296,6 @@ test('ai config persists defaults, api key, and automation flags', () => {
       model: 'gpt-4.1-mini',
       embeddingModel: 'text-embedding-3-small',
       autoSummaryOnSave: true,
-      autoTagOnSave: true,
-      autoHighlightOnSave: false,
       apiKey: 'secret-key'
     })
 
@@ -305,8 +303,6 @@ test('ai config persists defaults, api key, and automation flags', () => {
     assert.equal(config.enabled, false)
     assert.equal(config.baseUrl, 'https://example.ai/v1')
     assert.equal(config.autoSummaryOnSave, true)
-    assert.equal(config.autoTagOnSave, true)
-    assert.equal(config.autoHighlightOnSave, false)
     assert.equal(config.hasApiKey, true)
   })
 })

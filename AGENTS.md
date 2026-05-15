@@ -40,7 +40,7 @@
 
 ## Important Conventions & Quirks
 - **Database file location**: `app.getPath('userData')/storage/knowbook.db` (created by main). Tests create isolated temp DBs.
-- **Embeddings & AI**: Optional OpenAI-compatible endpoints. Embeddings are cached per `(document, model, contentHash)` in SQLite. Auto-summary/auto-tag/auto-highlight run via event-bus subscribers on document update when AI enabled.
+- **Embeddings & AI**: Optional OpenAI-compatible endpoints. Embeddings are cached per `(document, model, contentHash)` in SQLite. Auto-summary runs via an event-bus subscriber on document update when AI is enabled.
 - **Plugins**: Two plugin roots — workspace `plugins/` (dev) and user-data `plugins/`. Workspace plugins can't be replaced by user install (error); user-data plugins can be replaced. Plugin manifest fields: id, name, version, entry (optional), enabledByDefault.
 - **Document tree**: Hierarchical by `parentId`. Path is materialized (e.g., `Home/Product/Specs`). Renaming/moving rewrites descendant paths automatically. Path normalization uses title; siblings get `Untitled`, `Untitled 1`, ... on conflict.
 - **Block references & linking**: Stored as `blockId` references. When a document title changes, link labels are updated; outgoing/incoming links are computed via markdown link parsing.

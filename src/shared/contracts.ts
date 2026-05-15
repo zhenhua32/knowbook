@@ -212,8 +212,6 @@ export interface AiConfig {
   model: string
   embeddingModel: string
   autoSummaryOnSave: boolean
-  autoTagOnSave: boolean
-  autoHighlightOnSave: boolean
   hasApiKey: boolean
   hasEmbeddingApiKey: boolean
 }
@@ -231,8 +229,6 @@ export type WorkspaceEventType =
   | 'document.created'
   | 'document.updated'
   | 'document.summary.generated'
-  | 'document.tags.generated'
-  | 'document.highlights.generated'
   | 'document.moved'
   | 'document.deleted'
   | 'ai.config.updated'
@@ -377,8 +373,6 @@ export interface UpdateAiConfigInput {
   model: string
   embeddingModel: string
   autoSummaryOnSave: boolean
-  autoTagOnSave: boolean
-  autoHighlightOnSave: boolean
   apiKey?: string
 }
 
@@ -400,8 +394,6 @@ export interface AskAiResult {
 
 export interface RunDocumentAiAutomationsResult {
   summaryGenerated: boolean
-  taggedBlocks: number
-  highlightedBlocks: number
 }
 
 export interface SetPluginEnabledInput {

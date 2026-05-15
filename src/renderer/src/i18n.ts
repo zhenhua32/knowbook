@@ -142,8 +142,6 @@ function createUiText(language: UiLanguage) {
     aiSettingsTitle: zh ? '云端 API 配置' : 'Cloud API configuration',
     enableAiFeatures: zh ? '启用 AI 功能' : 'Enable AI features',
     autoSummaryWhenEmpty: zh ? '摘要为空时自动生成摘要' : 'Auto-generate summary when summary is empty',
-    autoTagOnSave: zh ? '保存时自动补齐缺失的块标签' : 'Auto-generate missing block tags on save',
-    autoHighlightOnSave: zh ? '保存时自动高亮重要块' : 'Auto-highlight important blocks on save',
     baseUrl: zh ? '基础地址' : 'Base URL',
     embeddingBaseUrl: zh ? '向量地址（留空则自动推导）' : 'Embedding Base URL (leave blank to auto-derive)',
     model: zh ? '模型' : 'Model',
@@ -159,12 +157,6 @@ function createUiText(language: UiLanguage) {
     aiHintSummary: zh
       ? '自动摘要只会在文档保存时触发，并且仅在当前摘要为空或仍为默认占位内容时运行。'
       : 'Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.',
-    aiHintTags: zh
-      ? '自动标签只会补齐当前还没有标签的块，手动标签不会被覆盖。'
-      : 'Auto-tags only fill blocks that still have no tags, so manual tags stay untouched.',
-    aiHintHighlights: zh
-      ? '自动高亮只会补齐当前还没有背景色的块，手动高亮不会被覆盖。'
-      : 'Auto-highlights only fill blocks that still have no background color, so manual highlight choices stay untouched.',
     saveAiSettings: zh ? '保存 AI 设置' : 'Save AI settings',
     automationFeedLabel: zh ? '自动化事件流' : 'Automation feed',
     recentEventsTitle: zh ? '最近事件' : 'Recent events',
@@ -458,7 +450,7 @@ function createUiText(language: UiLanguage) {
     databaseColumnDeleted: (name: string) => zh ? `已删除列“${name}”。` : `Deleted column "${name}".`,
     databaseColumnDeleteFailed: zh ? '删除数据库列失败。' : 'Failed to delete database column.',
     pluginActionFailed: zh ? '执行插件动作失败。' : 'Plugin action failed.',
-    aiAutomationResult: (input: { summaryGenerated: boolean; taggedBlocks: number; highlightedBlocks: number }) => {
+    aiAutomationResult: (input: { summaryGenerated: boolean }) => {
       if (input.summaryGenerated) {
         return zh ? 'AI 自动化已更新摘要。' : 'AI automation updated the summary.'
       }

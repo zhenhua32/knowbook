@@ -95,13 +95,11 @@ DATABASE (7+):
   ✅ Column ops
   ✅ Cell editing
 
-AI AUTOMATION (7+):
+AI AUTOMATION (5+):
   ✅ Chat completions
   ✅ Embeddings
   ✅ Semantic search
   ✅ Auto-summary
-  ✅ Auto-tags
-  ✅ Auto-highlights
   ✅ Config persistence
 
 PLUGINS (10+):
