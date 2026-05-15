@@ -1,44 +1,5 @@
-import { expect, test } from '@playwright/test'
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const builtMainEntry = join(repoRoot, 'out', 'main', 'index.js')
-
-function uiText(en: string, zh: string): RegExp {
-  return new RegExp(`^(?:${escapeForRegExp(en)}|${escapeForRegExp(zh)})$`, 'i')
-}
-
-function escapeForRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-async function launchApp(): Promise<{ app: ElectronApplication; page: Page; tempRoot: string }> {
-  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
-  const app = await electron.launch({
-    args: ['.'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      APPDATA: tempRoot,
-      LOCALAPPDATA: tempRoot
-    }
-  })
-  const page = await app.firstWindow()
-  await page.waitForLoadState('domcontentloaded')
-  await expect(page.locator('[data-testid="shell"]')).toBeVisible()
-  return { app, page, tempRoot }
-}
-
-async function closeApp(app: ElectronApplication | null, tempRoot: string | null): Promise<void> {
-  await app?.close()
-  if (tempRoot) {
-    rmSync(tempRoot, { recursive: true, force: true })
-  }
-}
+import { expect, test, type Page } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function openDatabasePage(page: Page): Promise<void> {
   await page.getByTitle(uiText('Database', '数据库')).click()
@@ -75,41 +36,32 @@ async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Pro
     .toEqual([...expectedNames].sort())
 }
 
-test.describe('Database Views', () => {
+test.describe('Database Views @electron', () => {
   test('isolates schema columns between the default database and an independent database', async () => {
-    test.skip(!existsSync(builtMainEntry), 'Built Electron app not found. Run npm run build before E2E tests.')
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
-    let app: ElectronApplication | null = null
-    let tempRoot: string | null = null
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await getDatabaseButton(page, 'Default').click()
 
-    try {
-      const launched = await launchApp()
-      app = launched.app
-      tempRoot = launched.tempRoot
+      await addTextColumn(page, 'Status')
+      await expectSchemaColumnNames(page, ['Status'])
 
-      await openDatabasePage(launched.page)
-      await getDatabaseButton(launched.page, 'Default').click()
+      await createDatabase(page, 'Projects', 'Project tracking')
+      await getDatabaseButton(page, 'Projects').click()
+      await expectSchemaColumnNames(page, [])
 
-      await addTextColumn(launched.page, 'Status')
-      await expectSchemaColumnNames(launched.page, ['Status'])
+      await addTextColumn(page, 'Owner')
+      await expectSchemaColumnNames(page, ['Owner'])
 
-      await createDatabase(launched.page, 'Projects', 'Project tracking')
-      await getDatabaseButton(launched.page, 'Projects').click()
-      await expectSchemaColumnNames(launched.page, [])
-
-      await addTextColumn(launched.page, 'Owner')
-      await expectSchemaColumnNames(launched.page, ['Owner'])
-
-      const entityForm = launched.page.locator('.database-entity-field-grid-form')
+      const entityForm = page.locator('.database-entity-field-grid-form')
       await expect(entityForm).toContainText('Owner')
       await expect(entityForm).not.toContainText('Status')
 
-      await getDatabaseButton(launched.page, 'Default').click()
-      await expectSchemaColumnNames(launched.page, ['Status'])
+      await getDatabaseButton(page, 'Default').click()
+      await expectSchemaColumnNames(page, ['Status'])
       await expect(entityForm).toContainText('Status')
       await expect(entityForm).not.toContainText('Owner')
-    } finally {
-      await closeApp(app, tempRoot)
-    }
+    })
   })
 })
