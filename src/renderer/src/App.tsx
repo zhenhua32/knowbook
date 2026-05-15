@@ -488,6 +488,33 @@ function formatDocumentDatabaseFieldValueForDraft(value: DocumentDatabaseFieldVa
   return typeof value === 'string' ? value : ''
 }
 
+function normalizeDocumentDatabaseFieldValue(value: DocumentDatabaseFieldValue): DocumentDatabaseFieldValue {
+  if (Array.isArray(value)) {
+    const normalizedValues = [...new Set(value.map((item) => item.trim()).filter(Boolean))]
+    return normalizedValues.length > 0 ? normalizedValues : null
+  }
+
+  if (typeof value === 'string') {
+    const normalizedValue = value.trim()
+    return normalizedValue.length > 0 ? normalizedValue : null
+  }
+
+  return value
+}
+
+function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatabaseFieldValue>): Record<string, DocumentDatabaseFieldValue> {
+  const compacted: Record<string, DocumentDatabaseFieldValue> = {}
+
+  for (const [columnId, value] of Object.entries(values)) {
+    const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
+    if (normalizedValue !== null) {
+      compacted[columnId] = normalizedValue
+    }
+  }
+
+  return compacted
+}
+
 function resolveDraftBlockRelationship(
   type: string,
   requestedDepth: number,
@@ -2383,7 +2410,7 @@ export function App() {
       await window.knowbook.createDatabaseEntity({
         databaseId: databaseEntityDatabaseId,
         documentId: databaseEntityDocumentId || undefined,
-        fieldValues: databaseEntityFieldValues
+        fieldValues: compactDocumentDatabaseFieldValues(databaseEntityFieldValues)
       })
       const [refreshedHome, refreshedEntities] = await Promise.all([
         window.knowbook.getHomeData(),
@@ -2403,7 +2430,12 @@ export function App() {
 
   async function updateDatabaseEntity(entityId: string, fieldValues: Record<string, DocumentDatabaseFieldValue>) {
     try {
-      await window.knowbook.updateDatabaseEntity({ entityId, fieldValues })
+      await window.knowbook.updateDatabaseEntity({
+        entityId,
+        fieldValues: Object.fromEntries(
+          Object.entries(fieldValues).map(([columnId, value]) => [columnId, normalizeDocumentDatabaseFieldValue(value)])
+        )
+      })
       const [refreshedHome, refreshedEntities] = await Promise.all([
         window.knowbook.getHomeData(),
         databaseEntityDatabaseId ? window.knowbook.getDatabaseEntities(databaseEntityDatabaseId) : Promise.resolve([])
@@ -2415,6 +2447,13 @@ export function App() {
       const message = error instanceof Error ? error.message : ui.databaseEntityUpdateFailed
       setBackupMessage(message)
     }
+  }
+
+  async function updateDatabaseEntityField(entity: DatabaseEntity, columnId: string, value: DocumentDatabaseFieldValue) {
+    await updateDatabaseEntity(entity.id, {
+      ...entity.fieldValues,
+      [columnId]: normalizeDocumentDatabaseFieldValue(value)
+    })
   }
 
   async function deleteDatabaseEntity(entityId: string) {
@@ -4313,6 +4352,32 @@ return (
                     value={databaseEntityDocumentId}
                   />
                 </label>
+                {homeData.databaseColumns.length > 0 ? (
+                  <div className="database-entity-field-grid database-entity-field-grid-form">
+                    {homeData.databaseColumns.map((column) => (
+                      <label className="editor-label database-entity-field" key={`draft-${column.id}`}>
+                        {column.name}
+                        <DatabaseFieldEditor
+                          column={column}
+                          textCommitMode="change"
+                          value={databaseEntityFieldValues[column.id] ?? null}
+                          onChangeValue={(value) => {
+                            const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
+                            setDatabaseEntityFieldValues((previous) => {
+                              const nextFieldValues = { ...previous }
+                              if (normalizedValue === null) {
+                                delete nextFieldValues[column.id]
+                              } else {
+                                nextFieldValues[column.id] = normalizedValue
+                              }
+                              return nextFieldValues
+                            })
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="database-schema-actions">
                   <button
                     className="secondary-button"
@@ -4336,7 +4401,6 @@ return (
                 </div>
               </div>
             ) : null}
-
             {databases.length > 0 ? (
               <>
                 <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -4362,15 +4426,35 @@ return (
 
                         return (
                           <div className="document-row" key={entity.id}>
-                            <div>
-                              <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
-                              <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
-                            </div>
-                            <div className="document-meta">
-                              <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
-                              <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
-                                {ui.common.delete}
-                              </button>
+                            <div className="database-entity-card">
+                              <div className="database-entity-head">
+                                <div>
+                                  <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
+                                  <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                                </div>
+                                <div className="document-meta">
+                                  <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
+                                  <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
+                                    {ui.common.delete}
+                                  </button>
+                                </div>
+                              </div>
+                              {homeData.databaseColumns.length > 0 ? (
+                                <div className="database-entity-field-grid">
+                                  {homeData.databaseColumns.map((column) => (
+                                    <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
+                                      {column.name}
+                                      <DatabaseFieldEditor
+                                        column={column}
+                                        value={entity.fieldValues[column.id] ?? null}
+                                        onChangeValue={(value) => {
+                                          void updateDatabaseEntityField(entity, column.id, value)
+                                        }}
+                                      />
+                                    </label>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         )
@@ -5375,6 +5459,29 @@ function DocumentCatalogFieldCell({
   onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
   value: DocumentDatabaseFieldValue
 }) {
+  return (
+    <DatabaseFieldEditor
+      column={column}
+      value={value}
+      stopPropagation={true}
+      onChangeValue={(nextValue) => onUpdateField(documentId, column.id, nextValue)}
+    />
+  )
+}
+
+function DatabaseFieldEditor({
+  column,
+  value,
+  onChangeValue,
+  stopPropagation = false,
+  textCommitMode = 'blur'
+}: {
+  column: DocumentDatabaseColumn
+  value: DocumentDatabaseFieldValue
+  onChangeValue: (value: DocumentDatabaseFieldValue) => void | Promise<void>
+  stopPropagation?: boolean
+  textCommitMode?: 'blur' | 'change'
+}) {
   const ui = getActiveUiText()
   const [draftValue, setDraftValue] = useState('')
 
@@ -5382,17 +5489,23 @@ function DocumentCatalogFieldCell({
     setDraftValue(formatDocumentDatabaseFieldValueForDraft(value))
   }, [value])
 
-  const stopRowSelection = (event: { stopPropagation: () => void }) => {
-    event.stopPropagation()
+  const stopEventPropagation = (event: { stopPropagation: () => void }) => {
+    if (stopPropagation) {
+      event.stopPropagation()
+    }
+  }
+
+  const commitTextValue = (nextDraftValue: string) => {
+    void onChangeValue(normalizeDocumentDatabaseFieldValue(nextDraftValue))
   }
 
   if (column.type === 'checkbox') {
     return (
-      <label className="catalog-checkbox" onClick={stopRowSelection}>
+      <label className="catalog-checkbox" onClick={stopEventPropagation}>
         <input
           checked={value === true}
           onChange={(event) => {
-            void onUpdateField(documentId, column.id, event.target.checked)
+            void onChangeValue(event.target.checked)
           }}
           type="checkbox"
         />
@@ -5405,9 +5518,9 @@ function DocumentCatalogFieldCell({
       <select
         className="catalog-cell-input"
         onChange={(event) => {
-          void onUpdateField(documentId, column.id, event.target.value || null)
+          void onChangeValue(event.target.value || null)
         }}
-        onClick={stopRowSelection}
+        onClick={stopEventPropagation}
         value={typeof value === 'string' ? value : ''}
       >
         <option value="">{ui.common.select}</option>
@@ -5425,9 +5538,9 @@ function DocumentCatalogFieldCell({
         multiple
         onChange={(event) => {
           const nextValues = Array.from(event.target.selectedOptions, (option) => option.value)
-          void onUpdateField(documentId, column.id, nextValues)
+          void onChangeValue(nextValues)
         }}
-        onClick={stopRowSelection}
+        onClick={stopEventPropagation}
         size={Math.min(Math.max(column.options.length, 3), 5)}
         value={Array.isArray(value) ? value : []}
       >
@@ -5443,9 +5556,9 @@ function DocumentCatalogFieldCell({
       <input
         className="catalog-cell-input"
         onChange={(event) => {
-          void onUpdateField(documentId, column.id, event.target.value || null)
+          void onChangeValue(event.target.value || null)
         }}
-        onClick={stopRowSelection}
+        onClick={stopEventPropagation}
         type="date"
         value={typeof value === 'string' ? value : ''}
       />
@@ -5456,10 +5569,18 @@ function DocumentCatalogFieldCell({
     <input
       className="catalog-cell-input"
       onBlur={() => {
-        void onUpdateField(documentId, column.id, draftValue.trim().length > 0 ? draftValue : null)
+        if (textCommitMode === 'blur') {
+          commitTextValue(draftValue)
+        }
       }}
-      onChange={(event) => setDraftValue(event.target.value)}
-      onClick={stopRowSelection}
+      onChange={(event) => {
+        const nextDraftValue = event.target.value
+        setDraftValue(nextDraftValue)
+        if (textCommitMode === 'change') {
+          commitTextValue(nextDraftValue)
+        }
+      }}
+      onClick={stopEventPropagation}
       onKeyDown={(event) => {
         if (event.key === 'Enter') {
           event.currentTarget.blur()

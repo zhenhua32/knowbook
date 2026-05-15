@@ -1657,6 +1657,20 @@ del {
   color: #5b513f;
 }
 
+.database-entity-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+}
+
+.database-entity-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 @media (max-width: 1080px) {
   .shell {
     grid-template-columns: 1fr;
@@ -1826,6 +1840,20 @@ del {
   display: flex;
   align-items: flex-end;
   gap: 10px;
+}
+
+.database-entity-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.database-entity-field-grid-form {
+  grid-column: 1 / -1;
+}
+
+.database-entity-field {
+  min-width: 0;
 }
 
 .database-schema-chip-row {
@@ -2272,7 +2300,8 @@ del {
   font-size: 0.8rem;
 }
 
-/* Wave 29: Document TOC / Outline Panel */
+/* Wave 29: Document TOC / Outline Panel */
+
 .toc-panel {
   padding: 8px 16px;
   border-radius: 14px;
