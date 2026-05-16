@@ -13,6 +13,10 @@ function getTreeButton(page: Page, title: string) {
   return page.locator('.tree-button', { hasText: title }).first()
 }
 
+function getMoveTargetSelect(page: Page) {
+  return page.locator('.preview-panel .compact-select').first()
+}
+
 test.describe('Document CRUD Operations @electron', () => {
   test('creates a new root document and persists edited title and summary', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
@@ -79,6 +83,55 @@ test.describe('Document CRUD Operations @electron', () => {
       await getTreeButton(page, childTitle).click()
       await expect(getTitleInput(page)).toHaveValue(childTitle)
       await expect(page.locator('.document-path')).toContainText(`${renamedParentTitle}/${childTitle}`)
+    })
+  })
+
+  test('moves a document subtree under another parent and rewrites descendant paths', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const uniqueSuffix = Date.now().toString(36)
+    const sourceParentTitle = `E2E Source Parent ${uniqueSuffix}`
+    const targetParentTitle = `E2E Target Parent ${uniqueSuffix}`
+    const childTitle = `E2E Moving Child ${uniqueSuffix}`
+    const grandchildTitle = `E2E Grandchild ${uniqueSuffix}`
+
+    await withElectronApp(async ({ page }) => {
+      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await getTitleInput(page).fill(sourceParentTitle)
+      await getSummaryInput(page).fill(`Source parent summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await getTitleInput(page).fill(targetParentTitle)
+      await getSummaryInput(page).fill(`Target parent summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await getTreeButton(page, sourceParentTitle).click()
+      await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await getTitleInput(page).fill(childTitle)
+      await getSummaryInput(page).fill(`Child summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await getTitleInput(page).fill(grandchildTitle)
+      await getSummaryInput(page).fill(`Grandchild summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(page.locator('.document-path')).toContainText(`${sourceParentTitle}/${childTitle}/${grandchildTitle}`)
+
+      await getTreeButton(page, childTitle).click()
+      await expect(page.locator('.document-path')).toContainText(`${sourceParentTitle}/${childTitle}`)
+
+      await getMoveTargetSelect(page).selectOption({ label: targetParentTitle })
+      await page.getByRole('button', { name: uiText('Move', '移动') }).click()
+
+      await expect(page.locator('.document-path')).toContainText(`${targetParentTitle}/${childTitle}`)
+
+      await getTreeButton(page, grandchildTitle).click()
+      await expect(getTitleInput(page)).toHaveValue(grandchildTitle)
+      await expect(page.locator('.document-path')).toContainText(`${targetParentTitle}/${childTitle}/${grandchildTitle}`)
     })
   })
 })

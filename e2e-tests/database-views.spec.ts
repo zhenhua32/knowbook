@@ -12,13 +12,26 @@ async function openDocumentCatalogView(page: Page): Promise<void> {
     return
   }
 
-  await page.getByRole('button', { name: uiText('Document catalog', '文档目录') }).click({ noWaitAfter: true })
+  const button = page.getByRole('button', { name: uiText('Document catalog', '文档目录') })
+  await expect(button).toBeVisible()
+  await button.evaluate((element) => {
+    ;(element as HTMLButtonElement).click()
+  })
   await expect(heading).toBeVisible()
 }
 
 async function openStandaloneDatabasesView(page: Page): Promise<void> {
-  await page.getByRole('button', { name: uiText('Standalone databases', '独立数据库') }).click({ noWaitAfter: true })
-  await expect(page.getByRole('heading', { name: uiText('Standalone databases', '独立数据库') })).toBeVisible()
+  const heading = page.getByRole('heading', { name: uiText('Standalone databases', '独立数据库') })
+  if (await heading.isVisible().catch(() => false)) {
+    return
+  }
+
+  const button = page.getByRole('button', { name: uiText('Standalone databases', '独立数据库') })
+  await expect(button).toBeVisible()
+  await button.evaluate((element) => {
+    ;(element as HTMLButtonElement).click()
+  })
+  await expect(heading).toBeVisible()
 }
 
 function getDatabaseButton(page: Page, databaseName: string) {
