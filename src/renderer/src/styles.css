@@ -1893,6 +1893,42 @@ del {
   gap: 12px;
 }
 
+.database-entity-bulk-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(246, 240, 228, 0.88);
+  border: 1px solid rgba(203, 122, 32, 0.14);
+}
+
+.database-entity-bulk-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.database-entity-bulk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 251, 245, 0.9);
+  border: 1px solid rgba(91, 72, 44, 0.1);
+}
+
+.database-entity-bulk-field-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .database-entity-field-grid-form {
   grid-column: 1 / -1;
 }

@@ -210,4 +210,37 @@ test.describe('Database Views @electron', () => {
       await expect(page.locator('.flash-message')).toContainText(/Deleted 2 database entities\.|已删除 2 条数据库实体。/)
     })
   })
+
+  test('applies and clears a field value across selected standalone entities', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Entity Bulk Edit', 'Standalone entity bulk field editing')
+      await selectDatabase(page, 'Entity Bulk Edit')
+      await addTextColumn(page, 'Owner')
+
+      await createStandaloneTextEntity(page, 'Owner', 'alpha')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+      await createStandaloneTextEntity(page, 'Owner', 'beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta', 'alpha'])
+
+      await page.locator('.database-entity-select-visible-button').click()
+      await expect.poll(() => getStandaloneEntitySelectionStates(page)).toEqual([true, true])
+
+      const bulkPanel = page.locator('.database-entity-bulk-panel')
+      const ownerField = bulkPanel.locator('[data-column-name="Owner"]')
+      await expect(bulkPanel).toBeVisible()
+
+      await ownerField.locator('.catalog-cell-input').fill('shared-owner')
+      await ownerField.locator('.database-entity-bulk-field-apply-button').click()
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['shared-owner', 'shared-owner'])
+
+      await ownerField.locator('.database-entity-bulk-field-clear-button').click()
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['', ''])
+      await expect(page.locator('.flash-message')).toContainText(/Updated 2 database entities\.|已更新 2 条数据库实体。/)
+    })
+  })
 })

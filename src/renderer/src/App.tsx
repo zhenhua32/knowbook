@@ -1169,6 +1169,7 @@ export function App() {
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
+  const [databaseEntityBulkFieldValues, setDatabaseEntityBulkFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
   const [databaseEntityFilterQuery, setDatabaseEntityFilterQuery] = useState('')
   const [databaseEntityFilterScope, setDatabaseEntityFilterScope] = useState<DatabaseEntityFilterScope>('')
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
@@ -1618,6 +1619,8 @@ export function App() {
       setSelectedDatabaseColumns([])
       setDatabaseEntities([])
       setDatabaseEntityFieldValues({})
+      setDatabaseEntityBulkFieldValues({})
+      setSelectedDatabaseEntityIds([])
       return () => {
         mounted = false
       }
@@ -1631,6 +1634,8 @@ export function App() {
         setDatabaseEntities(items)
         setSelectedDatabaseColumns(columns)
         setDatabaseEntityFieldValues({})
+        setDatabaseEntityBulkFieldValues({})
+        setSelectedDatabaseEntityIds([])
       }
     })
 
@@ -2515,6 +2520,7 @@ export function App() {
     setIsCreatingDatabaseEntity(false)
     setDatabaseEntityDocumentId('')
     setDatabaseEntityFieldValues({})
+    setDatabaseEntityBulkFieldValues({})
     setSelectedDatabaseEntityIds([])
   }
 
@@ -2710,6 +2716,66 @@ export function App() {
       const message = error instanceof Error ? error.message : ui.databaseEntitiesDeleteFailed
       setBackupMessage(message)
     }
+  }
+
+  async function updateSelectedDatabaseEntities(input: {
+    fieldValues?: Record<string, DocumentDatabaseFieldValue>
+    documentId?: string | null
+  }) {
+    if (selectedVisibleDatabaseEntityIds.length === 0) {
+      return
+    }
+
+    const entityIds = [...selectedVisibleDatabaseEntityIds]
+    const count = entityIds.length
+
+    try {
+      for (const entityId of entityIds) {
+        await window.knowbook.updateDatabaseEntity({
+          entityId,
+          fieldValues: input.fieldValues,
+          documentId: input.documentId
+        })
+      }
+
+      await refreshDatabasePageData(databaseEntityDatabaseId)
+      setBackupMessage(ui.databaseEntitiesUpdated(count))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseEntitiesUpdateFailed
+      setBackupMessage(message)
+    }
+  }
+
+  function updateDatabaseEntityBulkFieldValue(columnId: string, value: DocumentDatabaseFieldValue) {
+    setDatabaseEntityBulkFieldValues((current) => ({
+      ...current,
+      [columnId]: normalizeDocumentDatabaseFieldValue(value)
+    }))
+  }
+
+  async function applyDatabaseEntityFieldToSelected(columnId: string) {
+    await updateSelectedDatabaseEntities({
+      fieldValues: {
+        [columnId]: databaseEntityBulkFieldValues[columnId] ?? null
+      }
+    })
+  }
+
+  async function clearDatabaseEntityFieldFromSelected(columnId: string) {
+    setDatabaseEntityBulkFieldValues((current) => ({
+      ...current,
+      [columnId]: null
+    }))
+
+    await updateSelectedDatabaseEntities({
+      fieldValues: {
+        [columnId]: null
+      }
+    })
+  }
+
+  async function clearSelectedDatabaseEntityDocuments() {
+    await updateSelectedDatabaseEntities({ documentId: null })
   }
 
   function toggleDatabaseEntitySelection(entityId: string, checked: boolean) {
@@ -4291,6 +4357,8 @@ export function App() {
   const filteredStandaloneDatabaseEntityIds = filteredStandaloneDatabaseEntityRows.map(({ entity }) => entity.id)
   const selectedDatabaseEntityIdSet = new Set(selectedDatabaseEntityIds)
   const selectedVisibleDatabaseEntityIds = filteredStandaloneDatabaseEntityIds.filter((entityId) => selectedDatabaseEntityIdSet.has(entityId))
+  const selectedVisibleDatabaseEntityRows = filteredStandaloneDatabaseEntityRows.filter(({ entity }) => selectedDatabaseEntityIdSet.has(entity.id))
+  const selectedVisibleDatabaseEntitiesHaveLinkedDocument = selectedVisibleDatabaseEntityRows.some(({ entity }) => Boolean(entity.documentId))
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -4921,6 +4989,75 @@ return (
                             </button>
                             <span className="pill">{ui.selectedDatabaseEntitiesCount(selectedVisibleDatabaseEntityIds.length)}</span>
                           </div>
+
+                          {selectedVisibleDatabaseEntityIds.length > 0 ? (
+                            <section className="database-entity-bulk-panel">
+                              <div className="database-entity-bulk-panel-head">
+                                <div>
+                                  <p className="panel-label">{ui.databaseEntityBulkEditLabel}</p>
+                                  <h4>{ui.databaseEntityBulkEditTitle(selectedVisibleDatabaseEntityIds.length)}</h4>
+                                </div>
+                                <div className="toolbar-inline" style={{ justifyContent: 'flex-start' }}>
+                                  <button
+                                    className="secondary-button database-entity-bulk-document-clear-button"
+                                    disabled={!selectedVisibleDatabaseEntitiesHaveLinkedDocument}
+                                    onClick={() => void clearSelectedDatabaseEntityDocuments()}
+                                    type="button"
+                                  >
+                                    {ui.clearSelectedDatabaseEntityDocuments(selectedVisibleDatabaseEntityIds.length)}
+                                  </button>
+                                  <button
+                                    className="secondary-button"
+                                    onClick={() => setDatabaseEntityBulkFieldValues({})}
+                                    type="button"
+                                  >
+                                    {ui.common.clear}
+                                  </button>
+                                </div>
+                              </div>
+                              <p className="mini-hint">{ui.databaseEntityBulkEditHint}</p>
+                              {selectedDatabaseColumns.length > 0 ? (
+                                <div className="database-entity-field-grid">
+                                  {selectedDatabaseColumns.map((column) => (
+                                    <div
+                                      className="database-entity-bulk-field"
+                                      data-column-id={column.id}
+                                      data-column-name={column.name}
+                                      key={`bulk-${column.id}`}
+                                    >
+                                      <label className="editor-label database-entity-field">
+                                        {column.name}
+                                        <DatabaseFieldEditor
+                                          column={column}
+                                          textCommitMode="change"
+                                          value={databaseEntityBulkFieldValues[column.id] ?? null}
+                                          onChangeValue={(value) => {
+                                            updateDatabaseEntityBulkFieldValue(column.id, value)
+                                          }}
+                                        />
+                                      </label>
+                                      <div className="database-entity-bulk-field-actions">
+                                        <button
+                                          className="secondary-button database-entity-bulk-field-apply-button"
+                                          onClick={() => void applyDatabaseEntityFieldToSelected(column.id)}
+                                          type="button"
+                                        >
+                                          {ui.applySelectedDatabaseEntityField(column.name, selectedVisibleDatabaseEntityIds.length)}
+                                        </button>
+                                        <button
+                                          className="secondary-button database-entity-bulk-field-clear-button"
+                                          onClick={() => void clearDatabaseEntityFieldFromSelected(column.id)}
+                                          type="button"
+                                        >
+                                          {ui.clearSelectedDatabaseEntityField(column.name, selectedVisibleDatabaseEntityIds.length)}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </section>
+                          ) : null}
 
                           {filteredStandaloneDatabaseEntityRows.length > 0 ? (
                             <div className="document-list" style={{ marginBottom: '16px' }}>
