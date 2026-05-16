@@ -29,8 +29,10 @@ async function selectDatabase(page: Page, databaseName: string): Promise<void> {
 
 async function addTextColumn(page: Page, columnName: string): Promise<void> {
   await page.getByRole('button', { name: uiText('Add column', '新增列') }).click()
-  await page.getByLabel(uiText('Column name', '列名')).fill(columnName)
-  await page.getByRole('button', { name: uiText('Save column', '保存列') }).click()
+  const form = page.locator('.database-schema-form').filter({ has: page.getByLabel(uiText('Column name', '列名')) }).first()
+  await expect(form).toBeVisible()
+  await form.getByLabel(uiText('Column name', '列名')).fill(columnName)
+  await form.getByRole('button', { name: uiText('Save column', '保存列') }).click()
   await expect(page.getByRole('button', { name: uiText('Add column', '新增列') })).toBeVisible()
 }
 
@@ -64,6 +66,12 @@ async function createStandaloneTextEntity(page: Page, fieldLabel: string, value:
 
 async function getStandaloneEntityTextValues(page: Page): Promise<string[]> {
   return page.locator('.database-entity-card .catalog-cell-input').evaluateAll((inputs) =>
+    inputs.map((input) => (input as HTMLInputElement).value)
+  )
+}
+
+async function getStandaloneEntityTableTextValues(page: Page): Promise<string[]> {
+  return page.locator('.database-entity-table tbody [data-column-id] .catalog-cell-input').evaluateAll((inputs) =>
     inputs.map((input) => (input as HTMLInputElement).value)
   )
 }
@@ -241,6 +249,34 @@ test.describe('Database Views @electron', () => {
       await ownerField.locator('.database-entity-bulk-field-clear-button').click()
       await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['', ''])
       await expect(page.locator('.flash-message')).toContainText(/Updated 2 database entities\.|已更新 2 条数据库实体。/)
+    })
+  })
+
+  test('switches standalone entities into table view and edits fields there', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Entity Table View', 'Standalone entity table view')
+      await selectDatabase(page, 'Entity Table View')
+      await addTextColumn(page, 'Owner')
+
+      await createStandaloneTextEntity(page, 'Owner', 'alpha')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+      await createStandaloneTextEntity(page, 'Owner', 'beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta', 'alpha'])
+
+      await page.locator('.database-entity-table-view-button').click()
+      await expect(page.locator('.database-entity-table')).toBeVisible()
+      await expect.poll(() => getStandaloneEntityTableTextValues(page)).toEqual(['beta', 'alpha'])
+
+      const firstRowOwnerInput = page.locator('.database-entity-table tbody tr').first().locator('[data-column-id] .catalog-cell-input').first()
+      await firstRowOwnerInput.fill('table-updated')
+      await firstRowOwnerInput.blur()
+
+      await expect.poll(() => getStandaloneEntityTableTextValues(page)).toEqual(['table-updated', 'alpha'])
     })
   })
 })

@@ -113,6 +113,7 @@ const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
+type StandaloneDatabaseEntityViewMode = 'cards' | 'table'
 type DatabaseEntityFilterScope = '' | '__document__' | string
 type DatabaseEntitySortMode = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc'
 const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
@@ -1173,6 +1174,7 @@ export function App() {
   const [databaseEntityFilterQuery, setDatabaseEntityFilterQuery] = useState('')
   const [databaseEntityFilterScope, setDatabaseEntityFilterScope] = useState<DatabaseEntityFilterScope>('')
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
+  const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
@@ -4959,6 +4961,21 @@ return (
                               <option value="created-desc">{ui.databaseEntitySortCreatedDesc}</option>
                               <option value="created-asc">{ui.databaseEntitySortCreatedAsc}</option>
                             </select>
+                            <span className="pill">{ui.databaseEntityViewModeLabel}</span>
+                            <button
+                              className={databaseEntityViewMode === 'cards' ? 'primary-button database-entity-cards-view-button' : 'secondary-button database-entity-cards-view-button'}
+                              onClick={() => setDatabaseEntityViewMode('cards')}
+                              type="button"
+                            >
+                              {ui.databaseEntityCardsView}
+                            </button>
+                            <button
+                              className={databaseEntityViewMode === 'table' ? 'primary-button database-entity-table-view-button' : 'secondary-button database-entity-table-view-button'}
+                              onClick={() => setDatabaseEntityViewMode('table')}
+                              type="button"
+                            >
+                              {ui.databaseEntityTableView}
+                            </button>
                             <span className="pill">{ui.filteredRowsCount(filteredStandaloneDatabaseEntityRows.length, databaseEntities.length)}</span>
                           </div>
 
@@ -5059,73 +5076,88 @@ return (
                             </section>
                           ) : null}
 
-                          {filteredStandaloneDatabaseEntityRows.length > 0 ? (
-                            <div className="document-list" style={{ marginBottom: '16px' }}>
-                              {filteredStandaloneDatabaseEntityRows.map(({ entity, linkedDocument }) => {
-                                const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
+                          <p className="mini-hint">{databaseEntityViewMode === 'table' ? ui.databaseEntityTableHint : ui.databaseEntityCardsHint}</p>
 
-                                return (
-                                  <div className="document-row" key={entity.id}>
-                                    <div className={`database-entity-card${selectedDatabaseEntityIdSet.has(entity.id) ? ' database-entity-card-selected' : ''}`}>
-                                      <div className="database-entity-head">
-                                        <div className="database-entity-head-main">
-                                          <label className="database-entity-select-toggle">
-                                            <input
-                                              aria-label={ui.selectDatabaseEntity(entityLabel)}
-                                              checked={selectedDatabaseEntityIdSet.has(entity.id)}
-                                              className="database-entity-select-checkbox"
-                                              onChange={(event) => toggleDatabaseEntitySelection(entity.id, event.target.checked)}
-                                              type="checkbox"
-                                            />
-                                          </label>
-                                          <div>
-                                            <strong>{entityLabel}</strong>
-                                            <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
-                                          </div>
-                                        </div>
-                                        <div className="document-meta">
-                                          <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
-                                          <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
-                                            {ui.common.delete}
-                                          </button>
-                                        </div>
-                                      </div>
-                                      <label className="editor-label" style={{ marginBottom: '12px' }}>
-                                        {ui.linkToDocumentOptional}
-                                        <select
-                                          className="editor-input database-entity-document-select"
-                                          onChange={(event) => {
-                                            void updateDatabaseEntityDocument(entity, event.target.value || null)
-                                          }}
-                                          value={entity.documentId ?? ''}
-                                        >
-                                          <option value="">{ui.noLinkedDocument}</option>
-                                          {homeData.documentCatalog.map((document) => (
-                                            <option key={document.id} value={document.id}>{document.path}</option>
-                                          ))}
-                                        </select>
-                                      </label>
-                                      {selectedDatabaseColumns.length > 0 ? (
-                                        <div className="database-entity-field-grid">
-                                          {selectedDatabaseColumns.map((column) => (
-                                            <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
-                                              {column.name}
-                                              <DatabaseFieldEditor
-                                                column={column}
-                                                value={entity.fieldValues[column.id] ?? null}
-                                                onChangeValue={(value) => {
-                                                  void updateDatabaseEntityField(entity, column.id, value)
-                                                }}
+                          {filteredStandaloneDatabaseEntityRows.length > 0 ? (
+                            databaseEntityViewMode === 'table' ? (
+                              <StandaloneDatabaseEntityTable
+                                columns={selectedDatabaseColumns}
+                                documentCatalog={homeData.documentCatalog}
+                                entities={filteredStandaloneDatabaseEntityRows}
+                                onDeleteEntity={deleteDatabaseEntity}
+                                onToggleSelection={toggleDatabaseEntitySelection}
+                                onUpdateDocument={updateDatabaseEntityDocument}
+                                onUpdateField={updateDatabaseEntityField}
+                                selectedEntityIds={selectedDatabaseEntityIdSet}
+                              />
+                            ) : (
+                              <div className="document-list" style={{ marginBottom: '16px' }}>
+                                {filteredStandaloneDatabaseEntityRows.map(({ entity, linkedDocument }) => {
+                                  const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
+
+                                  return (
+                                    <div className="document-row" key={entity.id}>
+                                      <div className={`database-entity-card${selectedDatabaseEntityIdSet.has(entity.id) ? ' database-entity-card-selected' : ''}`}>
+                                        <div className="database-entity-head">
+                                          <div className="database-entity-head-main">
+                                            <label className="database-entity-select-toggle">
+                                              <input
+                                                aria-label={ui.selectDatabaseEntity(entityLabel)}
+                                                checked={selectedDatabaseEntityIdSet.has(entity.id)}
+                                                className="database-entity-select-checkbox"
+                                                onChange={(event) => toggleDatabaseEntitySelection(entity.id, event.target.checked)}
+                                                type="checkbox"
                                               />
                                             </label>
-                                          ))}
+                                            <div>
+                                              <strong>{entityLabel}</strong>
+                                              <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                                            </div>
+                                          </div>
+                                          <div className="document-meta">
+                                            <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
+                                            <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
+                                              {ui.common.delete}
+                                            </button>
+                                          </div>
                                         </div>
-                                      ) : null}
+                                        <label className="editor-label" style={{ marginBottom: '12px' }}>
+                                          {ui.linkToDocumentOptional}
+                                          <select
+                                            className="editor-input database-entity-document-select"
+                                            onChange={(event) => {
+                                              void updateDatabaseEntityDocument(entity, event.target.value || null)
+                                            }}
+                                            value={entity.documentId ?? ''}
+                                          >
+                                            <option value="">{ui.noLinkedDocument}</option>
+                                            {homeData.documentCatalog.map((document) => (
+                                              <option key={document.id} value={document.id}>{document.path}</option>
+                                            ))}
+                                          </select>
+                                        </label>
+                                        {selectedDatabaseColumns.length > 0 ? (
+                                          <div className="database-entity-field-grid">
+                                            {selectedDatabaseColumns.map((column) => (
+                                              <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
+                                                {column.name}
+                                                <DatabaseFieldEditor
+                                                  column={column}
+                                                  value={entity.fieldValues[column.id] ?? null}
+                                                  onChangeValue={(value) => {
+                                                    void updateDatabaseEntityField(entity, column.id, value)
+                                                  }}
+                                                />
+                                              </label>
+                                            ))}
+                                          </div>
+                                        ) : null}
+                                      </div>
                                     </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
+                                  )
+                                })}
+                              </div>
+                            )
                           ) : (
                             <p className="mini-hint">{ui.noFilteredDatabaseEntitiesYet(selectedDatabase.name)}</p>
                           )}
@@ -5973,6 +6005,103 @@ function DocumentCatalogTable({
               <td>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function StandaloneDatabaseEntityTable({
+  columns,
+  documentCatalog,
+  entities,
+  onDeleteEntity,
+  onToggleSelection,
+  onUpdateDocument,
+  onUpdateField,
+  selectedEntityIds
+}: {
+  columns: DocumentDatabaseColumn[]
+  documentCatalog: DocumentCatalogEntry[]
+  entities: Array<{ entity: DatabaseEntity; linkedDocument: DocumentCatalogEntry | null }>
+  onDeleteEntity: (entityId: string) => Promise<void>
+  onToggleSelection: (entityId: string, checked: boolean) => void
+  onUpdateDocument: (entity: DatabaseEntity, documentId: string | null) => Promise<void>
+  onUpdateField: (entity: DatabaseEntity, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
+  selectedEntityIds: Set<string>
+}) {
+  const ui = getActiveUiText()
+
+  return (
+    <div className="catalog-table-wrap database-entity-table-wrap">
+      <table className="catalog-table database-entity-table">
+        <thead>
+          <tr>
+            <th>{ui.common.select}</th>
+            <th>{ui.databaseEntityTableEntity}</th>
+            <th>{ui.linkToDocumentOptional}</th>
+            {columns.map((column) => (
+              <th key={column.id}>{column.name}</th>
+            ))}
+            <th>{ui.tableHeaderUpdated}</th>
+            <th>{ui.databaseEntityTableActions}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entities.map(({ entity, linkedDocument }) => {
+            const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
+
+            return (
+              <tr className={selectedEntityIds.has(entity.id) ? 'catalog-row-active' : ''} key={entity.id}>
+                <td>
+                  <label className="database-entity-select-toggle database-entity-table-select-toggle">
+                    <input
+                      aria-label={ui.selectDatabaseEntity(entityLabel)}
+                      checked={selectedEntityIds.has(entity.id)}
+                      className="database-entity-select-checkbox"
+                      onChange={(event) => onToggleSelection(entity.id, event.target.checked)}
+                      type="checkbox"
+                    />
+                  </label>
+                </td>
+                <td>
+                  <strong>{entityLabel}</strong>
+                  <p className="catalog-summary">{linkedDocument?.path ?? entity.id}</p>
+                </td>
+                <td className="catalog-cell-field">
+                  <select
+                    className="catalog-cell-input database-entity-document-select"
+                    onChange={(event) => {
+                      void onUpdateDocument(entity, event.target.value || null)
+                    }}
+                    value={entity.documentId ?? ''}
+                  >
+                    <option value="">{ui.noLinkedDocument}</option>
+                    {documentCatalog.map((document) => (
+                      <option key={document.id} value={document.id}>{document.path}</option>
+                    ))}
+                  </select>
+                </td>
+                {columns.map((column) => (
+                  <td className="catalog-cell-field" data-column-id={column.id} key={`${entity.id}-${column.id}`}>
+                    <DatabaseFieldEditor
+                      column={column}
+                      value={entity.fieldValues[column.id] ?? null}
+                      onChangeValue={(value) => {
+                        void onUpdateField(entity, column.id, value)
+                      }}
+                    />
+                  </td>
+                ))}
+                <td>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</td>
+                <td>
+                  <button className="secondary-button" onClick={() => void onDeleteEntity(entity.id)} type="button">
+                    {ui.common.delete}
+                  </button>
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>

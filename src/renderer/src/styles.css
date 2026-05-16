@@ -1893,6 +1893,14 @@ del {
   gap: 12px;
 }
 
+.database-entity-table-wrap {
+  margin-bottom: 16px;
+}
+
+.database-entity-table-select-toggle {
+  padding-top: 0;
+}
+
 .database-entity-bulk-panel {
   display: flex;
   flex-direction: column;
