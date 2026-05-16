@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS database_entities (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS database_entity_values (
+  entity_id TEXT NOT NULL REFERENCES database_entities(id) ON DELETE CASCADE,
+  column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,
+  value_text TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (entity_id, column_id)
+);
+
 CREATE TABLE IF NOT EXISTS document_database_values (
   document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
   column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,

@@ -185,7 +185,7 @@ test('document database columns and standalone entities stay isolated per databa
       type: 'text'
     })
 
-    store.createDatabaseEntity({
+    const projectEntity = store.createDatabaseEntity({
       databaseId: projectsDatabase.id,
       fieldValues: { [projectsColumn.id]: 'Alice' }
     })
@@ -199,6 +199,9 @@ test('document database columns and standalone entities stay isolated per databa
     assert.equal(projectColumns.some((column) => column.id === defaultColumn.id), false)
     assert.equal(refreshedHome.documentCatalog.length, defaultCatalogCount)
     assert.equal(refreshedHome.databaseColumns.length, defaultDatabaseColumnsBefore.length + 1)
+    assert.equal(projectEntity.documentId, null)
+    assert.equal(projectEntity.fieldValues[projectsColumn.id], 'Alice')
+    assert.equal(store.getDatabaseEntities(projectsDatabase.id)[0]?.fieldValues[projectsColumn.id], 'Alice')
   })
 })
 

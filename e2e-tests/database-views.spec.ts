@@ -42,6 +42,32 @@ async function createDatabase(page: Page, databaseName: string, description: str
   await expect(getDatabaseButton(page, databaseName)).toBeVisible()
 }
 
+async function ensureDatabaseEntityFormOpen(page: Page): Promise<void> {
+  if (await page.locator('.database-schema-form').count() === 0) {
+    await page.getByRole('button', { name: uiText('Add entity', '新增实体') }).click()
+  }
+
+  await expect(page.locator('.database-schema-form').last()).toBeVisible()
+}
+
+async function createStandaloneTextEntity(page: Page, fieldLabel: string, value: string): Promise<void> {
+  await ensureDatabaseEntityFormOpen(page)
+
+  const form = page.locator('.database-schema-form').last()
+  await form.getByLabel(fieldLabel).fill(value)
+  await form.getByRole('button', { name: uiText('Create Entity', '创建实体') }).click()
+
+  const flashMessage = page.locator('.flash-message')
+  await expect(flashMessage).toBeVisible()
+  expect(await flashMessage.textContent()).toMatch(/Database entity created successfully\.|数据库实体已创建。/)
+}
+
+async function getStandaloneEntityTextValues(page: Page): Promise<string[]> {
+  return page.locator('.database-entity-card .catalog-cell-input').evaluateAll((inputs) =>
+    inputs.map((input) => (input as HTMLInputElement).value)
+  )
+}
+
 async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Promise<void> {
   await expect
     .poll(async () => {
@@ -98,10 +124,11 @@ test.describe('Database Views @electron', () => {
       await createDatabase(page, 'Entity Links', 'Standalone entity link flow')
       await selectDatabase(page, 'Entity Links')
 
-      const createFormDocumentSelect = page.locator('.database-schema-form .database-entity-document-select').first()
+      await ensureDatabaseEntityFormOpen(page)
+      const createFormDocumentSelect = page.locator('.database-schema-form').last().locator('.database-entity-document-select').first()
       await createFormDocumentSelect.selectOption({ index: 1 })
       await expect(createFormDocumentSelect).not.toHaveValue('')
-      await page.getByRole('button', { name: uiText('Create Entity', '创建实体') }).click()
+      await page.locator('.database-schema-form').last().getByRole('button', { name: uiText('Create Entity', '创建实体') }).click()
 
       const entityCard = page.locator('.database-entity-card').first()
       const entityDocumentSelect = entityCard.locator('.database-entity-document-select')
@@ -113,6 +140,38 @@ test.describe('Database Views @electron', () => {
       await entityDocumentSelect.selectOption('')
       await expect(entityDocumentSelect).toHaveValue('')
       await expect(entityPath).toHaveText(uiText('No linked document', '未关联文档'))
+    })
+  })
+
+  test('filters and sorts standalone entities by field values', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Entity Filters', 'Standalone entity list controls')
+      await selectDatabase(page, 'Entity Filters')
+      await addTextColumn(page, 'Owner')
+
+      await createStandaloneTextEntity(page, 'Owner', 'alpha')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+      await createStandaloneTextEntity(page, 'Owner', 'beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta', 'alpha'])
+
+      const filterQuery = page.locator('.database-entity-filter-query')
+      const filterScope = page.locator('.database-entity-filter-scope-select')
+      const sortSelect = page.locator('.database-entity-sort-select')
+
+      await expect(sortSelect).toHaveValue('updated-desc')
+
+      await sortSelect.selectOption('created-asc')
+      await expect(sortSelect).toHaveValue('created-asc')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha', 'beta'])
+
+      await filterScope.selectOption({ index: 2 })
+      await filterQuery.fill('beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta'])
     })
   })
 })

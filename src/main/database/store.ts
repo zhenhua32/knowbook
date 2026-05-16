@@ -2134,6 +2134,27 @@ export class KnowbookStore {
         'ALTER TABLE document_database_values ADD COLUMN entity_id TEXT REFERENCES database_entities(id) ON DELETE CASCADE'
       )
     }
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS database_entity_values (
+        entity_id TEXT NOT NULL REFERENCES database_entities(id) ON DELETE CASCADE,
+        column_id TEXT NOT NULL REFERENCES document_database_columns(id) ON DELETE CASCADE,
+        value_text TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (entity_id, column_id)
+      )
+    `)
+
+    this.db.exec(`
+      INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
+      SELECT entity_id, column_id, value_text, updated_at
+      FROM document_database_values
+      WHERE entity_id IS NOT NULL
+      ON CONFLICT(entity_id, column_id) DO UPDATE SET
+        value_text = excluded.value_text,
+        updated_at = excluded.updated_at
+    `)
+    this.db.exec('DELETE FROM document_database_values WHERE entity_id IS NOT NULL')
   }
 
   private readSetting(key: string): string | null {
@@ -2257,7 +2278,7 @@ export class KnowbookStore {
     
     // 插入字段值
     const valueInsert = this.db.prepare(
-      'INSERT INTO document_database_values (document_id, column_id, value_text, updated_at, entity_id) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at) VALUES (?, ?, ?, ?)'
     )
     
     for (const [columnId, value] of Object.entries(fieldValues)) {
@@ -2276,7 +2297,7 @@ export class KnowbookStore {
         continue
       }
 
-      valueInsert.run(documentId, columnId, valueText, now, entityId)
+      valueInsert.run(entityId, columnId, valueText, now)
     }
     
     // 获取完整的实体数据
@@ -2302,7 +2323,7 @@ export class KnowbookStore {
     
     // 获取字段值
     const fieldRows = this.db.prepare(
-      'SELECT column_id, value_text FROM document_database_values WHERE entity_id = ?'
+      'SELECT column_id, value_text FROM database_entity_values WHERE entity_id = ?'
     ).all(entityId) as Array<{ column_id: string; value_text: string | null }>
     
     const fieldValues: Record<string, DocumentDatabaseFieldValue> = {}
@@ -2374,6 +2395,12 @@ export class KnowbookStore {
     
     // 更新字段值（如果提供了）
     if (fieldValues) {
+      const deleteValue = this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ? AND column_id = ?')
+      const insertValue = this.db.prepare(
+        `INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
+         VALUES (?, ?, ?, ?)`
+      )
+
       for (const [columnId, value] of Object.entries(fieldValues)) {
         const columnRow = this.db.prepare(`
           SELECT id, database_id, name, type, options_json, sort_order
@@ -2387,27 +2414,20 @@ export class KnowbookStore {
 
         const valueText = this.serializeDocumentDatabaseFieldValue(this.mapDocumentDatabaseColumnRow(columnRow), value)
 
-        // 使用 document_id 来自实体记录（可能是 null）
-        const currentEntity = this.db.prepare('SELECT document_id FROM database_entities WHERE id = ?').get(entityId) as
-          | { document_id: string | null }
-          | undefined
-
         if (valueText === null) {
-          this.db.prepare('DELETE FROM document_database_values WHERE entity_id = ? AND column_id = ?').run(entityId, columnId)
+          deleteValue.run(entityId, columnId)
           continue
         }
 
-        this.db.prepare(
-          `INSERT OR REPLACE INTO document_database_values (document_id, column_id, value_text, updated_at, entity_id)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(currentEntity?.document_id ?? null, columnId, valueText, now, entityId)
+        deleteValue.run(entityId, columnId)
+        insertValue.run(entityId, columnId, valueText, now)
       }
     }
   }
   
   deleteDatabaseEntity(entityId: string): void {
     this.db.prepare('DELETE FROM database_entities WHERE id = ?').run(entityId)
-    this.db.prepare('DELETE FROM document_database_values WHERE entity_id = ?').run(entityId)
+    this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ?').run(entityId)
   }
   
   getDatabaseEntities(databaseId: string): DatabaseEntity[] {

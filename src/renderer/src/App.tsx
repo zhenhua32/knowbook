@@ -113,6 +113,8 @@ const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
+type DatabaseEntityFilterScope = '' | '__document__' | string
+type DatabaseEntitySortMode = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc'
 const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
 type BlockDropPreview = {
@@ -1167,6 +1169,9 @@ export function App() {
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
+  const [databaseEntityFilterQuery, setDatabaseEntityFilterQuery] = useState('')
+  const [databaseEntityFilterScope, setDatabaseEntityFilterScope] = useState<DatabaseEntityFilterScope>('')
+  const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
   const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
   const [aiEmbeddingBaseUrlDraft, setAiEmbeddingBaseUrlDraft] = useState('')
@@ -1647,6 +1652,16 @@ export function App() {
       setDatabaseEntityDatabaseId(nextStandaloneDatabases[0].id)
     }
   }, [databaseEntityDatabaseId, databases])
+
+  useEffect(() => {
+    if (!databaseEntityFilterScope || databaseEntityFilterScope === '__document__') {
+      return
+    }
+
+    if (!selectedDatabaseColumns.some((column) => column.id === databaseEntityFilterScope)) {
+      setDatabaseEntityFilterScope('')
+    }
+  }, [databaseEntityFilterScope, selectedDatabaseColumns])
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage
@@ -4175,6 +4190,57 @@ export function App() {
   const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : homeData.databaseColumns
   const databasePageTitle = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesTitle : ui.documentCatalogTitle
   const databasePageHint = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesHint : ui.documentCatalogHint
+  const trimmedDatabaseEntityFilterQuery = databaseEntityFilterQuery.trim().toLowerCase()
+  const standaloneDatabaseEntityRows = databaseEntities.map((entity) => {
+    const linkedDocument = entity.documentId
+      ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
+      : null
+
+    return {
+      entity,
+      linkedDocument,
+      searchableDocumentText: [linkedDocument?.title ?? '', linkedDocument?.path ?? ''].join(' ').trim(),
+      searchableFieldText: selectedDatabaseColumns
+        .map((column) => formatDocumentDatabaseFieldValueForSearch(entity.fieldValues[column.id] ?? null))
+        .join(' ')
+    }
+  })
+  const filteredStandaloneDatabaseEntityRows = standaloneDatabaseEntityRows
+    .filter(({ entity, searchableDocumentText, searchableFieldText }) => {
+      if (!trimmedDatabaseEntityFilterQuery) {
+        return true
+      }
+
+      if (databaseEntityFilterScope === '__document__') {
+        return searchableDocumentText.toLowerCase().includes(trimmedDatabaseEntityFilterQuery)
+      }
+
+      if (databaseEntityFilterScope) {
+        return formatDocumentDatabaseFieldValueForSearch(entity.fieldValues[databaseEntityFilterScope] ?? null)
+          .toLowerCase()
+          .includes(trimmedDatabaseEntityFilterQuery)
+      }
+
+      return [searchableDocumentText, searchableFieldText]
+        .join(' ')
+        .toLowerCase()
+        .includes(trimmedDatabaseEntityFilterQuery)
+    })
+    .sort((left, right) => {
+      if (databaseEntitySortMode === 'updated-asc') {
+        return new Date(left.entity.updatedAt).getTime() - new Date(right.entity.updatedAt).getTime()
+      }
+
+      if (databaseEntitySortMode === 'created-desc') {
+        return new Date(right.entity.createdAt).getTime() - new Date(left.entity.createdAt).getTime()
+      }
+
+      if (databaseEntitySortMode === 'created-asc') {
+        return new Date(left.entity.createdAt).getTime() - new Date(right.entity.createdAt).getTime()
+      }
+
+      return new Date(right.entity.updatedAt).getTime() - new Date(left.entity.updatedAt).getTime()
+    })
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -4745,63 +4811,95 @@ return (
 
                     {selectedDatabase ? (
                       databaseEntities.length > 0 ? (
-                        <div className="document-list" style={{ marginBottom: '16px' }}>
-                          {databaseEntities.map((entity) => {
-                            const linkedDocument = entity.documentId
-                              ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
-                              : null
+                        <>
+                          <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
+                            <input
+                              className="editor-input database-entity-filter-query"
+                              onChange={(event) => setDatabaseEntityFilterQuery(event.target.value)}
+                              placeholder={ui.searchDatabaseEntitiesPlaceholder}
+                              type="search"
+                              value={databaseEntityFilterQuery}
+                            />
+                            <select
+                              className="editor-input database-entity-filter-scope-select"
+                              onChange={(event) => setDatabaseEntityFilterScope(event.target.value as DatabaseEntityFilterScope)}
+                              value={databaseEntityFilterScope}
+                            >
+                              <option value="">{ui.databaseEntityFilterAllFields}</option>
+                              <option value="__document__">{ui.databaseEntityFilterLinkedDocument}</option>
+                              {selectedDatabaseColumns.map((column) => (
+                                <option key={column.id} value={column.id}>{ui.databaseEntityFilterField(column.name)}</option>
+                              ))}
+                            </select>
+                            <select
+                              className="editor-input database-entity-sort-select"
+                              onChange={(event) => setDatabaseEntitySortMode(event.target.value as DatabaseEntitySortMode)}
+                              value={databaseEntitySortMode}
+                            >
+                              <option value="updated-desc">{ui.databaseEntitySortUpdatedDesc}</option>
+                              <option value="updated-asc">{ui.databaseEntitySortUpdatedAsc}</option>
+                              <option value="created-desc">{ui.databaseEntitySortCreatedDesc}</option>
+                              <option value="created-asc">{ui.databaseEntitySortCreatedAsc}</option>
+                            </select>
+                            <span className="pill">{ui.filteredRowsCount(filteredStandaloneDatabaseEntityRows.length, databaseEntities.length)}</span>
+                          </div>
 
-                            return (
-                              <div className="document-row" key={entity.id}>
-                                <div className="database-entity-card">
-                                  <div className="database-entity-head">
-                                    <div>
-                                      <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
-                                      <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                          {filteredStandaloneDatabaseEntityRows.length > 0 ? (
+                            <div className="document-list" style={{ marginBottom: '16px' }}>
+                              {filteredStandaloneDatabaseEntityRows.map(({ entity, linkedDocument }) => (
+                                <div className="document-row" key={entity.id}>
+                                  <div className="database-entity-card">
+                                    <div className="database-entity-head">
+                                      <div>
+                                        <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
+                                        <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                                      </div>
+                                      <div className="document-meta">
+                                        <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
+                                        <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
+                                          {ui.common.delete}
+                                        </button>
+                                      </div>
                                     </div>
-                                    <div className="document-meta">
-                                      <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
-                                      <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
-                                        {ui.common.delete}
-                                      </button>
-                                    </div>
+                                    <label className="editor-label" style={{ marginBottom: '12px' }}>
+                                      {ui.linkToDocumentOptional}
+                                      <select
+                                        className="editor-input database-entity-document-select"
+                                        onChange={(event) => {
+                                          void updateDatabaseEntityDocument(entity, event.target.value || null)
+                                        }}
+                                        value={entity.documentId ?? ''}
+                                      >
+                                        <option value="">{ui.noLinkedDocument}</option>
+                                        {homeData.documentCatalog.map((document) => (
+                                          <option key={document.id} value={document.id}>{document.path}</option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                    {selectedDatabaseColumns.length > 0 ? (
+                                      <div className="database-entity-field-grid">
+                                        {selectedDatabaseColumns.map((column) => (
+                                          <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
+                                            {column.name}
+                                            <DatabaseFieldEditor
+                                              column={column}
+                                              value={entity.fieldValues[column.id] ?? null}
+                                              onChangeValue={(value) => {
+                                                void updateDatabaseEntityField(entity, column.id, value)
+                                              }}
+                                            />
+                                          </label>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                   </div>
-                                  <label className="editor-label" style={{ marginBottom: '12px' }}>
-                                    {ui.linkToDocumentOptional}
-                                    <select
-                                      className="editor-input database-entity-document-select"
-                                      onChange={(event) => {
-                                        void updateDatabaseEntityDocument(entity, event.target.value || null)
-                                      }}
-                                      value={entity.documentId ?? ''}
-                                    >
-                                      <option value="">{ui.noLinkedDocument}</option>
-                                      {homeData.documentCatalog.map((document) => (
-                                        <option key={document.id} value={document.id}>{document.path}</option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                  {selectedDatabaseColumns.length > 0 ? (
-                                    <div className="database-entity-field-grid">
-                                      {selectedDatabaseColumns.map((column) => (
-                                        <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
-                                          {column.name}
-                                          <DatabaseFieldEditor
-                                            column={column}
-                                            value={entity.fieldValues[column.id] ?? null}
-                                            onChangeValue={(value) => {
-                                              void updateDatabaseEntityField(entity, column.id, value)
-                                            }}
-                                          />
-                                        </label>
-                                      ))}
-                                    </div>
-                                  ) : null}
                                 </div>
-                              </div>
-                            )
-                          })}
-                        </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mini-hint">{ui.noFilteredDatabaseEntitiesYet(selectedDatabase.name)}</p>
+                          )}
+                        </>
                       ) : (
                         <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
                       )

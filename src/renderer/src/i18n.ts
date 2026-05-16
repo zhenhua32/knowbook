@@ -216,8 +216,10 @@ function createUiText(language: UiLanguage) {
     addEntity: zh ? '新增实体' : 'Add entity',
     closeSchema: zh ? '关闭结构编辑' : 'Close schema',
     searchDocumentsPlaceholder: zh ? '搜索文档...' : 'Search documents...',
+    searchDatabaseEntitiesPlaceholder: zh ? '搜索实体或字段值...' : 'Search entities or field values...',
     customColumnsCount: (count: number) => zh ? `${count} 个自定义列` : `${count} custom columns`,
     rowsCount: (count: number) => zh ? `${count} 行` : `${count} rows`,
+    filteredRowsCount: (visibleCount: number, totalCount: number) => zh ? `${visibleCount} / ${totalCount} 行` : `${visibleCount} / ${totalCount} rows`,
     columnName: zh ? '列名' : 'Column name',
     databaseName: zh ? '数据库名称' : 'Database name',
     databaseDescription: zh ? '描述' : 'Description',
@@ -241,6 +243,16 @@ function createUiText(language: UiLanguage) {
     noDatabaseEntitiesYet: (name: string) => zh
       ? `数据库“${name}”下还没有实体。可以先创建一条关联文档的记录，或录入独立行。`
       : `No entities yet for ${name}. Create one to link a document or store standalone rows.`,
+    noFilteredDatabaseEntitiesYet: (name: string) => zh
+      ? `数据库“${name}”里没有匹配当前过滤条件的实体。`
+      : `No entities in ${name} match the current filters.`,
+    databaseEntityFilterAllFields: zh ? '全部字段' : 'All fields',
+    databaseEntityFilterLinkedDocument: zh ? '关联文档' : 'Linked document',
+    databaseEntityFilterField: (name: string) => zh ? `字段：${name}` : `Field: ${name}`,
+    databaseEntitySortUpdatedDesc: zh ? '最近更新优先' : 'Recently updated first',
+    databaseEntitySortUpdatedAsc: zh ? '最早更新优先' : 'Oldest update first',
+    databaseEntitySortCreatedDesc: zh ? '最新创建优先' : 'Newest created first',
+    databaseEntitySortCreatedAsc: zh ? '最早创建优先' : 'Oldest created first',
     noLinkedDocument: zh ? '未关联文档' : 'No linked document',
     boardViewLabel: zh ? '看板视图' : 'Board view',
     boardGroupedBy: (name: string | null) => name
