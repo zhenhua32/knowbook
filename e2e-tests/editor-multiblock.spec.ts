@@ -30,6 +30,18 @@ async function getBodyBlockValues(page: Page): Promise<string[]> {
   )
 }
 
+async function selectFirstTwoBodyBlocks(page: Page): Promise<void> {
+  const editors = page.locator('textarea.block-inline-textarea')
+  const firstBody = editors.nth(1)
+
+  await firstBody.click()
+  await firstBody.press('End')
+  await firstBody.press('Shift+ArrowDown')
+
+  await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+  await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+}
+
 test.describe('Editor Multi-Block Operations @electron', () => {
   test('selects a contiguous block range with Shift and deletes it from the toolbar', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
@@ -38,15 +50,7 @@ test.describe('Editor Multi-Block Operations @electron', () => {
       await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
 
-      const editors = page.locator('textarea.block-inline-textarea')
-      const firstBody = editors.nth(1)
-
-      await firstBody.click()
-      await firstBody.press('End')
-      await firstBody.press('Shift+ArrowDown')
-
-      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
-      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await selectFirstTwoBodyBlocks(page)
 
       await page
         .locator('.block-selection-toolbar')
@@ -55,6 +59,22 @@ test.describe('Editor Multi-Block Operations @electron', () => {
 
       await expect(page.locator('.block-selection-toolbar')).toHaveCount(0)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Gamma'])
+    })
+  })
+
+  test('duplicates a contiguous block range with Ctrl+Shift+D', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+
+      await selectFirstTwoBodyBlocks(page)
+      await page.locator('textarea.block-inline-textarea').nth(1).press('Control+Shift+D')
+
+      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Alpha', 'Beta', 'Gamma'])
     })
   })
 })

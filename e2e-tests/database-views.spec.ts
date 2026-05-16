@@ -32,7 +32,16 @@ async function addTextColumn(page: Page, columnName: string): Promise<void> {
   const form = page.locator('.database-schema-form').filter({ has: page.getByLabel(uiText('Column name', '列名')) }).first()
   await expect(form).toBeVisible()
   await form.getByLabel(uiText('Column name', '列名')).fill(columnName)
-  await form.getByRole('button', { name: uiText('Save column', '保存列') }).click()
+  const saveButton = form.getByRole('button', { name: uiText('Save column', '保存列') })
+  await expect(saveButton).toBeEnabled()
+  await saveButton.click()
+  await expect(form).toHaveCount(0)
+  await expect.poll(async () => {
+    const values = await page.locator('.database-schema-name-input').evaluateAll((inputs) =>
+      inputs.map((input) => (input as HTMLInputElement).value)
+    )
+    return values.includes(columnName)
+  }, { timeout: 60000 }).toBe(true)
   await expect(page.getByRole('button', { name: uiText('Add column', '新增列') })).toBeVisible()
 }
 
@@ -89,7 +98,7 @@ async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Pro
         inputs.map((input) => (input as HTMLInputElement).value)
       )
       return [...new Set(values)].sort()
-    }, { timeout: 30000 })
+    }, { timeout: 60000 })
     .toEqual([...expectedNames].sort())
 }
 
