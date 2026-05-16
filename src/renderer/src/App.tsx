@@ -2608,14 +2608,29 @@ export function App() {
     }
   }
 
-  async function updateDatabaseEntity(entityId: string, fieldValues: Record<string, DocumentDatabaseFieldValue>) {
+  async function updateDatabaseEntity(
+    entityId: string,
+    fieldValues?: Record<string, DocumentDatabaseFieldValue>,
+    documentId?: string | null
+  ) {
     try {
-      await window.knowbook.updateDatabaseEntity({
-        entityId,
-        fieldValues: Object.fromEntries(
+      const input: {
+        entityId: string
+        fieldValues?: Record<string, DocumentDatabaseFieldValue>
+        documentId?: string | null
+      } = { entityId }
+
+      if (fieldValues) {
+        input.fieldValues = Object.fromEntries(
           Object.entries(fieldValues).map(([columnId, value]) => [columnId, normalizeDocumentDatabaseFieldValue(value)])
         )
-      })
+      }
+
+      if (documentId !== undefined) {
+        input.documentId = documentId
+      }
+
+      await window.knowbook.updateDatabaseEntity(input)
       await refreshDatabasePageData(databaseEntityDatabaseId)
       setBackupMessage(ui.databaseEntityUpdated)
     } catch (error) {
@@ -2629,6 +2644,10 @@ export function App() {
       ...entity.fieldValues,
       [columnId]: normalizeDocumentDatabaseFieldValue(value)
     })
+  }
+
+  async function updateDatabaseEntityDocument(entity: DatabaseEntity, documentId: string | null) {
+    await updateDatabaseEntity(entity.id, undefined, documentId)
   }
 
   async function deleteDatabaseEntity(entityId: string) {
@@ -4648,13 +4667,16 @@ return (
                     </label>
                     <label className="editor-label">
                       {ui.linkToDocumentOptional}
-                      <input
-                        className="editor-input"
-                        type="text"
-                        placeholder="Document ID"
+                      <select
+                        className="editor-input database-entity-document-select"
                         onChange={(event) => setDatabaseEntityDocumentId(event.target.value)}
                         value={databaseEntityDocumentId}
-                      />
+                      >
+                        <option value="">{ui.noLinkedDocument}</option>
+                        {homeData.documentCatalog.map((document) => (
+                          <option key={document.id} value={document.id}>{document.path}</option>
+                        ))}
+                      </select>
                     </label>
                     {selectedDatabaseColumns.length > 0 ? (
                       <div className="database-entity-field-grid database-entity-field-grid-form">
@@ -4744,6 +4766,21 @@ return (
                                       </button>
                                     </div>
                                   </div>
+                                  <label className="editor-label" style={{ marginBottom: '12px' }}>
+                                    {ui.linkToDocumentOptional}
+                                    <select
+                                      className="editor-input database-entity-document-select"
+                                      onChange={(event) => {
+                                        void updateDatabaseEntityDocument(entity, event.target.value || null)
+                                      }}
+                                      value={entity.documentId ?? ''}
+                                    >
+                                      <option value="">{ui.noLinkedDocument}</option>
+                                      {homeData.documentCatalog.map((document) => (
+                                        <option key={document.id} value={document.id}>{document.path}</option>
+                                      ))}
+                                    </select>
+                                  </label>
                                   {selectedDatabaseColumns.length > 0 ? (
                                     <div className="database-entity-field-grid">
                                       {selectedDatabaseColumns.map((column) => (

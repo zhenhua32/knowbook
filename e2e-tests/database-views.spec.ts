@@ -87,4 +87,32 @@ test.describe('Database Views @electron', () => {
       await expect(page.locator('.board-panel')).toHaveCount(0)
     })
   })
+
+  test('creates a standalone entity with a selected document and can clear the link later', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Entity Links', 'Standalone entity link flow')
+      await selectDatabase(page, 'Entity Links')
+
+      const createFormDocumentSelect = page.locator('.database-schema-form .database-entity-document-select').first()
+      await createFormDocumentSelect.selectOption({ index: 1 })
+      await expect(createFormDocumentSelect).not.toHaveValue('')
+      await page.getByRole('button', { name: uiText('Create Entity', '创建实体') }).click()
+
+      const entityCard = page.locator('.database-entity-card').first()
+      const entityDocumentSelect = entityCard.locator('.database-entity-document-select')
+      const entityPath = entityCard.locator('.database-entity-head p').first()
+      await expect(entityCard).toBeVisible()
+      await expect(entityDocumentSelect).not.toHaveValue('')
+      await expect(entityPath).not.toHaveText(uiText('No linked document', '未关联文档'))
+
+      await entityDocumentSelect.selectOption('')
+      await expect(entityDocumentSelect).toHaveValue('')
+      await expect(entityPath).toHaveText(uiText('No linked document', '未关联文档'))
+    })
+  })
 })
