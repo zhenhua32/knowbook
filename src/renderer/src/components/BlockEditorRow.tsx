@@ -109,6 +109,10 @@ function resizeBlockTextarea(textarea: HTMLTextAreaElement | null): void {
   textarea.style.height = `${textarea.scrollHeight}px`
 }
 
+function isNestableBlockType(type: DocumentBlock['type']): boolean {
+  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+}
+
 export function BlockEditorRow(props: BlockEditorRowProps) {
   const {
     block,
@@ -602,12 +606,23 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                 }
 
 
-                // Tab: insert spaces to prevent focus jump
+                // Tab / Shift+Tab: adjust nesting for list-like blocks, otherwise keep the current space insertion behavior.
                 if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey) {
                   event.preventDefault()
                   const el = event.currentTarget
                   const start = el.selectionStart ?? 0
                   const end = el.selectionEnd ?? 0
+
+                  if (selectedBlockRange && isSelected && selectedBlockCount > 1) {
+                    adjustSelectedBlocksDepth(event.shiftKey ? -1 : 1, index, start)
+                    return
+                  }
+
+                  if (isNestableBlockType(block.type)) {
+                    adjustBlockDepth(index, event.shiftKey ? -1 : 1, start)
+                    return
+                  }
+
                   const spaces = '  '
                   const newValue = el.value.slice(0, start) + spaces + el.value.slice(end)
                   handleBlockContentChange(index, newValue)

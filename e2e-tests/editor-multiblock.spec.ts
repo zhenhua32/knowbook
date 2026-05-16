@@ -24,6 +24,22 @@ async function createParagraphBlocks(page: Page, values: string[]): Promise<void
   }
 }
 
+async function createTodoBlocks(page: Page, values: string[]): Promise<void> {
+  const editors = page.locator('textarea.block-inline-textarea')
+  await createFreshDocumentEditor(page)
+
+  for (let index = 0; index < values.length; index += 1) {
+    const editor = editors.nth(index + 1)
+    await expect(editor).toBeVisible()
+    await editor.fill(`- [ ] ${values[index]}`)
+    await expect(editor).toHaveClass(/type-todo/)
+
+    if (index < values.length - 1) {
+      await editor.press('Control+Enter')
+    }
+  }
+}
+
 async function getBodyBlockValues(page: Page): Promise<string[]> {
   return page.locator('textarea.block-inline-textarea').evaluateAll((textareas) =>
     textareas.slice(1).map((textarea) => (textarea as HTMLTextAreaElement).value)
@@ -35,6 +51,19 @@ async function getBodyBlockTypes(page: Page): Promise<string[]> {
     textareas.slice(1).map((textarea) => {
       const match = Array.from((textarea as HTMLTextAreaElement).classList).find((className) => className.startsWith('type-'))
       return match ?? ''
+    })
+  )
+}
+
+async function getBodyBlockIndentValues(page: Page): Promise<number[]> {
+  return page.locator('textarea.block-inline-textarea').evaluateAll((textareas) =>
+    textareas.slice(1).map((textarea) => {
+      const row = textarea.closest('.block-editor-row')
+      if (!(row instanceof HTMLElement)) {
+        return 0
+      }
+
+      return Number.parseFloat(getComputedStyle(row).paddingLeft || '0')
     })
   )
 }
@@ -175,6 +204,32 @@ test.describe('Editor Multi-Block Operations @electron', () => {
 
       await expect(toolbar).toHaveCount(0)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Gamma'])
+    })
+  })
+
+  test('adjusts the nesting of a contiguous todo range with Tab and Shift+Tab', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createTodoBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockTypes(page)).toEqual(['type-todo', 'type-todo', 'type-todo'])
+      await expect.poll(() => getBodyBlockIndentValues(page)).toEqual([0, 0, 0])
+
+      await selectLastTwoBodyBlocks(page)
+      await page.locator('textarea.block-inline-textarea').nth(2).press('Tab')
+
+      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockIndentValues(page)).toEqual([0, 24, 24])
+
+      await page.locator('textarea.block-inline-textarea').nth(2).press('Shift+Tab')
+
+      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockIndentValues(page)).toEqual([0, 0, 0])
     })
   })
 })

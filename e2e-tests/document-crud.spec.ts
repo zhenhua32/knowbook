@@ -42,4 +42,43 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(getSummaryInput(page)).toHaveValue(nextSummary)
     })
   })
+
+  test('renames a parent document and rewrites descendant paths', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const uniqueSuffix = Date.now().toString(36)
+    const parentTitle = `E2E Parent ${uniqueSuffix}`
+    const renamedParentTitle = `E2E Parent Renamed ${uniqueSuffix}`
+    const childTitle = `E2E Child ${uniqueSuffix}`
+
+    await withElectronApp(async ({ page }) => {
+      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await getTitleInput(page).fill(parentTitle)
+      await getSummaryInput(page).fill(`Parent summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(page.locator('.document-path')).toContainText(parentTitle)
+
+      await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
+      await getTitleInput(page).fill(childTitle)
+      await getSummaryInput(page).fill(`Child summary ${uniqueSuffix}`)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${childTitle}`)
+
+      await getTreeButton(page, parentTitle).click()
+      await expect(getTitleInput(page)).toHaveValue(parentTitle)
+      await getTitleInput(page).fill(renamedParentTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(page.locator('.document-path')).toContainText(renamedParentTitle)
+
+      await getTreeButton(page, childTitle).click()
+      await expect(getTitleInput(page)).toHaveValue(childTitle)
+      await expect(page.locator('.document-path')).toContainText(`${renamedParentTitle}/${childTitle}`)
+    })
+  })
 })

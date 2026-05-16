@@ -2087,6 +2087,11 @@ export function App() {
       return
     }
 
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
@@ -2911,6 +2916,7 @@ export function App() {
       ])
       setHomeData(refreshedHome)
       setSelectedDocument(refreshedDetail)
+      setDraftSummary(refreshedDetail?.summary ?? '')
 
       setBackupMessage(ui.aiAutomationResult(result))
     } catch (error) {
@@ -3210,7 +3216,7 @@ export function App() {
         }
 
         const nextMinDepth = minDepth + appliedDelta
-        if (precedingBlock.depth < nextMinDepth) {
+        if (precedingBlock.depth + 1 < nextMinDepth) {
           console.warn(`Cannot indent to depth ${nextMinDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
           return
         }
@@ -3737,7 +3743,7 @@ export function App() {
         return
       }
 
-      if (precedingBlock.depth < nextRootDepth) {
+      if (precedingBlock.depth + 1 < nextRootDepth) {
         console.warn(`Cannot indent to depth ${nextRootDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
         return
       }

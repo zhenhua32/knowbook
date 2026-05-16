@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function openDatabasePage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Database', '数据库')).click()
+  await page.getByTitle(uiText('Database', '数据库')).click({ noWaitAfter: true })
   await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()
 }
 
@@ -12,12 +12,12 @@ async function openDocumentCatalogView(page: Page): Promise<void> {
     return
   }
 
-  await page.getByRole('button', { name: uiText('Document catalog', '文档目录') }).click()
+  await page.getByRole('button', { name: uiText('Document catalog', '文档目录') }).click({ noWaitAfter: true })
   await expect(heading).toBeVisible()
 }
 
 async function openStandaloneDatabasesView(page: Page): Promise<void> {
-  await page.getByRole('button', { name: uiText('Standalone databases', '独立数据库') }).click()
+  await page.getByRole('button', { name: uiText('Standalone databases', '独立数据库') }).click({ noWaitAfter: true })
   await expect(page.getByRole('heading', { name: uiText('Standalone databases', '独立数据库') })).toBeVisible()
 }
 
@@ -33,7 +33,11 @@ async function selectDatabase(page: Page, databaseName: string): Promise<void> {
 }
 
 async function addTextColumn(page: Page, columnName: string): Promise<void> {
-  await page.getByRole('button', { name: uiText('Add column', '新增列') }).click()
+  const addColumnButton = page.locator('.database-panel').getByRole('button', { name: uiText('Add column', '新增列') })
+  await expect(addColumnButton).toBeVisible({ timeout: 60000 })
+  await expect(addColumnButton).toBeEnabled({ timeout: 60000 })
+  await addColumnButton.scrollIntoViewIfNeeded()
+  await addColumnButton.click()
   const form = page.locator('.database-schema-form').filter({ has: page.getByLabel(uiText('Column name', '列名')) }).first()
   await expect(form).toBeVisible()
   await form.getByLabel(uiText('Column name', '列名')).fill(columnName)
@@ -47,7 +51,7 @@ async function addTextColumn(page: Page, columnName: string): Promise<void> {
     )
     return values.includes(columnName)
   }, { timeout: 60000 }).toBe(true)
-  await expect(page.getByRole('button', { name: uiText('Add column', '新增列') })).toBeVisible()
+  await expect(addColumnButton).toBeVisible()
 }
 
 async function createDatabase(page: Page, databaseName: string, description: string): Promise<void> {

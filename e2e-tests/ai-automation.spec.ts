@@ -1,5 +1,14 @@
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+
+type MockAiRequest = {
+  method: string
+  url: string | undefined
+  authorization: string | undefined
+  body: string
+}
 
 function getTitleInput(page: Page): Locator {
   return page.locator('.document-summary-card .editor-input').first()
@@ -11,6 +20,76 @@ function getBodyEditor(page: Page): Locator {
 
 function getPreviewTitle(page: Page): Locator {
   return page.locator('.preview-panel .panel-head h3')
+}
+
+function getSummaryInput(page: Page): Locator {
+  return page.locator('.document-summary-card .editor-textarea').first()
+}
+
+async function startMockAiServer(summary: string): Promise<{
+  baseUrl: string
+  requests: MockAiRequest[]
+  close: () => Promise<void>
+}> {
+  const requests: MockAiRequest[] = []
+  const server = createServer((request, response) => {
+    const chunks: Buffer[] = []
+
+    request.on('data', (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+    })
+
+    request.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8')
+      requests.push({
+        method: request.method ?? 'GET',
+        url: request.url,
+        authorization: request.headers.authorization,
+        body
+      })
+
+      if (request.method === 'POST' && request.url === '/chat/completions') {
+        response.writeHead(200, { 'Content-Type': 'application/json' })
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: summary
+                }
+              }
+            ]
+          })
+        )
+        return
+      }
+
+      response.writeHead(404, { 'Content-Type': 'text/plain' })
+      response.end('not found')
+    })
+  })
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve())
+  })
+
+  const address = server.address() as AddressInfo
+
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error)
+            return
+          }
+
+          resolve()
+        })
+      })
+  }
 }
 
 async function openSettingsPage(page: Page): Promise<void> {
@@ -42,11 +121,23 @@ async function createRootDocument(page: Page, title: string, body: string): Prom
   await expect(getPreviewTitle(page)).toHaveText(title)
 }
 
-async function saveAiSettings(page: Page, baseUrl: string, model: string, embeddingBaseUrl: string, embeddingModel: string): Promise<void> {
+async function saveAiSettings(
+  page: Page,
+  baseUrl: string,
+  model: string,
+  embeddingBaseUrl: string,
+  embeddingModel: string,
+  autoSummaryOnSave = true
+): Promise<void> {
   await openSettingsPage(page)
 
   await page.getByLabel(uiText('Enable AI features', '启用 AI 功能')).check()
-  await page.getByLabel(uiText('Auto-generate summary when summary is empty', '摘要为空时自动生成摘要')).check()
+  const autoSummaryCheckbox = page.getByLabel(uiText('Auto-generate summary when summary is empty', '摘要为空时自动生成摘要'))
+  if (autoSummaryOnSave) {
+    await autoSummaryCheckbox.check()
+  } else {
+    await autoSummaryCheckbox.uncheck()
+  }
   await page.getByLabel(uiText('Base URL', '基础地址')).fill(baseUrl)
   await page.getByLabel(uiText('Model', '模型')).fill(model)
   await page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）')).fill('test-api-key')
@@ -102,5 +193,52 @@ test.describe('AI Settings @electron', () => {
       await expect(page.locator('.ai-panel .pill, .panel-head .pill')).toContainText(`AI Config Doc ${suffix}`)
       await expect(runAutomationsButton).toBeEnabled()
     })
+  })
+
+  test('runs document summary automation against a configured AI endpoint', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const suffix = Date.now().toString(36)
+    const generatedSummary = '这是由本地模拟 AI 自动生成的摘要。'
+    const mockAiServer = await startMockAiServer(generatedSummary)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', mockAiServer.baseUrl, 'text-embedding-3-small', false)
+
+        await openDocumentsPage(page)
+        await createRootDocument(
+          page,
+          `AI Automation Doc ${suffix}`,
+          'This document contains enough detail to trigger automatic summarization after the AI settings are configured and the automation is run manually.'
+        )
+
+        await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')
+
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', mockAiServer.baseUrl, 'text-embedding-3-small', true)
+
+        await openDocumentsPage(page)
+        await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')
+
+        await openAiPage(page)
+        const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
+        await expect(runAutomationsButton).toBeEnabled()
+        const summaryRequestCountBeforeRun = mockAiServer.requests.filter((request) => request.url === '/chat/completions').length
+        await runAutomationsButton.click()
+
+        await expect(page.locator('.flash-message')).toContainText(/AI automation updated the summary\.|AI 自动化已更新摘要。/)
+        await expect.poll(() => mockAiServer.requests.filter((request) => request.url === '/chat/completions').length).toBe(summaryRequestCountBeforeRun + 1)
+
+        await openDocumentsPage(page)
+        await expect(getSummaryInput(page)).toHaveValue(generatedSummary)
+      })
+
+      const summaryRequests = mockAiServer.requests.filter((request) => request.url === '/chat/completions')
+      expect(summaryRequests[0]?.authorization).toBe('Bearer test-api-key')
+      expect(summaryRequests[0]?.body).toContain(`Document title: AI Automation Doc ${suffix}`)
+      expect(summaryRequests[0]?.body).toContain('Document content:')
+    } finally {
+      await mockAiServer.close()
+    }
   })
 })
