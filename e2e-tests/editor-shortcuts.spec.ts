@@ -1,127 +1,131 @@
-import { test, expect } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-test.describe('Editor Markdown Shortcuts', () => {
-  test('should convert # to heading 1', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('# Heading One')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-heading-1"]')).toBeVisible()
+async function createFreshDocumentEditor(page: Page): Promise<Locator> {
+  await page.getByTitle(uiText('New root', '新建根文档')).click()
+
+  const editor = page.locator('textarea.block-inline-textarea').nth(1)
+  await expect(editor).toBeVisible()
+  return editor
+}
+
+test.describe('Editor Markdown Shortcuts @electron', () => {
+  test('should convert # to heading 1', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('# Heading One')
+
+      await expect(editor).toHaveClass(/type-heading-1/)
+    })
   })
 
-  test('should convert ## to heading 2', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('## Heading Two')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-heading-2"]')).toBeVisible()
+  test('should convert ## to heading 2', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('## Heading Two')
+
+      await expect(editor).toHaveClass(/type-heading-2/)
+    })
   })
 
-  test('should convert - [ ] to todo unchecked', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('- [ ] Task not done')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    const todoBlock = page.locator('[data-testid="block-type-todo"]').first()
-    await expect(todoBlock).toBeVisible()
-    await expect(todoBlock).not.toHaveAttribute('data-checked', 'true')
+  test('should convert - [ ] to todo unchecked', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('- [ ] Task not done')
+
+      const todoCheckbox = page.locator('.block-todo-checkbox').first()
+      await expect(editor).toHaveClass(/type-todo/)
+      await expect(todoCheckbox).toBeVisible()
+      await expect(todoCheckbox).not.toBeChecked()
+    })
   })
 
-  test('should convert - [x] to todo checked', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('- [x] Task done')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    const todoBlock = page.locator('[data-testid="block-type-todo"]').first()
-    await expect(todoBlock).toBeVisible()
-    await expect(todoBlock).toHaveAttribute('data-checked', 'true')
+  test('should convert - [x] to todo checked', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('- [x] Task done')
+
+      const todoCheckbox = page.locator('.block-todo-checkbox').first()
+      await expect(editor).toHaveClass(/type-todo/)
+      await expect(todoCheckbox).toBeVisible()
+      await expect(todoCheckbox).toBeChecked()
+    })
   })
 
-  test('should convert > to quote', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('> This is a quote')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-quote"]')).toBeVisible()
+  test('should convert > to quote', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('> This is a quote')
+
+      await expect(editor).toHaveClass(/type-quote/)
+    })
   })
 
-  test('should convert - to bulleted list', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('- List item 1')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-bulleted-list"]')).toBeVisible()
+  test('should convert - to bulleted list', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('- List item 1')
+
+      await expect(editor).toHaveClass(/type-bulleted-list/)
+      await expect(page.locator('.block-bullet-dot').first()).toBeVisible()
+    })
   })
 
-  test('should convert 1. to numbered list', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('1. First item')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-numbered-list"]')).toBeVisible()
+  test('should convert 1. to numbered list', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('1. First item')
+
+      await expect(editor).toHaveClass(/type-numbered-list/)
+      await expect(page.locator('.block-number-label').first()).toBeVisible()
+    })
   })
 
-  test('should convert $$ to math block', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('$$\nE = mc^2\n$$')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-math"]')).toBeVisible()
+  test('should convert $$ to math block', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('$$ E = mc^2')
+
+      await expect(editor).toHaveClass(/type-math/)
+    })
   })
 
-  test('should convert --- to divider', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('---')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-divider"]')).toBeVisible()
+  test('should convert --- to divider', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('---')
+
+      await expect(page.locator('.block-divider-line').first()).toBeVisible()
+    })
   })
 
-  test('should convert ``` to code block', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /edit/i }).click()
-    
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('```\nconst x = 1;\n```')
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    await expect(page.locator('[data-testid="block-type-code"]')).toBeVisible()
+  test('should convert ``` to code block', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('```\nconst x = 1;\n```')
+
+      await expect(editor).toHaveClass(/type-code/)
+      await expect(page.locator('.block-code-language-badge').first()).toBeVisible()
+    })
   })
 })
