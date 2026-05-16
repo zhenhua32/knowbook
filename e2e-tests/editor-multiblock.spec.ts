@@ -30,6 +30,15 @@ async function getBodyBlockValues(page: Page): Promise<string[]> {
   )
 }
 
+async function getBodyBlockTypes(page: Page): Promise<string[]> {
+  return page.locator('textarea.block-inline-textarea').evaluateAll((textareas) =>
+    textareas.slice(1).map((textarea) => {
+      const match = Array.from((textarea as HTMLTextAreaElement).classList).find((className) => className.startsWith('type-'))
+      return match ?? ''
+    })
+  )
+}
+
 async function getSelectedBodyBlockValues(page: Page): Promise<string[]> {
   return page.locator('.block-editor-row-selected textarea.block-inline-textarea').evaluateAll((textareas) =>
     textareas.map((textarea) => (textarea as HTMLTextAreaElement).value)
@@ -127,6 +136,45 @@ test.describe('Editor Multi-Block Operations @electron', () => {
       await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Beta', 'Gamma', 'Alpha'])
       await expect.poll(() => getSelectedBodyBlockValues(page)).toEqual(['Beta', 'Gamma'])
+    })
+  })
+
+  test('converts a contiguous block range to todos from the selection toolbar', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockTypes(page)).toEqual(['type-paragraph', 'type-paragraph', 'type-paragraph'])
+
+      await selectFirstTwoBodyBlocks(page)
+
+      const toolbar = page.locator('.block-selection-toolbar')
+      await toolbar.locator('select').selectOption('todo')
+      await toolbar.getByRole('button', { name: uiText('Convert', '转换') }).click()
+
+      await expect(toolbar).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockTypes(page)).toEqual(['type-todo', 'type-todo', 'type-paragraph'])
+      await expect(page.locator('.block-todo-checkbox')).toHaveCount(2)
+    })
+  })
+
+  test('cuts a contiguous block range from the selection toolbar', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+
+      await selectFirstTwoBodyBlocks(page)
+
+      const toolbar = page.locator('.block-selection-toolbar')
+      await toolbar.getByRole('button', { name: uiText('Cut', '剪切') }).click()
+
+      await expect(toolbar).toHaveCount(0)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Gamma'])
     })
   })
 })
