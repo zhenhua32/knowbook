@@ -112,6 +112,7 @@ const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
+type DatabaseWorkspaceView = 'catalog' | 'standalone'
 const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
 type BlockDropPreview = {
@@ -159,6 +160,10 @@ function getBlockTypeOptionLabel(type: string): string {
 
 function getBlockConversionLabel(type: string): string {
   return getActiveUiText().conversionOptions[type] ?? type
+}
+
+function isDefaultDocumentDatabase(database: DocumentDatabase): boolean {
+  return database.name === 'Default' && database.description === 'Default database'
 }
 
 function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
@@ -1113,6 +1118,7 @@ export function App() {
   const [activePage, setActivePage] = useState<PageId>('documents')
   const [documentsAuxPanelOpen, setDocumentsAuxPanelOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
@@ -1626,6 +1632,21 @@ export function App() {
       mounted = false
     }
   }, [databaseEntityDatabaseId])
+
+  useEffect(() => {
+    const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
+
+    if (nextStandaloneDatabases.length === 0) {
+      if (databaseEntityDatabaseId) {
+        setDatabaseEntityDatabaseId('')
+      }
+      return
+    }
+
+    if (!nextStandaloneDatabases.some((database) => database.id === databaseEntityDatabaseId)) {
+      setDatabaseEntityDatabaseId(nextStandaloneDatabases[0].id)
+    }
+  }, [databaseEntityDatabaseId, databases])
 
   useEffect(() => {
     document.documentElement.lang = uiLanguage
@@ -2458,10 +2479,29 @@ export function App() {
     }
   }
 
+  function switchDatabaseWorkspaceView(nextView: DatabaseWorkspaceView) {
+    setDatabaseWorkspaceView(nextView)
+    setIsCreatingDatabaseColumn(false)
+    setDatabaseColumnNameDraft('')
+    setDatabaseColumnTypeDraft('text')
+    setDatabaseColumnOptionsDraft('')
+    setIsCreatingDatabase(false)
+    setDatabaseNameDraft('')
+    setDatabaseDescriptionDraft('')
+    setIsCreatingDatabaseEntity(false)
+    setDatabaseEntityDocumentId('')
+    setDatabaseEntityFieldValues({})
+  }
+
   async function createDatabaseColumn() {
+    if (databaseWorkspaceView === 'standalone' && !selectedDatabase) {
+      setBackupMessage(ui.noIndependentDatabasesYet)
+      return
+    }
+
     try {
       const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
-        databaseId: selectedDatabase?.id,
+        databaseId: databaseWorkspaceView === 'standalone' ? selectedDatabase?.id : undefined,
         name: databaseColumnNameDraft,
         type: databaseColumnTypeDraft,
         options: normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft)
@@ -2536,6 +2576,7 @@ export function App() {
       })
       const refreshedDatabases = await window.knowbook.getDatabases()
       setDatabases(refreshedDatabases)
+      setDatabaseWorkspaceView('standalone')
       setDatabaseEntityDatabaseId(createdDatabase.id)
       setDatabaseEntities([])
       setIsCreatingDatabase(false)
@@ -4110,8 +4151,11 @@ export function App() {
   const boardGroupingColumn = boardGroupBy === BOARD_GROUP_BY_PARENT
     ? null
     : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
-  const selectedDatabase = databases.find((database) => database.id === databaseEntityDatabaseId) ?? null
-  const databasePageColumns = selectedDatabase ? selectedDatabaseColumns : homeData.databaseColumns
+  const standaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
+  const selectedDatabase = standaloneDatabases.find((database) => database.id === databaseEntityDatabaseId) ?? null
+  const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : homeData.databaseColumns
+  const databasePageTitle = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesTitle : ui.documentCatalogTitle
+  const databasePageHint = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesHint : ui.documentCatalogHint
   const filteredCatalog = homeData.documentCatalog.filter((document) => {
     const query = catalogQuery.trim().toLowerCase()
     if (!query) {
@@ -4359,326 +4403,442 @@ return (
             <div className="panel-head compact-head">
               <div>
                 <p className="panel-label">{ui.databaseViewLabel}</p>
-                <h3>{ui.documentCatalogTitle}</h3>
+                <h3>{databasePageTitle}</h3>
               </div>
                <div className="toolbar-inline">
-                 <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
-                   {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
+                 <button
+                   className={databaseWorkspaceView === 'catalog' ? 'primary-button' : 'secondary-button'}
+                   onClick={() => switchDatabaseWorkspaceView('catalog')}
+                   type="button"
+                 >
+                   {ui.documentCatalogTitle}
                  </button>
-                 <button className="secondary-button" onClick={() => setIsCreatingDatabase((previous) => !previous)} type="button">
-                   {isCreatingDatabase ? ui.common.cancel : ui.addDatabase}
+                 <button
+                   className={databaseWorkspaceView === 'standalone' ? 'primary-button' : 'secondary-button'}
+                   onClick={() => switchDatabaseWorkspaceView('standalone')}
+                   type="button"
+                 >
+                   {ui.standaloneDatabasesTitle}
                  </button>
-                 <button className="secondary-button" onClick={() => setIsCreatingDatabaseEntity((previous) => !previous)} type="button">
-                   {isCreatingDatabaseEntity ? ui.common.cancel : ui.addEntity}
-                 </button>
-                 <input
-                  className="editor-input table-search"
-                  onChange={(event) => setCatalogQuery(event.target.value)}
-                  placeholder={ui.searchDocumentsPlaceholder}
-                  type="text"
-                  value={catalogQuery}
-                />
-                <span className="pill">{ui.customColumnsCount(databasePageColumns.length)}</span>
-                <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
-              </div>
+               </div>
             </div>
 
-            {isCreatingDatabaseColumn ? (
-              <div className="database-schema-form">
-                <label className="editor-label">
-                  {ui.columnName}
-                  <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.fieldType}
-                  <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
-                    {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </select>
-                </label>
-                {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
-                  <label className="editor-label database-schema-options">
-                    {ui.options}
-                    <input
-                      className="editor-input"
-                      onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
-                      placeholder={ui.optionsCommaHint}
-                      type="text"
-                      value={databaseColumnOptionsDraft}
-                    />
-                  </label>
-                ) : null}
-                <div className="database-schema-actions">
-                  <button
-                    className="secondary-button"
-                    disabled={databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
-                    onClick={() => void createDatabaseColumn()}
-                    type="button"
-                  >
-                    {ui.saveColumn}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setIsCreatingDatabaseColumn(false)
-                      setDatabaseColumnNameDraft('')
-                      setDatabaseColumnTypeDraft('text')
-                      setDatabaseColumnOptionsDraft('')
-                    }}
-                    type="button"
-                  >
-                    {ui.common.cancel}
-                  </button>
-                </div>
-              </div>
-             ) : null}
+            <p className="mini-hint">{databasePageHint}</p>
 
-            {isCreatingDatabase ? (
-              <div className="database-schema-form">
-                <label className="editor-label">
-                  {ui.databaseName}
-                  <input className="editor-input" onChange={(event) => setDatabaseNameDraft(event.target.value)} type="text" value={databaseNameDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.databaseDescription}
-                  <input className="editor-input" onChange={(event) => setDatabaseDescriptionDraft(event.target.value)} type="text" value={databaseDescriptionDraft} />
-                </label>
-                <div className="database-schema-actions">
-                  <button
-                    className="secondary-button"
-                    disabled={databaseNameDraft.trim().length === 0}
-                    onClick={() => void createDatabase()}
-                    type="button"
-                  >
-                    {ui.createDatabase}
+            {databaseWorkspaceView === 'catalog' ? (
+              <>
+                <div className="toolbar-inline">
+                  <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
+                    {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
                   </button>
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setIsCreatingDatabase(false)
-                      setDatabaseNameDraft('')
-                      setDatabaseDescriptionDraft('')
-                    }}
-                    type="button"
-                  >
-                    {ui.common.cancel}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {isCreatingDatabaseEntity ? (
-              <div className="database-schema-form">
-                <label className="editor-label">
-                  Database
-                  <select
-                    className="editor-input"
-                    onChange={(event) => setDatabaseEntityDatabaseId(event.target.value)}
-                    value={databaseEntityDatabaseId}
-                  >
-                    <option value="">{ui.selectDatabasePlaceholder}</option>
-                    {databases.map((database) => (
-                      <option key={database.id} value={database.id}>{database.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="editor-label">
-                  {ui.linkToDocumentOptional}
                   <input
-                    className="editor-input"
+                    className="editor-input table-search"
+                    onChange={(event) => setCatalogQuery(event.target.value)}
+                    placeholder={ui.searchDocumentsPlaceholder}
                     type="text"
-                    placeholder="Document ID"
-                    onChange={(event) => setDatabaseEntityDocumentId(event.target.value)}
-                    value={databaseEntityDocumentId}
+                    value={catalogQuery}
                   />
-                </label>
-                {databasePageColumns.length > 0 ? (
-                  <div className="database-entity-field-grid database-entity-field-grid-form">
-                    {databasePageColumns.map((column) => (
-                      <label className="editor-label database-entity-field" key={`draft-${column.id}`}>
-                        {column.name}
-                        <DatabaseFieldEditor
-                          column={column}
-                          textCommitMode="change"
-                          value={databaseEntityFieldValues[column.id] ?? null}
-                          onChangeValue={(value) => {
-                            const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
-                            setDatabaseEntityFieldValues((previous) => {
-                              const nextFieldValues = { ...previous }
-                              if (normalizedValue === null) {
-                                delete nextFieldValues[column.id]
-                              } else {
-                                nextFieldValues[column.id] = normalizedValue
-                              }
-                              return nextFieldValues
-                            })
-                          }}
+                  <span className="pill">{ui.customColumnsCount(homeData.databaseColumns.length)}</span>
+                  <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
+                </div>
+
+                {isCreatingDatabaseColumn ? (
+                  <div className="database-schema-form">
+                    <label className="editor-label">
+                      {ui.columnName}
+                      <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
+                    </label>
+                    <label className="editor-label">
+                      {ui.fieldType}
+                      <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
+                        {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
+                      <label className="editor-label database-schema-options">
+                        {ui.options}
+                        <input
+                          className="editor-input"
+                          onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
+                          placeholder={ui.optionsCommaHint}
+                          type="text"
+                          value={databaseColumnOptionsDraft}
                         />
                       </label>
+                    ) : null}
+                    <div className="database-schema-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
+                        onClick={() => void createDatabaseColumn()}
+                        type="button"
+                      >
+                        {ui.saveColumn}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setIsCreatingDatabaseColumn(false)
+                          setDatabaseColumnNameDraft('')
+                          setDatabaseColumnTypeDraft('text')
+                          setDatabaseColumnOptionsDraft('')
+                        }}
+                        type="button"
+                      >
+                        {ui.common.cancel}
+                      </button>
+                    </div>
+                  </div>
+                 ) : null}
+
+                {homeData.databaseColumns.length > 0 ? (
+                  <div className="database-schema-chip-row">
+                    {homeData.databaseColumns.map((column, index) => (
+                      <DatabaseSchemaColumnCard
+                        column={column}
+                        isFirst={index === 0}
+                        isLast={index === homeData.databaseColumns.length - 1}
+                        key={column.id}
+                        onDelete={deleteDatabaseColumn}
+                        onMove={moveDatabaseColumn}
+                        onUpdateOptions={updateDatabaseColumnOptions}
+                        onRename={renameDatabaseColumn}
+                      />
                     ))}
                   </div>
-                ) : null}
-                <div className="database-schema-actions">
-                  <button
-                    className="secondary-button"
-                    onClick={() => void createDatabaseEntity()}
-                    type="button"
-                    disabled={!databaseEntityDatabaseId}
-                  >
-                    {ui.createEntity}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    onClick={() => {
-                      setIsCreatingDatabaseEntity(false)
-                      setDatabaseEntityDocumentId('')
-                      setDatabaseEntityFieldValues({})
-                    }}
-                    type="button"
-                  >
-                    {ui.common.cancel}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-            {databases.length > 0 ? (
-              <>
-                <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
-                  {databases.map((database) => (
-                    <button
-                      className={database.id === databaseEntityDatabaseId ? 'primary-button' : 'secondary-button'}
-                      key={database.id}
-                      onClick={() => setDatabaseEntityDatabaseId(database.id)}
-                      type="button"
-                    >
-                      {database.name}
-                    </button>
-                  ))}
-                </div>
+                ) : (
+                  <p className="mini-hint">{ui.noCustomColumnsYet}</p>
+                )}
 
-                {selectedDatabase ? (
-                  databaseEntities.length > 0 ? (
-                    <div className="document-list" style={{ marginBottom: '16px' }}>
-                      {databaseEntities.map((entity) => {
-                        const linkedDocument = entity.documentId
-                          ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
-                          : null
-
-                        return (
-                          <div className="document-row" key={entity.id}>
-                            <div className="database-entity-card">
-                              <div className="database-entity-head">
-                                <div>
-                                  <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
-                                  <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
-                                </div>
-                                <div className="document-meta">
-                                  <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
-                                  <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
-                                    {ui.common.delete}
-                                  </button>
-                                </div>
-                              </div>
-                              {databasePageColumns.length > 0 ? (
-                                <div className="database-entity-field-grid">
-                                  {databasePageColumns.map((column) => (
-                                    <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
-                                      {column.name}
-                                      <DatabaseFieldEditor
-                                        column={column}
-                                        value={entity.fieldValues[column.id] ?? null}
-                                        onChangeValue={(value) => {
-                                          void updateDatabaseEntityField(entity, column.id, value)
-                                        }}
-                                      />
-                                    </label>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  ) : (
-                    <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
-                  )
-                ) : null}
+                <DocumentCatalogTable
+                  columns={homeData.databaseColumns}
+                  documents={filteredCatalog}
+                  onSelect={openDocumentInDocumentsPage}
+                  onUpdateField={updateDocumentDatabaseValue}
+                  selectedDocumentId={selectedDocumentId}
+                />
               </>
             ) : (
-              <p className="mini-hint">{ui.noIndependentDatabasesYet}</p>
-            )}
+              <>
+                <div className="toolbar-inline">
+                  <button
+                    className="secondary-button"
+                    disabled={!selectedDatabase && !isCreatingDatabaseColumn}
+                    onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)}
+                    type="button"
+                  >
+                    {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
+                  </button>
+                  <button className="secondary-button" onClick={() => setIsCreatingDatabase((previous) => !previous)} type="button">
+                    {isCreatingDatabase ? ui.common.cancel : ui.addDatabase}
+                  </button>
+                  <button
+                    className="secondary-button"
+                    disabled={!selectedDatabase && !isCreatingDatabaseEntity}
+                    onClick={() => setIsCreatingDatabaseEntity((previous) => !previous)}
+                    type="button"
+                  >
+                    {isCreatingDatabaseEntity ? ui.common.cancel : ui.addEntity}
+                  </button>
+                  <span className="pill">{ui.customColumnsCount(selectedDatabaseColumns.length)}</span>
+                  <span className="pill">{ui.rowsCount(databaseEntities.length)}</span>
+                </div>
 
-            {databasePageColumns.length > 0 ? (
-              <div className="database-schema-chip-row">
-                {databasePageColumns.map((column, index) => (
-                  <DatabaseSchemaColumnCard
-                    column={column}
-                    isFirst={index === 0}
-                    isLast={index === databasePageColumns.length - 1}
-                    key={column.id}
-                    onDelete={deleteDatabaseColumn}
-                    onMove={moveDatabaseColumn}
-                    onUpdateOptions={updateDatabaseColumnOptions}
-                    onRename={renameDatabaseColumn}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="mini-hint">{ui.noCustomColumnsYet}</p>
-            )}
+                {isCreatingDatabase ? (
+                  <div className="database-schema-form">
+                    <label className="editor-label">
+                      {ui.databaseName}
+                      <input className="editor-input" onChange={(event) => setDatabaseNameDraft(event.target.value)} type="text" value={databaseNameDraft} />
+                    </label>
+                    <label className="editor-label">
+                      {ui.databaseDescription}
+                      <input className="editor-input" onChange={(event) => setDatabaseDescriptionDraft(event.target.value)} type="text" value={databaseDescriptionDraft} />
+                    </label>
+                    <div className="database-schema-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={databaseNameDraft.trim().length === 0}
+                        onClick={() => void createDatabase()}
+                        type="button"
+                      >
+                        {ui.createDatabase}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setIsCreatingDatabase(false)
+                          setDatabaseNameDraft('')
+                          setDatabaseDescriptionDraft('')
+                        }}
+                        type="button"
+                      >
+                        {ui.common.cancel}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
-            <DocumentCatalogTable
-              columns={homeData.databaseColumns}
-              documents={filteredCatalog}
-              onSelect={openDocumentInDocumentsPage}
-              onUpdateField={updateDocumentDatabaseValue}
-              selectedDocumentId={selectedDocumentId}
-            />
+                {isCreatingDatabaseColumn ? (
+                  <div className="database-schema-form">
+                    <label className="editor-label">
+                      {ui.columnName}
+                      <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
+                    </label>
+                    <label className="editor-label">
+                      {ui.fieldType}
+                      <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
+                        {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
+                      <label className="editor-label database-schema-options">
+                        {ui.options}
+                        <input
+                          className="editor-input"
+                          onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
+                          placeholder={ui.optionsCommaHint}
+                          type="text"
+                          value={databaseColumnOptionsDraft}
+                        />
+                      </label>
+                    ) : null}
+                    <div className="database-schema-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={!selectedDatabase || databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
+                        onClick={() => void createDatabaseColumn()}
+                        type="button"
+                      >
+                        {ui.saveColumn}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setIsCreatingDatabaseColumn(false)
+                          setDatabaseColumnNameDraft('')
+                          setDatabaseColumnTypeDraft('text')
+                          setDatabaseColumnOptionsDraft('')
+                        }}
+                        type="button"
+                      >
+                        {ui.common.cancel}
+                      </button>
+                    </div>
+                  </div>
+                 ) : null}
+
+                {isCreatingDatabaseEntity ? (
+                  <div className="database-schema-form">
+                    <label className="editor-label">
+                      Database
+                      <select
+                        className="editor-input"
+                        onChange={(event) => setDatabaseEntityDatabaseId(event.target.value)}
+                        value={databaseEntityDatabaseId}
+                      >
+                        <option value="">{ui.selectDatabasePlaceholder}</option>
+                        {standaloneDatabases.map((database) => (
+                          <option key={database.id} value={database.id}>{database.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="editor-label">
+                      {ui.linkToDocumentOptional}
+                      <input
+                        className="editor-input"
+                        type="text"
+                        placeholder="Document ID"
+                        onChange={(event) => setDatabaseEntityDocumentId(event.target.value)}
+                        value={databaseEntityDocumentId}
+                      />
+                    </label>
+                    {selectedDatabaseColumns.length > 0 ? (
+                      <div className="database-entity-field-grid database-entity-field-grid-form">
+                        {selectedDatabaseColumns.map((column) => (
+                          <label className="editor-label database-entity-field" key={`draft-${column.id}`}>
+                            {column.name}
+                            <DatabaseFieldEditor
+                              column={column}
+                              textCommitMode="change"
+                              value={databaseEntityFieldValues[column.id] ?? null}
+                              onChangeValue={(value) => {
+                                const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
+                                setDatabaseEntityFieldValues((previous) => {
+                                  const nextFieldValues = { ...previous }
+                                  if (normalizedValue === null) {
+                                    delete nextFieldValues[column.id]
+                                  } else {
+                                    nextFieldValues[column.id] = normalizedValue
+                                  }
+                                  return nextFieldValues
+                                })
+                              }}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="database-schema-actions">
+                      <button
+                        className="secondary-button"
+                        onClick={() => void createDatabaseEntity()}
+                        type="button"
+                        disabled={!databaseEntityDatabaseId}
+                      >
+                        {ui.createEntity}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setIsCreatingDatabaseEntity(false)
+                          setDatabaseEntityDocumentId('')
+                          setDatabaseEntityFieldValues({})
+                        }}
+                        type="button"
+                      >
+                        {ui.common.cancel}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {standaloneDatabases.length > 0 ? (
+                  <>
+                    <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
+                      {standaloneDatabases.map((database) => (
+                        <button
+                          className={database.id === databaseEntityDatabaseId ? 'primary-button' : 'secondary-button'}
+                          key={database.id}
+                          onClick={() => setDatabaseEntityDatabaseId(database.id)}
+                          type="button"
+                        >
+                          {database.name}
+                        </button>
+                      ))}
+                    </div>
+
+                    {selectedDatabase ? (
+                      databaseEntities.length > 0 ? (
+                        <div className="document-list" style={{ marginBottom: '16px' }}>
+                          {databaseEntities.map((entity) => {
+                            const linkedDocument = entity.documentId
+                              ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
+                              : null
+
+                            return (
+                              <div className="document-row" key={entity.id}>
+                                <div className="database-entity-card">
+                                  <div className="database-entity-head">
+                                    <div>
+                                      <strong>{linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`}</strong>
+                                      <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
+                                    </div>
+                                    <div className="document-meta">
+                                      <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
+                                      <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
+                                        {ui.common.delete}
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {selectedDatabaseColumns.length > 0 ? (
+                                    <div className="database-entity-field-grid">
+                                      {selectedDatabaseColumns.map((column) => (
+                                        <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
+                                          {column.name}
+                                          <DatabaseFieldEditor
+                                            column={column}
+                                            value={entity.fieldValues[column.id] ?? null}
+                                            onChangeValue={(value) => {
+                                              void updateDatabaseEntityField(entity, column.id, value)
+                                            }}
+                                          />
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
+                      )
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="mini-hint">{ui.noIndependentDatabasesYet}</p>
+                )}
+
+                {selectedDatabaseColumns.length > 0 ? (
+                  <div className="database-schema-chip-row">
+                    {selectedDatabaseColumns.map((column, index) => (
+                      <DatabaseSchemaColumnCard
+                        column={column}
+                        isFirst={index === 0}
+                        isLast={index === selectedDatabaseColumns.length - 1}
+                        key={column.id}
+                        onDelete={deleteDatabaseColumn}
+                        onMove={moveDatabaseColumn}
+                        onUpdateOptions={updateDatabaseColumnOptions}
+                        onRename={renameDatabaseColumn}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mini-hint">{selectedDatabase ? ui.noStandaloneDatabaseColumnsYet(selectedDatabase.name) : ui.noIndependentDatabasesYet}</p>
+                )}
+              </>
+            )}
           </article>
 
-          <article className="panel board-panel">
-            <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.boardViewLabel}</p>
-                <h3>{ui.boardGroupedBy(boardGroupingColumn?.name ?? null)}</h3>
+          {databaseWorkspaceView === 'catalog' ? (
+            <article className="panel board-panel">
+              <div className="panel-head compact-head">
+                <div>
+                  <p className="panel-label">{ui.boardViewLabel}</p>
+                  <h3>{ui.boardGroupedBy(boardGroupingColumn?.name ?? null)}</h3>
+                </div>
+                <div className="toolbar-inline">
+                  <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
+                    <option value={BOARD_GROUP_BY_PARENT}>{ui.parentBucket}</option>
+                    {boardGroupableColumns.map((column) => (
+                      <option key={column.id} value={column.id}>{column.name} ({getDatabaseColumnTypeLabel(column.type)})</option>
+                    ))}
+                  </select>
+                  <span className="pill">{ui.boardColumnsCount(boardColumns.length)}</span>
+                </div>
               </div>
-              <div className="toolbar-inline">
-                <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
-                  <option value={BOARD_GROUP_BY_PARENT}>{ui.parentBucket}</option>
-                  {boardGroupableColumns.map((column) => (
-                    <option key={column.id} value={column.id}>{column.name} ({getDatabaseColumnTypeLabel(column.type)})</option>
-                  ))}
-                </select>
-                <span className="pill">{ui.boardColumnsCount(boardColumns.length)}</span>
-              </div>
-            </div>
 
-            <p className="mini-hint">
-              {boardGroupingColumn
-                ? ui.boardHintForColumn(boardGroupingColumn.name, boardGroupingColumn.type === 'multi-select')
-                : ui.boardHintForParent}
-            </p>
+              <p className="mini-hint">
+                {boardGroupingColumn
+                  ? ui.boardHintForColumn(boardGroupingColumn.name, boardGroupingColumn.type === 'multi-select')
+                  : ui.boardHintForParent}
+              </p>
 
-            <DocumentBoard
-              columns={boardColumns}
-              onSelect={openDocumentInDocumentsPage}
-              selectedDocumentId={selectedDocumentId}
-              draggingDocumentId={draggingDocumentId}
-              dragOverColumnId={dragOverBoardColumnId}
-              onDragStart={beginDrag}
-              onDragEnd={endDrag}
-              onDragOverColumn={(columnId) => {
-                if (draggingDocumentId) {
-                  setDragOverBoardColumnId(columnId)
-                  setDragOverDocumentId(null)
-                  setDragOverRoot(false)
-                }
-              }}
-              onDropOnColumn={dropOnBoardTarget}
-            />
-          </article>
+              <DocumentBoard
+                columns={boardColumns}
+                onSelect={openDocumentInDocumentsPage}
+                selectedDocumentId={selectedDocumentId}
+                draggingDocumentId={draggingDocumentId}
+                dragOverColumnId={dragOverBoardColumnId}
+                onDragStart={beginDrag}
+                onDragEnd={endDrag}
+                onDragOverColumn={(columnId) => {
+                  if (draggingDocumentId) {
+                    setDragOverBoardColumnId(columnId)
+                    setDragOverDocumentId(null)
+                    setDragOverRoot(false)
+                  }
+                }}
+                onDropOnColumn={dropOnBoardTarget}
+              />
+            </article>
+          ) : null}
         </section> : null}
 
          {activePage === 'documents' ? <section className="workspace-grid" data-testid="workspace-grid">

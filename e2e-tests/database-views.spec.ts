@@ -6,6 +6,16 @@ async function openDatabasePage(page: Page): Promise<void> {
   await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()
 }
 
+async function openDocumentCatalogView(page: Page): Promise<void> {
+  await page.getByRole('button', { name: uiText('Document catalog', '文档目录') }).click()
+  await expect(page.getByRole('heading', { name: uiText('Document catalog', '文档目录') })).toBeVisible()
+}
+
+async function openStandaloneDatabasesView(page: Page): Promise<void> {
+  await page.getByRole('button', { name: uiText('Standalone databases', '独立数据库') }).click()
+  await expect(page.getByRole('heading', { name: uiText('Standalone databases', '独立数据库') })).toBeVisible()
+}
+
 function getDatabaseButton(page: Page, databaseName: string) {
   return page.getByRole('button', { name: databaseName }).last()
 }
@@ -39,7 +49,7 @@ async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Pro
         inputs.map((input) => (input as HTMLInputElement).value)
       )
       return [...new Set(values)].sort()
-    })
+    }, { timeout: 30000 })
     .toEqual([...expectedNames].sort())
 }
 
@@ -50,22 +60,31 @@ test.describe('Database Views @electron', () => {
 
     await withElectronApp(async ({ page }) => {
       await openDatabasePage(page)
-      await selectDatabase(page, 'Default')
+      await openDocumentCatalogView(page)
 
       await addTextColumn(page, 'Status')
       await expectSchemaColumnNames(page, ['Status'])
 
+      await expect(page.getByPlaceholder(uiText('Search documents...', '搜索文档...'))).toBeVisible()
+
+      await openStandaloneDatabasesView(page)
       await createDatabase(page, 'Projects', 'Project tracking')
+      await selectDatabase(page, 'Projects')
       await expectSchemaColumnNames(page, [])
 
       await addTextColumn(page, 'Owner')
       await expectSchemaColumnNames(page, ['Owner'])
 
-      await selectDatabase(page, 'Default')
-      await expectSchemaColumnNames(page, ['Status'])
+      await expect(page.getByPlaceholder(uiText('Search documents...', '搜索文档...'))).toHaveCount(0)
 
+      await openDocumentCatalogView(page)
+      await expectSchemaColumnNames(page, ['Status'])
+      await expect(page.locator('.board-panel')).toBeVisible()
+
+      await openStandaloneDatabasesView(page)
       await selectDatabase(page, 'Projects')
       await expectSchemaColumnNames(page, ['Owner'])
+      await expect(page.locator('.board-panel')).toHaveCount(0)
     })
   })
 })

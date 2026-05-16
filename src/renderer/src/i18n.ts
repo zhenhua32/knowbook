@@ -204,6 +204,13 @@ function createUiText(language: UiLanguage) {
     workspaceTopology: zh ? '工作区拓扑' : 'Workspace topology',
     databaseViewLabel: zh ? '数据库视图' : 'Database view',
     documentCatalogTitle: zh ? '文档目录' : 'Document catalog',
+    standaloneDatabasesTitle: zh ? '独立数据库' : 'Standalone databases',
+    documentCatalogHint: zh
+      ? '这里管理默认文档数据库的字段、表格和看板；结构化字段会直接写回文档目录。'
+      : 'Manage the default document database here. Fields added in this view are written back into the document catalog table and board.',
+    standaloneDatabasesHint: zh
+      ? '这里专门管理独立 database 的 schema 与实体行，不再和文档 catalog 混排。'
+      : 'Manage standalone database schemas and entity rows here, separate from the document catalog.',
     addColumn: zh ? '新增列' : 'Add column',
     addDatabase: zh ? '新增数据库' : 'Add database',
     addEntity: zh ? '新增实体' : 'Add entity',
@@ -228,6 +235,9 @@ function createUiText(language: UiLanguage) {
     noIndependentDatabasesYet: zh
       ? '还没有独立数据库。如需使用独立 database 实体，请先创建一个数据库。'
       : 'No independent databases yet. Create one first if you want to use standalone database entities.',
+    noStandaloneDatabaseColumnsYet: (name: string) => zh
+      ? `数据库“${name}”还没有字段。先新增一列，再开始录入实体。`
+      : `${name} does not have any fields yet. Add a column before entering entity data.`,
     noDatabaseEntitiesYet: (name: string) => zh
       ? `数据库“${name}”下还没有实体。可以先创建一条关联文档的记录，或录入独立行。`
       : `No entities yet for ${name}. Create one to link a document or store standalone rows.`,
