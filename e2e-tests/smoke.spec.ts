@@ -1,59 +1,40 @@
-import { test, expect } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-test.describe('KnowBook Smoke Tests', () => {
-  test('should have the main application structure', async ({ page }) => {
-    // Test that the renderer HTML is served (would need dev server running)
-    // For now, we test the built app structure
-    await page.goto('/')
-    
-    // Check that the shell container exists
-    const shell = page.locator('[data-testid="shell"]')
-    // We skip this assertion since it requires a running dev server
-    // In CI, we would start the dev server first
-    expect(true).toBe(true)
-  })
+async function openRailPage(page: Page, en: string, zh: string): Promise<void> {
+  await page.getByTitle(uiText(en, zh)).click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText(en, zh))
+}
 
-  test('should have all core modules', async () => {
-    const fs = require('fs')
-    const path = require('path')
-    
-    const requiredFiles = [
-      'src/main/index.ts',
-      'src/renderer/src/App.tsx',
-      'src/shared/contracts.ts',
-      'src/main/database/store.ts',
-      'src/main/database/schema.ts',
-      'src/main/plugin-host.ts',
-      'src/main/plugin-sdk.ts',
-      'src/main/plugin-version.ts',
-      'src/renderer/src/i18n.ts',
-      'src/shared/board.ts',
-      'src/shared/markdown.ts',
-      'src/shared/code.ts'
-    ]
-    
-    for (const file of requiredFiles) {
-      const fullPath = path.join(__dirname, '..', file)
-      expect(fs.existsSync(fullPath)).toBe(true)
-    }
-  })
+test.describe('Application Shell Smoke @electron', () => {
+  test('opens the core workspace pages from the rail', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
-  test('should have E2E test files', async () => {
-    const fs = require('fs')
-    const path = require('path')
-    
-    const e2eTestFiles = [
-      'e2e-tests/document-crud.spec.ts',
-      'e2e-tests/database-views.spec.ts',
-      'e2e-tests/links-and-graph.spec.ts',
-      'e2e-tests/ai-automation.spec.ts',
-      'e2e-tests/plugins.spec.ts',
-      'e2e-tests/editor-shortcuts.spec.ts'
-    ]
-    
-    for (const file of e2eTestFiles) {
-      const fullPath = path.join(__dirname, '..', file)
-      expect(fs.existsSync(fullPath)).toBe(true)
-    }
+    await withElectronApp(async ({ page }) => {
+      await expect(page.locator('[data-testid="shell"]')).toBeVisible()
+      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+
+      await openRailPage(page, 'Dashboard', '总览')
+      await expect(page.locator('.meta-grid')).toBeVisible()
+
+      await openRailPage(page, 'Database', '数据库')
+      await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()
+
+      await openRailPage(page, 'Graph', '图谱')
+      await expect(page.locator('[data-testid="graph-grid"]')).toBeVisible()
+
+      await openRailPage(page, 'AI Assistant', 'AI 助手')
+      await expect(page.getByRole('heading', { name: uiText('Document AI assistant', '文档智能助手') })).toBeVisible()
+
+      await openRailPage(page, 'Plugins', '插件中心')
+      await expect(page.getByRole('heading', { name: uiText('Workspace extensions', '工作区扩展') })).toBeVisible()
+      await expect(page.locator('.plugin-item').first()).toBeVisible()
+
+      await openRailPage(page, 'Settings', '配置中心')
+      await expect(page.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置') })).toBeVisible()
+
+      await openRailPage(page, 'Documents', '文档')
+      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+    })
   })
 })
