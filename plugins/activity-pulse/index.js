@@ -1,4 +1,12 @@
 module.exports.activate = function activate(api) {
+  const summaryPrefix = api.contributeSetting({
+    id: 'summary-prefix',
+    label: 'Summary prefix',
+    description: 'Adds a prefix before the generated summary text for the document action.',
+    type: 'text',
+    defaultValue: ''
+  })
+
   const card = api.contributeDashboardCard({
     id: 'activity-pulse-card',
     title: 'Plugin host online',
@@ -31,7 +39,9 @@ module.exports.activate = function activate(api) {
         }
       }
 
-      const nextSummary = firstContentBlock.content.trim().replace(/\s+/g, ' ').slice(0, 80)
+        const configuredPrefix = summaryPrefix.getValue()
+      const nextSummaryBody = firstContentBlock.content.trim().replace(/\s+/g, ' ').slice(0, 80)
+        const nextSummary = configuredPrefix.trim() ? `${configuredPrefix}${nextSummaryBody}` : nextSummaryBody
       api.documents.updateSummary(context.document.id, nextSummary)
       api.log('Summary synced', `Synced summary from the first content block in ${context.document.title}.`, context.document.id)
 

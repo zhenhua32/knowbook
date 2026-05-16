@@ -277,6 +277,7 @@ export interface PluginDescriptor {
   enabled: boolean
   status: PluginStatus
   error?: string
+  settings: PluginSettingDescriptor[]
 }
 
 export interface PluginDashboardCard {
@@ -291,6 +292,26 @@ export interface PluginDocumentAction {
   id: string
   label: string
   description?: string
+}
+
+export type PluginSettingType = 'text' | 'checkbox' | 'select'
+
+export type PluginSettingValue = string | boolean
+
+export interface PluginSettingOption {
+  value: string
+  label: string
+}
+
+export interface PluginSettingDescriptor {
+  pluginId: string
+  id: string
+  label: string
+  description?: string
+  type: PluginSettingType
+  value: PluginSettingValue
+  defaultValue: PluginSettingValue
+  options?: PluginSettingOption[]
 }
 
 export interface PluginHostInfo {
@@ -413,6 +434,12 @@ export interface RunPluginDocumentActionResult {
   refreshDocument: boolean
 }
 
+export interface UpdatePluginSettingInput {
+  pluginId: string
+  settingId: string
+  value: PluginSettingValue
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
@@ -436,6 +463,7 @@ export interface ElectronApi {
   reloadPlugin: (pluginId: string) => Promise<void>
   installPluginFromFolder: () => Promise<InstallPluginResult | null>
   removePlugin: (pluginId: string) => Promise<void>
+  updatePluginSetting: (input: UpdatePluginSettingInput) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   triggerBackup: () => Promise<BackupResult>
   writeClipboardText: (text: string) => Promise<void>

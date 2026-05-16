@@ -294,6 +294,55 @@ dt,
   gap: 12px;
 }
 
+.plugin-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(82, 66, 39, 0.08);
+}
+
+.plugin-settings-label {
+  margin: 0;
+}
+
+.plugin-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plugin-setting-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 250, 243, 0.78);
+  border: 1px solid rgba(82, 66, 39, 0.08);
+}
+
+.plugin-setting-field {
+  margin: 0;
+}
+
+.plugin-setting-toggle {
+  justify-content: space-between;
+}
+
+.plugin-setting-description,
+.plugin-settings-empty,
+.plugin-setting-default {
+  margin: 0;
+}
+
+.plugin-setting-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .plugin-reload-button {
   flex: 0 0 auto;
 }

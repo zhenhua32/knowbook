@@ -165,6 +165,10 @@ function createUiText(language: UiLanguage) {
     pluginsLabel: zh ? '插件' : 'Plugins',
     pluginsTitle: zh ? '工作区扩展' : 'Workspace extensions',
     installFolder: zh ? '安装文件夹' : 'Install Folder',
+    pluginSettingsLabel: zh ? '插件设置' : 'Plugin settings',
+    noPluginSettings: zh ? '这个插件当前没有暴露可编辑设置。' : 'This plugin does not expose editable settings right now.',
+    savePluginSetting: (label: string) => zh ? `保存“${label}”` : `Save ${label}`,
+    pluginSettingDefault: (value: string | boolean) => zh ? `默认值：${String(value)}` : `Default: ${String(value)}`,
     pluginRootsHint: zh
       ? '使用“重载”可在不重启的情况下重新扫描插件根目录；“安装文件夹”会把本地插件复制到用户数据可写目录，并可替换同 id 的用户级插件。'
       : 'Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root and can replace an existing user-data plugin with the same id.',
@@ -492,6 +496,8 @@ function createUiText(language: UiLanguage) {
     confirmRemovePlugin: (name: string) => zh ? `确定从本地用户数据插件目录中移除“${name}”吗？` : `Remove plugin "${name}" from the local user-data plugin root?`,
     pluginRemoved: (name: string) => zh ? `已移除插件“${name}”。` : `Removed plugin "${name}".`,
     pluginRemoveFailed: zh ? '移除插件失败。' : 'Failed to remove plugin.',
+    pluginSettingSaved: (pluginName: string, settingLabel: string) => zh ? `已保存插件“${pluginName}”的设置“${settingLabel}”。` : `Saved ${settingLabel} for plugin "${pluginName}".`,
+    pluginSettingUpdateFailed: zh ? '保存插件设置失败。' : 'Failed to save plugin setting.',
     pluginMissingAfterReload: (name: string) => zh ? `插件“${name}”已重载，但列表中已找不到它。` : `Plugin "${name}" was reloaded, but it is no longer listed.`,
     pluginStillHasErrorsAfterReload: (name: string, error: string) => zh ? `插件“${name}”重载后仍有错误：${error}` : `Plugin "${name}" still has errors after reload: ${error}`,
     disabledPluginMetadataReloaded: (name: string) => zh ? `已刷新已禁用插件“${name}”的元数据。` : `Reloaded metadata for disabled plugin "${name}".`,

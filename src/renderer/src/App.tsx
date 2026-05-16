@@ -27,6 +27,8 @@ import type {
   PluginDashboardCard,
   PluginDescriptor,
   PluginDocumentAction,
+  PluginSettingDescriptor,
+  PluginSettingValue,
   SemanticSearchResult,
   WorkspaceGraphEdge,
   WorkspaceGraphNode
@@ -1113,6 +1115,20 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
   }
 }
 
+function getPluginSettingDraftKey(pluginId: string, settingId: string): string {
+  return `${pluginId}:${settingId}`
+}
+
+function buildPluginSettingDrafts(plugins: PluginDescriptor[]): Record<string, PluginSettingValue> {
+  return plugins.reduce<Record<string, PluginSettingValue>>((accumulator, plugin) => {
+    for (const setting of plugin.settings) {
+      accumulator[getPluginSettingDraftKey(plugin.id, setting.id)] = setting.value
+    }
+
+    return accumulator
+  }, {})
+}
+
 export function App() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
   const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
@@ -1205,6 +1221,8 @@ export function App() {
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
   const [pluginBusyId, setPluginBusyId] = useState<string | null>(null)
+  const [pluginSettingBusyKey, setPluginSettingBusyKey] = useState<string | null>(null)
+  const [pluginSettingDrafts, setPluginSettingDrafts] = useState<Record<string, PluginSettingValue>>({})
   const [pluginActionBusyKey, setPluginActionBusyKey] = useState<string | null>(null)
   const [pluginInventoryBusy, setPluginInventoryBusy] = useState(false)
   const navHistoryRef = useRef<string[]>([])
@@ -1690,6 +1708,10 @@ export function App() {
 
     void window.knowbook.saveSetting(UI_LANGUAGE_SETTING_KEY, uiLanguage)
   }, [uiLanguage, uiLanguageHydrated])
+
+  useEffect(() => {
+    setPluginSettingDrafts(buildPluginSettingDrafts(homeData.plugins ?? []))
+  }, [homeData.plugins])
 
   useEffect(() => {
     if (!selectedDocumentId) {
@@ -2491,6 +2513,26 @@ export function App() {
     }
   }
 
+  async function updatePluginSetting(plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) {
+    const busyKey = getPluginSettingDraftKey(plugin.id, setting.id)
+    setPluginSettingBusyKey(busyKey)
+    try {
+      await window.knowbook.updatePluginSetting({
+        pluginId: plugin.id,
+        settingId: setting.id,
+        value
+      })
+      const refreshed = await window.knowbook.getHomeData()
+      setHomeData(refreshed)
+      setBackupMessage(ui.pluginSettingSaved(plugin.name, setting.label))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.pluginSettingUpdateFailed
+      setBackupMessage(message)
+    } finally {
+      setPluginSettingBusyKey(null)
+    }
+  }
+
   async function reloadPlugin(plugin: PluginDescriptor) {
     setPluginBusyId(plugin.id)
     try {
@@ -2950,6 +2992,7 @@ export function App() {
       setHomeData(refreshedHome)
       if (result.refreshDocument) {
         setSelectedDocument(refreshedDetail)
+        setDraftSummary(refreshedDetail?.summary ?? '')
       }
       setBackupMessage(result.message)
     } catch (error) {
@@ -5775,6 +5818,93 @@ return (
                             </button>
                           ) : null}
                         </div>
+                        {plugin.settings.length > 0 ? (
+                          <div className="plugin-settings-panel">
+                            <p className="panel-label plugin-settings-label">{ui.pluginSettingsLabel}</p>
+                            <div className="plugin-settings-list">
+                              {plugin.settings.map((setting) => {
+                                const draftKey = getPluginSettingDraftKey(plugin.id, setting.id)
+                                const draftValue = pluginSettingDrafts[draftKey] ?? setting.value
+                                const hasPendingChanges = draftValue !== setting.value
+                                const isSettingBusy = pluginSettingBusyKey === draftKey
+                                const disabled = pluginInventoryBusy || pluginBusyId === plugin.id || isSettingBusy
+
+                                return (
+                                  <div className="plugin-setting-item" key={draftKey}>
+                                    {setting.type === 'checkbox' ? (
+                                      <label className="toggle-row plugin-setting-toggle">
+                                        <input
+                                          checked={Boolean(draftValue)}
+                                          disabled={disabled}
+                                          onChange={(event) => {
+                                            setPluginSettingDrafts((previous) => ({
+                                              ...previous,
+                                              [draftKey]: event.target.checked
+                                            }))
+                                          }}
+                                          type="checkbox"
+                                        />
+                                        <span>{setting.label}</span>
+                                      </label>
+                                    ) : (
+                                      <label className="editor-label plugin-setting-field">
+                                        {setting.label}
+                                        {setting.type === 'select' ? (
+                                          <select
+                                            aria-label={setting.label}
+                                            className="editor-input"
+                                            disabled={disabled}
+                                            onChange={(event) => {
+                                              setPluginSettingDrafts((previous) => ({
+                                                ...previous,
+                                                [draftKey]: event.target.value
+                                              }))
+                                            }}
+                                            value={String(draftValue)}
+                                          >
+                                            {(setting.options ?? []).map((option) => (
+                                              <option key={option.value} value={option.value}>{option.label}</option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          <input
+                                            aria-label={setting.label}
+                                            className="editor-input"
+                                            disabled={disabled}
+                                            onChange={(event) => {
+                                              setPluginSettingDrafts((previous) => ({
+                                                ...previous,
+                                                [draftKey]: event.target.value
+                                              }))
+                                            }}
+                                            type="text"
+                                            value={String(draftValue)}
+                                          />
+                                        )}
+                                      </label>
+                                    )}
+                                    {setting.description ? <p className="mini-hint plugin-setting-description">{setting.description}</p> : null}
+                                    <div className="plugin-setting-actions">
+                                      <span className="mini-hint plugin-setting-default">{ui.pluginSettingDefault(setting.defaultValue)}</span>
+                                      <button
+                                        className="secondary-button"
+                                        disabled={disabled || !hasPendingChanges}
+                                        onClick={() => {
+                                          void updatePluginSetting(plugin, setting, draftValue)
+                                        }}
+                                        type="button"
+                                      >
+                                        {isSettingBusy ? ui.common.working : ui.savePluginSetting(setting.label)}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mini-hint plugin-settings-empty">{ui.noPluginSettings}</p>
+                        )}
                       </div>
                     )
                   })}

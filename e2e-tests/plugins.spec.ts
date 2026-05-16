@@ -158,6 +158,35 @@ test.describe('Plugin System @electron', () => {
     })
   })
 
+  test('updates a plugin setting and uses it in the document action', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const suffix = Date.now().toString(36)
+    const title = `Plugin Setting Doc ${suffix}`
+    const prefix = `Configured ${suffix}: `
+
+    await withElectronApp(async ({ page }) => {
+      await enableActivityPulse(page)
+      await openPluginsPage(page)
+
+      const pluginItem = getPluginItem(page)
+      const settingRow = pluginItem.locator('.plugin-setting-item').filter({ hasText: 'Summary prefix' }).first()
+      await settingRow.getByLabel('Summary prefix').fill(prefix)
+      await settingRow.getByRole('button', { name: /Save Summary prefix|保存“Summary prefix”/ }).click()
+
+      await expect(page.locator('.flash-message')).toContainText(/Summary prefix|插件“Activity Pulse”/)
+
+      await openDocumentsPage(page)
+      const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the configured summary action.')
+      await ensureAuxPanelVisible(page)
+
+      await page.getByRole('button', { name: 'Summary from first block' }).click()
+
+      await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
+      await expect(getSummaryInput(page)).toHaveValue(`${prefix}${initialSeedTitle}`)
+    })
+  })
+
   test('runs the plugin document action and refreshes the saved summary', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
@@ -166,6 +195,13 @@ test.describe('Plugin System @electron', () => {
 
     await withElectronApp(async ({ page }) => {
       await enableActivityPulse(page)
+      await openPluginsPage(page)
+
+      const pluginItem = getPluginItem(page)
+      const settingRow = pluginItem.locator('.plugin-setting-item').filter({ hasText: 'Summary prefix' }).first()
+      await settingRow.getByLabel('Summary prefix').fill('')
+      await settingRow.getByRole('button', { name: /Save Summary prefix|保存“Summary prefix”/ }).click()
+
       await openDocumentsPage(page)
       const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the summary action.')
       await ensureAuxPanelVisible(page)

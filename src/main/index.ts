@@ -26,6 +26,7 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
+  UpdatePluginSettingInput,
   UpdateAiConfigInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
@@ -406,6 +407,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:remove-plugin', async (_event, pluginId: string) => {
     await pluginHost.removePlugin(pluginId)
+  })
+
+  ipcMain.handle('knowbook:update-plugin-setting', async (_event, input: UpdatePluginSettingInput) => {
+    await pluginHost.updatePluginSetting(input.pluginId, input.settingId, input.value)
   })
 
   ipcMain.handle('knowbook:run-plugin-document-action', async (_event, input: RunPluginDocumentActionInput) => {

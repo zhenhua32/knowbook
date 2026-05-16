@@ -9,6 +9,10 @@ import type {
   PluginDocumentAction,
   PluginHostInfo,
   PluginManifest,
+  PluginSettingDescriptor,
+  PluginSettingOption,
+  PluginSettingType,
+  PluginSettingValue,
   PluginSource,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
@@ -43,6 +47,11 @@ type RegisteredDashboardCard = PluginDashboardCard & {
   update: (patch: Partial<Pick<PluginDashboardCard, 'title' | 'body'>>) => void
 }
 
+type RegisteredPluginSetting = PluginSettingDescriptor & {
+  getValue: () => PluginSettingValue
+  setValue: (value: PluginSettingValue) => void
+}
+
 type RegisteredPlugin = {
   manifest: PluginManifest
   directory: string
@@ -52,6 +61,7 @@ type RegisteredPlugin = {
   error?: string
   dashboardCards: Map<string, RegisteredDashboardCard>
   documentActions: Map<string, RegisteredDocumentAction>
+  settings: Map<string, RegisteredPluginSetting>
   eventHandlers: Array<{ eventTypes: Set<WorkspaceEventType>; handler: PluginEventHandler }>
   dispose?: () => void | Promise<void>
 }
@@ -80,6 +90,19 @@ type PluginApi = {
     action: Omit<PluginDocumentAction, 'pluginId'>,
     handler: PluginDocumentActionHandler
   ) => void
+  contributeSetting: (setting: {
+    id: string
+    label: string
+    description?: string
+    type: PluginSettingType
+    defaultValue: PluginSettingValue
+    options?: PluginSettingOption[]
+  }) => {
+    id: string
+    pluginId: string
+    getValue: () => PluginSettingValue
+    setValue: (value: PluginSettingValue) => void
+  }
   onWorkspaceEvent: (eventTypes: WorkspaceEventType | WorkspaceEventType[], handler: PluginEventHandler) => void
   workspace: {
     getDocumentDetail: (documentId: string) => DocumentDetail | null
@@ -151,17 +174,7 @@ export class PluginHost {
     host: PluginHostInfo
   } {
     const plugins = [...this.plugins.values()]
-      .map((plugin): PluginDescriptor => ({
-        id: plugin.manifest.id,
-        name: plugin.manifest.name,
-        version: plugin.manifest.version,
-        description: plugin.manifest.description?.trim() || 'No description provided.',
-        author: plugin.manifest.author?.trim() || undefined,
-        source: plugin.source,
-        enabled: plugin.enabled,
-        status: plugin.status,
-        error: plugin.error
-      }))
+      .map((plugin): PluginDescriptor => this.toPluginDescriptor(plugin))
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 
     const dashboardCards = [...this.plugins.values()]
@@ -363,6 +376,20 @@ export class PluginHost {
     await this.activatePlugin(plugin)
   }
 
+  async updatePluginSetting(pluginId: string, settingId: string, value: PluginSettingValue): Promise<void> {
+    const plugin = this.plugins.get(pluginId)
+    if (!plugin) {
+      throw new Error('Plugin not found.')
+    }
+
+    const setting = plugin.settings.get(settingId)
+    if (!setting) {
+      throw new Error('Plugin setting not found.')
+    }
+
+    setting.setValue(value)
+  }
+
   async handleWorkspaceEvent(event: WorkspaceEvent): Promise<void> {
     for (const plugin of this.plugins.values()) {
       if (plugin.status !== 'running') {
@@ -463,6 +490,7 @@ export class PluginHost {
             status: 'disabled',
             dashboardCards: new Map(),
             documentActions: new Map(),
+            settings: new Map(),
             eventHandlers: []
           })
         } catch (error) {
@@ -508,6 +536,90 @@ export class PluginHost {
 
   private getPluginEnabledSettingKey(pluginId: string): string {
     return `plugin.enabled.${pluginId}`
+  }
+
+  private getPluginSettingKey(pluginId: string, settingId: string): string {
+    return `plugin.setting.${pluginId}.${settingId}`
+  }
+
+  private normalizePluginSettingOptions(options?: PluginSettingOption[]): PluginSettingOption[] | undefined {
+    if (!options) {
+      return undefined
+    }
+
+    const normalized = options
+      .map((option) => ({
+        value: option.value.trim(),
+        label: option.label.trim() || option.value.trim()
+      }))
+      .filter((option) => option.value.length > 0)
+
+    if (normalized.length === 0) {
+      return undefined
+    }
+
+    const seenValues = new Set<string>()
+    return normalized.filter((option) => {
+      if (seenValues.has(option.value)) {
+        return false
+      }
+
+      seenValues.add(option.value)
+      return true
+    })
+  }
+
+  private normalizePluginSettingValue(
+    setting: {
+      type: PluginSettingType
+      defaultValue: PluginSettingValue
+      options?: PluginSettingOption[]
+    },
+    value: PluginSettingValue
+  ): PluginSettingValue {
+    if (setting.type === 'checkbox') {
+      return Boolean(value)
+    }
+
+    const textValue = typeof value === 'string' ? value : value ? 'true' : 'false'
+    if (setting.type !== 'select') {
+      return textValue
+    }
+
+    const options = setting.options ?? []
+    if (options.some((option) => option.value === textValue)) {
+      return textValue
+    }
+
+    const fallback = typeof setting.defaultValue === 'string' ? setting.defaultValue : options[0]?.value ?? ''
+    return fallback
+  }
+
+  private readPluginSettingValue(
+    pluginId: string,
+    settingId: string,
+    type: PluginSettingType,
+    defaultValue: PluginSettingValue,
+    options?: PluginSettingOption[]
+  ): PluginSettingValue {
+    const storedValue = this.store.getSettingPublic(this.getPluginSettingKey(pluginId, settingId))
+    if (storedValue === null) {
+      return defaultValue
+    }
+
+    if (type === 'checkbox') {
+      return storedValue === 'true'
+    }
+
+    return this.normalizePluginSettingValue({ type, defaultValue, options }, storedValue)
+  }
+
+  private serializePluginSettingValue(type: PluginSettingType, value: PluginSettingValue): string {
+    if (type === 'checkbox') {
+      return Boolean(value) ? 'true' : 'false'
+    }
+
+    return typeof value === 'string' ? value : value ? 'true' : 'false'
   }
 
   private getWritableRoot(): string | null {
@@ -559,6 +671,11 @@ export class PluginHost {
     }
 
     try {
+      plugin.dashboardCards.clear()
+      plugin.documentActions.clear()
+      plugin.settings.clear()
+      plugin.eventHandlers = []
+
       const api = this.createPluginApi(plugin)
       const entryPath = join(plugin.directory, plugin.manifest.entry ?? 'index.js')
       
@@ -693,6 +810,69 @@ export class PluginHost {
           handler
         })
       },
+      contributeSetting: (settingInput) => {
+        const settingId = settingInput.id.trim()
+        const label = settingInput.label.trim()
+        if (!settingId) {
+          throw new Error('Plugin setting id is required.')
+        }
+        if (!label) {
+          throw new Error('Plugin setting label is required.')
+        }
+
+        const options = settingInput.type === 'select'
+          ? this.normalizePluginSettingOptions(settingInput.options)
+          : undefined
+
+        if (settingInput.type === 'select' && (!options || options.length === 0)) {
+          throw new Error('Select plugin settings require at least one option.')
+        }
+
+        const defaultValue = this.normalizePluginSettingValue(
+          {
+            type: settingInput.type,
+            defaultValue: settingInput.defaultValue,
+            options
+          },
+          settingInput.defaultValue
+        )
+
+        const setting: RegisteredPluginSetting = {
+          pluginId: plugin.manifest.id,
+          id: settingId,
+          label,
+          description: settingInput.description?.trim() || undefined,
+          type: settingInput.type,
+          value: this.readPluginSettingValue(plugin.manifest.id, settingId, settingInput.type, defaultValue, options),
+          defaultValue,
+          options,
+          getValue: () => setting.value,
+          setValue: (value) => {
+            const nextValue = this.normalizePluginSettingValue(
+              {
+                type: setting.type,
+                defaultValue: setting.defaultValue,
+                options: setting.options
+              },
+              value
+            )
+            setting.value = nextValue
+            this.store.saveSetting(
+              this.getPluginSettingKey(plugin.manifest.id, setting.id),
+              this.serializePluginSettingValue(setting.type, nextValue)
+            )
+          }
+        }
+
+        plugin.settings.set(setting.id, setting)
+
+        return {
+          id: setting.id,
+          pluginId: setting.pluginId,
+          getValue: () => setting.getValue(),
+          setValue: (value) => setting.setValue(value)
+        }
+      },
       onWorkspaceEvent: (eventTypes, handler) => {
         const normalizedEventTypes = new Set(Array.isArray(eventTypes) ? eventTypes : [eventTypes])
         plugin.eventHandlers.push({ eventTypes: normalizedEventTypes, handler })
@@ -725,6 +905,7 @@ export class PluginHost {
     plugin.error = errorMessage
     plugin.dashboardCards.clear()
     plugin.documentActions.clear()
+    plugin.settings.clear()
     plugin.eventHandlers = []
     console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, error)
   }
@@ -739,7 +920,19 @@ export class PluginHost {
       source: plugin.source,
       enabled: plugin.enabled,
       status: plugin.status,
-      error: plugin.error
+      error: plugin.error,
+      settings: [...plugin.settings.values()]
+        .map((setting): PluginSettingDescriptor => ({
+          pluginId: setting.pluginId,
+          id: setting.id,
+          label: setting.label,
+          description: setting.description,
+          type: setting.type,
+          value: setting.value,
+          defaultValue: setting.defaultValue,
+          options: setting.options ? [...setting.options] : undefined
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
     }
   }
 }

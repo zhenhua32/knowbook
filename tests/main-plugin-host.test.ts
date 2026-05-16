@@ -107,6 +107,99 @@ test('PluginHost loads workspace plugin, reacts to events, and runs document act
   }
 })
 
+test('PluginHost persists plugin settings and exposes updated values to plugin actions', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-settings-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const pluginRoot = join(workspaceRoot, 'configurable-plugin')
+
+  mkdirSync(pluginRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(
+    join(pluginRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'configurable-plugin',
+        name: 'Configurable Plugin',
+        version: '0.1.0',
+        entry: 'index.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    [
+      'module.exports.activate = function activate(api) {',
+      '  const prefix = api.contributeSetting({',
+      '    id: "summary-prefix",',
+      '    label: "Summary prefix",',
+      '    type: "text",',
+      '    defaultValue: ""',
+      '  })',
+      '  api.contributeDocumentAction({ id: "prefix-summary", label: "Prefix summary" }, function runAction(context) {',
+      '    const firstContentBlock = context.document.blocks.find(function findBlock(block) {',
+      '      return typeof block.content === "string" && block.content.trim().length > 0',
+      '    })',
+      '    const nextSummary = prefix.getValue() + firstContentBlock.content.trim()',
+      '    api.documents.updateSummary(context.document.id, nextSummary)',
+      '    return { message: nextSummary, refreshDocument: true }',
+      '  })',
+      '}'
+    ].join('\n'),
+    'utf8'
+  )
+
+  const settings = new Map<string, string>()
+  const summaryUpdates: Array<{ documentId: string; summary: string }> = []
+  const store = {
+    getSettingPublic: (key: string) => settings.get(key) ?? null,
+    saveSetting: (key: string, value: string) => {
+      settings.set(key, value)
+    },
+    getDocumentDetail: (documentId: string) => createMockDetail(documentId),
+    updateDocumentSummary: (documentId: string, summary: string) => {
+      summaryUpdates.push({ documentId, summary })
+    },
+    recordWorkspaceEvent: () => undefined
+  }
+
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ])
+
+  try {
+    await host.loadAll()
+
+    const initialPlugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'configurable-plugin')
+    assert.ok(initialPlugin)
+    assert.equal(initialPlugin?.settings.length, 1)
+    assert.equal(initialPlugin?.settings[0]?.value, '')
+
+    await host.updatePluginSetting('configurable-plugin', 'summary-prefix', 'Configured: ')
+
+    const updatedPlugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'configurable-plugin')
+    assert.equal(updatedPlugin?.settings[0]?.value, 'Configured: ')
+
+    const result = await host.runDocumentAction({
+      pluginId: 'configurable-plugin',
+      actionId: 'prefix-summary',
+      documentId: 'doc-1'
+    })
+
+    assert.equal(result.refreshDocument, true)
+    assert.equal(summaryUpdates[0]?.summary, 'Configured: First content block')
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('PluginHost installs and removes user-data plugins', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-install-test-'))
   const workspaceRoot = join(tempRoot, 'workspace-plugins')

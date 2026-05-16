@@ -1,4 +1,25 @@
-import type { DocumentDetail } from '@shared/contracts'
+import type {
+  DocumentDetail,
+  PluginSettingOption,
+  PluginSettingType,
+  PluginSettingValue
+} from '@shared/contracts'
+
+export type PluginSettingController = {
+  id: string
+  pluginId: string
+  getValue: () => PluginSettingValue
+  setValue: (value: PluginSettingValue) => void
+}
+
+export type PluginSettingInput = {
+  id: string
+  label: string
+  description?: string
+  type: PluginSettingType
+  defaultValue: PluginSettingValue
+  options?: PluginSettingOption[]
+}
 
 /**
  * Plugin API provided to plugins during activation
@@ -15,6 +36,7 @@ export type PluginApi = {
     action: { id: string; label: string; description?: string },
     handler: (context: { document: DocumentDetail }) => void | string | { message?: string; refreshDocument?: boolean }
   ) => void;
+  contributeSetting: (setting: PluginSettingInput) => PluginSettingController;
   onWorkspaceEvent: (eventTypes: string | string[], handler: (event: { type: string; title: string; description: string; documentId: string | null }) => void) => void;
   workspace: {
     getDocumentDetail: (documentId: string) => DocumentDetail | null;
@@ -61,6 +83,13 @@ export abstract class KnowBookPlugin {
     description?: string
   ) {
     this.api.contributeDocumentAction({ id, label, description }, handler)
+  }
+
+  /**
+   * Helper to create a persisted plugin setting
+   */
+  protected createSetting(setting: PluginSettingInput) {
+    return this.api.contributeSetting(setting)
   }
 
   /**
