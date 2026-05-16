@@ -1,89 +1,106 @@
-import { test, expect } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-test.describe('AI Automation Features', () => {
-  test('should configure AI settings', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /ai settings/i }).click()
-    
-    // Enable AI
-    const enableToggle = page.getByRole('checkbox', { name: /enable ai features/i })
-    await enableToggle.check()
-    
-    // Fill API configuration
-    const baseUrlInput = page.getByPlaceholder(/base url/i)
-    await baseUrlInput.fill('https://api.openai.com/v1')
-    
-    const modelInput = page.getByPlaceholder(/model/i)
-    await modelInput.fill('gpt-4')
-    
-    const embeddingInput = page.getByPlaceholder(/embedding model/i)
-    await embeddingInput.fill('text-embedding-3-small')
-    
-    const apiKeyInput = page.getByPlaceholder(/api key/i)
-    await apiKeyInput.fill('test-api-key')
-    
-    // Save settings
-    const saveBtn = page.getByRole('button', { name: /save ai settings/i })
-    await saveBtn.click()
-    
-    // Verify settings saved
-    await expect(page.getByText(/ai settings saved/i)).toBeVisible()
+function getTitleInput(page: Page): Locator {
+  return page.locator('.document-summary-card .editor-input').first()
+}
+
+function getBodyEditor(page: Page): Locator {
+  return page.locator('textarea.block-inline-textarea').nth(1)
+}
+
+function getPreviewTitle(page: Page): Locator {
+  return page.locator('.preview-panel .panel-head h3')
+}
+
+async function openSettingsPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Settings', '配置中心')).first().click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText('Settings', '配置中心'))
+}
+
+async function openDashboardPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Dashboard', '总览')).first().click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText('Dashboard', '总览'))
+}
+
+async function openDocumentsPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Documents', '文档')).first().click()
+  await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+}
+
+async function openAiPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('AI Assistant', 'AI 助手')).first().click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText('AI Assistant', 'AI 助手'))
+}
+
+async function createRootDocument(page: Page, title: string, body: string): Promise<void> {
+  await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
+  await getTitleInput(page).fill(title)
+  await getBodyEditor(page).fill(body)
+  await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+  await expect(getPreviewTitle(page)).toHaveText(title)
+}
+
+async function saveAiSettings(page: Page, baseUrl: string, model: string, embeddingBaseUrl: string, embeddingModel: string): Promise<void> {
+  await openSettingsPage(page)
+
+  await page.getByLabel(uiText('Enable AI features', '启用 AI 功能')).check()
+  await page.getByLabel(uiText('Auto-generate summary when summary is empty', '摘要为空时自动生成摘要')).check()
+  await page.getByLabel(uiText('Base URL', '基础地址')).fill(baseUrl)
+  await page.getByLabel(uiText('Model', '模型')).fill(model)
+  await page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）')).fill('test-api-key')
+  await page.getByLabel(uiText('Embedding Base URL (leave blank to auto-derive)', '向量地址（留空则自动推导）')).fill(embeddingBaseUrl)
+  await page.getByLabel(uiText('Embedding model', '向量模型')).fill(embeddingModel)
+
+  await page.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置') }).click()
+  await expect(page.locator('.flash-message')).toContainText(/AI settings saved\.|AI 设置已保存。/)
+}
+
+test.describe('AI Settings @electron', () => {
+  test('saves AI settings and keeps non-secret values after page navigation', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const baseUrl = 'https://example.invalid/v1'
+    const model = 'gpt-4.1-mini'
+    const embeddingBaseUrl = 'https://example.invalid/embeddings'
+    const embeddingModel = 'text-embedding-3-small'
+
+    await withElectronApp(async ({ page }) => {
+      await saveAiSettings(page, baseUrl, model, embeddingBaseUrl, embeddingModel)
+
+      await openDashboardPage(page)
+      await expect(page.locator('.meta-grid')).toContainText(baseUrl)
+
+      await openSettingsPage(page)
+      await expect(page.getByLabel(uiText('Enable AI features', '启用 AI 功能'))).toBeChecked()
+      await expect(page.getByLabel(uiText('Auto-generate summary when summary is empty', '摘要为空时自动生成摘要'))).toBeChecked()
+      await expect(page.getByLabel(uiText('Base URL', '基础地址'))).toHaveValue(baseUrl)
+      await expect(page.getByLabel(uiText('Model', '模型'))).toHaveValue(model)
+      await expect(page.getByLabel(uiText('Embedding Base URL (leave blank to auto-derive)', '向量地址（留空则自动推导）'))).toHaveValue(embeddingBaseUrl)
+      await expect(page.getByLabel(uiText('Embedding model', '向量模型'))).toHaveValue(embeddingModel)
+      await expect(page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）'))).toHaveValue('')
+    })
   })
 
-  test('should enable auto-summary on save', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /ai settings/i }).click()
-    
-    // Enable auto-summary
-    const autoSummaryToggle = page.getByRole('checkbox', { name: /auto summary when empty/i })
-    await autoSummaryToggle.check()
-    
-    // Save AI settings
-    await page.getByRole('button', { name: /save ai settings/i }).click()
-    
-    // Create a document
-    await page.getByRole('link', { name: /documents/i }).click()
-    await page.getByRole('button', { name: /new root/i }).click()
-    
-    // Edit document with content
-    await page.getByRole('button', { name: /edit/i }).click()
-    const editor = page.locator('[data-testid="block-editor"]')
-    await editor.fill('This is a test document with some content that should be summarized automatically when saved.')
-    
-    await page.getByRole('button', { name: /save/i }).click()
-    
-    // Wait for auto-summary
-    await page.waitForTimeout(2000)
-    
-    // Verify summary was generated
-    const summary = page.locator('[data-testid="document-summary"]')
-    await expect(summary).not.toContainText('New knowledge node ready for editing')
-  })
+  test('keeps the document AI automation button available after AI config is saved', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
-  test('should generate document summary via AI', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    
-    // Select document
-    const doc = page.locator('[data-testid="document-tree-item"]').first()
-    await doc.click()
-    
-    // Switch to AI panel
-    await page.getByRole('link', { name: /ask ai/i }).click()
-    
-    // Find related notes
-    const findRelatedBtn = page.getByRole('button', { name: /find related notes/i })
-    await findRelatedBtn.click()
-    
-    // Ask question
-    const askInput = page.getByPlaceholder(/for example/i)
-    await askInput.fill('Give me 3 key suggestions for this document')
-    
-    const askBtn = page.getByRole('button', { name: /ask ai/i })
-    await askBtn.click()
-    
-    // Wait for response
-    await expect(page.locator('[data-testid="ai-response"]')).toBeVisible()
-  })
+    const suffix = Date.now().toString(36)
 
+    await withElectronApp(async ({ page }) => {
+      await openDocumentsPage(page)
+      await createRootDocument(page, `AI Config Doc ${suffix}`, 'Testing AI configuration gating in the document assistant.')
+
+      await openAiPage(page)
+      const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
+      await expect(runAutomationsButton).toBeEnabled()
+
+      await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini', 'https://example.invalid/embeddings', 'text-embedding-3-small')
+
+      await openAiPage(page)
+      await expect(page.locator('.ai-panel .pill, .panel-head .pill')).toContainText(`AI Config Doc ${suffix}`)
+      await expect(runAutomationsButton).toBeEnabled()
+    })
+  })
 })

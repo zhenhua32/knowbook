@@ -1,108 +1,185 @@
-import { test, expect } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-test.describe('Plugin System', () => {
-  test('should load workspace plugins on startup', async ({ page }) => {
-    await page.goto('/')
-    
-    // Wait for plugins to load
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Verify activity-pulse plugin is loaded
-    await expect(page.locator('[data-testid="plugin-card"]')).toContainText('activity-pulse')
-    await expect(page.locator('[data-testid="plugin-status"]')).toContainText('Running')
+function getPluginItem(page: Page): Locator {
+  return page.locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
+}
+
+function getTitleInput(page: Page): Locator {
+  return page.locator('.document-summary-card .editor-input').first()
+}
+
+function getSummaryInput(page: Page): Locator {
+  return page.locator('.document-summary-card .editor-textarea').first()
+}
+
+function getBodyEditor(page: Page): Locator {
+  return page.locator('textarea.block-inline-textarea').nth(1)
+}
+
+function getPreviewTitle(page: Page): Locator {
+  return page.locator('.preview-panel .panel-head h3')
+}
+
+function getTreeButton(page: Page, title: string): Locator {
+  return page.locator('.tree-button', { hasText: title }).first()
+}
+
+async function openPluginsPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Plugins', '插件中心')).first().click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText('Plugins', '插件中心'))
+  await expect(page.locator('.plugin-list')).toBeVisible()
+}
+
+async function openDashboardPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Dashboard', '总览')).first().click()
+  await expect(page.locator('.current-page-text')).toHaveText(uiText('Dashboard', '总览'))
+}
+
+async function openDocumentsPage(page: Page): Promise<void> {
+  await page.getByTitle(uiText('Documents', '文档')).first().click()
+  await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+}
+
+async function createRootDocument(page: Page, title: string, body: string): Promise<string> {
+  await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
+  const initialTitle = await getTitleInput(page).inputValue()
+  await getTitleInput(page).fill(title)
+  await getBodyEditor(page).fill(body)
+  await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+  await expect(getPreviewTitle(page)).toHaveText(title)
+  return initialTitle
+}
+
+async function ensureAuxPanelVisible(page: Page): Promise<void> {
+  const actionButton = page.getByRole('button', { name: 'Summary from first block' })
+
+  if (await actionButton.isVisible().catch(() => false)) {
+    return
+  }
+
+  const showAuxButton = page.getByRole('button', { name: uiText('Show auxiliary', '展开辅助区') })
+  if (await showAuxButton.isVisible().catch(() => false)) {
+    await showAuxButton.click()
+  }
+
+  await expect(actionButton).toBeVisible()
+}
+
+async function enableActivityPulse(page: Page): Promise<void> {
+  await openPluginsPage(page)
+
+  const pluginItem = getPluginItem(page)
+  const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
+  if (await toggle.isChecked()) {
+    await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
+    return
+  }
+
+  await pluginItem.locator('.plugin-toggle-row').click()
+  await expect(toggle).toBeChecked()
+  await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
+}
+
+async function disableActivityPulse(page: Page): Promise<void> {
+  await openPluginsPage(page)
+
+  const pluginItem = getPluginItem(page)
+  const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
+  if (!(await toggle.isChecked())) {
+    await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
+    return
+  }
+
+  await pluginItem.locator('.plugin-toggle-row').click()
+  await expect(toggle).not.toBeChecked()
+  await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
+}
+
+test.describe('Plugin System @electron', () => {
+  test('loads the workspace plugin inventory entry and keeps dashboard state consistent', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openPluginsPage(page)
+
+      const pluginItem = getPluginItem(page)
+      const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
+      const isEnabled = await toggle.isChecked()
+      await expect(pluginItem).toBeVisible()
+
+      if (isEnabled) {
+        await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
+      } else {
+        await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
+      }
+
+      await openDashboardPage(page)
+      const dashboardCard = page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })
+
+      if (isEnabled) {
+        await expect(dashboardCard.first()).toBeVisible()
+      } else {
+        await expect(dashboardCard).toHaveCount(0)
+      }
+    })
   })
 
-  test('should enable and disable plugin', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Find plugin toggle
-    const toggleBtn = page.getByRole('button', { name: /enabled/i }).first()
-    await toggleBtn.click()
-    
-    // Verify plugin is disabled
-    await expect(page.getByRole('button', { name: /disabled/i })).toBeVisible()
-    
-    // Re-enable
-    await page.getByRole('button', { name: /disabled/i }).click()
-    await expect(page.getByRole('button', { name: /enabled/i })).toBeVisible()
+  test('enables and disables the workspace plugin', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await enableActivityPulse(page)
+
+      await openDashboardPage(page)
+      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' }).first()).toBeVisible()
+
+      await disableActivityPulse(page)
+
+      await openDashboardPage(page)
+      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })).toHaveCount(0)
+    })
   })
 
-  test('should reload plugin', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Click reload
-    const reloadBtn = page.getByRole('button', { name: /reload/i }).first()
-    await reloadBtn.click()
-    
-    // Verify reload complete
-    await expect(page.getByText(/plugin reloaded/i)).toBeVisible()
+  test('reloads plugin inventory without losing the workspace plugin', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await enableActivityPulse(page)
+
+      await page.locator('.plugin-toolbar button').first().click()
+
+      await expect(page.locator('.flash-message')).toContainText(/Plugins reloaded\.|插件已重载。/)
+      await expect(getPluginItem(page)).toBeVisible()
+
+      await openDashboardPage(page)
+      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' }).first()).toBeVisible()
+    })
   })
 
-  test('should install plugin from folder', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Mock file dialog - in real test we'd need to mock the dialog
-    // For now, verify the button exists
-    const installBtn = page.getByRole('button', { name: /install folder/i })
-    await expect(installBtn).toBeVisible()
-  })
+  test('runs the plugin document action and refreshes the saved summary', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
-  test('should remove user-data plugin', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Try to remove a plugin (this would require a user-data plugin to exist)
-    const removeBtn = page.getByRole('button', { name: /remove/i }).first()
-    
-    // Click remove
-    await removeBtn.click()
-    
-    // Confirm
-    const confirmBtn = page.getByRole('button', { name: /confirm/i })
-    await confirmBtn.click()
-  })
+    const suffix = Date.now().toString(36)
+    const title = `Plugin Doc ${suffix}`
 
-  test('should display plugin dashboard card', async ({ page }) => {
-    await page.goto('/')
-    
-    // Verify plugin card is visible on dashboard
-    await expect(page.locator('[data-testid="plugin-dashboard-card"]')).toBeVisible()
-    await expect(page.locator('[data-testid="plugin-dashboard-card"]')).toContainText('activity-pulse')
-  })
+    await withElectronApp(async ({ page }) => {
+      await enableActivityPulse(page)
+      await openDocumentsPage(page)
+      const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the summary action.')
+      await ensureAuxPanelVisible(page)
 
-  test('should execute plugin document action', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /documents/i }).click()
-    
-    // Select a document
-    const doc = page.locator('[data-testid="document-tree-item"]').first()
-    await doc.click()
-    
-    // Open plugin actions panel
-    const pluginActionsTab = page.getByRole('tab', { name: /plugin actions/i })
-    await pluginActionsTab.click()
-    
-    // Execute action
-    const actionBtn = page.getByRole('button', { name: /run/i }).first()
-    await actionBtn.click()
-    
-    // Verify action execution
-    await expect(page.getByText(/action executed/i)).toBeVisible()
-  })
+      await page.getByRole('button', { name: 'Summary from first block' }).click()
 
-  test('should show plugin error state', async ({ page }) => {
-    await page.goto('/')
-    await page.getByRole('link', { name: /plugins/i }).click()
-    
-    // Find errored plugin
-    const erroredPlugin = page.locator('[data-testid="plugin-card"][data-status="error"]')
-    
-    // If an error plugin exists, verify it shows recover
-    if (await erroredPlugin.isVisible()) {
-      await expect(page.getByRole('button', { name: /recover/i })).toBeVisible()
-    }
+      await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
+
+      await page.locator('.tree-button:not(.tree-button-active)').first().click()
+      await expect(getPreviewTitle(page)).not.toHaveText(title)
+
+      await getTreeButton(page, title).click()
+      await expect(getPreviewTitle(page)).toHaveText(title)
+      await expect(getSummaryInput(page)).toHaveValue(initialSeedTitle)
+    })
   })
 })
