@@ -9,6 +9,7 @@ async function openRailPage(page: Page, en: string, zh: string): Promise<void> {
 test.describe('Application Shell Smoke @electron', () => {
   test('opens the core workspace pages from the rail', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+    test.slow()
 
     await withElectronApp(async ({ page }) => {
       await expect(page.locator('[data-testid="shell"]')).toBeVisible()

@@ -522,6 +522,10 @@ dt,
 
 .database-panel {
   min-height: 360px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .board-panel {
@@ -1862,6 +1866,8 @@ del {
 }
 
 .catalog-table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
   border-radius: 18px;
   background: rgba(255, 251, 245, 0.82);

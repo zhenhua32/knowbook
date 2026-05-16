@@ -7,8 +7,13 @@ async function openDatabasePage(page: Page): Promise<void> {
 }
 
 async function openDocumentCatalogView(page: Page): Promise<void> {
+  const heading = page.getByRole('heading', { name: uiText('Document catalog', '文档目录') })
+  if (await heading.isVisible().catch(() => false)) {
+    return
+  }
+
   await page.getByRole('button', { name: uiText('Document catalog', '文档目录') }).click()
-  await expect(page.getByRole('heading', { name: uiText('Document catalog', '文档目录') })).toBeVisible()
+  await expect(heading).toBeVisible()
 }
 
 async function openStandaloneDatabasesView(page: Page): Promise<void> {
