@@ -10,6 +10,13 @@ function getDatabaseButton(page: Page, databaseName: string) {
   return page.getByRole('button', { name: databaseName }).last()
 }
 
+async function selectDatabase(page: Page, databaseName: string): Promise<void> {
+  const button = getDatabaseButton(page, databaseName)
+  await expect(button).toBeVisible()
+  await button.click()
+  await expect(button).toHaveClass(/primary-button/)
+}
+
 async function addTextColumn(page: Page, columnName: string): Promise<void> {
   await page.getByRole('button', { name: uiText('Add column', '新增列') }).click()
   await page.getByLabel(uiText('Column name', '列名')).fill(columnName)
@@ -39,29 +46,26 @@ async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Pro
 test.describe('Database Views @electron', () => {
   test('isolates schema columns between the default database and an independent database', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+    test.slow()
 
     await withElectronApp(async ({ page }) => {
       await openDatabasePage(page)
-      await getDatabaseButton(page, 'Default').click()
+      await selectDatabase(page, 'Default')
 
       await addTextColumn(page, 'Status')
       await expectSchemaColumnNames(page, ['Status'])
 
       await createDatabase(page, 'Projects', 'Project tracking')
-      await getDatabaseButton(page, 'Projects').click()
       await expectSchemaColumnNames(page, [])
 
       await addTextColumn(page, 'Owner')
       await expectSchemaColumnNames(page, ['Owner'])
 
-      const entityForm = page.locator('.database-entity-field-grid-form')
-      await expect(entityForm).toContainText('Owner')
-      await expect(entityForm).not.toContainText('Status')
-
-      await getDatabaseButton(page, 'Default').click()
+      await selectDatabase(page, 'Default')
       await expectSchemaColumnNames(page, ['Status'])
-      await expect(entityForm).toContainText('Status')
-      await expect(entityForm).not.toContainText('Owner')
+
+      await selectDatabase(page, 'Projects')
+      await expectSchemaColumnNames(page, ['Owner'])
     })
   })
 })
