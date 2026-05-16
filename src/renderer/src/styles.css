@@ -1684,11 +1684,36 @@ del {
   width: 100%;
 }
 
+.database-entity-card-selected {
+  padding: 14px;
+  border-radius: 16px;
+  background: rgba(255, 248, 234, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(203, 122, 32, 0.24);
+}
+
 .database-entity-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+}
+
+.database-entity-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.database-entity-select-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.database-entity-select-checkbox {
+  width: 16px;
+  height: 16px;
 }
 
 @media (max-width: 1080px) {

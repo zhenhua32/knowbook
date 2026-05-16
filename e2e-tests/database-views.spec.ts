@@ -68,6 +68,12 @@ async function getStandaloneEntityTextValues(page: Page): Promise<string[]> {
   )
 }
 
+async function getStandaloneEntitySelectionStates(page: Page): Promise<boolean[]> {
+  return page.locator('.database-entity-select-checkbox').evaluateAll((inputs) =>
+    inputs.map((input) => (input as HTMLInputElement).checked)
+  )
+}
+
 async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Promise<void> {
   await expect
     .poll(async () => {
@@ -172,6 +178,36 @@ test.describe('Database Views @electron', () => {
       await filterScope.selectOption({ index: 2 })
       await filterQuery.fill('beta')
       await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta'])
+    })
+  })
+
+  test('selects visible standalone entities and deletes them in bulk', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Entity Bulk Delete', 'Standalone entity bulk actions')
+      await selectDatabase(page, 'Entity Bulk Delete')
+      await addTextColumn(page, 'Owner')
+
+      await createStandaloneTextEntity(page, 'Owner', 'alpha')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+      await createStandaloneTextEntity(page, 'Owner', 'beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta', 'alpha'])
+
+      await page.locator('.database-entity-select-visible-button').click()
+      await expect.poll(() => getStandaloneEntitySelectionStates(page)).toEqual([true, true])
+
+      page.once('dialog', async (dialog) => {
+        expect(dialog.message()).toMatch(/Delete these 2 database entities\?|确定删除这 2 条数据库实体吗？/)
+        await dialog.accept()
+      })
+      await page.locator('.database-entity-delete-selected-button').click()
+
+      await expect(page.locator('.database-entity-card')).toHaveCount(0)
+      await expect(page.locator('.flash-message')).toContainText(/Deleted 2 database entities\.|已删除 2 条数据库实体。/)
     })
   })
 })

@@ -53,6 +53,7 @@ function createUiText(language: UiLanguage) {
     move: zh ? '移动' : 'Move',
     loading: zh ? '加载中...' : 'Loading...',
     ready: zh ? '就绪' : 'Ready',
+    clear: zh ? '清空' : 'Clear',
     enabled: zh ? '已启用' : 'Enabled',
     disabled: zh ? '已禁用' : 'Disabled',
     working: zh ? '处理中...' : 'Working...',
@@ -253,6 +254,10 @@ function createUiText(language: UiLanguage) {
     databaseEntitySortUpdatedAsc: zh ? '最早更新优先' : 'Oldest update first',
     databaseEntitySortCreatedDesc: zh ? '最新创建优先' : 'Newest created first',
     databaseEntitySortCreatedAsc: zh ? '最早创建优先' : 'Oldest created first',
+    selectedDatabaseEntitiesCount: (count: number) => zh ? `已选 ${count} 条` : `${count} selected`,
+    selectVisibleDatabaseEntities: zh ? '选择可见项' : 'Select visible',
+    deleteSelectedDatabaseEntities: (count: number) => zh ? `删除已选（${count}）` : `Delete selected (${count})`,
+    selectDatabaseEntity: (name: string) => zh ? `选择数据库实体：${name}` : `Select database entity: ${name}`,
     noLinkedDocument: zh ? '未关联文档' : 'No linked document',
     boardViewLabel: zh ? '看板视图' : 'Board view',
     boardGroupedBy: (name: string | null) => name
@@ -494,8 +499,11 @@ function createUiText(language: UiLanguage) {
     databaseEntityUpdated: zh ? '数据库实体已更新。' : 'Database entity updated.',
     databaseEntityUpdateFailed: zh ? '更新数据库实体失败。' : 'Failed to update database entity.',
     confirmDeleteDatabaseEntity: zh ? '确定删除这条数据库实体吗？' : 'Are you sure you want to delete this database entity?',
+    confirmDeleteDatabaseEntities: (count: number) => zh ? `确定删除这 ${count} 条数据库实体吗？` : `Delete these ${count} database entities?`,
     databaseEntityDeleted: zh ? '数据库实体已删除。' : 'Database entity deleted.',
+    databaseEntitiesDeleted: (count: number) => zh ? `已删除 ${count} 条数据库实体。` : `Deleted ${count} database entities.`,
     databaseEntityDeleteFailed: zh ? '删除数据库实体失败。' : 'Failed to delete database entity.',
+    databaseEntitiesDeleteFailed: zh ? '批量删除数据库实体失败。' : 'Failed to delete selected database entities.',
     pluginActionFailed: zh ? '执行插件动作失败。' : 'Plugin action failed.',
     aiAutomationResult: (input: { summaryGenerated: boolean }) => {
       if (input.summaryGenerated) {
