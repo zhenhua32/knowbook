@@ -30,6 +30,12 @@ async function getBodyBlockValues(page: Page): Promise<string[]> {
   )
 }
 
+async function getSelectedBodyBlockValues(page: Page): Promise<string[]> {
+  return page.locator('.block-editor-row-selected textarea.block-inline-textarea').evaluateAll((textareas) =>
+    textareas.map((textarea) => (textarea as HTMLTextAreaElement).value)
+  )
+}
+
 async function selectFirstTwoBodyBlocks(page: Page): Promise<void> {
   const editors = page.locator('textarea.block-inline-textarea')
   const firstBody = editors.nth(1)
@@ -37,6 +43,18 @@ async function selectFirstTwoBodyBlocks(page: Page): Promise<void> {
   await firstBody.click()
   await firstBody.press('End')
   await firstBody.press('Shift+ArrowDown')
+
+  await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+  await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+}
+
+async function selectLastTwoBodyBlocks(page: Page): Promise<void> {
+  const editors = page.locator('textarea.block-inline-textarea')
+  const secondBody = editors.nth(2)
+
+  await secondBody.click()
+  await secondBody.press('End')
+  await secondBody.press('Shift+ArrowDown')
 
   await expect(page.locator('.block-selection-toolbar')).toBeVisible()
   await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
@@ -75,6 +93,40 @@ test.describe('Editor Multi-Block Operations @electron', () => {
       await expect(page.locator('.block-selection-toolbar')).toBeVisible()
       await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Alpha', 'Beta', 'Gamma'])
+    })
+  })
+
+  test('moves a contiguous block range down with Alt+ArrowDown', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+
+      await selectFirstTwoBodyBlocks(page)
+      await page.locator('textarea.block-inline-textarea').nth(1).press('Alt+ArrowDown')
+
+      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Gamma', 'Alpha', 'Beta'])
+      await expect.poll(() => getSelectedBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
+    })
+  })
+
+  test('moves a contiguous block range up with Alt+ArrowUp', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta', 'Gamma'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta', 'Gamma'])
+
+      await selectLastTwoBodyBlocks(page)
+      await page.locator('textarea.block-inline-textarea').nth(2).press('Alt+ArrowUp')
+
+      await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Beta', 'Gamma', 'Alpha'])
+      await expect.poll(() => getSelectedBodyBlockValues(page)).toEqual(['Beta', 'Gamma'])
     })
   })
 })
