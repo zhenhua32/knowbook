@@ -1,0 +1,32 @@
+appId: com.zhenhua32.knowbook
+productName: KnowBook
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
+publish:
+  - provider: github
+    owner: zhenhua32
+    repo: knowbook
+    releaseType: draft
+win:
+  artifactName: KnowBook-${version}-win-${arch}.${ext}
+  target:
+    - target: nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+mac:
+  artifactName: KnowBook-${version}-mac-${arch}.${ext}
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+linux:
+  artifactName: KnowBook-${version}-linux-${arch}.${ext}
+  category: Office
+  target:
+    - target: AppImage

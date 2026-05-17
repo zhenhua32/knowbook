@@ -5,14 +5,25 @@
   "type": "module",
   "main": "out/main/index.js",
   "description": "Local-first knowledge management client built with Electron, React, TypeScript, and SQLite.",
+  "author": "zhenhua32",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhenhua32/knowbook.git"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "npm run typecheck && electron-vite build",
+    "pack": "npm run build && electron-builder --dir --publish never",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage --publish never",
+    "release": "npm run build && electron-builder --publish always",
     "preview": "electron-vite preview",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\"",
     "test:e2e": "npm run build && playwright test --grep @electron",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "postinstall": "electron-rebuild -f -w better-sqlite3"
+    "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
     "better-sqlite3": "^11.8.1",
@@ -23,7 +34,6 @@
     "shiki": "^4.0.2"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.2",
     "@playwright/test": "^1.59.1",
     "@swc/core": "^1.11.24",
     "@types/better-sqlite3": "^7.6.13",
@@ -34,7 +44,7 @@
     "@vitejs/plugin-react": "^4.4.1",
     "cross-env": "^10.1.0",
     "electron": "^35.1.5",
-    "electron-rebuild": "^3.2.9",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^3.1.0",
     "semver": "^7.7.4",
     "tsx": "^4.21.0",
