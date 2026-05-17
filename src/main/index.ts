@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron'
+import electron from 'electron'
 import type { OpenDialogOptions } from 'electron'
 import type {
   AskAiInput,
@@ -8,8 +8,10 @@ import type {
   BackupResult,
   CreateDatabaseInput,
   CreateDatabaseEntityInput,
+  CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
   DatabaseEntity,
+  DatabaseSavedView,
   DeleteDatabaseEntityInput,
   DocumentDatabase,
   DocumentDatabaseColumn,
@@ -28,6 +30,7 @@ import type {
   SetPluginEnabledInput,
   UpdatePluginSettingInput,
   UpdateAiConfigInput,
+  UpdateDatabaseSavedViewInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
@@ -40,9 +43,12 @@ import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { AppUpdateManager } from './update-manager'
 
+const { app, BrowserWindow, clipboard, dialog, ipcMain } = electron
+type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
+
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
-let mainWindow: BrowserWindow | null = null
+let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
 let embeddingSyncQueue: Promise<void> = Promise.resolve()
 
@@ -247,6 +253,25 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-databases', () => {
     const databases: DocumentDatabase[] = store.getDatabases()
     return databases
+  })
+
+  ipcMain.handle('knowbook:get-database-saved-views', (_event, databaseId: string) => {
+    const views: DatabaseSavedView[] = store.getDatabaseSavedViews(databaseId)
+    return views
+  })
+
+  ipcMain.handle('knowbook:create-database-saved-view', (_event, input: CreateDatabaseSavedViewInput) => {
+    const view: DatabaseSavedView = store.createDatabaseSavedView(input)
+    return view
+  })
+
+  ipcMain.handle('knowbook:update-database-saved-view', (_event, input: UpdateDatabaseSavedViewInput) => {
+    const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
+    return view
+  })
+
+  ipcMain.handle('knowbook:delete-database-saved-view', (_event, viewId: string) => {
+    store.deleteDatabaseSavedView(viewId)
   })
 
   ipcMain.handle('knowbook:create-database-entity', (_event, input: CreateDatabaseEntityInput) => {

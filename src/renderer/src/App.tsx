@@ -12,6 +12,9 @@ import type {
   BackupResult,
   BlockReferenceResult,
   DatabaseEntity,
+  DatabaseSavedView,
+  DatabaseSavedViewLayoutMode,
+  DatabaseSavedViewSortMode,
   DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
@@ -116,9 +119,9 @@ const BOARD_GROUP_BY_PARENT = '__parent__'
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
-type StandaloneDatabaseEntityViewMode = 'cards' | 'table'
+type StandaloneDatabaseEntityViewMode = DatabaseSavedViewLayoutMode
 type DatabaseEntityFilterScope = '' | '__document__' | string
-type DatabaseEntitySortMode = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc'
+type DatabaseEntitySortMode = DatabaseSavedViewSortMode
 const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
 type BlockDropPreview = {
@@ -1185,6 +1188,8 @@ export function App() {
   const [databaseDescriptionDraft, setDatabaseDescriptionDraft] = useState('')
   const [isCreatingDatabaseEntity, setIsCreatingDatabaseEntity] = useState(false)
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
+  const [databaseSavedViews, setDatabaseSavedViews] = useState<DatabaseSavedView[]>([])
+  const [activeDatabaseSavedViewId, setActiveDatabaseSavedViewId] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
   const [databaseEntityBulkFieldValues, setDatabaseEntityBulkFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
@@ -1674,23 +1679,38 @@ export function App() {
     let mounted = true
 
     if (!databaseEntityDatabaseId) {
+      setDatabaseSavedViews([])
+      setActiveDatabaseSavedViewId('')
       setSelectedDatabaseColumns([])
       setDatabaseEntities([])
       setDatabaseEntityFieldValues({})
       setDatabaseEntityBulkFieldValues({})
+      setDatabaseEntityFilterQuery('')
+      setDatabaseEntityFilterScope('')
+      setDatabaseEntitySortMode('updated-desc')
+      setDatabaseEntityViewMode('cards')
       setSelectedDatabaseEntityIds([])
       return () => {
         mounted = false
       }
     }
 
+    setDatabaseSavedViews([])
+    setActiveDatabaseSavedViewId('')
+    setDatabaseEntityFilterQuery('')
+    setDatabaseEntityFilterScope('')
+    setDatabaseEntitySortMode('updated-desc')
+    setDatabaseEntityViewMode('cards')
+
     Promise.all([
       window.knowbook.getDatabaseEntities(databaseEntityDatabaseId),
-      window.knowbook.getDocumentDatabaseColumns(databaseEntityDatabaseId)
-    ]).then(([items, columns]) => {
+      window.knowbook.getDocumentDatabaseColumns(databaseEntityDatabaseId),
+      window.knowbook.getDatabaseSavedViews(databaseEntityDatabaseId)
+    ]).then(([items, columns, views]) => {
       if (mounted) {
         setDatabaseEntities(items)
         setSelectedDatabaseColumns(columns)
+        setDatabaseSavedViews(views)
         setDatabaseEntityFieldValues({})
         setDatabaseEntityBulkFieldValues({})
         setSelectedDatabaseEntityIds([])
@@ -2766,6 +2786,100 @@ export function App() {
     }
   }
 
+  function applyDatabaseSavedView(view: DatabaseSavedView) {
+    setActiveDatabaseSavedViewId(view.id)
+    setDatabaseEntityFilterQuery(view.filterQuery)
+    setDatabaseEntityFilterScope(view.filterScope as DatabaseEntityFilterScope)
+    setDatabaseEntitySortMode(view.sortMode)
+    setDatabaseEntityViewMode(view.viewMode)
+    setSelectedDatabaseEntityIds([])
+  }
+
+  function handleDatabaseSavedViewSelect(viewId: string) {
+    if (!viewId) {
+      setActiveDatabaseSavedViewId('')
+      return
+    }
+
+    const nextView = databaseSavedViews.find((view) => view.id === viewId)
+    if (!nextView) {
+      return
+    }
+
+    applyDatabaseSavedView(nextView)
+  }
+
+  async function saveCurrentDatabaseSavedView() {
+    if (!databaseEntityDatabaseId) {
+      return
+    }
+
+    const suggestedName = activeDatabaseSavedView?.name ?? ui.databaseSavedViewDefaultName(databaseSavedViews.length + 1)
+    const nextName = window.prompt(ui.databaseSavedViewNamePrompt, suggestedName) ?? ''
+    if (!nextName.trim()) {
+      return
+    }
+
+    try {
+      const createdView = await window.knowbook.createDatabaseSavedView({
+        databaseId: databaseEntityDatabaseId,
+        name: nextName,
+        filterQuery: databaseEntityFilterQuery,
+        filterScope: databaseEntityFilterScope,
+        sortMode: databaseEntitySortMode,
+        viewMode: databaseEntityViewMode
+      })
+      await refreshDatabasePageData(databaseEntityDatabaseId)
+      setActiveDatabaseSavedViewId(createdView.id)
+      setBackupMessage(ui.databaseSavedViewCreated(createdView.name))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseSavedViewCreateFailed
+      setBackupMessage(message)
+    }
+  }
+
+  async function updateCurrentDatabaseSavedView() {
+    if (!activeDatabaseSavedView) {
+      return
+    }
+
+    try {
+      const updatedView = await window.knowbook.updateDatabaseSavedView({
+        viewId: activeDatabaseSavedView.id,
+        filterQuery: databaseEntityFilterQuery,
+        filterScope: databaseEntityFilterScope,
+        sortMode: databaseEntitySortMode,
+        viewMode: databaseEntityViewMode
+      })
+      await refreshDatabasePageData(databaseEntityDatabaseId)
+      setActiveDatabaseSavedViewId(updatedView.id)
+      setBackupMessage(ui.databaseSavedViewUpdated(updatedView.name))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseSavedViewUpdateFailed
+      setBackupMessage(message)
+    }
+  }
+
+  async function deleteCurrentDatabaseSavedView() {
+    if (!activeDatabaseSavedView) {
+      return
+    }
+
+    if (!window.confirm(ui.confirmDeleteDatabaseSavedView(activeDatabaseSavedView.name))) {
+      return
+    }
+
+    try {
+      await window.knowbook.deleteDatabaseSavedView(activeDatabaseSavedView.id)
+      await refreshDatabasePageData(databaseEntityDatabaseId)
+      setActiveDatabaseSavedViewId('')
+      setBackupMessage(ui.databaseSavedViewDeleted(activeDatabaseSavedView.name))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseSavedViewDeleteFailed
+      setBackupMessage(message)
+    }
+  }
+
   async function createDatabaseEntity() {
     try {
       await window.knowbook.createDatabaseEntity({
@@ -2984,14 +3098,17 @@ export function App() {
   }
 
   async function refreshDatabasePageData(targetDatabaseId: string | null = databaseEntityDatabaseId) {
-    const [refreshedHome, refreshedEntities, refreshedColumns] = await Promise.all([
+    const [refreshedHome, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
       window.knowbook.getHomeData(),
       targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve([]),
-      window.knowbook.getDocumentDatabaseColumns(targetDatabaseId)
+      window.knowbook.getDocumentDatabaseColumns(targetDatabaseId),
+      targetDatabaseId ? window.knowbook.getDatabaseSavedViews(targetDatabaseId) : Promise.resolve([])
     ])
     setHomeData(refreshedHome)
     setDatabaseEntities(refreshedEntities)
     setSelectedDatabaseColumns(refreshedColumns)
+    setDatabaseSavedViews(refreshedViews)
+    setActiveDatabaseSavedViewId((current) => (refreshedViews.some((view) => view.id === current) ? current : ''))
   }
 
   async function findRelatedNotesForPrompt() {
@@ -4447,6 +4564,13 @@ export function App() {
     : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
   const standaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
   const selectedDatabase = standaloneDatabases.find((database) => database.id === databaseEntityDatabaseId) ?? null
+  const activeDatabaseSavedView = databaseSavedViews.find((view) => view.id === activeDatabaseSavedViewId) ?? null
+  const databaseSavedViewDirty = activeDatabaseSavedView !== null && (
+    activeDatabaseSavedView.filterQuery !== databaseEntityFilterQuery
+    || activeDatabaseSavedView.filterScope !== databaseEntityFilterScope
+    || activeDatabaseSavedView.sortMode !== databaseEntitySortMode
+    || activeDatabaseSavedView.viewMode !== databaseEntityViewMode
+  )
   const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : homeData.databaseColumns
   const databasePageTitle = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesTitle : ui.documentCatalogTitle
   const databasePageHint = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesHint : ui.documentCatalogHint
@@ -5075,7 +5199,45 @@ return (
                     </div>
 
                     {selectedDatabase ? (
-                      databaseEntities.length > 0 ? (
+                      <>
+                        <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
+                          <span className="pill">{ui.databaseSavedViewsLabel}</span>
+                          <select
+                            className="editor-input database-saved-view-select"
+                            onChange={(event) => handleDatabaseSavedViewSelect(event.target.value)}
+                            value={activeDatabaseSavedViewId}
+                          >
+                            <option value="">{ui.databaseSavedViewDraftOption}</option>
+                            {databaseSavedViews.map((view) => (
+                              <option key={view.id} value={view.id}>{view.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            className="secondary-button database-saved-view-create-button"
+                            onClick={() => void saveCurrentDatabaseSavedView()}
+                            type="button"
+                          >
+                            {ui.saveCurrentDatabaseView}
+                          </button>
+                          <button
+                            className="secondary-button database-saved-view-update-button"
+                            disabled={!activeDatabaseSavedView || !databaseSavedViewDirty}
+                            onClick={() => void updateCurrentDatabaseSavedView()}
+                            type="button"
+                          >
+                            {ui.updateCurrentDatabaseView}
+                          </button>
+                          <button
+                            className="secondary-button database-saved-view-delete-button"
+                            disabled={!activeDatabaseSavedView}
+                            onClick={() => void deleteCurrentDatabaseSavedView()}
+                            type="button"
+                          >
+                            {ui.deleteCurrentDatabaseView}
+                          </button>
+                        </div>
+
+                        {databaseEntities.length > 0 ? (
                         <>
                           <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
                             <input
@@ -5307,9 +5469,10 @@ return (
                             <p className="mini-hint">{ui.noFilteredDatabaseEntitiesYet(selectedDatabase.name)}</p>
                           )}
                         </>
-                      ) : (
-                        <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
-                      )
+                        ) : (
+                          <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
+                        )}
+                      </>
                     ) : null}
                   </>
                 ) : (

@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS databases (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS database_saved_views (
+  id TEXT PRIMARY KEY,
+  database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  filter_query TEXT NOT NULL DEFAULT '',
+  filter_scope TEXT NOT NULL DEFAULT '',
+  sort_mode TEXT NOT NULL DEFAULT 'updated-desc',
+  view_mode TEXT NOT NULL DEFAULT 'cards',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_database_saved_views_database_name
+  ON database_saved_views(database_id, name COLLATE NOCASE);
+
 CREATE TABLE IF NOT EXISTS document_database_columns (
   id TEXT PRIMARY KEY,
   database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,

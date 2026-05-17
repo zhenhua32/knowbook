@@ -310,4 +310,64 @@ test.describe('Database Views @electron', () => {
       await expect.poll(() => getStandaloneEntityTableTextValues(page)).toEqual(['table-updated', 'alpha'])
     })
   })
+
+  test('saves and reapplies a standalone database view', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      await createDatabase(page, 'Saved Views', 'Standalone saved views')
+      await selectDatabase(page, 'Saved Views')
+      await addTextColumn(page, 'Owner')
+
+      await createStandaloneTextEntity(page, 'Owner', 'alpha')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+      await createStandaloneTextEntity(page, 'Owner', 'beta')
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['beta', 'alpha'])
+
+      const filterQuery = page.locator('.database-entity-filter-query')
+      const filterScope = page.locator('.database-entity-filter-scope-select')
+      const sortSelect = page.locator('.database-entity-sort-select')
+      const savedViewSelect = page.locator('.database-saved-view-select')
+
+      await filterScope.selectOption({ index: 2 })
+      await filterQuery.fill('beta')
+      await sortSelect.selectOption('created-asc')
+      await page.locator('.database-entity-table-view-button').click()
+      await expect(page.locator('.database-entity-table')).toBeVisible()
+
+      page.once('dialog', async (dialog) => {
+        expect(dialog.type()).toBe('prompt')
+        expect(dialog.message()).toMatch(/Name this view|输入视图名称/)
+        await dialog.accept('Beta table')
+      })
+      await page.locator('.database-saved-view-create-button').click()
+
+      await expect(savedViewSelect).not.toHaveValue('')
+      await expect(page.locator('.flash-message')).toContainText(/Beta table/)
+
+      await savedViewSelect.selectOption('')
+      await filterQuery.fill('alpha')
+      await page.locator('.database-entity-cards-view-button').click()
+      await expect.poll(() => getStandaloneEntityTextValues(page)).toEqual(['alpha'])
+
+      await savedViewSelect.selectOption({ label: 'Beta table' })
+      await expect(filterQuery).toHaveValue('beta')
+      await expect(sortSelect).toHaveValue('created-asc')
+      await expect(page.locator('.database-entity-table')).toBeVisible()
+      await expect.poll(() => getStandaloneEntityTableTextValues(page)).toEqual(['beta'])
+
+      page.once('dialog', async (dialog) => {
+        expect(dialog.type()).toBe('confirm')
+        expect(dialog.message()).toMatch(/Delete saved view|确定删除视图/)
+        await dialog.accept()
+      })
+      await page.locator('.database-saved-view-delete-button').click()
+
+      await expect(savedViewSelect).toHaveValue('')
+      await expect(savedViewSelect.locator('option').filter({ hasText: 'Beta table' })).toHaveCount(0)
+    })
+  })
 })

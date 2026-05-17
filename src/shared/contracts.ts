@@ -49,6 +49,22 @@ export interface DocumentDatabase {
   updatedAt: string
 }
 
+export type DatabaseSavedViewSortMode = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc'
+
+export type DatabaseSavedViewLayoutMode = 'cards' | 'table'
+
+export interface DatabaseSavedView {
+  id: string
+  databaseId: string
+  name: string
+  filterQuery: string
+  filterScope: string
+  sortMode: DatabaseSavedViewSortMode
+  viewMode: DatabaseSavedViewLayoutMode
+  createdAt: string
+  updatedAt: string
+}
+
 export interface DatabaseEntity {
   id: string
   databaseId: string
@@ -61,6 +77,24 @@ export interface DatabaseEntity {
 export interface CreateDatabaseInput {
   name: string
   description?: string
+}
+
+export interface CreateDatabaseSavedViewInput {
+  databaseId: string
+  name: string
+  filterQuery?: string
+  filterScope?: string
+  sortMode?: DatabaseSavedViewSortMode
+  viewMode?: DatabaseSavedViewLayoutMode
+}
+
+export interface UpdateDatabaseSavedViewInput {
+  viewId: string
+  name?: string
+  filterQuery?: string
+  filterScope?: string
+  sortMode?: DatabaseSavedViewSortMode
+  viewMode?: DatabaseSavedViewLayoutMode
 }
 
 export interface CreateDocumentDatabaseColumnInput {
@@ -500,6 +534,10 @@ export interface ElectronApi {
   saveSetting: (key: string, value: string) => Promise<void>
   createDocumentDatabase: (input: CreateDatabaseInput) => Promise<DocumentDatabase>
   getDatabases: () => Promise<DocumentDatabase[]>
+  getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>
+  createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
+  updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
+  deleteDatabaseSavedView: (viewId: string) => Promise<void>
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => Promise<DatabaseEntity>
   updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => Promise<void>
   deleteDatabaseEntity: (entityId: string) => Promise<void>

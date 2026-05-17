@@ -205,6 +205,54 @@ test('document database columns and standalone entities stay isolated per databa
   })
 })
 
+test('standalone database saved views persist and update list controls', () => {
+  withStore((store) => {
+    const projectsDatabase = store.createDatabase({
+      name: 'Projects',
+      description: 'Project tracking'
+    })
+
+    const createdView = store.createDatabaseSavedView({
+      databaseId: projectsDatabase.id,
+      name: 'Beta table',
+      filterQuery: 'beta',
+      filterScope: '__document__',
+      sortMode: 'created-asc',
+      viewMode: 'table'
+    })
+
+    assert.equal(store.getDatabaseSavedViews(projectsDatabase.id).length, 1)
+    assert.equal(createdView.filterQuery, 'beta')
+    assert.equal(createdView.filterScope, '__document__')
+    assert.equal(createdView.sortMode, 'created-asc')
+    assert.equal(createdView.viewMode, 'table')
+
+    assert.throws(() => {
+      store.createDatabaseSavedView({
+        databaseId: projectsDatabase.id,
+        name: 'beta table'
+      })
+    }, /already exists/)
+
+    const updatedView = store.updateDatabaseSavedView({
+      viewId: createdView.id,
+      filterQuery: 'alpha',
+      filterScope: '',
+      sortMode: 'updated-desc',
+      viewMode: 'cards'
+    })
+
+    assert.equal(updatedView.name, 'Beta table')
+    assert.equal(updatedView.filterQuery, 'alpha')
+    assert.equal(updatedView.filterScope, '')
+    assert.equal(updatedView.sortMode, 'updated-desc')
+    assert.equal(updatedView.viewMode, 'cards')
+
+    store.deleteDatabaseSavedView(createdView.id)
+    assert.deepEqual(store.getDatabaseSavedViews(projectsDatabase.id), [])
+  })
+})
+
 test('embedding cache supports save/get/delete lifecycle', () => {
   withStore((store, backupRoot) => {
     const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')

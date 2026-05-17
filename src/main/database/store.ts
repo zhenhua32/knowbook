@@ -1,15 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
-import Database from 'better-sqlite3'
 import type {
   AiConfig,
   AskAiInput,
   BlockReferenceResult,
   CreateDatabaseEntityInput,
   CreateDatabaseInput,
+  CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
   DatabaseEntity,
+  DatabaseSavedView,
+  DatabaseSavedViewLayoutMode,
+  DatabaseSavedViewSortMode,
   DeleteDatabaseEntityInput,
   DocumentDatabase,
   DocumentDatabaseColumn,
@@ -27,6 +31,7 @@ import type {
   RecentDocument,
   RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
+  UpdateDatabaseSavedViewInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
@@ -46,6 +51,8 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
+const require = createRequire(import.meta.url)
+const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
 type SqliteDatabase = InstanceType<typeof Database>
 
@@ -87,6 +94,18 @@ interface DocumentDatabaseValueRow {
   document_id: string
   column_id: string
   value_text: string | null
+}
+
+interface DatabaseSavedViewRow {
+  id: string
+  database_id: string
+  name: string
+  filter_query: string
+  filter_scope: string
+  sort_mode: string
+  view_mode: string
+  created_at: string
+  updated_at: string
 }
 
 interface DocumentTreeRow {
@@ -1557,6 +1576,97 @@ export class KnowbookStore {
     }
   }
 
+  private getDatabaseSavedView(viewId: string): DatabaseSavedView {
+    const row = this.db.prepare(`
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      FROM database_saved_views
+      WHERE id = ?
+    `).get(viewId) as DatabaseSavedViewRow | undefined
+
+    if (!row) {
+      throw new Error('Saved view not found.')
+    }
+
+    return this.mapDatabaseSavedViewRow(row)
+  }
+
+  private mapDatabaseSavedViewRow(row: DatabaseSavedViewRow): DatabaseSavedView {
+    return {
+      id: row.id,
+      databaseId: row.database_id,
+      name: row.name,
+      filterQuery: row.filter_query,
+      filterScope: row.filter_scope,
+      sortMode: this.normalizeDatabaseSavedViewSortMode(row.sort_mode),
+      viewMode: this.normalizeDatabaseSavedViewLayoutMode(row.view_mode),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }
+  }
+
+  private assertDatabaseExists(databaseId: string): void {
+    const normalizedDatabaseId = databaseId.trim()
+    const row = normalizedDatabaseId
+      ? this.db.prepare('SELECT id FROM databases WHERE id = ?').get(normalizedDatabaseId) as { id: string } | undefined
+      : undefined
+
+    if (!row) {
+      throw new Error('Database not found.')
+    }
+  }
+
+  private assertDatabaseSavedViewNameAvailable(databaseId: string, name: string, excludeViewId?: string): void {
+    const existing = excludeViewId
+      ? this.db.prepare(`
+          SELECT id
+          FROM database_saved_views
+          WHERE database_id = ?
+            AND name = ? COLLATE NOCASE
+            AND id != ?
+        `).get(databaseId, name, excludeViewId) as { id: string } | undefined
+      : this.db.prepare(`
+          SELECT id
+          FROM database_saved_views
+          WHERE database_id = ?
+            AND name = ? COLLATE NOCASE
+        `).get(databaseId, name) as { id: string } | undefined
+
+    if (existing) {
+      throw new Error('A saved view with this name already exists in this database.')
+    }
+  }
+
+  private normalizeDatabaseSavedViewName(name: string): string {
+    const trimmedName = name.trim()
+    if (!trimmedName) {
+      throw new Error('Saved view name is required.')
+    }
+
+    return trimmedName
+  }
+
+  private normalizeDatabaseSavedViewSortMode(sortMode: string): DatabaseSavedViewSortMode {
+    switch (sortMode) {
+      case 'updated-desc':
+      case 'updated-asc':
+      case 'created-desc':
+      case 'created-asc':
+        return sortMode
+      default:
+        throw new Error(`Unsupported saved view sort mode: ${sortMode}`)
+    }
+  }
+
+  private normalizeDatabaseSavedViewLayoutMode(viewMode: string): DatabaseSavedViewLayoutMode {
+    switch (viewMode) {
+      case 'cards':
+      case 'table':
+        return viewMode
+      default:
+        throw new Error(`Unsupported saved view layout mode: ${viewMode}`)
+    }
+  }
+
   private normalizeDocumentDatabaseColumnType(type: string): DocumentDatabaseColumnType {
     switch (type) {
       case 'text':
@@ -2216,6 +2326,93 @@ export class KnowbookStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }))
+  }
+
+  getDatabaseSavedViews(databaseId: string): DatabaseSavedView[] {
+    const normalizedDatabaseId = databaseId.trim()
+    if (!normalizedDatabaseId) {
+      return []
+    }
+
+    this.assertDatabaseExists(normalizedDatabaseId)
+
+    const rows = this.db.prepare(`
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      FROM database_saved_views
+      WHERE database_id = ?
+      ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+    `).all(normalizedDatabaseId) as DatabaseSavedViewRow[]
+
+    return rows.map((row) => this.mapDatabaseSavedViewRow(row))
+  }
+
+  createDatabaseSavedView(input: CreateDatabaseSavedViewInput): DatabaseSavedView {
+    const databaseId = input.databaseId.trim()
+    this.assertDatabaseExists(databaseId)
+
+    const name = this.normalizeDatabaseSavedViewName(input.name)
+    this.assertDatabaseSavedViewNameAvailable(databaseId, name)
+
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    const filterQuery = input.filterQuery ?? ''
+    const filterScope = input.filterScope?.trim() ?? ''
+    const sortMode = this.normalizeDatabaseSavedViewSortMode(input.sortMode ?? 'updated-desc')
+    const viewMode = this.normalizeDatabaseSavedViewLayoutMode(input.viewMode ?? 'cards')
+
+    this.db.prepare(`
+      INSERT INTO database_saved_views (id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, databaseId, name, filterQuery, filterScope, sortMode, viewMode, now, now)
+
+    return this.getDatabaseSavedView(id)
+  }
+
+  updateDatabaseSavedView(input: UpdateDatabaseSavedViewInput): DatabaseSavedView {
+    const currentRow = this.db.prepare(`
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      FROM database_saved_views
+      WHERE id = ?
+    `).get(input.viewId) as DatabaseSavedViewRow | undefined
+
+    if (!currentRow) {
+      throw new Error('Saved view not found.')
+    }
+
+    const name = input.name !== undefined
+      ? this.normalizeDatabaseSavedViewName(input.name)
+      : currentRow.name
+
+    this.assertDatabaseSavedViewNameAvailable(currentRow.database_id, name, currentRow.id)
+
+    const filterQuery = input.filterQuery !== undefined ? input.filterQuery : currentRow.filter_query
+    const filterScope = input.filterScope !== undefined ? input.filterScope.trim() : currentRow.filter_scope
+    const sortMode = input.sortMode !== undefined
+      ? this.normalizeDatabaseSavedViewSortMode(input.sortMode)
+      : this.normalizeDatabaseSavedViewSortMode(currentRow.sort_mode)
+    const viewMode = input.viewMode !== undefined
+      ? this.normalizeDatabaseSavedViewLayoutMode(input.viewMode)
+      : this.normalizeDatabaseSavedViewLayoutMode(currentRow.view_mode)
+    const now = new Date().toISOString()
+
+    this.db.prepare(`
+      UPDATE database_saved_views
+      SET name = ?, filter_query = ?, filter_scope = ?, sort_mode = ?, view_mode = ?, updated_at = ?
+      WHERE id = ?
+    `).run(name, filterQuery, filterScope, sortMode, viewMode, now, currentRow.id)
+
+    return this.getDatabaseSavedView(currentRow.id)
+  }
+
+  deleteDatabaseSavedView(viewId: string): void {
+    const result = this.db.prepare(`
+      DELETE FROM database_saved_views
+      WHERE id = ?
+    `).run(viewId)
+
+    if (result.changes === 0) {
+      throw new Error('Saved view not found.')
+    }
   }
 
   createDatabase(input: CreateDatabaseInput): DocumentDatabase {

@@ -1,6 +1,9 @@
-import { app } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electron from 'electron'
+import electronUpdater from 'electron-updater'
 import type { AppUpdateState } from '@shared/contracts'
+
+const { app } = electron
+const { autoUpdater } = electronUpdater
 
 function canUseAutoUpdates(): boolean {
   return app.isPackaged && !process.env['ELECTRON_RENDERER_URL']

@@ -1,12 +1,14 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import electron from 'electron'
 import type {
   AppUpdateState,
   AskAiInput,
   AskAiResult,
   BackupResult,
   BlockReferenceResult,
+  CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
   CreateDocumentResult,
+  DatabaseSavedView,
   DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDetail,
@@ -28,12 +30,15 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
+  UpdateDatabaseSavedViewInput,
   UpdatePluginSettingInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput
 } from '@shared/contracts'
+
+const { contextBridge, ipcRenderer } = electron
 
 const api: ElectronApi = {
   getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
@@ -73,6 +78,10 @@ const api: ElectronApi = {
   searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   createDocumentDatabase: (input: CreateDatabaseInput) => ipcRenderer.invoke('knowbook:create-document-database', input) as Promise<DocumentDatabase>,
   getDatabases: () => ipcRenderer.invoke('knowbook:get-databases') as Promise<DocumentDatabase[]>,
+  getDatabaseSavedViews: (databaseId: string) => ipcRenderer.invoke('knowbook:get-database-saved-views', databaseId) as Promise<DatabaseSavedView[]>,
+  createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => ipcRenderer.invoke('knowbook:create-database-saved-view', input) as Promise<DatabaseSavedView>,
+  updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => ipcRenderer.invoke('knowbook:update-database-saved-view', input) as Promise<DatabaseSavedView>,
+  deleteDatabaseSavedView: (viewId: string) => ipcRenderer.invoke('knowbook:delete-database-saved-view', viewId) as Promise<void>,
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:create-database-entity', input) as Promise<DatabaseEntity>,
   updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:update-database-entity', input) as Promise<void>,
   deleteDatabaseEntity: (entityId: string) => ipcRenderer.invoke('knowbook:delete-database-entity', entityId) as Promise<void>,
