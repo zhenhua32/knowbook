@@ -19,6 +19,8 @@
     "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
     "dist:linux": "npm run build && electron-builder --linux AppImage --publish never",
     "release": "npm run build && electron-builder --publish always",
+    "release:preflight": "node scripts/release-preflight.mjs",
+    "release:verify-local": "npm run dist && node scripts/release-preflight.mjs --require-artifacts",
     "preview": "electron-vite preview",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\"",
     "test:e2e": "npm run build && playwright test --grep @electron",
