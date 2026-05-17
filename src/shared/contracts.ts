@@ -325,6 +325,31 @@ export interface InstallPluginResult {
   previousVersion: string | null
 }
 
+export type AppUpdateStatus =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+  | 'unsupported'
+
+export interface AppUpdateState {
+  status: AppUpdateStatus
+  currentVersion: string
+  availableVersion: string | null
+  downloadedVersion: string | null
+  releaseName: string | null
+  releaseNotes: string | null
+  checkedAt: string | null
+  progressPercent: number | null
+  message: string
+  error: string | null
+  updatesEnabled: boolean
+  canInstall: boolean
+}
+
 export interface HomeData {
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
@@ -442,6 +467,9 @@ export interface UpdatePluginSettingInput {
 
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
+  getAppUpdateState: () => Promise<AppUpdateState>
+  checkForAppUpdates: () => Promise<AppUpdateState>
+  installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>

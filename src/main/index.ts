@@ -38,6 +38,7 @@ import { MarkdownBackupService } from './backup/exporter'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
+import { AppUpdateManager } from './update-manager'
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 
@@ -55,6 +56,7 @@ const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
   { path: join(userDataRoot, 'plugins'), source: 'user-data' }
 ])
+const appUpdateManager = new AppUpdateManager()
 
 type SemanticContextNote = SemanticSearchResult & {
   content: string
@@ -162,6 +164,18 @@ function registerIpcHandlers(): void {
       pluginHost: pluginData.host
     }
     return data
+  })
+
+  ipcMain.handle('knowbook:get-app-update-state', () => {
+    return appUpdateManager.getState()
+  })
+
+  ipcMain.handle('knowbook:check-for-app-updates', async () => {
+    return appUpdateManager.checkForUpdates()
+  })
+
+  ipcMain.handle('knowbook:install-app-update', () => {
+    appUpdateManager.installUpdate()
   })
 
   ipcMain.handle('knowbook:get-document-detail', (_event, documentId: string) => {
@@ -982,10 +996,12 @@ function startBackupSchedule(): void {
 
 app.whenReady().then(async () => {
   await pluginHost.loadAll()
+  appUpdateManager.initialize()
   registerWorkspaceEventHandlers()
   registerIpcHandlers()
   createWindow()
   startBackupSchedule()
+  appUpdateManager.scheduleStartupCheck()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

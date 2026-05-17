@@ -8,6 +8,7 @@ import {
   type BoardDropTarget
 } from '@shared/board'
 import type {
+  AppUpdateState,
   BackupResult,
   BlockReferenceResult,
   DatabaseEntity,
@@ -1201,6 +1202,8 @@ export function App() {
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
+  const [appUpdateRefreshing, setAppUpdateRefreshing] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
@@ -1240,6 +1243,33 @@ export function App() {
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
+
+  function getAppUpdateStatusText(state: AppUpdateState | null): string {
+    if (!state) {
+      return ui.common.loading
+    }
+
+    switch (state.status) {
+      case 'idle':
+        return ui.updateStatusIdle
+      case 'checking':
+        return ui.updateStatusChecking
+      case 'available':
+        return ui.updateStatusAvailable(state.availableVersion)
+      case 'downloading':
+        return ui.updateStatusDownloading(state.progressPercent)
+      case 'downloaded':
+        return ui.updateStatusDownloaded(state.downloadedVersion ?? state.availableVersion)
+      case 'not-available':
+        return ui.updateStatusNotAvailable
+      case 'unsupported':
+        return ui.updateStatusUnsupported
+      case 'error':
+        return ui.updateStatusError(state.error)
+      default:
+        return state.message
+    }
+  }
 
   function flashHighlightedBlock(blockId: string) {
     setHighlightedBlockId(blockId)
@@ -1600,6 +1630,14 @@ export function App() {
       }
     })
 
+    window.knowbook.getAppUpdateState().then((state) => {
+      if (mounted) {
+        setAppUpdateState(state)
+      }
+    }).catch((error) => {
+      console.warn('Failed to load app update state.', error)
+    })
+
     window.knowbook.getDatabases().then((items) => {
       if (mounted) {
         setDatabases(items)
@@ -1663,6 +1701,37 @@ export function App() {
       mounted = false
     }
   }, [databaseEntityDatabaseId])
+
+  useEffect(() => {
+    if (activePage !== 'settings') {
+      return
+    }
+
+    let cancelled = false
+
+    const refresh = async () => {
+      try {
+        const state = await window.knowbook.getAppUpdateState()
+        if (!cancelled) {
+          setAppUpdateState(state)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to refresh app update state.', error)
+        }
+      }
+    }
+
+    void refresh()
+    const timer = setInterval(() => {
+      void refresh()
+    }, 4000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [activePage])
 
   useEffect(() => {
     const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
@@ -2436,6 +2505,33 @@ export function App() {
     setAiApiKeyDraft('')
     setAiSaving(false)
     setBackupMessage(ui.aiSettingsSaved)
+  }
+
+  async function checkForAppUpdates() {
+    setAppUpdateRefreshing(true)
+    try {
+      const nextState = await window.knowbook.checkForAppUpdates()
+      setAppUpdateState(nextState)
+      setBackupMessage(ui.appUpdateCheckStarted)
+    } catch (error) {
+      const message = error instanceof Error
+        ? `${ui.appUpdateCheckFailed} ${error.message}`
+        : ui.appUpdateCheckFailed
+      setBackupMessage(message)
+    } finally {
+      setAppUpdateRefreshing(false)
+    }
+  }
+
+  async function installAppUpdate() {
+    try {
+      await window.knowbook.installAppUpdate()
+    } catch (error) {
+      const message = error instanceof Error
+        ? `${ui.appUpdateInstallFailed} ${error.message}`
+        : ui.appUpdateInstallFailed
+      setBackupMessage(message)
+    }
   }
 
   async function setPluginEnabled(plugin: PluginDescriptor, enabled: boolean) {
@@ -5996,6 +6092,65 @@ return (
                 <button className="primary-button" onClick={handleBackup} type="button">
                   {ui.runBackupNow}
                 </button>
+                <div
+                  style={{
+                    marginTop: '8px',
+                    padding: '16px',
+                    borderRadius: '18px',
+                    border: '1px solid rgba(91, 72, 44, 0.18)',
+                    background: 'rgba(255, 252, 246, 0.86)',
+                    display: 'grid',
+                    gap: '12px'
+                  }}
+                >
+                  <div>
+                    <p className="panel-label">{ui.appUpdateLabel}</p>
+                    <h3 style={{ margin: '4px 0 0' }}>{ui.appUpdateTitle}</h3>
+                    <p style={{ margin: '8px 0 0', color: 'rgba(91, 72, 44, 0.76)' }}>{ui.appUpdateDescription}</p>
+                  </div>
+                  <dl className="meta-grid">
+                    <div>
+                      <dt>{ui.currentVersionLabel}</dt>
+                      <dd>{appUpdateState?.currentVersion ?? ui.initializing}</dd>
+                    </div>
+                    <div>
+                      <dt>{ui.availableVersionLabel}</dt>
+                      <dd>{appUpdateState?.downloadedVersion ?? appUpdateState?.availableVersion ?? ui.common.none}</dd>
+                    </div>
+                    <div>
+                      <dt>{ui.updateStatusField}</dt>
+                      <dd>{getAppUpdateStatusText(appUpdateState)}</dd>
+                    </div>
+                    <div>
+                      <dt>{ui.lastCheckedLabel}</dt>
+                      <dd>{appUpdateState?.checkedAt ? new Date(appUpdateState.checkedAt).toLocaleString(ui.locale) : ui.notCheckedYet}</dd>
+                    </div>
+                  </dl>
+                  <div>
+                    <strong>{ui.releaseNotesLabel}</strong>
+                    <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', color: 'rgba(91, 72, 44, 0.8)' }}>
+                      {appUpdateState?.releaseNotes ?? ui.noReleaseNotes}
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <button
+                      className="secondary-button"
+                      disabled={appUpdateRefreshing || appUpdateState?.status === 'checking' || appUpdateState?.updatesEnabled === false}
+                      onClick={checkForAppUpdates}
+                      type="button"
+                    >
+                      {appUpdateRefreshing || appUpdateState?.status === 'checking' ? ui.checkingForUpdates : ui.checkForUpdates}
+                    </button>
+                    <button
+                      className="primary-button"
+                      disabled={!appUpdateState?.canInstall}
+                      onClick={installAppUpdate}
+                      type="button"
+                    >
+                      {ui.installUpdateNow}
+                    </button>
+                  </div>
+                </div>
               </div>
             ) : null}
           </article>

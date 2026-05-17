@@ -159,6 +159,40 @@ function createUiText(language: UiLanguage) {
       ? '自动摘要只会在文档保存时触发，并且仅在当前摘要为空或仍为默认占位内容时运行。'
       : 'Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.',
     saveAiSettings: zh ? '保存 AI 设置' : 'Save AI settings',
+    appUpdateLabel: zh ? '应用更新' : 'App updates',
+    appUpdateTitle: zh ? '桌面版本更新' : 'Desktop version updates',
+    appUpdateDescription: zh
+      ? '打包后的应用会在启动后后台检查 GitHub Releases；发现新版本后会自动下载，并在下载完成后提供安装入口。'
+      : 'Packaged builds check GitHub Releases after startup, download new versions in the background, and expose an install action once the update is ready.',
+    currentVersionLabel: zh ? '当前版本' : 'Current version',
+    availableVersionLabel: zh ? '可用版本' : 'Available version',
+    updateStatusField: zh ? '更新状态' : 'Update status',
+    lastCheckedLabel: zh ? '最近检查' : 'Last checked',
+    releaseNotesLabel: zh ? '更新说明' : 'Release notes',
+    notCheckedYet: zh ? '尚未检查' : 'Not checked yet',
+    noReleaseNotes: zh ? '当前没有可展示的更新说明。' : 'No release notes are available right now.',
+    checkForUpdates: zh ? '检查更新' : 'Check for updates',
+    checkingForUpdates: zh ? '检查中...' : 'Checking...',
+    installUpdateNow: zh ? '安装更新并重启' : 'Install update and restart',
+    updateStatusIdle: zh ? '已就绪，可手动检查更新。' : 'Ready to check for updates.',
+    updateStatusChecking: zh ? '正在检查新版本...' : 'Checking for a newer version...',
+    updateStatusAvailable: (version: string | null) => zh
+      ? `发现新版本${version ? ` ${version}` : ''}，正在后台下载。`
+      : `Update${version ? ` ${version}` : ''} found. Downloading in background.`,
+    updateStatusDownloading: (progress: number | null) => zh
+      ? `正在下载更新${progress !== null ? `（${progress}%）` : ''}。`
+      : `Downloading update${progress !== null ? ` (${progress}%)` : ''}.`,
+    updateStatusDownloaded: (version: string | null) => zh
+      ? `新版本${version ? ` ${version}` : ''}已下载，安装后会重启应用。`
+      : `Update${version ? ` ${version}` : ''} is downloaded and ready to install.`,
+    updateStatusNotAvailable: zh ? '当前已经是最新版本。' : 'You already have the latest version.',
+    updateStatusUnsupported: zh ? '自动更新只在打包后的桌面应用中可用。' : 'Auto updates are only available in packaged desktop builds.',
+    updateStatusError: (message: string | null) => zh
+      ? `更新检查失败${message ? `：${message}` : '。'}`
+      : `Update check failed${message ? `: ${message}` : '.'}`,
+    appUpdateCheckStarted: zh ? '已开始检查更新。' : 'Started checking for updates.',
+    appUpdateCheckFailed: zh ? '检查更新失败。' : 'Failed to check for updates.',
+    appUpdateInstallFailed: zh ? '安装更新失败。' : 'Failed to install the downloaded update.',
     automationFeedLabel: zh ? '自动化事件流' : 'Automation feed',
     recentEventsTitle: zh ? '最近事件' : 'Recent events',
     noAutomationEvents: zh ? '还没有自动化事件。' : 'No automation events yet.',

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
+  AppUpdateState,
   AskAiInput,
   AskAiResult,
   BackupResult,
@@ -36,6 +37,9 @@ import type {
 
 const api: ElectronApi = {
   getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
+  getAppUpdateState: () => ipcRenderer.invoke('knowbook:get-app-update-state') as Promise<AppUpdateState>,
+  checkForAppUpdates: () => ipcRenderer.invoke('knowbook:check-for-app-updates') as Promise<AppUpdateState>,
+  installAppUpdate: () => ipcRenderer.invoke('knowbook:install-app-update') as Promise<void>,
   getDocumentDetail: (documentId: string) => ipcRenderer.invoke('knowbook:get-document-detail', documentId) as Promise<DocumentDetail | null>,
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
