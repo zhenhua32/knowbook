@@ -59,6 +59,48 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare Windows signing certificate
+        if: ${{ runner.os == 'Windows' && secrets.WINDOWS_CERTIFICATE_PFX_BASE64 != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $certificateDirectory = Join-Path $env:RUNNER_TEMP 'signing'
+          New-Item -ItemType Directory -Force -Path $certificateDirectory | Out-Null
+          $certificatePath = Join-Path $certificateDirectory 'windows-signing.pfx'
+          [System.IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64))
+          "WIN_CSC_LINK=$certificatePath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "WIN_CSC_KEY_PASSWORD=$env:WINDOWS_CERTIFICATE_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Prepare macOS signing certificate
+        if: ${{ runner.os == 'macOS' && secrets.MACOS_CERTIFICATE_P12_BASE64 != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' }}
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/macos-signing.p12"
+          node -e "const fs = require('node:fs'); fs.writeFileSync(process.argv[1], Buffer.from(process.env.MACOS_CERTIFICATE_P12_BASE64, 'base64'));" "$CERTIFICATE_PATH"
+          {
+            echo "CSC_LINK=$CERTIFICATE_PATH"
+            echo "CSC_KEY_PASSWORD=$MACOS_CERTIFICATE_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare Apple notarization credentials
+        if: ${{ runner.os == 'macOS' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          {
+            echo "APPLE_ID=$APPLE_ID"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=$APPLE_APP_SPECIFIC_PASSWORD"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+          } >> "$GITHUB_ENV"
+
       - name: Build local distributables
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npm run dist
