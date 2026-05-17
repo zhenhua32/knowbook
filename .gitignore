@@ -10,3 +10,6 @@ release/
 Thumbs.db
 playwright-report/
 
+*.zip
+*.exe
+*.tar.gz
