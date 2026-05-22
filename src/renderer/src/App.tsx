@@ -2152,7 +2152,15 @@ export function App() {
       }
 
       await refreshWorkspaceAfterStorageMutation()
-      setBackupMessage(ui.backupRestored(result.restored, result.created, result.updated, result.placeholdersCreated, result.at))
+      setBackupMessage(ui.backupRestored(
+        result.restored,
+        result.created,
+        result.updated,
+        result.deleted,
+        result.conflictsResolved,
+        result.placeholdersCreated,
+        result.at
+      ))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.backupRestoreFailed
       setBackupMessage(message)

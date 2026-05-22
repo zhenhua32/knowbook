@@ -469,6 +469,21 @@ export class KnowbookStore {
     }
   }
 
+  getAllDocumentSnapshots(): Array<{ id: string; title: string; path: string; parentId: string | null }> {
+    const rows = this.db.prepare(`
+      SELECT id, title, path, parent_id
+      FROM documents
+      ORDER BY path ASC
+    `).all() as DocumentPathRow[]
+
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      parentId: row.parent_id ?? null
+    }))
+  }
+
   createDocument(parentId: string | null): string {
     const now = new Date().toISOString()
     const title = this.generateSiblingTitle(parentId, 'Untitled')

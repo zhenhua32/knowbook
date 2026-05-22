@@ -413,6 +413,8 @@ export interface BackupRestoreResult {
   restored: number
   created: number
   updated: number
+  deleted: number
+  conflictsResolved: number
   placeholdersCreated: number
   root: string
   at: string

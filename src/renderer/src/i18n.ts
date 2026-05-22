@@ -519,9 +519,9 @@ function createUiText(language: UiLanguage) {
     backupExported: (count: number, at: string) => zh
       ? `已导出 ${count} 个 Markdown 文件，时间：${new Date(at).toLocaleString(locale)}。`
       : `Exported ${count} markdown files at ${new Date(at).toLocaleString(locale)}.`,
-    backupRestored: (restored: number, created: number, updated: number, placeholders: number, at: string) => zh
-      ? `已恢复 ${restored} 个备份文档（新建 ${created}，更新 ${updated}，补父级占位 ${placeholders}），时间：${new Date(at).toLocaleString(locale)}。`
-      : `Restored ${restored} backup documents (${created} created, ${updated} updated, ${placeholders} parent placeholders) at ${new Date(at).toLocaleString(locale)}.`,
+    backupRestored: (restored: number, created: number, updated: number, deleted: number, conflicts: number, placeholders: number, at: string) => zh
+      ? `已恢复 ${restored} 个备份文档（新建 ${created}，更新 ${updated}，删除过期文档 ${deleted}，解决路径冲突 ${conflicts}，补父级占位 ${placeholders}），时间：${new Date(at).toLocaleString(locale)}。`
+      : `Restored ${restored} backup documents (${created} created, ${updated} updated, ${deleted} stale deleted, ${conflicts} conflicts resolved, ${placeholders} parent placeholders) at ${new Date(at).toLocaleString(locale)}.`,
     backupRestoreFailed: zh ? '恢复备份失败。' : 'Failed to restore backup.',
     cannotSaveInvalidBlockTree: (errors: string[]) => zh
       ? `无法保存：块树结构无效。${errors.join('；')}`

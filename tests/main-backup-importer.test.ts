@@ -68,6 +68,8 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
     const restoreResult = new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot)
     assert.equal(restoreResult.restored, exportedCount)
     assert.equal(restoreResult.created + restoreResult.updated, exportedCount)
+    assert.equal(restoreResult.deleted, 0)
+    assert.equal(restoreResult.conflictsResolved, 0)
     assert.equal(restoreResult.placeholdersCreated, 0)
     assert.equal(restoreResult.created >= 2, true)
 
@@ -100,6 +102,92 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
   } finally {
     sourceStore.destroy()
     targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService resolves path conflicts and deletes stale documents inside the restore scope', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-conflict-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const initialCatalog = store.getHomeData(backupRoot).documentCatalog
+    const product = byPath(initialCatalog, 'Home/Product')
+    const specsId = store.createDocument(product.id)
+    const notesId = store.createDocument(product.id)
+
+    store.updateDocument(specsId, {
+      title: 'Specs',
+      summary: 'Specs backup summary',
+      blocks: [
+        { id: 'spec-root', type: 'heading-1', content: 'Specs', checked: false, depth: 0 },
+        { id: 'spec-task', type: 'todo', content: 'Canonical backup node', checked: false, depth: 0 }
+      ]
+    })
+
+    store.updateDocument(notesId, {
+      title: 'Notes',
+      summary: 'Notes backup summary',
+      blocks: [
+        { id: 'notes-root', type: 'heading-1', content: 'Notes', checked: false, depth: 0 },
+        { id: 'notes-body', type: 'paragraph', content: 'Original notes content', checked: false, depth: 0 }
+      ]
+    })
+
+    new MarkdownBackupService(store, backupRoot).exportAll()
+
+    const staleId = store.createDocument(product.id)
+    store.updateDocument(staleId, {
+      title: 'Obsolete',
+      summary: 'Should be deleted by restore sync',
+      blocks: [{ id: 'obsolete-root', type: 'heading-1', content: 'Obsolete', checked: false, depth: 0 }]
+    })
+
+    store.updateDocument(specsId, {
+      title: 'Specs Archive',
+      summary: 'Locally moved away',
+      blocks: [
+        { id: 'spec-root', type: 'heading-1', content: 'Specs Archive', checked: false, depth: 0 },
+        { id: 'spec-task', type: 'todo', content: 'Locally moved away', checked: false, depth: 0 }
+      ]
+    })
+
+    store.updateDocument(notesId, {
+      title: 'Specs',
+      summary: 'Temporarily occupying the canonical path',
+      blocks: [
+        { id: 'notes-root', type: 'heading-1', content: 'Specs', checked: false, depth: 0 },
+        { id: 'notes-body', type: 'paragraph', content: 'Occupying canonical path', checked: false, depth: 0 }
+      ]
+    })
+
+    const restoreResult = new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
+
+    assert.equal(restoreResult.deleted, 1)
+    assert.equal(restoreResult.conflictsResolved, 1)
+
+    const refreshedCatalog = store.getHomeData(backupRoot).documentCatalog
+    const restoredSpecs = refreshedCatalog.find((entry) => entry.id === specsId)
+    const restoredNotes = refreshedCatalog.find((entry) => entry.id === notesId)
+    const staleDocument = refreshedCatalog.find((entry) => entry.id === staleId)
+
+    assert.ok(restoredSpecs)
+    assert.ok(restoredNotes)
+    assert.equal(restoredSpecs.path, 'Home/Product/Specs')
+    assert.equal(restoredNotes.path, 'Home/Product/Notes')
+    assert.equal(staleDocument, undefined)
+
+    const specsDetail = store.getDocumentDetail(specsId)
+    const notesDetail = store.getDocumentDetail(notesId)
+    assert.ok(specsDetail)
+    assert.ok(notesDetail)
+    assert.equal(specsDetail.summary, 'Specs backup summary')
+    assert.equal(notesDetail.summary, 'Notes backup summary')
+    assert.equal(byBlockId(specsDetail, 'spec-task').content, 'Canonical backup node')
+    assert.equal(byBlockId(notesDetail, 'notes-body').content, 'Original notes content')
+  } finally {
+    store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
