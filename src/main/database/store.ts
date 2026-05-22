@@ -253,6 +253,7 @@ export interface ExportDocument {
     parentBlockId: string | null
     sortOrder: number
     language?: string
+    highlight?: string
   }>
 }
 
@@ -436,6 +437,25 @@ export class KnowbookStore {
       FROM documents
       WHERE id = ?
     `).get(documentId) as DocumentPathRow | undefined
+
+    if (!row) {
+      return null
+    }
+
+    return {
+      id: row.id,
+      title: row.title,
+      path: row.path,
+      parentId: row.parent_id ?? null
+    }
+  }
+
+  getDocumentSnapshotByPath(path: string): { id: string; title: string; path: string; parentId: string | null } | null {
+    const row = this.db.prepare(`
+      SELECT id, title, path, parent_id
+      FROM documents
+      WHERE path = ?
+    `).get(path) as DocumentPathRow | undefined
 
     if (!row) {
       return null
@@ -1843,6 +1863,9 @@ export class KnowbookStore {
     const normalized = blocks
       .map((block) => {
         const type = block.type.trim() || 'paragraph'
+        const normalizedLanguage = type === 'code' && typeof block.language === 'string' && block.language.trim()
+          ? block.language.trim()
+          : undefined
         return {
           id: block.id,
           type,
@@ -1851,6 +1874,7 @@ export class KnowbookStore {
           depth: this.normalizeNestableDepth(type, block.depth ?? 0),
           parentBlockId: block.parentBlockId ?? null,
           tags: this.normalizeBlockTags(block.tags),
+          language: normalizedLanguage,
           highlight: this.normalizeBlockHighlight(block.highlight)
         }
       })

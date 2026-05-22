@@ -6,6 +6,7 @@ import type {
   AskAiInput,
   AskAiResult,
   BackupResult,
+  BackupRestoreResult,
   CreateDatabaseInput,
   CreateDatabaseEntityInput,
   CreateDatabaseSavedViewInput,
@@ -38,6 +39,7 @@ import type {
 } from '@shared/contracts'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { MarkdownBackupService } from './backup/exporter'
+import { MarkdownRestoreService } from './backup/importer'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
@@ -57,6 +59,7 @@ const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
+const restoreService = new MarkdownRestoreService(store)
 const workspaceEventBus = new WorkspaceEventBus()
 const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
@@ -460,6 +463,24 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:trigger-backup', () => {
     const result: BackupResult = backupService.exportAll()
     return result
+  })
+
+  ipcMain.handle('knowbook:restore-backup-from-folder', async (event): Promise<BackupRestoreResult | null> => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+    const openDialogOptions: OpenDialogOptions = {
+      title: '选择备份目录',
+      buttonLabel: '恢复备份',
+      properties: ['openDirectory']
+    }
+    const result = targetWindow
+      ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
+      : await dialog.showOpenDialog(openDialogOptions)
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+
+    return restoreService.restoreFromDirectory(result.filePaths[0])
   })
 
   ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {

@@ -230,6 +230,7 @@ function createUiText(language: UiLanguage) {
       ? 'SQLite 仍是单一事实源，Markdown 备份会导出为树形目录，renderer 现在已经可以经由 preload bridge 浏览文档层级并检查文档关系。'
       : 'SQLite remains the source of truth, markdown backups export into a nested tree, and the renderer can now browse document hierarchy and inspect document relationships over the preload bridge.',
     runBackupNow: zh ? '立即执行备份' : 'Run backup now',
+    restoreBackup: zh ? '恢复备份' : 'Restore backup',
     documentsLabel: zh ? '文档数' : 'Documents',
     blocksLabel: zh ? '块数' : 'Blocks',
     linksLabel: zh ? '链接数' : 'Links',
@@ -518,6 +519,10 @@ function createUiText(language: UiLanguage) {
     backupExported: (count: number, at: string) => zh
       ? `已导出 ${count} 个 Markdown 文件，时间：${new Date(at).toLocaleString(locale)}。`
       : `Exported ${count} markdown files at ${new Date(at).toLocaleString(locale)}.`,
+    backupRestored: (restored: number, created: number, updated: number, placeholders: number, at: string) => zh
+      ? `已恢复 ${restored} 个备份文档（新建 ${created}，更新 ${updated}，补父级占位 ${placeholders}），时间：${new Date(at).toLocaleString(locale)}。`
+      : `Restored ${restored} backup documents (${created} created, ${updated} updated, ${placeholders} parent placeholders) at ${new Date(at).toLocaleString(locale)}.`,
+    backupRestoreFailed: zh ? '恢复备份失败。' : 'Failed to restore backup.',
     cannotSaveInvalidBlockTree: (errors: string[]) => zh
       ? `无法保存：块树结构无效。${errors.join('；')}`
       : `Cannot save: invalid block tree structure. ${errors.join('; ')}`,

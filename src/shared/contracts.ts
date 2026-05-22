@@ -409,6 +409,15 @@ export interface BackupResult {
   at: string
 }
 
+export interface BackupRestoreResult {
+  restored: number
+  created: number
+  updated: number
+  placeholdersCreated: number
+  root: string
+  at: string
+}
+
 export interface CreateDocumentResult {
   id: string
 }
@@ -528,6 +537,7 @@ export interface ElectronApi {
   updatePluginSetting: (input: UpdatePluginSettingInput) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   triggerBackup: () => Promise<BackupResult>
+  restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>
   saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>
   getSetting: (key: string) => Promise<string | null>

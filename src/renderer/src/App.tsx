@@ -2125,8 +2125,7 @@ export function App() {
     }
   })()
 
-  async function handleBackup() {
-    const result: BackupResult = await window.knowbook.triggerBackup()
+  async function refreshWorkspaceAfterStorageMutation() {
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
     const nextDocumentId = selectedDocumentId ?? refreshed.initialDocumentId
@@ -2137,7 +2136,27 @@ export function App() {
       const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
       setSelectedDocument(detail)
     }
+  }
+
+  async function handleBackup() {
+    const result: BackupResult = await window.knowbook.triggerBackup()
+    await refreshWorkspaceAfterStorageMutation()
     setBackupMessage(ui.backupExported(result.exported, result.at))
+  }
+
+  async function handleRestoreBackup() {
+    try {
+      const result = await window.knowbook.restoreBackupFromFolder()
+      if (!result) {
+        return
+      }
+
+      await refreshWorkspaceAfterStorageMutation()
+      setBackupMessage(ui.backupRestored(result.restored, result.created, result.updated, result.placeholdersCreated, result.at))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.backupRestoreFailed
+      setBackupMessage(message)
+    }
   }
 
   async function handleCreateDocument(parentId: string | null) {
@@ -4762,9 +4781,14 @@ return (
               <h2>{ui.workspaceStatusTitle}</h2>
               <p className="hero-copy">{ui.workspaceStatusBody}</p>
             </div>
-            <button className="primary-button" onClick={handleBackup} type="button">
-              {ui.runBackupNow}
-            </button>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button className="secondary-button" onClick={handleRestoreBackup} type="button">
+                {ui.restoreBackup}
+              </button>
+              <button className="primary-button" onClick={handleBackup} type="button">
+                {ui.runBackupNow}
+              </button>
+            </div>
           </section>
         ) : null}
 
@@ -6251,6 +6275,9 @@ return (
                 </button>
                 <button className="secondary-button" onClick={() => setActivePage('plugins')} type="button">
                   {isZh ? '打开插件中心' : 'Open plugin center'}
+                </button>
+                <button className="secondary-button" onClick={handleRestoreBackup} type="button">
+                  {ui.restoreBackup}
                 </button>
                 <button className="primary-button" onClick={handleBackup} type="button">
                   {ui.runBackupNow}
