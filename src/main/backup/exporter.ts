@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { BackupResult } from '@shared/contracts'
-import { serializeBlocksToMarkdown } from '@shared/markdown'
+import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
 import type { ExportDocument, KnowbookStore } from '../database/store'
 
 export class MarkdownBackupService {
@@ -33,19 +33,17 @@ export class MarkdownBackupService {
   }
 
   private renderMarkdown(document: ExportDocument): string {
-    const frontmatter = [
-      '---',
-      `id: ${document.id}`,
-      `title: ${document.title}`,
-      `path: ${document.path}`,
-      `updatedAt: ${document.updatedAt}`,
-      `summary: ${document.summary}`,
-      '---',
-      ''
-    ].join('\n')
+    const frontmatter = renderMarkdownFrontmatter({
+      id: document.id,
+      title: document.title,
+      path: document.path,
+      updatedAt: document.updatedAt,
+      summary: document.summary
+    })
 
     const body = serializeBlocksToMarkdown(document.blocks, {
-      fallbackCodeLanguage: 'txt'
+      fallbackCodeLanguage: 'txt',
+      includeBlockMetadata: true
     })
 
     return `${frontmatter}${body}\n`

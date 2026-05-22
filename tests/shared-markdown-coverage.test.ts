@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
+import { parseMarkdownBackupDocument, renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
 
 test('serializeBlocksToMarkdown renders all major block types', () => {
   const output = serializeBlocksToMarkdown([
@@ -69,4 +69,64 @@ test('serializeBlocksToMarkdown falls back to root-level when parent references 
   ])
 
   assert.equal(output, '- Top\n\n- Broken parent but still nested\n\n- Keeps nesting from stack')
+})
+
+test('parseMarkdownBackupDocument round-trips frontmatter and block metadata', () => {
+  const markdown = [
+    renderMarkdownFrontmatter({
+      id: 'doc-1',
+      title: 'Roadmap: 2026',
+      path: 'Root/Roadmap',
+      updatedAt: '2026-05-22T00:00:00.000Z',
+      summary: 'Line 1:\nLine 2'
+    }),
+    serializeBlocksToMarkdown([
+      { id: 'root', type: 'bulleted-list', content: 'Parent', depth: 0, tags: ['alpha', 'beta'], highlight: 'Yellow' },
+      { id: 'child', type: 'bulleted-list', content: 'Child', depth: 0, parentBlockId: 'root' },
+      { id: 'code', type: 'code', content: 'SELECT 1', depth: 0, language: null }
+    ], {
+      fallbackCodeLanguage: 'txt',
+      includeBlockMetadata: true
+    })
+  ].join('')
+
+  const parsed = parseMarkdownBackupDocument(markdown)
+
+  assert.deepEqual(parsed.frontmatter, {
+    id: 'doc-1',
+    title: 'Roadmap: 2026',
+    path: 'Root/Roadmap',
+    updatedAt: '2026-05-22T00:00:00.000Z',
+    summary: 'Line 1:\nLine 2'
+  })
+
+  assert.deepEqual(parsed.blocks, [
+    {
+      id: 'root',
+      type: 'bulleted-list',
+      content: 'Parent',
+      checked: false,
+      depth: 0,
+      parentBlockId: null,
+      tags: ['alpha', 'beta'],
+      highlight: 'yellow'
+    },
+    {
+      id: 'child',
+      type: 'bulleted-list',
+      content: 'Child',
+      checked: false,
+      depth: 1,
+      parentBlockId: 'root'
+    },
+    {
+      id: 'code',
+      type: 'code',
+      content: 'SELECT 1',
+      checked: false,
+      depth: 0,
+      parentBlockId: null,
+      language: 'txt'
+    }
+  ])
 })

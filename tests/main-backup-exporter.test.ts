@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
+import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
 
 test('MarkdownBackupService exports nested markdown files and persists backup timestamp', () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-test-'))
@@ -58,12 +59,44 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
 
     const rootContent = readFileSync(rootFile, 'utf8')
     const childContent = readFileSync(childFile, 'utf8')
+    const parsedRoot = parseMarkdownBackupDocument(rootContent)
+    const parsedChild = parseMarkdownBackupDocument(childContent)
 
-    assert.equal(rootContent.includes('id: doc-1'), true)
-    assert.equal(rootContent.includes('summary: Root summary'), true)
+    assert.deepEqual(parsedRoot.frontmatter, {
+      id: 'doc-1',
+      title: 'Root',
+      path: 'Root',
+      updatedAt: '2026-05-02T00:00:00.000Z',
+      summary: 'Root summary'
+    })
     assert.equal(rootContent.includes('```txt\nSELECT 1\n```'), true)
+    assert.equal(parsedRoot.blocks[0]?.id, 'b1')
+    assert.equal(parsedRoot.blocks[1]?.id, 'b2')
+    assert.equal(parsedRoot.blocks[1]?.language, 'txt')
 
-    assert.equal(childContent.includes('- Item\n\n  - Nested'), true)
+    assert.equal(childContent.includes('- Item'), true)
+    assert.deepEqual(parsedChild.blocks.map((block) => ({
+      id: block.id,
+      type: block.type,
+      content: block.content,
+      depth: block.depth,
+      parentBlockId: block.parentBlockId
+    })), [
+      {
+        id: 'b3',
+        type: 'bulleted-list',
+        content: 'Item',
+        depth: 0,
+        parentBlockId: null
+      },
+      {
+        id: 'b4',
+        type: 'bulleted-list',
+        content: 'Nested',
+        depth: 1,
+        parentBlockId: 'b3'
+      }
+    ])
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }
