@@ -12,7 +12,7 @@ publish:
   - provider: github
     owner: zhenhua32
     repo: knowbook
-    releaseType: draft
+    releaseType: release
 win:
   icon: build/icon.png
   artifactName: KnowBook-${version}-win-${arch}.${ext}
