@@ -5,7 +5,9 @@ import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/ma
 import type { ExportDocument, ExportStandaloneDatabase, KnowbookStore } from '../database/store'
 
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
+const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
 const STANDALONE_DATABASE_BACKUP_ROOT = '__knowbook/databases'
+const STANDALONE_DATABASE_MANIFEST_FILE_NAME = 'index.md'
 
 export class MarkdownBackupService {
   constructor(
@@ -22,6 +24,7 @@ export class MarkdownBackupService {
     for (const database of standaloneDatabases) {
       this.writeStandaloneDatabase(database)
     }
+    this.writeStandaloneDatabaseManifest(standaloneDatabases)
 
     const at = new Date().toISOString()
     this.store.saveSetting('backup.lastRunAt', at)
@@ -43,6 +46,12 @@ export class MarkdownBackupService {
     const filePath = join(this.backupRoot, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${database.id}.md`)
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, this.renderStandaloneDatabase(database), 'utf8')
+  }
+
+  private writeStandaloneDatabaseManifest(databases: ExportStandaloneDatabase[]): void {
+    const filePath = join(this.backupRoot, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), STANDALONE_DATABASE_MANIFEST_FILE_NAME)
+    mkdirSync(dirname(filePath), { recursive: true })
+    writeFileSync(filePath, this.renderStandaloneDatabaseManifest(databases), 'utf8')
   }
 
   private renderMarkdown(document: ExportDocument): string {
@@ -75,6 +84,13 @@ export class MarkdownBackupService {
       databaseColumns: JSON.stringify(database.columns),
       databaseSavedViews: JSON.stringify(database.savedViews),
       databaseEntities: JSON.stringify(database.entities)
+    })}\n`
+  }
+
+  private renderStandaloneDatabaseManifest(databases: ExportStandaloneDatabase[]): string {
+    return `${renderMarkdownFrontmatter({
+      kind: STANDALONE_DATABASE_MANIFEST_BACKUP_KIND,
+      databaseIds: JSON.stringify(databases.map((database) => database.id))
     })}\n`
   }
 }

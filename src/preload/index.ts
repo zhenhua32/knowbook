@@ -80,6 +80,7 @@ const api: ElectronApi = {
   searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   createDocumentDatabase: (input: CreateDatabaseInput) => ipcRenderer.invoke('knowbook:create-document-database', input) as Promise<DocumentDatabase>,
   getDatabases: () => ipcRenderer.invoke('knowbook:get-databases') as Promise<DocumentDatabase[]>,
+  deleteDatabase: (databaseId: string) => ipcRenderer.invoke('knowbook:delete-database', databaseId) as Promise<void>,
   getDatabaseSavedViews: (databaseId: string) => ipcRenderer.invoke('knowbook:get-database-saved-views', databaseId) as Promise<DatabaseSavedView[]>,
   createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => ipcRenderer.invoke('knowbook:create-database-saved-view', input) as Promise<DatabaseSavedView>,
   updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => ipcRenderer.invoke('knowbook:update-database-saved-view', input) as Promise<DatabaseSavedView>,

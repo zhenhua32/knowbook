@@ -253,6 +253,45 @@ test('standalone database saved views persist and update list controls', () => {
   })
 })
 
+test('deleteDatabase removes standalone database data but refuses the default database', () => {
+  withStore((store) => {
+    const defaultDatabase = store.getDatabases().find((database) => database.name === 'Default')
+    assert.ok(defaultDatabase)
+
+    const projectsDatabase = store.createDatabase({
+      name: 'Projects',
+      description: 'Project tracking'
+    })
+    const ownerColumn = store.createDocumentDatabaseColumn({
+      databaseId: projectsDatabase.id,
+      name: 'Owner',
+      type: 'text'
+    })
+
+    store.createDatabaseSavedView({
+      databaseId: projectsDatabase.id,
+      name: 'Active projects'
+    })
+    store.createDatabaseEntity({
+      databaseId: projectsDatabase.id,
+      fieldValues: {
+        [ownerColumn.id]: 'Alice'
+      }
+    })
+
+    store.deleteDatabase(projectsDatabase.id)
+
+    assert.equal(store.getDatabases().some((database) => database.id === projectsDatabase.id), false)
+    assert.equal(store.getDatabaseEntities(projectsDatabase.id).length, 0)
+    assert.throws(() => {
+      store.getDatabaseSavedViews(projectsDatabase.id)
+    }, /Database not found/)
+    assert.throws(() => {
+      store.deleteDatabase(defaultDatabase.id)
+    }, /cannot be deleted/)
+  })
+})
+
 test('embedding cache supports save/get/delete lifecycle', () => {
   withStore((store, backupRoot) => {
     const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')

@@ -52,12 +52,19 @@ type RestoreSourceStandaloneDatabase = {
   entities: RestoreSourceStandaloneDatabaseEntity[]
 }
 
-type RestoreSourceFile = RestoreSourceDocument | RestoreSourceStandaloneDatabase
+type RestoreSourceStandaloneDatabaseManifest = {
+  kind: 'standalone-database-manifest'
+  sourceFilePath: string
+  sourceDatabaseIds: string[]
+}
+
+type RestoreSourceFile = RestoreSourceDocument | RestoreSourceStandaloneDatabase | RestoreSourceStandaloneDatabaseManifest
 
 const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
 const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc'])
 const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
+const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 
@@ -77,6 +84,9 @@ export class MarkdownRestoreService {
       })
     const sourceStandaloneDatabases = sourceFiles
       .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
+    const sourceStandaloneDatabaseManifest = sourceFiles.find(
+      (source): source is RestoreSourceStandaloneDatabaseManifest => source.kind === 'standalone-database-manifest'
+    )
 
     let created = 0
     let updated = 0
@@ -98,7 +108,7 @@ export class MarkdownRestoreService {
     }
 
     deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
-    this.restoreStandaloneDatabases(sourceStandaloneDatabases)
+  this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
 
     return {
       restored: sourceDocuments.length,
@@ -146,6 +156,10 @@ export class MarkdownRestoreService {
 
     if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
       return this.parseSourceStandaloneDatabase(filePath, parsed)
+    }
+
+    if (parsed.frontmatter.kind === STANDALONE_DATABASE_MANIFEST_BACKUP_KIND) {
+      return this.parseSourceStandaloneDatabaseManifest(filePath, parsed)
     }
 
     return this.parseSourceDocument(filePath, parsed, relativePath)
@@ -220,6 +234,17 @@ export class MarkdownRestoreService {
       columns,
       savedViews: this.parseSourceStandaloneDatabaseSavedViews(parsed.frontmatter.databaseSavedViews),
       entities: this.parseSourceStandaloneDatabaseEntities(parsed.frontmatter.databaseEntities, columns)
+    }
+  }
+
+  private parseSourceStandaloneDatabaseManifest(
+    filePath: string,
+    parsed: ReturnType<typeof parseMarkdownBackupDocument>
+  ): RestoreSourceStandaloneDatabaseManifest {
+    return {
+      kind: 'standalone-database-manifest',
+      sourceFilePath: filePath,
+      sourceDatabaseIds: this.parseSourceStandaloneDatabaseIds(parsed.frontmatter.databaseIds)
     }
   }
 
@@ -543,7 +568,10 @@ export class MarkdownRestoreService {
     }
   }
 
-  private restoreStandaloneDatabases(sourceDatabases: RestoreSourceStandaloneDatabase[]): void {
+  private restoreStandaloneDatabases(
+    sourceDatabases: RestoreSourceStandaloneDatabase[],
+    shouldDeleteMissingDatabases: boolean
+  ): void {
     const existingDatabases = this.store.getDatabases()
     const existingById = new Map(existingDatabases.map((database) => [database.id, database]))
     const existingByName = new Map(
@@ -551,6 +579,7 @@ export class MarkdownRestoreService {
         .filter((database) => !this.isDefaultDocumentDatabase(database.name, database.description))
         .map((database) => [this.getDatabaseLookupKey(database.name), database])
     )
+    const restoredDatabaseIds = new Set<string>()
 
     for (const source of sourceDatabases) {
       let targetDatabase = existingById.get(source.sourceDatabaseId)
@@ -578,10 +607,25 @@ export class MarkdownRestoreService {
 
       existingById.set(source.sourceDatabaseId, targetDatabase)
       existingByName.set(this.getDatabaseLookupKey(targetDatabase.name), targetDatabase)
+      restoredDatabaseIds.add(targetDatabase.id)
 
       const columnIdMap = this.ensureDatabaseColumns(source.columns, targetDatabase.id)
       this.restoreStandaloneDatabaseSavedViews(targetDatabase.id, source.savedViews)
       this.restoreStandaloneDatabaseEntities(targetDatabase.id, source.columns, source.entities, columnIdMap)
+    }
+
+    if (!shouldDeleteMissingDatabases) {
+      return
+    }
+
+    for (const existingDatabase of existingDatabases) {
+      if (this.isDefaultDocumentDatabase(existingDatabase.name, existingDatabase.description)) {
+        continue
+      }
+
+      if (!restoredDatabaseIds.has(existingDatabase.id)) {
+        this.store.deleteDatabase(existingDatabase.id)
+      }
     }
   }
 
@@ -866,6 +910,23 @@ export class MarkdownRestoreService {
           fieldValues: this.parseSourceDatabaseFieldValues(candidate.fieldValues, columns)
         }]
       })
+    } catch {
+      return []
+    }
+  }
+
+  private parseSourceStandaloneDatabaseIds(rawDatabaseIds: string | undefined): string[] {
+    if (!rawDatabaseIds) {
+      return []
+    }
+
+    try {
+      const parsed = JSON.parse(rawDatabaseIds) as unknown
+      if (!Array.isArray(parsed)) {
+        return []
+      }
+
+      return [...new Set(parsed.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
     } catch {
       return []
     }

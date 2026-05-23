@@ -326,3 +326,94 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('MarkdownRestoreService deletes stale standalone databases when backup manifest is present', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-standalone-db-sync-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const sourceDatabase = store.createDatabase({
+      name: 'Projects',
+      description: 'Canonical backup database'
+    })
+    const sourceStageColumn = store.createDocumentDatabaseColumn({
+      databaseId: sourceDatabase.id,
+      name: 'Stage',
+      type: 'select',
+      options: ['Idea', 'Doing', 'Done']
+    })
+    store.createDatabaseSavedView({
+      databaseId: sourceDatabase.id,
+      name: 'Open projects',
+      filterQuery: 'Doing',
+      filterScope: '',
+      sortMode: 'updated-desc',
+      viewMode: 'cards'
+    })
+    store.createDatabaseEntity({
+      databaseId: sourceDatabase.id,
+      fieldValues: {
+        [sourceStageColumn.id]: 'Idea'
+      }
+    })
+
+    new MarkdownBackupService(store, backupRoot).exportAll()
+
+    const staleDatabase = store.createDatabase({
+      name: 'Archive',
+      description: 'Should be deleted during restore sync'
+    })
+    const staleOwnerColumn = store.createDocumentDatabaseColumn({
+      databaseId: staleDatabase.id,
+      name: 'Owner',
+      type: 'text'
+    })
+    store.createDatabaseSavedView({
+      databaseId: staleDatabase.id,
+      name: 'Archive view'
+    })
+    store.createDatabaseEntity({
+      databaseId: staleDatabase.id,
+      fieldValues: {
+        [staleOwnerColumn.id]: 'Alice'
+      }
+    })
+
+    new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
+
+    const refreshedDatabases = store.getDatabases()
+    assert.equal(refreshedDatabases.some((database) => database.id === sourceDatabase.id), true)
+    assert.equal(refreshedDatabases.some((database) => database.id === staleDatabase.id), false)
+    assert.equal(store.getDatabaseSavedViews(sourceDatabase.id).length, 1)
+    assert.equal(store.getDatabaseEntities(sourceDatabase.id).length, 1)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService keeps standalone databases when restoring a legacy backup without manifest', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-legacy-backup-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
+  const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
+
+  try {
+    new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    rmSync(join(backupRoot, '__knowbook'), { recursive: true, force: true })
+
+    const staleDatabase = targetStore.createDatabase({
+      name: 'Archive',
+      description: 'Legacy backups should not wipe this database'
+    })
+
+    new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot)
+
+    assert.equal(targetStore.getDatabases().some((database) => database.id === staleDatabase.id), true)
+  } finally {
+    sourceStore.destroy()
+    targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

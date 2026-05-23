@@ -2813,6 +2813,35 @@ export function App() {
     }
   }
 
+  async function deleteCurrentDatabase() {
+    if (!selectedDatabase) {
+      return
+    }
+
+    if (!window.confirm(ui.confirmDeleteDatabase(selectedDatabase.name))) {
+      return
+    }
+
+    try {
+      await window.knowbook.deleteDatabase(selectedDatabase.id)
+      const refreshedDatabases = await window.knowbook.getDatabases()
+      setDatabases(refreshedDatabases)
+      setIsCreatingDatabaseColumn(false)
+      setIsCreatingDatabaseEntity(false)
+      setDatabaseColumnNameDraft('')
+      setDatabaseColumnTypeDraft('text')
+      setDatabaseColumnOptionsDraft('')
+      setDatabaseEntityDocumentId('')
+      setDatabaseEntityFieldValues({})
+      setDatabaseEntityBulkFieldValues({})
+      setSelectedDatabaseEntityIds([])
+      setBackupMessage(ui.databaseDeleted(selectedDatabase.name))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseDeleteFailed
+      setBackupMessage(message)
+    }
+  }
+
   function applyDatabaseSavedView(view: DatabaseSavedView) {
     setActiveDatabaseSavedViewId(view.id)
     setDatabaseEntityFilterQuery(view.filterQuery)
@@ -5266,6 +5295,13 @@ return (
                             type="button"
                           >
                             {ui.deleteCurrentDatabaseView}
+                          </button>
+                          <button
+                            className="secondary-button database-delete-button"
+                            onClick={() => void deleteCurrentDatabase()}
+                            type="button"
+                          >
+                            {ui.deleteCurrentDatabase}
                           </button>
                         </div>
 

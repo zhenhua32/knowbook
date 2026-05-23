@@ -258,6 +258,10 @@ function registerIpcHandlers(): void {
     return databases
   })
 
+  ipcMain.handle('knowbook:delete-database', (_event, databaseId: string) => {
+    store.deleteDatabase(databaseId)
+  })
+
   ipcMain.handle('knowbook:get-database-saved-views', (_event, databaseId: string) => {
     const views: DatabaseSavedView[] = store.getDatabaseSavedViews(databaseId)
     return views

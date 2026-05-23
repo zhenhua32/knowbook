@@ -100,17 +100,21 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
 
     const rootFile = join(backupRoot, 'Root.md')
     const childFile = join(backupRoot, 'Root', 'Child.md')
+    const standaloneDatabaseManifestFile = join(backupRoot, '__knowbook', 'databases', 'index.md')
     const standaloneDatabaseFile = join(backupRoot, '__knowbook', 'databases', 'db-standalone.md')
 
     assert.equal(statSync(rootFile).isFile(), true)
     assert.equal(statSync(childFile).isFile(), true)
+    assert.equal(statSync(standaloneDatabaseManifestFile).isFile(), true)
     assert.equal(statSync(standaloneDatabaseFile).isFile(), true)
 
     const rootContent = readFileSync(rootFile, 'utf8')
     const childContent = readFileSync(childFile, 'utf8')
+    const standaloneDatabaseManifestContent = readFileSync(standaloneDatabaseManifestFile, 'utf8')
     const standaloneDatabaseContent = readFileSync(standaloneDatabaseFile, 'utf8')
     const parsedRoot = parseMarkdownBackupDocument(rootContent)
     const parsedChild = parseMarkdownBackupDocument(childContent)
+    const parsedStandaloneDatabaseManifest = parseMarkdownBackupDocument(standaloneDatabaseManifestContent)
     const parsedStandaloneDatabase = parseMarkdownBackupDocument(standaloneDatabaseContent)
 
     assert.deepEqual(parsedRoot.frontmatter, {
@@ -152,6 +156,10 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
         parentBlockId: 'b3'
       }
     ])
+
+    assert.equal(parsedStandaloneDatabaseManifest.frontmatter.kind, 'standalone-database-manifest')
+    assert.equal(parsedStandaloneDatabaseManifest.frontmatter.databaseIds, '["db-standalone"]')
+    assert.deepEqual(parsedStandaloneDatabaseManifest.blocks, [])
 
     assert.equal(parsedStandaloneDatabase.frontmatter.kind, 'standalone-database')
     assert.equal(parsedStandaloneDatabase.frontmatter.databaseId, 'db-standalone')

@@ -546,6 +546,7 @@ export interface ElectronApi {
   saveSetting: (key: string, value: string) => Promise<void>
   createDocumentDatabase: (input: CreateDatabaseInput) => Promise<DocumentDatabase>
   getDatabases: () => Promise<DocumentDatabase[]>
+  deleteDatabase: (databaseId: string) => Promise<void>
   getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>
   createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
   updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => Promise<DatabaseSavedView>

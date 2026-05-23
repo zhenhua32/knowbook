@@ -2575,6 +2575,26 @@ export class KnowbookStore {
     }
   }
 
+  deleteDatabase(databaseId: string): void {
+    const normalizedDatabaseId = databaseId.trim()
+    if (!normalizedDatabaseId) {
+      throw new Error('Database not found.')
+    }
+
+    if (normalizedDatabaseId === this.getDefaultDocumentDatabaseId()) {
+      throw new Error('Default document database cannot be deleted.')
+    }
+
+    const result = this.db.prepare(`
+      DELETE FROM databases
+      WHERE id = ?
+    `).run(normalizedDatabaseId)
+
+    if (result.changes === 0) {
+      throw new Error('Database not found.')
+    }
+  }
+
   createDatabaseEntity(input: CreateDatabaseEntityInput): DatabaseEntity {
     const { databaseId, documentId = null, fieldValues = {} } = input
     
