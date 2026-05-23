@@ -338,12 +338,9 @@ test.describe('Database Views @electron', () => {
       await page.locator('.database-entity-table-view-button').click()
       await expect(page.locator('.database-entity-table')).toBeVisible()
 
-      page.once('dialog', async (dialog) => {
-        expect(dialog.type()).toBe('prompt')
-        expect(dialog.message()).toMatch(/Name this view|输入视图名称/)
-        await dialog.accept('Beta table')
-      })
       await page.locator('.database-saved-view-create-button').click()
+      await page.locator('.database-saved-view-name-input').fill('Beta table')
+      await page.locator('.database-saved-view-confirm-button').click()
 
       await expect(savedViewSelect).not.toHaveValue('')
       await expect(page.locator('.flash-message')).toContainText(/Beta table/)

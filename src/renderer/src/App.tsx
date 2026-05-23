@@ -1190,6 +1190,8 @@ export function App() {
   const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
   const [databaseSavedViews, setDatabaseSavedViews] = useState<DatabaseSavedView[]>([])
   const [activeDatabaseSavedViewId, setActiveDatabaseSavedViewId] = useState('')
+  const [isCreatingDatabaseSavedView, setIsCreatingDatabaseSavedView] = useState(false)
+  const [databaseSavedViewNameDraft, setDatabaseSavedViewNameDraft] = useState('')
   const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
   const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
   const [databaseEntityBulkFieldValues, setDatabaseEntityBulkFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
@@ -1681,6 +1683,8 @@ export function App() {
     if (!databaseEntityDatabaseId) {
       setDatabaseSavedViews([])
       setActiveDatabaseSavedViewId('')
+      setIsCreatingDatabaseSavedView(false)
+      setDatabaseSavedViewNameDraft('')
       setSelectedDatabaseColumns([])
       setDatabaseEntities([])
       setDatabaseEntityFieldValues({})
@@ -1697,6 +1701,8 @@ export function App() {
 
     setDatabaseSavedViews([])
     setActiveDatabaseSavedViewId('')
+    setIsCreatingDatabaseSavedView(false)
+    setDatabaseSavedViewNameDraft('')
     setDatabaseEntityFilterQuery('')
     setDatabaseEntityFilterScope('')
     setDatabaseEntitySortMode('updated-desc')
@@ -2865,13 +2871,23 @@ export function App() {
     applyDatabaseSavedView(nextView)
   }
 
+  function beginCurrentDatabaseSavedViewCreation() {
+    const suggestedName = activeDatabaseSavedView?.name ?? ui.databaseSavedViewDefaultName(databaseSavedViews.length + 1)
+    setDatabaseSavedViewNameDraft(suggestedName)
+    setIsCreatingDatabaseSavedView(true)
+  }
+
+  function cancelCurrentDatabaseSavedViewCreation() {
+    setIsCreatingDatabaseSavedView(false)
+    setDatabaseSavedViewNameDraft('')
+  }
+
   async function saveCurrentDatabaseSavedView() {
     if (!databaseEntityDatabaseId) {
       return
     }
 
-    const suggestedName = activeDatabaseSavedView?.name ?? ui.databaseSavedViewDefaultName(databaseSavedViews.length + 1)
-    const nextName = window.prompt(ui.databaseSavedViewNamePrompt, suggestedName) ?? ''
+    const nextName = databaseSavedViewNameDraft.trim()
     if (!nextName.trim()) {
       return
     }
@@ -2885,8 +2901,11 @@ export function App() {
         sortMode: databaseEntitySortMode,
         viewMode: databaseEntityViewMode
       })
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setActiveDatabaseSavedViewId(createdView.id)
+      setDatabaseSavedViews((current) => [createdView, ...current.filter((view) => view.id !== createdView.id)])
+      applyDatabaseSavedView(createdView)
+      setIsCreatingDatabaseSavedView(false)
+      setDatabaseSavedViewNameDraft('')
+      await refreshDatabasePageData(databaseEntityDatabaseId, createdView.id)
       setBackupMessage(ui.databaseSavedViewCreated(createdView.name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseSavedViewCreateFailed
@@ -2907,8 +2926,7 @@ export function App() {
         sortMode: databaseEntitySortMode,
         viewMode: databaseEntityViewMode
       })
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setActiveDatabaseSavedViewId(updatedView.id)
+      await refreshDatabasePageData(databaseEntityDatabaseId, updatedView.id)
       setBackupMessage(ui.databaseSavedViewUpdated(updatedView.name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseSavedViewUpdateFailed
@@ -2927,8 +2945,7 @@ export function App() {
 
     try {
       await window.knowbook.deleteDatabaseSavedView(activeDatabaseSavedView.id)
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setActiveDatabaseSavedViewId('')
+      await refreshDatabasePageData(databaseEntityDatabaseId, '')
       setBackupMessage(ui.databaseSavedViewDeleted(activeDatabaseSavedView.name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseSavedViewDeleteFailed
@@ -3153,7 +3170,10 @@ export function App() {
     }
   }
 
-  async function refreshDatabasePageData(targetDatabaseId: string | null = databaseEntityDatabaseId) {
+  async function refreshDatabasePageData(
+    targetDatabaseId: string | null = databaseEntityDatabaseId,
+    preferredSavedViewId?: string
+  ) {
     const [refreshedHome, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
       window.knowbook.getHomeData(),
       targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve([]),
@@ -3164,7 +3184,10 @@ export function App() {
     setDatabaseEntities(refreshedEntities)
     setSelectedDatabaseColumns(refreshedColumns)
     setDatabaseSavedViews(refreshedViews)
-    setActiveDatabaseSavedViewId((current) => (refreshedViews.some((view) => view.id === current) ? current : ''))
+    setActiveDatabaseSavedViewId((current) => {
+      const nextId = preferredSavedViewId ?? current
+      return nextId && refreshedViews.some((view) => view.id === nextId) ? nextId : ''
+    })
   }
 
   async function findRelatedNotesForPrompt() {
@@ -5275,11 +5298,49 @@ return (
                           </select>
                           <button
                             className="secondary-button database-saved-view-create-button"
-                            onClick={() => void saveCurrentDatabaseSavedView()}
+                            onClick={() => beginCurrentDatabaseSavedViewCreation()}
                             type="button"
                           >
                             {ui.saveCurrentDatabaseView}
                           </button>
+                          {isCreatingDatabaseSavedView ? (
+                            <>
+                              <input
+                                aria-label={ui.databaseSavedViewNamePrompt}
+                                className="editor-input database-saved-view-name-input"
+                                onChange={(event) => setDatabaseSavedViewNameDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault()
+                                    void saveCurrentDatabaseSavedView()
+                                  }
+
+                                  if (event.key === 'Escape') {
+                                    event.preventDefault()
+                                    cancelCurrentDatabaseSavedViewCreation()
+                                  }
+                                }}
+                                placeholder={ui.databaseSavedViewNamePrompt}
+                                type="text"
+                                value={databaseSavedViewNameDraft}
+                              />
+                              <button
+                                className="secondary-button database-saved-view-confirm-button"
+                                disabled={!databaseSavedViewNameDraft.trim()}
+                                onClick={() => void saveCurrentDatabaseSavedView()}
+                                type="button"
+                              >
+                                {ui.saveCurrentDatabaseView}
+                              </button>
+                              <button
+                                className="secondary-button database-saved-view-cancel-button"
+                                onClick={() => cancelCurrentDatabaseSavedViewCreation()}
+                                type="button"
+                              >
+                                {ui.common.cancel}
+                              </button>
+                            </>
+                          ) : null}
                           <button
                             className="secondary-button database-saved-view-update-button"
                             disabled={!activeDatabaseSavedView || !databaseSavedViewDirty}
