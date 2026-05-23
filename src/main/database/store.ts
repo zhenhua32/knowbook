@@ -243,6 +243,8 @@ export interface ExportDocument {
   path: string
   summary: string
   updatedAt: string
+  documentDatabaseColumns: DocumentDatabaseColumn[]
+  documentDatabaseFieldValues: Record<string, DocumentDatabaseFieldValue>
   blocks: Array<{
     id: string
     type: string
@@ -1250,11 +1252,41 @@ export class KnowbookStore {
   }
 
   getExportDocuments(): ExportDocument[] {
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+    const documentDatabaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
+    const columnById = new Map(documentDatabaseColumns.map((column) => [column.id, column]))
     const documents = this.db.prepare(`
       SELECT id, title, path, summary, updated_at
       FROM documents
       ORDER BY path ASC
     `).all() as ExportDocumentRow[]
+
+    const documentDatabaseValueRows = this.db.prepare(`
+      SELECT document_id, column_id, value_text
+      FROM document_database_values
+      WHERE entity_id IS NULL
+      ORDER BY document_id ASC, column_id ASC
+    `).all() as Array<{
+      document_id: string | null
+      column_id: string
+      value_text: string | null
+    }>
+    const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+
+    for (const row of documentDatabaseValueRows) {
+      if (!row.document_id) {
+        continue
+      }
+
+      const column = columnById.get(row.column_id)
+      if (!column) {
+        continue
+      }
+
+      const fieldValues = fieldValuesByDocumentId.get(row.document_id) ?? {}
+      fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
+      fieldValuesByDocumentId.set(row.document_id, fieldValues)
+    }
 
     const blocksStatement = this.db.prepare(`
       SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
@@ -1269,6 +1301,8 @@ export class KnowbookStore {
       path: document.path,
       summary: document.summary,
       updatedAt: document.updated_at,
+      documentDatabaseColumns: documentDatabaseColumns.map((column) => ({ ...column, options: [...column.options] })),
+      documentDatabaseFieldValues: { ...(fieldValuesByDocumentId.get(document.id) ?? {}) },
       blocks: (blocksStatement.all(document.id) as ExportBlockRow[]).map((block) => ({
         id: block.id,
         type: block.type,

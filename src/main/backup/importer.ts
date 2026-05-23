@@ -1,6 +1,12 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import type { BackupRestoreResult, DocumentBlockDraft } from '@shared/contracts'
+import type {
+  BackupRestoreResult,
+  CreateDocumentDatabaseColumnInput,
+  DocumentBlockDraft,
+  DocumentDatabaseColumn,
+  DocumentDatabaseFieldValue
+} from '@shared/contracts'
 import { parseMarkdownBackupDocument } from '@shared/markdown'
 import { KnowbookStore } from '../database/store'
 
@@ -11,8 +17,12 @@ type RestoreSourceDocument = {
   restoreScopePath: string
   title: string
   summary: string
+  documentDatabaseColumns: DocumentDatabaseColumn[]
+  documentDatabaseFieldValues: Record<string, DocumentDatabaseFieldValue>
   blocks: DocumentBlockDraft[]
 }
+
+const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
 
 export class MarkdownRestoreService {
   constructor(private readonly store: KnowbookStore) {}
@@ -34,9 +44,10 @@ export class MarkdownRestoreService {
     const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
     let placeholdersCreated = 0
     const restoredDocumentIds = new Set<string>()
+    const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
 
     for (const source of sourceDocuments) {
-      const result = this.restoreDocument(source)
+      const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
       placeholdersCreated += result.placeholdersCreated
       restoredDocumentIds.add(result.documentId)
       if (result.mode === 'created') {
@@ -93,6 +104,7 @@ export class MarkdownRestoreService {
     const markdown = readFileSync(filePath, 'utf8')
     const parsed = parseMarkdownBackupDocument(markdown)
     const normalizedDocumentPath = this.normalizeDocumentPath(parsed.frontmatter.path || normalizedRelativePath)
+    const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.documentDatabaseColumns)
 
     if (!normalizedDocumentPath) {
       throw new Error(`Cannot restore document without a valid path: ${filePath}`)
@@ -108,6 +120,11 @@ export class MarkdownRestoreService {
       restoreScopePath: this.deriveRestoreScopePath(normalizedDocumentPath, normalizedRelativePath),
       title,
       summary: parsed.frontmatter.summary ?? '',
+      documentDatabaseColumns,
+      documentDatabaseFieldValues: this.parseSourceDocumentDatabaseFieldValues(
+        parsed.frontmatter.documentDatabaseFieldValues,
+        documentDatabaseColumns
+      ),
       blocks: parsed.blocks.map((block) => ({
         id: block.id,
         type: block.type,
@@ -154,7 +171,10 @@ export class MarkdownRestoreService {
     return documentSegments.slice(0, documentSegments.length - relativeSegments.length).join('/')
   }
 
-  private restoreDocument(source: RestoreSourceDocument): {
+  private restoreDocument(
+    source: RestoreSourceDocument,
+    documentDatabaseColumnIdMap: Map<string, string>
+  ): {
     mode: 'created' | 'updated'
     documentId: string
     placeholdersCreated: number
@@ -185,11 +205,244 @@ export class MarkdownRestoreService {
       summary: source.summary,
       blocks: source.blocks
     })
+    this.restoreDocumentDatabaseFieldValues(documentId, source, documentDatabaseColumnIdMap)
 
     return {
       mode,
       documentId,
       placeholdersCreated: ensuredParent.placeholdersCreated
+    }
+  }
+
+  private parseSourceDocumentDatabaseColumns(rawColumns: string | undefined): DocumentDatabaseColumn[] {
+    if (!rawColumns) {
+      return []
+    }
+
+    try {
+      const parsed = JSON.parse(rawColumns) as unknown
+      if (!Array.isArray(parsed)) {
+        return []
+      }
+
+      return parsed.flatMap((value): DocumentDatabaseColumn[] => {
+        if (!value || typeof value !== 'object') {
+          return []
+        }
+
+        const candidate = value as Record<string, unknown>
+        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+        const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
+        const type = typeof candidate.type === 'string' && DOCUMENT_DATABASE_COLUMN_TYPES.has(candidate.type)
+          ? candidate.type as CreateDocumentDatabaseColumnInput['type']
+          : null
+
+        if (!id || !name || !type) {
+          return []
+        }
+
+        const options = Array.isArray(candidate.options)
+          ? [...new Set(candidate.options.filter((option): option is string => typeof option === 'string').map((option) => option.trim()).filter(Boolean))]
+          : []
+        const sortOrder = typeof candidate.sortOrder === 'number' && Number.isFinite(candidate.sortOrder)
+          ? candidate.sortOrder
+          : 0
+
+        return [{
+          id,
+          name,
+          type,
+          options,
+          sortOrder
+        }]
+      })
+    } catch {
+      return []
+    }
+  }
+
+  private parseSourceDocumentDatabaseFieldValues(
+    rawFieldValues: string | undefined,
+    columns: DocumentDatabaseColumn[]
+  ): Record<string, DocumentDatabaseFieldValue> {
+    if (!rawFieldValues) {
+      return {}
+    }
+
+    const columnById = new Map(columns.map((column) => [column.id, column]))
+
+    try {
+      const parsed = JSON.parse(rawFieldValues) as unknown
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {}
+      }
+
+      const values: Record<string, DocumentDatabaseFieldValue> = {}
+      for (const [columnId, rawValue] of Object.entries(parsed as Record<string, unknown>)) {
+        const column = columnById.get(columnId)
+        if (!column) {
+          continue
+        }
+
+        const normalized = this.normalizeSourceDocumentDatabaseFieldValue(column, rawValue)
+        if (normalized !== undefined) {
+          values[columnId] = normalized
+        }
+      }
+
+      return values
+    } catch {
+      return {}
+    }
+  }
+
+  private normalizeSourceDocumentDatabaseFieldValue(
+    column: DocumentDatabaseColumn,
+    rawValue: unknown
+  ): DocumentDatabaseFieldValue | undefined {
+    if (rawValue === null) {
+      return null
+    }
+
+    switch (column.type) {
+      case 'checkbox':
+        return typeof rawValue === 'boolean' ? rawValue : undefined
+      case 'multi-select': {
+        if (!Array.isArray(rawValue)) {
+          return undefined
+        }
+        return [...new Set(rawValue.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
+      }
+      case 'text':
+      case 'select':
+      case 'date':
+        return typeof rawValue === 'string' ? rawValue : undefined
+      default:
+        return undefined
+    }
+  }
+
+  private ensureDocumentDatabaseColumns(sourceDocuments: RestoreSourceDocument[]): Map<string, string> {
+    const sourceColumns = this.collectSourceDocumentDatabaseColumns(sourceDocuments)
+      .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name))
+    const targetColumns = this.store.getDocumentDatabaseColumns()
+    const targetById = new Map(targetColumns.map((column) => [column.id, column]))
+    const targetByNameAndType = new Map(targetColumns.map((column) => [this.getDocumentDatabaseColumnLookupKey(column.name, column.type), column]))
+    const columnIdMap = new Map<string, string>()
+
+    for (const sourceColumn of sourceColumns) {
+      let targetColumn = targetById.get(sourceColumn.id)
+      if (targetColumn && targetColumn.type !== sourceColumn.type) {
+        targetColumn = undefined
+      }
+
+      if (!targetColumn) {
+        targetColumn = targetByNameAndType.get(this.getDocumentDatabaseColumnLookupKey(sourceColumn.name, sourceColumn.type))
+      }
+
+      if (!targetColumn) {
+        targetColumn = this.store.createDocumentDatabaseColumn({
+          name: sourceColumn.name,
+          type: sourceColumn.type,
+          options: [...sourceColumn.options]
+        })
+      } else {
+        if (targetColumn.id === sourceColumn.id && targetColumn.name !== sourceColumn.name) {
+          this.store.renameDocumentDatabaseColumn({
+            columnId: targetColumn.id,
+            name: sourceColumn.name
+          })
+          targetColumn = {
+            ...targetColumn,
+            name: sourceColumn.name
+          }
+        }
+
+        if ((sourceColumn.type === 'select' || sourceColumn.type === 'multi-select')) {
+          const currentOptions = [...targetColumn.options]
+          const mergedOptions = [...new Set([...currentOptions, ...sourceColumn.options])]
+          if (mergedOptions.length !== currentOptions.length || mergedOptions.some((option, index) => option !== currentOptions[index])) {
+            this.store.updateDocumentDatabaseColumnOptions({
+              columnId: targetColumn.id,
+              options: mergedOptions
+            })
+            targetColumn = {
+              ...targetColumn,
+              options: mergedOptions
+            }
+          }
+        }
+      }
+
+      targetById.set(targetColumn.id, targetColumn)
+      targetByNameAndType.set(this.getDocumentDatabaseColumnLookupKey(targetColumn.name, targetColumn.type), targetColumn)
+      columnIdMap.set(sourceColumn.id, targetColumn.id)
+    }
+
+    return columnIdMap
+  }
+
+  private collectSourceDocumentDatabaseColumns(sourceDocuments: RestoreSourceDocument[]): DocumentDatabaseColumn[] {
+    const columnsById = new Map<string, DocumentDatabaseColumn>()
+
+    for (const source of sourceDocuments) {
+      for (const column of source.documentDatabaseColumns) {
+        const existing = columnsById.get(column.id)
+        if (!existing) {
+          columnsById.set(column.id, {
+            ...column,
+            options: [...column.options]
+          })
+          continue
+        }
+
+        columnsById.set(column.id, {
+          ...existing,
+          options: [...new Set([...existing.options, ...column.options])],
+          sortOrder: Math.min(existing.sortOrder, column.sortOrder)
+        })
+      }
+    }
+
+    return [...columnsById.values()]
+  }
+
+  private getDocumentDatabaseColumnLookupKey(name: string, type: DocumentDatabaseColumn['type']): string {
+    return `${name.trim().toLowerCase()}::${type}`
+  }
+
+  private restoreDocumentDatabaseFieldValues(
+    documentId: string,
+    source: RestoreSourceDocument,
+    columnIdMap: Map<string, string>
+  ): void {
+    const restoredTargetColumnIds = new Set<string>()
+
+    for (const [sourceColumnId, value] of Object.entries(source.documentDatabaseFieldValues)) {
+      const targetColumnId = columnIdMap.get(sourceColumnId)
+      if (!targetColumnId) {
+        continue
+      }
+
+      this.store.updateDocumentDatabaseValue({
+        documentId,
+        columnId: targetColumnId,
+        value
+      })
+      restoredTargetColumnIds.add(targetColumnId)
+    }
+
+    for (const sourceColumn of source.documentDatabaseColumns) {
+      const targetColumnId = columnIdMap.get(sourceColumn.id)
+      if (!targetColumnId || restoredTargetColumnIds.has(targetColumnId)) {
+        continue
+      }
+
+      this.store.updateDocumentDatabaseValue({
+        documentId,
+        columnId: targetColumnId,
+        value: null
+      })
     }
   }
 

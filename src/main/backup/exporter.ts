@@ -38,7 +38,9 @@ export class MarkdownBackupService {
       title: document.title,
       path: document.path,
       updatedAt: document.updatedAt,
-      summary: document.summary
+      summary: document.summary,
+      documentDatabaseColumns: JSON.stringify(document.documentDatabaseColumns),
+      documentDatabaseFieldValues: JSON.stringify(document.documentDatabaseFieldValues)
     })
 
     const body = serializeBlocksToMarkdown(document.blocks, {

@@ -31,6 +31,25 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
     const product = byPath(sourceCatalog, 'Home/Product')
     const roadmap = byPath(sourceCatalog, 'Home/Product/Roadmap')
 
+    const statusColumn = sourceStore.createDocumentDatabaseColumn({
+      name: 'Status',
+      type: 'select',
+      options: ['Todo', 'Doing', 'Done']
+    })
+    const tagsColumn = sourceStore.createDocumentDatabaseColumn({
+      name: 'Tags',
+      type: 'multi-select',
+      options: ['AI', 'Infra', 'Docs']
+    })
+    const ownerColumn = sourceStore.createDocumentDatabaseColumn({
+      name: 'Owner',
+      type: 'text'
+    })
+    const doneColumn = sourceStore.createDocumentDatabaseColumn({
+      name: 'Done',
+      type: 'checkbox'
+    })
+
     sourceStore.updateDocument(roadmap.id, {
       title: 'Roadmap',
       summary: 'Restored roadmap summary',
@@ -62,6 +81,32 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
       ]
     })
 
+    sourceStore.updateDocumentDatabaseValue({
+      documentId: roadmap.id,
+      columnId: statusColumn.id,
+      value: 'Doing'
+    })
+    sourceStore.updateDocumentDatabaseValue({
+      documentId: roadmap.id,
+      columnId: tagsColumn.id,
+      value: ['AI', 'Infra']
+    })
+    sourceStore.updateDocumentDatabaseValue({
+      documentId: roadmap.id,
+      columnId: doneColumn.id,
+      value: true
+    })
+    sourceStore.updateDocumentDatabaseValue({
+      documentId: specsId,
+      columnId: ownerColumn.id,
+      value: 'Alice'
+    })
+    sourceStore.updateDocumentDatabaseValue({
+      documentId: specsId,
+      columnId: statusColumn.id,
+      value: 'Todo'
+    })
+
     const exportedCount = sourceStore.getExportDocuments().length
     new MarkdownBackupService(sourceStore, backupRoot).exportAll()
 
@@ -85,6 +130,28 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
     assert.ok(roadmapDetail)
     assert.ok(specsDetail)
     assert.ok(checklistDetail)
+
+    const targetHome = targetStore.getHomeData(backupRoot)
+    const restoredStatusColumn = targetHome.databaseColumns.find((column) => column.name === 'Status')
+    const restoredTagsColumn = targetHome.databaseColumns.find((column) => column.name === 'Tags')
+    const restoredOwnerColumn = targetHome.databaseColumns.find((column) => column.name === 'Owner')
+    const restoredDoneColumn = targetHome.databaseColumns.find((column) => column.name === 'Done')
+
+    assert.ok(restoredStatusColumn)
+    assert.ok(restoredTagsColumn)
+    assert.ok(restoredOwnerColumn)
+    assert.ok(restoredDoneColumn)
+    assert.deepEqual(restoredStatusColumn.options, ['Todo', 'Doing', 'Done'])
+    assert.deepEqual(restoredTagsColumn.options, ['AI', 'Infra', 'Docs'])
+
+    const roadmapCatalog = byPath(targetHome.documentCatalog, 'Home/Product/Roadmap')
+    const specsCatalog = byPath(targetHome.documentCatalog, 'Home/Product/Specs')
+    assert.equal(roadmapCatalog.fieldValues[restoredStatusColumn.id], 'Doing')
+    assert.deepEqual(roadmapCatalog.fieldValues[restoredTagsColumn.id], ['AI', 'Infra'])
+    assert.equal(roadmapCatalog.fieldValues[restoredDoneColumn.id], true)
+    assert.equal(specsCatalog.fieldValues[restoredOwnerColumn.id], 'Alice')
+    assert.equal(specsCatalog.fieldValues[restoredStatusColumn.id], 'Todo')
+
     assert.equal(roadmapDetail.summary, 'Restored roadmap summary')
     assert.deepEqual(byBlockId(roadmapDetail, 'roadmap-task').tags, ['restore'])
     assert.equal(byBlockId(roadmapDetail, 'roadmap-task').highlight, 'green')

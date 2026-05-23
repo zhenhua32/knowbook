@@ -19,6 +19,8 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
         path: 'Root',
         summary: 'Root summary',
         updatedAt: '2026-05-02T00:00:00.000Z',
+        documentDatabaseColumns: [],
+        documentDatabaseFieldValues: {},
         blocks: [
           { id: 'b1', type: 'heading-1', content: 'Root', checked: false, depth: 0, parentBlockId: null, sortOrder: 0 },
           { id: 'b2', type: 'code', content: 'SELECT 1', checked: false, depth: 0, parentBlockId: null, sortOrder: 1 }
@@ -30,6 +32,8 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
         path: 'Root/Child',
         summary: 'Child summary',
         updatedAt: '2026-05-02T00:00:00.000Z',
+        documentDatabaseColumns: [],
+        documentDatabaseFieldValues: {},
         blocks: [
           { id: 'b3', type: 'bulleted-list', content: 'Item', checked: false, depth: 0, parentBlockId: null, sortOrder: 0 },
           { id: 'b4', type: 'bulleted-list', content: 'Nested', checked: false, depth: 0, parentBlockId: 'b3', sortOrder: 1 }
@@ -67,7 +71,9 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
       title: 'Root',
       path: 'Root',
       updatedAt: '2026-05-02T00:00:00.000Z',
-      summary: 'Root summary'
+      summary: 'Root summary',
+      documentDatabaseColumns: '[]',
+      documentDatabaseFieldValues: '{}'
     })
     assert.equal(rootContent.includes('```txt\nSELECT 1\n```'), true)
     assert.equal(parsedRoot.blocks[0]?.id, 'b1')
@@ -75,6 +81,8 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
     assert.equal(parsedRoot.blocks[1]?.language, 'txt')
 
     assert.equal(childContent.includes('- Item'), true)
+    assert.equal(parsedChild.frontmatter.documentDatabaseColumns, '[]')
+    assert.equal(parsedChild.frontmatter.documentDatabaseFieldValues, '{}')
     assert.deepEqual(parsedChild.blocks.map((block) => ({
       id: block.id,
       type: block.type,
