@@ -259,6 +259,26 @@ export interface ExportDocument {
   }>
 }
 
+export interface ExportStandaloneDatabaseEntity {
+  id: string
+  documentId: string | null
+  documentPath: string | null
+  createdAt: string
+  updatedAt: string
+  fieldValues: Record<string, DocumentDatabaseFieldValue>
+}
+
+export interface ExportStandaloneDatabase {
+  id: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+  columns: DocumentDatabaseColumn[]
+  savedViews: DatabaseSavedView[]
+  entities: ExportStandaloneDatabaseEntity[]
+}
+
 export class KnowbookStore {
   private readonly db: SqliteDatabase
 
@@ -1316,6 +1336,31 @@ export class KnowbookStore {
         highlight: block.highlight ?? undefined
       }))
     }))
+  }
+
+  getExportStandaloneDatabases(): ExportStandaloneDatabase[] {
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+
+    return this.getDatabases()
+      .filter((database) => database.id !== defaultDatabaseId)
+      .map((database) => ({
+        ...database,
+        columns: this.getDocumentDatabaseColumns(database.id).map((column) => ({
+          ...column,
+          options: [...column.options]
+        })),
+        savedViews: this.getDatabaseSavedViews(database.id).map((view) => ({ ...view })),
+        entities: this.getDatabaseEntities(database.id).map((entity) => ({
+          id: entity.id,
+          documentId: entity.documentId,
+          documentPath: entity.documentId ? this.getDocumentSnapshot(entity.documentId)?.path ?? null : null,
+          createdAt: entity.createdAt,
+          updatedAt: entity.updatedAt,
+          fieldValues: Object.fromEntries(
+            Object.entries(entity.fieldValues).map(([columnId, value]) => [columnId, Array.isArray(value) ? [...value] : value])
+          ) as Record<string, DocumentDatabaseFieldValue>
+        }))
+      }))
   }
 
   saveSetting(key: string, value: string): void {
@@ -2508,6 +2553,25 @@ export class KnowbookStore {
       description: (input.description ?? '').trim(),
       createdAt: now,
       updatedAt: now
+    }
+  }
+
+  updateDatabaseMetadata(input: { databaseId: string; name: string; description: string }): void {
+    const name = input.name.trim()
+    if (!name) {
+      throw new Error('Database name is required.')
+    }
+
+    const description = input.description.trim()
+    const now = new Date().toISOString()
+    const result = this.db.prepare(`
+      UPDATE databases
+      SET name = ?, description = ?, updated_at = ?
+      WHERE id = ?
+    `).run(name, description, now, input.databaseId)
+
+    if (result.changes === 0) {
+      throw new Error('Database not found.')
     }
   }
 

@@ -107,6 +107,45 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
       value: 'Todo'
     })
 
+    const projectsDatabase = sourceStore.createDatabase({
+      name: 'Projects',
+      description: 'Standalone project tracker'
+    })
+    const stageColumn = sourceStore.createDocumentDatabaseColumn({
+      databaseId: projectsDatabase.id,
+      name: 'Stage',
+      type: 'select',
+      options: ['Idea', 'Doing', 'Done']
+    })
+    const priorityColumn = sourceStore.createDocumentDatabaseColumn({
+      databaseId: projectsDatabase.id,
+      name: 'Priority',
+      type: 'multi-select',
+      options: ['P0', 'P1', 'P2']
+    })
+    sourceStore.createDatabaseSavedView({
+      databaseId: projectsDatabase.id,
+      name: 'Open Work',
+      filterQuery: 'Doing',
+      filterScope: '',
+      sortMode: 'updated-desc',
+      viewMode: 'table'
+    })
+    sourceStore.createDatabaseEntity({
+      databaseId: projectsDatabase.id,
+      documentId: specsId,
+      fieldValues: {
+        [stageColumn.id]: 'Doing',
+        [priorityColumn.id]: ['P0', 'P1']
+      }
+    })
+    sourceStore.createDatabaseEntity({
+      databaseId: projectsDatabase.id,
+      fieldValues: {
+        [stageColumn.id]: 'Idea'
+      }
+    })
+
     const exportedCount = sourceStore.getExportDocuments().length
     new MarkdownBackupService(sourceStore, backupRoot).exportAll()
 
@@ -166,6 +205,35 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
 
     assert.equal(checklistDetail.summary, 'Checklist summary')
     assert.equal(checklistDetail.blocks.some((block) => block.id === 'check-ref'), true)
+
+    const restoredProjectsDatabase = targetStore.getDatabases().find((database) => database.name === 'Projects')
+    assert.ok(restoredProjectsDatabase)
+    assert.equal(restoredProjectsDatabase.description, 'Standalone project tracker')
+
+    const restoredProjectsColumns = targetStore.getDocumentDatabaseColumns(restoredProjectsDatabase.id)
+    const restoredStageColumn = restoredProjectsColumns.find((column) => column.name === 'Stage')
+    const restoredPriorityColumn = restoredProjectsColumns.find((column) => column.name === 'Priority')
+    assert.ok(restoredStageColumn)
+    assert.ok(restoredPriorityColumn)
+    assert.deepEqual(restoredStageColumn.options, ['Idea', 'Doing', 'Done'])
+    assert.deepEqual(restoredPriorityColumn.options, ['P0', 'P1', 'P2'])
+
+    const restoredProjectsViews = targetStore.getDatabaseSavedViews(restoredProjectsDatabase.id)
+    assert.equal(restoredProjectsViews.length, 1)
+    assert.equal(restoredProjectsViews[0]?.name, 'Open Work')
+    assert.equal(restoredProjectsViews[0]?.filterQuery, 'Doing')
+    assert.equal(restoredProjectsViews[0]?.viewMode, 'table')
+
+    const restoredProjectsEntities = targetStore.getDatabaseEntities(restoredProjectsDatabase.id)
+    assert.equal(restoredProjectsEntities.length, 2)
+
+    const linkedProjectEntity = restoredProjectsEntities.find((entity) => entity.documentId === restoredSpecs.id)
+    const unlinkedProjectEntity = restoredProjectsEntities.find((entity) => entity.documentId === null)
+    assert.ok(linkedProjectEntity)
+    assert.ok(unlinkedProjectEntity)
+    assert.equal(linkedProjectEntity.fieldValues[restoredStageColumn.id], 'Doing')
+    assert.deepEqual(linkedProjectEntity.fieldValues[restoredPriorityColumn.id], ['P0', 'P1'])
+    assert.equal(unlinkedProjectEntity.fieldValues[restoredStageColumn.id], 'Idea')
   } finally {
     sourceStore.destroy()
     targetStore.destroy()

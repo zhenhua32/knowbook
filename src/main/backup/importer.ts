@@ -2,6 +2,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type {
   BackupRestoreResult,
+  DatabaseEntity,
+  DatabaseSavedViewLayoutMode,
+  DatabaseSavedViewSortMode,
   CreateDocumentDatabaseColumnInput,
   DocumentBlockDraft,
   DocumentDatabaseColumn,
@@ -11,6 +14,7 @@ import { parseMarkdownBackupDocument } from '@shared/markdown'
 import { KnowbookStore } from '../database/store'
 
 type RestoreSourceDocument = {
+  kind: 'document'
   sourceFilePath: string
   sourceDocumentId: string | null
   documentPath: string
@@ -22,21 +26,57 @@ type RestoreSourceDocument = {
   blocks: DocumentBlockDraft[]
 }
 
+type RestoreSourceStandaloneDatabaseSavedView = {
+  id: string
+  name: string
+  filterQuery: string
+  filterScope: string
+  sortMode: DatabaseSavedViewSortMode
+  viewMode: DatabaseSavedViewLayoutMode
+}
+
+type RestoreSourceStandaloneDatabaseEntity = {
+  id: string
+  documentPath: string | null
+  fieldValues: Record<string, DocumentDatabaseFieldValue>
+}
+
+type RestoreSourceStandaloneDatabase = {
+  kind: 'standalone-database'
+  sourceFilePath: string
+  sourceDatabaseId: string
+  name: string
+  description: string
+  columns: DocumentDatabaseColumn[]
+  savedViews: RestoreSourceStandaloneDatabaseSavedView[]
+  entities: RestoreSourceStandaloneDatabaseEntity[]
+}
+
+type RestoreSourceFile = RestoreSourceDocument | RestoreSourceStandaloneDatabase
+
 const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
+const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc'])
+const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
+const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
+const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
+const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 
 export class MarkdownRestoreService {
   constructor(private readonly store: KnowbookStore) {}
 
   restoreFromDirectory(root: string): BackupRestoreResult {
     const markdownFiles = this.collectMarkdownFiles(root)
-    const sourceDocuments = markdownFiles
-      .map((filePath) => this.parseSourceDocument(root, filePath))
+    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath))
+    const sourceDocuments = sourceFiles
+      .filter((source): source is RestoreSourceDocument => source.kind === 'document')
       .sort((left, right) => {
         const depthDifference = this.getDocumentPathDepth(left.documentPath) - this.getDocumentPathDepth(right.documentPath)
         return depthDifference !== 0
           ? depthDifference
           : left.documentPath.localeCompare(right.documentPath)
       })
+    const sourceStandaloneDatabases = sourceFiles
+      .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
 
     let created = 0
     let updated = 0
@@ -58,6 +98,7 @@ export class MarkdownRestoreService {
     }
 
     deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+    this.restoreStandaloneDatabases(sourceStandaloneDatabases)
 
     return {
       restored: sourceDocuments.length,
@@ -96,13 +137,26 @@ export class MarkdownRestoreService {
     return files
   }
 
-  private parseSourceDocument(root: string, filePath: string): RestoreSourceDocument {
+  private parseSourceFile(root: string, filePath: string): RestoreSourceFile {
     const relativePath = relative(root, filePath)
       .replace(/\\/g, '/')
       .replace(/\.md$/i, '')
-    const normalizedRelativePath = this.normalizeDocumentPath(relativePath)
     const markdown = readFileSync(filePath, 'utf8')
     const parsed = parseMarkdownBackupDocument(markdown)
+
+    if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
+      return this.parseSourceStandaloneDatabase(filePath, parsed)
+    }
+
+    return this.parseSourceDocument(filePath, parsed, relativePath)
+  }
+
+  private parseSourceDocument(
+    filePath: string,
+    parsed: ReturnType<typeof parseMarkdownBackupDocument>,
+    relativePath: string
+  ): RestoreSourceDocument {
+    const normalizedRelativePath = this.normalizeDocumentPath(relativePath)
     const normalizedDocumentPath = this.normalizeDocumentPath(parsed.frontmatter.path || normalizedRelativePath)
     const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.documentDatabaseColumns)
 
@@ -114,6 +168,7 @@ export class MarkdownRestoreService {
     const title = pathSegments[pathSegments.length - 1] ?? 'Untitled'
 
     return {
+      kind: 'document',
       sourceFilePath: filePath,
       sourceDocumentId: parsed.frontmatter.id?.trim() || null,
       documentPath: normalizedDocumentPath,
@@ -136,6 +191,35 @@ export class MarkdownRestoreService {
         language: block.language ?? undefined,
         highlight: block.highlight
       }))
+    }
+  }
+
+  private parseSourceStandaloneDatabase(
+    filePath: string,
+    parsed: ReturnType<typeof parseMarkdownBackupDocument>
+  ): RestoreSourceStandaloneDatabase {
+    const sourceDatabaseId = parsed.frontmatter.databaseId?.trim()
+    const name = parsed.frontmatter.databaseName?.trim()
+
+    if (!sourceDatabaseId) {
+      throw new Error(`Cannot restore standalone database without an id: ${filePath}`)
+    }
+
+    if (!name) {
+      throw new Error(`Cannot restore standalone database without a name: ${filePath}`)
+    }
+
+    const columns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.databaseColumns)
+
+    return {
+      kind: 'standalone-database',
+      sourceFilePath: filePath,
+      sourceDatabaseId,
+      name,
+      description: parsed.frontmatter.databaseDescription ?? '',
+      columns,
+      savedViews: this.parseSourceStandaloneDatabaseSavedViews(parsed.frontmatter.databaseSavedViews),
+      entities: this.parseSourceStandaloneDatabaseEntities(parsed.frontmatter.databaseEntities, columns)
     }
   }
 
@@ -272,28 +356,36 @@ export class MarkdownRestoreService {
     const columnById = new Map(columns.map((column) => [column.id, column]))
 
     try {
-      const parsed = JSON.parse(rawFieldValues) as unknown
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return {}
-      }
-
-      const values: Record<string, DocumentDatabaseFieldValue> = {}
-      for (const [columnId, rawValue] of Object.entries(parsed as Record<string, unknown>)) {
-        const column = columnById.get(columnId)
-        if (!column) {
-          continue
-        }
-
-        const normalized = this.normalizeSourceDocumentDatabaseFieldValue(column, rawValue)
-        if (normalized !== undefined) {
-          values[columnId] = normalized
-        }
-      }
-
-      return values
+      return this.parseSourceDatabaseFieldValues(JSON.parse(rawFieldValues) as unknown, columns)
     } catch {
       return {}
     }
+  }
+
+  private parseSourceDatabaseFieldValues(
+    rawFieldValues: unknown,
+    columns: DocumentDatabaseColumn[]
+  ): Record<string, DocumentDatabaseFieldValue> {
+    if (!rawFieldValues || typeof rawFieldValues !== 'object' || Array.isArray(rawFieldValues)) {
+      return {}
+    }
+
+    const columnById = new Map(columns.map((column) => [column.id, column]))
+    const values: Record<string, DocumentDatabaseFieldValue> = {}
+
+    for (const [columnId, rawValue] of Object.entries(rawFieldValues as Record<string, unknown>)) {
+      const column = columnById.get(columnId)
+      if (!column) {
+        continue
+      }
+
+      const normalized = this.normalizeSourceDocumentDatabaseFieldValue(column, rawValue)
+      if (normalized !== undefined) {
+        values[columnId] = normalized
+      }
+    }
+
+    return values
   }
 
   private normalizeSourceDocumentDatabaseFieldValue(
@@ -323,14 +415,18 @@ export class MarkdownRestoreService {
   }
 
   private ensureDocumentDatabaseColumns(sourceDocuments: RestoreSourceDocument[]): Map<string, string> {
-    const sourceColumns = this.collectSourceDocumentDatabaseColumns(sourceDocuments)
+    return this.ensureDatabaseColumns(this.collectSourceDocumentDatabaseColumns(sourceDocuments))
+  }
+
+  private ensureDatabaseColumns(sourceColumns: DocumentDatabaseColumn[], databaseId?: string): Map<string, string> {
+    const normalizedSourceColumns = [...sourceColumns]
       .sort((left, right) => left.sortOrder - right.sortOrder || left.name.localeCompare(right.name))
-    const targetColumns = this.store.getDocumentDatabaseColumns()
+    const targetColumns = this.store.getDocumentDatabaseColumns(databaseId)
     const targetById = new Map(targetColumns.map((column) => [column.id, column]))
     const targetByNameAndType = new Map(targetColumns.map((column) => [this.getDocumentDatabaseColumnLookupKey(column.name, column.type), column]))
     const columnIdMap = new Map<string, string>()
 
-    for (const sourceColumn of sourceColumns) {
+    for (const sourceColumn of normalizedSourceColumns) {
       let targetColumn = targetById.get(sourceColumn.id)
       if (targetColumn && targetColumn.type !== sourceColumn.type) {
         targetColumn = undefined
@@ -342,6 +438,7 @@ export class MarkdownRestoreService {
 
       if (!targetColumn) {
         targetColumn = this.store.createDocumentDatabaseColumn({
+          databaseId,
           name: sourceColumn.name,
           type: sourceColumn.type,
           options: [...sourceColumn.options]
@@ -443,6 +540,334 @@ export class MarkdownRestoreService {
         columnId: targetColumnId,
         value: null
       })
+    }
+  }
+
+  private restoreStandaloneDatabases(sourceDatabases: RestoreSourceStandaloneDatabase[]): void {
+    const existingDatabases = this.store.getDatabases()
+    const existingById = new Map(existingDatabases.map((database) => [database.id, database]))
+    const existingByName = new Map(
+      existingDatabases
+        .filter((database) => !this.isDefaultDocumentDatabase(database.name, database.description))
+        .map((database) => [this.getDatabaseLookupKey(database.name), database])
+    )
+
+    for (const source of sourceDatabases) {
+      let targetDatabase = existingById.get(source.sourceDatabaseId)
+      if (!targetDatabase) {
+        targetDatabase = existingByName.get(this.getDatabaseLookupKey(source.name))
+      }
+
+      if (!targetDatabase) {
+        targetDatabase = this.store.createDatabase({
+          name: source.name,
+          description: source.description
+        })
+      } else if (targetDatabase.name !== source.name || targetDatabase.description !== source.description) {
+        this.store.updateDatabaseMetadata({
+          databaseId: targetDatabase.id,
+          name: source.name,
+          description: source.description
+        })
+        targetDatabase = {
+          ...targetDatabase,
+          name: source.name,
+          description: source.description
+        }
+      }
+
+      existingById.set(source.sourceDatabaseId, targetDatabase)
+      existingByName.set(this.getDatabaseLookupKey(targetDatabase.name), targetDatabase)
+
+      const columnIdMap = this.ensureDatabaseColumns(source.columns, targetDatabase.id)
+      this.restoreStandaloneDatabaseSavedViews(targetDatabase.id, source.savedViews)
+      this.restoreStandaloneDatabaseEntities(targetDatabase.id, source.columns, source.entities, columnIdMap)
+    }
+  }
+
+  private restoreStandaloneDatabaseSavedViews(
+    databaseId: string,
+    sourceViews: RestoreSourceStandaloneDatabaseSavedView[]
+  ): void {
+    const existingViews = this.store.getDatabaseSavedViews(databaseId)
+    const existingById = new Map(existingViews.map((view) => [view.id, view]))
+    const existingByName = new Map(existingViews.map((view) => [this.getDatabaseSavedViewLookupKey(view.name), view]))
+    const restoredViewIds = new Set<string>()
+
+    for (const sourceView of sourceViews) {
+      let targetView = existingById.get(sourceView.id)
+      if (!targetView) {
+        targetView = existingByName.get(this.getDatabaseSavedViewLookupKey(sourceView.name))
+      }
+
+      if (!targetView) {
+        targetView = this.store.createDatabaseSavedView({
+          databaseId,
+          name: sourceView.name,
+          filterQuery: sourceView.filterQuery,
+          filterScope: sourceView.filterScope,
+          sortMode: sourceView.sortMode,
+          viewMode: sourceView.viewMode
+        })
+      } else {
+        targetView = this.store.updateDatabaseSavedView({
+          viewId: targetView.id,
+          name: sourceView.name,
+          filterQuery: sourceView.filterQuery,
+          filterScope: sourceView.filterScope,
+          sortMode: sourceView.sortMode,
+          viewMode: sourceView.viewMode
+        })
+      }
+
+      restoredViewIds.add(targetView.id)
+    }
+
+    for (const existingView of existingViews) {
+      if (!restoredViewIds.has(existingView.id)) {
+        this.store.deleteDatabaseSavedView(existingView.id)
+      }
+    }
+  }
+
+  private restoreStandaloneDatabaseEntities(
+    databaseId: string,
+    sourceColumns: DocumentDatabaseColumn[],
+    sourceEntities: RestoreSourceStandaloneDatabaseEntity[],
+    columnIdMap: Map<string, string>
+  ): void {
+    const existingEntities = this.store.getDatabaseEntities(databaseId)
+    const existingById = new Map(existingEntities.map((entity) => [entity.id, entity]))
+    const existingByDocumentId = new Map(
+      existingEntities
+        .filter((entity) => Boolean(entity.documentId))
+        .map((entity) => [entity.documentId as string, entity])
+    )
+    const existingBySignature = new Map<string, DatabaseEntity[]>()
+    const restoredEntityIds = new Set<string>()
+
+    for (const entity of existingEntities) {
+      if (entity.documentId) {
+        continue
+      }
+
+      const signature = this.getDatabaseEntitySignature(entity.fieldValues)
+      const matches = existingBySignature.get(signature) ?? []
+      matches.push(entity)
+      existingBySignature.set(signature, matches)
+    }
+
+    for (const sourceEntity of sourceEntities) {
+      const targetFieldValues = this.buildTargetDatabaseEntityFieldValues(sourceColumns, sourceEntity.fieldValues, columnIdMap)
+      const signatureFieldValues = this.mapSourceDatabaseFieldValuesToTarget(sourceEntity.fieldValues, columnIdMap)
+      const resolvedDocumentId = sourceEntity.documentPath
+        ? this.store.getDocumentSnapshotByPath(sourceEntity.documentPath)?.id ?? null
+        : null
+
+      let targetEntity = existingById.get(sourceEntity.id)
+      if (targetEntity && restoredEntityIds.has(targetEntity.id)) {
+        targetEntity = undefined
+      }
+
+      if (!targetEntity && resolvedDocumentId) {
+        const entityByDocumentId = existingByDocumentId.get(resolvedDocumentId)
+        if (entityByDocumentId && !restoredEntityIds.has(entityByDocumentId.id)) {
+          targetEntity = entityByDocumentId
+        }
+      }
+
+      if (!targetEntity && !sourceEntity.documentPath) {
+        targetEntity = this.takeMatchingDatabaseEntityBySignature(
+          existingBySignature,
+          this.getDatabaseEntitySignature(signatureFieldValues),
+          restoredEntityIds
+        )
+      }
+
+      if (!targetEntity) {
+        const createdEntity = this.store.createDatabaseEntity({
+          databaseId,
+          documentId: resolvedDocumentId ?? undefined,
+          fieldValues: targetFieldValues
+        })
+        restoredEntityIds.add(createdEntity.id)
+        continue
+      }
+
+      this.store.updateDatabaseEntity({
+        entityId: targetEntity.id,
+        documentId: resolvedDocumentId,
+        fieldValues: targetFieldValues
+      })
+      restoredEntityIds.add(targetEntity.id)
+    }
+
+    for (const existingEntity of existingEntities) {
+      if (!restoredEntityIds.has(existingEntity.id)) {
+        this.store.deleteDatabaseEntity(existingEntity.id)
+      }
+    }
+  }
+
+  private buildTargetDatabaseEntityFieldValues(
+    sourceColumns: DocumentDatabaseColumn[],
+    sourceFieldValues: Record<string, DocumentDatabaseFieldValue>,
+    columnIdMap: Map<string, string>
+  ): Record<string, DocumentDatabaseFieldValue> {
+    const targetFieldValues: Record<string, DocumentDatabaseFieldValue> = {}
+
+    for (const sourceColumn of sourceColumns) {
+      const targetColumnId = columnIdMap.get(sourceColumn.id)
+      if (!targetColumnId) {
+        continue
+      }
+
+      targetFieldValues[targetColumnId] = Object.prototype.hasOwnProperty.call(sourceFieldValues, sourceColumn.id)
+        ? sourceFieldValues[sourceColumn.id] ?? null
+        : null
+    }
+
+    return targetFieldValues
+  }
+
+  private mapSourceDatabaseFieldValuesToTarget(
+    sourceFieldValues: Record<string, DocumentDatabaseFieldValue>,
+    columnIdMap: Map<string, string>
+  ): Record<string, DocumentDatabaseFieldValue> {
+    const mappedFieldValues: Record<string, DocumentDatabaseFieldValue> = {}
+
+    for (const [sourceColumnId, value] of Object.entries(sourceFieldValues)) {
+      const targetColumnId = columnIdMap.get(sourceColumnId)
+      if (!targetColumnId) {
+        continue
+      }
+
+      mappedFieldValues[targetColumnId] = value
+    }
+
+    return mappedFieldValues
+  }
+
+  private takeMatchingDatabaseEntityBySignature(
+    entitiesBySignature: Map<string, DatabaseEntity[]>,
+    signature: string,
+    restoredEntityIds: Set<string>
+  ): DatabaseEntity | undefined {
+    const entities = entitiesBySignature.get(signature)
+    if (!entities) {
+      return undefined
+    }
+
+    while (entities.length > 0) {
+      const candidate = entities.shift()
+      if (candidate && !restoredEntityIds.has(candidate.id)) {
+        return candidate
+      }
+    }
+
+    return undefined
+  }
+
+  private getDatabaseEntitySignature(fieldValues: Record<string, DocumentDatabaseFieldValue>): string {
+    return JSON.stringify(
+      Object.entries(fieldValues)
+        .sort(([leftColumnId], [rightColumnId]) => leftColumnId.localeCompare(rightColumnId))
+    )
+  }
+
+  private getDatabaseLookupKey(name: string): string {
+    return name.trim().toLowerCase()
+  }
+
+  private getDatabaseSavedViewLookupKey(name: string): string {
+    return name.trim().toLowerCase()
+  }
+
+  private isDefaultDocumentDatabase(name: string, description: string): boolean {
+    return name === DEFAULT_DOCUMENT_DATABASE_NAME && description === DEFAULT_DOCUMENT_DATABASE_DESCRIPTION
+  }
+
+  private parseSourceStandaloneDatabaseSavedViews(
+    rawViews: string | undefined
+  ): RestoreSourceStandaloneDatabaseSavedView[] {
+    if (!rawViews) {
+      return []
+    }
+
+    try {
+      const parsed = JSON.parse(rawViews) as unknown
+      if (!Array.isArray(parsed)) {
+        return []
+      }
+
+      return parsed.flatMap((value): RestoreSourceStandaloneDatabaseSavedView[] => {
+        if (!value || typeof value !== 'object') {
+          return []
+        }
+
+        const candidate = value as Record<string, unknown>
+        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+        const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
+
+        if (!id || !name) {
+          return []
+        }
+
+        return [{
+          id,
+          name,
+          filterQuery: typeof candidate.filterQuery === 'string' ? candidate.filterQuery : '',
+          filterScope: typeof candidate.filterScope === 'string' ? candidate.filterScope.trim() : '',
+          sortMode: typeof candidate.sortMode === 'string' && DATABASE_SAVED_VIEW_SORT_MODES.has(candidate.sortMode)
+            ? candidate.sortMode as DatabaseSavedViewSortMode
+            : 'updated-desc',
+          viewMode: typeof candidate.viewMode === 'string' && DATABASE_SAVED_VIEW_LAYOUT_MODES.has(candidate.viewMode)
+            ? candidate.viewMode as DatabaseSavedViewLayoutMode
+            : 'cards'
+        }]
+      })
+    } catch {
+      return []
+    }
+  }
+
+  private parseSourceStandaloneDatabaseEntities(
+    rawEntities: string | undefined,
+    columns: DocumentDatabaseColumn[]
+  ): RestoreSourceStandaloneDatabaseEntity[] {
+    if (!rawEntities) {
+      return []
+    }
+
+    try {
+      const parsed = JSON.parse(rawEntities) as unknown
+      if (!Array.isArray(parsed)) {
+        return []
+      }
+
+      return parsed.flatMap((value): RestoreSourceStandaloneDatabaseEntity[] => {
+        if (!value || typeof value !== 'object') {
+          return []
+        }
+
+        const candidate = value as Record<string, unknown>
+        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+        if (!id) {
+          return []
+        }
+
+        const normalizedDocumentPath = typeof candidate.documentPath === 'string'
+          ? this.normalizeDocumentPath(candidate.documentPath)
+          : ''
+
+        return [{
+          id,
+          documentPath: normalizedDocumentPath || null,
+          fieldValues: this.parseSourceDatabaseFieldValues(candidate.fieldValues, columns)
+        }]
+      })
+    } catch {
+      return []
     }
   }
 
