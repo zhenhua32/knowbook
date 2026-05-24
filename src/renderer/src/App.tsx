@@ -64,6 +64,7 @@ import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
+import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
 import { AISection } from './sections/AISection'
@@ -132,11 +133,6 @@ type BlockDropPreview = {
 type BlockSelectionRange = {
   start: number
   end: number
-}
-
-type PendingBlockNavigationTarget = {
-  documentId: string
-  blockId: string
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
@@ -1210,7 +1206,6 @@ export function App() {
   const deferredCatalogQuery = useDeferredValue(catalogQuery)
   const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
-  const [detailLoading, setDetailLoading] = useState(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   // 自动清除消息（3秒后）
   useEffect(() => {
@@ -1218,8 +1213,6 @@ export function App() {
     const timer = setTimeout(() => setBackupMessage(null), 3000)
     return () => clearTimeout(timer)
   }, [backupMessage])
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
-  const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
@@ -1270,19 +1263,39 @@ export function App() {
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
-  const [pendingBlockNavigationTarget, setPendingBlockNavigationTarget] = useState<PendingBlockNavigationTarget | null>(null)
-  const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
-  const navHistoryRef = useRef<string[]>([])
-  const navPointerRef = useRef<number>(-1)
-  const isNavJumpRef = useRef<boolean>(false)
-  const [navCanGoBack, setNavCanGoBack] = useState(false)
-  const [navCanGoForward, setNavCanGoForward] = useState(false)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const blockMouseDownOrigin = useRef<number | null>(null)
   const highlightedBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
+  const {
+    detailLoading,
+    navBack,
+    navCanGoBack,
+    navCanGoForward,
+    navForward,
+    openDocumentBlockInDocumentsPage: openDocumentBlockInDocumentsPageInternal,
+    openDocumentInDocumentsPage: openDocumentInDocumentsPageInternal,
+    pendingBlockNavigationTarget,
+    pinnedDocumentIds,
+    selectedDocument,
+    selectedDocumentId,
+    setDetailLoading,
+    setPendingBlockNavigationTarget,
+    setSelectedDocument,
+    setSelectedDocumentId,
+    togglePinDocument
+  } = useDocumentNavigationState({
+    onActivePageChange: (page) => setActivePage(page)
+  })
+  const openDocumentInDocumentsPage = useCallback((documentId: string) => {
+    setHighlightedBlockId(null)
+    openDocumentInDocumentsPageInternal(documentId)
+  }, [openDocumentInDocumentsPageInternal])
+  const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
+    openDocumentBlockInDocumentsPageInternal(documentId, blockId)
+  }, [openDocumentBlockInDocumentsPageInternal])
   const {
     autoSaveFlash,
     canRedo,
@@ -1448,19 +1461,6 @@ export function App() {
       openDocumentInDocumentsPage(document.id)
       closeGlobalSearch()
     }
-  }
-
-  const openDocumentInDocumentsPage = useCallback((documentId: string) => {
-    setPendingBlockNavigationTarget(null)
-    setHighlightedBlockId(null)
-    setSelectedDocumentId(documentId)
-    setActivePage('documents')
-  }, [])
-
-  function openDocumentBlockInDocumentsPage(documentId: string, blockId: string) {
-    setPendingBlockNavigationTarget({ documentId, blockId })
-    setActivePage('documents')
-    setSelectedDocumentId(documentId)
   }
 
   async function navigateInlineReferenceAtCursor(content: string, cursorPosition: number) {
@@ -1685,15 +1685,6 @@ export function App() {
       }
     })
 
-    window.knowbook.getSetting('pinned_documents').then((value) => {
-      if (mounted && value) {
-        try {
-          const ids: string[] = JSON.parse(value)
-          setPinnedDocumentIds(new Set(ids))
-        } catch { /* ignore */ }
-      }
-    })
-
     window.knowbook.getSetting(UI_LANGUAGE_SETTING_KEY).then((value) => {
       if (!mounted) {
         return
@@ -1883,24 +1874,6 @@ export function App() {
       }
     }
   }, [])
-
-  // Track navigation history
-  useEffect(() => {
-    if (!selectedDocumentId) return
-    if (isNavJumpRef.current) {
-      isNavJumpRef.current = false
-      return
-    }
-    const history = navHistoryRef.current
-    const pointer = navPointerRef.current
-    // Trim forward history when navigating to a new doc
-    const trimmed = history.slice(0, pointer + 1)
-    trimmed.push(selectedDocumentId)
-    navHistoryRef.current = trimmed.slice(-50)
-    navPointerRef.current = navHistoryRef.current.length - 1
-    setNavCanGoBack(navPointerRef.current > 0)
-    setNavCanGoForward(false)
-  }, [selectedDocumentId])
 
   useEffect(() => {
     if (activePage !== 'documents') {
@@ -2168,42 +2141,6 @@ export function App() {
     clearEditorSession()
     setDetailLoading(true)
     setSelectedDocumentId(created.id)
-  }
-
-  function togglePinDocument(documentId: string) {
-    setPinnedDocumentIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(documentId)) {
-        next.delete(documentId)
-      } else {
-        next.add(documentId)
-      }
-      window.knowbook.saveSetting('pinned_documents', JSON.stringify([...next]))
-      return next
-    })
-  }
-
-  function navBack() {
-    const pointer = navPointerRef.current
-    if (pointer <= 0) return
-    const newPointer = pointer - 1
-    navPointerRef.current = newPointer
-    isNavJumpRef.current = true
-    setSelectedDocumentId(navHistoryRef.current[newPointer])
-    setNavCanGoBack(newPointer > 0)
-    setNavCanGoForward(true)
-  }
-
-  function navForward() {
-    const history = navHistoryRef.current
-    const pointer = navPointerRef.current
-    if (pointer >= history.length - 1) return
-    const newPointer = pointer + 1
-    navPointerRef.current = newPointer
-    isNavJumpRef.current = true
-    setSelectedDocumentId(history[newPointer])
-    setNavCanGoBack(true)
-    setNavCanGoForward(newPointer < history.length - 1)
   }
 
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
@@ -4837,8 +4774,7 @@ return (
                       key={event.id}
                       onClick={() => {
                         if (event.documentId) {
-                          setSelectedDocumentId(event.documentId)
-                          setActivePage('documents')
+                          openDocumentInDocumentsPage(event.documentId)
                         }
                       }}
                       type="button"
