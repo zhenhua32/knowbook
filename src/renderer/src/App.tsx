@@ -8,7 +8,6 @@ import {
   type BoardDropTarget
 } from '@shared/board'
 import type {
-  AppUpdateState,
   BackupResult,
   BlockReferenceResult,
   DatabaseEntity,
@@ -77,6 +76,7 @@ import { useAiState } from './hooks/useAiState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
 import { AISection } from './sections/AISection'
+import { DashboardSettingsSection } from './sections/DashboardSettingsSection'
 import { PluginsSection } from './sections/PluginsSection'
 
 const emptyState: HomeData = {
@@ -1375,33 +1375,6 @@ export function App() {
     ui,
     onMessage: setBackupMessage
   })
-
-  function getAppUpdateStatusText(state: AppUpdateState | null): string {
-    if (!state) {
-      return ui.common.loading
-    }
-
-    switch (state.status) {
-      case 'idle':
-        return ui.updateStatusIdle
-      case 'checking':
-        return ui.updateStatusChecking
-      case 'available':
-        return ui.updateStatusAvailable(state.availableVersion)
-      case 'downloading':
-        return ui.updateStatusDownloading(state.progressPercent)
-      case 'downloaded':
-        return ui.updateStatusDownloaded(state.downloadedVersion ?? state.availableVersion)
-      case 'not-available':
-        return ui.updateStatusNotAvailable
-      case 'unsupported':
-        return ui.updateStatusUnsupported
-      case 'error':
-        return ui.updateStatusError(state.error)
-      default:
-        return state.message
-    }
-  }
 
   function flashHighlightedBlock(blockId: string) {
     setHighlightedBlockId(blockId)
@@ -5949,175 +5922,55 @@ return (
         ) : null}
 
         {activePage === 'dashboard' || activePage === 'settings' ? (
-          <section className="detail-grid">
-          <article className="panel large-panel">
-            <div className="panel-head">
-              <div>
-                <p className="panel-label">{ui.storageLabel}</p>
-                <h3>{ui.storageTitle}</h3>
-              </div>
-              {loading ? <span className="pill">{ui.common.loading}</span> : <span className="pill">{ui.common.ready}</span>}
-            </div>
-            <dl className="meta-grid">
-              <div>
-                <dt>{ui.databasePath}</dt>
-                <dd>{homeData.summary.databasePath || ui.initializing}</dd>
-              </div>
-              <div>
-                <dt>{ui.backupRoot}</dt>
-                <dd>{homeData.summary.backupRoot || ui.initializing}</dd>
-              </div>
-              <div>
-                <dt>{ui.lastBackup}</dt>
-                <dd>{homeData.summary.lastBackupAt ? new Date(homeData.summary.lastBackupAt).toLocaleString(ui.locale) : ui.notYetExported}</dd>
-              </div>
-              <div>
-                <dt>{ui.aiEndpoint}</dt>
-                <dd>{homeData.aiConfig.baseUrl}</dd>
-              </div>
-            </dl>
-            {activePage === 'settings' ? (
-              <div className="editor-fields" style={{ marginTop: '16px' }}>
-                <label className="editor-label">
-                  {ui.languageSwitchLabel}
-                  <select className="editor-input" onChange={(event) => setUiLanguage(event.target.value as UiLanguage)} value={uiLanguage}>
-                    <option value="zh-CN">{ui.languageOptionZh}</option>
-                    <option value="en-US">{ui.languageOptionEn}</option>
-                  </select>
-                </label>
-                <label className="toggle-row">
-                  <input checked={aiEnabledDraft} onChange={(event) => setAiEnabledDraft(event.target.checked)} type="checkbox" />
-                  <span>{ui.enableAiFeatures}</span>
-                </label>
-                <label className="toggle-row">
-                  <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => setAiAutoSummaryOnSaveDraft(event.target.checked)} type="checkbox" />
-                  <span>{ui.autoSummaryWhenEmpty}</span>
-                </label>
-                {/* 普通模型 */}
-                <label className="editor-label">
-                  {ui.baseUrl}
-                  <input className="editor-input" onChange={(event) => setAiBaseUrlDraft(event.target.value)} type="text" value={aiBaseUrlDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.model}
-                  <input className="editor-input" onChange={(event) => setAiModelDraft(event.target.value)} type="text" value={aiModelDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.apiKeyLabel}
-                  <input className="editor-input" onChange={(event) => setAiApiKeyDraft(event.target.value)} type="password" value={aiApiKeyDraft} />
-                </label>
-                {/* 向量模型 */}
-                <label className="editor-label">
-                  {ui.embeddingBaseUrl}
-                  <input className="editor-input" onChange={(event) => setAiEmbeddingBaseUrlDraft(event.target.value)} type="text" placeholder={isZh ? '留空则自动推导' : 'Leave blank to auto-derive'} value={aiEmbeddingBaseUrlDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.embeddingModel}
-                  <input className="editor-input" onChange={(event) => setAiEmbeddingModelDraft(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
-                </label>
-                <label className="editor-label">
-                  {ui.embeddingApiKeyLabel}
-                  <input className="editor-input" onChange={(event) => setAiEmbeddingApiKeyDraft(event.target.value)} type="password" placeholder={isZh ? '留空则使用上述 Key' : 'Leave blank to use above key'} value={aiEmbeddingApiKeyDraft} />
-                </label>
-                <button className="secondary-button" disabled={aiSaving} onClick={saveAiConfig} type="button">
-                  {aiSaving ? ui.common.saving : ui.saveAiSettings}
-                </button>
-                <button className="secondary-button" onClick={() => setActivePage('plugins')} type="button">
-                  {isZh ? '打开插件中心' : 'Open plugin center'}
-                </button>
-                <button className="secondary-button" onClick={handleRestoreBackup} type="button">
-                  {ui.restoreBackup}
-                </button>
-                <button className="primary-button" onClick={handleBackup} type="button">
-                  {ui.runBackupNow}
-                </button>
-                <div
-                  style={{
-                    marginTop: '8px',
-                    padding: '16px',
-                    borderRadius: '18px',
-                    border: '1px solid rgba(91, 72, 44, 0.18)',
-                    background: 'rgba(255, 252, 246, 0.86)',
-                    display: 'grid',
-                    gap: '12px'
-                  }}
-                >
-                  <div>
-                    <p className="panel-label">{ui.appUpdateLabel}</p>
-                    <h3 style={{ margin: '4px 0 0' }}>{ui.appUpdateTitle}</h3>
-                    <p style={{ margin: '8px 0 0', color: 'rgba(91, 72, 44, 0.76)' }}>{ui.appUpdateDescription}</p>
-                  </div>
-                  <dl className="meta-grid">
-                    <div>
-                      <dt>{ui.currentVersionLabel}</dt>
-                      <dd>{appUpdateState?.currentVersion ?? ui.initializing}</dd>
-                    </div>
-                    <div>
-                      <dt>{ui.availableVersionLabel}</dt>
-                      <dd>{appUpdateState?.downloadedVersion ?? appUpdateState?.availableVersion ?? ui.common.none}</dd>
-                    </div>
-                    <div>
-                      <dt>{ui.updateStatusField}</dt>
-                      <dd>{getAppUpdateStatusText(appUpdateState)}</dd>
-                    </div>
-                    <div>
-                      <dt>{ui.lastCheckedLabel}</dt>
-                      <dd>{appUpdateState?.checkedAt ? new Date(appUpdateState.checkedAt).toLocaleString(ui.locale) : ui.notCheckedYet}</dd>
-                    </div>
-                  </dl>
-                  <div>
-                    <strong>{ui.releaseNotesLabel}</strong>
-                    <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', color: 'rgba(91, 72, 44, 0.8)' }}>
-                      {appUpdateState?.releaseNotes ?? ui.noReleaseNotes}
-                    </p>
-                  </div>
-                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                    <button
-                      className="secondary-button"
-                      disabled={appUpdateRefreshing || appUpdateState?.status === 'checking' || appUpdateState?.updatesEnabled === false}
-                      onClick={checkForAppUpdates}
-                      type="button"
-                    >
-                      {appUpdateRefreshing || appUpdateState?.status === 'checking' ? ui.checkingForUpdates : ui.checkForUpdates}
-                    </button>
-                    <button
-                      className="primary-button"
-                      disabled={!appUpdateState?.canInstall}
-                      onClick={installAppUpdate}
-                      type="button"
-                    >
-                      {ui.installUpdateNow}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ) : null}
-          </article>
-
-          <article className="panel large-panel">
-            <div className="panel-head">
-              <div>
-                <p className="panel-label">{ui.recentDocumentsLabel}</p>
-                <h3>{ui.recentDocumentsTitle}</h3>
-              </div>
-            </div>
-
-            <div className="document-list">
-              {homeData.recentDocuments.map((document) => (
-                <button className="document-row document-button" key={document.id} onClick={() => openDocumentInDocumentsPage(document.id)} type="button">
-                  <div>
-                    <strong>{document.title}</strong>
-                    <p>{document.path}</p>
-                  </div>
-                  <div className="document-meta">
-                    <span>{document.blockCount} {ui.docStatBlocks}</span>
-                    <span>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </article>
-        </section>
+          <DashboardSettingsSection
+            aiApiKeyDraft={aiApiKeyDraft}
+            aiAutoSummaryOnSaveDraft={aiAutoSummaryOnSaveDraft}
+            aiBaseUrlDraft={aiBaseUrlDraft}
+            aiEmbeddingApiKeyDraft={aiEmbeddingApiKeyDraft}
+            aiEmbeddingBaseUrlDraft={aiEmbeddingBaseUrlDraft}
+            aiEmbeddingModelDraft={aiEmbeddingModelDraft}
+            aiEnabledDraft={aiEnabledDraft}
+            aiEndpoint={homeData.aiConfig.baseUrl}
+            aiModelDraft={aiModelDraft}
+            aiSaving={aiSaving}
+            appUpdateRefreshing={appUpdateRefreshing}
+            appUpdateState={appUpdateState}
+            isSettingsPage={activePage === 'settings'}
+            isZh={isZh}
+            loading={loading}
+            onAiApiKeyChange={setAiApiKeyDraft}
+            onAiAutoSummaryOnSaveChange={setAiAutoSummaryOnSaveDraft}
+            onAiBaseUrlChange={setAiBaseUrlDraft}
+            onAiEmbeddingApiKeyChange={setAiEmbeddingApiKeyDraft}
+            onAiEmbeddingBaseUrlChange={setAiEmbeddingBaseUrlDraft}
+            onAiEmbeddingModelChange={setAiEmbeddingModelDraft}
+            onAiEnabledChange={setAiEnabledDraft}
+            onAiModelChange={setAiModelDraft}
+            onBackupNow={() => {
+              void handleBackup()
+            }}
+            onCheckForAppUpdates={() => {
+              void checkForAppUpdates()
+            }}
+            onInstallAppUpdate={() => {
+              void installAppUpdate()
+            }}
+            onOpenDocument={openDocumentInDocumentsPage}
+            onOpenPlugins={() => {
+              setActivePage('plugins')
+            }}
+            onRestoreBackup={() => {
+              void handleRestoreBackup()
+            }}
+            onSaveAiConfig={() => {
+              void saveAiConfig()
+            }}
+            onUiLanguageChange={setUiLanguage}
+            recentDocuments={homeData.recentDocuments}
+            summary={homeData.summary}
+            ui={ui}
+            uiLanguage={uiLanguage}
+          />
         ) : null}
       </main>
 
