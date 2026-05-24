@@ -8,9 +8,10 @@ export type PendingBlockNavigationTarget = {
 
 type UseDocumentNavigationStateParams = {
   onActivePageChange: (page: 'documents') => void
+  onBeforeOpenDocument?: () => void
 }
 
-export function useDocumentNavigationState({ onActivePageChange }: UseDocumentNavigationStateParams) {
+export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDocument }: UseDocumentNavigationStateParams) {
   const [detailLoading, setDetailLoading] = useState(false)
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
@@ -23,10 +24,11 @@ export function useDocumentNavigationState({ onActivePageChange }: UseDocumentNa
   const isNavJumpRef = useRef<boolean>(false)
 
   const openDocumentInDocumentsPage = useCallback((documentId: string) => {
+    onBeforeOpenDocument?.()
     setPendingBlockNavigationTarget(null)
     setSelectedDocumentId(documentId)
     onActivePageChange('documents')
-  }, [onActivePageChange])
+  }, [onActivePageChange, onBeforeOpenDocument])
 
   const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
     setPendingBlockNavigationTarget({ documentId, blockId })

@@ -71,13 +71,13 @@ import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
+import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
 import { useDocumentsUiState } from './hooks/useDocumentsUiState'
 import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
 import { useBlockDragDropActions } from './hooks/useBlockDragDropActions'
 import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
-import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
 import { useMultiBlockActions } from './hooks/useMultiBlockActions'
 import { useSlashCommandActions } from './hooks/useSlashCommandActions'
 import { useBlockStructureActions } from './hooks/useBlockStructureActions'
@@ -1255,8 +1255,8 @@ export function App() {
     navCanGoBack,
     navCanGoForward,
     navForward,
-    openDocumentBlockInDocumentsPage: openDocumentBlockInDocumentsPageInternal,
-    openDocumentInDocumentsPage: openDocumentInDocumentsPageInternal,
+    openDocumentBlockInDocumentsPage,
+    openDocumentInDocumentsPage,
     pendingBlockNavigationTarget,
     pinnedDocumentIds,
     selectedDocument,
@@ -1267,15 +1267,9 @@ export function App() {
     setSelectedDocumentId,
     togglePinDocument
   } = useDocumentNavigationState({
-    onActivePageChange: (page) => setActivePage(page)
+    onActivePageChange: (page) => setActivePage(page),
+    onBeforeOpenDocument: () => setHighlightedBlockId(null)
   })
-  const openDocumentInDocumentsPage = useCallback((documentId: string) => {
-    setHighlightedBlockId(null)
-    openDocumentInDocumentsPageInternal(documentId)
-  }, [openDocumentInDocumentsPageInternal])
-  const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
-    openDocumentBlockInDocumentsPageInternal(documentId, blockId)
-  }, [openDocumentBlockInDocumentsPageInternal])
   const {
     autoSaveFlash,
     canRedo,
@@ -1431,55 +1425,6 @@ export function App() {
     captureBlockCursor,
     draftBlocks
   })
-  const handleNoDocumentSelected = useCallback(() => {
-    clearEditorSession()
-    setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
-    setPendingBlockNavigationTarget(null)
-    setHighlightedBlockId(null)
-    resetAiSession()
-  }, [clearEditorSession, resetAiSession, setPendingBlockNavigationTarget])
-
-  const handleDocumentLoaded = useCallback((detail: DocumentDetail) => {
-    endBlockDrag()
-    setPendingFocusBlockIndex(null)
-    setActiveBlockIndex(null)
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
-    setActiveCursorPosition(0)
-    clearEditorAssistSuggestions()
-    clearMoveTarget()
-    loadDocumentIntoEditor(detail, true)
-    resetAiSession()
-  }, [clearEditorAssistSuggestions, clearMoveTarget, endBlockDrag, loadDocumentIntoEditor, resetAiSession])
-
-  const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
-    revealBlockAncestors(blockId)
-    setSelectedBlockRange(null)
-    setSelectionAnchorBlockId(blockId)
-    setActiveBlockIndex(targetIndex)
-    setPendingFocusBlockIndex(targetIndex)
-    flashHighlightedBlock(blockId)
-  }, [flashHighlightedBlock, revealBlockAncestors])
-
-  const handlePendingTargetMissing = useCallback(() => {
-    setBackupMessage(ui.blockReferenceNotFound)
-  }, [ui.blockReferenceNotFound])
-
-  useDocumentLoadingAndBlockNavigation({
-    clearPendingTarget: () => setPendingBlockNavigationTarget(null),
-    draftBlocks,
-    onDocumentLoaded: handleDocumentLoaded,
-    onNoDocumentSelected: handleNoDocumentSelected,
-    onPendingTargetMissing: handlePendingTargetMissing,
-    onPendingTargetResolved: handlePendingTargetResolved,
-    pendingBlockNavigationTarget,
-    selectedDocument,
-    selectedDocumentId,
-    setDetailLoading,
-    setSelectedDocument
-  })
   const {
     closeGlobalSearch,
     globalSearchLoading,
@@ -1536,6 +1481,31 @@ export function App() {
     getPreviousSiblingSubtreeStartIndex,
     onActiveBlockChange: setActiveBlockIndex,
     visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
+  })
+  useDocumentsLoadingOrchestration({
+    clearEditorAssistSuggestions,
+    clearEditorSession,
+    clearMoveTarget,
+    draftBlocks,
+    endBlockDrag,
+    flashHighlightedBlock,
+    loadDocumentIntoEditor,
+    pendingBlockNavigationTarget,
+    resetAiSession,
+    revealBlockAncestors,
+    selectedDocument,
+    selectedDocumentId,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setBackupMessage,
+    setDetailLoading,
+    setHighlightedBlockId,
+    setPendingBlockNavigationTarget,
+    setPendingFocusBlockIndex,
+    setSelectedBlockRange,
+    setSelectedDocument,
+    setSelectionAnchorBlockId,
+    uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
   const {
     adjustSelectedBlocksDepth,
