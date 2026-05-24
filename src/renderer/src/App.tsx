@@ -69,6 +69,8 @@ import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
 import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
 import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
+import { useMultiBlockActions } from './hooks/useMultiBlockActions'
+import { useBlockStructureActions } from './hooks/useBlockStructureActions'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
@@ -1413,7 +1415,6 @@ export function App() {
     selectedDocumentId,
     selectedDocumentPresent: Boolean(selectedDocument)
   })
-
   function flashHighlightedBlock(blockId: string) {
     setHighlightedBlockId(blockId)
     if (highlightedBlockTimerRef.current) {
@@ -1533,6 +1534,86 @@ export function App() {
     getPreviousSiblingSubtreeStartIndex,
     onActiveBlockChange: setActiveBlockIndex,
     visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
+  })
+  const {
+    adjustSelectedBlocksDepth,
+    convertSelectedBlocks,
+    copySelectedBlocks,
+    copySelectedBlocksAsPlainText,
+    cutSelectedBlocks,
+    deleteSelectedBlocks,
+    duplicateSelectedBlocks,
+    moveSelectedBlocks,
+    removeSelectedBlockRange
+  } = useMultiBlockActions({
+    activeBlockIndex,
+    activeCursorPosition,
+    buildBlockTypePatch,
+    clearBlockSelection,
+    draftBlocks,
+    endBlockDrag,
+    getBlockSubtreeEndIndex,
+    getBlockTypeLabel,
+    getFragmentLocalRootIds,
+    getMultiBlockInteractionGuard,
+    getMultiBlockOperationRange,
+    getNextSiblingSubtreeStartIndex,
+    getNormalizedBlockId,
+    getNormalizedParentBlockId,
+    getPreviousSiblingSubtreeStartIndex,
+    getVisibleSiblingSelectionSlice,
+    isNestableBlock,
+    materializeDraftFragment,
+    moveContiguousBlockRange,
+    normalizeBlockDepth,
+    pushToHistory,
+    remapIndexAfterSubtreeMove,
+    resolveDraftInsertionPlacement,
+    selectedBlockRange,
+    serializeDraftBlockRange,
+    serializeDraftBlockRangeAsPlainText,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setBackupMessage,
+    setDraftBlocks,
+    setPendingFocusBlockIndex,
+    setSelectedBlockRange,
+    setSelectionAnchorBlockId,
+    shiftDraftFragmentDepth,
+    ui: {
+      convertedBlocks: ui.convertedBlocks,
+      copiedBlocks: ui.copiedBlocks,
+      copiedPlainText: ui.copiedPlainText,
+      copyFailed: ui.copyFailed,
+      copyTextFailed: ui.copyTextFailed,
+      cutBlocks: ui.cutBlocks,
+      cutFailed: ui.cutFailed,
+      deletedBlocks: ui.deletedBlocks,
+      duplicatedBlocks: ui.duplicatedBlocks,
+      invalidVisibleTreeSlice: ui.invalidVisibleTreeSlice
+    }
+  })
+  const {
+    duplicateDraftBlock,
+    insertChildDraftBlock,
+    insertDraftBlockAt,
+    splitDraftBlock
+  } = useBlockStructureActions({
+    buildBlockTypePatch,
+    buildSiblingDraftBlock,
+    clearBlockSelection,
+    draftBlocks,
+    endBlockDrag,
+    getBlockSubtreeEndIndex,
+    getDefaultChildBlockType,
+    getNormalizedParentBlockId,
+    isNestableBlock,
+    materializeDraftFragment,
+    pushToHistory,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setDraftBlocks,
+    setPendingFocusBlockIndex
   })
   const {
     blockSearchItems,
@@ -2488,339 +2569,6 @@ export function App() {
     )
   }
 
-    function moveSelectedBlocks(delta: -1 | 1) {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
-      if (interactionIssue) {
-        setBackupMessage(interactionIssue)
-        return
-      }
-
-      const visibleSiblingSlice = getVisibleSiblingSelectionSlice(selectedBlockRange)
-      if (!visibleSiblingSlice) {
-        setBackupMessage(ui.invalidVisibleTreeSlice)
-        return
-      }
-
-      const firstVisibleEntry = visibleSiblingSlice.visibleEntries[0]
-      const lastVisibleEntry = visibleSiblingSlice.visibleEntries[visibleSiblingSlice.visibleEntries.length - 1]
-      if (!firstVisibleEntry || !lastVisibleEntry) {
-        return
-      }
-
-      const siblingIndex =
-        delta === -1
-          ? getPreviousSiblingSubtreeStartIndex(draftBlocks, firstVisibleEntry.index)
-          : getNextSiblingSubtreeStartIndex(draftBlocks, lastVisibleEntry.index)
-
-      if (siblingIndex === null) {
-        return
-      }
-
-      pushToHistory(draftBlocks)
-
-      const operationRange = visibleSiblingSlice.operationRange
-      const targetIndex = delta === -1 ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
-      const nextBlocks = moveContiguousBlockRange(draftBlocks, operationRange, targetIndex)
-      
-      const movedCount = operationRange.end - operationRange.start + 1
-      const insertionIndex = operationRange.start < targetIndex ? Math.max(0, targetIndex - movedCount + 1) : targetIndex
-      const newStartIndex = remapIndexAfterSubtreeMove(operationRange.start, operationRange.start, operationRange.end, insertionIndex) ?? operationRange.start
-      const newEndIndex = remapIndexAfterSubtreeMove(operationRange.end, operationRange.start, operationRange.end, insertionIndex) ?? operationRange.end
-      const nextFocusIndex = remapIndexAfterSubtreeMove(
-        activeBlockIndex ?? lastVisibleEntry.index,
-        operationRange.start,
-        operationRange.end,
-        insertionIndex
-      ) ?? newEndIndex
-
-      setDraftBlocks(nextBlocks)
-      setSelectedBlockRange({
-        start: newStartIndex,
-        end: newEndIndex
-      })
-      setSelectionAnchorBlockId(getNormalizedBlockId(nextBlocks[newStartIndex]) ?? null)
-      setActiveBlockIndex(nextFocusIndex)
-      setPendingFocusBlockIndex(nextFocusIndex)
-      endBlockDrag()
-    }
-
-    function adjustSelectedBlocksDepth(delta: -1 | 1, focusIndex: number, cursorPosition = activeCursorPosition) {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
-      if (interactionIssue) {
-        setBackupMessage(interactionIssue)
-        return
-      }
-
-      const operationRange = getMultiBlockOperationRange(selectedBlockRange)
-      pushToHistory(draftBlocks)
-
-      const selectedNestableBlocks = draftBlocks
-        .slice(operationRange.start, operationRange.end + 1)
-        .filter((block) => isNestableBlock(block.type))
-
-      if (selectedNestableBlocks.length === 0) {
-        return
-      }
-
-      const minDepth = Math.min(...selectedNestableBlocks.map((block) => block.depth))
-      const appliedDelta =
-        delta === 1
-          ? Math.min(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth + 1) - block.depth))
-          : Math.max(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth - 1) - block.depth))
-
-      if (appliedDelta === 0) {
-        return
-      }
-
-      if (appliedDelta > 0) {
-        const precedingBlock = operationRange.start > 0 ? draftBlocks[operationRange.start - 1] : null
-        if (!precedingBlock) {
-          console.warn('Cannot indent: no preceding block found as parent.')
-          return
-        }
-
-        const nextMinDepth = minDepth + appliedDelta
-        if (precedingBlock.depth + 1 < nextMinDepth) {
-          console.warn(`Cannot indent to depth ${nextMinDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
-          return
-        }
-
-        for (let i = operationRange.start; i <= operationRange.end; i += 1) {
-          const block = draftBlocks[i]
-          if (!isNestableBlock(block.type)) {
-            continue
-          }
-
-          const nextBlockDepth = normalizeBlockDepth(block.type, block.depth + appliedDelta)
-
-          if (i === selectedBlockRange.start) {
-            continue
-          }
-
-          const prevBlock = draftBlocks[i - 1]
-          if (prevBlock.depth < nextBlockDepth - 1) {
-            console.warn(`Cannot indent multi-block range: block at index ${i} would have insufficient preceding block depth for its new depth ${nextBlockDepth}.`)
-            return
-          }
-        }
-      }
-
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        const operationBlocks = next.slice(operationRange.start, operationRange.end + 1)
-        const rootIds = getFragmentLocalRootIds(operationBlocks)
-        const firstAdjustableRootOffset = operationBlocks.findIndex((block) => {
-          const blockId = getNormalizedBlockId(block)
-          return Boolean(blockId && rootIds.has(blockId) && isNestableBlock(block.type))
-        })
-
-        if (firstAdjustableRootOffset === -1) {
-          return previous
-        }
-
-        const firstAdjustableRootIndex = operationRange.start + firstAdjustableRootOffset
-        const firstAdjustableRoot = next[firstAdjustableRootIndex]
-        if (!firstAdjustableRoot) {
-          return previous
-        }
-
-        const placement = resolveDraftInsertionPlacement(
-          next,
-          firstAdjustableRootIndex,
-          firstAdjustableRoot.type,
-          firstAdjustableRoot.depth + appliedDelta
-        )
-
-        next.splice(
-          operationRange.start,
-          operationBlocks.length,
-          ...shiftDraftFragmentDepth(operationBlocks, placement.depth - firstAdjustableRoot.depth, placement.parentBlockId, rootIds)
-        )
-        return next
-      })
-      setActiveBlockIndex(focusIndex)
-      setActiveCursorPosition(cursorPosition)
-      setPendingFocusBlockIndex(focusIndex)
-      endBlockDrag()
-    }
-
-    function convertSelectedBlocks(nextType: DocumentBlock['type']) {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const operationRange = getMultiBlockOperationRange(selectedBlockRange)
-      const operationCount = operationRange.end - operationRange.start + 1
-      pushToHistory(draftBlocks)
-
-      const focusIndex =
-        activeBlockIndex !== null && activeBlockIndex >= operationRange.start && activeBlockIndex <= operationRange.end
-          ? activeBlockIndex
-          : operationRange.start
-
-      setDraftBlocks((previous) =>
-        previous.map((block, currentIndex) => {
-          if (currentIndex < operationRange.start || currentIndex > operationRange.end) {
-            return block
-          }
-
-          return buildBlockTypePatch(nextType, block.content, nextType === 'todo' ? block.checked : false, block.depth, block.parentBlockId ?? null)
-        })
-      )
-      setActiveBlockIndex(focusIndex)
-      setPendingFocusBlockIndex(focusIndex)
-      endBlockDrag()
-      setBackupMessage(ui.convertedBlocks(operationCount, getBlockTypeLabel(nextType)))
-    }
-
-    function removeSelectedBlockRange(range: BlockSelectionRange) {
-      pushToHistory(draftBlocks)
-      const lastRemovedBlock = draftBlocks[range.end]
-      if (!lastRemovedBlock) {
-        return
-      }
-
-      const modifiedBlocks: DocumentBlockDraft[] = []
-      
-      for (let i = 0; i < draftBlocks.length; i += 1) {
-        const block = draftBlocks[i]
-        
-        if (i >= range.start && i <= range.end) {
-          continue
-        }
-
-        if (i > range.end) {
-          if (block.depth > lastRemovedBlock.depth) {
-            const requestedDepth = normalizeBlockDepth(block.type, block.depth + (lastRemovedBlock.depth - block.depth))
-            const placement = resolveDraftInsertionPlacement(modifiedBlocks, modifiedBlocks.length, block.type, requestedDepth)
-            modifiedBlocks.push({
-              ...block,
-              depth: placement.depth,
-              parentBlockId: placement.parentBlockId
-            })
-            continue
-          }
-        }
-
-        modifiedBlocks.push(block)
-      }
-
-      const remainingCount = modifiedBlocks.length
-      const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null
-
-      clearBlockSelection()
-      setDraftBlocks(modifiedBlocks)
-      setActiveBlockIndex(nextIndex)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(nextIndex)
-      endBlockDrag()
-    }
-
-    async function copySelectedBlocks() {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const range = getMultiBlockOperationRange(selectedBlockRange)
-      const text = serializeDraftBlockRange(draftBlocks, range)
-      const count = range.end - range.start + 1
-
-      try {
-        await window.knowbook.writeClipboardText(text)
-        setBackupMessage(ui.copiedBlocks(count))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : ui.copyFailed
-        setBackupMessage(message)
-      }
-    }
-
-    async function copySelectedBlocksAsPlainText() {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const range = getMultiBlockOperationRange(selectedBlockRange)
-      const text = serializeDraftBlockRangeAsPlainText(draftBlocks, range)
-      const count = range.end - range.start + 1
-
-      try {
-        await window.knowbook.writeClipboardText(text)
-        setBackupMessage(ui.copiedPlainText(count))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : ui.copyTextFailed
-        setBackupMessage(message)
-      }
-    }
-
-    async function cutSelectedBlocks() {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const range = getMultiBlockOperationRange(selectedBlockRange)
-      const text = serializeDraftBlockRange(draftBlocks, range)
-      const count = range.end - range.start + 1
-
-      try {
-        await window.knowbook.writeClipboardText(text)
-        removeSelectedBlockRange(range)
-        setBackupMessage(ui.cutBlocks(count))
-      } catch (error) {
-        const message = error instanceof Error ? error.message : ui.cutFailed
-        setBackupMessage(message)
-      }
-    }
-
-    function deleteSelectedBlocks() {
-      if (!selectedBlockRange) {
-        return
-      }
-
-      const range = getMultiBlockOperationRange(selectedBlockRange)
-      const count = range.end - range.start + 1
-      removeSelectedBlockRange(range)
-      setBackupMessage(ui.deletedBlocks(count))
-    }
-
-    function duplicateSelectedBlocks() {
-      if (!selectedBlockRange) {
-        return
-      }
-      pushToHistory(draftBlocks)
-
-      const range = getMultiBlockOperationRange(selectedBlockRange)
-      const duplicatedBlocks = materializeDraftFragment(
-        draftBlocks.slice(range.start, range.end + 1),
-        getNormalizedParentBlockId(draftBlocks[range.start])
-      )
-      const count = duplicatedBlocks.length
-      const duplicatedRange = {
-        start: range.end + 1,
-        end: range.end + count
-      }
-
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        next.splice(range.end + 1, 0, ...duplicatedBlocks)
-        return next
-      })
-      setSelectionAnchorBlockId(duplicatedBlocks[0]?.id ?? null)
-      setSelectedBlockRange(duplicatedRange)
-      setActiveBlockIndex(duplicatedRange.start)
-      setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
-      setPendingFocusBlockIndex(duplicatedRange.start)
-      endBlockDrag()
-      setBackupMessage(ui.duplicatedBlocks(count))
-    }
-
   function handleBlockContentChange(index: number, content: string) {
     const currentBlock = draftBlocks[index] ?? buildBlockTypePatch('paragraph', '')
     const shortcut = resolveMarkdownBlockShortcut({
@@ -2918,135 +2666,6 @@ export function App() {
     setPendingFocusBlockIndex(focusIndex)
     endBlockDrag()
     return true
-  }
-
-  function insertDraftBlockAt(index: number, anchorIndex: number | null = null) {
-    pushToHistory(draftBlocks)
-    const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
-    clearBlockSelection()
-
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      const anchorBlock = anchorIndex !== null ? next[anchorIndex] : undefined
-      next.splice(nextIndex, 0, buildSiblingDraftBlock(anchorBlock))
-      return next
-    })
-
-    setActiveBlockIndex(nextIndex)
-    setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(nextIndex)
-    endBlockDrag()
-  }
-
-  function insertChildDraftBlock(index: number, contentOverride?: string) {
-    const currentBlock = draftBlocks[index]
-    if (!currentBlock) {
-      return
-    }
-
-    clearBlockSelection()
-
-    const childType = getDefaultChildBlockType(currentBlock.type)
-    const childDepth = currentBlock.depth + 1
-    if (!isNestableBlock(childType) || childDepth > 6) {
-      return
-    }
-
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      if (contentOverride !== undefined) {
-        next[index] = {
-          ...next[index],
-          content: contentOverride
-        }
-      }
-
-      next.splice(subtreeEndIndex + 1, 0, buildBlockTypePatch(childType, '', false, childDepth, currentBlock.id))
-      return next
-    })
-
-    setActiveBlockIndex(subtreeEndIndex + 1)
-    setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(subtreeEndIndex + 1)
-    endBlockDrag()
-  }
-
-  function duplicateDraftBlock(index: number, contentOverride?: string) {
-    pushToHistory(draftBlocks)
-    const currentBlock = draftBlocks[index]
-    if (!currentBlock) {
-      return
-    }
-
-    clearBlockSelection()
-
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-    const duplicatedRootIndex = subtreeEndIndex + 1
-    const duplicatedBlocks = materializeDraftFragment(
-      draftBlocks.slice(index, subtreeEndIndex + 1).map((block, offset) => ({
-        ...block,
-        content: offset === 0 ? contentOverride ?? block.content : block.content
-      })),
-      getNormalizedParentBlockId(currentBlock)
-    )
-
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      if (contentOverride !== undefined) {
-        next[index] = {
-          ...next[index],
-          content: contentOverride
-        }
-      }
-
-      next.splice(duplicatedRootIndex, 0, ...duplicatedBlocks)
-      return next
-    })
-    setActiveBlockIndex(duplicatedRootIndex)
-    setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
-    setPendingFocusBlockIndex(duplicatedRootIndex)
-    endBlockDrag()
-  }
-
-  function splitDraftBlock(index: number, selectionStart: number, selectionEnd = selectionStart, nextTypeOverride?: string) {
-    const currentBlock = draftBlocks[index]
-    if (!currentBlock) {
-      return
-    }
-
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-    if (subtreeEndIndex > index) {
-      console.warn('Cannot split a block with child blocks. Please delete or move child blocks first.')
-      return
-    }
-
-    clearBlockSelection()
-
-    const safeStart = Math.max(0, Math.min(selectionStart, currentBlock.content.length))
-    const safeEnd = Math.max(safeStart, Math.min(selectionEnd, currentBlock.content.length))
-    const leftContent = currentBlock.content.slice(0, safeStart)
-    const rightContent = currentBlock.content.slice(safeEnd)
-    const nextType = nextTypeOverride ?? (currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type)
-
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      next[index] = {
-        ...next[index],
-        content: leftContent
-      }
-      next.splice(
-        index + 1,
-        0,
-        buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null)
-      )
-      return next
-    })
-    setActiveBlockIndex(index + 1)
-    setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(index + 1)
-    endBlockDrag()
   }
 
   function continueBlockAt(index: number, selectionStart: number, selectionEnd = selectionStart) {
