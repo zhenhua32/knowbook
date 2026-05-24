@@ -66,6 +66,7 @@ import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
 import { useBlockInputActions } from './hooks/useBlockInputActions'
+import { useBlockCollapseState } from './hooks/useBlockCollapseState'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
@@ -377,39 +378,6 @@ function buildTreeAwareBlockIndexById(blocks: TreeAwareBlock[]): Map<string, num
     }
   }
   return indexById
-}
-
-function expandAncestorBlocks(
-  blocks: TreeAwareBlock[],
-  targetBlockId: string,
-  collapsedBlockIds: Set<string>
-): Set<string> {
-  const nextCollapsedBlockIds = new Set(collapsedBlockIds)
-  const indexById = buildTreeAwareBlockIndexById(blocks)
-  const visitedParentIds = new Set<string>()
-  let currentBlockId: string | null = targetBlockId
-
-  while (currentBlockId) {
-    if (visitedParentIds.has(currentBlockId)) {
-      break
-    }
-
-    visitedParentIds.add(currentBlockId)
-    const currentIndex = indexById.get(currentBlockId)
-    if (currentIndex === undefined) {
-      break
-    }
-
-    const parentBlockId = getNormalizedParentBlockId(blocks[currentIndex])
-    if (!parentBlockId) {
-      break
-    }
-
-    nextCollapsedBlockIds.delete(parentBlockId)
-    currentBlockId = parentBlockId
-  }
-
-  return nextCollapsedBlockIds
 }
 
 function isBlockDescendantOf(rootId: string, blocks: TreeAwareBlock[], candidateIndex: number, indexById: Map<string, number>): boolean {
@@ -1257,7 +1225,6 @@ export function App() {
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
-  const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const {
     dragOverBlockDepth,
@@ -1336,6 +1303,15 @@ export function App() {
     toDraftBlock,
     ui,
     validateBlockTreeStructure
+  })
+  const {
+    blockHasChildren,
+    collapsedBlockIds,
+    revealBlockAncestors,
+    toggleBlockCollapse
+  } = useBlockCollapseState({
+    draftBlocks,
+    getBlockSubtreeEndIndex
   })
   const {
     aiEnabledDraft,
@@ -1472,13 +1448,13 @@ export function App() {
   }, [clearEditorAssistSuggestions, endBlockDrag, loadDocumentIntoEditor, resetAiSession])
 
   const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
-    setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, blockId, previous))
+    revealBlockAncestors(blockId)
     setSelectedBlockRange(null)
     setSelectionAnchorBlockId(blockId)
     setActiveBlockIndex(targetIndex)
     setPendingFocusBlockIndex(targetIndex)
     flashHighlightedBlock(blockId)
-  }, [draftBlocks])
+  }, [flashHighlightedBlock, revealBlockAncestors])
 
   const handlePendingTargetMissing = useCallback(() => {
     setBackupMessage(ui.blockReferenceNotFound)
@@ -1775,20 +1751,6 @@ export function App() {
       ...draftBlocks[index],
       highlight
     })
-  }
-
-  function blockHasChildren(blockIndex: number): boolean {
-    return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
-  }
-
-  function toggleBlockCollapse(blockId: string) {
-    const newCollapsed = new Set(collapsedBlockIds)
-    if (newCollapsed.has(blockId)) {
-      newCollapsed.delete(blockId)
-    } else {
-      newCollapsed.add(blockId)
-    }
-    setCollapsedBlockIds(newCollapsed)
   }
 
   useEffect(() => {
@@ -2904,6 +2866,7 @@ export function App() {
   })
   const {
     auxPanelProps: documentsAuxPanelProps,
+    previewHeaderProps: documentsPreviewHeaderProps,
     relationGroups: documentsRelationGroups,
     statsBarProps: documentsStatsBarProps,
     summaryCardProps: documentsSummaryCardProps
@@ -2916,42 +2879,17 @@ export function App() {
     aiContextSearching,
     aiEnabled: homeData.aiConfig.enabled,
     aiPromptDraft,
+    autoSaveFlash,
+    canRedo,
+    canUndo,
+    detailLoading,
     documentsAuxPanelOpen,
     draftBlocks,
     draftSummary,
     draftTitle,
     hasApiKey: homeData.aiConfig.hasApiKey,
     isZh,
-    onAiPromptChange: setAiPromptDraft,
-    onAskAi: () => {
-      void askAiOnSelectedDocument()
-    },
-    onFindRelatedNotes: () => {
-      void findRelatedNotesForPrompt()
-    },
-    onOpenDocument: openDocumentInDocumentsPage,
-    onRunEnabledAutomations: () => {
-      void runEnabledAiAutomationsOnSelectedDocument()
-    },
-    onRunPluginAction: (action) => {
-      void runPluginDocumentAction(action)
-    },
-    onSummaryChange: setDraftSummary,
-    onTitleChange: setDraftTitle,
-    pluginActionBusyKey,
-    pluginDocumentActions,
-    selectedDocument,
-    ui
-  })
-  const documentsPreviewHeaderProps = {
-    autoSaveFlash,
-    canRedo,
-    canUndo,
-    detailLoading,
-    documentsAuxPanelOpen,
-    isPinned: selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false,
     isSaving,
-    isZh,
     mdCopyFlash,
     moveOptions,
     moveTargetId,
@@ -2960,34 +2898,53 @@ export function App() {
         void handleCreateDocument(selectedDocument.id)
       }
     },
+    onAiPromptChange: setAiPromptDraft,
+    onAskAi: () => {
+      void askAiOnSelectedDocument()
+    },
     onCopyMarkdown: () => {
       void copyDocumentAsMarkdown()
     },
     onDelete: () => {
       void deleteSelectedDocument()
     },
+    onFindRelatedNotes: () => {
+      void findRelatedNotesForPrompt()
+    },
     onMove: () => {
       void moveSelectedDocument()
     },
     onMoveTargetChange: setMoveTargetId,
+    onOpenDocument: openDocumentInDocumentsPage,
     onRedo: redoEdit,
+    onRunEnabledAutomations: () => {
+      void runEnabledAiAutomationsOnSelectedDocument()
+    },
+    onRunPluginAction: (action) => {
+      void runPluginDocumentAction(action)
+    },
     onSave: () => {
       void saveDocument()
     },
     onSaveMarkdown: () => {
       void saveDocumentAsMarkdown()
     },
+    onSummaryChange: setDraftSummary,
     onToggleAuxPanel: () => setDocumentsAuxPanelOpen((previous) => !previous),
     onTogglePin: () => {
       if (selectedDocument) {
         togglePinDocument(selectedDocument.id)
       }
     },
+    onTitleChange: setDraftTitle,
     onUndo: undoEdit,
+    pinnedDocumentIds,
+    pluginActionBusyKey,
+    pluginDocumentActions,
+    selectedDocument,
     selectedDocumentId,
-    selectedDocumentTitle: selectedDocument?.title ?? null,
     ui
-  }
+  })
 
   useEffect(() => {
     if (boardGroupBy === BOARD_GROUP_BY_PARENT) {
