@@ -1,15 +1,32 @@
 import { useMemo } from 'react'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
+import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
 import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
+import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
+import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
-type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'isHighlighted' | 'selectedDocument'>
+type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex'> & {
+  setSelectedSlashCommandIndex: Dispatch<SetStateAction<number>>
+}
 type OutlinePanelProps = ComponentProps<typeof DocumentOutlinePanel>
+type SelectionToolbarProps = ComponentProps<typeof BlockSelectionToolbar>
+type LinkSuggestionPanelProps = ComponentProps<typeof LinkSuggestionPanel>
+type FloatingSlashCommandPanelProps = ComponentProps<typeof FloatingSlashCommandPanel>
 
 type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps & {
+  activeLinkContext: { query: string } | null
+  blockSuggestions: DocumentBlockDraft[]
+  canMoveSelectionDown: boolean
+  canMoveSelectionUp: boolean
+  clearBlockSelection: () => void
+  convertSelectedBlocks: (type: DocumentBlock['type']) => void
+  copySelectedBlocks: () => void
+  copySelectedBlocksAsPlainText: () => void
+  cutSelectedBlocks: () => void
   dragOverBlockDepth: number | null
   dragOverBlockIndex: number | null
   draggingBlockIndex: number | null
@@ -19,28 +36,49 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
     targetIndex: number,
     targetDepth: number | null
   ) => ComponentProps<typeof BlockEditorRow>['dropPreview']
+  getBlockConversionLabel: (type: DocumentBlock['type']) => string
   getVisibleBlocks: (blocks: DocumentBlockDraft[]) => DocumentBlockDraft[]
+  insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
+  insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
   isBlockSelected: (index: number) => boolean
   isNestableBlock: (type: DocumentBlock['type']) => boolean
+  linkSuggestions: LinkSuggestionPanelProps['linkSuggestions']
   onSelectOutlineBlock: (blockIndex: number) => void
   selectedDocument: SharedBlockEditorRowProps['selectedDocument'] | null
+  selectedBlockActionCount: number
+  selectedBlockConversionType: DocumentBlock['type']
+  selectedBlockHasHiddenCollapsedContent: boolean
+  selectedBlockInteractionIssue: string | null
+  selectedVisibleBlockCount: number
+  selectedVisibleSiblingSlice: unknown
+  setSelectedBlockConversionType: (type: DocumentBlock['type']) => void
+  slashPanelPos: { x: number; y: number } | null
 }
 
 export function useDocumentsBlockEditorPresentation({
   activeBlockIndex,
+  activeLinkContext,
   activeSlashCommand,
   activeSlashContext,
   adjustBlockDepth,
   adjustSelectedBlocksDepth,
   applySlashCommand,
   beginBlockDrag,
+  blockSuggestions,
   blockHasChildren,
   blockTextareaRefs,
   BLOCK_INDENT_SIZE,
   canMoveSelectedRange,
+  canMoveSelectionDown,
+  canMoveSelectionUp,
   captureBlockCursor,
   collapsedBlockIds,
+  clearBlockSelection,
   continueBlockAt,
+  convertSelectedBlocks,
+  copySelectedBlocks,
+  copySelectedBlocksAsPlainText,
+  cutSelectedBlocks,
   deleteSelectedBlocks,
   dismissSlashCommand,
   draftBlocks,
@@ -55,6 +93,7 @@ export function useDocumentsBlockEditorPresentation({
   endBlockRangeSelection,
   filteredSlashCommands,
   getBlockDropPreview,
+  getBlockConversionLabel,
   getDraggedBlockDepthPreview,
   getMultiBlockOperationRange,
   getNextSiblingSubtreeStartIndex,
@@ -65,11 +104,14 @@ export function useDocumentsBlockEditorPresentation({
   handleBlockMouseEnter,
   handleBlockPaste,
   insertDraftBlockAt,
+  insertBlockSuggestion,
+  insertLinkSuggestion,
   isBlockRangeSelecting,
   isBlockSelected,
   isNestableBlock,
   isSelectionCoherent,
   isZh,
+  linkSuggestions,
   mergeWithPreviousBlock,
   moveDraftBlockBySibling,
   moveSelectedBlocks,
@@ -79,13 +121,21 @@ export function useDocumentsBlockEditorPresentation({
   removeSelectedBlockRange,
   selectAllBlocks,
   selectBlockRange,
+  selectedBlockActionCount,
   selectedBlockCount,
+  selectedBlockConversionType,
+  selectedBlockHasHiddenCollapsedContent,
+  selectedBlockInteractionIssue,
   selectedBlockRange,
   selectedDocument,
+  selectedVisibleBlockCount,
+  selectedVisibleSiblingSlice,
   serializeDraftBlockRange,
   setDragOverBlockDepth,
   setDragOverBlockIndex,
+  setSelectedBlockConversionType,
   setSelectedSlashCommandIndex,
+  slashPanelPos,
   splitDraftBlock,
   toggleBlockCollapse,
   ui,
@@ -163,7 +213,103 @@ export function useDocumentsBlockEditorPresentation({
         title: isZh ? '大纲' : 'Outline'
       }
     : null
-    
+
+  const selectionToolbarProps: SelectionToolbarProps | null = selectedBlockRange
+    ? {
+        canMoveDown: canMoveSelectionDown,
+        canMoveUp: canMoveSelectionUp,
+        clearLabel: ui.clear,
+        conversionOptions: {
+          paragraph: getBlockConversionLabel('paragraph'),
+          todo: getBlockConversionLabel('todo'),
+          quote: getBlockConversionLabel('quote'),
+          'bulleted-list': getBlockConversionLabel('bulleted-list'),
+          'numbered-list': getBlockConversionLabel('numbered-list')
+        },
+        convertLabel: ui.convert,
+        copyBlocksLabel: ui.copyBlocks,
+        copyTextLabel: ui.copyText,
+        cutLabel: ui.cut,
+        deleteLabel: ui.common.delete,
+        duplicateLabel: ui.duplicate,
+        hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice,
+        hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+        hintLabel: ui.blockSelectionHint({
+          start: selectedBlockRange.start,
+          end: selectedBlockRange.end,
+          actionCount: selectedBlockActionCount,
+          selectedCount: selectedBlockCount,
+          incoherent: !isSelectionCoherent(selectedBlockRange),
+          hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+          selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
+        }),
+        interactionIssue: selectedBlockInteractionIssue,
+        isIncoherent: !isSelectionCoherent(selectedBlockRange),
+        moveDownLabel: ui.moveDown,
+        moveUpLabel: ui.moveUp,
+        onClear: clearBlockSelection,
+        onConvert: () => convertSelectedBlocks(selectedBlockConversionType),
+        onConversionTypeChange: setSelectedBlockConversionType,
+        onCopyBlocks: copySelectedBlocks,
+        onCopyText: copySelectedBlocksAsPlainText,
+        onCut: cutSelectedBlocks,
+        onDelete: deleteSelectedBlocks,
+        onDuplicate: duplicateSelectedBlocks,
+        onMoveDown: () => moveSelectedBlocks(1),
+        onMoveUp: () => moveSelectedBlocks(-1),
+        rangeEnd: selectedBlockRange.end,
+        rangeStart: selectedBlockRange.start,
+        selectedBlockActionCount,
+        selectedBlockConversionType,
+        selectedBlockCount,
+        selectedVisibleBlockCount,
+        summaryLabel: ui.blockSelectionSummary({
+          visibleCount: selectedVisibleBlockCount,
+          selectedCount: selectedBlockCount,
+          actionCount: selectedBlockActionCount,
+          incoherent: !isSelectionCoherent(selectedBlockRange),
+          hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+          selectedBlockInteractionIssue,
+          hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
+        })
+      }
+    : null
+
+  const linkSuggestionPanelProps: LinkSuggestionPanelProps | null = activeLinkContext
+    ? {
+        blockSuggestions,
+        blocksLabel: ui.blocksInDocument,
+        linkedDocsLabel: ui.linkedDocuments,
+        linkSuggestions,
+        noMatchingLabel: ui.noMatchingSuggestions,
+        onSelectBlockSuggestion: insertBlockSuggestion,
+        onSelectLinkSuggestion: insertLinkSuggestion,
+        query: activeLinkContext.query,
+        queryLabel: ui.linkQuery
+      }
+    : null
+
+  const floatingSlashCommandPanelProps: FloatingSlashCommandPanelProps | null = activeSlashContext && slashPanelPos
+    ? {
+        activeCommandId: activeSlashCommand?.id,
+        commands: filteredSlashCommands.map((command) => ({
+          id: command.id,
+          label: command.label,
+          description: command.description
+        })),
+        noMatchingLabel: ui.noMatchingCommands,
+        onHoverCommand: setSelectedSlashCommandIndex,
+        onSelectCommand: (command) => {
+          const fullCommand = filteredSlashCommands.find((candidate) => candidate.id === command.id)
+          if (fullCommand) {
+            applySlashCommand(fullCommand)
+          }
+        },
+        query: activeSlashContext.query,
+        x: slashPanelPos.x,
+        y: slashPanelPos.y
+      }
+    : null
 
   const blockEditorRowSharedProps: SharedBlockEditorRowProps | null = selectedDocument
     ? {
@@ -229,7 +375,10 @@ export function useDocumentsBlockEditorPresentation({
 
   return {
     blockEditorRowSharedProps,
+    floatingSlashCommandPanelProps,
+    linkSuggestionPanelProps,
     outlinePanelProps,
+    selectionToolbarProps,
     visibleEditorRows
   }
 }

@@ -69,6 +69,7 @@ import { useBlockInputActions } from './hooks/useBlockInputActions'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
+import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
 import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
@@ -1776,17 +1777,6 @@ export function App() {
     })
   }
 
-  function getDocumentStats() {
-    const blocks = draftBlocks
-    const blockCount = blocks.length
-    const allText = blocks.map((b) => b.content).join(' ')
-    const wordCount = allText.trim() === '' ? 0 : allText.trim().split(/\s+/).length
-    const charCount = allText.length
-    const codeBlockCount = blocks.filter((b) => b.type === 'code').length
-    const todoCount = blocks.filter((b) => b.type === 'todo').length
-    return { blockCount, wordCount, charCount, codeBlockCount, todoCount }
-  }
-
   function blockHasChildren(blockIndex: number): boolean {
     return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
   }
@@ -2817,23 +2807,35 @@ export function App() {
   const pageDescription = pageItems.find((item) => item.id === activePage)?.description ?? ''
   const {
     blockEditorRowSharedProps: documentsBlockEditorRowSharedProps,
+    floatingSlashCommandPanelProps: documentsFloatingSlashCommandPanelProps,
+    linkSuggestionPanelProps: documentsLinkSuggestionPanelProps,
     outlinePanelProps: documentsOutlinePanelProps,
+    selectionToolbarProps: documentsSelectionToolbarProps,
     visibleEditorRows: visibleDocumentEditorRows
   } = useDocumentsBlockEditorPresentation({
     activeBlockIndex,
+    activeLinkContext,
     activeSlashCommand,
     activeSlashContext,
     adjustBlockDepth,
     adjustSelectedBlocksDepth,
     applySlashCommand,
     beginBlockDrag,
+    blockSuggestions,
     blockHasChildren,
     blockTextareaRefs,
     BLOCK_INDENT_SIZE,
     canMoveSelectedRange,
+    canMoveSelectionDown,
+    canMoveSelectionUp,
     captureBlockCursor,
     collapsedBlockIds,
+    clearBlockSelection,
     continueBlockAt,
+    convertSelectedBlocks,
+    copySelectedBlocks,
+    copySelectedBlocksAsPlainText,
+    cutSelectedBlocks,
     deleteSelectedBlocks,
     dismissSlashCommand,
     draftBlocks,
@@ -2848,6 +2850,7 @@ export function App() {
     endBlockRangeSelection,
     filteredSlashCommands,
     getBlockDropPreview,
+    getBlockConversionLabel,
     getDraggedBlockDepthPreview,
     getMultiBlockOperationRange,
     getNextSiblingSubtreeStartIndex,
@@ -2858,11 +2861,14 @@ export function App() {
     handleBlockMouseEnter,
     handleBlockPaste,
     insertDraftBlockAt,
+    insertBlockSuggestion,
+    insertLinkSuggestion,
     isBlockRangeSelecting,
     isBlockSelected,
     isNestableBlock,
     isSelectionCoherent,
     isZh,
+    linkSuggestions,
     mergeWithPreviousBlock,
     moveDraftBlockBySibling,
     moveSelectedBlocks,
@@ -2875,196 +2881,68 @@ export function App() {
     removeSelectedBlockRange,
     selectAllBlocks,
     selectBlockRange,
+    selectedBlockActionCount,
     selectedBlockCount,
+    selectedBlockConversionType,
+    selectedBlockHasHiddenCollapsedContent,
+    selectedBlockInteractionIssue,
     selectedBlockRange,
     selectedDocument,
+    selectedVisibleBlockCount,
+    selectedVisibleSiblingSlice,
     serializeDraftBlockRange,
     setDragOverBlockDepth,
     setDragOverBlockIndex,
+    setSelectedBlockConversionType,
     setSelectedSlashCommandIndex,
+    slashPanelPos,
     splitDraftBlock,
     toggleBlockCollapse,
     ui,
     updateBlockHighlight,
     updateDraftBlock
   })
-  const documentsSelectionToolbarProps = selectedBlockRange
-    ? {
-      canMoveDown: canMoveSelectionDown,
-      canMoveUp: canMoveSelectionUp,
-      clearLabel: ui.clear,
-      conversionOptions: {
-        paragraph: getBlockConversionLabel('paragraph'),
-        todo: getBlockConversionLabel('todo'),
-        quote: getBlockConversionLabel('quote'),
-        'bulleted-list': getBlockConversionLabel('bulleted-list'),
-        'numbered-list': getBlockConversionLabel('numbered-list')
-      },
-      convertLabel: ui.convert,
-      copyBlocksLabel: ui.copyBlocks,
-      copyTextLabel: ui.copyText,
-      cutLabel: ui.cut,
-      deleteLabel: ui.common.delete,
-      duplicateLabel: ui.duplicate,
-      hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice,
-      hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-      hintLabel: ui.blockSelectionHint({
-        start: selectedBlockRange.start,
-        end: selectedBlockRange.end,
-        actionCount: selectedBlockActionCount,
-        selectedCount: selectedBlockCount,
-        incoherent: !isSelectionCoherent(selectedBlockRange),
-        hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-        selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
-      }),
-      interactionIssue: selectedBlockInteractionIssue,
-      isIncoherent: !isSelectionCoherent(selectedBlockRange),
-      moveDownLabel: ui.moveDown,
-      moveUpLabel: ui.moveUp,
-      onClear: clearBlockSelection,
-      onConvert: () => convertSelectedBlocks(selectedBlockConversionType),
-      onConversionTypeChange: setSelectedBlockConversionType,
-      onCopyBlocks: copySelectedBlocks,
-      onCopyText: copySelectedBlocksAsPlainText,
-      onCut: cutSelectedBlocks,
-      onDelete: deleteSelectedBlocks,
-      onDuplicate: duplicateSelectedBlocks,
-      onMoveDown: () => moveSelectedBlocks(1),
-      onMoveUp: () => moveSelectedBlocks(-1),
-      rangeEnd: selectedBlockRange.end,
-      rangeStart: selectedBlockRange.start,
-      selectedBlockActionCount: selectedBlockActionCount,
-      selectedBlockConversionType: selectedBlockConversionType,
-      selectedBlockCount: selectedBlockCount,
-      selectedVisibleBlockCount: selectedVisibleBlockCount,
-      summaryLabel: ui.blockSelectionSummary({
-        visibleCount: selectedVisibleBlockCount,
-        selectedCount: selectedBlockCount,
-        actionCount: selectedBlockActionCount,
-        incoherent: !isSelectionCoherent(selectedBlockRange),
-        hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-        selectedBlockInteractionIssue,
-        hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
-      })
-    }
-    : null
-  const documentsLinkSuggestionPanelProps = activeLinkContext
-    ? {
-      blockSuggestions,
-      blocksLabel: ui.blocksInDocument,
-      linkedDocsLabel: ui.linkedDocuments,
-      linkSuggestions,
-      noMatchingLabel: ui.noMatchingSuggestions,
-      onSelectBlockSuggestion: insertBlockSuggestion,
-      onSelectLinkSuggestion: insertLinkSuggestion,
-      query: activeLinkContext.query,
-      queryLabel: ui.linkQuery
-    }
-    : null
-  const documentsFloatingSlashCommandPanelProps = activeSlashContext && slashPanelPos
-    ? {
-      activeCommandId: activeSlashCommand?.id,
-      commands: filteredSlashCommands.map((command) => ({
-        id: command.id,
-        label: command.label,
-        description: command.description
-      })),
-      noMatchingLabel: ui.noMatchingCommands,
-      onHoverCommand: setSelectedSlashCommandIndex,
-      onSelectCommand: (command: { id: string }) => {
-        const fullCommand = filteredSlashCommands.find((candidate) => candidate.id === command.id)
-        if (fullCommand) {
-          applySlashCommand(fullCommand)
-        }
-      },
-      query: activeSlashContext.query,
-      x: slashPanelPos.x,
-      y: slashPanelPos.y
-    }
-    : null
-  const documentsAuxPanelProps = selectedDocument
-    ? {
-      aiAnswer,
-      aiAsking,
-      aiAutomationsRunning,
-      aiContextError,
-      aiContextResults,
-      aiContextSearching,
-      aiEnabled: homeData.aiConfig.enabled,
-      aiPromptDraft,
-      hasApiKey: homeData.aiConfig.hasApiKey,
-      isOpen: documentsAuxPanelOpen,
-      isZh,
-      onAiPromptChange: setAiPromptDraft,
-      onAskAi: () => {
-        void askAiOnSelectedDocument()
-      },
-      onFindRelatedNotes: () => {
-        void findRelatedNotesForPrompt()
-      },
-      onOpenDocument: openDocumentInDocumentsPage,
-      onRunEnabledAutomations: () => {
-        void runEnabledAiAutomationsOnSelectedDocument()
-      },
-      onRunPluginAction: (action: PluginDocumentAction) => {
-        void runPluginDocumentAction(action)
-      },
-      pluginActionBusyKey,
-      pluginDocumentActions,
-      ui
-    }
-    : null
-  const documentsRelationGroups = selectedDocument
-    ? [
-      {
-        emptyText: ui.relationChildrenEmpty,
-        links: selectedDocument.children.map((child) => ({
-          id: child.id,
-          title: child.title,
-          path: child.path,
-          label: 'child'
-        })),
-        title: ui.relationChildrenTitle
-      },
-      {
-        emptyText: ui.relationOutgoingEmpty,
-        links: selectedDocument.outgoingLinks,
-        title: ui.relationOutgoingTitle
-      },
-      {
-        emptyText: ui.relationBacklinksEmpty,
-        links: selectedDocument.backlinks,
-        title: ui.relationBacklinksTitle
-      }
-    ]
-    : []
-  const documentStats = selectedDocument ? getDocumentStats() : null
-  const documentsStatsBarProps = documentStats
-    ? {
-      blockCount: documentStats.blockCount,
-      blocksLabel: ui.docStatBlocks,
-      charCount: documentStats.charCount,
-      charsLabel: ui.docStatCharacters,
-      codeBlockCount: documentStats.codeBlockCount,
-      codeBlocksLabel: ui.docStatCodeBlocks,
-      todoCount: documentStats.todoCount,
-      todosLabel: ui.docStatTodos,
-      wordCount: documentStats.wordCount,
-      wordsLabel: ui.docStatWords
-    }
-    : null
-  const documentsSummaryCardProps = selectedDocument
-    ? {
-      onSummaryChange: setDraftSummary,
-      onTitleChange: setDraftTitle,
-      path: selectedDocument.path,
-      summary: draftSummary,
-      summaryLabel: ui.common.summary,
-      title: draftTitle,
-      titleLabel: ui.common.title,
-      updatedText: ui.updatedAt(selectedDocument.updatedAt)
-    }
-    : null
+  const {
+    auxPanelProps: documentsAuxPanelProps,
+    relationGroups: documentsRelationGroups,
+    statsBarProps: documentsStatsBarProps,
+    summaryCardProps: documentsSummaryCardProps
+  } = useDocumentsDetailPresentation({
+    aiAnswer,
+    aiAsking,
+    aiAutomationsRunning,
+    aiContextError,
+    aiContextResults,
+    aiContextSearching,
+    aiEnabled: homeData.aiConfig.enabled,
+    aiPromptDraft,
+    documentsAuxPanelOpen,
+    draftBlocks,
+    draftSummary,
+    draftTitle,
+    hasApiKey: homeData.aiConfig.hasApiKey,
+    isZh,
+    onAiPromptChange: setAiPromptDraft,
+    onAskAi: () => {
+      void askAiOnSelectedDocument()
+    },
+    onFindRelatedNotes: () => {
+      void findRelatedNotesForPrompt()
+    },
+    onOpenDocument: openDocumentInDocumentsPage,
+    onRunEnabledAutomations: () => {
+      void runEnabledAiAutomationsOnSelectedDocument()
+    },
+    onRunPluginAction: (action) => {
+      void runPluginDocumentAction(action)
+    },
+    onSummaryChange: setDraftSummary,
+    onTitleChange: setDraftTitle,
+    pluginActionBusyKey,
+    pluginDocumentActions,
+    selectedDocument,
+    ui
+  })
   const documentsPreviewHeaderProps = {
     autoSaveFlash,
     canRedo,
