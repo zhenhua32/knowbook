@@ -50,12 +50,6 @@ import { PageRail } from './components/PageRail'
 import { DocumentsSidebar } from './components/DocumentsSidebar'
 import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
-import { DocumentPreviewHeader } from './components/DocumentPreviewHeader'
-import { DocumentsAuxPanel } from './components/DocumentsAuxPanel'
-import { DocumentStatsBar } from './components/DocumentStatsBar'
-import { DocumentSummaryCard } from './components/DocumentSummaryCard'
-import { DocumentOutlinePanel } from './components/DocumentOutlinePanel'
-import { BlockSearchPanel } from './components/BlockSearchPanel'
 import { CrossDocumentBlockReference } from './components/BlockReference'
 import {
   getInlineReferenceTokenAtCursor,
@@ -66,17 +60,15 @@ import {
   resolveInlineReferenceTarget,
   resolveBlockReference
 } from './components/InlineContentRenderer'
-import { BlockSelectionToolbar } from './components/BlockSelectionToolbar'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
-import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPanel'
-import { LinkSuggestionPanel } from './components/LinkSuggestionPanel'
-import { BlockEditorRow } from './components/BlockEditorRow'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
 import { AISection } from './sections/AISection'
+import { DatabaseSection } from './sections/DatabaseSection'
 import { DashboardSettingsSection } from './sections/DashboardSettingsSection'
+import { DocumentsSection } from './sections/DocumentsSection'
 import { PluginsSection } from './sections/PluginsSection'
 
 const emptyState: HomeData = {
@@ -4567,6 +4559,344 @@ export function App() {
 
   const pageTitle = pageItems.find((item) => item.id === activePage)?.label ?? ''
   const pageDescription = pageItems.find((item) => item.id === activePage)?.description ?? ''
+  const documentsOutlineItems = draftBlocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
+    .map(({ block, index }) => ({
+      index,
+      level: block.type === 'heading-1' ? 1 as const : 2 as const,
+      title: block.content
+    }))
+  const visibleDocumentEditorRows = selectedDocument
+    ? getVisibleBlocks(draftBlocks).map((block) => {
+      const index = draftBlocks.indexOf(block)
+      const dropPreview =
+        draggingBlockIndex !== null && dragOverBlockIndex === index
+          ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
+          : null
+      const isSelected = isBlockSelected(index)
+      const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
+
+      let numberLabel = ''
+      if (block.type === 'numbered-list') {
+        let count = 0
+        for (let currentIndex = index; currentIndex >= 0; currentIndex -= 1) {
+          const candidateBlock = draftBlocks[currentIndex]
+          if (candidateBlock.type !== 'numbered-list' || candidateBlock.depth < block.depth) {
+            break
+          }
+          if (candidateBlock.depth === block.depth) {
+            count += 1
+          }
+        }
+        numberLabel = `${count}.`
+      }
+
+      return {
+        block,
+        dropPreview,
+        indentPx,
+        index,
+        isSelected,
+        numberLabel
+      }
+    })
+    : []
+  const documentsSelectionToolbarProps = selectedBlockRange
+    ? {
+      canMoveDown: canMoveSelectionDown,
+      canMoveUp: canMoveSelectionUp,
+      clearLabel: ui.clear,
+      conversionOptions: {
+        paragraph: getBlockConversionLabel('paragraph'),
+        todo: getBlockConversionLabel('todo'),
+        quote: getBlockConversionLabel('quote'),
+        'bulleted-list': getBlockConversionLabel('bulleted-list'),
+        'numbered-list': getBlockConversionLabel('numbered-list')
+      },
+      convertLabel: ui.convert,
+      copyBlocksLabel: ui.copyBlocks,
+      copyTextLabel: ui.copyText,
+      cutLabel: ui.cut,
+      deleteLabel: ui.common.delete,
+      duplicateLabel: ui.duplicate,
+      hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice,
+      hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+      hintLabel: ui.blockSelectionHint({
+        start: selectedBlockRange.start,
+        end: selectedBlockRange.end,
+        actionCount: selectedBlockActionCount,
+        selectedCount: selectedBlockCount,
+        incoherent: !isSelectionCoherent(selectedBlockRange),
+        hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+        selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
+      }),
+      interactionIssue: selectedBlockInteractionIssue,
+      isIncoherent: !isSelectionCoherent(selectedBlockRange),
+      moveDownLabel: ui.moveDown,
+      moveUpLabel: ui.moveUp,
+      onClear: clearBlockSelection,
+      onConvert: () => convertSelectedBlocks(selectedBlockConversionType),
+      onConversionTypeChange: setSelectedBlockConversionType,
+      onCopyBlocks: copySelectedBlocks,
+      onCopyText: copySelectedBlocksAsPlainText,
+      onCut: cutSelectedBlocks,
+      onDelete: deleteSelectedBlocks,
+      onDuplicate: duplicateSelectedBlocks,
+      onMoveDown: () => moveSelectedBlocks(1),
+      onMoveUp: () => moveSelectedBlocks(-1),
+      rangeEnd: selectedBlockRange.end,
+      rangeStart: selectedBlockRange.start,
+      selectedBlockActionCount: selectedBlockActionCount,
+      selectedBlockConversionType: selectedBlockConversionType,
+      selectedBlockCount: selectedBlockCount,
+      selectedVisibleBlockCount: selectedVisibleBlockCount,
+      summaryLabel: ui.blockSelectionSummary({
+        visibleCount: selectedVisibleBlockCount,
+        selectedCount: selectedBlockCount,
+        actionCount: selectedBlockActionCount,
+        incoherent: !isSelectionCoherent(selectedBlockRange),
+        hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
+        selectedBlockInteractionIssue,
+        hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
+      })
+    }
+    : null
+  const documentsLinkSuggestionPanelProps = activeLinkContext
+    ? {
+      blockSuggestions,
+      blocksLabel: ui.blocksInDocument,
+      linkedDocsLabel: ui.linkedDocuments,
+      linkSuggestions,
+      noMatchingLabel: ui.noMatchingSuggestions,
+      onSelectBlockSuggestion: insertBlockSuggestion,
+      onSelectLinkSuggestion: insertLinkSuggestion,
+      query: activeLinkContext.query,
+      queryLabel: ui.linkQuery
+    }
+    : null
+  const documentsFloatingSlashCommandPanelProps = activeSlashContext && slashPanelPos
+    ? {
+      activeCommandId: activeSlashCommand?.id,
+      commands: filteredSlashCommands.map((command) => ({
+        id: command.id,
+        label: command.label,
+        description: command.description
+      })),
+      noMatchingLabel: ui.noMatchingCommands,
+      onHoverCommand: setSelectedSlashCommandIndex,
+      onSelectCommand: (command: { id: string }) => {
+        const fullCommand = filteredSlashCommands.find((candidate) => candidate.id === command.id)
+        if (fullCommand) {
+          applySlashCommand(fullCommand)
+        }
+      },
+      query: activeSlashContext.query,
+      x: slashPanelPos.x,
+      y: slashPanelPos.y
+    }
+    : null
+  const documentsAuxPanelProps = selectedDocument
+    ? {
+      aiAnswer,
+      aiAsking,
+      aiAutomationsRunning,
+      aiContextError,
+      aiContextResults,
+      aiContextSearching,
+      aiEnabled: homeData.aiConfig.enabled,
+      aiPromptDraft,
+      hasApiKey: homeData.aiConfig.hasApiKey,
+      isOpen: documentsAuxPanelOpen,
+      isZh,
+      onAiPromptChange: setAiPromptDraft,
+      onAskAi: () => {
+        void askAiOnSelectedDocument()
+      },
+      onFindRelatedNotes: () => {
+        void findRelatedNotesForPrompt()
+      },
+      onOpenDocument: openDocumentInDocumentsPage,
+      onRunEnabledAutomations: () => {
+        void runEnabledAiAutomationsOnSelectedDocument()
+      },
+      onRunPluginAction: (action: PluginDocumentAction) => {
+        void runPluginDocumentAction(action)
+      },
+      pluginActionBusyKey,
+      pluginDocumentActions,
+      ui
+    }
+    : null
+  const documentsRelationGroups = selectedDocument
+    ? [
+      {
+        emptyText: ui.relationChildrenEmpty,
+        links: selectedDocument.children.map((child) => ({
+          id: child.id,
+          title: child.title,
+          path: child.path,
+          label: 'child'
+        })),
+        title: ui.relationChildrenTitle
+      },
+      {
+        emptyText: ui.relationOutgoingEmpty,
+        links: selectedDocument.outgoingLinks,
+        title: ui.relationOutgoingTitle
+      },
+      {
+        emptyText: ui.relationBacklinksEmpty,
+        links: selectedDocument.backlinks,
+        title: ui.relationBacklinksTitle
+      }
+    ]
+    : []
+  const documentStats = selectedDocument ? getDocumentStats() : null
+  const documentsStatsBarProps = documentStats
+    ? {
+      blockCount: documentStats.blockCount,
+      blocksLabel: ui.docStatBlocks,
+      charCount: documentStats.charCount,
+      charsLabel: ui.docStatCharacters,
+      codeBlockCount: documentStats.codeBlockCount,
+      codeBlocksLabel: ui.docStatCodeBlocks,
+      todoCount: documentStats.todoCount,
+      todosLabel: ui.docStatTodos,
+      wordCount: documentStats.wordCount,
+      wordsLabel: ui.docStatWords
+    }
+    : null
+  const documentsBlockEditorRowSharedProps = selectedDocument
+    ? {
+      activeBlockIndex,
+      activeSlashCommand,
+      activeSlashContext,
+      adjustBlockDepth,
+      adjustSelectedBlocksDepth,
+      applySlashCommand,
+      beginBlockDrag,
+      blockHasChildren,
+      blockTextareaRefs,
+      BLOCK_INDENT_SIZE,
+      canMoveSelectedRange,
+      captureBlockCursor,
+      collapsedBlockIds,
+      continueBlockAt,
+      deleteSelectedBlocks,
+      dismissSlashCommand,
+      draftBlocks,
+      downgradeBlockAt,
+      dropBlockAt,
+      duplicateDraftBlock,
+      duplicateSelectedBlocks,
+      endBlockDrag,
+      endBlockRangeSelection,
+      filteredSlashCommands,
+      getDraggedBlockDepthPreview,
+      getMultiBlockOperationRange,
+      getNextSiblingSubtreeStartIndex,
+      getPreviousSiblingSubtreeStartIndex,
+      getVisibleBlockCountInRange,
+      handleBlockContentChange,
+      handleBlockMouseEnter,
+      handleBlockPaste,
+      insertDraftBlockAt,
+      isBlockRangeSelecting,
+      isHighlighted: false,
+      isSelectionCoherent,
+      isZh: uiLanguage === 'zh-CN',
+      mergeWithPreviousBlock,
+      moveDraftBlockBySibling,
+      moveSelectedBlocks,
+      navigateInlineReferenceAtCursor,
+      notifyBlockMouseDown,
+      removeSelectedBlockRange,
+      selectAllBlocks,
+      selectBlockRange,
+      selectedBlockCount,
+      selectedBlockRange,
+      selectedDocument,
+      serializeDraftBlockRange,
+      setDragOverBlockDepth,
+      setDragOverBlockIndex,
+      setSelectedSlashCommandIndex,
+      splitDraftBlock,
+      toggleBlockCollapse,
+      ui,
+      updateBlockHighlight,
+      updateDraftBlock
+    }
+    : null
+  const documentsSummaryCardProps = selectedDocument
+    ? {
+      onSummaryChange: setDraftSummary,
+      onTitleChange: setDraftTitle,
+      path: selectedDocument.path,
+      summary: draftSummary,
+      summaryLabel: ui.common.summary,
+      title: draftTitle,
+      titleLabel: ui.common.title,
+      updatedText: ui.updatedAt(selectedDocument.updatedAt)
+    }
+    : null
+  const documentsOutlinePanelProps = selectedDocument
+    ? {
+      emptyHeadingTitleLevel1: isZh ? '标题 1' : 'Heading 1',
+      emptyHeadingTitleLevel2: isZh ? '标题 2' : 'Heading 2',
+      items: documentsOutlineItems,
+      onSelect: (blockIndex: number) => {
+        setActiveBlockIndex(blockIndex)
+        setPendingFocusBlockIndex(blockIndex)
+      },
+      title: isZh ? '大纲' : 'Outline'
+    }
+    : null
+  const documentsPreviewHeaderProps = {
+    autoSaveFlash,
+    canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
+    canUndo: editHistoryPointerRef.current > 0,
+    detailLoading,
+    documentsAuxPanelOpen,
+    isPinned: selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false,
+    isSaving,
+    isZh,
+    mdCopyFlash,
+    moveOptions,
+    moveTargetId,
+    onAddChild: () => {
+      if (selectedDocument) {
+        void handleCreateDocument(selectedDocument.id)
+      }
+    },
+    onCopyMarkdown: () => {
+      void copyDocumentAsMarkdown()
+    },
+    onDelete: () => {
+      void deleteSelectedDocument()
+    },
+    onMove: () => {
+      void moveSelectedDocument()
+    },
+    onMoveTargetChange: setMoveTargetId,
+    onRedo: redoEdit,
+    onSave: () => {
+      void saveDocument()
+    },
+    onSaveMarkdown: () => {
+      void saveDocumentAsMarkdown()
+    },
+    onToggleAuxPanel: () => setDocumentsAuxPanelOpen((previous) => !previous),
+    onTogglePin: () => {
+      if (selectedDocument) {
+        togglePinDocument(selectedDocument.id)
+      }
+    },
+    onUndo: undoEdit,
+    selectedDocumentId,
+    selectedDocumentTitle: selectedDocument?.title ?? null,
+    ui
+  }
 
   useEffect(() => {
     if (boardGroupBy === BOARD_GROUP_BY_PARENT) {
@@ -4757,1110 +5087,246 @@ return (
           </article>
         </section> : null}
 
-         {activePage === 'database' ? <section className="database-grid" data-testid="database-grid">
-           <article className="panel database-panel">
-            <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.databaseViewLabel}</p>
-                <h3>{databasePageTitle}</h3>
-              </div>
-               <div className="toolbar-inline">
-                 <button
-                   className={databaseWorkspaceView === 'catalog' ? 'primary-button' : 'secondary-button'}
-                   onClick={() => switchDatabaseWorkspaceView('catalog')}
-                   type="button"
-                 >
-                   {ui.documentCatalogTitle}
-                 </button>
-                 <button
-                   className={databaseWorkspaceView === 'standalone' ? 'primary-button' : 'secondary-button'}
-                   onClick={() => switchDatabaseWorkspaceView('standalone')}
-                   type="button"
-                 >
-                   {ui.standaloneDatabasesTitle}
-                 </button>
-               </div>
-            </div>
+         {activePage === 'database' ? (
+           <DatabaseSection
+             board={{
+               boardColumns,
+               boardGroupingColumn,
+               dragOverColumnId: dragOverBoardColumnId,
+               draggingDocumentId,
+               groupBy: boardGroupBy,
+               groupableColumns: boardGroupableColumns,
+               onDragEnd: endDrag,
+               onDragOverColumn: (columnId) => {
+                 if (draggingDocumentId) {
+                   setDragOverBoardColumnId(columnId)
+                   setDragOverDocumentId(null)
+                   setDragOverRoot(false)
+                 }
+               },
+               onDragStart: beginDrag,
+               onDropOnColumn: dropOnBoardTarget,
+               onGroupByChange: setBoardGroupBy,
+               onOpenDocument: openDocumentInDocumentsPage,
+               parentGroupValue: BOARD_GROUP_BY_PARENT,
+               selectedDocumentId
+             }}
+             catalog={{
+               canSaveColumn: databaseColumnNameDraft.trim().length > 0 && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select') || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0),
+               columnNameDraft: databaseColumnNameDraft,
+               columnOptionsDraft: databaseColumnOptionsDraft,
+               columnTypeDraft: databaseColumnTypeDraft,
+               columns: catalogColumns,
+               filteredDocuments: filteredCatalog,
+               isCreatingColumn: isCreatingDatabaseColumn,
+               onCancelCreateColumn: () => {
+                 setIsCreatingDatabaseColumn(false)
+                 setDatabaseColumnNameDraft('')
+                 setDatabaseColumnTypeDraft('text')
+                 setDatabaseColumnOptionsDraft('')
+               },
+               onColumnNameChange: setDatabaseColumnNameDraft,
+               onColumnOptionsChange: setDatabaseColumnOptionsDraft,
+               onColumnTypeChange: setDatabaseColumnTypeDraft,
+               onDeleteColumn: deleteDatabaseColumn,
+               onMoveColumn: moveDatabaseColumn,
+               onOpenDocument: openDocumentInDocumentsPage,
+               onQueryChange: setCatalogQuery,
+               onRenameColumn: renameDatabaseColumn,
+               onSaveColumn: () => {
+                 void createDatabaseColumn()
+               },
+               onToggleCreateColumn: () => setIsCreatingDatabaseColumn((previous) => !previous),
+               onUpdateColumnOptions: updateDatabaseColumnOptions,
+               onUpdateField: updateDocumentDatabaseValue,
+               query: catalogQuery,
+               selectedDocumentId
+             }}
+             components={{
+               DatabaseFieldEditor,
+               DatabaseSchemaColumnCard,
+               DocumentBoard,
+               DocumentCatalogTable,
+               StandaloneDatabaseEntityTable
+             }}
+             databasePageHint={databasePageHint}
+             databasePageTitle={databasePageTitle}
+             databaseWorkspaceView={databaseWorkspaceView}
+             onSwitchDatabaseWorkspaceView={switchDatabaseWorkspaceView}
+             standalone={{
+               activeSavedView: activeDatabaseSavedView,
+               activeSavedViewId: activeDatabaseSavedViewId,
+               bulkFieldValues: databaseEntityBulkFieldValues,
+               canSaveColumn: Boolean(selectedDatabase) && databaseColumnNameDraft.trim().length > 0 && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select') || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0),
+               columnNameDraft: databaseColumnNameDraft,
+               columnOptionsDraft: databaseColumnOptionsDraft,
+               columnTypeDraft: databaseColumnTypeDraft,
+               databaseDescriptionDraft,
+               databaseEntities,
+               databaseNameDraft,
+               databases: standaloneDatabases,
+               documentCatalog: homeData.documentCatalog,
+               entityDatabaseId: databaseEntityDatabaseId,
+               entityDocumentId: databaseEntityDocumentId,
+               entityFieldValues: databaseEntityFieldValues,
+               filterQuery: databaseEntityFilterQuery,
+               filteredEntityRows: filteredStandaloneDatabaseEntityRows,
+               filterScope: databaseEntityFilterScope,
+               isCreatingColumn: isCreatingDatabaseColumn,
+               isCreatingDatabase,
+               isCreatingEntity: isCreatingDatabaseEntity,
+               isCreatingSavedView: isCreatingDatabaseSavedView,
+               onApplyFieldToSelected: (columnId) => {
+                 void applyDatabaseEntityFieldToSelected(columnId)
+               },
+               onBeginSavedViewCreation: beginCurrentDatabaseSavedViewCreation,
+               onBulkFieldChange: updateDatabaseEntityBulkFieldValue,
+               onCancelCreateColumn: () => {
+                 setIsCreatingDatabaseColumn(false)
+                 setDatabaseColumnNameDraft('')
+                 setDatabaseColumnTypeDraft('text')
+                 setDatabaseColumnOptionsDraft('')
+               },
+               onCancelCreateDatabase: () => {
+                 setIsCreatingDatabase(false)
+                 setDatabaseNameDraft('')
+                 setDatabaseDescriptionDraft('')
+               },
+               onCancelCreateEntity: () => {
+                 setIsCreatingDatabaseEntity(false)
+                 setDatabaseEntityDocumentId('')
+                 setDatabaseEntityFieldValues({})
+               },
+               onCancelSavedViewCreation: cancelCurrentDatabaseSavedViewCreation,
+               onClearBulkFieldValues: () => setDatabaseEntityBulkFieldValues({}),
+               onClearFieldFromSelected: (columnId) => {
+                 void clearDatabaseEntityFieldFromSelected(columnId)
+               },
+               onClearSelectedEntities: () => setSelectedDatabaseEntityIds([]),
+               onClearSelectedEntityDocuments: () => {
+                 void clearSelectedDatabaseEntityDocuments()
+               },
+               onColumnNameChange: setDatabaseColumnNameDraft,
+               onColumnOptionsChange: setDatabaseColumnOptionsDraft,
+               onColumnTypeChange: setDatabaseColumnTypeDraft,
+               onDatabaseDescriptionChange: setDatabaseDescriptionDraft,
+               onDatabaseNameChange: setDatabaseNameDraft,
+               onDeleteColumn: deleteDatabaseColumn,
+               onDeleteDatabase: () => {
+                 void deleteCurrentDatabase()
+               },
+               onDeleteEntity: deleteDatabaseEntity,
+               onDeleteSavedView: () => {
+                 void deleteCurrentDatabaseSavedView()
+               },
+               onDeleteSelectedEntities: () => {
+                 void deleteSelectedDatabaseEntities()
+               },
+               onEntityDatabaseIdChange: setDatabaseEntityDatabaseId,
+               onEntityDocumentIdChange: setDatabaseEntityDocumentId,
+               onEntityDraftFieldChange: (columnId, value) => {
+                 const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
+                 setDatabaseEntityFieldValues((previous) => {
+                   const nextFieldValues = { ...previous }
+                   if (normalizedValue === null) {
+                     delete nextFieldValues[columnId]
+                   } else {
+                     nextFieldValues[columnId] = normalizedValue
+                   }
+                   return nextFieldValues
+                 })
+               },
+               onFilterQueryChange: setDatabaseEntityFilterQuery,
+               onFilterScopeChange: setDatabaseEntityFilterScope,
+               onMoveColumn: moveDatabaseColumn,
+               onRenameColumn: renameDatabaseColumn,
+               onSavedViewNameChange: setDatabaseSavedViewNameDraft,
+               onSavedViewSelect: handleDatabaseSavedViewSelect,
+               onSaveColumn: () => {
+                 void createDatabaseColumn()
+               },
+               onSaveSavedView: () => {
+                 void saveCurrentDatabaseSavedView()
+               },
+               onSelectVisibleEntities: selectVisibleDatabaseEntities,
+               onSortModeChange: setDatabaseEntitySortMode,
+               onSubmitCreateDatabase: () => {
+                 void createDatabase()
+               },
+               onSubmitCreateEntity: () => {
+                 void createDatabaseEntity()
+               },
+               onToggleCreateColumn: () => setIsCreatingDatabaseColumn((previous) => !previous),
+               onToggleCreateDatabase: () => setIsCreatingDatabase((previous) => !previous),
+               onToggleCreateEntity: () => setIsCreatingDatabaseEntity((previous) => !previous),
+               onToggleEntitySelection: toggleDatabaseEntitySelection,
+               onUpdateColumnOptions: updateDatabaseColumnOptions,
+               onUpdateEntityDocument: updateDatabaseEntityDocument,
+               onUpdateEntityField: updateDatabaseEntityField,
+               onUpdateSavedView: () => {
+                 void updateCurrentDatabaseSavedView()
+               },
+               onViewModeChange: setDatabaseEntityViewMode,
+               savedViewDirty: databaseSavedViewDirty,
+               savedViewNameDraft: databaseSavedViewNameDraft,
+               savedViews: databaseSavedViews,
+               selectedDatabase,
+               selectedDatabaseColumns,
+               selectedEntitiesHaveLinkedDocument: selectedVisibleDatabaseEntitiesHaveLinkedDocument,
+               selectedEntityIdSet: selectedDatabaseEntityIdSet,
+               selectedEntityIds: selectedVisibleDatabaseEntityIds,
+               sortMode: databaseEntitySortMode,
+               viewMode: databaseEntityViewMode
+             }}
+             ui={ui}
+           />
+         ) : null}
 
-            <p className="mini-hint">{databasePageHint}</p>
-
-            {databaseWorkspaceView === 'catalog' ? (
-              <>
-                <div className="toolbar-inline">
-                  <button className="secondary-button" onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)} type="button">
-                    {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
-                  </button>
-                  <input
-                    className="editor-input table-search"
-                    onChange={(event) => setCatalogQuery(event.target.value)}
-                    placeholder={ui.searchDocumentsPlaceholder}
-                    type="text"
-                    value={catalogQuery}
-                  />
-                  <span className="pill">{ui.customColumnsCount(catalogColumns.length)}</span>
-                  <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
-                </div>
-
-                {isCreatingDatabaseColumn ? (
-                  <div className="database-schema-form">
-                    <label className="editor-label">
-                      {ui.columnName}
-                      <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
-                    </label>
-                    <label className="editor-label">
-                      {ui.fieldType}
-                      <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
-                        {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
-                      <label className="editor-label database-schema-options">
-                        {ui.options}
-                        <input
-                          className="editor-input"
-                          onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
-                          placeholder={ui.optionsCommaHint}
-                          type="text"
-                          value={databaseColumnOptionsDraft}
-                        />
-                      </label>
-                    ) : null}
-                    <div className="database-schema-actions">
-                      <button
-                        className="secondary-button"
-                        disabled={databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
-                        onClick={() => void createDatabaseColumn()}
-                        type="button"
-                      >
-                        {ui.saveColumn}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={() => {
-                          setIsCreatingDatabaseColumn(false)
-                          setDatabaseColumnNameDraft('')
-                          setDatabaseColumnTypeDraft('text')
-                          setDatabaseColumnOptionsDraft('')
-                        }}
-                        type="button"
-                      >
-                        {ui.common.cancel}
-                      </button>
-                    </div>
-                  </div>
-                 ) : null}
-
-                {catalogColumns.length > 0 ? (
-                  <div className="database-schema-chip-row">
-                    {catalogColumns.map((column, index) => (
-                      <DatabaseSchemaColumnCard
-                        column={column}
-                        isFirst={index === 0}
-                        isLast={index === catalogColumns.length - 1}
-                        key={column.id}
-                        onDelete={deleteDatabaseColumn}
-                        onMove={moveDatabaseColumn}
-                        onUpdateOptions={updateDatabaseColumnOptions}
-                        onRename={renameDatabaseColumn}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mini-hint">{ui.noCustomColumnsYet}</p>
-                )}
-
-                <DocumentCatalogTable
-                  columns={catalogColumns}
-                  documents={filteredCatalog}
-                  onSelect={openDocumentInDocumentsPage}
-                  onUpdateField={updateDocumentDatabaseValue}
-                  selectedDocumentId={selectedDocumentId}
-                />
-              </>
-            ) : (
-              <>
-                <div className="toolbar-inline">
-                  <button
-                    className="secondary-button"
-                    disabled={!selectedDatabase && !isCreatingDatabaseColumn}
-                    onClick={() => setIsCreatingDatabaseColumn((previous) => !previous)}
-                    type="button"
-                  >
-                    {isCreatingDatabaseColumn ? ui.closeSchema : ui.addColumn}
-                  </button>
-                  <button className="secondary-button" onClick={() => setIsCreatingDatabase((previous) => !previous)} type="button">
-                    {isCreatingDatabase ? ui.common.cancel : ui.addDatabase}
-                  </button>
-                  <button
-                    className="secondary-button"
-                    disabled={!selectedDatabase && !isCreatingDatabaseEntity}
-                    onClick={() => setIsCreatingDatabaseEntity((previous) => !previous)}
-                    type="button"
-                  >
-                    {isCreatingDatabaseEntity ? ui.common.cancel : ui.addEntity}
-                  </button>
-                  <span className="pill">{ui.customColumnsCount(selectedDatabaseColumns.length)}</span>
-                  <span className="pill">{ui.rowsCount(databaseEntities.length)}</span>
-                </div>
-
-                {isCreatingDatabase ? (
-                  <div className="database-schema-form">
-                    <label className="editor-label">
-                      {ui.databaseName}
-                      <input className="editor-input" onChange={(event) => setDatabaseNameDraft(event.target.value)} type="text" value={databaseNameDraft} />
-                    </label>
-                    <label className="editor-label">
-                      {ui.databaseDescription}
-                      <input className="editor-input" onChange={(event) => setDatabaseDescriptionDraft(event.target.value)} type="text" value={databaseDescriptionDraft} />
-                    </label>
-                    <div className="database-schema-actions">
-                      <button
-                        className="secondary-button"
-                        disabled={databaseNameDraft.trim().length === 0}
-                        onClick={() => void createDatabase()}
-                        type="button"
-                      >
-                        {ui.createDatabase}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={() => {
-                          setIsCreatingDatabase(false)
-                          setDatabaseNameDraft('')
-                          setDatabaseDescriptionDraft('')
-                        }}
-                        type="button"
-                      >
-                        {ui.common.cancel}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {isCreatingDatabaseColumn ? (
-                  <div className="database-schema-form">
-                    <label className="editor-label">
-                      {ui.columnName}
-                      <input className="editor-input" onChange={(event) => setDatabaseColumnNameDraft(event.target.value)} type="text" value={databaseColumnNameDraft} />
-                    </label>
-                    <label className="editor-label">
-                      {ui.fieldType}
-                      <select className="editor-input" onChange={(event) => setDatabaseColumnTypeDraft(event.target.value as DocumentDatabaseColumnType)} value={databaseColumnTypeDraft}>
-                        {Object.entries(ui.databaseColumnTypes).map(([value, label]) => (
-                          <option key={value} value={value}>{label}</option>
-                        ))}
-                      </select>
-                    </label>
-                    {databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select' ? (
-                      <label className="editor-label database-schema-options">
-                        {ui.options}
-                        <input
-                          className="editor-input"
-                          onChange={(event) => setDatabaseColumnOptionsDraft(event.target.value)}
-                          placeholder={ui.optionsCommaHint}
-                          type="text"
-                          value={databaseColumnOptionsDraft}
-                        />
-                      </label>
-                    ) : null}
-                    <div className="database-schema-actions">
-                      <button
-                        className="secondary-button"
-                        disabled={!selectedDatabase || databaseColumnNameDraft.trim().length === 0 || ((databaseColumnTypeDraft === 'select' || databaseColumnTypeDraft === 'multi-select') && normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length === 0)}
-                        onClick={() => void createDatabaseColumn()}
-                        type="button"
-                      >
-                        {ui.saveColumn}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={() => {
-                          setIsCreatingDatabaseColumn(false)
-                          setDatabaseColumnNameDraft('')
-                          setDatabaseColumnTypeDraft('text')
-                          setDatabaseColumnOptionsDraft('')
-                        }}
-                        type="button"
-                      >
-                        {ui.common.cancel}
-                      </button>
-                    </div>
-                  </div>
-                 ) : null}
-
-                {isCreatingDatabaseEntity ? (
-                  <div className="database-schema-form">
-                    <label className="editor-label">
-                      Database
-                      <select
-                        className="editor-input"
-                        onChange={(event) => setDatabaseEntityDatabaseId(event.target.value)}
-                        value={databaseEntityDatabaseId}
-                      >
-                        <option value="">{ui.selectDatabasePlaceholder}</option>
-                        {standaloneDatabases.map((database) => (
-                          <option key={database.id} value={database.id}>{database.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="editor-label">
-                      {ui.linkToDocumentOptional}
-                      <select
-                        className="editor-input database-entity-document-select"
-                        onChange={(event) => setDatabaseEntityDocumentId(event.target.value)}
-                        value={databaseEntityDocumentId}
-                      >
-                        <option value="">{ui.noLinkedDocument}</option>
-                        {homeData.documentCatalog.map((document) => (
-                          <option key={document.id} value={document.id}>{document.path}</option>
-                        ))}
-                      </select>
-                    </label>
-                    {selectedDatabaseColumns.length > 0 ? (
-                      <div className="database-entity-field-grid database-entity-field-grid-form">
-                        {selectedDatabaseColumns.map((column) => (
-                          <label className="editor-label database-entity-field" key={`draft-${column.id}`}>
-                            {column.name}
-                            <DatabaseFieldEditor
-                              column={column}
-                              textCommitMode="change"
-                              value={databaseEntityFieldValues[column.id] ?? null}
-                              onChangeValue={(value) => {
-                                const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
-                                setDatabaseEntityFieldValues((previous) => {
-                                  const nextFieldValues = { ...previous }
-                                  if (normalizedValue === null) {
-                                    delete nextFieldValues[column.id]
-                                  } else {
-                                    nextFieldValues[column.id] = normalizedValue
-                                  }
-                                  return nextFieldValues
-                                })
-                              }}
-                            />
-                          </label>
-                        ))}
-                      </div>
-                    ) : null}
-                    <div className="database-schema-actions">
-                      <button
-                        className="secondary-button"
-                        onClick={() => void createDatabaseEntity()}
-                        type="button"
-                        disabled={!databaseEntityDatabaseId}
-                      >
-                        {ui.createEntity}
-                      </button>
-                      <button
-                        className="secondary-button"
-                        onClick={() => {
-                          setIsCreatingDatabaseEntity(false)
-                          setDatabaseEntityDocumentId('')
-                          setDatabaseEntityFieldValues({})
-                        }}
-                        type="button"
-                      >
-                        {ui.common.cancel}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {standaloneDatabases.length > 0 ? (
-                  <>
-                    <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
-                      {standaloneDatabases.map((database) => (
-                        <button
-                          className={database.id === databaseEntityDatabaseId ? 'primary-button' : 'secondary-button'}
-                          key={database.id}
-                          onClick={() => setDatabaseEntityDatabaseId(database.id)}
-                          type="button"
-                        >
-                          {database.name}
-                        </button>
-                      ))}
-                    </div>
-
-                    {selectedDatabase ? (
-                      <>
-                        <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
-                          <span className="pill">{ui.databaseSavedViewsLabel}</span>
-                          <select
-                            className="editor-input database-saved-view-select"
-                            onChange={(event) => handleDatabaseSavedViewSelect(event.target.value)}
-                            value={activeDatabaseSavedViewId}
-                          >
-                            <option value="">{ui.databaseSavedViewDraftOption}</option>
-                            {databaseSavedViews.map((view) => (
-                              <option key={view.id} value={view.id}>{view.name}</option>
-                            ))}
-                          </select>
-                          <button
-                            className="secondary-button database-saved-view-create-button"
-                            onClick={() => beginCurrentDatabaseSavedViewCreation()}
-                            type="button"
-                          >
-                            {ui.saveCurrentDatabaseView}
-                          </button>
-                          {isCreatingDatabaseSavedView ? (
-                            <>
-                              <input
-                                aria-label={ui.databaseSavedViewNamePrompt}
-                                className="editor-input database-saved-view-name-input"
-                                onChange={(event) => setDatabaseSavedViewNameDraft(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.preventDefault()
-                                    void saveCurrentDatabaseSavedView()
-                                  }
-
-                                  if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    cancelCurrentDatabaseSavedViewCreation()
-                                  }
-                                }}
-                                placeholder={ui.databaseSavedViewNamePrompt}
-                                type="text"
-                                value={databaseSavedViewNameDraft}
-                              />
-                              <button
-                                className="secondary-button database-saved-view-confirm-button"
-                                disabled={!databaseSavedViewNameDraft.trim()}
-                                onClick={() => void saveCurrentDatabaseSavedView()}
-                                type="button"
-                              >
-                                {ui.saveCurrentDatabaseView}
-                              </button>
-                              <button
-                                className="secondary-button database-saved-view-cancel-button"
-                                onClick={() => cancelCurrentDatabaseSavedViewCreation()}
-                                type="button"
-                              >
-                                {ui.common.cancel}
-                              </button>
-                            </>
-                          ) : null}
-                          <button
-                            className="secondary-button database-saved-view-update-button"
-                            disabled={!activeDatabaseSavedView || !databaseSavedViewDirty}
-                            onClick={() => void updateCurrentDatabaseSavedView()}
-                            type="button"
-                          >
-                            {ui.updateCurrentDatabaseView}
-                          </button>
-                          <button
-                            className="secondary-button database-saved-view-delete-button"
-                            disabled={!activeDatabaseSavedView}
-                            onClick={() => void deleteCurrentDatabaseSavedView()}
-                            type="button"
-                          >
-                            {ui.deleteCurrentDatabaseView}
-                          </button>
-                          <button
-                            className="secondary-button database-delete-button"
-                            onClick={() => void deleteCurrentDatabase()}
-                            type="button"
-                          >
-                            {ui.deleteCurrentDatabase}
-                          </button>
-                        </div>
-
-                        {databaseEntities.length > 0 ? (
-                        <>
-                          <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
-                            <input
-                              className="editor-input database-entity-filter-query"
-                              onChange={(event) => setDatabaseEntityFilterQuery(event.target.value)}
-                              placeholder={ui.searchDatabaseEntitiesPlaceholder}
-                              type="search"
-                              value={databaseEntityFilterQuery}
-                            />
-                            <select
-                              className="editor-input database-entity-filter-scope-select"
-                              onChange={(event) => setDatabaseEntityFilterScope(event.target.value as DatabaseEntityFilterScope)}
-                              value={databaseEntityFilterScope}
-                            >
-                              <option value="">{ui.databaseEntityFilterAllFields}</option>
-                              <option value="__document__">{ui.databaseEntityFilterLinkedDocument}</option>
-                              {selectedDatabaseColumns.map((column) => (
-                                <option key={column.id} value={column.id}>{ui.databaseEntityFilterField(column.name)}</option>
-                              ))}
-                            </select>
-                            <select
-                              className="editor-input database-entity-sort-select"
-                              onChange={(event) => setDatabaseEntitySortMode(event.target.value as DatabaseEntitySortMode)}
-                              value={databaseEntitySortMode}
-                            >
-                              <option value="updated-desc">{ui.databaseEntitySortUpdatedDesc}</option>
-                              <option value="updated-asc">{ui.databaseEntitySortUpdatedAsc}</option>
-                              <option value="created-desc">{ui.databaseEntitySortCreatedDesc}</option>
-                              <option value="created-asc">{ui.databaseEntitySortCreatedAsc}</option>
-                            </select>
-                            <span className="pill">{ui.databaseEntityViewModeLabel}</span>
-                            <button
-                              className={databaseEntityViewMode === 'cards' ? 'primary-button database-entity-cards-view-button' : 'secondary-button database-entity-cards-view-button'}
-                              onClick={() => setDatabaseEntityViewMode('cards')}
-                              type="button"
-                            >
-                              {ui.databaseEntityCardsView}
-                            </button>
-                            <button
-                              className={databaseEntityViewMode === 'table' ? 'primary-button database-entity-table-view-button' : 'secondary-button database-entity-table-view-button'}
-                              onClick={() => setDatabaseEntityViewMode('table')}
-                              type="button"
-                            >
-                              {ui.databaseEntityTableView}
-                            </button>
-                            <span className="pill">{ui.filteredRowsCount(filteredStandaloneDatabaseEntityRows.length, databaseEntities.length)}</span>
-                          </div>
-
-                          <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
-                            <button
-                              className="secondary-button database-entity-select-visible-button"
-                              disabled={filteredStandaloneDatabaseEntityRows.length === 0}
-                              onClick={selectVisibleDatabaseEntities}
-                              type="button"
-                            >
-                              {ui.selectVisibleDatabaseEntities}
-                            </button>
-                            <button
-                              className="secondary-button"
-                              disabled={selectedVisibleDatabaseEntityIds.length === 0}
-                              onClick={() => setSelectedDatabaseEntityIds([])}
-                              type="button"
-                            >
-                              {ui.common.clear}
-                            </button>
-                            <button
-                              className="secondary-button database-entity-delete-selected-button"
-                              disabled={selectedVisibleDatabaseEntityIds.length === 0}
-                              onClick={() => void deleteSelectedDatabaseEntities()}
-                              type="button"
-                            >
-                              {ui.deleteSelectedDatabaseEntities(selectedVisibleDatabaseEntityIds.length)}
-                            </button>
-                            <span className="pill">{ui.selectedDatabaseEntitiesCount(selectedVisibleDatabaseEntityIds.length)}</span>
-                          </div>
-
-                          {selectedVisibleDatabaseEntityIds.length > 0 ? (
-                            <section className="database-entity-bulk-panel">
-                              <div className="database-entity-bulk-panel-head">
-                                <div>
-                                  <p className="panel-label">{ui.databaseEntityBulkEditLabel}</p>
-                                  <h4>{ui.databaseEntityBulkEditTitle(selectedVisibleDatabaseEntityIds.length)}</h4>
-                                </div>
-                                <div className="toolbar-inline" style={{ justifyContent: 'flex-start' }}>
-                                  <button
-                                    className="secondary-button database-entity-bulk-document-clear-button"
-                                    disabled={!selectedVisibleDatabaseEntitiesHaveLinkedDocument}
-                                    onClick={() => void clearSelectedDatabaseEntityDocuments()}
-                                    type="button"
-                                  >
-                                    {ui.clearSelectedDatabaseEntityDocuments(selectedVisibleDatabaseEntityIds.length)}
-                                  </button>
-                                  <button
-                                    className="secondary-button"
-                                    onClick={() => setDatabaseEntityBulkFieldValues({})}
-                                    type="button"
-                                  >
-                                    {ui.common.clear}
-                                  </button>
-                                </div>
-                              </div>
-                              <p className="mini-hint">{ui.databaseEntityBulkEditHint}</p>
-                              {selectedDatabaseColumns.length > 0 ? (
-                                <div className="database-entity-field-grid">
-                                  {selectedDatabaseColumns.map((column) => (
-                                    <div
-                                      className="database-entity-bulk-field"
-                                      data-column-id={column.id}
-                                      data-column-name={column.name}
-                                      key={`bulk-${column.id}`}
-                                    >
-                                      <label className="editor-label database-entity-field">
-                                        {column.name}
-                                        <DatabaseFieldEditor
-                                          column={column}
-                                          textCommitMode="change"
-                                          value={databaseEntityBulkFieldValues[column.id] ?? null}
-                                          onChangeValue={(value) => {
-                                            updateDatabaseEntityBulkFieldValue(column.id, value)
-                                          }}
-                                        />
-                                      </label>
-                                      <div className="database-entity-bulk-field-actions">
-                                        <button
-                                          className="secondary-button database-entity-bulk-field-apply-button"
-                                          onClick={() => void applyDatabaseEntityFieldToSelected(column.id)}
-                                          type="button"
-                                        >
-                                          {ui.applySelectedDatabaseEntityField(column.name, selectedVisibleDatabaseEntityIds.length)}
-                                        </button>
-                                        <button
-                                          className="secondary-button database-entity-bulk-field-clear-button"
-                                          onClick={() => void clearDatabaseEntityFieldFromSelected(column.id)}
-                                          type="button"
-                                        >
-                                          {ui.clearSelectedDatabaseEntityField(column.name, selectedVisibleDatabaseEntityIds.length)}
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </section>
-                          ) : null}
-
-                          <p className="mini-hint">{databaseEntityViewMode === 'table' ? ui.databaseEntityTableHint : ui.databaseEntityCardsHint}</p>
-
-                          {filteredStandaloneDatabaseEntityRows.length > 0 ? (
-                            databaseEntityViewMode === 'table' ? (
-                              <StandaloneDatabaseEntityTable
-                                columns={selectedDatabaseColumns}
-                                documentCatalog={homeData.documentCatalog}
-                                entities={filteredStandaloneDatabaseEntityRows}
-                                onDeleteEntity={deleteDatabaseEntity}
-                                onToggleSelection={toggleDatabaseEntitySelection}
-                                onUpdateDocument={updateDatabaseEntityDocument}
-                                onUpdateField={updateDatabaseEntityField}
-                                selectedEntityIds={selectedDatabaseEntityIdSet}
-                              />
-                            ) : (
-                              <div className="document-list" style={{ marginBottom: '16px' }}>
-                                {filteredStandaloneDatabaseEntityRows.map(({ entity, linkedDocument }) => {
-                                  const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
-
-                                  return (
-                                    <div className="document-row" key={entity.id}>
-                                      <div className={`database-entity-card${selectedDatabaseEntityIdSet.has(entity.id) ? ' database-entity-card-selected' : ''}`}>
-                                        <div className="database-entity-head">
-                                          <div className="database-entity-head-main">
-                                            <label className="database-entity-select-toggle">
-                                              <input
-                                                aria-label={ui.selectDatabaseEntity(entityLabel)}
-                                                checked={selectedDatabaseEntityIdSet.has(entity.id)}
-                                                className="database-entity-select-checkbox"
-                                                onChange={(event) => toggleDatabaseEntitySelection(entity.id, event.target.checked)}
-                                                type="checkbox"
-                                              />
-                                            </label>
-                                            <div>
-                                              <strong>{entityLabel}</strong>
-                                              <p>{linkedDocument?.path ?? ui.noLinkedDocument}</p>
-                                            </div>
-                                          </div>
-                                          <div className="document-meta">
-                                            <span>{new Date(entity.updatedAt).toLocaleDateString(ui.locale)}</span>
-                                            <button className="secondary-button" onClick={() => void deleteDatabaseEntity(entity.id)} type="button">
-                                              {ui.common.delete}
-                                            </button>
-                                          </div>
-                                        </div>
-                                        <label className="editor-label" style={{ marginBottom: '12px' }}>
-                                          {ui.linkToDocumentOptional}
-                                          <select
-                                            className="editor-input database-entity-document-select"
-                                            onChange={(event) => {
-                                              void updateDatabaseEntityDocument(entity, event.target.value || null)
-                                            }}
-                                            value={entity.documentId ?? ''}
-                                          >
-                                            <option value="">{ui.noLinkedDocument}</option>
-                                            {homeData.documentCatalog.map((document) => (
-                                              <option key={document.id} value={document.id}>{document.path}</option>
-                                            ))}
-                                          </select>
-                                        </label>
-                                        {selectedDatabaseColumns.length > 0 ? (
-                                          <div className="database-entity-field-grid">
-                                            {selectedDatabaseColumns.map((column) => (
-                                              <label className="editor-label database-entity-field" key={`${entity.id}-${column.id}`}>
-                                                {column.name}
-                                                <DatabaseFieldEditor
-                                                  column={column}
-                                                  value={entity.fieldValues[column.id] ?? null}
-                                                  onChangeValue={(value) => {
-                                                    void updateDatabaseEntityField(entity, column.id, value)
-                                                  }}
-                                                />
-                                              </label>
-                                            ))}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            )
-                          ) : (
-                            <p className="mini-hint">{ui.noFilteredDatabaseEntitiesYet(selectedDatabase.name)}</p>
-                          )}
-                        </>
-                        ) : (
-                          <p className="mini-hint">{ui.noDatabaseEntitiesYet(selectedDatabase.name)}</p>
-                        )}
-                      </>
-                    ) : null}
-                  </>
-                ) : (
-                  <p className="mini-hint">{ui.noIndependentDatabasesYet}</p>
-                )}
-
-                {selectedDatabaseColumns.length > 0 ? (
-                  <div className="database-schema-chip-row">
-                    {selectedDatabaseColumns.map((column, index) => (
-                      <DatabaseSchemaColumnCard
-                        column={column}
-                        isFirst={index === 0}
-                        isLast={index === selectedDatabaseColumns.length - 1}
-                        key={column.id}
-                        onDelete={deleteDatabaseColumn}
-                        onMove={moveDatabaseColumn}
-                        onUpdateOptions={updateDatabaseColumnOptions}
-                        onRename={renameDatabaseColumn}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mini-hint">{selectedDatabase ? ui.noStandaloneDatabaseColumnsYet(selectedDatabase.name) : ui.noIndependentDatabasesYet}</p>
-                )}
-              </>
-            )}
-          </article>
-
-          {databaseWorkspaceView === 'catalog' ? (
-            <article className="panel board-panel">
-              <div className="panel-head compact-head">
-                <div>
-                  <p className="panel-label">{ui.boardViewLabel}</p>
-                  <h3>{ui.boardGroupedBy(boardGroupingColumn?.name ?? null)}</h3>
-                </div>
-                <div className="toolbar-inline">
-                  <select className="editor-input" onChange={(event) => setBoardGroupBy(event.target.value)} value={boardGroupBy}>
-                    <option value={BOARD_GROUP_BY_PARENT}>{ui.parentBucket}</option>
-                    {boardGroupableColumns.map((column) => (
-                      <option key={column.id} value={column.id}>{column.name} ({getDatabaseColumnTypeLabel(column.type)})</option>
-                    ))}
-                  </select>
-                  <span className="pill">{ui.boardColumnsCount(boardColumns.length)}</span>
-                </div>
-              </div>
-
-              <p className="mini-hint">
-                {boardGroupingColumn
-                  ? ui.boardHintForColumn(boardGroupingColumn.name, boardGroupingColumn.type === 'multi-select')
-                  : ui.boardHintForParent}
-              </p>
-
-              <DocumentBoard
-                columns={boardColumns}
-                onSelect={openDocumentInDocumentsPage}
-                selectedDocumentId={selectedDocumentId}
-                draggingDocumentId={draggingDocumentId}
-                dragOverColumnId={dragOverBoardColumnId}
-                onDragStart={beginDrag}
-                onDragEnd={endDrag}
-                onDragOverColumn={(columnId) => {
-                  if (draggingDocumentId) {
-                    setDragOverBoardColumnId(columnId)
-                    setDragOverDocumentId(null)
-                    setDragOverRoot(false)
-                  }
-                }}
-                onDropOnColumn={dropOnBoardTarget}
-              />
-            </article>
-          ) : null}
-        </section> : null}
-
-         {activePage === 'documents' ? <section className="workspace-grid" data-testid="workspace-grid">
-           <article className="panel preview-panel">
-            <DocumentPreviewHeader
-              autoSaveFlash={autoSaveFlash}
-              canRedo={editHistoryPointerRef.current < editHistoryRef.current.length - 1}
-              canUndo={editHistoryPointerRef.current > 0}
-              detailLoading={detailLoading}
-              documentsAuxPanelOpen={documentsAuxPanelOpen}
-              isPinned={selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false}
-              isSaving={isSaving}
-              isZh={isZh}
-              mdCopyFlash={mdCopyFlash}
-              moveOptions={moveOptions}
-              moveTargetId={moveTargetId}
-              onAddChild={() => {
-                if (selectedDocument) {
-                  void handleCreateDocument(selectedDocument.id)
-                }
-              }}
-              onCopyMarkdown={() => {
-                void copyDocumentAsMarkdown()
-              }}
-              onDelete={() => {
-                void deleteSelectedDocument()
-              }}
-              onMove={() => {
-                void moveSelectedDocument()
-              }}
-              onMoveTargetChange={setMoveTargetId}
-              onRedo={redoEdit}
-              onSave={() => {
-                void saveDocument()
-              }}
-              onSaveMarkdown={() => {
-                void saveDocumentAsMarkdown()
-              }}
-              onToggleAuxPanel={() => setDocumentsAuxPanelOpen((previous) => !previous)}
-              onTogglePin={() => {
-                if (selectedDocument) {
-                  togglePinDocument(selectedDocument.id)
-                }
-              }}
-              onUndo={undoEdit}
-              selectedDocumentId={selectedDocumentId}
-              selectedDocumentTitle={selectedDocument?.title ?? null}
-              ui={ui}
-            />
-
-            {selectedDocument ? (
-              <>
-                <DocumentSummaryCard
-                  onSummaryChange={setDraftSummary}
-                  onTitleChange={setDraftTitle}
-                  path={selectedDocument.path}
-                  summary={draftSummary}
-                  summaryLabel={ui.common.summary}
-                  title={draftTitle}
-                  titleLabel={ui.common.title}
-                  updatedText={ui.updatedAt(selectedDocument.updatedAt)}
-                />
-
-                <DocumentOutlinePanel
-                  emptyHeadingTitleLevel1={isZh ? '标题 1' : 'Heading 1'}
-                  emptyHeadingTitleLevel2={isZh ? '标题 2' : 'Heading 2'}
-                  items={draftBlocks
-                    .map((block, index) => ({ block, index }))
-                    .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
-                    .map(({ block, index }) => ({
-                      index,
-                      level: block.type === 'heading-1' ? 1 : 2,
-                      title: block.content
-                    }))}
-                  onSelect={(blockIndex) => {
-                    setActiveBlockIndex(blockIndex)
-                    setPendingFocusBlockIndex(blockIndex)
-                  }}
-                  title={isZh ? '大纲' : 'Outline'}
-                />
-
-                <div className="preview-section">
-                  <p className="panel-label">{ui.blocksPanelLabel}</p>
-                    <div
-                      className="block-editor-list"
-                      onKeyDown={(event) => {
-                        if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
-                          event.preventDefault()
-                          setIsBlockSearchOpen(true)
-                        }
-                      }}
-                    >
-                      <BlockSearchPanel
-                        isOpen={isBlockSearchOpen}
-                        items={blockSearchItems}
-                        noMatchText={ui.noBlocksMatchSearch}
-                        onClose={() => {
-                          setIsBlockSearchOpen(false)
-                          setBlockSearchQuery('')
-                        }}
-                        onQueryChange={setBlockSearchQuery}
-                        onSelect={(blockIndex) => {
-                          setActiveBlockIndex(blockIndex)
-                          setIsBlockSearchOpen(false)
-                          setBlockSearchQuery('')
-                          setPendingFocusBlockIndex(blockIndex)
-                        }}
-                        placeholder={ui.searchBlocksPlaceholder}
-                        query={blockSearchQuery}
-                      />
-                      {selectedBlockRange ? (
-                        <BlockSelectionToolbar
-                          canMoveDown={canMoveSelectionDown}
-                          canMoveUp={canMoveSelectionUp}
-                          clearLabel={ui.clear}
-                          conversionOptions={{
-                            paragraph: getBlockConversionLabel('paragraph'),
-                            todo: getBlockConversionLabel('todo'),
-                            quote: getBlockConversionLabel('quote'),
-                            'bulleted-list': getBlockConversionLabel('bulleted-list'),
-                            'numbered-list': getBlockConversionLabel('numbered-list')
-                          }}
-                          convertLabel={ui.convert}
-                          copyBlocksLabel={ui.copyBlocks}
-                          copyTextLabel={ui.copyText}
-                          cutLabel={ui.cut}
-                          deleteLabel={ui.common.delete}
-                          duplicateLabel={ui.duplicate}
-                          hasCrossParent={selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice}
-                          hasHiddenCollapsedContent={selectedBlockHasHiddenCollapsedContent}
-                          hintLabel={ui.blockSelectionHint({
-                            start: selectedBlockRange.start,
-                            end: selectedBlockRange.end,
-                            actionCount: selectedBlockActionCount,
-                            selectedCount: selectedBlockCount,
-                            incoherent: !isSelectionCoherent(selectedBlockRange),
-                            hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-                            selectedBlockInteractionIssue: selectedBlockCount > 1 ? selectedBlockInteractionIssue : null
-                          })}
-                          interactionIssue={selectedBlockInteractionIssue}
-                          isIncoherent={!isSelectionCoherent(selectedBlockRange)}
-                          moveDownLabel={ui.moveDown}
-                          moveUpLabel={ui.moveUp}
-                          onClear={clearBlockSelection}
-                          onConvert={() => convertSelectedBlocks(selectedBlockConversionType)}
-                          onConversionTypeChange={setSelectedBlockConversionType}
-                          onCopyBlocks={copySelectedBlocks}
-                          onCopyText={copySelectedBlocksAsPlainText}
-                          onCut={cutSelectedBlocks}
-                          onDelete={deleteSelectedBlocks}
-                          onDuplicate={duplicateSelectedBlocks}
-                          onMoveDown={() => moveSelectedBlocks(1)}
-                          onMoveUp={() => moveSelectedBlocks(-1)}
-                          rangeEnd={selectedBlockRange.end}
-                          rangeStart={selectedBlockRange.start}
-                          selectedBlockActionCount={selectedBlockActionCount}
-                          selectedBlockConversionType={selectedBlockConversionType}
-                          selectedBlockCount={selectedBlockCount}
-                          selectedVisibleBlockCount={selectedVisibleBlockCount}
-                          summaryLabel={ui.blockSelectionSummary({
-                            visibleCount: selectedVisibleBlockCount,
-                            selectedCount: selectedBlockCount,
-                            actionCount: selectedBlockActionCount,
-                            incoherent: !isSelectionCoherent(selectedBlockRange),
-                            hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
-                            selectedBlockInteractionIssue,
-                            hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice
-                          })}
-                        />
-                      ) : null}
-                      {getVisibleBlocks(draftBlocks).map((block, filteredIndex) => {
-                        const index = draftBlocks.indexOf(block)
-                        const dropPreview =
-                          draggingBlockIndex !== null && dragOverBlockIndex === index
-                            ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
-                            : null
-                        const isSelected = isBlockSelected(index)
-                        const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
-
-                        // Compute number label for numbered-list
-                        let numberLabel = ''
-                        if (block.type === 'numbered-list') {
-                          let count = 0
-                          for (let i = index; i >= 0; i--) {
-                            const b = draftBlocks[i]
-                            if (b.type !== 'numbered-list' || b.depth < block.depth) break
-                            if (b.depth === block.depth) count++
-                          }
-                          numberLabel = `${count}.`
-                        }
-
-                        return (
-                          <BlockEditorRow
-                            key={block.id ?? `${selectedDocument.id}-draft-${index}`}
-                            activeBlockIndex={activeBlockIndex}
-                            activeSlashCommand={activeSlashCommand}
-                            activeSlashContext={activeSlashContext}
-                            adjustBlockDepth={adjustBlockDepth}
-                            adjustSelectedBlocksDepth={adjustSelectedBlocksDepth}
-                            applySlashCommand={applySlashCommand}
-                            beginBlockDrag={beginBlockDrag}
-                            notifyBlockMouseDown={notifyBlockMouseDown}
-                            handleBlockMouseEnter={handleBlockMouseEnter}
-                            block={block}
-                            blockHasChildren={blockHasChildren}
-                            blockTextareaRefs={blockTextareaRefs}
-                            BLOCK_INDENT_SIZE={BLOCK_INDENT_SIZE}
-                            canMoveSelectedRange={canMoveSelectedRange}
-                            captureBlockCursor={captureBlockCursor}
-                            continueBlockAt={continueBlockAt}
-                            deleteSelectedBlocks={deleteSelectedBlocks}
-                            dismissSlashCommand={dismissSlashCommand}
-                            draftBlocks={draftBlocks}
-                            downgradeBlockAt={downgradeBlockAt}
-                            dropBlockAt={dropBlockAt}
-                            dropPreview={dropPreview}
-                            duplicateDraftBlock={duplicateDraftBlock}
-                            duplicateSelectedBlocks={duplicateSelectedBlocks}
-                            endBlockDrag={endBlockDrag}
-                            endBlockRangeSelection={endBlockRangeSelection}
-                            filteredSlashCommands={filteredSlashCommands}
-                            getDraggedBlockDepthPreview={getDraggedBlockDepthPreview}
-                            getMultiBlockOperationRange={getMultiBlockOperationRange}
-                            getNextSiblingSubtreeStartIndex={getNextSiblingSubtreeStartIndex}
-                            getPreviousSiblingSubtreeStartIndex={getPreviousSiblingSubtreeStartIndex}
-                            getVisibleBlockCountInRange={getVisibleBlockCountInRange}
-                            handleBlockContentChange={handleBlockContentChange}
-                            navigateInlineReferenceAtCursor={navigateInlineReferenceAtCursor}
-                            handleBlockPaste={handleBlockPaste}
-                            indentPx={indentPx}
-                            index={index}
-                            isHighlighted={block.id === highlightedBlockId}
-                            isBlockRangeSelecting={isBlockRangeSelecting}
-                            isSelected={isSelected}
-                            isSelectionCoherent={isSelectionCoherent}
-                            isZh={uiLanguage === 'zh-CN'}
-                            mergeWithPreviousBlock={mergeWithPreviousBlock}
-                            moveSelectedBlocks={moveSelectedBlocks}
-                            moveDraftBlockBySibling={moveDraftBlockBySibling}
-                            numberLabel={numberLabel}
-                            removeSelectedBlockRange={removeSelectedBlockRange}
-                            selectBlockRange={selectBlockRange}
-                            selectAllBlocks={selectAllBlocks}
-                            selectedBlockCount={selectedBlockCount}
-                            selectedBlockRange={selectedBlockRange}
-                            selectedDocument={selectedDocument}
-                            serializeDraftBlockRange={serializeDraftBlockRange}
-                            setDragOverBlockDepth={setDragOverBlockDepth}
-                            setDragOverBlockIndex={setDragOverBlockIndex}
-                            setSelectedSlashCommandIndex={setSelectedSlashCommandIndex}
-                            splitDraftBlock={splitDraftBlock}
-                            toggleBlockCollapse={toggleBlockCollapse}
-                            ui={ui}
-                            updateDraftBlock={updateDraftBlock}
-                            updateBlockHighlight={updateBlockHighlight}
-                            insertDraftBlockAt={insertDraftBlockAt}
-                            collapsedBlockIds={collapsedBlockIds}
-                          />
-                        )
-                      })}
-                      <button className="secondary-button" onClick={addDraftBlock} type="button">
-                        {ui.addBlock}
-                      </button>
-                      {activeLinkContext ? (
-                        <LinkSuggestionPanel
-                          blockSuggestions={blockSuggestions}
-                          blocksLabel={ui.blocksInDocument}
-                          linkedDocsLabel={ui.linkedDocuments}
-                          linkSuggestions={linkSuggestions}
-                          noMatchingLabel={ui.noMatchingSuggestions}
-                          onSelectBlockSuggestion={insertBlockSuggestion}
-                          onSelectLinkSuggestion={insertLinkSuggestion}
-                          query={activeLinkContext.query}
-                          queryLabel={ui.linkQuery}
-                        />
-                      ) : (
-                        <p className="mini-hint">{ui.editorHelpText}</p>
-                      )}
-                    </div>
-                </div>
-
-                {/* ── Floating Slash Command Panel ── */}
-                {activeSlashContext && slashPanelPos ? (
-                  <FloatingSlashCommandPanel
-                    x={slashPanelPos.x}
-                    y={slashPanelPos.y}
-                    query={activeSlashContext.query}
-                    commands={filteredSlashCommands.map((cmd) => ({
-                      id: cmd.id,
-                      label: cmd.label,
-                      description: cmd.description
-                    }))}
-                    activeCommandId={activeSlashCommand?.id}
-                    noMatchingLabel={ui.noMatchingCommands}
-                    onSelectCommand={(cmd) => {
-                      const fullCommand = filteredSlashCommands.find((c) => c.id === cmd.id)
-                      if (fullCommand) {
-                        applySlashCommand(fullCommand)
-                      }
-                    }}
-                    onHoverCommand={setSelectedSlashCommandIndex}
-                  />
-                ) : null}
-
-                <DocumentsAuxPanel
-                  aiAnswer={aiAnswer}
-                  aiAsking={aiAsking}
-                  aiAutomationsRunning={aiAutomationsRunning}
-                  aiContextError={aiContextError}
-                  aiContextResults={aiContextResults}
-                  aiContextSearching={aiContextSearching}
-                  aiEnabled={homeData.aiConfig.enabled}
-                  aiPromptDraft={aiPromptDraft}
-                  hasApiKey={homeData.aiConfig.hasApiKey}
-                  isOpen={documentsAuxPanelOpen}
-                  isZh={isZh}
-                  onAiPromptChange={setAiPromptDraft}
-                  onAskAi={() => {
-                    void askAiOnSelectedDocument()
-                  }}
-                  onFindRelatedNotes={() => {
-                    void findRelatedNotesForPrompt()
-                  }}
-                  onOpenDocument={openDocumentInDocumentsPage}
-                  onRunEnabledAutomations={() => {
-                    void runEnabledAiAutomationsOnSelectedDocument()
-                  }}
-                  onRunPluginAction={(action: PluginDocumentAction) => {
-                    void runPluginDocumentAction(action)
-                  }}
-                  pluginActionBusyKey={pluginActionBusyKey}
-                  pluginDocumentActions={pluginDocumentActions}
-                  relationContent={(
-                    <div className="relation-grid">
-                      <RelationList
-                        title={ui.relationChildrenTitle}
-                        emptyText={ui.relationChildrenEmpty}
-                        links={selectedDocument.children.map((child) => ({
-                          id: child.id,
-                          title: child.title,
-                          path: child.path,
-                          label: 'child'
-                        }))}
-                        onSelect={openDocumentInDocumentsPage}
-                      />
-                      <RelationList
-                        title={ui.relationOutgoingTitle}
-                        emptyText={ui.relationOutgoingEmpty}
-                        links={selectedDocument.outgoingLinks}
-                        onSelect={openDocumentInDocumentsPage}
-                      />
-                      <RelationList
-                        title={ui.relationBacklinksTitle}
-                        emptyText={ui.relationBacklinksEmpty}
-                        links={selectedDocument.backlinks}
-                        onSelect={openDocumentInDocumentsPage}
-                      />
-                    </div>
-                  )}
-                  ui={ui}
-                />
-
-                {(() => {
-                  const stats = getDocumentStats()
-                  return (
-                    <DocumentStatsBar
-                      blockCount={stats.blockCount}
-                      blocksLabel={ui.docStatBlocks}
-                      charCount={stats.charCount}
-                      charsLabel={ui.docStatCharacters}
-                      codeBlockCount={stats.codeBlockCount}
-                      codeBlocksLabel={ui.docStatCodeBlocks}
-                      todoCount={stats.todoCount}
-                      todosLabel={ui.docStatTodos}
-                      wordCount={stats.wordCount}
-                      wordsLabel={ui.docStatWords}
-                    />
-                  )
-                })()}
-              </>
-            ) : (
-              <div className="empty-preview">
-                <p>{ui.emptyDocumentState}</p>
-              </div>
-            )}
-          </article>
-        </section> : null}
+         {activePage === 'documents' ? (
+           <DocumentsSection
+             addBlockLabel={ui.addBlock}
+             blockEditorRowSharedProps={documentsBlockEditorRowSharedProps}
+             blockSearchPanelProps={{
+               isOpen: isBlockSearchOpen,
+               items: blockSearchItems,
+               noMatchText: ui.noBlocksMatchSearch,
+               onClose: () => {
+                 setIsBlockSearchOpen(false)
+                 setBlockSearchQuery('')
+               },
+               onQueryChange: setBlockSearchQuery,
+               onSelect: (blockIndex) => {
+                 setActiveBlockIndex(blockIndex)
+                 setIsBlockSearchOpen(false)
+                 setBlockSearchQuery('')
+                 setPendingFocusBlockIndex(blockIndex)
+               },
+               placeholder: ui.searchBlocksPlaceholder,
+               query: blockSearchQuery
+             }}
+             blocksPanelLabel={ui.blocksPanelLabel}
+             documentStatsBarProps={documentsStatsBarProps}
+             documentsAuxPanelProps={documentsAuxPanelProps}
+             editorHelpText={ui.editorHelpText}
+             emptyDocumentStateText={ui.emptyDocumentState}
+             floatingSlashCommandPanelProps={documentsFloatingSlashCommandPanelProps}
+             linkSuggestionPanelProps={documentsLinkSuggestionPanelProps}
+             onAddBlock={addDraftBlock}
+             onEditorKeyDown={(event) => {
+               if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
+                 event.preventDefault()
+                 setIsBlockSearchOpen(true)
+               }
+             }}
+             outlinePanelProps={documentsOutlinePanelProps}
+             previewHeaderProps={documentsPreviewHeaderProps}
+             relationGroups={documentsRelationGroups}
+             selectedDocument={selectedDocument}
+             selectionToolbarProps={documentsSelectionToolbarProps}
+             summaryCardProps={documentsSummaryCardProps}
+             visibleEditorRows={visibleDocumentEditorRows}
+           />
+         ) : null}
 
         {activePage === 'ai' ? (
           <AISection
@@ -6843,41 +6309,6 @@ function DocumentBoard({
         </section>
       ))}
     </div>
-  )
-}
-
-function RelationList({
-  title,
-  links,
-  emptyText,
-  onSelect
-}: {
-  title: string
-  links: LinkedDocument[]
-  emptyText: string
-  onSelect: (documentId: string) => void
-}) {
-  return (
-    <section className="relation-panel">
-      <p className="panel-label">{title}</p>
-      {links.length > 0 ? (
-        <div className="relation-list">
-          {links.map((link) => (
-            <button className="relation-chip" key={`${title}-${link.id}`} onClick={() => onSelect(link.id)} type="button">
-              <strong>{link.title}</strong>
-              <span>{link.path}</span>
-              {link.contextSnippet ? (
-                <span className="relation-chip-context">{link.contextSnippet.slice(0, 120)}{link.contextSnippet.length > 120 ? '…' : ''}</span>
-              ) : (
-                <small>{link.label}</small>
-              )}
-            </button>
-          ))}
-        </div>
-      ) : (
-        <p className="empty-text">{emptyText}</p>
-      )}
-    </section>
   )
 }
 
