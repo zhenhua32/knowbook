@@ -64,7 +64,9 @@ import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
+import { useBlockSelectionState } from './hooks/useBlockSelectionState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
+import { useEditorAssistState } from './hooks/useEditorAssistState'
 import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
 import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
@@ -1222,14 +1224,7 @@ export function App() {
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
   const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
-  const [selectionAnchorBlockId, setSelectionAnchorBlockId] = useState<string | null>(null)
-  const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
-  const [isBlockRangeSelecting, setIsBlockRangeSelecting] = useState(false)
-  const [selectedBlockConversionType, setSelectedBlockConversionType] = useState<DocumentBlock['type']>('paragraph')
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
-  const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
-  const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
-  const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
   const [isCreatingDatabaseColumn, setIsCreatingDatabaseColumn] = useState(false)
   const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
@@ -1258,7 +1253,6 @@ export function App() {
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
-  const blockMouseDownOrigin = useRef<number | null>(null)
   const highlightedBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
@@ -1397,6 +1391,28 @@ export function App() {
     ui,
     onMessage: setBackupMessage
   })
+  const {
+    activeLinkContext,
+    activeSlashCommand,
+    activeSlashContext,
+    blockSuggestions,
+    clearEditorAssistSuggestions,
+    filteredSlashCommands,
+    linkSuggestions,
+    setSelectedSlashCommandIndex,
+    slashPanelPos
+  } = useEditorAssistState({
+    activeBlockIndex,
+    activeCursorPosition,
+    blockSlashCommands,
+    blockTextareaRefs,
+    draftBlocks,
+    getOpenLinkContext,
+    getSlashCommandContext,
+    isEditing,
+    selectedDocumentId,
+    selectedDocumentPresent: Boolean(selectedDocument)
+  })
 
   function flashHighlightedBlock(blockId: string) {
     setHighlightedBlockId(blockId)
@@ -1429,11 +1445,11 @@ export function App() {
     setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
     setActiveCursorPosition(0)
-    setLinkSuggestions([])
+    clearEditorAssistSuggestions()
     setMoveTargetId('')
     loadDocumentIntoEditor(detail, true)
     resetAiSession()
-  }, [loadDocumentIntoEditor, resetAiSession])
+  }, [clearEditorAssistSuggestions, loadDocumentIntoEditor, resetAiSession])
 
   const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
     setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, blockId, previous))
@@ -1475,6 +1491,50 @@ export function App() {
     onOpenDocument: openDocumentInDocumentsPage
   })
   const {
+    canMoveSelectedRange,
+    canMoveSelectionDown,
+    canMoveSelectionUp,
+    clearBlockSelection,
+    endBlockRangeSelection,
+    getMultiBlockInteractionGuard,
+    getMultiBlockOperationRange,
+    getVisibleBlockCountInRange,
+    getVisibleBlockEntries,
+    getVisibleBlocks,
+    getVisibleSiblingSelectionSlice,
+    handleBlockMouseEnter,
+    isBlockRangeSelecting,
+    isBlockSelected,
+    isSelectionCoherent,
+    notifyBlockMouseDown,
+    selectAllBlocks,
+    selectBlockRange,
+    selectedBlockActionCount,
+    selectedBlockConversionType,
+    selectedBlockCount,
+    selectedBlockHasHiddenCollapsedContent,
+    selectedBlockInteractionIssue,
+    selectedBlockRange,
+    selectedVisibleBlockCount,
+    selectedVisibleSiblingSlice,
+    selectionAnchorBlockId,
+    setIsBlockRangeSelecting,
+    setSelectedBlockConversionType,
+    setSelectedBlockRange,
+    setSelectionAnchorBlockId
+  } = useBlockSelectionState({
+    activeBlockIndex,
+    collapsedBlockIds,
+    draftBlocks,
+    getBlockSubtreeEndIndex,
+    getNextSiblingSubtreeStartIndex,
+    getNormalizedBlockId,
+    getNormalizedParentBlockId,
+    getPreviousSiblingSubtreeStartIndex,
+    onActiveBlockChange: setActiveBlockIndex,
+    visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
+  })
+  const {
     blockSearchItems,
     blockSearchQuery,
     closeBlockSearch,
@@ -1490,7 +1550,6 @@ export function App() {
       setPendingFocusBlockIndex(blockIndex)
     }
   })
-
   async function navigateInlineReferenceAtCursor(content: string, cursorPosition: number) {
     const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
     if (!token) {
@@ -1546,122 +1605,6 @@ export function App() {
     return { blockCount, wordCount, charCount, codeBlockCount, todoCount }
   }
 
-  function getVisibleBlockEntries(blocks: DocumentBlockDraft[]): Array<{ block: DocumentBlockDraft; index: number }> {
-    const entries: Array<{ block: DocumentBlockDraft; index: number }> = []
-
-    for (let index = 0; index < blocks.length; index += 1) {
-      const block = blocks[index]
-      if (!block) {
-        continue
-      }
-
-      entries.push({ block, index })
-
-      const blockId = getNormalizedBlockId(block)
-      if (blockId && collapsedBlockIds.has(blockId)) {
-        const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
-        if (subtreeEndIndex > index) {
-          index = subtreeEndIndex
-        }
-      }
-    }
-
-    return entries
-  }
-
-  function getVisibleBlockCountInRange(range: BlockSelectionRange): number {
-    return getVisibleBlockEntries(draftBlocks).filter(({ index }) => index >= range.start && index <= range.end).length
-  }
-
-  function getSelectedVisibleBlockEntries(range: BlockSelectionRange): Array<{ block: DocumentBlockDraft; index: number }> {
-    return getVisibleBlockEntries(draftBlocks).filter(({ index }) => index >= range.start && index <= range.end)
-  }
-
-  function getVisibleSelectionSlice(range: BlockSelectionRange): {
-    visibleEntries: Array<{ block: DocumentBlockDraft; index: number }>
-    operationRange: BlockSelectionRange
-  } | null {
-    const visibleEntries = getSelectedVisibleBlockEntries(range)
-    if (visibleEntries.length === 0) {
-      return null
-    }
-
-    const firstEntry = visibleEntries[0]
-    const lastEntry = visibleEntries[visibleEntries.length - 1]
-
-    return {
-      visibleEntries,
-      operationRange: {
-        start: firstEntry.index,
-        end: getBlockSubtreeEndIndex(draftBlocks, lastEntry.index)
-      }
-    }
-  }
-
-  function getVisibleSiblingSelectionSlice(range: BlockSelectionRange): {
-    visibleEntries: Array<{ block: DocumentBlockDraft; index: number }>
-    operationRange: BlockSelectionRange
-  } | null {
-    const slice = getVisibleSelectionSlice(range)
-    if (!slice) {
-      return null
-    }
-
-    const firstEntry = slice.visibleEntries[0]
-    if (!firstEntry) {
-      return null
-    }
-
-    const referenceDepth = firstEntry.block.depth
-    const referenceParentBlockId = getNormalizedParentBlockId(firstEntry.block)
-    const isSiblingSlice = slice.visibleEntries.every(
-      ({ block }) => block.depth === referenceDepth && getNormalizedParentBlockId(block) === referenceParentBlockId
-    )
-
-    return isSiblingSlice ? slice : null
-  }
-
-  function selectionIncludesHiddenCollapsedContent(range: BlockSelectionRange): boolean {
-    return getVisibleBlockCountInRange(range) < range.end - range.start + 1
-  }
-
-  function getMultiBlockInteractionGuard(range: BlockSelectionRange): string | null {
-    if (range.start === range.end) {
-      return null
-    }
-
-    const visibleSelectionSlice = getVisibleSelectionSlice(range)
-    if (!visibleSelectionSlice) {
-      return 'The current selection no longer maps to visible rows. Clear the selection and reselect the blocks you want to move.'
-    }
-
-    if (visibleSelectionSlice.visibleEntries.length === 1) {
-      return null
-    }
-
-    if (!getVisibleSiblingSelectionSlice(range)) {
-      return ui.visibleSliceCrossParentGuard
-    }
-
-    return null
-  }
-
-  function canMoveSelectedRange(range: BlockSelectionRange, delta: -1 | 1): boolean {
-    const visibleSiblingSlice = getVisibleSiblingSelectionSlice(range)
-    if (!visibleSiblingSlice) {
-      return false
-    }
-
-    const anchorEntry = delta === -1 ? visibleSiblingSlice.visibleEntries[0] : visibleSiblingSlice.visibleEntries[visibleSiblingSlice.visibleEntries.length - 1]
-    if (!anchorEntry) {
-      return false
-    }
-
-    return delta === -1
-      ? getPreviousSiblingSubtreeStartIndex(draftBlocks, anchorEntry.index) !== null
-      : getNextSiblingSubtreeStartIndex(draftBlocks, anchorEntry.index) !== null
-  }
-
   function blockHasChildren(blockIndex: number): boolean {
     return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
   }
@@ -1674,25 +1617,6 @@ export function App() {
       newCollapsed.add(blockId)
     }
     setCollapsedBlockIds(newCollapsed)
-  }
-
-  function getVisibleBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
-    return getVisibleBlockEntries(blocks).map(({ block }) => block)
-  }
-
-  function getBlockSuggestionsForLink(query: string): DocumentBlockDraft[] {
-    if (!query.trim() || draftBlocks.length === 0) {
-      return draftBlocks.slice(0, 5) // Show first 5 blocks by default
-    }
-
-    const lowerQuery = query.toLowerCase()
-    const matches = draftBlocks.filter((block) => {
-      const content = block.content.toLowerCase()
-      const type = block.type.toLowerCase()
-      return content.includes(lowerQuery) || type.includes(lowerQuery)
-    })
-
-    return matches.slice(0, 5) // Limit to 5 suggestions
   }
 
   useEffect(() => {
@@ -1902,8 +1826,7 @@ export function App() {
 
   useEffect(() => {
     function handleMouseUp() {
-      blockMouseDownOrigin.current = null
-      setIsBlockRangeSelecting(false)
+      endBlockRangeSelection()
     }
 
     window.addEventListener('mouseup', handleMouseUp)
@@ -1912,84 +1835,7 @@ export function App() {
       window.removeEventListener('mouseup', handleMouseUp)
       window.removeEventListener('blur', handleMouseUp)
     }
-  }, [])
-
-  const activeLinkContext =
-    activeBlockIndex !== null
-      ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
-      : null
-  const activeLinkQuery = activeLinkContext?.query ?? null
-  const activeSlashContext =
-    activeLinkContext || activeBlockIndex === null
-      ? null
-      : getSlashCommandContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
-  const filteredSlashCommands = blockSlashCommands.filter((command) => {
-    const query = activeSlashContext?.query.trim().toLowerCase() ?? ''
-    if (!query) {
-      return true
-    }
-
-    return [command.id, command.label, ...command.keywords]
-      .join(' ')
-      .toLowerCase()
-      .includes(query)
-  })
-  const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
-  const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
-  const selectedVisibleBlockCount = selectedBlockRange ? getVisibleBlockCountInRange(selectedBlockRange) : 0
-  const selectedBlockActionRange = selectedBlockRange ? getMultiBlockOperationRange(selectedBlockRange) : null
-  const selectedBlockActionCount = selectedBlockActionRange ? selectedBlockActionRange.end - selectedBlockActionRange.start + 1 : 0
-  const selectedBlockHasHiddenCollapsedContent = selectedBlockRange ? selectionIncludesHiddenCollapsedContent(selectedBlockRange) : false
-  const selectedBlockInteractionIssue = selectedBlockRange ? getMultiBlockInteractionGuard(selectedBlockRange) : null
-  const selectedVisibleSiblingSlice = selectedBlockRange ? getVisibleSiblingSelectionSlice(selectedBlockRange) : null
-  const canMoveSelectionUp = selectedBlockRange ? (
-    selectedBlockCount === 1
-      ? getPreviousSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) !== null
-      : selectedBlockInteractionIssue === null && canMoveSelectedRange(selectedBlockRange, -1)
-  ) : false
-  const canMoveSelectionDown = selectedBlockRange ? (
-    selectedBlockCount === 1
-      ? getNextSiblingSubtreeStartIndex(draftBlocks, selectedBlockRange.start) !== null
-      : selectedBlockInteractionIssue === null && canMoveSelectedRange(selectedBlockRange, 1)
-  ) : false
-
-  useEffect(() => {
-    if (!activeSlashContext || filteredSlashCommands.length === 0) {
-      setSelectedSlashCommandIndex(0)
-      return
-    }
-
-    setSelectedSlashCommandIndex((previous) => Math.min(previous, filteredSlashCommands.length - 1))
-  }, [activeBlockIndex, activeSlashContext?.query, filteredSlashCommands.length])
-
-  useEffect(() => {
-    if (!isEditing || !activeLinkContext) {
-      setLinkSuggestions([])
-      setBlockSuggestions([])
-      return
-    }
-
-    let mounted = true
-    
-    // Get document suggestions
-    window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
-      if (mounted) {
-        setLinkSuggestions(suggestions)
-      }
-    })
-    
-    // Get block suggestions from current document
-    if (isEditing && selectedDocument) {
-      const blockSuggs = getBlockSuggestionsForLink(activeLinkContext.query)
-      if (mounted) {
-        setBlockSuggestions(blockSuggs)
-      }
-    }
-
-    return () => {
-      mounted = false
-    }
-  }, [activeLinkQuery, isEditing, selectedDocumentId, selectedDocument, draftBlocks])
+  }, [endBlockRangeSelection])
 
   useEffect(() => {
     if (pendingFocusBlockIndex === null) {
@@ -2019,31 +1865,6 @@ export function App() {
       textarea.style.height = `${textarea.scrollHeight}px`
     }
   }, [draftBlocks, isEditing])
-
-  // 计算浮动斜杠面板的位置
-  const slashPanelPos = (() => {
-    if (!activeSlashContext || activeBlockIndex === null) {
-      return null
-    }
-
-    const textarea = blockTextareaRefs.current[activeBlockIndex]
-    if (!textarea) return null
-
-    // 获取 textarea 在屏幕中的位置
-    const rect = textarea.getBoundingClientRect()
-
-    // 计算光标在 textarea 中的坐标（粗略估计）
-    // 实际应用中可能需要更精确的计算
-    const lineHeight = parseInt(window.getComputedStyle(textarea).lineHeight)
-    const lines = textarea.value.substring(0, activeCursorPosition).split('\n')
-    const currentLine = lines.length - 1
-    const offsetX = lines[currentLine].length * 8 // 粗略估计字符宽度
-
-    return {
-      x: rect.left + offsetX,
-      y: rect.top + currentLine * lineHeight + lineHeight + 10 // 在光标下方显示
-    }
-  })()
 
   async function refreshWorkspaceAfterStorageMutation() {
     const refreshed = await window.knowbook.getHomeData()
@@ -2666,149 +2487,6 @@ export function App() {
       )
     )
   }
-
-    function clearBlockSelection() {
-      setIsBlockRangeSelecting(false)
-      setSelectionAnchorBlockId(null)
-      setSelectedBlockRange(null)
-    }
-
-    function beginBlockRangeSelection(index: number) {
-      setIsBlockRangeSelecting(true)
-      selectBlockRange(index, false)
-    }
-
-    function extendBlockRangeSelection(index: number) {
-      if (!isBlockRangeSelecting) {
-        return
-      }
-
-      selectBlockRange(index, true)
-    }
-
-    function endBlockRangeSelection() {
-      blockMouseDownOrigin.current = null
-      setIsBlockRangeSelecting(false)
-    }
-
-    function notifyBlockMouseDown(index: number) {
-      blockMouseDownOrigin.current = index
-    }
-
-    function handleBlockMouseEnter(index: number, buttonsHeld: boolean) {
-      const origin = blockMouseDownOrigin.current
-
-      if (!buttonsHeld) {
-        blockMouseDownOrigin.current = null
-        if (isBlockRangeSelecting) setIsBlockRangeSelecting(false)
-        return
-      }
-
-      if (origin === null || index === origin) return
-
-      if (!isBlockRangeSelecting) {
-        // First entry into a different block while mouse is held — start drag range selection
-        const originBlockId = getNormalizedBlockId(draftBlocks[origin])
-        const visibleEntries = getVisibleBlockEntries(draftBlocks)
-        const originVIdx = visibleEntries.findIndex((e) => e.index === origin)
-        const targetVIdx = visibleEntries.findIndex((e) => e.index === index)
-
-        if (originVIdx !== -1 && targetVIdx !== -1) {
-          const startEntry = visibleEntries[Math.min(originVIdx, targetVIdx)]
-          const endEntry = visibleEntries[Math.max(originVIdx, targetVIdx)]
-          if (startEntry && endEntry) {
-            setIsBlockRangeSelecting(true)
-            setSelectionAnchorBlockId(originBlockId ?? null)
-            setSelectedBlockRange({ start: startEntry.index, end: endEntry.index })
-            setActiveBlockIndex(index)
-          }
-        }
-      } else {
-        // Already in drag-select, extend from existing anchor
-        selectBlockRange(index, true)
-      }
-    }
-
-    function isBlockSelected(index: number) {
-      return selectedBlockRange ? index >= selectedBlockRange.start && index <= selectedBlockRange.end : false
-    }
-
-    function isSelectionCoherent(range: BlockSelectionRange): boolean {
-      if (range.start === range.end) {
-        return true
-      }
-
-      const visibleEntries = getSelectedVisibleBlockEntries(range)
-      if (visibleEntries.length === 0) {
-        return true
-      }
-
-      const depthSet = new Set(visibleEntries.map(({ block }) => block.depth))
-      return depthSet.size === 1
-    }
-
-    function selectBlockRange(index: number, extendSelection = false) {
-      const visibleEntries = getVisibleBlockEntries(draftBlocks)
-      const targetVisibleIndex = visibleEntries.findIndex((entry) => entry.index === index)
-      const targetBlockId = getNormalizedBlockId(draftBlocks[index])
-
-      // When extending but no anchor set, fall back to activeBlockIndex as the anchor
-      const resolvedAnchorId = selectionAnchorBlockId ??
-        (activeBlockIndex !== null ? getNormalizedBlockId(draftBlocks[activeBlockIndex]) : null)
-
-      if (!extendSelection || !resolvedAnchorId || targetVisibleIndex === -1) {
-        setSelectionAnchorBlockId(targetBlockId)
-        setSelectedBlockRange({ start: index, end: index })
-        setActiveBlockIndex(index)
-        return
-      }
-
-      const anchorVisibleIndex = visibleEntries.findIndex(({ block }) => getNormalizedBlockId(block) === resolvedAnchorId)
-      const resolvedAnchorVisibleIndex = anchorVisibleIndex === -1 ? targetVisibleIndex : anchorVisibleIndex
-      const rangeStartEntry = visibleEntries[Math.min(resolvedAnchorVisibleIndex, targetVisibleIndex)]
-      const rangeEndEntry = visibleEntries[Math.max(resolvedAnchorVisibleIndex, targetVisibleIndex)]
-
-      if (!rangeStartEntry || !rangeEndEntry) {
-        setSelectionAnchorBlockId(targetBlockId)
-        setSelectedBlockRange({ start: index, end: index })
-        setActiveBlockIndex(index)
-        return
-      }
-
-      setSelectionAnchorBlockId(resolvedAnchorId)
-      setSelectedBlockRange({
-        start: rangeStartEntry.index,
-        end: rangeEndEntry.index
-      })
-      setActiveBlockIndex(index)
-    }
-
-    function selectAllBlocks() {
-      if (draftBlocks.length === 0) return
-      const firstBlockId = getNormalizedBlockId(draftBlocks[0])
-      setSelectionAnchorBlockId(firstBlockId)
-      setSelectedBlockRange({ start: 0, end: draftBlocks.length - 1 })
-      setActiveBlockIndex(0)
-    }
-
-    function getSelectedBlockActionRange(range: BlockSelectionRange): BlockSelectionRange {
-      if (range.start !== range.end) {
-        return getMultiBlockOperationRange(range)
-      }
-
-      return {
-        start: range.start,
-        end: getBlockSubtreeEndIndex(draftBlocks, range.start)
-      }
-    }
-
-    function getMultiBlockOperationRange(range: BlockSelectionRange): BlockSelectionRange {
-      if (range.start === range.end) {
-        return getSelectedBlockActionRange(range)
-      }
-
-      return getVisibleSelectionSlice(range)?.operationRange ?? range
-    }
 
     function moveSelectedBlocks(delta: -1 | 1) {
       if (!selectedBlockRange) {
@@ -3957,8 +3635,7 @@ export function App() {
       })
     )
     setActiveCursorPosition(activeLinkContext.start + replacement.length)
-    setLinkSuggestions([])
-    setBlockSuggestions([])
+    clearEditorAssistSuggestions()
   }
 
   function insertBlockSuggestion(block: DocumentBlockDraft) {
@@ -3980,8 +3657,7 @@ export function App() {
       })
     )
     setActiveCursorPosition(activeLinkContext.start + replacement.length)
-    setLinkSuggestions([])
-    setBlockSuggestions([])
+    clearEditorAssistSuggestions()
   }
 
   const moveOptions = flattenTree(homeData.documentTree)
