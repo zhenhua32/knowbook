@@ -71,6 +71,7 @@ import { useBlockDragDropActions } from './hooks/useBlockDragDropActions'
 import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
 import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
 import { useMultiBlockActions } from './hooks/useMultiBlockActions'
+import { useSlashCommandActions } from './hooks/useSlashCommandActions'
 import { useBlockStructureActions } from './hooks/useBlockStructureActions'
 import { useSingleBlockTreeActions } from './hooks/useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
@@ -1649,6 +1650,35 @@ export function App() {
     updateDraftBlock
   })
   const {
+    addDraftBlock,
+    applySlashCommand,
+    dismissSlashCommand,
+    removeDraftBlock
+  } = useSlashCommandActions({
+    activeBlockIndex,
+    activeCursorPosition,
+    activeSlashContext,
+    adjustBlockDepth,
+    buildBlockTypePatch,
+    buildSiblingDraftBlock,
+    clearBlockSelection,
+    draftBlocks,
+    duplicateDraftBlock,
+    endBlockDrag,
+    getBlockSubtreeEndIndex,
+    insertChildDraftBlock,
+    insertDraftBlockAt,
+    isNestableBlock,
+    moveDraftBlockBySibling,
+    pushToHistory,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setDraftBlocks,
+    setPendingFocusBlockIndex,
+    stripSlashCommand,
+    updateDraftBlock
+  })
+  const {
     beginBlockDrag,
     dropBlockAt,
     getDraggedBlockDepthPreview
@@ -2722,214 +2752,6 @@ export function App() {
     setPendingFocusBlockIndex(focusIndex)
     endBlockDrag()
     return true
-  }
-
-  function applySlashCommand(command: BlockSlashCommand) {
-    if (activeBlockIndex === null || !activeSlashContext) {
-      return
-    }
-
-    const currentBlock = draftBlocks[activeBlockIndex]
-    if (!currentBlock) {
-      return
-    }
-
-    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
-
-    if (command.kind === 'type') {
-      setDraftBlocks((previous) =>
-        previous.map((block, index) =>
-          index === activeBlockIndex
-            ? {
-                ...block,
-                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false, currentBlock.depth, currentBlock.parentBlockId ?? null)
-              }
-            : block
-        )
-      )
-      setActiveCursorPosition(nextContent.length)
-      setPendingFocusBlockIndex(activeBlockIndex)
-      return
-    }
-
-    if (command.action === 'insert-above') {
-      clearBlockSelection()
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        next[activeBlockIndex] = {
-          ...next[activeBlockIndex],
-          content: nextContent
-        }
-        next.splice(activeBlockIndex, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
-        return next
-      })
-      setActiveBlockIndex(activeBlockIndex)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(activeBlockIndex)
-      return
-    }
-
-    if (command.action === 'insert-below') {
-      clearBlockSelection()
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        next[activeBlockIndex] = {
-          ...next[activeBlockIndex],
-          content: nextContent
-        }
-        next.splice(activeBlockIndex + 1, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
-        return next
-      })
-      setActiveBlockIndex(activeBlockIndex + 1)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(activeBlockIndex + 1)
-      return
-    }
-
-    if (command.action === 'insert-child') {
-      insertChildDraftBlock(activeBlockIndex, nextContent)
-      return
-    }
-
-    if (command.action === 'move-up' || command.action === 'move-down') {
-      moveDraftBlockBySibling(activeBlockIndex, command.action === 'move-up' ? -1 : 1, nextContent.length, nextContent)
-      return
-    }
-
-    if (command.action === 'indent' || command.action === 'outdent') {
-      if (!isNestableBlock(currentBlock.type)) {
-        setDraftBlocks((previous) =>
-          previous.map((block, index) =>
-            index === activeBlockIndex
-              ? {
-                  ...block,
-                  content: nextContent
-                }
-              : block
-          )
-        )
-        setActiveCursorPosition(nextContent.length)
-        setPendingFocusBlockIndex(activeBlockIndex)
-        return
-      }
-
-      setDraftBlocks((previous) =>
-        {
-          const next = [...previous]
-          const current = next[activeBlockIndex]
-          if (!current) {
-            return previous
-          }
-
-          next[activeBlockIndex] = {
-            ...current,
-            content: nextContent
-          }
-
-          const nextRootDepth = normalizeBlockDepth(current.type, current.depth + (command.action === 'indent' ? 1 : -1))
-          const appliedDelta = nextRootDepth - current.depth
-          if (appliedDelta === 0) {
-            return next
-          }
-
-          if (appliedDelta > 0) {
-            const precedingBlock = activeBlockIndex > 0 ? next[activeBlockIndex - 1] : null
-            if (!precedingBlock) {
-              console.warn('Cannot indent: no preceding block found as parent.')
-              return next
-            }
-
-            if (precedingBlock.depth < nextRootDepth) {
-              console.warn(`Cannot indent to depth ${nextRootDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
-              return next
-            }
-          }
-
-          const subtreeEndIndex = getBlockSubtreeEndIndex(next, activeBlockIndex)
-          const subtreeBlocks = next.slice(activeBlockIndex, subtreeEndIndex + 1)
-          const rootId = getNormalizedBlockId(current)
-          const rootIds = new Set<string>(rootId ? [rootId] : [])
-          const placement = resolveDraftInsertionPlacement(next, activeBlockIndex, current.type, nextRootDepth)
-
-          next.splice(
-            activeBlockIndex,
-            subtreeBlocks.length,
-            ...shiftDraftFragmentDepth(subtreeBlocks, placement.depth - current.depth, placement.parentBlockId, rootIds)
-          )
-          return next
-        }
-      )
-      setActiveCursorPosition(nextContent.length)
-      setPendingFocusBlockIndex(activeBlockIndex)
-      return
-    }
-
-    if (command.action === 'duplicate') {
-      duplicateDraftBlock(activeBlockIndex, nextContent)
-      return
-    }
-
-    if (command.action === 'delete') {
-      removeDraftBlock(activeBlockIndex)
-    }
-  }
-
-  function dismissSlashCommand() {
-    if (activeBlockIndex === null || !activeSlashContext) {
-      return
-    }
-
-    const currentBlock = draftBlocks[activeBlockIndex]
-    if (!currentBlock) {
-      return
-    }
-
-    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
-    setDraftBlocks((previous) =>
-      previous.map((block, index) =>
-        index === activeBlockIndex
-          ? {
-              ...block,
-              content: nextContent
-            }
-          : block
-      )
-    )
-    setActiveCursorPosition(nextContent.length)
-    setPendingFocusBlockIndex(activeBlockIndex)
-  }
-
-  function addDraftBlock() {
-    insertDraftBlockAt(draftBlocks.length)
-  }
-
-  function removeDraftBlock(index: number) {
-    pushToHistory(draftBlocks)
-    const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-    const removedCount = subtreeEndIndex - index + 1
-    const remainingCount = draftBlocks.length - removedCount
-    const nextIndex = remainingCount > 0 ? Math.min(index, remainingCount - 1) : null
-
-    clearBlockSelection()
-    setDraftBlocks((previous) => previous.filter((_, currentIndex) => currentIndex < index || currentIndex > subtreeEndIndex))
-    setActiveBlockIndex((previous) => {
-      if (previous === null) {
-        return previous
-      }
-
-      if (previous < index) {
-        return previous
-      }
-
-      if (previous <= subtreeEndIndex) {
-        return nextIndex
-      }
-
-      return previous - removedCount
-    })
-    setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(nextIndex)
-    endBlockDrag()
   }
 
   function endBlockDrag() {
