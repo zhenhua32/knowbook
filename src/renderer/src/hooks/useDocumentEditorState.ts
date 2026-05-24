@@ -71,6 +71,19 @@ export function useDocumentEditorState({
     })
   }, [normalizeDraftBlocks])
 
+  const updateDraftBlock = useCallback((index: number, patch: Partial<DocumentBlockDraft>) => {
+    setDraftBlocks((previous) =>
+      previous.map((block, currentIndex) =>
+        currentIndex === index
+          ? {
+              ...block,
+              ...patch
+            }
+          : block
+      )
+    )
+  }, [setDraftBlocks])
+
   const resetEditorFromDocument = useCallback((detail: DocumentDetail | null, editing = Boolean(detail)) => {
     const initialBlocks = normalizeDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
 
@@ -303,6 +316,7 @@ export function useDocumentEditorState({
     setDraftSummary,
     setDraftTitle,
     setIsSaving,
+    updateDraftBlock,
     undoEdit
   }
 }

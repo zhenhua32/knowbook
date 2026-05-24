@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 
 type LinkContext = {
@@ -29,6 +30,9 @@ type UseEditorAssistStateParams<TSlashCommand extends SlashCommandLike> = {
   isEditing: boolean
   selectedDocumentId: string | null
   selectedDocumentPresent: boolean
+  setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
+  setActiveCursorPosition: Dispatch<SetStateAction<number>>
+  setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
 }
 
 export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
@@ -41,22 +45,70 @@ export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
   getSlashCommandContext,
   isEditing,
   selectedDocumentId,
-  selectedDocumentPresent
+  selectedDocumentPresent,
+  setActiveBlockIndex,
+  setActiveCursorPosition,
+  setDraftBlocks
 }: UseEditorAssistStateParams<TSlashCommand>) {
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
 
-  const clearEditorAssistSuggestions = () => {
+  const clearEditorAssistSuggestions = useCallback(() => {
     setLinkSuggestions([])
     setBlockSuggestions([])
-  }
+  }, [])
+
+  const captureBlockCursor = useCallback((index: number, element: HTMLTextAreaElement) => {
+    setActiveBlockIndex(index)
+    setActiveCursorPosition(element.selectionStart ?? element.value.length)
+  }, [setActiveBlockIndex, setActiveCursorPosition])
 
   const activeLinkContext = useMemo(() => {
     return activeBlockIndex !== null
       ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
       : null
   }, [activeBlockIndex, activeCursorPosition, draftBlocks, getOpenLinkContext])
+
+  const insertAssistReplacement = useCallback((replacement: string) => {
+    if (activeBlockIndex === null || !activeLinkContext) {
+      return
+    }
+
+    setDraftBlocks((previous) =>
+      previous.map((block, index) => {
+        if (index !== activeBlockIndex) {
+          return block
+        }
+
+        return {
+          ...block,
+          content: `${block.content.slice(0, activeLinkContext.start)}${replacement}${block.content.slice(activeCursorPosition)}`
+        }
+      })
+    )
+    setActiveCursorPosition(activeLinkContext.start + replacement.length)
+    clearEditorAssistSuggestions()
+  }, [
+    activeBlockIndex,
+    activeCursorPosition,
+    activeLinkContext,
+    clearEditorAssistSuggestions,
+    setActiveCursorPosition,
+    setDraftBlocks
+  ])
+
+  const insertLinkSuggestion = useCallback((suggestion: DocumentSuggestion) => {
+    insertAssistReplacement(`[[${suggestion.path}]]`)
+  }, [insertAssistReplacement])
+
+  const insertBlockSuggestion = useCallback((block: DocumentBlockDraft) => {
+    if (!block.id) {
+      return
+    }
+
+    insertAssistReplacement(`[[${block.id}]]`)
+  }, [insertAssistReplacement])
 
   const activeSlashContext = useMemo(() => {
     if (activeLinkContext || activeBlockIndex === null) {
@@ -152,8 +204,11 @@ export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
     activeSlashCommand,
     activeSlashContext,
     blockSuggestions,
+    captureBlockCursor,
     clearEditorAssistSuggestions,
     filteredSlashCommands,
+    insertBlockSuggestion,
+    insertLinkSuggestion,
     linkSuggestions,
     selectedSlashCommandIndex,
     setSelectedSlashCommandIndex,

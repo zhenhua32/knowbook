@@ -1311,6 +1311,7 @@ export function App() {
     setDraftSummary,
     setDraftTitle,
     setIsSaving,
+    updateDraftBlock,
     undoEdit
   } = useDocumentEditorState({
     normalizeDraftBlocks,
@@ -1402,8 +1403,11 @@ export function App() {
     activeSlashCommand,
     activeSlashContext,
     blockSuggestions,
+    captureBlockCursor,
     clearEditorAssistSuggestions,
     filteredSlashCommands,
+    insertBlockSuggestion,
+    insertLinkSuggestion,
     linkSuggestions,
     setSelectedSlashCommandIndex,
     slashPanelPos
@@ -1417,7 +1421,10 @@ export function App() {
     getSlashCommandContext,
     isEditing,
     selectedDocumentId,
-    selectedDocumentPresent: Boolean(selectedDocument)
+    selectedDocumentPresent: Boolean(selectedDocument),
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setDraftBlocks
   })
   function flashHighlightedBlock(blockId: string) {
     setHighlightedBlockId(blockId)
@@ -2643,99 +2650,37 @@ export function App() {
     })
   }
 
-  function updateDraftBlock(index: number, patch: Partial<DocumentBlockDraft>) {
-    setDraftBlocks((previous) =>
-      previous.map((block, currentIndex) =>
-        currentIndex === index
-          ? {
-              ...block,
-              ...patch
-            }
-          : block
-      )
-    )
-  }
-
-    const {
-      handleBlockContentChange,
-      handleBlockPaste
-    } = useBlockInputActions({
-      adjustPastedBlocksDepth,
-      buildBlockTypePatch,
-      clearBlockSelection,
-      detectCodeLanguage,
-      draftBlocks,
-      endBlockDrag,
-      getMultiBlockOperationRange,
-      getNormalizedParentBlockId,
-      looksLikeStructuredBlockPaste,
-      materializeDraftFragment,
-      normalizeCodeLanguage,
-      normalizePastedLineBlock,
-      parseStructuredPastedBlocks,
-      pushToHistory,
-      resolveMarkdownBlockShortcut,
-      selectedBlockRange,
-      setActiveBlockIndex,
-      setActiveCursorPosition,
-      setDraftBlocks,
-      setPendingFocusBlockIndex,
-      updateDraftBlock
-    })
+  const {
+    handleBlockContentChange,
+    handleBlockPaste
+  } = useBlockInputActions({
+    adjustPastedBlocksDepth,
+    buildBlockTypePatch,
+    clearBlockSelection,
+    detectCodeLanguage,
+    draftBlocks,
+    endBlockDrag,
+    getMultiBlockOperationRange,
+    getNormalizedParentBlockId,
+    looksLikeStructuredBlockPaste,
+    materializeDraftFragment,
+    normalizeCodeLanguage,
+    normalizePastedLineBlock,
+    parseStructuredPastedBlocks,
+    pushToHistory,
+    resolveMarkdownBlockShortcut,
+    selectedBlockRange,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setDraftBlocks,
+    setPendingFocusBlockIndex,
+    updateDraftBlock
+  })
 
   function endBlockDrag() {
     setDraggingBlockIndex(null)
     setDragOverBlockIndex(null)
     setDragOverBlockDepth(null)
-  }
-
-  function captureBlockCursor(index: number, element: HTMLTextAreaElement) {
-    setActiveBlockIndex(index)
-    setActiveCursorPosition(element.selectionStart ?? element.value.length)
-  }
-
-  function insertLinkSuggestion(suggestion: DocumentSuggestion) {
-    if (activeBlockIndex === null || !activeLinkContext) {
-      return
-    }
-
-    const replacement = `[[${suggestion.path}]]`
-    setDraftBlocks((previous) =>
-      previous.map((block, index) => {
-        if (index !== activeBlockIndex) {
-          return block
-        }
-
-        return {
-          ...block,
-          content: `${block.content.slice(0, activeLinkContext.start)}${replacement}${block.content.slice(activeCursorPosition)}`
-        }
-      })
-    )
-    setActiveCursorPosition(activeLinkContext.start + replacement.length)
-    clearEditorAssistSuggestions()
-  }
-
-  function insertBlockSuggestion(block: DocumentBlockDraft) {
-    if (activeBlockIndex === null || !activeLinkContext || !block.id) {
-      return
-    }
-
-    const replacement = `[[${block.id}]]`
-    setDraftBlocks((previous) =>
-      previous.map((currentBlock, index) => {
-        if (index !== activeBlockIndex) {
-          return currentBlock
-        }
-
-        return {
-          ...currentBlock,
-          content: `${currentBlock.content.slice(0, activeLinkContext.start)}${replacement}${currentBlock.content.slice(activeCursorPosition)}`
-        }
-      })
-    )
-    setActiveCursorPosition(activeLinkContext.start + replacement.length)
-    clearEditorAssistSuggestions()
   }
 
   const moveOptions = flattenTree(homeData.documentTree)
