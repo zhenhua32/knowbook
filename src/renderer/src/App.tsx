@@ -1,5 +1,5 @@
 import { renderToString } from 'katex'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildBoardColumns,
   getBoardDropFieldValue,
@@ -116,6 +116,8 @@ const emptyState: HomeData = {
 const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 const BOARD_GROUP_BY_PARENT = '__parent__'
+const CATALOG_ROW_HEIGHT = 108
+const CATALOG_ROW_OVERSCAN = 6
 
 type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
@@ -562,6 +564,33 @@ function normalizeDocumentDatabaseFieldValue(value: DocumentDatabaseFieldValue):
   return value
 }
 
+function areDocumentDatabaseFieldValuesEqual(left: DocumentDatabaseFieldValue, right: DocumentDatabaseFieldValue): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    const leftValues = Array.isArray(left) ? [...left].sort() : []
+    const rightValues = Array.isArray(right) ? [...right].sort() : []
+
+    if (leftValues.length !== rightValues.length) {
+      return false
+    }
+
+    return leftValues.every((value, index) => value === rightValues[index])
+  }
+
+  return left === right
+}
+
+function formatDocumentCatalogFieldValueForDisplay(value: DocumentDatabaseFieldValue): string {
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 'True' : 'False'
+  }
+
+  return value ?? ''
+}
+
 function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatabaseFieldValue>): Record<string, DocumentDatabaseFieldValue> {
   const compacted: Record<string, DocumentDatabaseFieldValue> = {}
 
@@ -573,6 +602,58 @@ function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatab
   }
 
   return compacted
+}
+
+function setDocumentCatalogFieldValue(
+  entries: DocumentCatalogEntry[],
+  documentId: string,
+  columnId: string,
+  value: DocumentDatabaseFieldValue
+): { entries: DocumentCatalogEntry[]; previousValue: DocumentDatabaseFieldValue | undefined } {
+  let previousValue: DocumentDatabaseFieldValue | undefined
+
+  return {
+    entries: entries.map((entry) => {
+      if (entry.id !== documentId) {
+        return entry
+      }
+
+      previousValue = entry.fieldValues[columnId]
+      return {
+        ...entry,
+        fieldValues: {
+          ...entry.fieldValues,
+          [columnId]: value
+        }
+      }
+    }),
+    previousValue
+  }
+}
+
+function restoreDocumentCatalogFieldValue(
+  entries: DocumentCatalogEntry[],
+  documentId: string,
+  columnId: string,
+  previousValue: DocumentDatabaseFieldValue | undefined
+): DocumentCatalogEntry[] {
+  return entries.map((entry) => {
+    if (entry.id !== documentId) {
+      return entry
+    }
+
+    const nextFieldValues = { ...entry.fieldValues }
+    if (previousValue === undefined) {
+      delete nextFieldValues[columnId]
+    } else {
+      nextFieldValues[columnId] = previousValue
+    }
+
+    return {
+      ...entry,
+      fieldValues: nextFieldValues
+    }
+  })
 }
 
 function resolveDraftBlockRelationship(
@@ -1137,10 +1218,13 @@ export function App() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
   const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
+  const [catalogColumns, setCatalogColumns] = useState<DocumentDatabaseColumn[]>([])
+  const [catalogDocuments, setCatalogDocuments] = useState<DocumentCatalogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [activePage, setActivePage] = useState<PageId>('documents')
   const [documentsAuxPanelOpen, setDocumentsAuxPanelOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
+  const deferredCatalogQuery = useDeferredValue(catalogQuery)
   const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
   const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -1401,12 +1485,12 @@ export function App() {
     }
   }
 
-  function openDocumentInDocumentsPage(documentId: string) {
+  const openDocumentInDocumentsPage = useCallback((documentId: string) => {
     setPendingBlockNavigationTarget(null)
     setHighlightedBlockId(null)
     setSelectedDocumentId(documentId)
     setActivePage('documents')
-  }
+  }, [])
 
   function openDocumentBlockInDocumentsPage(documentId: string, blockId: string) {
     setPendingBlockNavigationTarget({ documentId, blockId })
@@ -1676,6 +1760,11 @@ export function App() {
       mounted = false
     }
   }, [])
+
+  useEffect(() => {
+    setCatalogColumns(homeData.databaseColumns)
+    setCatalogDocuments(homeData.documentCatalog)
+  }, [homeData.databaseColumns, homeData.documentCatalog])
 
   useEffect(() => {
     let mounted = true
@@ -2489,7 +2578,7 @@ export function App() {
       return
     }
 
-    const draggingDocument = homeData.documentCatalog.find((document) => document.id === draggingDocumentId)
+    const draggingDocument = catalogDocuments.find((document) => document.id === draggingDocumentId)
     if (draggingDocument && (draggingDocument.parentId ?? null) === parentId) {
       endDrag()
       return
@@ -2504,7 +2593,7 @@ export function App() {
       return
     }
 
-    const draggingDocument = homeData.documentCatalog.find((document) => document.id === draggingDocumentId)
+    const draggingDocument = catalogDocuments.find((document) => document.id === draggingDocumentId)
     if (!draggingDocument) {
       endDrag()
       return
@@ -2515,7 +2604,7 @@ export function App() {
       return
     }
 
-    const targetColumn = homeData.databaseColumns.find((column) => column.id === target.columnId)
+    const targetColumn = catalogColumns.find((column) => column.id === target.columnId)
     if (!targetColumn) {
       endDrag()
       return
@@ -2735,7 +2824,11 @@ export function App() {
         type: databaseColumnTypeDraft,
         options: normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft)
       })
-      await refreshDatabasePageData()
+      if (databaseWorkspaceView === 'catalog') {
+        await refreshDocumentCatalogData()
+      } else {
+        await refreshDatabasePageData()
+      }
       setIsCreatingDatabaseColumn(false)
       setDatabaseColumnNameDraft('')
       setDatabaseColumnTypeDraft('text')
@@ -2750,7 +2843,11 @@ export function App() {
   async function renameDatabaseColumn(columnId: string, name: string) {
     try {
       await window.knowbook.renameDocumentDatabaseColumn({ columnId, name })
-      await refreshDatabasePageData()
+      if (databaseWorkspaceView === 'catalog') {
+        await refreshDocumentCatalogData()
+      } else {
+        await refreshDatabasePageData()
+      }
       setBackupMessage(ui.databaseColumnRenamed(name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnRenameFailed
@@ -2761,7 +2858,11 @@ export function App() {
   async function moveDatabaseColumn(columnId: string, direction: 'left' | 'right') {
     try {
       await window.knowbook.moveDocumentDatabaseColumn({ columnId, direction })
-      await refreshDatabasePageData()
+      if (databaseWorkspaceView === 'catalog') {
+        await refreshDocumentCatalogData()
+      } else {
+        await refreshDatabasePageData()
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnReorderFailed
       setBackupMessage(message)
@@ -2773,7 +2874,11 @@ export function App() {
 
     try {
       await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId, options })
-      await refreshDatabasePageData()
+      if (databaseWorkspaceView === 'catalog') {
+        await refreshDocumentCatalogData()
+      } else {
+        await refreshDatabasePageData()
+      }
       setBackupMessage(ui.databaseColumnOptionsUpdated)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnOptionsUpdateFailed
@@ -2789,7 +2894,11 @@ export function App() {
 
     try {
       await window.knowbook.deleteDocumentDatabaseColumn(columnId)
-      await refreshDatabasePageData()
+      if (databaseWorkspaceView === 'catalog') {
+        await refreshDocumentCatalogData()
+      } else {
+        await refreshDatabasePageData()
+      }
       setBackupMessage(ui.databaseColumnDeleted(columnName))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnDeleteFailed
@@ -3124,51 +3233,43 @@ export function App() {
     setSelectedDatabaseEntityIds(filteredStandaloneDatabaseEntityIds)
   }
 
-  async function updateDocumentDatabaseValue(documentId: string, columnId: string, value: DocumentDatabaseFieldValue) {
-    const previousFieldValue = homeData.documentCatalog.find((document) => document.id === documentId)?.fieldValues[columnId]
+  const updateDocumentDatabaseValue = useCallback(async (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => {
+    let previousFieldValue: DocumentDatabaseFieldValue | undefined
 
-    setHomeData((previous) => ({
-      ...previous,
-      documentCatalog: previous.documentCatalog.map((document) =>
-        document.id === documentId
-          ? {
-              ...document,
-              fieldValues: {
-                ...document.fieldValues,
-                [columnId]: value
-              }
-            }
-          : document
-      )
-    }))
+    setCatalogDocuments((previous) => {
+      const nextState = setDocumentCatalogFieldValue(previous, documentId, columnId, value)
+      previousFieldValue = nextState.previousValue
+      return nextState.entries
+    })
+    setHomeData((previous) => {
+      const nextState = setDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, value)
+      return {
+        ...previous,
+        documentCatalog: nextState.entries
+      }
+    })
 
     try {
       await window.knowbook.updateDocumentDatabaseValue({ documentId, columnId, value })
     } catch (error) {
+      setCatalogDocuments((previous) => restoreDocumentCatalogFieldValue(previous, documentId, columnId, previousFieldValue))
       setHomeData((previous) => ({
         ...previous,
-        documentCatalog: previous.documentCatalog.map((document) => {
-          if (document.id !== documentId) {
-            return document
-          }
-
-          const nextFieldValues = { ...document.fieldValues }
-          if (previousFieldValue === undefined) {
-            delete nextFieldValues[columnId]
-          } else {
-            nextFieldValues[columnId] = previousFieldValue
-          }
-
-          return {
-            ...document,
-            fieldValues: nextFieldValues
-          }
-        })
+        documentCatalog: restoreDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, previousFieldValue)
       }))
       const message = error instanceof Error ? error.message : 'Failed to update database value.'
       setBackupMessage(message)
     }
-  }
+  }, [])
+
+  const refreshDocumentCatalogData = useCallback(async () => {
+    const [refreshedColumns, refreshedCatalog] = await Promise.all([
+      window.knowbook.getDocumentDatabaseColumns(),
+      window.knowbook.getDocumentCatalog()
+    ])
+    setCatalogColumns(refreshedColumns)
+    setCatalogDocuments(refreshedCatalog)
+  }, [])
 
   async function refreshDatabasePageData(
     targetDatabaseId: string | null = databaseEntityDatabaseId,
@@ -4637,7 +4738,10 @@ export function App() {
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
   const pluginRoots = homeData.pluginHost?.roots ?? []
   const pluginWritableRoot = homeData.pluginHost?.writableRoot ?? null
-  const boardGroupableColumns = homeData.databaseColumns.filter(isBoardGroupableColumn)
+  const boardGroupableColumns = useMemo(
+    () => catalogColumns.filter(isBoardGroupableColumn),
+    [catalogColumns]
+  )
   const boardGroupingColumn = boardGroupBy === BOARD_GROUP_BY_PARENT
     ? null
     : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
@@ -4650,9 +4754,10 @@ export function App() {
     || activeDatabaseSavedView.sortMode !== databaseEntitySortMode
     || activeDatabaseSavedView.viewMode !== databaseEntityViewMode
   )
-  const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : homeData.databaseColumns
+  const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : catalogColumns
   const databasePageTitle = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesTitle : ui.documentCatalogTitle
   const databasePageHint = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesHint : ui.documentCatalogHint
+  const isDocumentCatalogViewActive = activePage === 'database' && databaseWorkspaceView === 'catalog'
   const trimmedDatabaseEntityFilterQuery = databaseEntityFilterQuery.trim().toLowerCase()
   const standaloneDatabaseEntityRows = databaseEntities.map((entity) => {
     const linkedDocument = entity.documentId
@@ -4709,22 +4814,34 @@ export function App() {
   const selectedVisibleDatabaseEntityIds = filteredStandaloneDatabaseEntityIds.filter((entityId) => selectedDatabaseEntityIdSet.has(entityId))
   const selectedVisibleDatabaseEntityRows = filteredStandaloneDatabaseEntityRows.filter(({ entity }) => selectedDatabaseEntityIdSet.has(entity.id))
   const selectedVisibleDatabaseEntitiesHaveLinkedDocument = selectedVisibleDatabaseEntityRows.some(({ entity }) => Boolean(entity.documentId))
-  const filteredCatalog = homeData.documentCatalog.filter((document) => {
-    const query = catalogQuery.trim().toLowerCase()
-    if (!query) {
-      return true
+  const trimmedCatalogQuery = deferredCatalogQuery.trim().toLowerCase()
+  const filteredCatalog = useMemo(() => {
+    if (!isDocumentCatalogViewActive) {
+      return catalogDocuments
     }
 
-    const dynamicFieldSearchText = Object.values(document.fieldValues)
-      .map((value) => formatDocumentDatabaseFieldValueForSearch(value))
-      .join(' ')
+    return catalogDocuments.filter((document) => {
+      if (!trimmedCatalogQuery) {
+        return true
+      }
 
-    return [document.title, document.path, document.summary, dynamicFieldSearchText]
-      .join(' ')
-      .toLowerCase()
-      .includes(query)
-  })
-  const boardColumns = buildBoardColumns(filteredCatalog, boardGroupingColumn)
+      const dynamicFieldSearchText = Object.values(document.fieldValues)
+        .map((value) => formatDocumentDatabaseFieldValueForSearch(value))
+        .join(' ')
+
+      return [document.title, document.path, document.summary, dynamicFieldSearchText]
+        .join(' ')
+        .toLowerCase()
+        .includes(trimmedCatalogQuery)
+    })
+  }, [catalogDocuments, isDocumentCatalogViewActive, trimmedCatalogQuery])
+  const boardColumns = useMemo(() => {
+    if (!isDocumentCatalogViewActive) {
+      return []
+    }
+
+    return buildBoardColumns(filteredCatalog, boardGroupingColumn)
+  }, [boardGroupingColumn, filteredCatalog, isDocumentCatalogViewActive])
   const isZh = uiLanguage === 'zh-CN'
   const pageItems: Array<{ id: PageId; label: string; description: string }> = [
     {
@@ -4996,7 +5113,7 @@ return (
                     type="text"
                     value={catalogQuery}
                   />
-                  <span className="pill">{ui.customColumnsCount(homeData.databaseColumns.length)}</span>
+                  <span className="pill">{ui.customColumnsCount(catalogColumns.length)}</span>
                   <span className="pill">{ui.rowsCount(filteredCatalog.length)}</span>
                 </div>
 
@@ -5051,13 +5168,13 @@ return (
                   </div>
                  ) : null}
 
-                {homeData.databaseColumns.length > 0 ? (
+                {catalogColumns.length > 0 ? (
                   <div className="database-schema-chip-row">
-                    {homeData.databaseColumns.map((column, index) => (
+                    {catalogColumns.map((column, index) => (
                       <DatabaseSchemaColumnCard
                         column={column}
                         isFirst={index === 0}
-                        isLast={index === homeData.databaseColumns.length - 1}
+                        isLast={index === catalogColumns.length - 1}
                         key={column.id}
                         onDelete={deleteDatabaseColumn}
                         onMove={moveDatabaseColumn}
@@ -5071,7 +5188,7 @@ return (
                 )}
 
                 <DocumentCatalogTable
-                  columns={homeData.databaseColumns}
+                  columns={catalogColumns}
                   documents={filteredCatalog}
                   onSelect={openDocumentInDocumentsPage}
                   onUpdateField={updateDocumentDatabaseValue}
@@ -6532,7 +6649,7 @@ return (
   )
 }
 
-function DocumentCatalogTable({
+const DocumentCatalogTable = memo(function DocumentCatalogTable({
   columns,
   documents,
   onSelect,
@@ -6546,56 +6663,130 @@ function DocumentCatalogTable({
   selectedDocumentId: string | null
 }) {
   const ui = getActiveUiText()
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(CATALOG_ROW_HEIGHT * 5)
+
+  const gridTemplateColumns = useMemo(() => {
+    const dynamicColumns = columns.map(() => 'minmax(180px, 1.15fr)')
+    return [
+      'minmax(220px, 1.7fr)',
+      'minmax(220px, 1.45fr)',
+      ...dynamicColumns,
+      'minmax(84px, 0.55fr)',
+      'minmax(84px, 0.55fr)',
+      'minmax(84px, 0.55fr)',
+      'minmax(120px, 0.7fr)'
+    ].join(' ')
+  }, [columns])
+
+  useEffect(() => {
+    const node = scrollRef.current
+    if (!node) {
+      return
+    }
+
+    const updateViewportHeight = () => {
+      setViewportHeight(node.clientHeight || CATALOG_ROW_HEIGHT * 5)
+    }
+
+    updateViewportHeight()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateViewportHeight)
+      return () => {
+        window.removeEventListener('resize', updateViewportHeight)
+      }
+    }
+
+    const observer = new ResizeObserver(() => {
+      updateViewportHeight()
+    })
+    observer.observe(node)
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+
+  const totalHeight = documents.length * CATALOG_ROW_HEIGHT
+  const startIndex = Math.max(0, Math.floor(scrollTop / CATALOG_ROW_HEIGHT) - CATALOG_ROW_OVERSCAN)
+  const visibleCount = Math.ceil(viewportHeight / CATALOG_ROW_HEIGHT) + (CATALOG_ROW_OVERSCAN * 2)
+  const endIndex = Math.min(documents.length, startIndex + visibleCount)
+  const visibleDocuments = documents.slice(startIndex, endIndex)
 
   return (
     <div className="catalog-table-wrap">
-      <table className="catalog-table">
-        <thead>
-          <tr>
-            <th>{ui.common.title}</th>
-            <th>{ui.common.path}</th>
-            {columns.map((column) => (
-              <th key={column.id}>{column.name}</th>
-            ))}
-            <th>{ui.tableHeaderBlocks}</th>
-            <th>{ui.tableHeaderLinks}</th>
-            <th>{ui.tableHeaderChildren}</th>
-            <th>{ui.tableHeaderUpdated}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {documents.map((document) => (
-            <tr
-              className={selectedDocumentId === document.id ? 'catalog-row-active' : ''}
-              key={document.id}
-              onClick={() => onSelect(document.id)}
-            >
-              <td>
-                <strong>{document.title}</strong>
-                <p className="catalog-summary">{document.summary}</p>
-              </td>
-              <td>{document.path}</td>
-              {columns.map((column) => (
-                <td className="catalog-cell-field" key={`${document.id}-${column.id}`}>
-                  <DocumentCatalogFieldCell
-                    column={column}
-                    documentId={document.id}
-                    onUpdateField={onUpdateField}
-                    value={document.fieldValues[column.id] ?? null}
-                  />
-                </td>
-              ))}
-              <td>{document.blockCount}</td>
-              <td>{document.linkCount}</td>
-              <td>{document.childCount}</td>
-              <td>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</td>
-            </tr>
+      <div className="catalog-virtual-table">
+        <div className="catalog-virtual-head" style={{ gridTemplateColumns }}>
+          <div className="catalog-virtual-header-cell">{ui.common.title}</div>
+          <div className="catalog-virtual-header-cell">{ui.common.path}</div>
+          {columns.map((column) => (
+            <div className="catalog-virtual-header-cell" key={column.id}>{column.name}</div>
           ))}
-        </tbody>
-      </table>
+          <div className="catalog-virtual-header-cell">{ui.tableHeaderBlocks}</div>
+          <div className="catalog-virtual-header-cell">{ui.tableHeaderLinks}</div>
+          <div className="catalog-virtual-header-cell">{ui.tableHeaderChildren}</div>
+          <div className="catalog-virtual-header-cell">{ui.tableHeaderUpdated}</div>
+        </div>
+
+        <div
+          className="catalog-virtual-scroll"
+          onScroll={(event) => {
+            setScrollTop(event.currentTarget.scrollTop)
+          }}
+          ref={scrollRef}
+        >
+          <div className="catalog-virtual-spacer" style={{ height: totalHeight }}>
+            {visibleDocuments.map((document, offset) => {
+              const rowIndex = startIndex + offset
+
+              return (
+                <div
+                  className={`catalog-virtual-row${selectedDocumentId === document.id ? ' catalog-row-active' : ''}`}
+                  data-document-id={document.id}
+                  key={document.id}
+                  onClick={() => onSelect(document.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onSelect(document.id)
+                    }
+                  }}
+                  role="button"
+                  style={{
+                    gridTemplateColumns,
+                    transform: `translateY(${rowIndex * CATALOG_ROW_HEIGHT}px)`
+                  }}
+                  tabIndex={0}
+                >
+                  <div className="catalog-virtual-cell catalog-title-cell">
+                    <strong className="catalog-title-text">{document.title}</strong>
+                    <p className="catalog-summary">{document.summary}</p>
+                  </div>
+                  <div className="catalog-virtual-cell catalog-path-cell" title={document.path}>{document.path}</div>
+                  {columns.map((column) => (
+                    <div className="catalog-virtual-cell catalog-cell-field" data-column-id={column.id} key={`${document.id}-${column.id}`}>
+                      <DocumentCatalogFieldCell
+                        column={column}
+                        documentId={document.id}
+                        onUpdateField={onUpdateField}
+                        value={document.fieldValues[column.id] ?? null}
+                      />
+                    </div>
+                  ))}
+                  <div className="catalog-virtual-cell catalog-metric-cell">{document.blockCount}</div>
+                  <div className="catalog-virtual-cell catalog-metric-cell">{document.linkCount}</div>
+                  <div className="catalog-virtual-cell catalog-metric-cell">{document.childCount}</div>
+                  <div className="catalog-virtual-cell catalog-updated-cell">{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   )
-}
+})
 
 function StandaloneDatabaseEntityTable({
   columns,
@@ -6831,7 +7022,7 @@ function DatabaseSchemaColumnCard({
   )
 }
 
-function DocumentCatalogFieldCell({
+const DocumentCatalogFieldCell = memo(function DocumentCatalogFieldCell({
   column,
   documentId,
   onUpdateField,
@@ -6842,13 +7033,236 @@ function DocumentCatalogFieldCell({
   onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
   value: DocumentDatabaseFieldValue
 }) {
+  const ui = getActiveUiText()
+  const [isEditing, setIsEditing] = useState(false)
+  const [draftValue, setDraftValue] = useState('')
+  const [draftMultiValue, setDraftMultiValue] = useState<string[]>([])
+
+  useEffect(() => {
+    setDraftValue(formatDocumentDatabaseFieldValueForDraft(value))
+    setDraftMultiValue(Array.isArray(value) ? value : [])
+  }, [value])
+
+  const stopEventPropagation = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+  }
+
+  const closeEditor = () => {
+    setIsEditing(false)
+    setDraftValue(formatDocumentDatabaseFieldValueForDraft(value))
+    setDraftMultiValue(Array.isArray(value) ? value : [])
+  }
+
+  const commitValue = async (nextValue: DocumentDatabaseFieldValue) => {
+    const normalizedValue = normalizeDocumentDatabaseFieldValue(nextValue)
+    setIsEditing(false)
+
+    if (areDocumentDatabaseFieldValuesEqual(normalizedValue, value)) {
+      return
+    }
+
+    await onUpdateField(documentId, column.id, normalizedValue)
+  }
+
+  const displayValue = formatDocumentCatalogFieldValueForDisplay(value)
+  const emptyLabel = column.type === 'select' || column.type === 'multi-select' ? ui.common.select : ui.common.value
+
+  if (column.type === 'checkbox') {
+    return (
+      <label className="catalog-checkbox" onClick={stopEventPropagation}>
+        <input
+          checked={value === true}
+          onChange={(event) => {
+            void onUpdateField(documentId, column.id, event.target.checked)
+          }}
+          type="checkbox"
+        />
+      </label>
+    )
+  }
+
+  if (column.type === 'multi-select') {
+    return (
+      <div className="catalog-field-shell" onClick={stopEventPropagation}>
+        {isEditing ? (
+          <CatalogMultiSelectEditor
+            column={column}
+            onApply={() => {
+              void commitValue(draftMultiValue)
+            }}
+            onCancel={closeEditor}
+            onToggleOption={(option, checked) => {
+              setDraftMultiValue((current) => {
+                if (checked) {
+                  return current.includes(option) ? current : [...current, option]
+                }
+
+                return current.filter((item) => item !== option)
+              })
+            }}
+            selectedValues={draftMultiValue}
+          />
+        ) : (
+          <button
+            className={`catalog-value-button${displayValue ? '' : ' catalog-value-empty'}`}
+            onClick={() => setIsEditing(true)}
+            type="button"
+          >
+            {displayValue || emptyLabel}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (column.type === 'select') {
+    return (
+      <div className="catalog-field-shell" onClick={stopEventPropagation}>
+        {isEditing ? (
+          <select
+            autoFocus
+            className="catalog-cell-input"
+            onBlur={() => setIsEditing(false)}
+            onChange={(event) => {
+              void commitValue(event.target.value || null)
+            }}
+            onClick={stopEventPropagation}
+            value={typeof value === 'string' ? value : ''}
+          >
+            <option value="">{ui.common.select}</option>
+            {column.options.map((option) => (
+              <option key={option} value={option}>{option}</option>
+            ))}
+          </select>
+        ) : (
+          <button
+            className={`catalog-value-button${displayValue ? '' : ' catalog-value-empty'}`}
+            onClick={() => setIsEditing(true)}
+            type="button"
+          >
+            {displayValue || emptyLabel}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (column.type === 'date') {
+    return (
+      <div className="catalog-field-shell" onClick={stopEventPropagation}>
+        {isEditing ? (
+          <input
+            autoFocus
+            className="catalog-cell-input"
+            onBlur={() => {
+              void commitValue(draftValue)
+            }}
+            onChange={(event) => {
+              setDraftValue(event.target.value)
+            }}
+            onClick={stopEventPropagation}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                closeEditor()
+                return
+              }
+
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+            type="date"
+            value={draftValue}
+          />
+        ) : (
+          <button
+            className={`catalog-value-button${displayValue ? '' : ' catalog-value-empty'}`}
+            onClick={() => setIsEditing(true)}
+            type="button"
+          >
+            {displayValue || emptyLabel}
+          </button>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <DatabaseFieldEditor
-      column={column}
-      value={value}
-      stopPropagation={true}
-      onChangeValue={(nextValue) => onUpdateField(documentId, column.id, nextValue)}
-    />
+    <div className="catalog-field-shell" onClick={stopEventPropagation}>
+      {isEditing ? (
+        <input
+          autoFocus
+          className="catalog-cell-input"
+          onBlur={() => {
+            void commitValue(draftValue)
+          }}
+          onChange={(event) => {
+            setDraftValue(event.target.value)
+          }}
+          onClick={stopEventPropagation}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              closeEditor()
+              return
+            }
+
+            if (event.key === 'Enter') {
+              event.currentTarget.blur()
+            }
+          }}
+          placeholder={ui.common.value}
+          type="text"
+          value={draftValue}
+        />
+      ) : (
+        <button
+          className={`catalog-value-button${displayValue ? '' : ' catalog-value-empty'}`}
+          onClick={() => setIsEditing(true)}
+          type="button"
+        >
+          {displayValue || emptyLabel}
+        </button>
+      )}
+    </div>
+  )
+})
+
+function CatalogMultiSelectEditor({
+  column,
+  onApply,
+  onCancel,
+  onToggleOption,
+  selectedValues
+}: {
+  column: DocumentDatabaseColumn
+  onApply: () => void
+  onCancel: () => void
+  onToggleOption: (option: string, checked: boolean) => void
+  selectedValues: string[]
+}) {
+  const ui = getActiveUiText()
+
+  return (
+    <div className="catalog-multi-select-editor" onClick={(event) => event.stopPropagation()}>
+      <div className="catalog-multi-select-options">
+        {column.options.map((option) => (
+          <label className="catalog-multi-select-option" key={option}>
+            <input
+              checked={selectedValues.includes(option)}
+              onChange={(event) => {
+                onToggleOption(option, event.target.checked)
+              }}
+              type="checkbox"
+            />
+            <span>{option}</span>
+          </label>
+        ))}
+      </div>
+      <div className="catalog-inline-actions">
+        <button className="secondary-button" onClick={onApply} type="button">{ui.common.save}</button>
+        <button className="secondary-button" onClick={onCancel} type="button">{ui.common.cancel}</button>
+      </div>
+    </div>
   )
 }
 

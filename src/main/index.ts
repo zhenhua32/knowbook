@@ -15,6 +15,7 @@ import type {
   DatabaseSavedView,
   DeleteDatabaseEntityInput,
   DocumentDatabase,
+  DocumentCatalogEntry,
   DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
@@ -221,6 +222,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-document-database-columns', (_event, databaseId: string | null = null) => {
     const columns: DocumentDatabaseColumn[] = store.getDocumentDatabaseColumns(databaseId ?? undefined)
     return columns
+  })
+
+  ipcMain.handle('knowbook:get-document-catalog', (_event, databaseId: string | null = null) => {
+    const entries: DocumentCatalogEntry[] = store.getDocumentCatalog(databaseId ?? undefined)
+    return entries
   })
 
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {

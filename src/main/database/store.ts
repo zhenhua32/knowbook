@@ -312,13 +312,18 @@ export class KnowbookStore {
       summary: this.getSummary(backupRoot),
       recentDocuments,
       recentEvents,
-      documentCatalog: this.getDocumentCatalog(databaseColumns, defaultDatabaseId),
+      documentCatalog: this.getDocumentCatalog(defaultDatabaseId),
       databaseColumns,
       aiConfig: this.getAiConfig(),
       documentTree,
       graph,
       initialDocumentId: recentDocuments[0]?.id ?? documentTree[0]?.id ?? null
     }
+  }
+
+  getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {
+    const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
+    return this.buildDocumentCatalog(databaseColumns, databaseId)
   }
 
   getDocumentDetail(documentId: string): DocumentDetail | null {
@@ -1468,7 +1473,7 @@ export class KnowbookStore {
     }))
   }
 
-  private getDocumentCatalog(databaseColumns: DocumentDatabaseColumn[], defaultDatabaseId: string): DocumentCatalogEntry[] {
+  private buildDocumentCatalog(databaseColumns: DocumentDatabaseColumn[], defaultDatabaseId: string): DocumentCatalogEntry[] {
     // 获取普通的文档条目
     const documentRows = this.db.prepare(`
       SELECT

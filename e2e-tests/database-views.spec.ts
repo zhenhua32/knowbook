@@ -159,6 +159,39 @@ test.describe('Database Views @electron', () => {
     })
   })
 
+  test('edits a document catalog field through the virtualized catalog view', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const uniqueValue = `catalog-${Date.now()}`
+
+      await openDatabasePage(page)
+      await openDocumentCatalogView(page)
+      await addTextColumn(page, 'Status')
+
+      const searchInput = page.getByPlaceholder(uiText('Search documents...', '搜索文档...'))
+      const catalogScroll = page.locator('.catalog-virtual-scroll')
+      const firstRow = page.locator('.catalog-virtual-row').first()
+      const firstFieldCell = firstRow.locator('[data-column-id]').first()
+
+      await expect(catalogScroll).toBeVisible()
+      await expect(firstRow).toBeVisible()
+
+      await firstFieldCell.locator('.catalog-value-button').click()
+      const editor = firstFieldCell.locator('.catalog-cell-input')
+      await expect(editor).toBeVisible()
+      await editor.fill(uniqueValue)
+      await editor.blur()
+
+      const updatedFieldButton = page.locator('.catalog-virtual-row').first().locator('[data-column-id] .catalog-value-button').first()
+      await expect(updatedFieldButton).toHaveText(uniqueValue)
+
+      await searchInput.fill(uniqueValue)
+      await expect.poll(async () => page.locator('.catalog-virtual-row').count()).toBe(1)
+      await expect(page.locator('.catalog-virtual-row').first().locator('[data-column-id] .catalog-value-button').first()).toHaveText(uniqueValue)
+    })
+  })
+
   test('creates a standalone entity with a selected document and can clear the link later', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 

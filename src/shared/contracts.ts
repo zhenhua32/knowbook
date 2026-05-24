@@ -517,6 +517,7 @@ export interface ElectronApi {
   installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
+  getDocumentCatalog: (databaseId?: string | null) => Promise<DocumentCatalogEntry[]>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => Promise<DocumentDatabaseColumn>
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => Promise<void>
