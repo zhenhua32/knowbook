@@ -33,7 +33,6 @@ import type {
   PluginDocumentAction,
   PluginSettingDescriptor,
   PluginSettingValue,
-  SemanticSearchResult,
   WorkspaceGraphEdge,
   WorkspaceGraphNode
 } from '@shared/contracts'
@@ -74,6 +73,11 @@ import { FloatingSlashCommandPanel } from './components/FloatingSlashCommandPane
 import { LinkSuggestionPanel } from './components/LinkSuggestionPanel'
 import { BlockEditorRow } from './components/BlockEditorRow'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
+import { useAiState } from './hooks/useAiState'
+import { usePluginManagement } from './hooks/usePluginManagement'
+import { useSettingsState } from './hooks/useSettingsState'
+import { AISection } from './sections/AISection'
+import { PluginsSection } from './sections/PluginsSection'
 
 const emptyState: HomeData = {
   summary: {
@@ -1200,20 +1204,6 @@ function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'ch
   }
 }
 
-function getPluginSettingDraftKey(pluginId: string, settingId: string): string {
-  return `${pluginId}:${settingId}`
-}
-
-function buildPluginSettingDrafts(plugins: PluginDescriptor[]): Record<string, PluginSettingValue> {
-  return plugins.reduce<Record<string, PluginSettingValue>>((accumulator, plugin) => {
-    for (const setting of plugin.settings) {
-      accumulator[getPluginSettingDraftKey(plugin.id, setting.id)] = setting.value
-    }
-
-    return accumulator
-  }, {})
-}
-
 export function App() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
   const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
@@ -1284,24 +1274,6 @@ export function App() {
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
-  const [aiEnabledDraft, setAiEnabledDraft] = useState(false)
-  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState('')
-  const [aiEmbeddingBaseUrlDraft, setAiEmbeddingBaseUrlDraft] = useState('')
-  const [aiModelDraft, setAiModelDraft] = useState('')
-  const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState('')
-  const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(false)
-  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
-  const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
-  const [aiSaving, setAiSaving] = useState(false)
-  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
-  const [appUpdateRefreshing, setAppUpdateRefreshing] = useState(false)
-  const [aiPromptDraft, setAiPromptDraft] = useState('')
-  const [aiAnswer, setAiAnswer] = useState('')
-  const [aiAsking, setAiAsking] = useState(false)
-  const [aiAutomationsRunning, setAiAutomationsRunning] = useState(false)
-  const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
-  const [aiContextSearching, setAiContextSearching] = useState(false)
-  const [aiContextError, setAiContextError] = useState('')
   const [blockSearchQuery, setBlockSearchQuery] = useState('')
   const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
@@ -1314,11 +1286,6 @@ export function App() {
   const [autoSaveFlash, setAutoSaveFlash] = useState(false)
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
-  const [pluginBusyId, setPluginBusyId] = useState<string | null>(null)
-  const [pluginSettingBusyKey, setPluginSettingBusyKey] = useState<string | null>(null)
-  const [pluginSettingDrafts, setPluginSettingDrafts] = useState<Record<string, PluginSettingValue>>({})
-  const [pluginActionBusyKey, setPluginActionBusyKey] = useState<string | null>(null)
-  const [pluginInventoryBusy, setPluginInventoryBusy] = useState(false)
   const navHistoryRef = useRef<string[]>([])
   const navPointerRef = useRef<number>(-1)
   const isNavJumpRef = useRef<boolean>(false)
@@ -1334,6 +1301,80 @@ export function App() {
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
+  const {
+    aiEnabledDraft,
+    setAiEnabledDraft,
+    aiBaseUrlDraft,
+    setAiBaseUrlDraft,
+    aiEmbeddingBaseUrlDraft,
+    setAiEmbeddingBaseUrlDraft,
+    aiModelDraft,
+    setAiModelDraft,
+    aiEmbeddingModelDraft,
+    setAiEmbeddingModelDraft,
+    aiAutoSummaryOnSaveDraft,
+    setAiAutoSummaryOnSaveDraft,
+    aiApiKeyDraft,
+    setAiApiKeyDraft,
+    aiEmbeddingApiKeyDraft,
+    setAiEmbeddingApiKeyDraft,
+    aiSaving,
+    aiPromptDraft,
+    setAiPromptDraft,
+    aiAnswer,
+    aiAsking,
+    aiAutomationsRunning,
+    aiContextResults,
+    aiContextSearching,
+    aiContextError,
+    saveAiConfig,
+    findRelatedNotesForPrompt,
+    askAiOnSelectedDocument,
+    runEnabledAiAutomationsOnSelectedDocument,
+    resetAiSession
+  } = useAiState({
+    aiConfig: homeData.aiConfig,
+    selectedDocumentId,
+    ui,
+    onHomeDataChange: setHomeData,
+    onSelectedDocumentChange: setSelectedDocument,
+    onDraftSummaryChange: setDraftSummary,
+    onMessage: setBackupMessage
+  })
+  const {
+    pluginBusyId,
+    pluginSettingBusyKey,
+    pluginSettingDrafts,
+    pluginActionBusyKey,
+    pluginInventoryBusy,
+    updatePluginSettingDraft,
+    setPluginEnabled,
+    reloadPlugins,
+    installPluginFromFolder,
+    removePlugin,
+    updatePluginSetting,
+    reloadPlugin,
+    runPluginDocumentAction
+  } = usePluginManagement({
+    plugins: homeData.plugins ?? [],
+    selectedDocumentId,
+    selectedDocument,
+    ui,
+    onHomeDataChange: setHomeData,
+    onSelectedDocumentChange: setSelectedDocument,
+    onDraftSummaryChange: setDraftSummary,
+    onMessage: setBackupMessage
+  })
+  const {
+    appUpdateState,
+    appUpdateRefreshing,
+    checkForAppUpdates,
+    installAppUpdate
+  } = useSettingsState({
+    isSettingsPageActive: activePage === 'settings',
+    ui,
+    onMessage: setBackupMessage
+  })
 
   function getAppUpdateStatusText(state: AppUpdateState | null): string {
     if (!state) {
@@ -1710,23 +1751,7 @@ export function App() {
         setHomeData(data)
         setLoading(false)
         setSelectedDocumentId((current) => current ?? data.initialDocumentId)
-        setAiEnabledDraft(data.aiConfig.enabled)
-        setAiBaseUrlDraft(data.aiConfig.baseUrl)
-        setAiEmbeddingBaseUrlDraft(data.aiConfig.embeddingBaseUrl || '')
-        setAiEmbeddingApiKeyDraft('')
-        setAiModelDraft(data.aiConfig.model)
-        setAiEmbeddingModelDraft(data.aiConfig.embeddingModel)
-        setAiAutoSummaryOnSaveDraft(data.aiConfig.autoSummaryOnSave)
-        setAiApiKeyDraft('')
       }
-    })
-
-    window.knowbook.getAppUpdateState().then((state) => {
-      if (mounted) {
-        setAppUpdateState(state)
-      }
-    }).catch((error) => {
-      console.warn('Failed to load app update state.', error)
     })
 
     window.knowbook.getDatabases().then((items) => {
@@ -1818,37 +1843,6 @@ export function App() {
   }, [databaseEntityDatabaseId])
 
   useEffect(() => {
-    if (activePage !== 'settings') {
-      return
-    }
-
-    let cancelled = false
-
-    const refresh = async () => {
-      try {
-        const state = await window.knowbook.getAppUpdateState()
-        if (!cancelled) {
-          setAppUpdateState(state)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Failed to refresh app update state.', error)
-        }
-      }
-    }
-
-    void refresh()
-    const timer = setInterval(() => {
-      void refresh()
-    }, 4000)
-
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [activePage])
-
-  useEffect(() => {
     const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
 
     if (nextStandaloneDatabases.length === 0) {
@@ -1894,10 +1888,6 @@ export function App() {
   }, [uiLanguage, uiLanguageHydrated])
 
   useEffect(() => {
-    setPluginSettingDrafts(buildPluginSettingDrafts(homeData.plugins ?? []))
-  }, [homeData.plugins])
-
-  useEffect(() => {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
       setPendingFocusBlockIndex(null)
@@ -1905,9 +1895,7 @@ export function App() {
       setSelectedBlockRange(null)
       setPendingBlockNavigationTarget(null)
       setHighlightedBlockId(null)
-        setAiAnswer('')
-        setAiContextResults([])
-        setAiContextError('')
+      resetAiSession()
       return
     }
 
@@ -1935,9 +1923,7 @@ export function App() {
         editHistoryRef.current = [initialBlocks.map((b) => ({ ...b }))]
         editHistoryPointerRef.current = 0
         isRestoringHistoryRef.current = false
-        setAiAnswer('')
-        setAiContextResults([])
-        setAiContextError('')
+        resetAiSession()
         setDetailLoading(false)
       }
     })
@@ -2625,176 +2611,6 @@ export function App() {
     endDrag()
   }
 
-  async function saveAiConfig() {
-    setAiSaving(true)
-    await window.knowbook.updateAiConfig({
-      enabled: aiEnabledDraft,
-      baseUrl: aiBaseUrlDraft,
-      embeddingBaseUrl: aiEmbeddingBaseUrlDraft,
-      embeddingApiKey: aiEmbeddingApiKeyDraft,
-      model: aiModelDraft,
-      embeddingModel: aiEmbeddingModelDraft,
-      autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-      apiKey: aiApiKeyDraft
-    })
-    const refreshed = await window.knowbook.getHomeData()
-    setHomeData(refreshed)
-    setAiEnabledDraft(refreshed.aiConfig.enabled)
-    setAiBaseUrlDraft(refreshed.aiConfig.baseUrl)
-    setAiModelDraft(refreshed.aiConfig.model)
-    setAiEmbeddingModelDraft(refreshed.aiConfig.embeddingModel)
-    setAiAutoSummaryOnSaveDraft(refreshed.aiConfig.autoSummaryOnSave)
-    setAiApiKeyDraft('')
-    setAiSaving(false)
-    setBackupMessage(ui.aiSettingsSaved)
-  }
-
-  async function checkForAppUpdates() {
-    setAppUpdateRefreshing(true)
-    try {
-      const nextState = await window.knowbook.checkForAppUpdates()
-      setAppUpdateState(nextState)
-      setBackupMessage(ui.appUpdateCheckStarted)
-    } catch (error) {
-      const message = error instanceof Error
-        ? `${ui.appUpdateCheckFailed} ${error.message}`
-        : ui.appUpdateCheckFailed
-      setBackupMessage(message)
-    } finally {
-      setAppUpdateRefreshing(false)
-    }
-  }
-
-  async function installAppUpdate() {
-    try {
-      await window.knowbook.installAppUpdate()
-    } catch (error) {
-      const message = error instanceof Error
-        ? `${ui.appUpdateInstallFailed} ${error.message}`
-        : ui.appUpdateInstallFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function setPluginEnabled(plugin: PluginDescriptor, enabled: boolean) {
-    setPluginBusyId(plugin.id)
-    try {
-      await window.knowbook.setPluginEnabled({ pluginId: plugin.id, enabled })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage(ui.pluginStatusUpdated(plugin.name, enabled))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginStatusUpdateFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginBusyId(null)
-    }
-  }
-
-  async function reloadPlugins() {
-    setPluginInventoryBusy(true)
-    try {
-      await window.knowbook.reloadPlugins()
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage(ui.pluginsReloaded)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginsReloadFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginInventoryBusy(false)
-    }
-  }
-
-  async function installPluginFromFolder() {
-    setPluginInventoryBusy(true)
-    try {
-      const result = await window.knowbook.installPluginFromFolder()
-      if (!result) {
-        return
-      }
-
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      if (result.operation === 'updated') {
-        setBackupMessage(ui.pluginUpdated(result.plugin.name, result.previousVersion ?? (ui.language === 'zh-CN' ? '未知' : 'unknown'), result.plugin.version))
-      } else if (result.operation === 'reloaded') {
-        setBackupMessage(ui.pluginReloadedFromFolder(result.plugin.name))
-      } else {
-        setBackupMessage(ui.pluginInstalled(result.plugin.name))
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginInstallFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginInventoryBusy(false)
-    }
-  }
-
-  async function removePlugin(plugin: PluginDescriptor) {
-    const accepted = window.confirm(ui.confirmRemovePlugin(plugin.name))
-    if (!accepted) {
-      return
-    }
-
-    setPluginBusyId(plugin.id)
-    try {
-      await window.knowbook.removePlugin(plugin.id)
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage(ui.pluginRemoved(plugin.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginRemoveFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginBusyId(null)
-    }
-  }
-
-  async function updatePluginSetting(plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) {
-    const busyKey = getPluginSettingDraftKey(plugin.id, setting.id)
-    setPluginSettingBusyKey(busyKey)
-    try {
-      await window.knowbook.updatePluginSetting({
-        pluginId: plugin.id,
-        settingId: setting.id,
-        value
-      })
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      setBackupMessage(ui.pluginSettingSaved(plugin.name, setting.label))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginSettingUpdateFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginSettingBusyKey(null)
-    }
-  }
-
-  async function reloadPlugin(plugin: PluginDescriptor) {
-    setPluginBusyId(plugin.id)
-    try {
-      await window.knowbook.reloadPlugin(plugin.id)
-      const refreshed = await window.knowbook.getHomeData()
-      setHomeData(refreshed)
-      const refreshedPlugin = (refreshed.plugins ?? []).find((candidate) => candidate.id === plugin.id)
-      if (!refreshedPlugin) {
-        setBackupMessage(ui.pluginMissingAfterReload(plugin.name))
-      } else if (refreshedPlugin.status === 'error') {
-        setBackupMessage(ui.pluginStillHasErrorsAfterReload(refreshedPlugin.name, refreshedPlugin.error ?? (ui.language === 'zh-CN' ? '未知错误' : 'unknown error')))
-      } else if (refreshedPlugin.status === 'disabled') {
-        setBackupMessage(ui.disabledPluginMetadataReloaded(refreshedPlugin.name))
-      } else {
-        setBackupMessage(ui.pluginReloadedSingle(refreshedPlugin.name))
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginReloadFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginBusyId(null)
-    }
-  }
-
   function switchDatabaseWorkspaceView(nextView: DatabaseWorkspaceView) {
     setDatabaseWorkspaceView(nextView)
     setIsCreatingDatabaseColumn(false)
@@ -3289,111 +3105,6 @@ export function App() {
       const nextId = preferredSavedViewId ?? current
       return nextId && refreshedViews.some((view) => view.id === nextId) ? nextId : ''
     })
-  }
-
-  async function findRelatedNotesForPrompt() {
-    if (!selectedDocumentId || !aiPromptDraft.trim()) {
-      return
-    }
-
-    setAiContextSearching(true)
-    setAiContextError('')
-    try {
-      const results = await window.knowbook.searchSemanticNotes({
-        query: aiPromptDraft.trim(),
-        excludeDocumentId: selectedDocumentId,
-        limit: 4
-      })
-      setAiContextResults(results)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.semanticSearchFailed
-      setAiContextResults([])
-      setAiContextError(message)
-    } finally {
-      setAiContextSearching(false)
-    }
-  }
-
-  async function askAiOnSelectedDocument() {
-    if (!selectedDocumentId || !aiPromptDraft.trim()) {
-      return
-    }
-
-    setAiAsking(true)
-    setAiContextError('')
-    try {
-      const result = await window.knowbook.askAiAboutDocument({
-        documentId: selectedDocumentId,
-        prompt: aiPromptDraft.trim()
-      })
-      setAiAnswer(result.answer)
-      setAiContextResults(result.references)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.aiRequestFailed
-      setAiAnswer(message)
-      setAiContextResults([])
-    } finally {
-      setAiAsking(false)
-    }
-  }
-
-  async function runEnabledAiAutomationsOnSelectedDocument() {
-    if (!selectedDocumentId) {
-      return
-    }
-
-    setAiAutomationsRunning(true)
-    try {
-      const result = await window.knowbook.runDocumentAiAutomations(selectedDocumentId)
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(selectedDocumentId)
-      ])
-      setHomeData(refreshedHome)
-      setSelectedDocument(refreshedDetail)
-      setDraftSummary(refreshedDetail?.summary ?? '')
-
-      setBackupMessage(ui.aiAutomationResult(result))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.aiAutomationFailed
-      setBackupMessage(message)
-    } finally {
-      setAiAutomationsRunning(false)
-    }
-  }
-
-  async function runPluginDocumentAction(action: PluginDocumentAction) {
-    if (!selectedDocumentId) {
-      return
-    }
-
-    const actionKey = `${action.pluginId}:${action.id}`
-    setPluginActionBusyKey(actionKey)
-
-    try {
-      const result = await window.knowbook.runPluginDocumentAction({
-        pluginId: action.pluginId,
-        actionId: action.id,
-        documentId: selectedDocumentId
-      })
-
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        result.refreshDocument ? window.knowbook.getDocumentDetail(selectedDocumentId) : Promise.resolve(selectedDocument)
-      ])
-
-      setHomeData(refreshedHome)
-      if (result.refreshDocument) {
-        setSelectedDocument(refreshedDetail)
-        setDraftSummary(refreshedDetail?.summary ?? '')
-      }
-      setBackupMessage(result.message)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginActionFailed
-      setBackupMessage(message)
-    } finally {
-      setPluginActionBusyKey(null)
-    }
   }
 
   function updateDraftBlock(index: number, patch: Partial<DocumentBlockDraft>) {
@@ -6179,246 +5890,62 @@ return (
         </section> : null}
 
         {activePage === 'ai' ? (
-          <section className="detail-grid single-column">
-            <article className="panel large-panel">
-              <div className="panel-head">
-                <div>
-                  <p className="panel-label">{ui.askAiLabel}</p>
-                  <h3>{isZh ? '文档智能助手' : 'Document AI assistant'}</h3>
-                </div>
-                {selectedDocument ? <span className="pill">{selectedDocument.title}</span> : null}
-              </div>
-              {selectedDocument ? (
-                <div className="ai-panel">
-                  <textarea
-                    className="editor-textarea"
-                    onChange={(event) => setAiPromptDraft(event.target.value)}
-                    placeholder={ui.askAiPlaceholder}
-                    rows={4}
-                    value={aiPromptDraft}
-                  />
-                  <div className="toolbar-inline ai-actions">
-                    <button
-                      className="secondary-button"
-                      disabled={aiAutomationsRunning || !homeData.aiConfig.enabled || !homeData.aiConfig.hasApiKey}
-                      onClick={runEnabledAiAutomationsOnSelectedDocument}
-                      type="button"
-                    >
-                      {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
-                    </button>
-                    <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={findRelatedNotesForPrompt} type="button">
-                      {aiContextSearching ? ui.searching : ui.findRelatedNotes}
-                    </button>
-                    <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={askAiOnSelectedDocument} type="button">
-                      {aiAsking ? ui.thinking : ui.askAiLabel}
-                    </button>
-                  </div>
-                  <p className="mini-hint">{ui.manualAiHint}</p>
-                  {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
-                  {aiContextResults.length > 0 ? (
-                    <div className="ai-context-list">
-                      {aiContextResults.map((result) => (
-                        <button
-                          className="ai-context-card"
-                          key={`${result.documentId}-${result.path}`}
-                          onClick={() => setSelectedDocumentId(result.documentId)}
-                          type="button"
-                        >
-                          <div className="ai-context-head">
-                            <strong className="ai-context-title">{result.title}</strong>
-                            <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
-                          </div>
-                          <span className="ai-context-path">{result.path}</span>
-                          <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : aiPromptDraft.trim() ? (
-                    <p className="mini-hint">{ui.semanticHint}</p>
-                  ) : null}
-                  {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
-                </div>
-              ) : (
-                <p className="mini-hint">{isZh ? '请先在文档页选择一个文档。' : 'Please select a document from the documents page first.'}</p>
-              )}
-            </article>
-          </section>
+          <AISection
+            aiAnswer={aiAnswer}
+            aiAsking={aiAsking}
+            aiAutomationsRunning={aiAutomationsRunning}
+            aiContextError={aiContextError}
+            aiContextResults={aiContextResults}
+            aiContextSearching={aiContextSearching}
+            aiEnabled={homeData.aiConfig.enabled}
+            aiPromptDraft={aiPromptDraft}
+            hasApiKey={homeData.aiConfig.hasApiKey}
+            isZh={isZh}
+            onAiPromptChange={setAiPromptDraft}
+            onAskAi={() => {
+              void askAiOnSelectedDocument()
+            }}
+            onFindRelatedNotes={() => {
+              void findRelatedNotesForPrompt()
+            }}
+            onOpenDocument={openDocumentInDocumentsPage}
+            onRunEnabledAutomations={() => {
+              void runEnabledAiAutomationsOnSelectedDocument()
+            }}
+            selectedDocument={selectedDocument}
+            ui={ui}
+          />
         ) : null}
 
         {activePage === 'plugins' ? (
-          <section className="detail-grid">
-            <article className="panel large-panel">
-              <div className="panel-head">
-                <div>
-                  <p className="panel-label">{ui.pluginsLabel}</p>
-                  <h3>{ui.pluginsTitle}</h3>
-                </div>
-                <div className="plugin-toolbar">
-                  <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void reloadPlugins()} type="button">
-                    {pluginInventoryBusy ? ui.common.reloading : ui.common.reload}
-                  </button>
-                  <button className="secondary-button" disabled={pluginInventoryBusy} onClick={() => void installPluginFromFolder()} type="button">
-                    {pluginInventoryBusy ? ui.common.working : ui.installFolder}
-                  </button>
-                </div>
-              </div>
-              {pluginRoots.length > 0 ? (
-                <div className="plugin-roots">
-                  {pluginRoots.map((root) => (
-                    <code className="plugin-root-path" key={root}>{root}</code>
-                  ))}
-                </div>
-              ) : null}
-              {plugins.length > 0 ? (
-                <div className="plugin-list">
-                  {plugins.map((plugin) => {
-                    const statusLabel = ui.pluginStatusLabel(plugin.status)
-                    return (
-                      <div className="plugin-item" key={plugin.id}>
-                        <div className="plugin-item-head">
-                          <div>
-                            <strong>{plugin.name}</strong>
-                            <p className="mini-hint">{plugin.description}</p>
-                          </div>
-                          <span className={`plugin-status plugin-status-${plugin.status}`}>{statusLabel}</span>
-                        </div>
-                        <div className="plugin-item-meta">
-                          <span>{plugin.version}</span>
-                          <span>{ui.pluginSourceLabel(plugin.source)}</span>
-                          {plugin.author ? <span>{plugin.author}</span> : null}
-                        </div>
-                        {plugin.error ? <p className="plugin-error">{plugin.error}</p> : null}
-                        <div className="plugin-item-actions">
-                          <button
-                            className="secondary-button plugin-reload-button"
-                            disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                            onClick={() => {
-                              void reloadPlugin(plugin)
-                            }}
-                            type="button"
-                          >
-                            {pluginBusyId === plugin.id ? ui.common.working : plugin.status === 'error' ? ui.recover : ui.common.reload}
-                          </button>
-                          <label className="toggle-row plugin-toggle-row">
-                            <input
-                              checked={plugin.enabled}
-                              disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                              onChange={(event) => {
-                                void setPluginEnabled(plugin, event.target.checked)
-                              }}
-                              type="checkbox"
-                            />
-                            <span>{ui.pluginToggleLabel(pluginBusyId === plugin.id, plugin.enabled)}</span>
-                          </label>
-                          {plugin.source === 'user-data' ? (
-                            <button
-                              className="danger-button plugin-remove-button"
-                              disabled={pluginBusyId === plugin.id || pluginInventoryBusy}
-                              onClick={() => {
-                                void removePlugin(plugin)
-                              }}
-                              type="button"
-                            >
-                              Remove
-                            </button>
-                          ) : null}
-                        </div>
-                        {plugin.settings.length > 0 ? (
-                          <div className="plugin-settings-panel">
-                            <p className="panel-label plugin-settings-label">{ui.pluginSettingsLabel}</p>
-                            <div className="plugin-settings-list">
-                              {plugin.settings.map((setting) => {
-                                const draftKey = getPluginSettingDraftKey(plugin.id, setting.id)
-                                const draftValue = pluginSettingDrafts[draftKey] ?? setting.value
-                                const hasPendingChanges = draftValue !== setting.value
-                                const isSettingBusy = pluginSettingBusyKey === draftKey
-                                const disabled = pluginInventoryBusy || pluginBusyId === plugin.id || isSettingBusy
-
-                                return (
-                                  <div className="plugin-setting-item" key={draftKey}>
-                                    {setting.type === 'checkbox' ? (
-                                      <label className="toggle-row plugin-setting-toggle">
-                                        <input
-                                          checked={Boolean(draftValue)}
-                                          disabled={disabled}
-                                          onChange={(event) => {
-                                            setPluginSettingDrafts((previous) => ({
-                                              ...previous,
-                                              [draftKey]: event.target.checked
-                                            }))
-                                          }}
-                                          type="checkbox"
-                                        />
-                                        <span>{setting.label}</span>
-                                      </label>
-                                    ) : (
-                                      <label className="editor-label plugin-setting-field">
-                                        {setting.label}
-                                        {setting.type === 'select' ? (
-                                          <select
-                                            aria-label={setting.label}
-                                            className="editor-input"
-                                            disabled={disabled}
-                                            onChange={(event) => {
-                                              setPluginSettingDrafts((previous) => ({
-                                                ...previous,
-                                                [draftKey]: event.target.value
-                                              }))
-                                            }}
-                                            value={String(draftValue)}
-                                          >
-                                            {(setting.options ?? []).map((option) => (
-                                              <option key={option.value} value={option.value}>{option.label}</option>
-                                            ))}
-                                          </select>
-                                        ) : (
-                                          <input
-                                            aria-label={setting.label}
-                                            className="editor-input"
-                                            disabled={disabled}
-                                            onChange={(event) => {
-                                              setPluginSettingDrafts((previous) => ({
-                                                ...previous,
-                                                [draftKey]: event.target.value
-                                              }))
-                                            }}
-                                            type="text"
-                                            value={String(draftValue)}
-                                          />
-                                        )}
-                                      </label>
-                                    )}
-                                    {setting.description ? <p className="mini-hint plugin-setting-description">{setting.description}</p> : null}
-                                    <div className="plugin-setting-actions">
-                                      <span className="mini-hint plugin-setting-default">{ui.pluginSettingDefault(setting.defaultValue)}</span>
-                                      <button
-                                        className="secondary-button"
-                                        disabled={disabled || !hasPendingChanges}
-                                        onClick={() => {
-                                          void updatePluginSetting(plugin, setting, draftValue)
-                                        }}
-                                        type="button"
-                                      >
-                                        {isSettingBusy ? ui.common.working : ui.savePluginSetting(setting.label)}
-                                      </button>
-                                    </div>
-                                  </div>
-                                )
-                              })}
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="mini-hint plugin-settings-empty">{ui.noPluginSettings}</p>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                <p className="mini-hint">{ui.noPluginsDiscovered}</p>
-              )}
-            </article>
-          </section>
+          <PluginsSection
+            onInstallPluginFromFolder={() => {
+              void installPluginFromFolder()
+            }}
+            onReloadPlugin={(plugin) => {
+              void reloadPlugin(plugin)
+            }}
+            onReloadPlugins={() => {
+              void reloadPlugins()
+            }}
+            onRemovePlugin={(plugin) => {
+              void removePlugin(plugin)
+            }}
+            onSetPluginEnabled={(plugin, enabled) => {
+              void setPluginEnabled(plugin, enabled)
+            }}
+            onUpdatePluginSetting={(plugin, setting, value) => {
+              void updatePluginSetting(plugin, setting, value)
+            }}
+            onUpdatePluginSettingDraft={updatePluginSettingDraft}
+            pluginBusyId={pluginBusyId}
+            pluginInventoryBusy={pluginInventoryBusy}
+            pluginRoots={pluginRoots}
+            pluginSettingBusyKey={pluginSettingBusyKey}
+            pluginSettingDrafts={pluginSettingDrafts}
+            plugins={plugins}
+            ui={ui}
+          />
         ) : null}
 
         {activePage === 'dashboard' || activePage === 'settings' ? (

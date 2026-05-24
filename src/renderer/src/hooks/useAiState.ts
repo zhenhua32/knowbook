@@ -1,0 +1,209 @@
+import { useCallback, useEffect, useState } from 'react'
+import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
+import type { UiText } from '../i18n'
+
+type UseAiStateParams = {
+  aiConfig: AiConfig
+  selectedDocumentId: string | null
+  ui: UiText
+  onHomeDataChange: (homeData: HomeData) => void
+  onSelectedDocumentChange: (detail: DocumentDetail | null) => void
+  onDraftSummaryChange: (summary: string) => void
+  onMessage: (message: string) => void
+}
+
+export function useAiState({
+  aiConfig,
+  selectedDocumentId,
+  ui,
+  onHomeDataChange,
+  onSelectedDocumentChange,
+  onDraftSummaryChange,
+  onMessage
+}: UseAiStateParams) {
+  const [aiEnabledDraft, setAiEnabledDraft] = useState(aiConfig.enabled)
+  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState(aiConfig.baseUrl)
+  const [aiEmbeddingBaseUrlDraft, setAiEmbeddingBaseUrlDraft] = useState(aiConfig.embeddingBaseUrl || '')
+  const [aiModelDraft, setAiModelDraft] = useState(aiConfig.model)
+  const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState(aiConfig.embeddingModel)
+  const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(aiConfig.autoSummaryOnSave)
+  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
+  const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
+  const [aiSaving, setAiSaving] = useState(false)
+  const [aiPromptDraft, setAiPromptDraft] = useState('')
+  const [aiAnswer, setAiAnswer] = useState('')
+  const [aiAsking, setAiAsking] = useState(false)
+  const [aiAutomationsRunning, setAiAutomationsRunning] = useState(false)
+  const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
+  const [aiContextSearching, setAiContextSearching] = useState(false)
+  const [aiContextError, setAiContextError] = useState('')
+
+  useEffect(() => {
+    setAiEnabledDraft(aiConfig.enabled)
+    setAiBaseUrlDraft(aiConfig.baseUrl)
+    setAiEmbeddingBaseUrlDraft(aiConfig.embeddingBaseUrl || '')
+    setAiModelDraft(aiConfig.model)
+    setAiEmbeddingModelDraft(aiConfig.embeddingModel)
+    setAiAutoSummaryOnSaveDraft(aiConfig.autoSummaryOnSave)
+    setAiApiKeyDraft('')
+    setAiEmbeddingApiKeyDraft('')
+  }, [
+    aiConfig.autoSummaryOnSave,
+    aiConfig.baseUrl,
+    aiConfig.embeddingBaseUrl,
+    aiConfig.embeddingModel,
+    aiConfig.enabled,
+    aiConfig.model
+  ])
+
+  const resetAiSession = useCallback(() => {
+    setAiAnswer('')
+    setAiContextResults([])
+    setAiContextError('')
+  }, [])
+
+  const saveAiConfig = useCallback(async () => {
+    setAiSaving(true)
+
+    try {
+      await window.knowbook.updateAiConfig({
+        enabled: aiEnabledDraft,
+        baseUrl: aiBaseUrlDraft,
+        embeddingBaseUrl: aiEmbeddingBaseUrlDraft,
+        embeddingApiKey: aiEmbeddingApiKeyDraft,
+        model: aiModelDraft,
+        embeddingModel: aiEmbeddingModelDraft,
+        autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
+        apiKey: aiApiKeyDraft
+      })
+
+      const refreshed = await window.knowbook.getHomeData()
+      onHomeDataChange(refreshed)
+      onMessage(ui.aiSettingsSaved)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.aiRequestFailed
+      onMessage(message)
+    } finally {
+      setAiSaving(false)
+    }
+  }, [
+    aiAutoSummaryOnSaveDraft,
+    aiApiKeyDraft,
+    aiBaseUrlDraft,
+    aiEmbeddingApiKeyDraft,
+    aiEmbeddingBaseUrlDraft,
+    aiEmbeddingModelDraft,
+    aiEnabledDraft,
+    aiModelDraft,
+    onHomeDataChange,
+    onMessage,
+    ui
+  ])
+
+  const findRelatedNotesForPrompt = useCallback(async () => {
+    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+      return
+    }
+
+    setAiContextSearching(true)
+    setAiContextError('')
+
+    try {
+      const results = await window.knowbook.searchSemanticNotes({
+        query: aiPromptDraft.trim(),
+        excludeDocumentId: selectedDocumentId,
+        limit: 4
+      })
+      setAiContextResults(results)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.semanticSearchFailed
+      setAiContextResults([])
+      setAiContextError(message)
+    } finally {
+      setAiContextSearching(false)
+    }
+  }, [aiPromptDraft, selectedDocumentId, ui])
+
+  const askAiOnSelectedDocument = useCallback(async () => {
+    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+      return
+    }
+
+    setAiAsking(true)
+    setAiContextError('')
+
+    try {
+      const result = await window.knowbook.askAiAboutDocument({
+        documentId: selectedDocumentId,
+        prompt: aiPromptDraft.trim()
+      })
+      setAiAnswer(result.answer)
+      setAiContextResults(result.references)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.aiRequestFailed
+      setAiAnswer(message)
+      setAiContextResults([])
+    } finally {
+      setAiAsking(false)
+    }
+  }, [aiPromptDraft, selectedDocumentId, ui])
+
+  const runEnabledAiAutomationsOnSelectedDocument = useCallback(async () => {
+    if (!selectedDocumentId) {
+      return
+    }
+
+    setAiAutomationsRunning(true)
+
+    try {
+      const result = await window.knowbook.runDocumentAiAutomations(selectedDocumentId)
+      const [refreshedHome, refreshedDetail] = await Promise.all([
+        window.knowbook.getHomeData(),
+        window.knowbook.getDocumentDetail(selectedDocumentId)
+      ])
+
+      onHomeDataChange(refreshedHome)
+      onSelectedDocumentChange(refreshedDetail)
+      onDraftSummaryChange(refreshedDetail?.summary ?? '')
+      onMessage(ui.aiAutomationResult(result))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.aiAutomationFailed
+      onMessage(message)
+    } finally {
+      setAiAutomationsRunning(false)
+    }
+  }, [onDraftSummaryChange, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocumentId, ui])
+
+  return {
+    aiEnabledDraft,
+    setAiEnabledDraft,
+    aiBaseUrlDraft,
+    setAiBaseUrlDraft,
+    aiEmbeddingBaseUrlDraft,
+    setAiEmbeddingBaseUrlDraft,
+    aiModelDraft,
+    setAiModelDraft,
+    aiEmbeddingModelDraft,
+    setAiEmbeddingModelDraft,
+    aiAutoSummaryOnSaveDraft,
+    setAiAutoSummaryOnSaveDraft,
+    aiApiKeyDraft,
+    setAiApiKeyDraft,
+    aiEmbeddingApiKeyDraft,
+    setAiEmbeddingApiKeyDraft,
+    aiSaving,
+    aiPromptDraft,
+    setAiPromptDraft,
+    aiAnswer,
+    aiAsking,
+    aiAutomationsRunning,
+    aiContextResults,
+    aiContextSearching,
+    aiContextError,
+    saveAiConfig,
+    findRelatedNotesForPrompt,
+    askAiOnSelectedDocument,
+    runEnabledAiAutomationsOnSelectedDocument,
+    resetAiSession
+  }
+}
