@@ -63,6 +63,7 @@ import {
 import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
+import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
 import { AISection } from './sections/AISection'
@@ -1219,11 +1220,6 @@ export function App() {
   }, [backupMessage])
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null)
   const [selectedDocument, setSelectedDocument] = useState<DocumentDetail | null>(null)
-  const [isEditing, setIsEditing] = useState(false)
-  const [isSaving, setIsSaving] = useState(false)
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftSummary, setDraftSummary] = useState('')
-  const [draftBlocks, setDraftBlocksState] = useState<DocumentBlockDraft[]>([])
   const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
   const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
   const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
@@ -1275,8 +1271,6 @@ export function App() {
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const [pendingBlockNavigationTarget, setPendingBlockNavigationTarget] = useState<PendingBlockNavigationTarget | null>(null)
-  const [autoSaveFlash, setAutoSaveFlash] = useState(false)
-  const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const [pinnedDocumentIds, setPinnedDocumentIds] = useState<Set<string>>(new Set())
   const navHistoryRef = useRef<string[]>([])
   const navPointerRef = useRef<number>(-1)
@@ -1284,15 +1278,44 @@ export function App() {
   const [navCanGoBack, setNavCanGoBack] = useState(false)
   const [navCanGoForward, setNavCanGoForward] = useState(false)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
-  const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
-  const editHistoryPointerRef = useRef<number>(-1)
-  const isRestoringHistoryRef = useRef<boolean>(false)
-  const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const blockMouseDownOrigin = useRef<number | null>(null)
   const highlightedBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
+  const {
+    autoSaveFlash,
+    canRedo,
+    canUndo,
+    clearEditorSession,
+    copyDocumentAsMarkdown,
+    draftBlocks,
+    draftSummary,
+    draftTitle,
+    isEditing,
+    isSaving,
+    loadDocumentIntoEditor,
+    mdCopyFlash,
+    pushToHistory,
+    redoEdit,
+    saveDocument,
+    saveDocumentAsMarkdown,
+    setDraftBlocks,
+    setDraftSummary,
+    setDraftTitle,
+    setIsSaving,
+    undoEdit
+  } = useDocumentEditorState({
+    normalizeDraftBlocks,
+    onHomeDataChange: setHomeData,
+    onMessage: setBackupMessage,
+    onSelectedDocumentChange: setSelectedDocument,
+    selectedDocument,
+    selectedDocumentId,
+    toDraftBlock,
+    ui,
+    validateBlockTreeStructure
+  })
   const {
     aiEnabledDraft,
     setAiEnabledDraft,
@@ -1378,70 +1401,6 @@ export function App() {
       setHighlightedBlockId((current) => (current === blockId ? null : current))
       highlightedBlockTimerRef.current = null
     }, 2200)
-  }
-
-  function setDraftBlocks(next: DraftBlockUpdater) {
-    setDraftBlocksState((previous) => {
-      const resolved = typeof next === 'function' ? next(previous) : next
-      return normalizeDraftBlocks(resolved)
-    })
-  }
-
-  function pushToHistory(blocks: DocumentBlockDraft[]) {
-    if (isRestoringHistoryRef.current) return
-    if (historyDebounceTimerRef.current) {
-      clearTimeout(historyDebounceTimerRef.current)
-      historyDebounceTimerRef.current = null
-    }
-    const history = editHistoryRef.current
-    const pointer = editHistoryPointerRef.current
-    const trimmed = history.slice(0, pointer + 1)
-    trimmed.push(blocks.map((b) => ({ ...b })))
-    editHistoryRef.current = trimmed.slice(-80)
-    editHistoryPointerRef.current = editHistoryRef.current.length - 1
-  }
-
-  function scheduleHistorySnapshot(blocks: DocumentBlockDraft[]) {
-    if (isRestoringHistoryRef.current) return
-    if (historyDebounceTimerRef.current) clearTimeout(historyDebounceTimerRef.current)
-    historyDebounceTimerRef.current = setTimeout(() => {
-      historyDebounceTimerRef.current = null
-      const history = editHistoryRef.current
-      const pointer = editHistoryPointerRef.current
-      const trimmed = history.slice(0, pointer + 1)
-      trimmed.push(blocks.map((b) => ({ ...b })))
-      editHistoryRef.current = trimmed.slice(-80)
-      editHistoryPointerRef.current = editHistoryRef.current.length - 1
-    }, 600)
-  }
-
-  function undoEdit() {
-    const pointer = editHistoryPointerRef.current
-    if (pointer <= 0) return
-    if (historyDebounceTimerRef.current) {
-      clearTimeout(historyDebounceTimerRef.current)
-      historyDebounceTimerRef.current = null
-    }
-    isRestoringHistoryRef.current = true
-    const newPointer = pointer - 1
-    editHistoryPointerRef.current = newPointer
-    setDraftBlocks(editHistoryRef.current[newPointer].map((b) => ({ ...b })))
-    setTimeout(() => { isRestoringHistoryRef.current = false }, 0)
-  }
-
-  function redoEdit() {
-    const history = editHistoryRef.current
-    const pointer = editHistoryPointerRef.current
-    if (pointer >= history.length - 1) return
-    if (historyDebounceTimerRef.current) {
-      clearTimeout(historyDebounceTimerRef.current)
-      historyDebounceTimerRef.current = null
-    }
-    isRestoringHistoryRef.current = true
-    const newPointer = pointer + 1
-    editHistoryPointerRef.current = newPointer
-    setDraftBlocks(history[newPointer].map((b) => ({ ...b })))
-    setTimeout(() => { isRestoringHistoryRef.current = false }, 0)
   }
 
   function getBlockSearchResults() {
@@ -1855,6 +1814,7 @@ export function App() {
   useEffect(() => {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
+      clearEditorSession()
       setPendingFocusBlockIndex(null)
       setSelectionAnchorBlockId(null)
       setSelectedBlockRange(null)
@@ -1880,14 +1840,7 @@ export function App() {
         setActiveCursorPosition(0)
         setLinkSuggestions([])
         setMoveTargetId('')
-        setDraftTitle(detail?.title ?? '')
-        setDraftSummary(detail?.summary ?? '')
-        const initialBlocks = detail?.blocks.map(toDraftBlock) ?? []
-        setDraftBlocks(initialBlocks)
-        setIsEditing(true)
-        editHistoryRef.current = [initialBlocks.map((b) => ({ ...b }))]
-        editHistoryPointerRef.current = 0
-        isRestoringHistoryRef.current = false
+        loadDocumentIntoEditor(detail, true)
         resetAiSession()
         setDetailLoading(false)
       }
@@ -1896,7 +1849,7 @@ export function App() {
     return () => {
       mounted = false
     }
-  }, [selectedDocumentId])
+  }, [clearEditorSession, loadDocumentIntoEditor, resetAiSession, selectedDocumentId])
 
   useEffect(() => {
     if (!pendingBlockNavigationTarget || pendingBlockNavigationTarget.documentId !== selectedDocumentId) {
@@ -1948,12 +1901,6 @@ export function App() {
     setNavCanGoBack(navPointerRef.current > 0)
     setNavCanGoForward(false)
   }, [selectedDocumentId])
-
-  useEffect(() => {
-    if (isEditing && !isRestoringHistoryRef.current) {
-      scheduleHistorySnapshot(draftBlocks)
-    }
-  }, [draftBlocks, isEditing])
 
   useEffect(() => {
     if (activePage !== 'documents') {
@@ -2217,120 +2164,11 @@ export function App() {
     const created = await window.knowbook.createDocument(parentId)
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
+    setSelectedDocument(null)
+    clearEditorSession()
+    setDetailLoading(true)
     setSelectedDocumentId(created.id)
-    const detail = await window.knowbook.getDocumentDetail(created.id)
-    setSelectedDocument(detail)
-    setIsEditing(true)
-    setDraftTitle(detail?.title ?? '')
-    setDraftSummary(detail?.summary ?? '')
-    setDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
-    setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
   }
-
-  function startEdit() {
-    if (!selectedDocument) {
-      return
-    }
-
-    const initialBlocks = selectedDocument.blocks.map(toDraftBlock)
-    setDraftTitle(selectedDocument.title)
-    setDraftSummary(selectedDocument.summary)
-    setDraftBlocks(initialBlocks)
-    setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
-    setCollapsedBlockIds(new Set())
-    setIsEditing(true)
-    editHistoryRef.current = [initialBlocks.map((b) => ({ ...b }))]
-    editHistoryPointerRef.current = 0
-    isRestoringHistoryRef.current = false
-  }
-
-  function cancelEdit() {
-    if (!selectedDocument) {
-      setIsEditing(false)
-      return
-    }
-
-    setDraftTitle(selectedDocument.title)
-    setDraftSummary(selectedDocument.summary)
-    setDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
-    setPendingFocusBlockIndex(null)
-    setSelectionAnchorBlockId(null)
-    setSelectedBlockRange(null)
-    setCollapsedBlockIds(new Set())
-    setIsEditing(false)
-    editHistoryRef.current = []
-    editHistoryPointerRef.current = -1
-  }
-
-  async function saveDocument() {
-    if (!selectedDocumentId || !selectedDocument) {
-      return
-    }
-
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current)
-      autoSaveTimerRef.current = null
-    }
-
-    const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
-    const validation = validateBlockTreeStructure(normalizedDraftBlocks)
-    if (!validation.valid) {
-      console.error('Tree structure validation failed:', validation.errors)
-      setBackupMessage(ui.cannotSaveInvalidBlockTree(validation.errors))
-      return
-    }
-
-    setIsSaving(true)
-    await window.knowbook.updateDocument(selectedDocumentId, {
-      title: draftTitle,
-      summary: draftSummary,
-      blocks: normalizedDraftBlocks
-    })
-
-    const [refreshedHome, refreshedDetail] = await Promise.all([
-      window.knowbook.getHomeData(),
-      window.knowbook.getDocumentDetail(selectedDocumentId)
-    ])
-    setHomeData(refreshedHome)
-    setSelectedDocument(refreshedDetail)
-    setIsSaving(false)
-    setAutoSaveFlash(true)
-    setTimeout(() => setAutoSaveFlash(false), 2000)
-  }
-
-  // Debounced auto-save: saves 800ms after last change
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => {
-    if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) return
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-    autoSaveTimerRef.current = setTimeout(async () => {
-      const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocks)
-      const validation = validateBlockTreeStructure(normalizedDraftBlocks)
-      if (!validation.valid) return
-      setIsSaving(true)
-      await window.knowbook.updateDocument(selectedDocumentId, {
-        title: draftTitle,
-        summary: draftSummary,
-        blocks: normalizedDraftBlocks
-      })
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(selectedDocumentId)
-      ])
-      setHomeData(refreshedHome)
-      setSelectedDocument(refreshedDetail)
-      setIsSaving(false)
-      setAutoSaveFlash(true)
-      setTimeout(() => setAutoSaveFlash(false), 2000)
-    }, 800)
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-    }
-  }, [draftBlocks, draftTitle, draftSummary])
 
   function togglePinDocument(documentId: string) {
     setPinnedDocumentIds((prev) => {
@@ -2343,34 +2181,6 @@ export function App() {
       window.knowbook.saveSetting('pinned_documents', JSON.stringify([...next]))
       return next
     })
-  }
-
-  function blocksToMarkdown(blocks: DocumentBlock[]): string {
-    return serializeBlocksToMarkdown(blocks)
-  }
-
-  function buildDocumentMarkdown(document: Pick<DocumentDetail, 'title' | 'blocks'>): string {
-    const body = blocksToMarkdown(document.blocks)
-    return body.trim() === '' ? `# ${document.title}\n` : `# ${document.title}\n\n${body}`
-  }
-
-  async function copyDocumentAsMarkdown() {
-    if (!selectedDocument) return
-    const markdown = buildDocumentMarkdown(selectedDocument)
-    await window.knowbook.writeClipboardText(markdown)
-    setMdCopyFlash(true)
-    setTimeout(() => setMdCopyFlash(false), 2000)
-  }
-
-  async function saveDocumentAsMarkdown() {
-    if (!selectedDocument) return
-
-    const baseName = selectedDocument.path.split('/').filter(Boolean).at(-1) || selectedDocument.title || 'document'
-    const savedPath = await window.knowbook.saveMarkdownFile(`${baseName}.md`, buildDocumentMarkdown(selectedDocument))
-
-    if (savedPath) {
-      setBackupMessage(ui.markdownExportedPath(savedPath))
-    }
   }
 
   function navBack() {
@@ -2448,14 +2258,12 @@ export function App() {
     setHomeData(refreshed)
 
     const nextId = refreshed.initialDocumentId
+    setSelectedDocument(null)
     setSelectedDocumentId(nextId)
-    setIsEditing(false)
+    clearEditorSession()
 
     if (nextId) {
-      const detail = await window.knowbook.getDocumentDetail(nextId)
-      setSelectedDocument(detail)
-    } else {
-      setSelectedDocument(null)
+      setDetailLoading(true)
     }
   }
 
@@ -4854,8 +4662,8 @@ export function App() {
     : null
   const documentsPreviewHeaderProps = {
     autoSaveFlash,
-    canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
-    canUndo: editHistoryPointerRef.current > 0,
+    canRedo,
+    canUndo,
     detailLoading,
     documentsAuxPanelOpen,
     isPinned: selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false,
