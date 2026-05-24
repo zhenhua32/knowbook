@@ -63,11 +63,14 @@ import {
 import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
+import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
+import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
 import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
+import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
 import { AISection } from './sections/AISection'
 import { DatabaseSection } from './sections/DatabaseSection'
 import { DashboardSettingsSection } from './sections/DashboardSettingsSection'
@@ -1228,10 +1231,6 @@ export function App() {
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
   const [moveTargetId, setMoveTargetId] = useState('')
-  const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
-  const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
-  const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
-  const [dragOverRoot, setDragOverRoot] = useState(false)
   const [isCreatingDatabaseColumn, setIsCreatingDatabaseColumn] = useState(false)
   const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
   const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
@@ -1256,12 +1255,6 @@ export function App() {
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
-  const [blockSearchQuery, setBlockSearchQuery] = useState('')
-  const [isBlockSearchOpen, setIsBlockSearchOpen] = useState(false)
-  const [globalSearchQuery, setGlobalSearchQuery] = useState('')
-  const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
-  const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
-  const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
@@ -1468,53 +1461,35 @@ export function App() {
     setDetailLoading,
     setSelectedDocument
   })
-
-  function getBlockSearchResults() {
-    if (!blockSearchQuery.trim() || draftBlocks.length === 0) {
-      return []
+  const {
+    closeGlobalSearch,
+    globalSearchLoading,
+    globalSearchQuery,
+    globalSearchResults,
+    handleGlobalSearchNavigate,
+    isGlobalSearchOpen,
+    openGlobalSearch,
+    updateGlobalSearchQuery
+  } = useGlobalDocumentSearch({
+    documentCatalog: homeData.documentCatalog,
+    onOpenDocument: openDocumentInDocumentsPage
+  })
+  const {
+    blockSearchItems,
+    blockSearchQuery,
+    closeBlockSearch,
+    handleBlockSearchSelect,
+    isBlockSearchOpen,
+    openBlockSearch,
+    setBlockSearchQuery
+  } = useBlockSearchState({
+    activeBlockIndex,
+    draftBlocks,
+    onSelectBlock: (blockIndex) => {
+      setActiveBlockIndex(blockIndex)
+      setPendingFocusBlockIndex(blockIndex)
     }
-
-    const query = blockSearchQuery.toLowerCase()
-    return draftBlocks.filter((block) => {
-      const content = block.content.toLowerCase()
-      const type = block.type.toLowerCase()
-      return content.includes(query) || type.includes(query)
-    })
-  }
-
-  async function runGlobalSearch(query: string) {
-    if (!query.trim()) {
-      setGlobalSearchResults([])
-      return
-    }
-    setGlobalSearchLoading(true)
-    try {
-      const results = await window.knowbook.searchDocuments(query)
-      setGlobalSearchResults(results)
-    } finally {
-      setGlobalSearchLoading(false)
-    }
-  }
-
-  function openGlobalSearch() {
-    setIsGlobalSearchOpen(true)
-    setGlobalSearchQuery('')
-    setGlobalSearchResults([])
-  }
-
-  function closeGlobalSearch() {
-    setIsGlobalSearchOpen(false)
-    setGlobalSearchQuery('')
-    setGlobalSearchResults([])
-  }
-
-  function handleGlobalSearchNavigate(result: GlobalSearchResult) {
-    const document = homeData.documentCatalog.find((d: DocumentCatalogEntry) => d.id === result.documentId)
-    if (document) {
-      openDocumentInDocumentsPage(document.id)
-      closeGlobalSearch()
-    }
-  }
+  })
 
   async function navigateInlineReferenceAtCursor(content: string, cursorPosition: number) {
     const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
@@ -1865,10 +1840,10 @@ export function App() {
 
   useEffect(() => {
     if (activePage !== 'documents') {
-      setIsGlobalSearchOpen(false)
-      setIsBlockSearchOpen(false)
+      closeGlobalSearch()
+      closeBlockSearch()
     }
-  }, [activePage])
+  }, [activePage, closeBlockSearch, closeGlobalSearch])
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -1960,15 +1935,6 @@ export function App() {
       .includes(query)
   })
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
-  const blockSearchItems = getBlockSearchResults().map((block) => {
-    const blockIndex = draftBlocks.indexOf(block)
-    return {
-      index: blockIndex,
-      type: block.type,
-      contentPreview: block.content.slice(0, 100),
-      isHighlighted: activeBlockIndex === blockIndex
-    }
-  })
   const selectedBlockCount = selectedBlockRange ? selectedBlockRange.end - selectedBlockRange.start + 1 : 0
   const selectedVisibleBlockCount = selectedBlockRange ? getVisibleBlockCountInRange(selectedBlockRange) : 0
   const selectedBlockActionRange = selectedBlockRange ? getMultiBlockOperationRange(selectedBlockRange) : null
@@ -2121,16 +2087,6 @@ export function App() {
     }
   }
 
-  async function handleCreateDocument(parentId: string | null) {
-    const created = await window.knowbook.createDocument(parentId)
-    const refreshed = await window.knowbook.getHomeData()
-    setHomeData(refreshed)
-    setSelectedDocument(null)
-    clearEditorSession()
-    setDetailLoading(true)
-    setSelectedDocumentId(created.id)
-  }
-
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
     if (!selectedDocument) {
       return
@@ -2168,146 +2124,6 @@ export function App() {
     }
   }
 
-  async function deleteSelectedDocument() {
-    if (!selectedDocument) {
-      return
-    }
-
-    const accepted = window.confirm(ui.confirmDeleteDocument(selectedDocument.title))
-    if (!accepted) {
-      return
-    }
-
-    await window.knowbook.deleteDocument(selectedDocument.id)
-    const refreshed = await window.knowbook.getHomeData()
-    setHomeData(refreshed)
-
-    const nextId = refreshed.initialDocumentId
-    setSelectedDocument(null)
-    setSelectedDocumentId(nextId)
-    clearEditorSession()
-
-    if (nextId) {
-      setDetailLoading(true)
-    }
-  }
-
-  async function moveSelectedDocument() {
-    if (!selectedDocument || !moveTargetId) {
-      return
-    }
-
-    const newParentId = moveTargetId === '__root__' ? null : moveTargetId
-    await handleMoveDocument(selectedDocument.id, newParentId, ui.movedDocumentSuccess(selectedDocument.title))
-  }
-
-  async function handleMoveDocument(documentId: string, newParentId: string | null, successMessage?: string) {
-    try {
-      await window.knowbook.moveDocument(documentId, newParentId)
-      const refreshedHome = await window.knowbook.getHomeData()
-      setHomeData(refreshedHome)
-
-      if (selectedDocumentId) {
-        const refreshedDetail = await window.knowbook.getDocumentDetail(selectedDocumentId)
-        setSelectedDocument(refreshedDetail)
-      }
-
-      setMoveTargetId('')
-      if (successMessage) {
-        setBackupMessage(successMessage)
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.moveFailed
-      setBackupMessage(message)
-    } finally {
-      setDraggingDocumentId(null)
-      setDragOverDocumentId(null)
-      setDragOverBoardColumnId(null)
-      setDragOverRoot(false)
-    }
-  }
-
-  function beginDrag(documentId: string) {
-    setDraggingDocumentId(documentId)
-  }
-
-  function endDrag() {
-    setDraggingDocumentId(null)
-    setDragOverDocumentId(null)
-    setDragOverBoardColumnId(null)
-    setDragOverRoot(false)
-  }
-
-  async function dropOnDocument(targetId: string) {
-    if (!draggingDocumentId || draggingDocumentId === targetId) {
-      endDrag()
-      return
-    }
-
-    await handleMoveDocument(draggingDocumentId, targetId)
-  }
-
-  async function dropToRoot() {
-    if (!draggingDocumentId) {
-      endDrag()
-      return
-    }
-
-    await handleMoveDocument(draggingDocumentId, null)
-  }
-
-  async function dropOnBoardColumn(parentId: string | null) {
-    if (!draggingDocumentId) {
-      endDrag()
-      return
-    }
-
-    const draggingDocument = catalogDocuments.find((document) => document.id === draggingDocumentId)
-    if (draggingDocument && (draggingDocument.parentId ?? null) === parentId) {
-      endDrag()
-      return
-    }
-
-    await handleMoveDocument(draggingDocumentId, parentId)
-  }
-
-  async function dropOnBoardTarget(target: BoardDropTarget) {
-    if (!draggingDocumentId) {
-      endDrag()
-      return
-    }
-
-    const draggingDocument = catalogDocuments.find((document) => document.id === draggingDocumentId)
-    if (!draggingDocument) {
-      endDrag()
-      return
-    }
-
-    if (target.kind === 'parent') {
-      await dropOnBoardColumn(target.parentId)
-      return
-    }
-
-    const targetColumn = catalogColumns.find((column) => column.id === target.columnId)
-    if (!targetColumn) {
-      endDrag()
-      return
-    }
-
-    const nextFieldValue = getBoardDropFieldValue(
-      targetColumn,
-      draggingDocument.fieldValues[target.columnId] ?? null,
-      target.value
-    )
-
-    if (nextFieldValue === undefined) {
-      endDrag()
-      return
-    }
-
-    await updateDocumentDatabaseValue(draggingDocumentId, target.columnId, nextFieldValue)
-    endDrag()
-  }
 
   function switchDatabaseWorkspaceView(nextView: DatabaseWorkspaceView) {
     setDatabaseWorkspaceView(nextView)
@@ -2775,6 +2591,39 @@ export function App() {
       setBackupMessage(message)
     }
   }, [])
+
+  const {
+    beginDrag,
+    deleteSelectedDocument,
+    dragOverBoardColumnId,
+    dragOverRoot,
+    draggingDocumentId,
+    dropOnBoardTarget,
+    dropOnDocument,
+    dropToRoot,
+    endDrag,
+    handleBoardColumnDragOver,
+    handleCreateDocument,
+    handleRootDragLeave,
+    handleRootDragOver,
+    handleTreeNodeDragOver,
+    moveSelectedDocument
+  } = useWorkspaceDocumentManagement({
+    catalogColumns,
+    catalogDocuments,
+    moveTargetId,
+    onClearEditorSession: clearEditorSession,
+    onDetailLoadingChange: setDetailLoading,
+    onHomeDataChange: setHomeData,
+    onMessage: setBackupMessage,
+    onMoveTargetIdChange: setMoveTargetId,
+    onSelectedDocumentChange: setSelectedDocument,
+    onSelectedDocumentIdChange: setSelectedDocumentId,
+    onUpdateDocumentDatabaseValue: updateDocumentDatabaseValue,
+    selectedDocument,
+    selectedDocumentId,
+    ui
+  })
 
   const refreshDocumentCatalogData = useCallback(async () => {
     const [refreshedColumns, refreshedCatalog] = await Promise.all([
@@ -4659,17 +4508,12 @@ return (
             rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
             onOpenGlobalSearch={openGlobalSearch}
             globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-            onCreateRoot={() => handleCreateDocument(null)}
+            onCreateRoot={() => { void handleCreateDocument(null) }}
             newRootLabel={ui.newRoot}
             dropToRootLabel={ui.dropToRoot}
             dragOverRoot={dragOverRoot}
-            onRootDragOver={() => {
-              if (draggingDocumentId) {
-                setDragOverRoot(true)
-                setDragOverDocumentId(null)
-              }
-            }}
-            onRootDragLeave={() => setDragOverRoot(false)}
+            onRootDragOver={handleRootDragOver}
+            onRootDragLeave={handleRootDragLeave}
              onDropToRoot={() => { void dropToRoot() }}
              pinnedSectionLabel={ui.pinnedSectionLabel}
              pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
@@ -4685,12 +4529,7 @@ return (
              onSelectGraphNode={openDocumentInDocumentsPage}
              onDragStart={beginDrag}
              onDragEnd={endDrag}
-             onDragOverNode={(documentId) => {
-               if (draggingDocumentId && draggingDocumentId !== documentId) {
-                 setDragOverDocumentId(documentId)
-                 setDragOverRoot(false)
-               }
-             }}
+             onDragOverNode={handleTreeNodeDragOver}
              onDropOnNode={dropOnDocument}
              uiLanguage={uiLanguage}
              totalDocumentsCount={homeData.summary.documents}
@@ -4829,13 +4668,7 @@ return (
                groupBy: boardGroupBy,
                groupableColumns: boardGroupableColumns,
                onDragEnd: endDrag,
-               onDragOverColumn: (columnId) => {
-                 if (draggingDocumentId) {
-                   setDragOverBoardColumnId(columnId)
-                   setDragOverDocumentId(null)
-                   setDragOverRoot(false)
-                 }
-               },
+               onDragOverColumn: handleBoardColumnDragOver,
                onDragStart: beginDrag,
                onDropOnColumn: dropOnBoardTarget,
                onGroupByChange: setBoardGroupBy,
@@ -5022,17 +4855,9 @@ return (
                isOpen: isBlockSearchOpen,
                items: blockSearchItems,
                noMatchText: ui.noBlocksMatchSearch,
-               onClose: () => {
-                 setIsBlockSearchOpen(false)
-                 setBlockSearchQuery('')
-               },
+               onClose: closeBlockSearch,
                onQueryChange: setBlockSearchQuery,
-               onSelect: (blockIndex) => {
-                 setActiveBlockIndex(blockIndex)
-                 setIsBlockSearchOpen(false)
-                 setBlockSearchQuery('')
-                 setPendingFocusBlockIndex(blockIndex)
-               },
+               onSelect: handleBlockSearchSelect,
                placeholder: ui.searchBlocksPlaceholder,
                query: blockSearchQuery
              }}
@@ -5047,7 +4872,7 @@ return (
              onEditorKeyDown={(event) => {
                if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
                  event.preventDefault()
-                 setIsBlockSearchOpen(true)
+                 openBlockSearch()
                }
              }}
              outlinePanelProps={documentsOutlinePanelProps}
@@ -5183,8 +5008,7 @@ return (
                 type="text"
                 value={globalSearchQuery}
                 onChange={(event) => {
-                  setGlobalSearchQuery(event.target.value)
-                  runGlobalSearch(event.target.value)
+                  void updateGlobalSearchQuery(event.target.value)
                 }}
                 onKeyDown={(event) => {
                   if (event.key === 'Escape') closeGlobalSearch()
