@@ -66,6 +66,9 @@ import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
 import { useBlockInputActions } from './hooks/useBlockInputActions'
+import { useBlockFocusState } from './hooks/useBlockFocusState'
+import { useBlockDragState } from './hooks/useBlockDragState'
+import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
 import { useBlockDragDropActions } from './hooks/useBlockDragDropActions'
@@ -1225,10 +1228,6 @@ export function App() {
     const timer = setTimeout(() => setBackupMessage(null), 3000)
     return () => clearTimeout(timer)
   }, [backupMessage])
-  const [draggingBlockIndex, setDraggingBlockIndex] = useState<number | null>(null)
-  const [dragOverBlockIndex, setDragOverBlockIndex] = useState<number | null>(null)
-  const [dragOverBlockDepth, setDragOverBlockDepth] = useState<number | null>(null)
-  const [pendingFocusBlockIndex, setPendingFocusBlockIndex] = useState<number | null>(null)
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const [moveTargetId, setMoveTargetId] = useState('')
@@ -1257,9 +1256,21 @@ export function App() {
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
-  const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
-  const highlightedBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const {
+    dragOverBlockDepth,
+    dragOverBlockIndex,
+    draggingBlockIndex,
+    endBlockDrag,
+    setDragOverBlockDepth,
+    setDragOverBlockIndex,
+    setDraggingBlockIndex
+  } = useBlockDragState()
+  const {
+    flashHighlightedBlock,
+    highlightedBlockId,
+    setHighlightedBlockId
+  } = useHighlightedBlockState()
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
   const blockSlashCommands = buildBlockSlashCommands(uiLanguage)
@@ -1426,18 +1437,15 @@ export function App() {
     setActiveCursorPosition,
     setDraftBlocks
   })
-  function flashHighlightedBlock(blockId: string) {
-    setHighlightedBlockId(blockId)
-    if (highlightedBlockTimerRef.current) {
-      clearTimeout(highlightedBlockTimerRef.current)
-    }
-
-    highlightedBlockTimerRef.current = setTimeout(() => {
-      setHighlightedBlockId((current) => (current === blockId ? null : current))
-      highlightedBlockTimerRef.current = null
-    }, 2200)
-  }
-
+  const {
+    pendingFocusBlockIndex,
+    setPendingFocusBlockIndex
+  } = useBlockFocusState({
+    activeCursorPosition,
+    blockTextareaRefs,
+    captureBlockCursor,
+    draftBlocks
+  })
   const handleNoDocumentSelected = useCallback(() => {
     clearEditorSession()
     setPendingFocusBlockIndex(null)
@@ -1449,9 +1457,7 @@ export function App() {
   }, [clearEditorSession, resetAiSession, setPendingBlockNavigationTarget])
 
   const handleDocumentLoaded = useCallback((detail: DocumentDetail) => {
-    setDraggingBlockIndex(null)
-    setDragOverBlockIndex(null)
-    setDragOverBlockDepth(null)
+    endBlockDrag()
     setPendingFocusBlockIndex(null)
     setActiveBlockIndex(null)
     setSelectionAnchorBlockId(null)
@@ -1461,7 +1467,7 @@ export function App() {
     setMoveTargetId('')
     loadDocumentIntoEditor(detail, true)
     resetAiSession()
-  }, [clearEditorAssistSuggestions, loadDocumentIntoEditor, resetAiSession])
+  }, [clearEditorAssistSuggestions, endBlockDrag, loadDocumentIntoEditor, resetAiSession])
 
   const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
     setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, blockId, previous))
@@ -1930,14 +1936,6 @@ export function App() {
   }, [uiLanguage, uiLanguageHydrated])
 
   useEffect(() => {
-    return () => {
-      if (highlightedBlockTimerRef.current) {
-        clearTimeout(highlightedBlockTimerRef.current)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
     if (activePage !== 'documents') {
       closeGlobalSearch()
       closeBlockSearch()
@@ -2011,24 +2009,6 @@ export function App() {
       window.removeEventListener('blur', handleMouseUp)
     }
   }, [endBlockRangeSelection])
-
-  useEffect(() => {
-    if (pendingFocusBlockIndex === null) {
-      return
-    }
-
-    const textarea = blockTextareaRefs.current[pendingFocusBlockIndex]
-    if (!textarea) {
-      setPendingFocusBlockIndex(null)
-      return
-    }
-
-    textarea.focus()
-    const cursor = Math.max(0, Math.min(activeCursorPosition, textarea.value.length))
-    textarea.setSelectionRange(cursor, cursor)
-    captureBlockCursor(pendingFocusBlockIndex, textarea)
-    setPendingFocusBlockIndex(null)
-  }, [activeCursorPosition, draftBlocks, pendingFocusBlockIndex])
 
   // Auto-resize textareas to fit content
   useEffect(() => {
@@ -2676,12 +2656,6 @@ export function App() {
     setPendingFocusBlockIndex,
     updateDraftBlock
   })
-
-  function endBlockDrag() {
-    setDraggingBlockIndex(null)
-    setDragOverBlockIndex(null)
-    setDragOverBlockDepth(null)
-  }
 
   const moveOptions = flattenTree(homeData.documentTree)
     .filter((option) => option.id !== selectedDocumentId)
