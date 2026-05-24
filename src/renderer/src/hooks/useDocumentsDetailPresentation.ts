@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { ComponentProps } from 'react'
-import type { DocumentBlockDraft, DocumentDetail, LinkedDocument, PluginDocumentAction } from '@shared/contracts'
+import type { DocumentBlockDraft, DocumentDetail, DocumentTreeNode, LinkedDocument, PluginDocumentAction } from '@shared/contracts'
 import { DocumentPreviewHeader } from '../components/DocumentPreviewHeader'
 import { DocumentsAuxPanel } from '../components/DocumentsAuxPanel'
 import { DocumentStatsBar } from '../components/DocumentStatsBar'
@@ -30,15 +30,16 @@ type UseDocumentsDetailPresentationParams = {
   canRedo: boolean
   canUndo: boolean
   detailLoading: boolean
+  documentTree: DocumentTreeNode[]
   documentsAuxPanelOpen: boolean
   draftBlocks: DocumentBlockDraft[]
   draftSummary: string
   draftTitle: string
+  flattenDocumentTree: (nodes: DocumentTreeNode[], depth?: number) => Array<{ id: string; title: string; depth: number }>
   hasApiKey: boolean
   isZh: boolean
   isSaving: boolean
   mdCopyFlash: boolean
-  moveOptions: DocumentPreviewHeaderProps['moveOptions']
   moveTargetId: string
   onAddChild: DocumentPreviewHeaderProps['onAddChild']
   onAiPromptChange: DocumentsAuxPanelProps['onAiPromptChange']
@@ -80,15 +81,16 @@ export function useDocumentsDetailPresentation({
   canRedo,
   canUndo,
   detailLoading,
+  documentTree,
   documentsAuxPanelOpen,
   draftBlocks,
   draftSummary,
   draftTitle,
+  flattenDocumentTree,
   hasApiKey,
   isZh,
   isSaving,
   mdCopyFlash,
-  moveOptions,
   moveTargetId,
   onAddChild,
   onAiPromptChange,
@@ -208,6 +210,15 @@ export function useDocumentsDetailPresentation({
         ui
       }
     : null
+
+  const moveOptions = useMemo<DocumentPreviewHeaderProps['moveOptions']>(() => {
+    return flattenDocumentTree(documentTree)
+      .filter((option) => option.id !== selectedDocumentId)
+      .map((option) => ({
+        id: option.id,
+        label: `${'  '.repeat(option.depth)}${option.title}`
+      }))
+  }, [documentTree, flattenDocumentTree, selectedDocumentId])
 
   const previewHeaderProps: DocumentPreviewHeaderProps = {
     autoSaveFlash,

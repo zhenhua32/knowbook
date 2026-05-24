@@ -71,6 +71,7 @@ import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
+import { useDocumentsUiState } from './hooks/useDocumentsUiState'
 import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
@@ -1186,7 +1187,6 @@ export function App() {
   const [catalogDocuments, setCatalogDocuments] = useState<DocumentCatalogEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [activePage, setActivePage] = useState<PageId>('documents')
-  const [documentsAuxPanelOpen, setDocumentsAuxPanelOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
   const deferredCatalogQuery = useDeferredValue(catalogQuery)
   const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
@@ -1200,7 +1200,6 @@ export function App() {
   }, [backupMessage])
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
-  const [moveTargetId, setMoveTargetId] = useState('')
   const [isCreatingDatabaseColumn, setIsCreatingDatabaseColumn] = useState(false)
   const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
   const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
@@ -1226,6 +1225,13 @@ export function App() {
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
+  const {
+    clearMoveTarget,
+    documentsAuxPanelOpen,
+    moveTargetId,
+    setMoveTargetId,
+    toggleDocumentsAuxPanel
+  } = useDocumentsUiState()
   const {
     dragOverBlockDepth,
     dragOverBlockIndex,
@@ -1291,6 +1297,7 @@ export function App() {
     setDraftSummary,
     setDraftTitle,
     setIsSaving,
+    updateBlockHighlight,
     updateDraftBlock,
     undoEdit
   } = useDocumentEditorState({
@@ -1442,10 +1449,10 @@ export function App() {
     setSelectedBlockRange(null)
     setActiveCursorPosition(0)
     clearEditorAssistSuggestions()
-    setMoveTargetId('')
+    clearMoveTarget()
     loadDocumentIntoEditor(detail, true)
     resetAiSession()
-  }, [clearEditorAssistSuggestions, endBlockDrag, loadDocumentIntoEditor, resetAiSession])
+  }, [clearEditorAssistSuggestions, clearMoveTarget, endBlockDrag, loadDocumentIntoEditor, resetAiSession])
 
   const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
     revealBlockAncestors(blockId)
@@ -1744,13 +1751,6 @@ export function App() {
     }
 
     openDocumentBlockInDocumentsPage(blockReference.documentId, blockReference.block.id)
-  }
-
-  function updateBlockHighlight(index: number, highlight: string | undefined) {
-    updateDraftBlock(index, {
-      ...draftBlocks[index],
-      highlight
-    })
   }
 
   useEffect(() => {
@@ -2610,12 +2610,6 @@ export function App() {
     updateDraftBlock
   })
 
-  const moveOptions = flattenTree(homeData.documentTree)
-    .filter((option) => option.id !== selectedDocumentId)
-    .map((option) => ({
-      ...option,
-      label: `${'  '.repeat(option.depth)}${option.title}`
-    }))
   const documentReferences = buildDocumentReferences(homeData.documentTree)
   const plugins = homeData.plugins ?? []
   const pluginDashboardCards = homeData.pluginDashboardCards ?? []
@@ -2883,15 +2877,16 @@ export function App() {
     canRedo,
     canUndo,
     detailLoading,
+    documentTree: homeData.documentTree,
     documentsAuxPanelOpen,
     draftBlocks,
     draftSummary,
     draftTitle,
+    flattenDocumentTree: flattenTree,
     hasApiKey: homeData.aiConfig.hasApiKey,
     isZh,
     isSaving,
     mdCopyFlash,
-    moveOptions,
     moveTargetId,
     onAddChild: () => {
       if (selectedDocument) {
@@ -2930,7 +2925,7 @@ export function App() {
       void saveDocumentAsMarkdown()
     },
     onSummaryChange: setDraftSummary,
-    onToggleAuxPanel: () => setDocumentsAuxPanelOpen((previous) => !previous),
+    onToggleAuxPanel: toggleDocumentsAuxPanel,
     onTogglePin: () => {
       if (selectedDocument) {
         togglePinDocument(selectedDocument.id)
