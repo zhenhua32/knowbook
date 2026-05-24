@@ -68,6 +68,7 @@ import { useBlockSelectionState } from './hooks/useBlockSelectionState'
 import { useBlockInputActions } from './hooks/useBlockInputActions'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
+import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
@@ -2814,49 +2815,79 @@ export function App() {
 
   const pageTitle = pageItems.find((item) => item.id === activePage)?.label ?? ''
   const pageDescription = pageItems.find((item) => item.id === activePage)?.description ?? ''
-  const documentsOutlineItems = draftBlocks
-    .map((block, index) => ({ block, index }))
-    .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
-    .map(({ block, index }) => ({
-      index,
-      level: block.type === 'heading-1' ? 1 as const : 2 as const,
-      title: block.content
-    }))
-  const visibleDocumentEditorRows = selectedDocument
-    ? getVisibleBlocks(draftBlocks).map((block) => {
-      const index = draftBlocks.indexOf(block)
-      const dropPreview =
-        draggingBlockIndex !== null && dragOverBlockIndex === index
-          ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
-          : null
-      const isSelected = isBlockSelected(index)
-      const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
-
-      let numberLabel = ''
-      if (block.type === 'numbered-list') {
-        let count = 0
-        for (let currentIndex = index; currentIndex >= 0; currentIndex -= 1) {
-          const candidateBlock = draftBlocks[currentIndex]
-          if (candidateBlock.type !== 'numbered-list' || candidateBlock.depth < block.depth) {
-            break
-          }
-          if (candidateBlock.depth === block.depth) {
-            count += 1
-          }
-        }
-        numberLabel = `${count}.`
-      }
-
-      return {
-        block,
-        dropPreview,
-        indentPx,
-        index,
-        isSelected,
-        numberLabel
-      }
-    })
-    : []
+  const {
+    blockEditorRowSharedProps: documentsBlockEditorRowSharedProps,
+    outlinePanelProps: documentsOutlinePanelProps,
+    visibleEditorRows: visibleDocumentEditorRows
+  } = useDocumentsBlockEditorPresentation({
+    activeBlockIndex,
+    activeSlashCommand,
+    activeSlashContext,
+    adjustBlockDepth,
+    adjustSelectedBlocksDepth,
+    applySlashCommand,
+    beginBlockDrag,
+    blockHasChildren,
+    blockTextareaRefs,
+    BLOCK_INDENT_SIZE,
+    canMoveSelectedRange,
+    captureBlockCursor,
+    collapsedBlockIds,
+    continueBlockAt,
+    deleteSelectedBlocks,
+    dismissSlashCommand,
+    draftBlocks,
+    dragOverBlockDepth,
+    dragOverBlockIndex,
+    draggingBlockIndex,
+    downgradeBlockAt,
+    dropBlockAt,
+    duplicateDraftBlock,
+    duplicateSelectedBlocks,
+    endBlockDrag,
+    endBlockRangeSelection,
+    filteredSlashCommands,
+    getBlockDropPreview,
+    getDraggedBlockDepthPreview,
+    getMultiBlockOperationRange,
+    getNextSiblingSubtreeStartIndex,
+    getPreviousSiblingSubtreeStartIndex,
+    getVisibleBlockCountInRange,
+    getVisibleBlocks,
+    handleBlockContentChange,
+    handleBlockMouseEnter,
+    handleBlockPaste,
+    insertDraftBlockAt,
+    isBlockRangeSelecting,
+    isBlockSelected,
+    isNestableBlock,
+    isSelectionCoherent,
+    isZh,
+    mergeWithPreviousBlock,
+    moveDraftBlockBySibling,
+    moveSelectedBlocks,
+    navigateInlineReferenceAtCursor,
+    notifyBlockMouseDown,
+    onSelectOutlineBlock: (blockIndex) => {
+      setActiveBlockIndex(blockIndex)
+      setPendingFocusBlockIndex(blockIndex)
+    },
+    removeSelectedBlockRange,
+    selectAllBlocks,
+    selectBlockRange,
+    selectedBlockCount,
+    selectedBlockRange,
+    selectedDocument,
+    serializeDraftBlockRange,
+    setDragOverBlockDepth,
+    setDragOverBlockIndex,
+    setSelectedSlashCommandIndex,
+    splitDraftBlock,
+    toggleBlockCollapse,
+    ui,
+    updateBlockHighlight,
+    updateDraftBlock
+  })
   const documentsSelectionToolbarProps = selectedBlockRange
     ? {
       canMoveDown: canMoveSelectionDown,
@@ -3022,67 +3053,6 @@ export function App() {
       wordsLabel: ui.docStatWords
     }
     : null
-  const documentsBlockEditorRowSharedProps = selectedDocument
-    ? {
-      activeBlockIndex,
-      activeSlashCommand,
-      activeSlashContext,
-      adjustBlockDepth,
-      adjustSelectedBlocksDepth,
-      applySlashCommand,
-      beginBlockDrag,
-      blockHasChildren,
-      blockTextareaRefs,
-      BLOCK_INDENT_SIZE,
-      canMoveSelectedRange,
-      captureBlockCursor,
-      collapsedBlockIds,
-      continueBlockAt,
-      deleteSelectedBlocks,
-      dismissSlashCommand,
-      draftBlocks,
-      downgradeBlockAt,
-      dropBlockAt,
-      duplicateDraftBlock,
-      duplicateSelectedBlocks,
-      endBlockDrag,
-      endBlockRangeSelection,
-      filteredSlashCommands,
-      getDraggedBlockDepthPreview,
-      getMultiBlockOperationRange,
-      getNextSiblingSubtreeStartIndex,
-      getPreviousSiblingSubtreeStartIndex,
-      getVisibleBlockCountInRange,
-      handleBlockContentChange,
-      handleBlockMouseEnter,
-      handleBlockPaste,
-      insertDraftBlockAt,
-      isBlockRangeSelecting,
-      isHighlighted: false,
-      isSelectionCoherent,
-      isZh: uiLanguage === 'zh-CN',
-      mergeWithPreviousBlock,
-      moveDraftBlockBySibling,
-      moveSelectedBlocks,
-      navigateInlineReferenceAtCursor,
-      notifyBlockMouseDown,
-      removeSelectedBlockRange,
-      selectAllBlocks,
-      selectBlockRange,
-      selectedBlockCount,
-      selectedBlockRange,
-      selectedDocument,
-      serializeDraftBlockRange,
-      setDragOverBlockDepth,
-      setDragOverBlockIndex,
-      setSelectedSlashCommandIndex,
-      splitDraftBlock,
-      toggleBlockCollapse,
-      ui,
-      updateBlockHighlight,
-      updateDraftBlock
-    }
-    : null
   const documentsSummaryCardProps = selectedDocument
     ? {
       onSummaryChange: setDraftSummary,
@@ -3093,18 +3063,6 @@ export function App() {
       title: draftTitle,
       titleLabel: ui.common.title,
       updatedText: ui.updatedAt(selectedDocument.updatedAt)
-    }
-    : null
-  const documentsOutlinePanelProps = selectedDocument
-    ? {
-      emptyHeadingTitleLevel1: isZh ? '标题 1' : 'Heading 1',
-      emptyHeadingTitleLevel2: isZh ? '标题 2' : 'Heading 2',
-      items: documentsOutlineItems,
-      onSelect: (blockIndex: number) => {
-        setActiveBlockIndex(blockIndex)
-        setPendingFocusBlockIndex(blockIndex)
-      },
-      title: isZh ? '大纲' : 'Outline'
     }
     : null
   const documentsPreviewHeaderProps = {
