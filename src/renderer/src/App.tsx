@@ -64,6 +64,7 @@ import { SlashCommandPanel } from './components/SlashCommandPanel'
 import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
+import { useDocumentLoadingAndBlockNavigation } from './hooks/useDocumentLoadingAndBlockNavigation'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
 import { usePluginManagement } from './hooks/usePluginManagement'
 import { useSettingsState } from './hooks/useSettingsState'
@@ -1416,6 +1417,58 @@ export function App() {
     }, 2200)
   }
 
+  const handleNoDocumentSelected = useCallback(() => {
+    clearEditorSession()
+    setPendingFocusBlockIndex(null)
+    setSelectionAnchorBlockId(null)
+    setSelectedBlockRange(null)
+    setPendingBlockNavigationTarget(null)
+    setHighlightedBlockId(null)
+    resetAiSession()
+  }, [clearEditorSession, resetAiSession, setPendingBlockNavigationTarget])
+
+  const handleDocumentLoaded = useCallback((detail: DocumentDetail) => {
+    setDraggingBlockIndex(null)
+    setDragOverBlockIndex(null)
+    setDragOverBlockDepth(null)
+    setPendingFocusBlockIndex(null)
+    setActiveBlockIndex(null)
+    setSelectionAnchorBlockId(null)
+    setSelectedBlockRange(null)
+    setActiveCursorPosition(0)
+    setLinkSuggestions([])
+    setMoveTargetId('')
+    loadDocumentIntoEditor(detail, true)
+    resetAiSession()
+  }, [loadDocumentIntoEditor, resetAiSession])
+
+  const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
+    setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, blockId, previous))
+    setSelectedBlockRange(null)
+    setSelectionAnchorBlockId(blockId)
+    setActiveBlockIndex(targetIndex)
+    setPendingFocusBlockIndex(targetIndex)
+    flashHighlightedBlock(blockId)
+  }, [draftBlocks])
+
+  const handlePendingTargetMissing = useCallback(() => {
+    setBackupMessage(ui.blockReferenceNotFound)
+  }, [ui.blockReferenceNotFound])
+
+  useDocumentLoadingAndBlockNavigation({
+    clearPendingTarget: () => setPendingBlockNavigationTarget(null),
+    draftBlocks,
+    onDocumentLoaded: handleDocumentLoaded,
+    onNoDocumentSelected: handleNoDocumentSelected,
+    onPendingTargetMissing: handlePendingTargetMissing,
+    onPendingTargetResolved: handlePendingTargetResolved,
+    pendingBlockNavigationTarget,
+    selectedDocument,
+    selectedDocumentId,
+    setDetailLoading,
+    setSelectedDocument
+  })
+
   function getBlockSearchResults() {
     if (!blockSearchQuery.trim() || draftBlocks.length === 0) {
       return []
@@ -1801,71 +1854,6 @@ export function App() {
 
     void window.knowbook.saveSetting(UI_LANGUAGE_SETTING_KEY, uiLanguage)
   }, [uiLanguage, uiLanguageHydrated])
-
-  useEffect(() => {
-    if (!selectedDocumentId) {
-      setSelectedDocument(null)
-      clearEditorSession()
-      setPendingFocusBlockIndex(null)
-      setSelectionAnchorBlockId(null)
-      setSelectedBlockRange(null)
-      setPendingBlockNavigationTarget(null)
-      setHighlightedBlockId(null)
-      resetAiSession()
-      return
-    }
-
-    let mounted = true
-    setDetailLoading(true)
-
-    window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
-      if (mounted) {
-        setSelectedDocument(detail)
-        setDraggingBlockIndex(null)
-        setDragOverBlockIndex(null)
-        setDragOverBlockDepth(null)
-        setPendingFocusBlockIndex(null)
-        setActiveBlockIndex(null)
-        setSelectionAnchorBlockId(null)
-        setSelectedBlockRange(null)
-        setActiveCursorPosition(0)
-        setLinkSuggestions([])
-        setMoveTargetId('')
-        loadDocumentIntoEditor(detail, true)
-        resetAiSession()
-        setDetailLoading(false)
-      }
-    })
-
-    return () => {
-      mounted = false
-    }
-  }, [clearEditorSession, loadDocumentIntoEditor, resetAiSession, selectedDocumentId])
-
-  useEffect(() => {
-    if (!pendingBlockNavigationTarget || pendingBlockNavigationTarget.documentId !== selectedDocumentId) {
-      return
-    }
-
-    if (!selectedDocument) {
-      return
-    }
-
-    const targetIndex = draftBlocks.findIndex((block) => block.id === pendingBlockNavigationTarget.blockId)
-    if (targetIndex === -1) {
-      setPendingBlockNavigationTarget(null)
-      setBackupMessage(ui.blockReferenceNotFound)
-      return
-    }
-
-    setCollapsedBlockIds((previous) => expandAncestorBlocks(draftBlocks, pendingBlockNavigationTarget.blockId, previous))
-    setSelectedBlockRange(null)
-    setSelectionAnchorBlockId(pendingBlockNavigationTarget.blockId)
-    setActiveBlockIndex(targetIndex)
-    setPendingFocusBlockIndex(targetIndex)
-    flashHighlightedBlock(pendingBlockNavigationTarget.blockId)
-    setPendingBlockNavigationTarget(null)
-  }, [draftBlocks, pendingBlockNavigationTarget, selectedDocument, selectedDocumentId, ui.blockReferenceNotFound])
 
   useEffect(() => {
     return () => {
