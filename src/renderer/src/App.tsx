@@ -52,12 +52,10 @@ import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { CrossDocumentBlockReference } from './components/BlockReference'
 import {
-  getInlineReferenceTokenAtCursor,
   renderInlineContent,
   renderStyledContent,
   parseMarkdownStyles,
   resolveInlineReference,
-  resolveInlineReferenceTarget,
   resolveBlockReference
 } from './components/InlineContentRenderer'
 import { SlashCommandPanel } from './components/SlashCommandPanel'
@@ -73,11 +71,13 @@ import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEd
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
 import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
 import { useDocumentsUiState } from './hooks/useDocumentsUiState'
+import { useDatabaseSectionPresentation } from './hooks/useDatabaseSectionPresentation'
 import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
 import { useDocumentEditorState } from './hooks/useDocumentEditorState'
 import { useEditorAssistState } from './hooks/useEditorAssistState'
 import { useBlockDragDropActions } from './hooks/useBlockDragDropActions'
 import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
+import { useInlineReferenceNavigation } from './hooks/useInlineReferenceNavigation'
 import { useMultiBlockActions } from './hooks/useMultiBlockActions'
 import { useSlashCommandActions } from './hooks/useSlashCommandActions'
 import { useBlockStructureActions } from './hooks/useBlockStructureActions'
@@ -1686,43 +1686,6 @@ export function App() {
       setPendingFocusBlockIndex(blockIndex)
     }
   })
-  async function navigateInlineReferenceAtCursor(content: string, cursorPosition: number) {
-    const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
-    if (!token) {
-      return
-    }
-
-    const blockReferences = new Map(
-      draftBlocks
-        .filter((block): block is DocumentBlockDraft & { id: string } => Boolean(block.id?.trim()))
-        .map((block) => [block.id, { id: block.id, content: block.content }] as const)
-    )
-
-    const target = resolveInlineReferenceTarget(token, documentReferences, blockReferences, selectedDocumentId)
-    if (!target) {
-      setBackupMessage(ui.blockReferenceNotFound)
-      return
-    }
-
-    if (target.type === 'document') {
-      openDocumentInDocumentsPage(target.documentId)
-      return
-    }
-
-    if (target.type === 'block') {
-      openDocumentBlockInDocumentsPage(target.documentId, target.blockId)
-      return
-    }
-
-    const blockReference = await window.knowbook.getBlockReference(target.documentPath, target.blockId)
-    if (!blockReference) {
-      setBackupMessage(ui.blockReferenceNotFound)
-      return
-    }
-
-    openDocumentBlockInDocumentsPage(blockReference.documentId, blockReference.block.id)
-  }
-
   useEffect(() => {
     let mounted = true
 
@@ -2580,7 +2543,15 @@ export function App() {
     updateDraftBlock
   })
 
-  const documentReferences = buildDocumentReferences(homeData.documentTree)
+  const navigateInlineReferenceAtCursor = useInlineReferenceNavigation({
+    documentTree: homeData.documentTree,
+    draftBlocks,
+    onOpenDocument: openDocumentInDocumentsPage,
+    onOpenDocumentBlock: openDocumentBlockInDocumentsPage,
+    selectedDocumentId,
+    setBackupMessage,
+    uiBlockReferenceNotFound: ui.blockReferenceNotFound
+  })
   const plugins = homeData.plugins ?? []
   const pluginDashboardCards = homeData.pluginDashboardCards ?? []
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
@@ -2690,6 +2661,47 @@ export function App() {
 
     return buildBoardColumns(filteredCatalog, boardGroupingColumn)
   }, [boardGroupingColumn, filteredCatalog, isDocumentCatalogViewActive])
+  const catalogCanSaveColumn = databaseColumnNameDraft.trim().length > 0
+    && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select')
+      || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0)
+  const {
+    board: databaseBoardProps,
+    catalog: databaseCatalogProps
+  } = useDatabaseSectionPresentation({
+    beginDrag,
+    boardColumns,
+    boardGroupBy,
+    boardGroupableColumns,
+    boardGroupingColumn,
+    catalogCanSaveColumn,
+    catalogColumns,
+    catalogQuery,
+    createDatabaseColumn,
+    databaseColumnNameDraft,
+    databaseColumnOptionsDraft,
+    databaseColumnTypeDraft,
+    deleteDatabaseColumn,
+    dragOverBoardColumnId,
+    draggingDocumentId,
+    dropOnBoardTarget,
+    endDrag,
+    filteredCatalog,
+    handleBoardColumnDragOver,
+    isCreatingDatabaseColumn,
+    moveDatabaseColumn,
+    openDocumentInDocumentsPage,
+    parentGroupValue: BOARD_GROUP_BY_PARENT,
+    renameDatabaseColumn,
+    selectedDocumentId,
+    setBoardGroupBy,
+    setCatalogQuery,
+    setDatabaseColumnNameDraft,
+    setDatabaseColumnOptionsDraft,
+    setDatabaseColumnTypeDraft,
+    setIsCreatingDatabaseColumn,
+    updateDatabaseColumnOptions,
+    updateDocumentDatabaseValue
+  })
   const isZh = uiLanguage === 'zh-CN'
   const pageItems: Array<{ id: PageId; label: string; description: string }> = [
     {
@@ -3091,53 +3103,8 @@ return (
 
          {activePage === 'database' ? (
            <DatabaseSection
-             board={{
-               boardColumns,
-               boardGroupingColumn,
-               dragOverColumnId: dragOverBoardColumnId,
-               draggingDocumentId,
-               groupBy: boardGroupBy,
-               groupableColumns: boardGroupableColumns,
-               onDragEnd: endDrag,
-               onDragOverColumn: handleBoardColumnDragOver,
-               onDragStart: beginDrag,
-               onDropOnColumn: dropOnBoardTarget,
-               onGroupByChange: setBoardGroupBy,
-               onOpenDocument: openDocumentInDocumentsPage,
-               parentGroupValue: BOARD_GROUP_BY_PARENT,
-               selectedDocumentId
-             }}
-             catalog={{
-               canSaveColumn: databaseColumnNameDraft.trim().length > 0 && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select') || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0),
-               columnNameDraft: databaseColumnNameDraft,
-               columnOptionsDraft: databaseColumnOptionsDraft,
-               columnTypeDraft: databaseColumnTypeDraft,
-               columns: catalogColumns,
-               filteredDocuments: filteredCatalog,
-               isCreatingColumn: isCreatingDatabaseColumn,
-               onCancelCreateColumn: () => {
-                 setIsCreatingDatabaseColumn(false)
-                 setDatabaseColumnNameDraft('')
-                 setDatabaseColumnTypeDraft('text')
-                 setDatabaseColumnOptionsDraft('')
-               },
-               onColumnNameChange: setDatabaseColumnNameDraft,
-               onColumnOptionsChange: setDatabaseColumnOptionsDraft,
-               onColumnTypeChange: setDatabaseColumnTypeDraft,
-               onDeleteColumn: deleteDatabaseColumn,
-               onMoveColumn: moveDatabaseColumn,
-               onOpenDocument: openDocumentInDocumentsPage,
-               onQueryChange: setCatalogQuery,
-               onRenameColumn: renameDatabaseColumn,
-               onSaveColumn: () => {
-                 void createDatabaseColumn()
-               },
-               onToggleCreateColumn: () => setIsCreatingDatabaseColumn((previous) => !previous),
-               onUpdateColumnOptions: updateDatabaseColumnOptions,
-               onUpdateField: updateDocumentDatabaseValue,
-               query: catalogQuery,
-               selectedDocumentId
-             }}
+             board={databaseBoardProps}
+             catalog={databaseCatalogProps}
              components={{
                DatabaseFieldEditor,
                DatabaseSchemaColumnCard,
@@ -4733,21 +4700,6 @@ function renderMathBlock(content: string): string {
     throwOnError: false,
     strict: 'ignore'
   })
-}
-
-function buildDocumentReferences(nodes: DocumentTreeNode[]): Array<{ id: string; title: string; path: string }> {
-  const references: Array<{ id: string; title: string; path: string }> = []
-
-  for (const node of nodes) {
-    references.push({
-      id: node.id,
-      title: node.title,
-      path: node.path
-    })
-    references.push(...buildDocumentReferences(node.children))
-  }
-
-  return references
 }
 
 function buildBlockReferencesMap(blocks: DocumentBlock[]): Map<string, DocumentBlock> {
