@@ -1,9 +1,7 @@
 import { renderToString } from 'katex'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  buildBoardColumns,
   getBoardDropFieldValue,
-  isBoardGroupableColumn,
   type BoardColumn,
   type BoardDropTarget
 } from '@shared/board'
@@ -67,6 +65,7 @@ import { useBlockInputActions } from './hooks/useBlockInputActions'
 import { useBlockCollapseState } from './hooks/useBlockCollapseState'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
+import { useDatabaseDerivedState } from './hooks/useDatabaseDerivedState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
 import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
@@ -507,18 +506,6 @@ function createDraftBlockId() {
 
 function normalizeDatabaseColumnOptionsInput(input: string): string[] {
   return [...new Set(input.split(',').map((option) => option.trim()).filter(Boolean))]
-}
-
-function formatDocumentDatabaseFieldValueForSearch(value: DocumentDatabaseFieldValue): string {
-  if (Array.isArray(value)) {
-    return value.join(' ')
-  }
-
-  if (typeof value === 'boolean') {
-    return value ? 'checked true yes' : 'unchecked false no'
-  }
-
-  return value ?? ''
 }
 
 function formatDocumentDatabaseFieldValueForDraft(value: DocumentDatabaseFieldValue): string {
@@ -2557,149 +2544,150 @@ export function App() {
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
   const pluginRoots = homeData.pluginHost?.roots ?? []
   const pluginWritableRoot = homeData.pluginHost?.writableRoot ?? null
-  const boardGroupableColumns = useMemo(
-    () => catalogColumns.filter(isBoardGroupableColumn),
-    [catalogColumns]
-  )
-  const boardGroupingColumn = boardGroupBy === BOARD_GROUP_BY_PARENT
-    ? null
-    : boardGroupableColumns.find((column) => column.id === boardGroupBy) ?? null
-  const standaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
-  const selectedDatabase = standaloneDatabases.find((database) => database.id === databaseEntityDatabaseId) ?? null
-  const activeDatabaseSavedView = databaseSavedViews.find((view) => view.id === activeDatabaseSavedViewId) ?? null
-  const databaseSavedViewDirty = activeDatabaseSavedView !== null && (
-    activeDatabaseSavedView.filterQuery !== databaseEntityFilterQuery
-    || activeDatabaseSavedView.filterScope !== databaseEntityFilterScope
-    || activeDatabaseSavedView.sortMode !== databaseEntitySortMode
-    || activeDatabaseSavedView.viewMode !== databaseEntityViewMode
-  )
-  const databasePageColumns = databaseWorkspaceView === 'standalone' ? selectedDatabaseColumns : catalogColumns
-  const databasePageTitle = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesTitle : ui.documentCatalogTitle
-  const databasePageHint = databaseWorkspaceView === 'standalone' ? ui.standaloneDatabasesHint : ui.documentCatalogHint
-  const isDocumentCatalogViewActive = activePage === 'database' && databaseWorkspaceView === 'catalog'
-  const trimmedDatabaseEntityFilterQuery = databaseEntityFilterQuery.trim().toLowerCase()
-  const standaloneDatabaseEntityRows = databaseEntities.map((entity) => {
-    const linkedDocument = entity.documentId
-      ? homeData.documentCatalog.find((document) => document.id === entity.documentId) ?? null
-      : null
-
-    return {
-      entity,
-      linkedDocument,
-      searchableDocumentText: [linkedDocument?.title ?? '', linkedDocument?.path ?? ''].join(' ').trim(),
-      searchableFieldText: selectedDatabaseColumns
-        .map((column) => formatDocumentDatabaseFieldValueForSearch(entity.fieldValues[column.id] ?? null))
-        .join(' ')
-    }
+  const {
+    activeDatabaseSavedView,
+    boardColumns,
+    boardGroupableColumns,
+    boardGroupingColumn,
+    databasePageHint,
+    databasePageTitle,
+    databaseSavedViewDirty,
+    filteredCatalog,
+    filteredStandaloneDatabaseEntityIds,
+    filteredStandaloneDatabaseEntityRows,
+    selectedDatabase,
+    selectedDatabaseEntityIdSet,
+    selectedVisibleDatabaseEntitiesHaveLinkedDocument,
+    selectedVisibleDatabaseEntityIds,
+    standaloneDatabases
+  } = useDatabaseDerivedState({
+    activeDatabaseSavedViewId,
+    boardGroupBy,
+    catalogColumns,
+    catalogDocuments,
+    databaseEntities,
+    databaseEntityDatabaseId,
+    databaseEntityFilterQuery,
+    databaseEntityFilterScope,
+    databaseEntitySortMode,
+    databaseEntityViewMode,
+    databaseSavedViews,
+    databaseWorkspaceView,
+    databases,
+    deferredCatalogQuery,
+    documentCatalog: homeData.documentCatalog,
+    isDatabasePageActive: activePage === 'database',
+    isDefaultDocumentDatabase,
+    selectedDatabaseColumns,
+    selectedDatabaseEntityIds,
+    uiDocumentCatalogHint: ui.documentCatalogHint,
+    uiDocumentCatalogTitle: ui.documentCatalogTitle,
+    uiStandaloneDatabasesHint: ui.standaloneDatabasesHint,
+    uiStandaloneDatabasesTitle: ui.standaloneDatabasesTitle
   })
-  const filteredStandaloneDatabaseEntityRows = standaloneDatabaseEntityRows
-    .filter(({ entity, searchableDocumentText, searchableFieldText }) => {
-      if (!trimmedDatabaseEntityFilterQuery) {
-        return true
-      }
-
-      if (databaseEntityFilterScope === '__document__') {
-        return searchableDocumentText.toLowerCase().includes(trimmedDatabaseEntityFilterQuery)
-      }
-
-      if (databaseEntityFilterScope) {
-        return formatDocumentDatabaseFieldValueForSearch(entity.fieldValues[databaseEntityFilterScope] ?? null)
-          .toLowerCase()
-          .includes(trimmedDatabaseEntityFilterQuery)
-      }
-
-      return [searchableDocumentText, searchableFieldText]
-        .join(' ')
-        .toLowerCase()
-        .includes(trimmedDatabaseEntityFilterQuery)
-    })
-    .sort((left, right) => {
-      if (databaseEntitySortMode === 'updated-asc') {
-        return new Date(left.entity.updatedAt).getTime() - new Date(right.entity.updatedAt).getTime()
-      }
-
-      if (databaseEntitySortMode === 'created-desc') {
-        return new Date(right.entity.createdAt).getTime() - new Date(left.entity.createdAt).getTime()
-      }
-
-      if (databaseEntitySortMode === 'created-asc') {
-        return new Date(left.entity.createdAt).getTime() - new Date(right.entity.createdAt).getTime()
-      }
-
-      return new Date(right.entity.updatedAt).getTime() - new Date(left.entity.updatedAt).getTime()
-    })
-  const filteredStandaloneDatabaseEntityIds = filteredStandaloneDatabaseEntityRows.map(({ entity }) => entity.id)
-  const selectedDatabaseEntityIdSet = new Set(selectedDatabaseEntityIds)
-  const selectedVisibleDatabaseEntityIds = filteredStandaloneDatabaseEntityIds.filter((entityId) => selectedDatabaseEntityIdSet.has(entityId))
-  const selectedVisibleDatabaseEntityRows = filteredStandaloneDatabaseEntityRows.filter(({ entity }) => selectedDatabaseEntityIdSet.has(entity.id))
-  const selectedVisibleDatabaseEntitiesHaveLinkedDocument = selectedVisibleDatabaseEntityRows.some(({ entity }) => Boolean(entity.documentId))
-  const trimmedCatalogQuery = deferredCatalogQuery.trim().toLowerCase()
-  const filteredCatalog = useMemo(() => {
-    if (!isDocumentCatalogViewActive) {
-      return catalogDocuments
-    }
-
-    return catalogDocuments.filter((document) => {
-      if (!trimmedCatalogQuery) {
-        return true
-      }
-
-      const dynamicFieldSearchText = Object.values(document.fieldValues)
-        .map((value) => formatDocumentDatabaseFieldValueForSearch(value))
-        .join(' ')
-
-      return [document.title, document.path, document.summary, dynamicFieldSearchText]
-        .join(' ')
-        .toLowerCase()
-        .includes(trimmedCatalogQuery)
-    })
-  }, [catalogDocuments, isDocumentCatalogViewActive, trimmedCatalogQuery])
-  const boardColumns = useMemo(() => {
-    if (!isDocumentCatalogViewActive) {
-      return []
-    }
-
-    return buildBoardColumns(filteredCatalog, boardGroupingColumn)
-  }, [boardGroupingColumn, filteredCatalog, isDocumentCatalogViewActive])
   const catalogCanSaveColumn = databaseColumnNameDraft.trim().length > 0
     && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select')
       || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0)
+  const standaloneCanSaveColumn = Boolean(selectedDatabase) && catalogCanSaveColumn
   const {
     board: databaseBoardProps,
-    catalog: databaseCatalogProps
+    catalog: databaseCatalogProps,
+    standalone: databaseStandaloneProps
   } = useDatabaseSectionPresentation({
+    activeDatabaseSavedView,
+    activeDatabaseSavedViewId,
+    applyDatabaseEntityFieldToSelected,
     beginDrag,
+    beginCurrentDatabaseSavedViewCreation,
     boardColumns,
     boardGroupBy,
     boardGroupableColumns,
     boardGroupingColumn,
+    cancelCurrentDatabaseSavedViewCreation,
     catalogCanSaveColumn,
     catalogColumns,
     catalogQuery,
+    clearDatabaseEntityFieldFromSelected,
+    clearSelectedDatabaseEntityDocuments,
+    createDatabase,
     createDatabaseColumn,
+    createDatabaseEntity,
+    databaseDescriptionDraft,
     databaseColumnNameDraft,
     databaseColumnOptionsDraft,
     databaseColumnTypeDraft,
+    databaseEntities,
+    databaseEntityBulkFieldValues,
+    databaseEntityDatabaseId,
+    databaseEntityDocumentId,
+    databaseEntityFieldValues,
+    databaseEntityFilterQuery,
+    databaseEntityFilterScope,
+    databaseEntitySortMode,
+    databaseEntityViewMode,
+    databaseNameDraft,
+    databaseSavedViewDirty,
+    databaseSavedViewNameDraft,
+    databaseSavedViews,
+    deleteCurrentDatabase,
+    deleteCurrentDatabaseSavedView,
     deleteDatabaseColumn,
+    deleteDatabaseEntity,
+    deleteSelectedDatabaseEntities,
     dragOverBoardColumnId,
     draggingDocumentId,
+    documentCatalog: homeData.documentCatalog,
     dropOnBoardTarget,
     endDrag,
     filteredCatalog,
+    filteredStandaloneDatabaseEntityRows,
+    handleDatabaseSavedViewSelect,
     handleBoardColumnDragOver,
     isCreatingDatabaseColumn,
+    isCreatingDatabase,
+    isCreatingDatabaseEntity,
+    isCreatingDatabaseSavedView,
     moveDatabaseColumn,
+    normalizeDocumentDatabaseFieldValue,
     openDocumentInDocumentsPage,
     parentGroupValue: BOARD_GROUP_BY_PARENT,
     renameDatabaseColumn,
+    saveCurrentDatabaseSavedView,
+    selectVisibleDatabaseEntities,
+    selectedDatabase,
+    selectedDatabaseColumns,
+    selectedDatabaseEntityIdSet,
+    selectedEntitiesHaveLinkedDocument: selectedVisibleDatabaseEntitiesHaveLinkedDocument,
     selectedDocumentId,
+    selectedVisibleDatabaseEntityIds,
     setBoardGroupBy,
     setCatalogQuery,
+    setDatabaseDescriptionDraft,
+    setDatabaseEntityBulkFieldValues,
+    setDatabaseEntityDatabaseId,
+    setDatabaseEntityDocumentId,
+    setDatabaseEntityFieldValues,
+    setDatabaseEntityFilterQuery,
+    setDatabaseEntityFilterScope,
+    setDatabaseEntitySortMode,
+    setDatabaseEntityViewMode,
     setDatabaseColumnNameDraft,
     setDatabaseColumnOptionsDraft,
     setDatabaseColumnTypeDraft,
+    setDatabaseNameDraft,
+    setDatabaseSavedViewNameDraft,
+    setIsCreatingDatabase,
     setIsCreatingDatabaseColumn,
+    setIsCreatingDatabaseEntity,
+    setSelectedDatabaseEntityIds,
+    standaloneCanSaveColumn,
+    standaloneDatabases,
+    toggleDatabaseEntitySelection,
+    updateCurrentDatabaseSavedView,
     updateDatabaseColumnOptions,
+    updateDatabaseEntityBulkFieldValue,
+    updateDatabaseEntityDocument,
+    updateDatabaseEntityField,
     updateDocumentDatabaseValue
   })
   const isZh = uiLanguage === 'zh-CN'
@@ -3116,131 +3104,7 @@ return (
              databasePageTitle={databasePageTitle}
              databaseWorkspaceView={databaseWorkspaceView}
              onSwitchDatabaseWorkspaceView={switchDatabaseWorkspaceView}
-             standalone={{
-               activeSavedView: activeDatabaseSavedView,
-               activeSavedViewId: activeDatabaseSavedViewId,
-               bulkFieldValues: databaseEntityBulkFieldValues,
-               canSaveColumn: Boolean(selectedDatabase) && databaseColumnNameDraft.trim().length > 0 && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select') || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0),
-               columnNameDraft: databaseColumnNameDraft,
-               columnOptionsDraft: databaseColumnOptionsDraft,
-               columnTypeDraft: databaseColumnTypeDraft,
-               databaseDescriptionDraft,
-               databaseEntities,
-               databaseNameDraft,
-               databases: standaloneDatabases,
-               documentCatalog: homeData.documentCatalog,
-               entityDatabaseId: databaseEntityDatabaseId,
-               entityDocumentId: databaseEntityDocumentId,
-               entityFieldValues: databaseEntityFieldValues,
-               filterQuery: databaseEntityFilterQuery,
-               filteredEntityRows: filteredStandaloneDatabaseEntityRows,
-               filterScope: databaseEntityFilterScope,
-               isCreatingColumn: isCreatingDatabaseColumn,
-               isCreatingDatabase,
-               isCreatingEntity: isCreatingDatabaseEntity,
-               isCreatingSavedView: isCreatingDatabaseSavedView,
-               onApplyFieldToSelected: (columnId) => {
-                 void applyDatabaseEntityFieldToSelected(columnId)
-               },
-               onBeginSavedViewCreation: beginCurrentDatabaseSavedViewCreation,
-               onBulkFieldChange: updateDatabaseEntityBulkFieldValue,
-               onCancelCreateColumn: () => {
-                 setIsCreatingDatabaseColumn(false)
-                 setDatabaseColumnNameDraft('')
-                 setDatabaseColumnTypeDraft('text')
-                 setDatabaseColumnOptionsDraft('')
-               },
-               onCancelCreateDatabase: () => {
-                 setIsCreatingDatabase(false)
-                 setDatabaseNameDraft('')
-                 setDatabaseDescriptionDraft('')
-               },
-               onCancelCreateEntity: () => {
-                 setIsCreatingDatabaseEntity(false)
-                 setDatabaseEntityDocumentId('')
-                 setDatabaseEntityFieldValues({})
-               },
-               onCancelSavedViewCreation: cancelCurrentDatabaseSavedViewCreation,
-               onClearBulkFieldValues: () => setDatabaseEntityBulkFieldValues({}),
-               onClearFieldFromSelected: (columnId) => {
-                 void clearDatabaseEntityFieldFromSelected(columnId)
-               },
-               onClearSelectedEntities: () => setSelectedDatabaseEntityIds([]),
-               onClearSelectedEntityDocuments: () => {
-                 void clearSelectedDatabaseEntityDocuments()
-               },
-               onColumnNameChange: setDatabaseColumnNameDraft,
-               onColumnOptionsChange: setDatabaseColumnOptionsDraft,
-               onColumnTypeChange: setDatabaseColumnTypeDraft,
-               onDatabaseDescriptionChange: setDatabaseDescriptionDraft,
-               onDatabaseNameChange: setDatabaseNameDraft,
-               onDeleteColumn: deleteDatabaseColumn,
-               onDeleteDatabase: () => {
-                 void deleteCurrentDatabase()
-               },
-               onDeleteEntity: deleteDatabaseEntity,
-               onDeleteSavedView: () => {
-                 void deleteCurrentDatabaseSavedView()
-               },
-               onDeleteSelectedEntities: () => {
-                 void deleteSelectedDatabaseEntities()
-               },
-               onEntityDatabaseIdChange: setDatabaseEntityDatabaseId,
-               onEntityDocumentIdChange: setDatabaseEntityDocumentId,
-               onEntityDraftFieldChange: (columnId, value) => {
-                 const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
-                 setDatabaseEntityFieldValues((previous) => {
-                   const nextFieldValues = { ...previous }
-                   if (normalizedValue === null) {
-                     delete nextFieldValues[columnId]
-                   } else {
-                     nextFieldValues[columnId] = normalizedValue
-                   }
-                   return nextFieldValues
-                 })
-               },
-               onFilterQueryChange: setDatabaseEntityFilterQuery,
-               onFilterScopeChange: setDatabaseEntityFilterScope,
-               onMoveColumn: moveDatabaseColumn,
-               onRenameColumn: renameDatabaseColumn,
-               onSavedViewNameChange: setDatabaseSavedViewNameDraft,
-               onSavedViewSelect: handleDatabaseSavedViewSelect,
-               onSaveColumn: () => {
-                 void createDatabaseColumn()
-               },
-               onSaveSavedView: () => {
-                 void saveCurrentDatabaseSavedView()
-               },
-               onSelectVisibleEntities: selectVisibleDatabaseEntities,
-               onSortModeChange: setDatabaseEntitySortMode,
-               onSubmitCreateDatabase: () => {
-                 void createDatabase()
-               },
-               onSubmitCreateEntity: () => {
-                 void createDatabaseEntity()
-               },
-               onToggleCreateColumn: () => setIsCreatingDatabaseColumn((previous) => !previous),
-               onToggleCreateDatabase: () => setIsCreatingDatabase((previous) => !previous),
-               onToggleCreateEntity: () => setIsCreatingDatabaseEntity((previous) => !previous),
-               onToggleEntitySelection: toggleDatabaseEntitySelection,
-               onUpdateColumnOptions: updateDatabaseColumnOptions,
-               onUpdateEntityDocument: updateDatabaseEntityDocument,
-               onUpdateEntityField: updateDatabaseEntityField,
-               onUpdateSavedView: () => {
-                 void updateCurrentDatabaseSavedView()
-               },
-               onViewModeChange: setDatabaseEntityViewMode,
-               savedViewDirty: databaseSavedViewDirty,
-               savedViewNameDraft: databaseSavedViewNameDraft,
-               savedViews: databaseSavedViews,
-               selectedDatabase,
-               selectedDatabaseColumns,
-               selectedEntitiesHaveLinkedDocument: selectedVisibleDatabaseEntitiesHaveLinkedDocument,
-               selectedEntityIdSet: selectedDatabaseEntityIdSet,
-               selectedEntityIds: selectedVisibleDatabaseEntityIds,
-               sortMode: databaseEntitySortMode,
-               viewMode: databaseEntityViewMode
-             }}
+             standalone={databaseStandaloneProps}
              ui={ui}
            />
          ) : null}
