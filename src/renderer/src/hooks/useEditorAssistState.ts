@@ -25,8 +25,6 @@ type UseEditorAssistStateParams<TSlashCommand extends SlashCommandLike> = {
   blockSlashCommands: TSlashCommand[]
   blockTextareaRefs: { current: Array<HTMLTextAreaElement | null> }
   draftBlocks: DocumentBlockDraft[]
-  getOpenLinkContext: (content: string, cursorPosition: number) => LinkContext | null
-  getSlashCommandContext: (content: string, cursorPosition: number) => SlashCommandContext | null
   isEditing: boolean
   selectedDocumentId: string | null
   selectedDocumentPresent: boolean
@@ -41,8 +39,6 @@ export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
   blockSlashCommands,
   blockTextareaRefs,
   draftBlocks,
-  getOpenLinkContext,
-  getSlashCommandContext,
   isEditing,
   selectedDocumentId,
   selectedDocumentPresent,
@@ -213,5 +209,46 @@ export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
     selectedSlashCommandIndex,
     setSelectedSlashCommandIndex,
     slashPanelPos
+  }
+}
+
+function getOpenLinkContext(content: string, cursorPosition: number): LinkContext | null {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const beforeCursor = content.slice(0, safeCursor)
+  const start = beforeCursor.lastIndexOf('[[')
+
+  if (start === -1) {
+    return null
+  }
+
+  const openSegment = beforeCursor.slice(start + 2)
+  if (openSegment.includes(']]') || openSegment.includes('\n')) {
+    return null
+  }
+
+  return {
+    query: openSegment.trim(),
+    start
+  }
+}
+
+function getSlashCommandContext(content: string, cursorPosition: number): SlashCommandContext | null {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const beforeCursor = content.slice(0, safeCursor)
+  const lineStart = beforeCursor.lastIndexOf('\n') + 1
+  const lineBeforeCursor = beforeCursor.slice(lineStart)
+  const trimmedStart = lineBeforeCursor.trimStart()
+
+  if (!trimmedStart.startsWith('/')) {
+    return null
+  }
+
+  if (trimmedStart.includes(' ')) {
+    return null
+  }
+
+  return {
+    query: trimmedStart.slice(1),
+    start: lineStart + lineBeforeCursor.indexOf('/')
   }
 }

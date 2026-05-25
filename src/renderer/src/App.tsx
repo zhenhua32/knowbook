@@ -39,9 +39,6 @@ import {
   setActiveUiLanguage,
   type UiLanguage
 } from './i18n'
-import {
-  normalizeDatabaseColumnOptionsInput
-} from './components/database/databaseFieldUtils'
 import { PageRail } from './components/PageRail'
 import { DocumentsSidebar } from './components/DocumentsSidebar'
 import { WorkspaceGraph } from './components/WorkspaceGraph'
@@ -1276,8 +1273,6 @@ export function App() {
     blockSlashCommands,
     blockTextareaRefs,
     draftBlocks,
-    getOpenLinkContext,
-    getSlashCommandContext,
     isEditing,
     selectedDocumentId,
     selectedDocumentPresent: Boolean(selectedDocument),
@@ -1988,10 +1983,6 @@ export function App() {
     uiStandaloneDatabasesHint: ui.standaloneDatabasesHint,
     uiStandaloneDatabasesTitle: ui.standaloneDatabasesTitle
   })
-  const catalogCanSaveColumn = databaseColumnNameDraft.trim().length > 0
-    && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select')
-      || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0)
-  const standaloneCanSaveColumn = Boolean(selectedDatabase) && catalogCanSaveColumn
   const {
     createDatabaseColumn,
     deleteDatabaseColumn,
@@ -2063,7 +2054,6 @@ export function App() {
     boardGroupableColumns,
     boardGroupingColumn,
     cancelCurrentDatabaseSavedViewCreation,
-    catalogCanSaveColumn,
     catalogColumns,
     catalogQuery,
     clearDatabaseEntityFieldFromSelected,
@@ -2138,7 +2128,6 @@ export function App() {
     setIsCreatingDatabaseColumn,
     setIsCreatingDatabaseEntity,
     setSelectedDatabaseEntityIds,
-    standaloneCanSaveColumn,
     standaloneDatabases,
     toggleDatabaseEntitySelection,
     updateCurrentDatabaseSavedView,
@@ -2843,47 +2832,6 @@ function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; 
   }
 
   return flattened
-}
-
-function getOpenLinkContext(content: string, cursorPosition: number): { query: string; start: number } | null {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const beforeCursor = content.slice(0, safeCursor)
-  const start = beforeCursor.lastIndexOf('[[')
-
-  if (start === -1) {
-    return null
-  }
-
-  const openSegment = beforeCursor.slice(start + 2)
-  if (openSegment.includes(']]') || openSegment.includes('\n')) {
-    return null
-  }
-
-  return {
-    query: openSegment.trim(),
-    start
-  }
-}
-
-function getSlashCommandContext(content: string, cursorPosition: number): { query: string; start: number } | null {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const beforeCursor = content.slice(0, safeCursor)
-  const lineStart = beforeCursor.lastIndexOf('\n') + 1
-  const lineBeforeCursor = beforeCursor.slice(lineStart)
-  const trimmedStart = lineBeforeCursor.trimStart()
-
-  if (!trimmedStart.startsWith('/')) {
-    return null
-  }
-
-  if (trimmedStart.includes(' ')) {
-    return null
-  }
-
-  return {
-    query: trimmedStart.slice(1),
-    start: lineStart + lineBeforeCursor.indexOf('/')
-  }
 }
 
 function stripSlashCommand(content: string, start: number, cursorPosition: number) {

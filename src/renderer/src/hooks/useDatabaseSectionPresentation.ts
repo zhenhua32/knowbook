@@ -1,6 +1,9 @@
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import { DatabaseSection } from '../sections/DatabaseSection'
-import { normalizeDocumentDatabaseFieldValue } from '../components/database/databaseFieldUtils'
+import {
+  normalizeDatabaseColumnOptionsInput,
+  normalizeDocumentDatabaseFieldValue
+} from '../components/database/databaseFieldUtils'
 
 type DatabaseSectionProps = ComponentProps<typeof DatabaseSection>
 type DatabaseBoardProps = DatabaseSectionProps['board']
@@ -18,7 +21,6 @@ type UseDatabaseSectionPresentationParams = {
   boardGroupableColumns: DatabaseBoardProps['groupableColumns']
   boardGroupingColumn: DatabaseBoardProps['boardGroupingColumn']
   cancelCurrentDatabaseSavedViewCreation: DatabaseStandaloneProps['onCancelSavedViewCreation']
-  catalogCanSaveColumn: DatabaseCatalogProps['canSaveColumn']
   catalogColumns: DatabaseCatalogProps['columns']
   catalogQuery: DatabaseCatalogProps['query']
   clearDatabaseEntityFieldFromSelected: (columnId: string) => Promise<void>
@@ -93,7 +95,6 @@ type UseDatabaseSectionPresentationParams = {
   setIsCreatingDatabaseColumn: Dispatch<SetStateAction<boolean>>
   setIsCreatingDatabaseEntity: Dispatch<SetStateAction<boolean>>
   setSelectedDatabaseEntityIds: Dispatch<SetStateAction<string[]>>
-  standaloneCanSaveColumn: DatabaseStandaloneProps['canSaveColumn']
   standaloneDatabases: DatabaseStandaloneProps['databases']
   toggleDatabaseEntitySelection: DatabaseStandaloneProps['onToggleEntitySelection']
   updateCurrentDatabaseSavedView: () => Promise<void>
@@ -115,7 +116,6 @@ export function useDatabaseSectionPresentation({
   boardGroupableColumns,
   boardGroupingColumn,
   cancelCurrentDatabaseSavedViewCreation,
-  catalogCanSaveColumn,
   catalogColumns,
   catalogQuery,
   clearDatabaseEntityFieldFromSelected,
@@ -190,7 +190,6 @@ export function useDatabaseSectionPresentation({
   setIsCreatingDatabaseColumn,
   setIsCreatingDatabaseEntity,
   setSelectedDatabaseEntityIds,
-  standaloneCanSaveColumn,
   standaloneDatabases,
   toggleDatabaseEntitySelection,
   updateCurrentDatabaseSavedView,
@@ -200,6 +199,11 @@ export function useDatabaseSectionPresentation({
   updateDatabaseEntityField,
   updateDocumentDatabaseValue
 }: UseDatabaseSectionPresentationParams) {
+  const catalogCanSaveColumn = databaseColumnNameDraft.trim().length > 0
+    && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select')
+      || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0)
+  const standaloneCanSaveColumn = Boolean(selectedDatabase) && catalogCanSaveColumn
+
   const resetColumnDrafts = () => {
     setIsCreatingDatabaseColumn(false)
     setDatabaseColumnNameDraft('')
