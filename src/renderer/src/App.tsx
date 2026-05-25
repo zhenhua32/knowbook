@@ -66,6 +66,8 @@ import { useBlockCollapseState } from './hooks/useBlockCollapseState'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDatabaseDerivedState } from './hooks/useDatabaseDerivedState'
+import { useDatabasePageActions } from './hooks/useDatabasePageActions'
+import { useDatabaseWorkspaceActions } from './hooks/useDatabaseWorkspaceActions'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
 import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
@@ -1972,23 +1974,71 @@ export function App() {
       setIsSaving(false)
     }
   }
+  const {
+    createDatabase,
+    deleteCurrentDatabase,
+    switchDatabaseWorkspaceView
+  } = useDatabaseWorkspaceActions({
+    databaseEntityDatabaseId,
+    databaseDescriptionDraft,
+    databaseNameDraft,
+    databases,
+    isDefaultDocumentDatabase,
+    setBackupMessage,
+    setDatabaseColumnNameDraft,
+    setDatabaseColumnOptionsDraft,
+    setDatabaseColumnTypeDraft,
+    setDatabaseDescriptionDraft,
+    setDatabaseEntities,
+    setDatabaseEntityBulkFieldValues,
+    setDatabaseEntityDatabaseId,
+    setDatabaseEntityDocumentId,
+    setDatabaseEntityFieldValues,
+    setDatabaseNameDraft,
+    setDatabaseWorkspaceView,
+    setDatabases,
+    setIsCreatingDatabase,
+    setIsCreatingDatabaseColumn,
+    setIsCreatingDatabaseEntity,
+    setSelectedDatabaseEntityIds,
+    ui
+  })
 
-
-  function switchDatabaseWorkspaceView(nextView: DatabaseWorkspaceView) {
-    setDatabaseWorkspaceView(nextView)
-    setIsCreatingDatabaseColumn(false)
-    setDatabaseColumnNameDraft('')
-    setDatabaseColumnTypeDraft('text')
-    setDatabaseColumnOptionsDraft('')
-    setIsCreatingDatabase(false)
-    setDatabaseNameDraft('')
-    setDatabaseDescriptionDraft('')
-    setIsCreatingDatabaseEntity(false)
-    setDatabaseEntityDocumentId('')
-    setDatabaseEntityFieldValues({})
-    setDatabaseEntityBulkFieldValues({})
-    setSelectedDatabaseEntityIds([])
-  }
+  const {
+    beginCurrentDatabaseSavedViewCreation,
+    cancelCurrentDatabaseSavedViewCreation,
+    deleteCurrentDatabaseSavedView,
+    handleDatabaseSavedViewSelect,
+    refreshDatabasePageData,
+    refreshDocumentCatalogData,
+    saveCurrentDatabaseSavedView,
+    updateCurrentDatabaseSavedView
+  } = useDatabasePageActions({
+    activeDatabaseSavedViewId,
+    databaseEntityDatabaseId,
+    databaseEntityFilterQuery,
+    databaseEntityFilterScope,
+    databaseEntitySortMode,
+    databaseEntityViewMode,
+    databaseSavedViewNameDraft,
+    databaseSavedViews,
+    setActiveDatabaseSavedViewId,
+    setBackupMessage,
+    setCatalogColumns,
+    setCatalogDocuments,
+    setDatabaseEntities,
+    setDatabaseEntityFilterQuery,
+    setDatabaseEntityFilterScope,
+    setDatabaseEntitySortMode,
+    setDatabaseEntityViewMode,
+    setDatabaseSavedViewNameDraft,
+    setDatabaseSavedViews,
+    setHomeData,
+    setIsCreatingDatabaseSavedView,
+    setSelectedDatabaseColumns,
+    setSelectedDatabaseEntityIds,
+    ui
+  })
 
   async function createDatabaseColumn() {
     if (databaseWorkspaceView === 'standalone' && !selectedDatabase) {
@@ -2081,162 +2131,6 @@ export function App() {
       setBackupMessage(ui.databaseColumnDeleted(columnName))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.databaseColumnDeleteFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function createDatabase() {
-    try {
-      const createdDatabase = await window.knowbook.createDocumentDatabase({
-        name: databaseNameDraft,
-        description: databaseDescriptionDraft.trim() || undefined
-      })
-      const refreshedDatabases = await window.knowbook.getDatabases()
-      setDatabases(refreshedDatabases)
-      setDatabaseWorkspaceView('standalone')
-      setDatabaseEntityDatabaseId(createdDatabase.id)
-      setDatabaseEntities([])
-      setIsCreatingDatabase(false)
-      setIsCreatingDatabaseEntity(true)
-      setDatabaseNameDraft('')
-      setDatabaseDescriptionDraft('')
-      setBackupMessage(ui.databaseCreated(createdDatabase.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseCreateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function deleteCurrentDatabase() {
-    if (!selectedDatabase) {
-      return
-    }
-
-    if (!window.confirm(ui.confirmDeleteDatabase(selectedDatabase.name))) {
-      return
-    }
-
-    try {
-      await window.knowbook.deleteDatabase(selectedDatabase.id)
-      const refreshedDatabases = await window.knowbook.getDatabases()
-      setDatabases(refreshedDatabases)
-      setIsCreatingDatabaseColumn(false)
-      setIsCreatingDatabaseEntity(false)
-      setDatabaseColumnNameDraft('')
-      setDatabaseColumnTypeDraft('text')
-      setDatabaseColumnOptionsDraft('')
-      setDatabaseEntityDocumentId('')
-      setDatabaseEntityFieldValues({})
-      setDatabaseEntityBulkFieldValues({})
-      setSelectedDatabaseEntityIds([])
-      setBackupMessage(ui.databaseDeleted(selectedDatabase.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseDeleteFailed
-      setBackupMessage(message)
-    }
-  }
-
-  function applyDatabaseSavedView(view: DatabaseSavedView) {
-    setActiveDatabaseSavedViewId(view.id)
-    setDatabaseEntityFilterQuery(view.filterQuery)
-    setDatabaseEntityFilterScope(view.filterScope as DatabaseEntityFilterScope)
-    setDatabaseEntitySortMode(view.sortMode)
-    setDatabaseEntityViewMode(view.viewMode)
-    setSelectedDatabaseEntityIds([])
-  }
-
-  function handleDatabaseSavedViewSelect(viewId: string) {
-    if (!viewId) {
-      setActiveDatabaseSavedViewId('')
-      return
-    }
-
-    const nextView = databaseSavedViews.find((view) => view.id === viewId)
-    if (!nextView) {
-      return
-    }
-
-    applyDatabaseSavedView(nextView)
-  }
-
-  function beginCurrentDatabaseSavedViewCreation() {
-    const suggestedName = activeDatabaseSavedView?.name ?? ui.databaseSavedViewDefaultName(databaseSavedViews.length + 1)
-    setDatabaseSavedViewNameDraft(suggestedName)
-    setIsCreatingDatabaseSavedView(true)
-  }
-
-  function cancelCurrentDatabaseSavedViewCreation() {
-    setIsCreatingDatabaseSavedView(false)
-    setDatabaseSavedViewNameDraft('')
-  }
-
-  async function saveCurrentDatabaseSavedView() {
-    if (!databaseEntityDatabaseId) {
-      return
-    }
-
-    const nextName = databaseSavedViewNameDraft.trim()
-    if (!nextName.trim()) {
-      return
-    }
-
-    try {
-      const createdView = await window.knowbook.createDatabaseSavedView({
-        databaseId: databaseEntityDatabaseId,
-        name: nextName,
-        filterQuery: databaseEntityFilterQuery,
-        filterScope: databaseEntityFilterScope,
-        sortMode: databaseEntitySortMode,
-        viewMode: databaseEntityViewMode
-      })
-      setDatabaseSavedViews((current) => [createdView, ...current.filter((view) => view.id !== createdView.id)])
-      applyDatabaseSavedView(createdView)
-      setIsCreatingDatabaseSavedView(false)
-      setDatabaseSavedViewNameDraft('')
-      await refreshDatabasePageData(databaseEntityDatabaseId, createdView.id)
-      setBackupMessage(ui.databaseSavedViewCreated(createdView.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseSavedViewCreateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function updateCurrentDatabaseSavedView() {
-    if (!activeDatabaseSavedView) {
-      return
-    }
-
-    try {
-      const updatedView = await window.knowbook.updateDatabaseSavedView({
-        viewId: activeDatabaseSavedView.id,
-        filterQuery: databaseEntityFilterQuery,
-        filterScope: databaseEntityFilterScope,
-        sortMode: databaseEntitySortMode,
-        viewMode: databaseEntityViewMode
-      })
-      await refreshDatabasePageData(databaseEntityDatabaseId, updatedView.id)
-      setBackupMessage(ui.databaseSavedViewUpdated(updatedView.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseSavedViewUpdateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function deleteCurrentDatabaseSavedView() {
-    if (!activeDatabaseSavedView) {
-      return
-    }
-
-    if (!window.confirm(ui.confirmDeleteDatabaseSavedView(activeDatabaseSavedView.name))) {
-      return
-    }
-
-    try {
-      await window.knowbook.deleteDatabaseSavedView(activeDatabaseSavedView.id)
-      await refreshDatabasePageData(databaseEntityDatabaseId, '')
-      setBackupMessage(ui.databaseSavedViewDeleted(activeDatabaseSavedView.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseSavedViewDeleteFailed
       setBackupMessage(message)
     }
   }
@@ -2473,35 +2367,6 @@ export function App() {
     selectedDocumentId,
     ui
   })
-
-  const refreshDocumentCatalogData = useCallback(async () => {
-    const [refreshedColumns, refreshedCatalog] = await Promise.all([
-      window.knowbook.getDocumentDatabaseColumns(),
-      window.knowbook.getDocumentCatalog()
-    ])
-    setCatalogColumns(refreshedColumns)
-    setCatalogDocuments(refreshedCatalog)
-  }, [])
-
-  async function refreshDatabasePageData(
-    targetDatabaseId: string | null = databaseEntityDatabaseId,
-    preferredSavedViewId?: string
-  ) {
-    const [refreshedHome, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
-      window.knowbook.getHomeData(),
-      targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve([]),
-      window.knowbook.getDocumentDatabaseColumns(targetDatabaseId),
-      targetDatabaseId ? window.knowbook.getDatabaseSavedViews(targetDatabaseId) : Promise.resolve([])
-    ])
-    setHomeData(refreshedHome)
-    setDatabaseEntities(refreshedEntities)
-    setSelectedDatabaseColumns(refreshedColumns)
-    setDatabaseSavedViews(refreshedViews)
-    setActiveDatabaseSavedViewId((current) => {
-      const nextId = preferredSavedViewId ?? current
-      return nextId && refreshedViews.some((view) => view.id === nextId) ? nextId : ''
-    })
-  }
 
   const {
     handleBlockContentChange,
