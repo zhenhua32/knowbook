@@ -35,7 +35,6 @@ type UseDocumentsDetailPresentationParams = {
   draftBlocks: DocumentBlockDraft[]
   draftSummary: string
   draftTitle: string
-  flattenDocumentTree: (nodes: DocumentTreeNode[], depth?: number) => Array<{ id: string; title: string; depth: number }>
   hasApiKey: boolean
   isZh: boolean
   isSaving: boolean
@@ -86,7 +85,6 @@ export function useDocumentsDetailPresentation({
   draftBlocks,
   draftSummary,
   draftTitle,
-  flattenDocumentTree,
   hasApiKey,
   isZh,
   isSaving,
@@ -146,6 +144,8 @@ export function useDocumentsDetailPresentation({
       }
     ]
   }, [selectedDocument, ui.relationBacklinksEmpty, ui.relationBacklinksTitle, ui.relationChildrenEmpty, ui.relationChildrenTitle, ui.relationOutgoingEmpty, ui.relationOutgoingTitle])
+
+  const flattenedDocumentTree = useMemo(() => flattenDocumentTree(documentTree), [documentTree])
 
   const statsBarProps = useMemo<DocumentStatsBarProps | null>(() => {
     if (!selectedDocument) {
@@ -212,13 +212,13 @@ export function useDocumentsDetailPresentation({
     : null
 
   const moveOptions = useMemo<DocumentPreviewHeaderProps['moveOptions']>(() => {
-    return flattenDocumentTree(documentTree)
+    return flattenedDocumentTree
       .filter((option) => option.id !== selectedDocumentId)
       .map((option) => ({
         id: option.id,
         label: `${'  '.repeat(option.depth)}${option.title}`
       }))
-  }, [documentTree, flattenDocumentTree, selectedDocumentId])
+  }, [flattenedDocumentTree, selectedDocumentId])
 
   const previewHeaderProps: DocumentPreviewHeaderProps = {
     autoSaveFlash,
@@ -255,4 +255,19 @@ export function useDocumentsDetailPresentation({
     statsBarProps,
     summaryCardProps
   }
+}
+
+function flattenDocumentTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; title: string; depth: number }> {
+  const flattened: Array<{ id: string; title: string; depth: number }> = []
+
+  for (const node of nodes) {
+    flattened.push({
+      depth,
+      id: node.id,
+      title: node.title
+    })
+    flattened.push(...flattenDocumentTree(node.children, depth + 1))
+  }
+
+  return flattened
 }

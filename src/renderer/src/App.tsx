@@ -1508,7 +1508,6 @@ export function App() {
     setActiveCursorPosition,
     setDraftBlocks,
     setPendingFocusBlockIndex,
-    stripSlashCommand,
     updateDraftBlock
   })
   const {
@@ -2299,7 +2298,6 @@ export function App() {
     draftBlocks,
     draftSummary,
     draftTitle,
-    flattenDocumentTree: flattenTree,
     hasApiKey: homeData.aiConfig.hasApiKey,
     isZh,
     isSaving,
@@ -2817,27 +2815,6 @@ function renderBlock(
   }
 
   return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
-}
-
-function flattenTree(nodes: DocumentTreeNode[], depth = 0): Array<{ id: string; title: string; depth: number }> {
-  const flattened: Array<{ id: string; title: string; depth: number }> = []
-
-  for (const node of nodes) {
-    flattened.push({
-      id: node.id,
-      title: node.title,
-      depth
-    })
-    flattened.push(...flattenTree(node.children, depth + 1))
-  }
-
-  return flattened
-}
-
-function stripSlashCommand(content: string, start: number, cursorPosition: number) {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const next = `${content.slice(0, start)}${content.slice(safeCursor)}`
-  return next.trim() === '' ? '' : next
 }
 
 function normalizeBlockContentForType(type: string, content: string) {

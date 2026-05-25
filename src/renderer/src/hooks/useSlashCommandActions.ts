@@ -49,7 +49,6 @@ type UseSlashCommandActionsParams<TSlashCommand extends SlashCommandLike> = {
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
   setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
-  stripSlashCommand: (content: string, start: number, cursorPosition: number) => string
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
 }
 
@@ -74,7 +73,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   setActiveCursorPosition,
   setDraftBlocks,
   setPendingFocusBlockIndex,
-  stripSlashCommand,
   updateDraftBlock
 }: UseSlashCommandActionsParams<TSlashCommand>) {
   const removeDraftBlock = useCallback((index: number) => {
@@ -227,7 +225,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     setActiveCursorPosition,
     setDraftBlocks,
     setPendingFocusBlockIndex,
-    stripSlashCommand,
     updateDraftBlock
   ])
 
@@ -245,7 +242,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     updateDraftBlock(activeBlockIndex, { content: nextContent })
     setActiveCursorPosition(nextContent.length)
     setPendingFocusBlockIndex(activeBlockIndex)
-  }, [activeBlockIndex, activeCursorPosition, activeSlashContext, draftBlocks, setActiveCursorPosition, setPendingFocusBlockIndex, stripSlashCommand, updateDraftBlock])
+  }, [activeBlockIndex, activeCursorPosition, activeSlashContext, draftBlocks, setActiveCursorPosition, setPendingFocusBlockIndex, updateDraftBlock])
 
   const addDraftBlock = useCallback(() => {
     insertDraftBlockAt(draftBlocks.length)
@@ -257,4 +254,10 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     dismissSlashCommand,
     removeDraftBlock
   }
+}
+
+function stripSlashCommand(content: string, start: number, cursorPosition: number) {
+  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
+  const next = `${content.slice(0, start)}${content.slice(safeCursor)}`
+  return next.trim() === '' ? '' : next
 }
