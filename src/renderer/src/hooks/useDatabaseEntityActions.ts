@@ -2,13 +2,15 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DatabaseEntity, DocumentDatabaseFieldValue } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import {
+  compactDocumentDatabaseFieldValues,
+  normalizeDocumentDatabaseFieldValue
+} from '../components/database/databaseFieldUtils'
 
 type UseDatabaseEntityActionsParams = {
-  compactDocumentDatabaseFieldValues: (values: Record<string, DocumentDatabaseFieldValue>) => Record<string, DocumentDatabaseFieldValue>
   databaseEntityDatabaseId: string
   databaseEntityDocumentId: string
   databaseEntityFieldValues: Record<string, DocumentDatabaseFieldValue>
-  normalizeDocumentDatabaseFieldValue: (value: DocumentDatabaseFieldValue) => DocumentDatabaseFieldValue
   refreshDatabasePageData: (targetDatabaseId?: string | null, preferredSavedViewId?: string) => Promise<void>
   setBackupMessage: (message: string | null) => void
   setDatabaseEntityDocumentId: Dispatch<SetStateAction<string>>
@@ -18,11 +20,9 @@ type UseDatabaseEntityActionsParams = {
 }
 
 export function useDatabaseEntityActions({
-  compactDocumentDatabaseFieldValues,
   databaseEntityDatabaseId,
   databaseEntityDocumentId,
   databaseEntityFieldValues,
-  normalizeDocumentDatabaseFieldValue,
   refreshDatabasePageData,
   setBackupMessage,
   setDatabaseEntityDocumentId,
@@ -61,7 +61,6 @@ export function useDatabaseEntityActions({
     }
   }, [
     databaseEntityDatabaseId,
-    normalizeDocumentDatabaseFieldValue,
     refreshDatabasePageData,
     setBackupMessage,
     ui
@@ -84,7 +83,6 @@ export function useDatabaseEntityActions({
       setBackupMessage(message)
     }
   }, [
-    compactDocumentDatabaseFieldValues,
     databaseEntityDatabaseId,
     databaseEntityDocumentId,
     databaseEntityFieldValues,
@@ -101,7 +99,7 @@ export function useDatabaseEntityActions({
       ...entity.fieldValues,
       [columnId]: normalizeDocumentDatabaseFieldValue(value)
     })
-  }, [normalizeDocumentDatabaseFieldValue, updateDatabaseEntity])
+  }, [updateDatabaseEntity])
 
   const updateDatabaseEntityDocument = useCallback(async (entity: DatabaseEntity, documentId: string | null) => {
     await updateDatabaseEntity(entity.id, undefined, documentId)

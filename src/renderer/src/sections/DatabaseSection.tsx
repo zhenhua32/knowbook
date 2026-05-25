@@ -1,4 +1,3 @@
-import type { ComponentType } from 'react'
 import type { BoardColumn, BoardDropTarget } from '@shared/board'
 import type {
   DatabaseEntity,
@@ -12,58 +11,16 @@ import type {
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import {
+  DatabaseFieldEditor,
+  DatabaseSchemaColumnCard,
+  DocumentBoard,
+  DocumentCatalogTable,
+  StandaloneDatabaseEntityTable
+} from '../components/database/DatabaseSectionComponents'
 
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
 type DatabaseEntityFilterScope = '' | '__document__' | string
-
-type DocumentCatalogTableComponent = ComponentType<{
-  columns: DocumentDatabaseColumn[]
-  documents: DocumentCatalogEntry[]
-  onSelect: (documentId: string) => void
-  onUpdateField: (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
-  selectedDocumentId: string | null
-}>
-
-type StandaloneDatabaseEntityTableComponent = ComponentType<{
-  columns: DocumentDatabaseColumn[]
-  documentCatalog: DocumentCatalogEntry[]
-  entities: Array<{ entity: DatabaseEntity; linkedDocument: DocumentCatalogEntry | null }>
-  onDeleteEntity: (entityId: string) => Promise<void>
-  onToggleSelection: (entityId: string, checked: boolean) => void
-  onUpdateDocument: (entity: DatabaseEntity, documentId: string | null) => Promise<void>
-  onUpdateField: (entity: DatabaseEntity, columnId: string, value: DocumentDatabaseFieldValue) => Promise<void>
-  selectedEntityIds: Set<string>
-}>
-
-type DatabaseSchemaColumnCardComponent = ComponentType<{
-  column: DocumentDatabaseColumn
-  isFirst: boolean
-  isLast: boolean
-  onDelete: (columnId: string, columnName: string) => Promise<void>
-  onMove: (columnId: string, direction: 'left' | 'right') => Promise<void>
-  onUpdateOptions: (columnId: string, optionsInput: string) => Promise<void>
-  onRename: (columnId: string, name: string) => Promise<void>
-}>
-
-type DatabaseFieldEditorComponent = ComponentType<{
-  column: DocumentDatabaseColumn
-  value: DocumentDatabaseFieldValue
-  onChangeValue: (value: DocumentDatabaseFieldValue) => void | Promise<void>
-  stopPropagation?: boolean
-  textCommitMode?: 'blur' | 'change'
-}>
-
-type DocumentBoardComponent = ComponentType<{
-  columns: BoardColumn[]
-  onSelect: (documentId: string) => void
-  selectedDocumentId: string | null
-  draggingDocumentId: string | null
-  dragOverColumnId: string | null
-  onDragStart: (documentId: string) => void
-  onDragEnd: () => void
-  onDragOverColumn: (columnId: string) => void
-  onDropOnColumn: (target: BoardDropTarget) => Promise<void>
-}>
 
 type CatalogDatabasePanelProps = {
   isCreatingColumn: boolean
@@ -187,14 +144,6 @@ type DatabaseBoardPanelProps = {
   onDropOnColumn: (target: BoardDropTarget) => Promise<void>
 }
 
-type DatabaseSectionComponents = {
-  DocumentCatalogTable: DocumentCatalogTableComponent
-  StandaloneDatabaseEntityTable: StandaloneDatabaseEntityTableComponent
-  DatabaseSchemaColumnCard: DatabaseSchemaColumnCardComponent
-  DatabaseFieldEditor: DatabaseFieldEditorComponent
-  DocumentBoard: DocumentBoardComponent
-}
-
 type DatabaseSectionProps = {
   ui: UiText
   databasePageTitle: string
@@ -204,7 +153,6 @@ type DatabaseSectionProps = {
   catalog: CatalogDatabasePanelProps
   standalone: StandaloneDatabasePanelProps
   board: DatabaseBoardPanelProps
-  components: DatabaseSectionComponents
 }
 
 export function DatabaseSection({
@@ -215,10 +163,8 @@ export function DatabaseSection({
   onSwitchDatabaseWorkspaceView,
   catalog,
   standalone,
-  board,
-  components
+  board
 }: DatabaseSectionProps) {
-  const { DocumentCatalogTable, StandaloneDatabaseEntityTable, DatabaseSchemaColumnCard, DatabaseFieldEditor, DocumentBoard } = components
   const selectedEntityCount = standalone.selectedEntityIds.length
 
   return (

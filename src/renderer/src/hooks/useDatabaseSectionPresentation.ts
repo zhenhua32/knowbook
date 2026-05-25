@@ -1,5 +1,6 @@
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import { DatabaseSection } from '../sections/DatabaseSection'
+import { normalizeDocumentDatabaseFieldValue } from '../components/database/databaseFieldUtils'
 
 type DatabaseSectionProps = ComponentProps<typeof DatabaseSection>
 type DatabaseBoardProps = DatabaseSectionProps['board']
@@ -61,7 +62,6 @@ type UseDatabaseSectionPresentationParams = {
   isCreatingDatabaseEntity: DatabaseStandaloneProps['isCreatingEntity']
   isCreatingDatabaseSavedView: DatabaseStandaloneProps['isCreatingSavedView']
   moveDatabaseColumn: DatabaseCatalogProps['onMoveColumn']
-  normalizeDocumentDatabaseFieldValue: (value: DatabaseStandaloneProps['entityFieldValues'][string]) => DatabaseStandaloneProps['entityFieldValues'][string]
   openDocumentInDocumentsPage: DatabaseBoardProps['onOpenDocument']
   parentGroupValue: DatabaseBoardProps['parentGroupValue']
   renameDatabaseColumn: DatabaseCatalogProps['onRenameColumn']
@@ -159,7 +159,6 @@ export function useDatabaseSectionPresentation({
   isCreatingDatabaseEntity,
   isCreatingDatabaseSavedView,
   moveDatabaseColumn,
-  normalizeDocumentDatabaseFieldValue,
   openDocumentInDocumentsPage,
   parentGroupValue,
   renameDatabaseColumn,

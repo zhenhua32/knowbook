@@ -52,3 +52,16 @@ export function formatDocumentCatalogFieldValueForDisplay(value: DocumentDatabas
 
   return value ?? ''
 }
+
+export function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatabaseFieldValue>): Record<string, DocumentDatabaseFieldValue> {
+  const compacted: Record<string, DocumentDatabaseFieldValue> = {}
+
+  for (const [columnId, value] of Object.entries(values)) {
+    const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
+    if (normalizedValue !== null) {
+      compacted[columnId] = normalizedValue
+    }
+  }
+
+  return compacted
+}

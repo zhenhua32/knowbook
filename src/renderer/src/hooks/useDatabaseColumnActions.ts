@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentDatabase, DocumentDatabaseColumnType } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { normalizeDatabaseColumnOptionsInput } from '../components/database/databaseFieldUtils'
 
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
 
@@ -10,7 +11,6 @@ type UseDatabaseColumnActionsParams = {
   databaseColumnOptionsDraft: string
   databaseColumnTypeDraft: DocumentDatabaseColumnType
   databaseWorkspaceView: DatabaseWorkspaceView
-  normalizeDatabaseColumnOptionsInput: (input: string) => string[]
   refreshDatabasePageData: (targetDatabaseId?: string | null, preferredSavedViewId?: string) => Promise<void>
   refreshDocumentCatalogData: () => Promise<void>
   selectedDatabase: DocumentDatabase | null
@@ -27,7 +27,6 @@ export function useDatabaseColumnActions({
   databaseColumnOptionsDraft,
   databaseColumnTypeDraft,
   databaseWorkspaceView,
-  normalizeDatabaseColumnOptionsInput,
   refreshDatabasePageData,
   refreshDocumentCatalogData,
   selectedDatabase,
@@ -84,7 +83,6 @@ export function useDatabaseColumnActions({
     databaseColumnOptionsDraft,
     databaseColumnTypeDraft,
     databaseWorkspaceView,
-    normalizeDatabaseColumnOptionsInput,
     refreshCurrentDatabaseSurface,
     resetColumnDrafts,
     selectedDatabase,
@@ -124,7 +122,7 @@ export function useDatabaseColumnActions({
       const message = error instanceof Error ? error.message : ui.databaseColumnOptionsUpdateFailed
       setBackupMessage(message)
     }
-  }, [normalizeDatabaseColumnOptionsInput, refreshCurrentDatabaseSurface, setBackupMessage, ui])
+  }, [refreshCurrentDatabaseSurface, setBackupMessage, ui])
 
   const deleteDatabaseColumn = useCallback(async (columnId: string, columnName: string) => {
     const accepted = window.confirm(ui.confirmDeleteDatabaseColumn(columnName))

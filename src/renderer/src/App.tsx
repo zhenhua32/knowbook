@@ -40,15 +40,7 @@ import {
   type UiLanguage
 } from './i18n'
 import {
-  DatabaseFieldEditor,
-  DatabaseSchemaColumnCard,
-  DocumentBoard,
-  DocumentCatalogTable,
-  StandaloneDatabaseEntityTable
-} from './components/database/DatabaseSectionComponents'
-import {
-  normalizeDatabaseColumnOptionsInput,
-  normalizeDocumentDatabaseFieldValue
+  normalizeDatabaseColumnOptionsInput
 } from './components/database/databaseFieldUtils'
 import { PageRail } from './components/PageRail'
 import { DocumentsSidebar } from './components/DocumentsSidebar'
@@ -510,19 +502,6 @@ function createDraftBlockId() {
   }
 
   return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatabaseFieldValue>): Record<string, DocumentDatabaseFieldValue> {
-  const compacted: Record<string, DocumentDatabaseFieldValue> = {}
-
-  for (const [columnId, value] of Object.entries(values)) {
-    const normalizedValue = normalizeDocumentDatabaseFieldValue(value)
-    if (normalizedValue !== null) {
-      compacted[columnId] = normalizedValue
-    }
-  }
-
-  return compacted
 }
 
 function resolveDraftBlockRelationship(
@@ -2024,7 +2003,6 @@ export function App() {
     databaseColumnOptionsDraft,
     databaseColumnTypeDraft,
     databaseWorkspaceView,
-    normalizeDatabaseColumnOptionsInput,
     refreshDatabasePageData,
     refreshDocumentCatalogData,
     selectedDatabase,
@@ -2041,11 +2019,9 @@ export function App() {
     updateDatabaseEntityDocument,
     updateDatabaseEntityField
   } = useDatabaseEntityActions({
-    compactDocumentDatabaseFieldValues,
     databaseEntityDatabaseId,
     databaseEntityDocumentId,
     databaseEntityFieldValues,
-    normalizeDocumentDatabaseFieldValue,
     refreshDatabasePageData,
     setBackupMessage,
     setDatabaseEntityDocumentId,
@@ -2065,7 +2041,6 @@ export function App() {
     databaseEntityBulkFieldValues,
     databaseEntityDatabaseId,
     filteredStandaloneDatabaseEntityIds,
-    normalizeDocumentDatabaseFieldValue,
     refreshDatabasePageData,
     selectedVisibleDatabaseEntityIds,
     setBackupMessage,
@@ -2132,7 +2107,6 @@ export function App() {
     isCreatingDatabaseEntity,
     isCreatingDatabaseSavedView,
     moveDatabaseColumn,
-    normalizeDocumentDatabaseFieldValue,
     openDocumentInDocumentsPage,
     parentGroupValue: BOARD_GROUP_BY_PARENT,
     renameDatabaseColumn,
@@ -2577,13 +2551,6 @@ return (
            <DatabaseSection
              board={databaseBoardProps}
              catalog={databaseCatalogProps}
-             components={{
-               DatabaseFieldEditor,
-               DatabaseSchemaColumnCard,
-               DocumentBoard,
-               DocumentCatalogTable,
-               StandaloneDatabaseEntityTable
-             }}
              databasePageHint={databasePageHint}
              databasePageTitle={databasePageTitle}
              databaseWorkspaceView={databaseWorkspaceView}

@@ -2,12 +2,12 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentDatabaseFieldValue } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { normalizeDocumentDatabaseFieldValue } from '../components/database/databaseFieldUtils'
 
 type UseDatabaseEntityBulkActionsParams = {
   databaseEntityBulkFieldValues: Record<string, DocumentDatabaseFieldValue>
   databaseEntityDatabaseId: string
   filteredStandaloneDatabaseEntityIds: string[]
-  normalizeDocumentDatabaseFieldValue: (value: DocumentDatabaseFieldValue) => DocumentDatabaseFieldValue
   refreshDatabasePageData: (targetDatabaseId?: string | null, preferredSavedViewId?: string) => Promise<void>
   selectedVisibleDatabaseEntityIds: string[]
   setBackupMessage: (message: string | null) => void
@@ -20,7 +20,6 @@ export function useDatabaseEntityBulkActions({
   databaseEntityBulkFieldValues,
   databaseEntityDatabaseId,
   filteredStandaloneDatabaseEntityIds,
-  normalizeDocumentDatabaseFieldValue,
   refreshDatabasePageData,
   selectedVisibleDatabaseEntityIds,
   setBackupMessage,
@@ -91,7 +90,7 @@ export function useDatabaseEntityBulkActions({
       ...current,
       [columnId]: normalizeDocumentDatabaseFieldValue(value)
     }))
-  }, [normalizeDocumentDatabaseFieldValue, setDatabaseEntityBulkFieldValues])
+  }, [setDatabaseEntityBulkFieldValues])
 
   const applyDatabaseEntityFieldToSelected = useCallback(async (columnId: string) => {
     await updateSelectedDatabaseEntities({
