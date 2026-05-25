@@ -66,6 +66,9 @@ import { useBlockCollapseState } from './hooks/useBlockCollapseState'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
 import { useDatabaseDerivedState } from './hooks/useDatabaseDerivedState'
+import { useDatabaseColumnActions } from './hooks/useDatabaseColumnActions'
+import { useDatabaseEntityActions } from './hooks/useDatabaseEntityActions'
+import { useDatabaseEntityBulkActions } from './hooks/useDatabaseEntityBulkActions'
 import { useDatabasePageActions } from './hooks/useDatabasePageActions'
 import { useDatabaseWorkspaceActions } from './hooks/useDatabaseWorkspaceActions'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
@@ -2040,272 +2043,6 @@ export function App() {
     ui
   })
 
-  async function createDatabaseColumn() {
-    if (databaseWorkspaceView === 'standalone' && !selectedDatabase) {
-      setBackupMessage(ui.noIndependentDatabasesYet)
-      return
-    }
-
-    try {
-      const createdColumn = await window.knowbook.createDocumentDatabaseColumn({
-        databaseId: databaseWorkspaceView === 'standalone' ? selectedDatabase?.id : undefined,
-        name: databaseColumnNameDraft,
-        type: databaseColumnTypeDraft,
-        options: normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft)
-      })
-      if (databaseWorkspaceView === 'catalog') {
-        await refreshDocumentCatalogData()
-      } else {
-        await refreshDatabasePageData()
-      }
-      setIsCreatingDatabaseColumn(false)
-      setDatabaseColumnNameDraft('')
-      setDatabaseColumnTypeDraft('text')
-      setDatabaseColumnOptionsDraft('')
-      setBackupMessage(ui.databaseColumnAdded(createdColumn.name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseColumnCreateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function renameDatabaseColumn(columnId: string, name: string) {
-    try {
-      await window.knowbook.renameDocumentDatabaseColumn({ columnId, name })
-      if (databaseWorkspaceView === 'catalog') {
-        await refreshDocumentCatalogData()
-      } else {
-        await refreshDatabasePageData()
-      }
-      setBackupMessage(ui.databaseColumnRenamed(name))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseColumnRenameFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function moveDatabaseColumn(columnId: string, direction: 'left' | 'right') {
-    try {
-      await window.knowbook.moveDocumentDatabaseColumn({ columnId, direction })
-      if (databaseWorkspaceView === 'catalog') {
-        await refreshDocumentCatalogData()
-      } else {
-        await refreshDatabasePageData()
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseColumnReorderFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function updateDatabaseColumnOptions(columnId: string, optionsInput: string) {
-    const options = normalizeDatabaseColumnOptionsInput(optionsInput)
-
-    try {
-      await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId, options })
-      if (databaseWorkspaceView === 'catalog') {
-        await refreshDocumentCatalogData()
-      } else {
-        await refreshDatabasePageData()
-      }
-      setBackupMessage(ui.databaseColumnOptionsUpdated)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseColumnOptionsUpdateFailed
-      setBackupMessage(message)
-    }
-  }
-
-   async function deleteDatabaseColumn(columnId: string, columnName: string) {
-    const accepted = window.confirm(ui.confirmDeleteDatabaseColumn(columnName))
-    if (!accepted) {
-      return
-    }
-
-    try {
-      await window.knowbook.deleteDocumentDatabaseColumn(columnId)
-      if (databaseWorkspaceView === 'catalog') {
-        await refreshDocumentCatalogData()
-      } else {
-        await refreshDatabasePageData()
-      }
-      setBackupMessage(ui.databaseColumnDeleted(columnName))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseColumnDeleteFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function createDatabaseEntity() {
-    try {
-      await window.knowbook.createDatabaseEntity({
-        databaseId: databaseEntityDatabaseId,
-        documentId: databaseEntityDocumentId || undefined,
-        fieldValues: compactDocumentDatabaseFieldValues(databaseEntityFieldValues)
-      })
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setIsCreatingDatabaseEntity(false)
-      setDatabaseEntityDocumentId('')
-      setDatabaseEntityFieldValues({})
-      setBackupMessage(ui.databaseEntityCreated)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseEntityCreateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function updateDatabaseEntity(
-    entityId: string,
-    fieldValues?: Record<string, DocumentDatabaseFieldValue>,
-    documentId?: string | null
-  ) {
-    try {
-      const input: {
-        entityId: string
-        fieldValues?: Record<string, DocumentDatabaseFieldValue>
-        documentId?: string | null
-      } = { entityId }
-
-      if (fieldValues) {
-        input.fieldValues = Object.fromEntries(
-          Object.entries(fieldValues).map(([columnId, value]) => [columnId, normalizeDocumentDatabaseFieldValue(value)])
-        )
-      }
-
-      if (documentId !== undefined) {
-        input.documentId = documentId
-      }
-
-      await window.knowbook.updateDatabaseEntity(input)
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setBackupMessage(ui.databaseEntityUpdated)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseEntityUpdateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function updateDatabaseEntityField(entity: DatabaseEntity, columnId: string, value: DocumentDatabaseFieldValue) {
-    await updateDatabaseEntity(entity.id, {
-      ...entity.fieldValues,
-      [columnId]: normalizeDocumentDatabaseFieldValue(value)
-    })
-  }
-
-  async function updateDatabaseEntityDocument(entity: DatabaseEntity, documentId: string | null) {
-    await updateDatabaseEntity(entity.id, undefined, documentId)
-  }
-
-  async function deleteDatabaseEntity(entityId: string) {
-    if (!window.confirm(ui.confirmDeleteDatabaseEntity)) {
-      return
-    }
-    try {
-      await window.knowbook.deleteDatabaseEntity(entityId)
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setBackupMessage(ui.databaseEntityDeleted)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseEntityDeleteFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function deleteSelectedDatabaseEntities() {
-    if (selectedVisibleDatabaseEntityIds.length === 0) {
-      return
-    }
-
-    if (!window.confirm(ui.confirmDeleteDatabaseEntities(selectedVisibleDatabaseEntityIds.length))) {
-      return
-    }
-
-    try {
-      for (const entityId of selectedVisibleDatabaseEntityIds) {
-        await window.knowbook.deleteDatabaseEntity(entityId)
-      }
-
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setSelectedDatabaseEntityIds([])
-      setBackupMessage(ui.databaseEntitiesDeleted(selectedVisibleDatabaseEntityIds.length))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseEntitiesDeleteFailed
-      setBackupMessage(message)
-    }
-  }
-
-  async function updateSelectedDatabaseEntities(input: {
-    fieldValues?: Record<string, DocumentDatabaseFieldValue>
-    documentId?: string | null
-  }) {
-    if (selectedVisibleDatabaseEntityIds.length === 0) {
-      return
-    }
-
-    const entityIds = [...selectedVisibleDatabaseEntityIds]
-    const count = entityIds.length
-
-    try {
-      for (const entityId of entityIds) {
-        await window.knowbook.updateDatabaseEntity({
-          entityId,
-          fieldValues: input.fieldValues,
-          documentId: input.documentId
-        })
-      }
-
-      await refreshDatabasePageData(databaseEntityDatabaseId)
-      setBackupMessage(ui.databaseEntitiesUpdated(count))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.databaseEntitiesUpdateFailed
-      setBackupMessage(message)
-    }
-  }
-
-  function updateDatabaseEntityBulkFieldValue(columnId: string, value: DocumentDatabaseFieldValue) {
-    setDatabaseEntityBulkFieldValues((current) => ({
-      ...current,
-      [columnId]: normalizeDocumentDatabaseFieldValue(value)
-    }))
-  }
-
-  async function applyDatabaseEntityFieldToSelected(columnId: string) {
-    await updateSelectedDatabaseEntities({
-      fieldValues: {
-        [columnId]: databaseEntityBulkFieldValues[columnId] ?? null
-      }
-    })
-  }
-
-  async function clearDatabaseEntityFieldFromSelected(columnId: string) {
-    setDatabaseEntityBulkFieldValues((current) => ({
-      ...current,
-      [columnId]: null
-    }))
-
-    await updateSelectedDatabaseEntities({
-      fieldValues: {
-        [columnId]: null
-      }
-    })
-  }
-
-  async function clearSelectedDatabaseEntityDocuments() {
-    await updateSelectedDatabaseEntities({ documentId: null })
-  }
-
-  function toggleDatabaseEntitySelection(entityId: string, checked: boolean) {
-    setSelectedDatabaseEntityIds((current) => {
-      if (checked) {
-        return current.includes(entityId) ? current : [...current, entityId]
-      }
-
-      return current.filter((candidate) => candidate !== entityId)
-    })
-  }
-
-  function selectVisibleDatabaseEntities() {
-    setSelectedDatabaseEntityIds(filteredStandaloneDatabaseEntityIds)
-  }
-
   const updateDocumentDatabaseValue = useCallback(async (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => {
     let previousFieldValue: DocumentDatabaseFieldValue | undefined
 
@@ -2454,6 +2191,66 @@ export function App() {
     && ((databaseColumnTypeDraft !== 'select' && databaseColumnTypeDraft !== 'multi-select')
       || normalizeDatabaseColumnOptionsInput(databaseColumnOptionsDraft).length > 0)
   const standaloneCanSaveColumn = Boolean(selectedDatabase) && catalogCanSaveColumn
+  const {
+    createDatabaseColumn,
+    deleteDatabaseColumn,
+    moveDatabaseColumn,
+    renameDatabaseColumn,
+    updateDatabaseColumnOptions
+  } = useDatabaseColumnActions({
+    databaseColumnNameDraft,
+    databaseColumnOptionsDraft,
+    databaseColumnTypeDraft,
+    databaseWorkspaceView,
+    normalizeDatabaseColumnOptionsInput,
+    refreshDatabasePageData,
+    refreshDocumentCatalogData,
+    selectedDatabase,
+    setBackupMessage,
+    setDatabaseColumnNameDraft,
+    setDatabaseColumnOptionsDraft,
+    setDatabaseColumnTypeDraft,
+    setIsCreatingDatabaseColumn,
+    ui
+  })
+  const {
+    createDatabaseEntity,
+    deleteDatabaseEntity,
+    updateDatabaseEntityDocument,
+    updateDatabaseEntityField
+  } = useDatabaseEntityActions({
+    compactDocumentDatabaseFieldValues,
+    databaseEntityDatabaseId,
+    databaseEntityDocumentId,
+    databaseEntityFieldValues,
+    normalizeDocumentDatabaseFieldValue,
+    refreshDatabasePageData,
+    setBackupMessage,
+    setDatabaseEntityDocumentId,
+    setDatabaseEntityFieldValues,
+    setIsCreatingDatabaseEntity,
+    ui
+  })
+  const {
+    applyDatabaseEntityFieldToSelected,
+    clearDatabaseEntityFieldFromSelected,
+    clearSelectedDatabaseEntityDocuments,
+    deleteSelectedDatabaseEntities,
+    selectVisibleDatabaseEntities,
+    toggleDatabaseEntitySelection,
+    updateDatabaseEntityBulkFieldValue
+  } = useDatabaseEntityBulkActions({
+    databaseEntityBulkFieldValues,
+    databaseEntityDatabaseId,
+    filteredStandaloneDatabaseEntityIds,
+    normalizeDocumentDatabaseFieldValue,
+    refreshDatabasePageData,
+    selectedVisibleDatabaseEntityIds,
+    setBackupMessage,
+    setDatabaseEntityBulkFieldValues,
+    setSelectedDatabaseEntityIds,
+    ui
+  })
   const {
     board: databaseBoardProps,
     catalog: databaseCatalogProps,
