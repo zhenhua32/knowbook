@@ -71,6 +71,8 @@ import { useDatabaseEntityActions } from './hooks/useDatabaseEntityActions'
 import { useDatabaseEntityBulkActions } from './hooks/useDatabaseEntityBulkActions'
 import { useDatabasePageActions } from './hooks/useDatabasePageActions'
 import { useDatabaseWorkspaceActions } from './hooks/useDatabaseWorkspaceActions'
+import { useDocumentCatalogDatabaseActions } from './hooks/useDocumentCatalogDatabaseActions'
+import { useWorkspaceBackupActions } from './hooks/useWorkspaceBackupActions'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
 import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
@@ -573,58 +575,6 @@ function compactDocumentDatabaseFieldValues(values: Record<string, DocumentDatab
   }
 
   return compacted
-}
-
-function setDocumentCatalogFieldValue(
-  entries: DocumentCatalogEntry[],
-  documentId: string,
-  columnId: string,
-  value: DocumentDatabaseFieldValue
-): { entries: DocumentCatalogEntry[]; previousValue: DocumentDatabaseFieldValue | undefined } {
-  let previousValue: DocumentDatabaseFieldValue | undefined
-
-  return {
-    entries: entries.map((entry) => {
-      if (entry.id !== documentId) {
-        return entry
-      }
-
-      previousValue = entry.fieldValues[columnId]
-      return {
-        ...entry,
-        fieldValues: {
-          ...entry.fieldValues,
-          [columnId]: value
-        }
-      }
-    }),
-    previousValue
-  }
-}
-
-function restoreDocumentCatalogFieldValue(
-  entries: DocumentCatalogEntry[],
-  documentId: string,
-  columnId: string,
-  previousValue: DocumentDatabaseFieldValue | undefined
-): DocumentCatalogEntry[] {
-  return entries.map((entry) => {
-    if (entry.id !== documentId) {
-      return entry
-    }
-
-    const nextFieldValues = { ...entry.fieldValues }
-    if (previousValue === undefined) {
-      delete nextFieldValues[columnId]
-    } else {
-      nextFieldValues[columnId] = previousValue
-    }
-
-    return {
-      ...entry,
-      fieldValues: nextFieldValues
-    }
-  })
 }
 
 function resolveDraftBlockRelationship(
@@ -1899,47 +1849,18 @@ export function App() {
     }
   }, [draftBlocks, isEditing])
 
-  async function refreshWorkspaceAfterStorageMutation() {
-    const refreshed = await window.knowbook.getHomeData()
-    setHomeData(refreshed)
-    const nextDocumentId = selectedDocumentId ?? refreshed.initialDocumentId
-    if (!selectedDocumentId && nextDocumentId) {
-      setSelectedDocumentId(nextDocumentId)
-    }
-    if (selectedDocumentId) {
-      const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
-      setSelectedDocument(detail)
-    }
-  }
-
-  async function handleBackup() {
-    const result: BackupResult = await window.knowbook.triggerBackup()
-    await refreshWorkspaceAfterStorageMutation()
-    setBackupMessage(ui.backupExported(result.exported, result.at))
-  }
-
-  async function handleRestoreBackup() {
-    try {
-      const result = await window.knowbook.restoreBackupFromFolder()
-      if (!result) {
-        return
-      }
-
-      await refreshWorkspaceAfterStorageMutation()
-      setBackupMessage(ui.backupRestored(
-        result.restored,
-        result.created,
-        result.updated,
-        result.deleted,
-        result.conflictsResolved,
-        result.placeholdersCreated,
-        result.at
-      ))
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.backupRestoreFailed
-      setBackupMessage(message)
-    }
-  }
+  const {
+    handleBackup,
+    handleRestoreBackup,
+    refreshWorkspaceAfterStorageMutation
+  } = useWorkspaceBackupActions({
+    selectedDocumentId,
+    setBackupMessage,
+    setHomeData,
+    setSelectedDocument,
+    setSelectedDocumentId,
+    ui
+  })
 
   async function toggleTodoBlockChecked(index: number, checked: boolean) {
     if (!selectedDocument) {
@@ -2043,34 +1964,13 @@ export function App() {
     ui
   })
 
-  const updateDocumentDatabaseValue = useCallback(async (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => {
-    let previousFieldValue: DocumentDatabaseFieldValue | undefined
-
-    setCatalogDocuments((previous) => {
-      const nextState = setDocumentCatalogFieldValue(previous, documentId, columnId, value)
-      previousFieldValue = nextState.previousValue
-      return nextState.entries
-    })
-    setHomeData((previous) => {
-      const nextState = setDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, value)
-      return {
-        ...previous,
-        documentCatalog: nextState.entries
-      }
-    })
-
-    try {
-      await window.knowbook.updateDocumentDatabaseValue({ documentId, columnId, value })
-    } catch (error) {
-      setCatalogDocuments((previous) => restoreDocumentCatalogFieldValue(previous, documentId, columnId, previousFieldValue))
-      setHomeData((previous) => ({
-        ...previous,
-        documentCatalog: restoreDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, previousFieldValue)
-      }))
-      const message = error instanceof Error ? error.message : 'Failed to update database value.'
-      setBackupMessage(message)
-    }
-  }, [])
+  const {
+    updateDocumentDatabaseValue
+  } = useDocumentCatalogDatabaseActions({
+    setBackupMessage,
+    setCatalogDocuments,
+    setHomeData
+  })
 
   const {
     beginDrag,
