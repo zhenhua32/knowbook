@@ -721,18 +721,6 @@ function shiftDraftFragmentDepth(
   })
 }
 
-function getDefaultChildBlockType(type: string): DocumentBlock['type'] {
-  if (type === 'todo') {
-    return 'todo'
-  }
-
-  if (type === 'numbered-list') {
-    return 'numbered-list'
-  }
-
-  return 'bulleted-list'
-}
-
 function canChangeBlockType(fromType: string, toType: string, hasChildren: boolean): boolean {
   if (!hasChildren) {
     return true
@@ -1439,7 +1427,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
-    getDefaultChildBlockType,
     getNormalizedParentBlockId,
     isNestableBlock,
     materializeDraftFragment,

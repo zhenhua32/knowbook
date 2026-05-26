@@ -15,7 +15,6 @@ type UseBlockStructureActionsParams = {
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
   getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
-  getDefaultChildBlockType: (type: DocumentBlock['type']) => DocumentBlock['type']
   getNormalizedParentBlockId: (block: DocumentBlockDraft | undefined) => string | null
   isNestableBlock: (type: DocumentBlock['type']) => boolean
   materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
@@ -33,7 +32,6 @@ export function useBlockStructureActions({
   draftBlocks,
   endBlockDrag,
   getBlockSubtreeEndIndex,
-  getDefaultChildBlockType,
   getNormalizedParentBlockId,
   isNestableBlock,
   materializeDraftFragment,
@@ -227,4 +225,16 @@ export function useBlockStructureActions({
     insertDraftBlockAt,
     splitDraftBlock
   }
+}
+
+function getDefaultChildBlockType(type: DocumentBlock['type']): DocumentBlock['type'] {
+  if (type === 'todo') {
+    return 'todo'
+  }
+
+  if (type === 'numbered-list') {
+    return 'numbered-list'
+  }
+
+  return 'bulleted-list'
 }
