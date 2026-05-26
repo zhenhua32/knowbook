@@ -717,22 +717,6 @@ function shiftDraftFragmentDepth(
   })
 }
 
-function canChangeBlockType(fromType: string, toType: string, hasChildren: boolean): boolean {
-  if (!hasChildren) {
-    return true
-  }
-
-  const fromNestable = isNestableBlock(fromType)
-  const toNestable = isNestableBlock(toType)
-
-  if (fromNestable && !toNestable) {
-    console.warn(`Cannot convert nestable block type "${fromType}" to non-nestable type "${toType}" when it has child blocks.`)
-    return false
-  }
-
-  return true
-}
-
 function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: boolean; errors: string[] } {
   const errors: string[] = []
 
@@ -967,26 +951,6 @@ function moveContiguousBlockRange(blocks: DocumentBlockDraft[], range: BlockSele
   const insertionIndex = range.start < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
   next.splice(insertionIndex, 0, ...movedBlocks)
   return next
-}
-
-function moveIndexAfterRangeMove(index: number | null, range: BlockSelectionRange, delta: -1 | 1): number | null {
-  if (index === null) {
-    return index
-  }
-
-  if (index >= range.start && index <= range.end) {
-    return index + delta
-  }
-
-  if (delta === -1 && index === range.start - 1) {
-    return range.end
-  }
-
-  if (delta === 1 && index === range.end + 1) {
-    return range.start
-  }
-
-  return index
 }
 
 function remapIndexAfterSubtreeMove(
