@@ -1389,7 +1389,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
-    getBlockTypeLabel,
     getFragmentLocalRootIds,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
@@ -1407,7 +1406,6 @@ export function App() {
     resolveDraftInsertionPlacement,
     selectedBlockRange,
     serializeDraftBlockRange,
-    serializeDraftBlockRangeAsPlainText,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setBackupMessage,
@@ -2866,29 +2864,10 @@ function renderDraftBlockForClipboard(block: DocumentBlockDraft): string {
   return block.content
 }
 
-function renderDraftBlockAsPlainText(block: DocumentBlockDraft): string {
-  if (block.type === 'todo') {
-    return `${block.checked ? '[x]' : '[ ]'} ${block.content}`.trim()
-  }
-
-  if (block.type === 'divider') {
-    return ''
-  }
-
-  return block.content
-}
-
 function serializeDraftBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
   return blocks
     .slice(range.start, range.end + 1)
     .map((block) => renderDraftBlockForClipboard(block))
-    .join('\n\n')
-}
-
-function serializeDraftBlockRangeAsPlainText(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
-  return blocks
-    .slice(range.start, range.end + 1)
-    .map((block) => renderDraftBlockAsPlainText(block))
     .join('\n\n')
 }
 
@@ -2928,10 +2907,6 @@ function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: nu
       y: centerY + Math.sin(angle) * radius
     }
   })
-}
-
-function getBlockTypeLabel(type: string): string {
-  return getActiveUiText().blockTypeBadges[type] ?? getActiveUiText().blockTypeBadges.paragraph
 }
 
 function getBlockTreeText(type: string, content: string): string {

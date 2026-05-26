@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import { getActiveUiText } from '../i18n'
 
 type BlockSelectionRange = {
   start: number
@@ -44,7 +45,6 @@ type UseMultiBlockActionsParams = {
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
   getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
-  getBlockTypeLabel: (type: DocumentBlock['type']) => string
   getFragmentLocalRootIds: (blocks: DocumentBlockDraft[]) => Set<string>
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
@@ -72,7 +72,6 @@ type UseMultiBlockActionsParams = {
   ) => { depth: number; parentBlockId: string | null }
   selectedBlockRange: BlockSelectionRange | null
   serializeDraftBlockRange: (blocks: DocumentBlockDraft[], range: BlockSelectionRange) => string
-  serializeDraftBlockRangeAsPlainText: (blocks: DocumentBlockDraft[], range: BlockSelectionRange) => string
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setBackupMessage: Dispatch<SetStateAction<string | null>>
@@ -97,7 +96,6 @@ export function useMultiBlockActions({
   draftBlocks,
   endBlockDrag,
   getBlockSubtreeEndIndex,
-  getBlockTypeLabel,
   getFragmentLocalRootIds,
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
@@ -115,7 +113,6 @@ export function useMultiBlockActions({
   resolveDraftInsertionPlacement,
   selectedBlockRange,
   serializeDraftBlockRange,
-  serializeDraftBlockRangeAsPlainText,
   setActiveBlockIndex,
   setActiveCursorPosition,
   setBackupMessage,
@@ -126,6 +123,17 @@ export function useMultiBlockActions({
   shiftDraftFragmentDepth,
   ui
 }: UseMultiBlockActionsParams) {
+  const getBlockTypeLabel = useCallback((type: DocumentBlock['type']) => {
+    return getActiveUiText().blockTypeBadges[type] ?? getActiveUiText().blockTypeBadges.paragraph
+  }, [])
+
+  const serializeDraftBlockRangeAsPlainText = useCallback((blocks: DocumentBlockDraft[], range: BlockSelectionRange) => {
+    return blocks
+      .slice(range.start, range.end + 1)
+      .map((block) => renderDraftBlockAsPlainText(block))
+      .join('\n\n')
+  }, [])
+
   const moveSelectedBlocks = useCallback((delta: -1 | 1) => {
     if (!selectedBlockRange) {
       return
@@ -553,4 +561,16 @@ export function useMultiBlockActions({
     moveSelectedBlocks,
     removeSelectedBlockRange
   }
+}
+
+function renderDraftBlockAsPlainText(block: DocumentBlockDraft): string {
+  if (block.type === 'todo') {
+    return `${block.checked ? '[x]' : '[ ]'} ${block.content}`.trim()
+  }
+
+  if (block.type === 'divider') {
+    return ''
+  }
+
+  return block.content
 }
