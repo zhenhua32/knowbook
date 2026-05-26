@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import { getActiveUiText } from '../i18n'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
 import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
@@ -36,7 +37,6 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
     targetIndex: number,
     targetDepth: number | null
   ) => ComponentProps<typeof BlockEditorRow>['dropPreview']
-  getBlockConversionLabel: (type: DocumentBlock['type']) => string
   getVisibleBlocks: (blocks: DocumentBlockDraft[]) => DocumentBlockDraft[]
   insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
@@ -93,7 +93,6 @@ export function useDocumentsBlockEditorPresentation({
   endBlockRangeSelection,
   filteredSlashCommands,
   getBlockDropPreview,
-  getBlockConversionLabel,
   getDraggedBlockDepthPreview,
   getMultiBlockOperationRange,
   getNextSiblingSubtreeStartIndex,
@@ -381,4 +380,8 @@ export function useDocumentsBlockEditorPresentation({
     selectionToolbarProps,
     visibleEditorRows
   }
+}
+
+function getBlockConversionLabel(type: DocumentBlock['type']): string {
+  return getActiveUiText().conversionOptions[type] ?? type
 }

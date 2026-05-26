@@ -177,10 +177,6 @@ function getBlockTypeOptionLabel(type: string): string {
   return getActiveUiText().blockTypeOptions[type] ?? type
 }
 
-function getBlockConversionLabel(type: string): string {
-  return getActiveUiText().conversionOptions[type] ?? type
-}
-
 function isDefaultDocumentDatabase(database: DocumentDatabase): boolean {
   return database.name === 'Default' && database.description === 'Default database'
 }
@@ -2203,7 +2199,6 @@ export function App() {
     endBlockRangeSelection,
     filteredSlashCommands,
     getBlockDropPreview,
-    getBlockConversionLabel,
     getDraggedBlockDepthPreview,
     getMultiBlockOperationRange,
     getNextSiblingSubtreeStartIndex,
