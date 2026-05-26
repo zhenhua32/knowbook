@@ -1,4 +1,3 @@
-import { renderToString } from 'katex'
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import type {
   BackupResult,
@@ -39,20 +38,8 @@ import {
   setActiveUiLanguage,
   type UiLanguage
 } from './i18n'
-import { PageRail } from './components/PageRail'
-import { DocumentsSidebar } from './components/DocumentsSidebar'
 import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
-import { CrossDocumentBlockReference } from './components/BlockReference'
-import {
-  renderInlineContent,
-  renderStyledContent,
-  parseMarkdownStyles,
-  resolveInlineReference,
-  resolveBlockReference
-} from './components/InlineContentRenderer'
-import { SlashCommandPanel } from './components/SlashCommandPanel'
-import { CodeBlockPreview } from './components/CodeBlockPreview'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -387,25 +374,6 @@ function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[
   })
 }
 
-function areDraftBlocksEqual(left: DocumentBlockDraft[], right: DocumentBlockDraft[]) {
-  if (left.length !== right.length) {
-    return false
-  }
-
-  return left.every((block, index) => {
-    const nextBlock = right[index]
-    return (
-      nextBlock !== undefined &&
-      block.id === nextBlock.id &&
-      block.type === nextBlock.type &&
-      block.content === nextBlock.content &&
-      block.checked === nextBlock.checked &&
-      block.depth === nextBlock.depth &&
-      (block.parentBlockId ?? null) === (nextBlock.parentBlockId ?? null)
-    )
-  })
-}
-
 function buildBlockTypePatch(type: string, content: string, checked = false, depth = 0, parentBlockId?: string | null): DocumentBlockDraft {
   return {
     type,
@@ -651,115 +619,6 @@ function getBlockDropPreview(
     positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
     effectiveDepth: placement.depth,
     parentText: placement.parentText
-  }
-}
-
-function normalizeBlockSelectionRange(start: number, end: number): BlockSelectionRange {
-  return {
-    start: Math.min(start, end),
-    end: Math.max(start, end)
-  }
-}
-
-function findAdjacentSiblingIndexForRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): number | null {
-  if (!isValidSiblingRange(blocks, range)) {
-    return null
-  }
-
-  const referenceBlock = blocks[range.start]
-  if (!referenceBlock) {
-    return null
-  }
-
-  const referenceDepth = referenceBlock.depth
-  const referenceParentBlockId = getNormalizedParentBlockId(referenceBlock)
-
-  if (delta === -1) {
-    for (let i = range.start - 1; i >= 0; i -= 1) {
-      if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
-        return i
-      }
-
-      if (blocks[i].depth < referenceDepth) {
-        return null
-      }
-    }
-
-    return null
-  }
-
-  for (let i = range.end + 1; i < blocks.length; i += 1) {
-    if (blocks[i].depth === referenceDepth && getNormalizedParentBlockId(blocks[i]) === referenceParentBlockId) {
-      return i
-    }
-
-    if (blocks[i].depth < referenceDepth) {
-      return null
-    }
-  }
-
-  return null
-}
-
-function canMoveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): boolean {
-  return findAdjacentSiblingIndexForRange(blocks, range, delta) !== null
-}
-
-function isValidSiblingRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): boolean {
-  if (range.start >= blocks.length || range.end >= blocks.length) {
-    return false
-  }
-
-  const referenceBlock = blocks[range.start]
-  if (!referenceBlock) {
-    return false
-  }
-
-  const referenceDepth = referenceBlock.depth
-  const referenceParentBlockId = getNormalizedParentBlockId(referenceBlock)
-
-  for (let i = range.start; i <= range.end; i += 1) {
-    if (blocks[i].depth !== referenceDepth) {
-      return false
-    }
-
-    if (getNormalizedParentBlockId(blocks[i]) !== referenceParentBlockId) {
-      return false
-    }
-  }
-
-  return true
-}
-
-function moveBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, delta: -1 | 1): DocumentBlockDraft[] {
-  const isValidSiblings = isValidSiblingRange(blocks, range)
-  
-  if (!isValidSiblings) {
-    return blocks
-  }
-
-  if (delta === -1) {
-    const prevSiblingIndex = findAdjacentSiblingIndexForRange(blocks, range, -1)
-    if (prevSiblingIndex === null) {
-      return blocks
-    }
-
-    const movedBlocks = blocks.slice(range.start, range.end + 1)
-    const next = [...blocks]
-    next.splice(range.start, movedBlocks.length)
-    next.splice(prevSiblingIndex, 0, ...movedBlocks)
-    return next
-  } else {
-    const nextSiblingIndex = findAdjacentSiblingIndexForRange(blocks, range, 1)
-    if (nextSiblingIndex === null) {
-      return blocks
-    }
-
-    const movedBlocks = blocks.slice(range.start, range.end + 1)
-    const next = [...blocks]
-    next.splice(range.start, movedBlocks.length)
-    next.splice(nextSiblingIndex - movedBlocks.length + 1, 0, ...movedBlocks)
-    return next
   }
 }
 
@@ -2510,72 +2369,6 @@ return (
   )
 }
 
-function renderBlock(
-  block: DocumentBlock,
-  onSelectDocument: (documentId: string) => void,
-  references: Array<{ id: string; title: string; path: string }>,
-  onToggleTodo?: (checked: boolean) => void,
-  allBlocks?: DocumentBlock[],
-  currentDocumentId?: string | null
-) {
-  const indentStyle = isNestableBlock(block.type) ? { marginInlineStart: `${block.depth * BLOCK_INDENT_SIZE}px` } : undefined
-  const blockReferences = allBlocks ? buildBlockReferencesMap(allBlocks) : new Map()
-
-  if (block.type === 'heading-1') {
-    return <h4 className="block-heading"># {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</h4>
-  }
-
-  if (block.type === 'heading-2') {
-    return <h5 className="block-heading">## {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</h5>
-  }
-
-  if (block.type === 'todo') {
-    return (
-      <label className={`block-todo${block.checked ? ' block-todo-checked' : ''}`} style={indentStyle}>
-        <input checked={block.checked} onChange={(event) => onToggleTodo?.(event.target.checked)} type="checkbox" />
-        <span>{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</span>
-      </label>
-    )
-  }
-
-  if (block.type === 'quote') {
-    return <blockquote className="block-quote">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</blockquote>
-  }
-
-  if (block.type === 'bulleted-list') {
-    return <p className="block-bulleted-list" style={indentStyle}>- {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
-  }
-
-  if (block.type === 'numbered-list') {
-    return <p className="block-numbered-list" style={indentStyle}>1. {renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
-  }
-
-  if (block.type === 'divider') {
-    return <hr className="block-divider" />
-  }
-
-  if (block.type === 'math') {
-    return <div className="block-math" dangerouslySetInnerHTML={{ __html: renderMathBlock(block.content) }} />
-  }
-
-  if (block.type === 'code') {
-    const effectiveLanguage = detectCodeLanguage(block.content, block.language)
-    return (
-      <div className="block-code-wrapper">
-        {effectiveLanguage && (
-          <span className={`block-code-language${block.language ? '' : ' block-code-language-auto'}`}>
-            {effectiveLanguage}
-            {block.language ? '' : ' auto'}
-          </span>
-        )}
-        <CodeBlockPreview code={block.content} language={effectiveLanguage} />
-      </div>
-    )
-  }
-
-  return <p className="block-paragraph">{renderInlineContent(block.content, onSelectDocument, references, block.id, blockReferences, currentDocumentId)}</p>
-}
-
 function normalizeBlockContentForType(type: string, content: string) {
   if (type === 'divider') {
     return ''
@@ -2634,44 +2427,6 @@ function serializeDraftBlockRange(blocks: DocumentBlockDraft[], range: BlockSele
     .slice(range.start, range.end + 1)
     .map((block) => renderDraftBlockForClipboard(block))
     .join('\n\n')
-}
-
-function renderMathBlock(content: string): string {
-  return renderToString(content, {
-    displayMode: true,
-    throwOnError: false,
-    strict: 'ignore'
-  })
-}
-
-function buildBlockReferencesMap(blocks: DocumentBlock[]): Map<string, DocumentBlock> {
-  const map = new Map<string, DocumentBlock>()
-  for (const block of blocks) {
-    map.set(block.id, block)
-  }
-  return map
-}
-
-function buildGraphLayout(nodes: WorkspaceGraphNode[], width: number, height: number) {
-  if (nodes.length === 0) {
-    return [] as Array<WorkspaceGraphNode & { x: number; y: number }>
-  }
-
-  const centerX = width / 2
-  const centerY = height / 2
-  const maxDepth = Math.max(...nodes.map((node) => node.depth), 0)
-  const ringStep = maxDepth > 0 ? Math.min(72, 120 / maxDepth) : 0
-
-  return nodes.map((node, index) => {
-    const angle = (Math.PI * 2 * index) / nodes.length - Math.PI / 2
-    const radius = 38 + node.depth * (ringStep || 48)
-
-    return {
-      ...node,
-      x: centerX + Math.cos(angle) * radius,
-      y: centerY + Math.sin(angle) * radius
-    }
-  })
 }
 
 function getBlockTreeText(type: string, content: string): string {
