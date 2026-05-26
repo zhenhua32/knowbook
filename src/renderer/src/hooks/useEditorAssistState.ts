@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
+import { getUiText, type UiLanguage } from '../i18n'
 
 type LinkContext = {
   query: string
@@ -12,17 +13,25 @@ type SlashCommandContext = {
   start: number
 }
 
-type SlashCommandLike = {
+type BlockSlashCommand = {
   id: string
   label: string
   description: string
   keywords: string[]
-}
+} & (
+  | {
+      kind: 'type'
+      type: DocumentBlockDraft['type']
+    }
+  | {
+      kind: 'action'
+      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete'
+    }
+)
 
-type UseEditorAssistStateParams<TSlashCommand extends SlashCommandLike> = {
+type UseEditorAssistStateParams = {
   activeBlockIndex: number | null
   activeCursorPosition: number
-  blockSlashCommands: TSlashCommand[]
   blockTextareaRefs: { current: Array<HTMLTextAreaElement | null> }
   draftBlocks: DocumentBlockDraft[]
   isEditing: boolean
@@ -31,12 +40,12 @@ type UseEditorAssistStateParams<TSlashCommand extends SlashCommandLike> = {
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
+  uiLanguage: UiLanguage
 }
 
-export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
+export function useEditorAssistState({
   activeBlockIndex,
   activeCursorPosition,
-  blockSlashCommands,
   blockTextareaRefs,
   draftBlocks,
   isEditing,
@@ -44,11 +53,13 @@ export function useEditorAssistState<TSlashCommand extends SlashCommandLike>({
   selectedDocumentPresent,
   setActiveBlockIndex,
   setActiveCursorPosition,
-  setDraftBlocks
-}: UseEditorAssistStateParams<TSlashCommand>) {
+  setDraftBlocks,
+  uiLanguage
+}: UseEditorAssistStateParams) {
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
+  const blockSlashCommands = useMemo(() => buildBlockSlashCommands(uiLanguage), [uiLanguage])
 
   const clearEditorAssistSuggestions = useCallback(() => {
     setLinkSuggestions([])
@@ -251,4 +262,163 @@ function getSlashCommandContext(content: string, cursorPosition: number): SlashC
     query: trimmedStart.slice(1),
     start: lineStart + lineBeforeCursor.indexOf('/')
   }
+}
+
+function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
+  const ui = getUiText(language)
+
+  return [
+    {
+      id: 'text',
+      label: ui.blockTypeOptions.paragraph,
+      description: language === 'zh-CN' ? '把当前块转换为普通段落。' : 'Convert the current block into a plain paragraph.',
+      keywords: ['paragraph', 'plain', 'p', 'text', '文本', '段落'],
+      kind: 'type',
+      type: 'paragraph'
+    },
+    {
+      id: 'h1',
+      label: ui.blockTypeOptions['heading-1'],
+      description: language === 'zh-CN' ? '把当前块提升为一级标题。' : 'Promote this block to a top-level heading.',
+      keywords: ['title', 'heading-1', 'header', '标题', '一级'],
+      kind: 'type',
+      type: 'heading-1'
+    },
+    {
+      id: 'h2',
+      label: ui.blockTypeOptions['heading-2'],
+      description: language === 'zh-CN' ? '把当前块转换为二级标题。' : 'Convert this block to a section heading.',
+      keywords: ['subtitle', 'heading-2', 'section', '标题', '二级'],
+      kind: 'type',
+      type: 'heading-2'
+    },
+    {
+      id: 'todo',
+      label: ui.blockTypeOptions.todo,
+      description: language === 'zh-CN' ? '把当前块转换为未勾选的待办项。' : 'Turn this block into an unchecked todo item.',
+      keywords: ['task', 'checkbox', 'checklist', 'todo', '待办'],
+      kind: 'type',
+      type: 'todo'
+    },
+    {
+      id: 'code',
+      label: ui.blockTypeOptions.code,
+      description: language === 'zh-CN' ? '把当前块切换成代码块。' : 'Switch this block into a code block.',
+      keywords: ['snippet', 'pre', 'terminal', 'code', '代码'],
+      kind: 'type',
+      type: 'code'
+    },
+    {
+      id: 'math',
+      label: ui.blockTypeOptions.math,
+      description: language === 'zh-CN' ? '把当前块渲染为 KaTeX 公式。' : 'Render this block as a KaTeX display equation.',
+      keywords: ['latex', 'equation', 'formula', 'katex', '公式'],
+      kind: 'type',
+      type: 'math'
+    },
+    {
+      id: 'quote',
+      label: ui.blockTypeOptions.quote,
+      description: language === 'zh-CN' ? '把当前块转换为引用块。' : 'Convert this block into a quoted callout.',
+      keywords: ['blockquote', 'callout', 'cite', 'quote', '引用'],
+      kind: 'type',
+      type: 'quote'
+    },
+    {
+      id: 'bullet',
+      label: ui.blockTypeOptions['bulleted-list'],
+      description: language === 'zh-CN' ? '把当前块转换为无序列表项。' : 'Turn this block into a bulleted list item.',
+      keywords: ['unordered', 'list', 'dash', 'bullet', '列表', '无序'],
+      kind: 'type',
+      type: 'bulleted-list'
+    },
+    {
+      id: 'numbered',
+      label: ui.blockTypeOptions['numbered-list'],
+      description: language === 'zh-CN' ? '把当前块转换为有序列表项。' : 'Turn this block into an ordered list item.',
+      keywords: ['ordered', 'list', 'number', '列表', '有序'],
+      kind: 'type',
+      type: 'numbered-list'
+    },
+    {
+      id: 'divider',
+      label: ui.blockTypeOptions.divider,
+      description: language === 'zh-CN' ? '插入一个水平分隔线块。' : 'Insert a horizontal divider block.',
+      keywords: ['separator', 'rule', 'hr', 'divider', '分隔线'],
+      kind: 'type',
+      type: 'divider'
+    },
+    {
+      id: 'above',
+      label: language === 'zh-CN' ? '在上方插入' : 'Insert Above',
+      description: language === 'zh-CN' ? '在当前块上方插入一个同级块。' : 'Insert a new sibling block above the current block.',
+      keywords: ['insert', 'before', 'up', '上方', '插入'],
+      kind: 'action',
+      action: 'insert-above'
+    },
+    {
+      id: 'below',
+      label: language === 'zh-CN' ? '在下方插入' : 'Insert Below',
+      description: language === 'zh-CN' ? '在当前块下方插入一个同级块。' : 'Insert a new sibling block below the current block.',
+      keywords: ['insert', 'after', 'down', '下方', '插入'],
+      kind: 'action',
+      action: 'insert-below'
+    },
+    {
+      id: 'child',
+      label: language === 'zh-CN' ? '插入子块' : 'Insert Child',
+      description: language === 'zh-CN' ? '在当前子树下方插入一个嵌套子块。' : 'Insert a nested child block below the current subtree.',
+      keywords: ['child', 'sub-block', 'nested', 'descendant', '子块', '嵌套'],
+      kind: 'action',
+      action: 'insert-child'
+    },
+    {
+      id: 'up',
+      label: ui.moveUp,
+      description: language === 'zh-CN' ? '把当前块子树移动到上一个同级子树之前。' : 'Move the current block subtree above the previous sibling subtree.',
+      keywords: ['reorder', 'before', 'raise', '上移', '移动'],
+      kind: 'action',
+      action: 'move-up'
+    },
+    {
+      id: 'down',
+      label: ui.moveDown,
+      description: language === 'zh-CN' ? '把当前块子树移动到下一个同级子树之后。' : 'Move the current block subtree below the next sibling subtree.',
+      keywords: ['reorder', 'after', 'lower', '下移', '移动'],
+      kind: 'action',
+      action: 'move-down'
+    },
+    {
+      id: 'indent',
+      label: language === 'zh-CN' ? '增加缩进' : 'Indent Block',
+      description: language === 'zh-CN' ? '增加待办和列表块的嵌套层级。' : 'Increase nesting for todo and list blocks.',
+      keywords: ['nest', 'tab', 'right', 'depth', '缩进', '嵌套'],
+      kind: 'action',
+      action: 'indent'
+    },
+    {
+      id: 'outdent',
+      label: language === 'zh-CN' ? '减少缩进' : 'Outdent Block',
+      description: language === 'zh-CN' ? '降低待办和列表块的嵌套层级。' : 'Decrease nesting for todo and list blocks.',
+      keywords: ['shift-tab', 'left', 'unnest', 'depth', '取消缩进', '提升'],
+      kind: 'action',
+      action: 'outdent'
+    },
+    {
+      id: 'duplicate',
+      label: ui.duplicate,
+      description: language === 'zh-CN' ? '在原块下方复制一份当前块子树。' : 'Clone the current block subtree below the original.',
+      keywords: ['copy', 'clone', 'repeat', '复制', '克隆'],
+      kind: 'action',
+      action: 'duplicate'
+    },
+    {
+      id: 'delete',
+      label: ui.common.delete,
+      description: language === 'zh-CN' ? '删除当前块子树。' : 'Remove the current block subtree.',
+      keywords: ['remove', 'trash', 'del', 'delete', '删除'],
+      kind: 'action',
+      action: 'delete'
+    }
+  ]
 }
