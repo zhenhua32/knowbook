@@ -10,7 +10,6 @@ type UseBlockStructureActionsParams = {
     depth?: number,
     parentBlockId?: string | null
   ) => DocumentBlockDraft
-  buildSiblingDraftBlock: (anchorBlock?: DocumentBlockDraft) => DocumentBlockDraft
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
@@ -27,7 +26,6 @@ type UseBlockStructureActionsParams = {
 
 export function useBlockStructureActions({
   buildBlockTypePatch,
-  buildSiblingDraftBlock,
   clearBlockSelection,
   draftBlocks,
   endBlockDrag,
@@ -41,6 +39,14 @@ export function useBlockStructureActions({
   setDraftBlocks,
   setPendingFocusBlockIndex
 }: UseBlockStructureActionsParams) {
+  const buildSiblingDraftBlock = useCallback((anchorBlock?: DocumentBlockDraft): DocumentBlockDraft => {
+    if (anchorBlock && isNestableBlock(anchorBlock.type)) {
+      return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
+    }
+
+    return buildBlockTypePatch('paragraph', '')
+  }, [buildBlockTypePatch, isNestableBlock])
+
   const insertDraftBlockAt = useCallback((index: number, anchorIndex: number | null = null) => {
     pushToHistory(draftBlocks)
     const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))

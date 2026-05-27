@@ -381,14 +381,6 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
   }
 }
 
-function buildSiblingDraftBlock(anchorBlock?: DocumentBlockDraft): DocumentBlockDraft {
-  if (anchorBlock && isNestableBlock(anchorBlock.type)) {
-    return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
-  }
-
-  return buildBlockTypePatch('paragraph', '')
-}
-
 function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParentBlockId: string | null): DocumentBlockDraft[] {
   if (blocks.length === 0) {
     return blocks
@@ -417,25 +409,6 @@ function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParentBlockI
       parentBlockId
     }
   })
-}
-
-function getFragmentLocalRootIds(blocks: DocumentBlockDraft[]): Set<string> {
-  const blockIds = new Set(blocks.map((block) => getNormalizedBlockId(block)).filter((id): id is string => Boolean(id)))
-  const rootIds = new Set<string>()
-
-  for (const block of blocks) {
-    const blockId = getNormalizedBlockId(block)
-    if (!blockId) {
-      continue
-    }
-
-    const parentBlockId = getNormalizedParentBlockId(block)
-    if (!parentBlockId || !blockIds.has(parentBlockId)) {
-      rootIds.add(blockId)
-    }
-  }
-
-  return rootIds
 }
 
 function resolveDraftInsertionPlacement(
@@ -617,43 +590,6 @@ function getBlockDropPreview(
     effectiveDepth: placement.depth,
     parentText: placement.parentText
   }
-}
-
-function moveContiguousBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange, targetIndex: number): DocumentBlockDraft[] {
-  const movedBlocks = blocks.slice(range.start, range.end + 1)
-  const next = [...blocks]
-  next.splice(range.start, movedBlocks.length)
-
-  const insertionIndex = range.start < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
-  next.splice(insertionIndex, 0, ...movedBlocks)
-  return next
-}
-
-function remapIndexAfterSubtreeMove(
-  index: number | null,
-  sourceIndex: number,
-  subtreeEndIndex: number,
-  insertionIndex: number
-): number | null {
-  if (index === null) {
-    return index
-  }
-
-  const subtreeSize = subtreeEndIndex - sourceIndex + 1
-
-  if (index >= sourceIndex && index <= subtreeEndIndex) {
-    return insertionIndex + (index - sourceIndex)
-  }
-
-  if (sourceIndex < insertionIndex && index > subtreeEndIndex && index <= insertionIndex + subtreeSize - 1) {
-    return index - subtreeSize
-  }
-
-  if (sourceIndex > insertionIndex && index >= insertionIndex && index < sourceIndex) {
-    return index + subtreeSize
-  }
-
-  return index
 }
 
 function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'tags' | 'language' | 'highlight'>): DocumentBlockDraft {
@@ -1012,7 +948,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
-    getFragmentLocalRootIds,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
     getNextSiblingSubtreeStartIndex,
@@ -1022,10 +957,8 @@ export function App() {
     getVisibleSiblingSelectionSlice,
     isNestableBlock,
     materializeDraftFragment,
-    moveContiguousBlockRange,
     normalizeBlockDepth,
     pushToHistory,
-    remapIndexAfterSubtreeMove,
     resolveDraftInsertionPlacement,
     selectedBlockRange,
     setActiveBlockIndex,
@@ -1056,7 +989,6 @@ export function App() {
     splitDraftBlock
   } = useBlockStructureActions({
     buildBlockTypePatch,
-    buildSiblingDraftBlock,
     clearBlockSelection,
     draftBlocks,
     endBlockDrag,
@@ -1084,14 +1016,12 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
-    getFragmentLocalRootIds,
     getNextSiblingSubtreeStartIndex,
     getNormalizedBlockId,
     getPreviousSiblingSubtreeStartIndex,
     isNestableBlock,
     normalizeBlockDepth,
     pushToHistory,
-    remapIndexAfterSubtreeMove,
     resolveDraftInsertionPlacement,
     setActiveBlockIndex,
     setActiveCursorPosition,
@@ -1112,7 +1042,6 @@ export function App() {
     activeSlashContext,
     adjustBlockDepth,
     buildBlockTypePatch,
-    buildSiblingDraftBlock,
     clearBlockSelection,
     draftBlocks,
     duplicateDraftBlock,

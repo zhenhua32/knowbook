@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import { getFragmentLocalRootIds, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
 
 type UseSingleBlockTreeActionsParams = {
   activeCursorPosition: number
@@ -15,19 +16,12 @@ type UseSingleBlockTreeActionsParams = {
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
   getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
-  getFragmentLocalRootIds: (blocks: DocumentBlockDraft[]) => Set<string>
   getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   getNormalizedBlockId: (block: DocumentBlockDraft | undefined) => string | null
   getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   isNestableBlock: (type: DocumentBlock['type']) => boolean
   normalizeBlockDepth: (type: DocumentBlock['type'], depth: number) => number
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
-  remapIndexAfterSubtreeMove: (
-    candidateIndex: number | null,
-    sourceStart: number,
-    sourceEnd: number,
-    insertionIndex: number
-  ) => number | null
   resolveDraftInsertionPlacement: (
     blocks: DocumentBlockDraft[],
     insertionIndex: number,
@@ -55,14 +49,12 @@ export function useSingleBlockTreeActions({
   draftBlocks,
   endBlockDrag,
   getBlockSubtreeEndIndex,
-  getFragmentLocalRootIds,
   getNextSiblingSubtreeStartIndex,
   getNormalizedBlockId,
   getPreviousSiblingSubtreeStartIndex,
   isNestableBlock,
   normalizeBlockDepth,
   pushToHistory,
-  remapIndexAfterSubtreeMove,
   resolveDraftInsertionPlacement,
   setActiveBlockIndex,
   setActiveCursorPosition,
@@ -279,7 +271,7 @@ export function useSingleBlockTreeActions({
         insertionIndex
       )
     )
-  }, [clearBlockSelection, draftBlocks, getBlockSubtreeEndIndex, getFragmentLocalRootIds, pushToHistory, remapIndexAfterSubtreeMove, resolveDraftInsertionPlacement, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex, shiftDraftFragmentDepth])
+  }, [clearBlockSelection, draftBlocks, getBlockSubtreeEndIndex, pushToHistory, resolveDraftInsertionPlacement, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex, shiftDraftFragmentDepth])
 
   const moveDraftBlockBySibling = useCallback((index: number, direction: -1 | 1, cursorPosition = activeCursorPosition, contentOverride?: string) => {
     const siblingIndex =

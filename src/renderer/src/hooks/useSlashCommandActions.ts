@@ -34,7 +34,6 @@ type UseSlashCommandActionsParams<TSlashCommand extends SlashCommandLike> = {
     depth?: number,
     parentBlockId?: string | null
   ) => DocumentBlockDraft
-  buildSiblingDraftBlock: (anchorBlock?: DocumentBlockDraft) => DocumentBlockDraft
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   duplicateDraftBlock: (index: number, contentOverride?: string) => void
@@ -58,7 +57,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   activeSlashContext,
   adjustBlockDepth,
   buildBlockTypePatch,
-  buildSiblingDraftBlock,
   clearBlockSelection,
   draftBlocks,
   duplicateDraftBlock,
@@ -75,6 +73,14 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   setPendingFocusBlockIndex,
   updateDraftBlock
 }: UseSlashCommandActionsParams<TSlashCommand>) {
+  const buildSiblingDraftBlock = useCallback((anchorBlock?: DocumentBlockDraft): DocumentBlockDraft => {
+    if (anchorBlock && isNestableBlock(anchorBlock.type)) {
+      return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
+    }
+
+    return buildBlockTypePatch('paragraph', '')
+  }, [buildBlockTypePatch, isNestableBlock])
+
   const removeDraftBlock = useCallback((index: number) => {
     pushToHistory(draftBlocks)
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -213,7 +219,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     activeSlashContext,
     adjustBlockDepth,
     buildBlockTypePatch,
-    buildSiblingDraftBlock,
     clearBlockSelection,
     draftBlocks,
     duplicateDraftBlock,
