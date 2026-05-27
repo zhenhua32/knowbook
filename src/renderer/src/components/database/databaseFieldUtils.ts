@@ -1,4 +1,8 @@
-import type { DocumentDatabaseFieldValue } from '@shared/contracts'
+import type { DocumentDatabase, DocumentDatabaseFieldValue } from '@shared/contracts'
+
+export function isDefaultDocumentDatabase(database: DocumentDatabase): boolean {
+  return database.name === 'Default' && database.description === 'Default database'
+}
 
 export function normalizeDatabaseColumnOptionsInput(input: string): string[] {
   return [...new Set(input.split(',').map((option) => option.trim()).filter(Boolean))]

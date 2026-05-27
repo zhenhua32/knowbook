@@ -4,6 +4,7 @@ import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
 import { BlockContextMenu } from './BlockContextMenu'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
+import { serializeDraftBlockRange } from '../utils/draftClipboard'
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -86,7 +87,6 @@ export type BlockEditorRowProps = {
   isSelectionCoherent: (range: { start: number; end: number }) => boolean
   getVisibleBlockCountInRange: (range: { start: number; end: number }) => number
   getMultiBlockOperationRange: (range: { start: number; end: number }) => { start: number; end: number }
-  serializeDraftBlockRange: (blocks: DocumentBlockDraft[], range: { start: number; end: number }) => string
   removeSelectedBlockRange: (range: { start: number; end: number }) => void
 
   // Callbacks: selection/interaction guards
@@ -170,7 +170,6 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     isSelectionCoherent,
     getVisibleBlockCountInRange,
     getMultiBlockOperationRange,
-    serializeDraftBlockRange,
     removeSelectedBlockRange,
     getPreviousSiblingSubtreeStartIndex,
     getNextSiblingSubtreeStartIndex,

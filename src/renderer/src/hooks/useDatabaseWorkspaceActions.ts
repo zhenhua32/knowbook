@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DatabaseEntity, DocumentDatabase, DocumentDatabaseColumnType, DocumentDatabaseFieldValue } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { isDefaultDocumentDatabase } from '../components/database/databaseFieldUtils'
 
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
 
@@ -10,7 +11,6 @@ type UseDatabaseWorkspaceActionsParams = {
   databaseDescriptionDraft: string
   databaseNameDraft: string
   databases: DocumentDatabase[]
-  isDefaultDocumentDatabase: (database: DocumentDatabase) => boolean
   setBackupMessage: (message: string | null) => void
   setDatabaseColumnNameDraft: Dispatch<SetStateAction<string>>
   setDatabaseColumnOptionsDraft: Dispatch<SetStateAction<string>>
@@ -36,7 +36,6 @@ export function useDatabaseWorkspaceActions({
   databaseDescriptionDraft,
   databaseNameDraft,
   databases,
-  isDefaultDocumentDatabase,
   setBackupMessage,
   setDatabaseColumnNameDraft,
   setDatabaseColumnOptionsDraft,
@@ -58,7 +57,7 @@ export function useDatabaseWorkspaceActions({
 }: UseDatabaseWorkspaceActionsParams) {
   const selectedDatabase = useMemo(
     () => databases.find((database) => !isDefaultDocumentDatabase(database) && database.id === databaseEntityDatabaseId) ?? null,
-    [databaseEntityDatabaseId, databases, isDefaultDocumentDatabase]
+    [databaseEntityDatabaseId, databases]
   )
 
   const resetColumnDrafts = useCallback(() => {

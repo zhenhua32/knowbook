@@ -10,6 +10,7 @@ import type {
   DocumentDatabaseColumn,
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
+import { isDefaultDocumentDatabase } from '../components/database/databaseFieldUtils'
 
 type DatabaseWorkspaceView = 'catalog' | 'standalone'
 type DatabaseEntityFilterScope = '' | '__document__' | string
@@ -31,7 +32,6 @@ type UseDatabaseDerivedStateParams = {
   deferredCatalogQuery: string
   documentCatalog: DocumentCatalogEntry[]
   isDatabasePageActive: boolean
-  isDefaultDocumentDatabase: (database: DocumentDatabase) => boolean
   selectedDatabaseColumns: DocumentDatabaseColumn[]
   selectedDatabaseEntityIds: string[]
   uiDocumentCatalogHint: string
@@ -57,7 +57,6 @@ export function useDatabaseDerivedState({
   deferredCatalogQuery,
   documentCatalog,
   isDatabasePageActive,
-  isDefaultDocumentDatabase,
   selectedDatabaseColumns,
   selectedDatabaseEntityIds,
   uiDocumentCatalogHint,
@@ -79,7 +78,7 @@ export function useDatabaseDerivedState({
 
   const standaloneDatabases = useMemo(
     () => databases.filter((database) => !isDefaultDocumentDatabase(database)),
-    [databases, isDefaultDocumentDatabase]
+    [databases]
   )
 
   const selectedDatabase = useMemo(

@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
+import { serializeDraftBlockRange } from '../utils/draftClipboard'
 
 type BlockSelectionRange = {
   start: number
@@ -71,7 +72,6 @@ type UseMultiBlockActionsParams = {
     requestedDepth: number
   ) => { depth: number; parentBlockId: string | null }
   selectedBlockRange: BlockSelectionRange | null
-  serializeDraftBlockRange: (blocks: DocumentBlockDraft[], range: BlockSelectionRange) => string
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setBackupMessage: Dispatch<SetStateAction<string | null>>
@@ -112,7 +112,6 @@ export function useMultiBlockActions({
   remapIndexAfterSubtreeMove,
   resolveDraftInsertionPlacement,
   selectedBlockRange,
-  serializeDraftBlockRange,
   setActiveBlockIndex,
   setActiveCursorPosition,
   setBackupMessage,
@@ -452,7 +451,7 @@ export function useMultiBlockActions({
       const message = error instanceof Error ? error.message : ui.copyFailed
       setBackupMessage(message)
     }
-  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, serializeDraftBlockRange, setBackupMessage, ui])
+  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, setBackupMessage, ui])
 
   const copySelectedBlocksAsPlainText = useCallback(async () => {
     if (!selectedBlockRange) {
@@ -489,7 +488,7 @@ export function useMultiBlockActions({
       const message = error instanceof Error ? error.message : ui.cutFailed
       setBackupMessage(message)
     }
-  }, [draftBlocks, getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, serializeDraftBlockRange, setBackupMessage, ui])
+  }, [draftBlocks, getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, setBackupMessage, ui])
 
   const deleteSelectedBlocks = useCallback(() => {
     if (!selectedBlockRange) {

@@ -40,6 +40,7 @@ import {
 } from './i18n'
 import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
+import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -142,10 +143,6 @@ type BlockSelectionRange = {
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-
-function isDefaultDocumentDatabase(database: DocumentDatabase): boolean {
-  return database.name === 'Default' && database.description === 'Default database'
-}
 
 function isNestableBlock(type: string) {
   return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
@@ -1031,7 +1028,6 @@ export function App() {
     remapIndexAfterSubtreeMove,
     resolveDraftInsertionPlacement,
     selectedBlockRange,
-    serializeDraftBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setBackupMessage,
@@ -1425,7 +1421,6 @@ export function App() {
     databaseDescriptionDraft,
     databaseNameDraft,
     databases,
-    isDefaultDocumentDatabase,
     setBackupMessage,
     setDatabaseColumnNameDraft,
     setDatabaseColumnOptionsDraft,
@@ -1593,7 +1588,6 @@ export function App() {
     deferredCatalogQuery,
     documentCatalog: homeData.documentCatalog,
     isDatabasePageActive: activePage === 'database',
-    isDefaultDocumentDatabase,
     selectedDatabaseColumns,
     selectedDatabaseEntityIds,
     uiDocumentCatalogHint: ui.documentCatalogHint,
@@ -1880,7 +1874,6 @@ export function App() {
     selectedDocument,
     selectedVisibleBlockCount,
     selectedVisibleSiblingSlice,
-    serializeDraftBlockRange,
     setDragOverBlockDepth,
     setDragOverBlockIndex,
     setSelectedBlockConversionType,
@@ -2375,58 +2368,6 @@ function normalizeBlockContentForType(type: string, content: string) {
   }
 
   return content
-}
-
-function renderDraftBlockForClipboard(block: DocumentBlockDraft): string {
-  const indent = '  '.repeat(Math.max(0, block.depth))
-
-  if (block.type === 'heading-1') {
-    return `# ${block.content}`
-  }
-
-  if (block.type === 'heading-2') {
-    return `## ${block.content}`
-  }
-
-  if (block.type === 'todo') {
-    return `${indent}- [${block.checked ? 'x' : ' '}] ${block.content}`
-  }
-
-  if (block.type === 'quote') {
-    return block.content
-      .split('\n')
-      .map((line) => `> ${line}`)
-      .join('\n')
-  }
-
-  if (block.type === 'bulleted-list') {
-    return `${indent}- ${block.content}`
-  }
-
-  if (block.type === 'numbered-list') {
-    return `${indent}1. ${block.content}`
-  }
-
-  if (block.type === 'divider') {
-    return '---'
-  }
-
-  if (block.type === 'math') {
-    return ['$$', block.content, '$$'].join('\n')
-  }
-
-  if (block.type === 'code') {
-    return ['```' + (block.language ?? 'txt'), block.content, '```'].join('\n')
-  }
-
-  return block.content
-}
-
-function serializeDraftBlockRange(blocks: DocumentBlockDraft[], range: BlockSelectionRange): string {
-  return blocks
-    .slice(range.start, range.end + 1)
-    .map((block) => renderDraftBlockForClipboard(block))
-    .join('\n\n')
 }
 
 function getBlockTreeText(type: string, content: string): string {
