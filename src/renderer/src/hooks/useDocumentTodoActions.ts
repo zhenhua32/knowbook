@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentBlock, DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
+import type { DocumentDetail, HomeData } from '@shared/contracts'
+import { toDraftBlock } from '../utils/draftBlockShape'
 
 type UseDocumentTodoActionsParams = {
   selectedDocument: DocumentDetail | null
@@ -8,7 +9,6 @@ type UseDocumentTodoActionsParams = {
   setHomeData: Dispatch<SetStateAction<HomeData>>
   setIsSaving: Dispatch<SetStateAction<boolean>>
   setSelectedDocument: Dispatch<SetStateAction<DocumentDetail | null>>
-  toDraftBlock: (block: DocumentBlock) => DocumentBlockDraft
   todoUpdateFailedMessage: string
 }
 
@@ -18,7 +18,6 @@ export function useDocumentTodoActions({
   setHomeData,
   setIsSaving,
   setSelectedDocument,
-  toDraftBlock,
   todoUpdateFailedMessage
 }: UseDocumentTodoActionsParams) {
   const toggleTodoBlockChecked = useCallback(async (index: number, checked: boolean) => {
@@ -56,7 +55,7 @@ export function useDocumentTodoActions({
     } finally {
       setIsSaving(false)
     }
-  }, [selectedDocument, setBackupMessage, setHomeData, setIsSaving, setSelectedDocument, toDraftBlock, todoUpdateFailedMessage])
+  }, [selectedDocument, setBackupMessage, setHomeData, setIsSaving, setSelectedDocument, todoUpdateFailedMessage])
 
   return {
     toggleTodoBlockChecked

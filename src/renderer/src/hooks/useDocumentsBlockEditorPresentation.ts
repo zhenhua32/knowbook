@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
+import { isNestableBlock } from '../utils/draftBlockShape'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
 import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
@@ -41,7 +42,6 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
   isBlockSelected: (index: number) => boolean
-  isNestableBlock: (type: DocumentBlock['type']) => boolean
   linkSuggestions: LinkSuggestionPanelProps['linkSuggestions']
   onSelectOutlineBlock: (blockIndex: number) => void
   selectedDocument: SharedBlockEditorRowProps['selectedDocument'] | null
@@ -107,7 +107,6 @@ export function useDocumentsBlockEditorPresentation({
   insertLinkSuggestion,
   isBlockRangeSelecting,
   isBlockSelected,
-  isNestableBlock,
   isSelectionCoherent,
   isZh,
   linkSuggestions,

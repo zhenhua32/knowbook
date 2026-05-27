@@ -41,6 +41,7 @@ import {
 import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
+import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -143,14 +144,6 @@ type BlockSelectionRange = {
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-
-function isNestableBlock(type: string) {
-  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
-}
-
-function normalizeBlockDepth(type: string, depth: number) {
-  return isNestableBlock(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
-}
 
 type TreeAwareBlock = {
   id?: string
@@ -592,19 +585,6 @@ function getBlockDropPreview(
   }
 }
 
-function toDraftBlock(block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'tags' | 'language' | 'highlight'>): DocumentBlockDraft {
-  return {
-    id: block.id,
-    type: block.type,
-    content: block.content,
-    checked: Boolean(block.checked),
-    depth: normalizeBlockDepth(block.type, block.depth),
-    parentBlockId: block.parentBlockId ?? null,
-    language: block.language,
-    highlight: block.highlight
-  }
-}
-
 export function App() {
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
   const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
@@ -726,7 +706,6 @@ export function App() {
     onSelectedDocumentChange: setSelectedDocument,
     selectedDocument,
     selectedDocumentId,
-    toDraftBlock,
     ui,
     validateBlockTreeStructure
   })
@@ -994,7 +973,6 @@ export function App() {
     endBlockDrag,
     getBlockSubtreeEndIndex,
     getNormalizedParentBlockId,
-    isNestableBlock,
     materializeDraftFragment,
     pushToHistory,
     setActiveBlockIndex,
@@ -1049,7 +1027,6 @@ export function App() {
     getBlockSubtreeEndIndex,
     insertChildDraftBlock,
     insertDraftBlockAt,
-    isNestableBlock,
     moveDraftBlockBySibling,
     pushToHistory,
     setActiveBlockIndex,
@@ -1337,7 +1314,6 @@ export function App() {
     setHomeData,
     setIsSaving,
     setSelectedDocument,
-    toDraftBlock,
     todoUpdateFailedMessage: ui.todoUpdateFailed
   })
 
@@ -1458,7 +1434,6 @@ export function App() {
     endBlockDrag,
     getMultiBlockOperationRange,
     getNormalizedParentBlockId,
-    isNestableBlock,
     materializeDraftFragment,
     normalizeCodeLanguage,
     pushToHistory,
@@ -1778,7 +1753,6 @@ export function App() {
     insertLinkSuggestion,
     isBlockRangeSelecting,
     isBlockSelected,
-    isNestableBlock,
     isSelectionCoherent,
     isZh,
     linkSuggestions,
