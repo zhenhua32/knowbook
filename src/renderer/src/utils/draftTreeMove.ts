@@ -5,11 +5,11 @@ type DraftBlockRange = {
   end: number
 }
 
-function getNormalizedBlockId(block: Pick<DocumentBlockDraft, 'id'> | undefined): string | null {
+export function getNormalizedBlockId<TBlock extends { id?: string }>(block: TBlock | undefined): string | null {
   return block?.id?.trim() ? block.id : null
 }
 
-function getNormalizedParentBlockId(block: Pick<DocumentBlockDraft, 'parentBlockId'> | undefined): string | null {
+export function getNormalizedParentBlockId<TBlock extends { parentBlockId?: string | null }>(block: TBlock | undefined): string | null {
   return block?.parentBlockId?.trim() ? block.parentBlockId : null
 }
 

@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import type { DocumentBlockDraft } from '@shared/contracts'
+import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
 
 type BlockSelectionRange = {
   start: number
@@ -16,9 +17,7 @@ type UseBlockDragDropActionsParams = {
   getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
-  isNestableBlock: (type: DocumentBlock['type']) => boolean
   moveDraftSubtree: (sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) => void
-  normalizeBlockDepth: (type: DocumentBlock['type'], depth: number) => number
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   selectedBlockRange: BlockSelectionRange | null
   setBackupMessage: Dispatch<SetStateAction<string | null>>
@@ -36,9 +35,7 @@ export function useBlockDragDropActions({
   getBlockSubtreeEndIndex,
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
-  isNestableBlock,
   moveDraftSubtree,
-  normalizeBlockDepth,
   pushToHistory,
   selectedBlockRange,
   setBackupMessage,

@@ -42,6 +42,7 @@ import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
+import { getNormalizedBlockId, getNormalizedParentBlockId } from './utils/draftTreeMove'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -149,14 +150,6 @@ type TreeAwareBlock = {
   id?: string
   parentBlockId?: string | null
   depth: number
-}
-
-function getNormalizedBlockId(block: TreeAwareBlock | undefined): string | null {
-  return block?.id?.trim() ? block.id : null
-}
-
-function getNormalizedParentBlockId(block: TreeAwareBlock | undefined): string | null {
-  return block?.parentBlockId?.trim() ? block.parentBlockId : null
 }
 
 function buildTreeAwareBlockIndexById(blocks: TreeAwareBlock[]): Map<string, number> {
@@ -878,8 +871,6 @@ export function App() {
     draftBlocks,
     getBlockSubtreeEndIndex,
     getNextSiblingSubtreeStartIndex,
-    getNormalizedBlockId,
-    getNormalizedParentBlockId,
     getPreviousSiblingSubtreeStartIndex,
     onActiveBlockChange: setActiveBlockIndex,
     visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
@@ -930,13 +921,9 @@ export function App() {
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
     getNextSiblingSubtreeStartIndex,
-    getNormalizedBlockId,
-    getNormalizedParentBlockId,
     getPreviousSiblingSubtreeStartIndex,
     getVisibleSiblingSelectionSlice,
-    isNestableBlock,
     materializeDraftFragment,
-    normalizeBlockDepth,
     pushToHistory,
     resolveDraftInsertionPlacement,
     selectedBlockRange,
@@ -972,7 +959,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
-    getNormalizedParentBlockId,
     materializeDraftFragment,
     pushToHistory,
     setActiveBlockIndex,
@@ -995,10 +981,7 @@ export function App() {
     endBlockDrag,
     getBlockSubtreeEndIndex,
     getNextSiblingSubtreeStartIndex,
-    getNormalizedBlockId,
     getPreviousSiblingSubtreeStartIndex,
-    isNestableBlock,
-    normalizeBlockDepth,
     pushToHistory,
     resolveDraftInsertionPlacement,
     setActiveBlockIndex,
@@ -1048,9 +1031,7 @@ export function App() {
     getBlockSubtreeEndIndex,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
-    isNestableBlock,
     moveDraftSubtree,
-    normalizeBlockDepth,
     pushToHistory,
     selectedBlockRange,
     setBackupMessage,
@@ -1433,7 +1414,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     getMultiBlockOperationRange,
-    getNormalizedParentBlockId,
     materializeDraftFragment,
     normalizeCodeLanguage,
     pushToHistory,

@@ -1,7 +1,8 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
-import { getFragmentLocalRootIds, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
+import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { getFragmentLocalRootIds, getNormalizedBlockId, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
 
 type UseSingleBlockTreeActionsParams = {
   activeCursorPosition: number
@@ -17,10 +18,7 @@ type UseSingleBlockTreeActionsParams = {
   endBlockDrag: () => void
   getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
   getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getNormalizedBlockId: (block: DocumentBlockDraft | undefined) => string | null
   getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  isNestableBlock: (type: DocumentBlock['type']) => boolean
-  normalizeBlockDepth: (type: DocumentBlock['type'], depth: number) => number
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   resolveDraftInsertionPlacement: (
     blocks: DocumentBlockDraft[],
@@ -50,10 +48,7 @@ export function useSingleBlockTreeActions({
   endBlockDrag,
   getBlockSubtreeEndIndex,
   getNextSiblingSubtreeStartIndex,
-  getNormalizedBlockId,
   getPreviousSiblingSubtreeStartIndex,
-  isNestableBlock,
-  normalizeBlockDepth,
   pushToHistory,
   resolveDraftInsertionPlacement,
   setActiveBlockIndex,
@@ -108,7 +103,6 @@ export function useSingleBlockTreeActions({
     activeCursorPosition,
     draftBlocks,
     getBlockSubtreeEndIndex,
-    getNormalizedBlockId,
     isNestableBlock,
     normalizeBlockDepth,
     resolveDraftInsertionPlacement,

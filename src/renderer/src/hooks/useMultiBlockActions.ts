@@ -3,7 +3,8 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { getFragmentLocalRootIds, moveContiguousBlockRange, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
+import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { getFragmentLocalRootIds, getNormalizedBlockId, getNormalizedParentBlockId, moveContiguousBlockRange, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
 
 type BlockSelectionRange = {
   start: number
@@ -50,13 +51,9 @@ type UseMultiBlockActionsParams = {
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
   getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getNormalizedBlockId: (block: DocumentBlockDraft | undefined) => string | null
-  getNormalizedParentBlockId: (block: DocumentBlockDraft | undefined) => string | null
   getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   getVisibleSiblingSelectionSlice: (range: BlockSelectionRange) => VisibleSelectionSlice | null
-  isNestableBlock: (type: DocumentBlock['type']) => boolean
   materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
-  normalizeBlockDepth: (type: DocumentBlock['type'], depth: number) => number
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   resolveDraftInsertionPlacement: (
     blocks: DocumentBlockDraft[],
@@ -92,13 +89,9 @@ export function useMultiBlockActions({
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
   getNextSiblingSubtreeStartIndex,
-  getNormalizedBlockId,
-  getNormalizedParentBlockId,
   getPreviousSiblingSubtreeStartIndex,
   getVisibleSiblingSelectionSlice,
-  isNestableBlock,
   materializeDraftFragment,
-  normalizeBlockDepth,
   pushToHistory,
   resolveDraftInsertionPlacement,
   selectedBlockRange,
@@ -188,7 +181,6 @@ export function useMultiBlockActions({
     getBlockSubtreeEndIndex,
     getMultiBlockInteractionGuard,
     getNextSiblingSubtreeStartIndex,
-    getNormalizedBlockId,
     getPreviousSiblingSubtreeStartIndex,
     getVisibleSiblingSelectionSlice,
     pushToHistory,
@@ -310,7 +302,6 @@ export function useMultiBlockActions({
     endBlockDrag,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
-    getNormalizedBlockId,
     isNestableBlock,
     normalizeBlockDepth,
     pushToHistory,
@@ -522,7 +513,6 @@ export function useMultiBlockActions({
     draftBlocks,
     endBlockDrag,
     getMultiBlockOperationRange,
-    getNormalizedParentBlockId,
     materializeDraftFragment,
     pushToHistory,
     selectedBlockRange,
