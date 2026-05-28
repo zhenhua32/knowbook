@@ -1,6 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
-import { getNormalizedBlockId, getNormalizedParentBlockId } from '../utils/draftTreeMove'
+import {
+  getBlockSubtreeEndIndex,
+  getNextSiblingSubtreeStartIndex,
+  getNormalizedBlockId,
+  getNormalizedParentBlockId,
+  getPreviousSiblingSubtreeStartIndex
+} from '../utils/draftTreeMove'
 
 type BlockSelectionRange = {
   start: number
@@ -21,9 +27,6 @@ type UseBlockSelectionStateParams = {
   activeBlockIndex: number | null
   collapsedBlockIds: Set<string>
   draftBlocks: DocumentBlockDraft[]
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
-  getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   onActiveBlockChange: (index: number) => void
   visibleSliceCrossParentGuard: string
 }
@@ -32,9 +35,6 @@ export function useBlockSelectionState({
   activeBlockIndex,
   collapsedBlockIds,
   draftBlocks,
-  getBlockSubtreeEndIndex,
-  getNextSiblingSubtreeStartIndex,
-  getPreviousSiblingSubtreeStartIndex,
   onActiveBlockChange,
   visibleSliceCrossParentGuard
 }: UseBlockSelectionStateParams) {

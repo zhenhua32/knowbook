@@ -2,7 +2,14 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-import { getFragmentLocalRootIds, getNormalizedBlockId, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
+import {
+  getBlockSubtreeEndIndex,
+  getFragmentLocalRootIds,
+  getNextSiblingSubtreeStartIndex,
+  getNormalizedBlockId,
+  getPreviousSiblingSubtreeStartIndex,
+  remapIndexAfterSubtreeMove
+} from '../utils/draftTreeMove'
 
 type UseSingleBlockTreeActionsParams = {
   activeCursorPosition: number
@@ -16,9 +23,6 @@ type UseSingleBlockTreeActionsParams = {
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
-  getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   resolveDraftInsertionPlacement: (
     blocks: DocumentBlockDraft[],
@@ -46,9 +50,6 @@ export function useSingleBlockTreeActions({
   clearBlockSelection,
   draftBlocks,
   endBlockDrag,
-  getBlockSubtreeEndIndex,
-  getNextSiblingSubtreeStartIndex,
-  getPreviousSiblingSubtreeStartIndex,
   pushToHistory,
   resolveDraftInsertionPlacement,
   setActiveBlockIndex,

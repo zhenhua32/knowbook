@@ -90,8 +90,6 @@ export type BlockEditorRowProps = {
   removeSelectedBlockRange: (range: { start: number; end: number }) => void
 
   // Callbacks: selection/interaction guards
-  getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   canMoveSelectedRange: (range: { start: number; end: number }, delta: -1 | 1) => boolean
 
   // Constants & UI
@@ -171,8 +169,6 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
     getVisibleBlockCountInRange,
     getMultiBlockOperationRange,
     removeSelectedBlockRange,
-    getPreviousSiblingSubtreeStartIndex,
-    getNextSiblingSubtreeStartIndex,
     canMoveSelectedRange,
     BLOCK_INDENT_SIZE,
     ui,

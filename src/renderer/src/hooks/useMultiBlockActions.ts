@@ -4,7 +4,16 @@ import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-import { getFragmentLocalRootIds, getNormalizedBlockId, getNormalizedParentBlockId, moveContiguousBlockRange, remapIndexAfterSubtreeMove } from '../utils/draftTreeMove'
+import {
+  getBlockSubtreeEndIndex,
+  getFragmentLocalRootIds,
+  getNextSiblingSubtreeStartIndex,
+  getNormalizedBlockId,
+  getNormalizedParentBlockId,
+  getPreviousSiblingSubtreeStartIndex,
+  moveContiguousBlockRange,
+  remapIndexAfterSubtreeMove
+} from '../utils/draftTreeMove'
 
 type BlockSelectionRange = {
   start: number
@@ -47,11 +56,8 @@ type UseMultiBlockActionsParams = {
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
-  getNextSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
-  getPreviousSiblingSubtreeStartIndex: (blocks: DocumentBlockDraft[], index: number) => number | null
   getVisibleSiblingSelectionSlice: (range: BlockSelectionRange) => VisibleSelectionSlice | null
   materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
@@ -85,11 +91,8 @@ export function useMultiBlockActions({
   clearBlockSelection,
   draftBlocks,
   endBlockDrag,
-  getBlockSubtreeEndIndex,
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
-  getNextSiblingSubtreeStartIndex,
-  getPreviousSiblingSubtreeStartIndex,
   getVisibleSiblingSelectionSlice,
   materializeDraftFragment,
   pushToHistory,
