@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
-import { getNormalizedParentBlockId } from '../utils/draftTreeMove'
+import { getBlockSubtreeEndIndex, getNormalizedParentBlockId } from '../utils/draftTreeMove'
 
 type UseBlockStructureActionsParams = {
   buildBlockTypePatch: (
@@ -15,7 +15,6 @@ type UseBlockStructureActionsParams = {
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
   materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
@@ -29,7 +28,6 @@ export function useBlockStructureActions({
   clearBlockSelection,
   draftBlocks,
   endBlockDrag,
-  getBlockSubtreeEndIndex,
   materializeDraftFragment,
   pushToHistory,
   setActiveBlockIndex,

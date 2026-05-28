@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
+import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
 
 type SlashCommandLike = {
   id: string
@@ -39,7 +40,6 @@ type UseSlashCommandActionsParams<TSlashCommand extends SlashCommandLike> = {
   draftBlocks: DocumentBlockDraft[]
   duplicateDraftBlock: (index: number, contentOverride?: string) => void
   endBlockDrag: () => void
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
   insertChildDraftBlock: (index: number, contentOverride?: string) => void
   insertDraftBlockAt: (index: number, anchorIndex?: number | null) => void
   moveDraftBlockBySibling: (index: number, direction: -1 | 1, cursorPosition?: number, contentOverride?: string) => boolean
@@ -61,7 +61,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   draftBlocks,
   duplicateDraftBlock,
   endBlockDrag,
-  getBlockSubtreeEndIndex,
   insertChildDraftBlock,
   insertDraftBlockAt,
   moveDraftBlockBySibling,
