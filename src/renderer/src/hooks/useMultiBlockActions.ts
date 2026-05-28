@@ -4,6 +4,7 @@ import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
   getFragmentLocalRootIds,
@@ -61,12 +62,6 @@ type UseMultiBlockActionsParams = {
   getVisibleSiblingSelectionSlice: (range: BlockSelectionRange) => VisibleSelectionSlice | null
   materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
-  resolveDraftInsertionPlacement: (
-    blocks: DocumentBlockDraft[],
-    insertionIndex: number,
-    rootType: DocumentBlock['type'],
-    requestedDepth: number
-  ) => { depth: number; parentBlockId: string | null }
   selectedBlockRange: BlockSelectionRange | null
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
@@ -96,7 +91,6 @@ export function useMultiBlockActions({
   getVisibleSiblingSelectionSlice,
   materializeDraftFragment,
   pushToHistory,
-  resolveDraftInsertionPlacement,
   selectedBlockRange,
   setActiveBlockIndex,
   setActiveCursorPosition,

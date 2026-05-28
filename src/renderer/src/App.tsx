@@ -42,13 +42,8 @@ import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
-import {
-  getBlockSubtreeEndIndex,
-  getNextSiblingSubtreeStartIndex,
-  getNormalizedBlockId,
-  getNormalizedParentBlockId,
-  getPreviousSiblingSubtreeStartIndex
-} from './utils/draftTreeMove'
+import { resolveDraftBlockRelationship } from './utils/draftTreePlacement'
+import { getNormalizedBlockId, getNormalizedParentBlockId } from './utils/draftTreeMove'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -139,12 +134,6 @@ type DatabaseEntityFilterScope = '' | '__document__' | string
 type DatabaseEntitySortMode = DatabaseSavedViewSortMode
 const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
-type BlockDropPreview = {
-  positionLabel: string
-  effectiveDepth: number
-  parentText: string | null
-}
-
 type BlockSelectionRange = {
   start: number
   end: number
@@ -158,38 +147,6 @@ function createDraftBlockId() {
   }
 
   return `draft-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function resolveDraftBlockRelationship(
-  type: string,
-  requestedDepth: number,
-  requestedParentBlockId: string | null | undefined,
-  id: string,
-  resolvedDepthById: Map<string, number>,
-  depthStack: Array<string | null>
-) {
-  const trimmedParentBlockId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
-  const explicitParentDepth = trimmedParentBlockId && trimmedParentBlockId !== id ? resolvedDepthById.get(trimmedParentBlockId) : undefined
-
-  if (explicitParentDepth !== undefined) {
-    const explicitDepth = normalizeBlockDepth(type, explicitParentDepth + 1)
-    if (explicitDepth > explicitParentDepth) {
-      return {
-        depth: explicitDepth,
-        parentBlockId: trimmedParentBlockId
-      }
-    }
-  }
-
-  let depth = normalizeBlockDepth(type, requestedDepth)
-  while (depth > 0 && !depthStack[depth - 1]) {
-    depth -= 1
-  }
-
-  return {
-    depth,
-    parentBlockId: depth > 0 ? depthStack[depth - 1] ?? null : null
-  }
 }
 
 function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
@@ -268,43 +225,6 @@ function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParentBlockI
       parentBlockId
     }
   })
-}
-
-function resolveDraftInsertionPlacement(
-  blocks: DocumentBlockDraft[],
-  insertionIndex: number,
-  type: string,
-  requestedDepth: number
-): { depth: number; parentBlockId: string | null; parentText: string | null } {
-  const resolvedDepthById = new Map<string, number>()
-  const depthStack: Array<string | null> = []
-  const textById = new Map<string, string>()
-  const boundedInsertionIndex = Math.max(0, Math.min(insertionIndex, blocks.length))
-
-  for (let index = 0; index < boundedInsertionIndex; index += 1) {
-    const block = blocks[index]
-    const id = getNormalizedBlockId(block) ?? `__insertion-context-${index}`
-    const { depth, parentBlockId } = resolveDraftBlockRelationship(
-      block.type,
-      block.depth,
-      block.parentBlockId,
-      id,
-      resolvedDepthById,
-      depthStack
-    )
-
-    depthStack.length = depth + 1
-    depthStack[depth] = id
-    resolvedDepthById.set(id, depth)
-    textById.set(id, getBlockTreeText(block.type, block.content))
-  }
-
-  const placement = resolveDraftBlockRelationship(type, requestedDepth, null, '__insertion-candidate__', resolvedDepthById, depthStack)
-
-  return {
-    ...placement,
-    parentText: placement.parentBlockId ? textById.get(placement.parentBlockId) ?? null : null
-  }
 }
 
 function shiftDraftFragmentDepth(
@@ -413,41 +333,6 @@ function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { valid: bool
   return {
     valid: errors.length === 0,
     errors
-  }
-}
-
-function getBlockDropPreview(
-  blocks: DocumentBlockDraft[],
-  sourceIndex: number,
-  targetIndex: number,
-  targetDepth: number | null
-): BlockDropPreview | null {
-  const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, sourceIndex)
-  if (targetIndex >= sourceIndex && targetIndex <= subtreeEndIndex) {
-    return null
-  }
-
-  const movedBlocks = blocks.slice(sourceIndex, subtreeEndIndex + 1)
-  const rootBlock = movedBlocks[0]
-  if (!rootBlock) {
-    return null
-  }
-
-  const remainingBlocks = [...blocks]
-  remainingBlocks.splice(sourceIndex, movedBlocks.length)
-
-  const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
-  const placement = resolveDraftInsertionPlacement(
-    remainingBlocks,
-    insertionIndex,
-    rootBlock.type,
-    targetDepth === null ? rootBlock.depth : targetDepth
-  )
-
-  return {
-    positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
-    effectiveDepth: placement.depth,
-    parentText: placement.parentText
   }
 }
 
@@ -791,7 +676,6 @@ export function App() {
     getVisibleSiblingSelectionSlice,
     materializeDraftFragment,
     pushToHistory,
-    resolveDraftInsertionPlacement,
     selectedBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
@@ -845,7 +729,6 @@ export function App() {
     draftBlocks,
     endBlockDrag,
     pushToHistory,
-    resolveDraftInsertionPlacement,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
@@ -1578,7 +1461,6 @@ export function App() {
     endBlockDrag,
     endBlockRangeSelection,
     filteredSlashCommands,
-    getBlockDropPreview,
     getDraggedBlockDepthPreview,
     getMultiBlockOperationRange,
     getVisibleBlockCountInRange,
@@ -2111,15 +1993,3 @@ function normalizeBlockContentForType(type: string, content: string) {
   return content
 }
 
-function getBlockTreeText(type: string, content: string): string {
-  if (type === 'divider') {
-    return getActiveUiText().horizontalDivider
-  }
-
-  const normalizedContent = content.trim()
-  if (!normalizedContent) {
-    return getActiveUiText().emptyBlock
-  }
-
-  return normalizedContent.length > 72 ? `${normalizedContent.slice(0, 72)}...` : normalizedContent
-}

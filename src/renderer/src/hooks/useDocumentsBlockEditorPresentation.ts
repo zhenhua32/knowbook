@@ -3,6 +3,7 @@ import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { isNestableBlock } from '../utils/draftBlockShape'
+import { getBlockDropPreview } from '../utils/draftTreePlacement'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
 import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
@@ -32,12 +33,6 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   dragOverBlockDepth: number | null
   dragOverBlockIndex: number | null
   draggingBlockIndex: number | null
-  getBlockDropPreview: (
-    blocks: DocumentBlockDraft[],
-    draggingIndex: number,
-    targetIndex: number,
-    targetDepth: number | null
-  ) => ComponentProps<typeof BlockEditorRow>['dropPreview']
   getVisibleBlocks: (blocks: DocumentBlockDraft[]) => DocumentBlockDraft[]
   insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
@@ -92,7 +87,6 @@ export function useDocumentsBlockEditorPresentation({
   endBlockDrag,
   endBlockRangeSelection,
   filteredSlashCommands,
-  getBlockDropPreview,
   getDraggedBlockDepthPreview,
   getMultiBlockOperationRange,
   getVisibleBlockCountInRange,
