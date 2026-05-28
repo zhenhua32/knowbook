@@ -42,7 +42,13 @@ import { WorkspaceGraph } from './components/WorkspaceGraph'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
-import { getNormalizedBlockId, getNormalizedParentBlockId } from './utils/draftTreeMove'
+import {
+  getBlockSubtreeEndIndex,
+  getNextSiblingSubtreeStartIndex,
+  getNormalizedBlockId,
+  getNormalizedParentBlockId,
+  getPreviousSiblingSubtreeStartIndex
+} from './utils/draftTreeMove'
 import { useAiState } from './hooks/useAiState'
 import { useBlockSearchState } from './hooks/useBlockSearchState'
 import { useBlockSelectionState } from './hooks/useBlockSelectionState'
@@ -145,139 +151,6 @@ type BlockSelectionRange = {
 }
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-
-type TreeAwareBlock = {
-  id?: string
-  parentBlockId?: string | null
-  depth: number
-}
-
-function buildTreeAwareBlockIndexById(blocks: TreeAwareBlock[]): Map<string, number> {
-  const indexById = new Map<string, number>()
-  for (let index = 0; index < blocks.length; index += 1) {
-    const blockId = getNormalizedBlockId(blocks[index])
-    if (blockId) {
-      indexById.set(blockId, index)
-    }
-  }
-  return indexById
-}
-
-function isBlockDescendantOf(rootId: string, blocks: TreeAwareBlock[], candidateIndex: number, indexById: Map<string, number>): boolean {
-  const candidate = blocks[candidateIndex]
-  if (!candidate) {
-    return false
-  }
-
-  const visitedParentIds = new Set<string>()
-  let currentParentId = getNormalizedParentBlockId(candidate)
-
-  while (currentParentId) {
-    if (currentParentId === rootId) {
-      return true
-    }
-
-    if (visitedParentIds.has(currentParentId)) {
-      return false
-    }
-
-    visitedParentIds.add(currentParentId)
-    const parentIndex = indexById.get(currentParentId)
-    if (parentIndex === undefined || parentIndex >= candidateIndex) {
-      return false
-    }
-
-    currentParentId = getNormalizedParentBlockId(blocks[parentIndex])
-  }
-
-  return false
-}
-
-function getBlockSubtreeEndIndex(blocks: TreeAwareBlock[], index: number) {
-  const root = blocks[index]
-  if (!root) {
-    return index
-  }
-
-  const rootId = getNormalizedBlockId(root)
-  if (!rootId) {
-    let fallbackEndIndex = index
-    for (let currentIndex = index + 1; currentIndex < blocks.length; currentIndex += 1) {
-      if (blocks[currentIndex].depth <= root.depth) {
-        break
-      }
-
-      fallbackEndIndex = currentIndex
-    }
-
-    return fallbackEndIndex
-  }
-
-  const indexById = buildTreeAwareBlockIndexById(blocks)
-
-  let endIndex = index
-  for (let currentIndex = index + 1; currentIndex < blocks.length; currentIndex += 1) {
-    if (blocks[currentIndex].depth <= root.depth) {
-      break
-    }
-
-    if (!isBlockDescendantOf(rootId, blocks, currentIndex, indexById)) {
-      break
-    }
-
-    endIndex = currentIndex
-  }
-
-  return endIndex
-}
-
-function getPreviousSiblingSubtreeStartIndex(blocks: TreeAwareBlock[], index: number) {
-  const root = blocks[index]
-  if (!root) {
-    return null
-  }
-
-  const rootParentBlockId = getNormalizedParentBlockId(root)
-
-  for (let currentIndex = index - 1; currentIndex >= 0; currentIndex -= 1) {
-    if (blocks[currentIndex].depth === root.depth) {
-      if (getNormalizedParentBlockId(blocks[currentIndex]) === rootParentBlockId) {
-        return currentIndex
-      }
-      continue
-    }
-
-    if (blocks[currentIndex].depth < root.depth) {
-      break
-    }
-  }
-
-  return null
-}
-
-function getNextSiblingSubtreeStartIndex(blocks: TreeAwareBlock[], index: number) {
-  const root = blocks[index]
-  if (!root) {
-    return null
-  }
-
-  const rootParentBlockId = getNormalizedParentBlockId(root)
-  const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
-  for (let currentIndex = subtreeEndIndex + 1; currentIndex < blocks.length; currentIndex += 1) {
-    if (blocks[currentIndex].depth === root.depth) {
-      if (getNormalizedParentBlockId(blocks[currentIndex]) === rootParentBlockId) {
-        return currentIndex
-      }
-      continue
-    }
-
-    if (blocks[currentIndex].depth < root.depth) {
-      break
-    }
-  }
-
-  return null
-}
 
 function createDraftBlockId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -708,8 +581,7 @@ export function App() {
     revealBlockAncestors,
     toggleBlockCollapse
   } = useBlockCollapseState({
-    draftBlocks,
-    getBlockSubtreeEndIndex
+    draftBlocks
   })
   const {
     aiEnabledDraft,

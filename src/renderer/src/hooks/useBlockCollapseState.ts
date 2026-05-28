@@ -1,13 +1,6 @@
 import { useCallback, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
-
-function getNormalizedBlockId(block: DocumentBlockDraft | undefined): string | null {
-  return block?.id?.trim() ? block.id : null
-}
-
-function getNormalizedParentBlockId(block: DocumentBlockDraft | undefined): string | null {
-  return block?.parentBlockId?.trim() ? block.parentBlockId : null
-}
+import { getBlockSubtreeEndIndex, getNormalizedBlockId, getNormalizedParentBlockId } from '../utils/draftTreeMove'
 
 function buildBlockIndexById(blocks: DocumentBlockDraft[]): Map<string, number> {
   const indexById = new Map<string, number>()
@@ -22,10 +15,9 @@ function buildBlockIndexById(blocks: DocumentBlockDraft[]): Map<string, number> 
 
 type UseBlockCollapseStateParams = {
   draftBlocks: DocumentBlockDraft[]
-  getBlockSubtreeEndIndex: (blocks: DocumentBlockDraft[], index: number) => number
 }
 
-export function useBlockCollapseState({ draftBlocks, getBlockSubtreeEndIndex }: UseBlockCollapseStateParams) {
+export function useBlockCollapseState({ draftBlocks }: UseBlockCollapseStateParams) {
   const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
 
   const blockHasChildren = useCallback((blockIndex: number): boolean => {
