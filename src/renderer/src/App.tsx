@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useRef } from 'react'
 import type {
   BackupResult,
   BlockReferenceResult,
@@ -24,19 +24,10 @@ import type {
   WorkspaceGraphEdge,
   WorkspaceGraphNode
 } from '@shared/contracts'
-import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { useAppShellState, PAGE_ORDER, type PageId } from './hooks/useAppShellState'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
-import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
-import { useAiState } from './hooks/useAiState'
-import { useBlockSearchState } from './hooks/useBlockSearchState'
-import { useBlockSelectionState } from './hooks/useBlockSelectionState'
-import { useBlockInputActions } from './hooks/useBlockInputActions'
-import { useBlockCollapseState } from './hooks/useBlockCollapseState'
-import { useBlockFocusState } from './hooks/useBlockFocusState'
-import { useBlockDragState } from './hooks/useBlockDragState'
 import {
   BOARD_GROUP_BY_PARENT,
   useDatabaseDomainState
@@ -50,24 +41,12 @@ import { useDatabaseWorkspaceActions } from './hooks/useDatabaseWorkspaceActions
 import { useDocumentCatalogDatabaseActions } from './hooks/useDocumentCatalogDatabaseActions'
 import { useDocumentTodoActions } from './hooks/useDocumentTodoActions'
 import { useWorkspaceBackupActions } from './hooks/useWorkspaceBackupActions'
+import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
 import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
-import { useDocumentsLoadingOrchestration } from './hooks/useDocumentsLoadingOrchestration'
-import { useDocumentsUiState } from './hooks/useDocumentsUiState'
 import { useDatabaseSectionPresentation } from './hooks/useDatabaseSectionPresentation'
-import { useHighlightedBlockState } from './hooks/useHighlightedBlockState'
-import { useDocumentEditorState } from './hooks/useDocumentEditorState'
-import { useEditorAssistState } from './hooks/useEditorAssistState'
-import { useBlockDragDropActions } from './hooks/useBlockDragDropActions'
-import { useGlobalDocumentSearch } from './hooks/useGlobalDocumentSearch'
-import { useInlineReferenceNavigation } from './hooks/useInlineReferenceNavigation'
-import { useMultiBlockActions } from './hooks/useMultiBlockActions'
-import { useSlashCommandActions } from './hooks/useSlashCommandActions'
-import { useBlockStructureActions } from './hooks/useBlockStructureActions'
-import { useSingleBlockTreeActions } from './hooks/useSingleBlockTreeActions'
-import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
 import { usePluginsDomain } from './hooks/usePluginsDomain'
-import { useSettingsState } from './hooks/useSettingsState'
+import { useSettingsDomain } from './hooks/useSettingsDomain'
 import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
 import { useAiDomain } from './hooks/useAiDomain'
 import { AISection } from './sections/AISection'
@@ -99,6 +78,7 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
 }
 
 export function App() {
+  const resetAiSessionRef = useRef<() => void>(() => undefined)
   const {
     activePage,
     backupMessage,
@@ -176,97 +156,154 @@ export function App() {
     setSelectedDatabaseEntityIds,
     databaseWorkspaceView
   } = useDatabaseDomainState()
-  const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
-  const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
-  const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const {
-    clearMoveTarget,
+    activeBlockIndex,
+    activeCursorPosition,
+    activeLinkContext,
+    activeSlashCommand,
+    activeSlashContext,
+    addDraftBlock,
+    adjustBlockDepth,
+    adjustSelectedBlocksDepth,
+    applySlashCommand,
+    autoSaveFlash,
+    beginBlockDrag,
+    blockHasChildren,
+    blockSearchItems,
+    blockSearchQuery,
+    blockSuggestions,
+    blockTextareaRefs,
+    canMoveSelectedRange,
+    canMoveSelectionDown,
+    canMoveSelectionUp,
+    canRedo,
+    canUndo,
+    captureBlockCursor,
+    clearBlockSelection,
+    clearEditorSession,
+    closeBlockSearch,
+    closeGlobalSearch,
+    collapsedBlockIds,
+    continueBlockAt,
+    convertSelectedBlocks,
+    copyDocumentAsMarkdown,
+    copySelectedBlocks,
+    copySelectedBlocksAsPlainText,
+    cutSelectedBlocks,
+    deleteSelectedBlocks,
+    detailLoading,
+    dismissSlashCommand,
     documentsAuxPanelOpen,
-    moveTargetId,
-    setMoveTargetId,
-    toggleDocumentsAuxPanel
-  } = useDocumentsUiState()
-  const {
+    downgradeBlockAt,
     dragOverBlockDepth,
     dragOverBlockIndex,
+    draftBlocks,
+    draftSummary,
+    draftTitle,
     draggingBlockIndex,
+    dropBlockAt,
+    duplicateDraftBlock,
+    duplicateSelectedBlocks,
     endBlockDrag,
-    setDragOverBlockDepth,
-    setDragOverBlockIndex,
-    setDraggingBlockIndex
-  } = useBlockDragState()
-  const {
-    flashHighlightedBlock,
-    highlightedBlockId,
-    setHighlightedBlockId
-  } = useHighlightedBlockState()
-  const {
-    detailLoading,
+    endBlockRangeSelection,
+    filteredSlashCommands,
+    getDraggedBlockDepthPreview,
+    getMultiBlockOperationRange,
+    getVisibleBlockCountInRange,
+    getVisibleBlocks,
+    getVisibleSiblingSelectionSlice,
+    globalSearchLoading,
+    globalSearchQuery,
+    globalSearchResults,
+    handleBlockContentChange,
+    handleBlockMouseEnter,
+    handleBlockPaste,
+    handleBlockSearchSelect,
+    handleGlobalSearchNavigate,
+    insertBlockSuggestion,
+    insertDraftBlockAt,
+    insertLinkSuggestion,
+    isBlockRangeSelecting,
+    isBlockSearchOpen,
+    isBlockSelected,
+    isEditing,
+    isGlobalSearchOpen,
+    isSaving,
+    isSelectionCoherent,
+    linkSuggestions,
+    mdCopyFlash,
+    mergeWithPreviousBlock,
+    moveDraftBlockBySibling,
+    moveSelectedBlocks,
+    moveTargetId,
     navBack,
     navCanGoBack,
     navCanGoForward,
     navForward,
+    navigateInlineReferenceAtCursor,
+    notifyBlockMouseDown,
+    openBlockSearch,
     openDocumentBlockInDocumentsPage,
     openDocumentInDocumentsPage,
-    pendingBlockNavigationTarget,
+    openGlobalSearch,
     pinnedDocumentIds,
-    selectedDocument,
-    selectedDocumentId,
-    setDetailLoading,
-    setPendingBlockNavigationTarget,
-    setSelectedDocument,
-    setSelectedDocumentId,
-    togglePinDocument
-  } = useDocumentNavigationState({
-    onActivePageChange: (page) => setActivePage(page),
-    onBeforeOpenDocument: () => setHighlightedBlockId(null)
-  })
-  useEffect(() => {
-    if (!homeData.initialDocumentId) {
-      return
-    }
-
-    setSelectedDocumentId((current) => current ?? homeData.initialDocumentId)
-  }, [homeData.initialDocumentId, setSelectedDocumentId])
-  const {
-    autoSaveFlash,
-    canRedo,
-    canUndo,
-    clearEditorSession,
-    copyDocumentAsMarkdown,
-    draftBlocks,
-    draftSummary,
-    draftTitle,
-    isEditing,
-    isSaving,
-    loadDocumentIntoEditor,
-    mdCopyFlash,
-    pushToHistory,
     redoEdit,
+    removeSelectedBlockRange,
     saveDocument,
     saveDocumentAsMarkdown,
+    selectAllBlocks,
+    selectBlockRange,
+    selectedBlockActionCount,
+    selectedBlockConversionType,
+    selectedBlockCount,
+    selectedBlockHasHiddenCollapsedContent,
+    selectedBlockInteractionIssue,
+    selectedBlockRange,
+    selectedDocument,
+    selectedDocumentId,
+    selectedVisibleBlockCount,
+    selectedVisibleSiblingSlice,
+    setActiveBlockIndex,
+    setActiveCursorPosition,
+    setBlockSearchQuery,
+    setDetailLoading,
     setDraftBlocks,
     setDraftSummary,
     setDraftTitle,
+    setDragOverBlockDepth,
+    setDragOverBlockIndex,
+    setIsBlockRangeSelecting,
     setIsSaving,
+    setMoveTargetId,
+    setPendingFocusBlockIndex,
+    setSelectedBlockConversionType,
+    setSelectedBlockRange,
+    setSelectedDocument,
+    setSelectedDocumentId,
+    setSelectedSlashCommandIndex,
+    setSelectionAnchorBlockId,
+    slashPanelPos,
+    splitDraftBlock,
+    toggleBlockCollapse,
+    toggleDocumentsAuxPanel,
+    togglePinDocument,
+    undoEdit,
     updateBlockHighlight,
     updateDraftBlock,
-    undoEdit
-  } = useDocumentEditorState({
+    updateGlobalSearchQuery
+  } = useDocumentsDomainState({
+    activePage,
+    blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
+    buildBlockTypePatch,
+    documentCatalog: homeData.documentCatalog,
+    documentTree: homeData.documentTree,
+    initialDocumentId: homeData.initialDocumentId,
+    onActivePageChange: (page) => setActivePage(page),
+    onBackupMessage: setBackupMessage,
     onHomeDataChange: setHomeData,
-    onMessage: setBackupMessage,
-    onSelectedDocumentChange: setSelectedDocument,
-    selectedDocument,
-    selectedDocumentId,
-    ui
-  })
-  const {
-    blockHasChildren,
-    collapsedBlockIds,
-    revealBlockAncestors,
-    toggleBlockCollapse
-  } = useBlockCollapseState({
-    draftBlocks
+    resetAiSession: () => resetAiSessionRef.current(),
+    ui,
+    uiLanguage
   })
   const {
     aiApiKeyDraft,
@@ -312,6 +349,7 @@ export function App() {
     selectedDocumentId,
     ui
   })
+  resetAiSessionRef.current = resetAiSession
   const {
     pluginActionBusyKey,
     pluginDashboardCards,
@@ -329,266 +367,48 @@ export function App() {
     ui
   })
   const {
-    appUpdateState,
-    appUpdateRefreshing,
-    checkForAppUpdates,
-    installAppUpdate
-  } = useSettingsState({
-    isSettingsPageActive: activePage === 'settings',
+    sectionProps: dashboardSettingsSectionProps
+  } = useSettingsDomain({
+    aiApiKeyDraft,
+    aiAutoSummaryOnSaveDraft,
+    aiBaseUrlDraft,
+    aiEmbeddingApiKeyDraft,
+    aiEmbeddingBaseUrlDraft,
+    aiEmbeddingModelDraft,
+    aiEnabledDraft,
+    aiEndpoint: homeData.aiConfig.baseUrl,
+    aiModelDraft,
+    aiSaving,
+    isSettingsPage: activePage === 'settings',
+    isZh,
+    loading,
+    onAiApiKeyChange: setAiApiKeyDraft,
+    onAiAutoSummaryOnSaveChange: setAiAutoSummaryOnSaveDraft,
+    onAiBaseUrlChange: setAiBaseUrlDraft,
+    onAiEmbeddingApiKeyChange: setAiEmbeddingApiKeyDraft,
+    onAiEmbeddingBaseUrlChange: setAiEmbeddingBaseUrlDraft,
+    onAiEmbeddingModelChange: setAiEmbeddingModelDraft,
+    onAiEnabledChange: setAiEnabledDraft,
+    onAiModelChange: setAiModelDraft,
+    onBackupNow: () => {
+      void handleBackup()
+    },
+    onMessage: (message) => setBackupMessage(message),
+    onOpenDocument: openDocumentInDocumentsPage,
+    onOpenPlugins: () => {
+      setActivePage('plugins')
+    },
+    onRestoreBackup: () => {
+      void handleRestoreBackup()
+    },
+    onSaveAiConfig: () => {
+      void saveAiConfig()
+    },
+    onUiLanguageChange: setUiLanguage,
+    recentDocuments: homeData.recentDocuments,
+    summary: homeData.summary,
     ui,
-    onMessage: setBackupMessage
-  })
-  const {
-    activeLinkContext,
-    activeSlashCommand,
-    activeSlashContext,
-    blockSuggestions,
-    captureBlockCursor,
-    clearEditorAssistSuggestions,
-    filteredSlashCommands,
-    insertBlockSuggestion,
-    insertLinkSuggestion,
-    linkSuggestions,
-    setSelectedSlashCommandIndex,
-    slashPanelPos
-  } = useEditorAssistState({
-    activeBlockIndex,
-    activeCursorPosition,
-    blockTextareaRefs,
-    draftBlocks,
-    isEditing,
-    selectedDocumentId,
-    selectedDocumentPresent: Boolean(selectedDocument),
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setDraftBlocks,
     uiLanguage
-  })
-  const {
-    pendingFocusBlockIndex,
-    setPendingFocusBlockIndex
-  } = useBlockFocusState({
-    activeCursorPosition,
-    blockTextareaRefs,
-    captureBlockCursor,
-    draftBlocks
-  })
-  const {
-    closeGlobalSearch,
-    globalSearchLoading,
-    globalSearchQuery,
-    globalSearchResults,
-    handleGlobalSearchNavigate,
-    isGlobalSearchOpen,
-    openGlobalSearch,
-    updateGlobalSearchQuery
-  } = useGlobalDocumentSearch({
-    documentCatalog: homeData.documentCatalog,
-    onOpenDocument: openDocumentInDocumentsPage
-  })
-  const {
-    canMoveSelectedRange,
-    canMoveSelectionDown,
-    canMoveSelectionUp,
-    clearBlockSelection,
-    endBlockRangeSelection,
-    getMultiBlockInteractionGuard,
-    getMultiBlockOperationRange,
-    getVisibleBlockCountInRange,
-    getVisibleBlockEntries,
-    getVisibleBlocks,
-    getVisibleSiblingSelectionSlice,
-    handleBlockMouseEnter,
-    isBlockRangeSelecting,
-    isBlockSelected,
-    isSelectionCoherent,
-    notifyBlockMouseDown,
-    selectAllBlocks,
-    selectBlockRange,
-    selectedBlockActionCount,
-    selectedBlockConversionType,
-    selectedBlockCount,
-    selectedBlockHasHiddenCollapsedContent,
-    selectedBlockInteractionIssue,
-    selectedBlockRange,
-    selectedVisibleBlockCount,
-    selectedVisibleSiblingSlice,
-    selectionAnchorBlockId,
-    setIsBlockRangeSelecting,
-    setSelectedBlockConversionType,
-    setSelectedBlockRange,
-    setSelectionAnchorBlockId
-  } = useBlockSelectionState({
-    activeBlockIndex,
-    collapsedBlockIds,
-    draftBlocks,
-    onActiveBlockChange: setActiveBlockIndex,
-    visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
-  })
-  useDocumentsLoadingOrchestration({
-    clearEditorAssistSuggestions,
-    clearEditorSession,
-    clearMoveTarget,
-    draftBlocks,
-    endBlockDrag,
-    flashHighlightedBlock,
-    loadDocumentIntoEditor,
-    pendingBlockNavigationTarget,
-    resetAiSession,
-    revealBlockAncestors,
-    selectedDocument,
-    selectedDocumentId,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setBackupMessage,
-    setDetailLoading,
-    setHighlightedBlockId,
-    setPendingBlockNavigationTarget,
-    setPendingFocusBlockIndex,
-    setSelectedBlockRange,
-    setSelectedDocument,
-    setSelectionAnchorBlockId,
-    uiBlockReferenceNotFound: ui.blockReferenceNotFound
-  })
-  const {
-    adjustSelectedBlocksDepth,
-    convertSelectedBlocks,
-    copySelectedBlocks,
-    copySelectedBlocksAsPlainText,
-    cutSelectedBlocks,
-    deleteSelectedBlocks,
-    duplicateSelectedBlocks,
-    moveSelectedBlocks,
-    removeSelectedBlockRange
-  } = useMultiBlockActions({
-    activeBlockIndex,
-    activeCursorPosition,
-    buildBlockTypePatch,
-    clearBlockSelection,
-    draftBlocks,
-    endBlockDrag,
-    getMultiBlockInteractionGuard,
-    getMultiBlockOperationRange,
-    getVisibleSiblingSelectionSlice,
-    pushToHistory,
-    selectedBlockRange,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setBackupMessage,
-    setDraftBlocks,
-    setPendingFocusBlockIndex,
-    setSelectedBlockRange,
-    setSelectionAnchorBlockId,
-    ui: {
-      convertedBlocks: ui.convertedBlocks,
-      copiedBlocks: ui.copiedBlocks,
-      copiedPlainText: ui.copiedPlainText,
-      copyFailed: ui.copyFailed,
-      copyTextFailed: ui.copyTextFailed,
-      cutBlocks: ui.cutBlocks,
-      cutFailed: ui.cutFailed,
-      deletedBlocks: ui.deletedBlocks,
-      duplicatedBlocks: ui.duplicatedBlocks,
-      invalidVisibleTreeSlice: ui.invalidVisibleTreeSlice
-    }
-  })
-  const {
-    duplicateDraftBlock,
-    insertChildDraftBlock,
-    insertDraftBlockAt,
-    splitDraftBlock
-  } = useBlockStructureActions({
-    buildBlockTypePatch,
-    clearBlockSelection,
-    draftBlocks,
-    endBlockDrag,
-    pushToHistory,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setDraftBlocks,
-    setPendingFocusBlockIndex
-  })
-  const {
-    adjustBlockDepth,
-    continueBlockAt,
-    downgradeBlockAt,
-    mergeWithPreviousBlock,
-    moveDraftBlockBySibling,
-    moveDraftSubtree
-  } = useSingleBlockTreeActions({
-    activeCursorPosition,
-    buildBlockTypePatch,
-    clearBlockSelection,
-    draftBlocks,
-    endBlockDrag,
-    pushToHistory,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setDraftBlocks,
-    setPendingFocusBlockIndex,
-    splitDraftBlock,
-    updateDraftBlock
-  })
-  const {
-    addDraftBlock,
-    applySlashCommand,
-    dismissSlashCommand,
-    removeDraftBlock
-  } = useSlashCommandActions({
-    activeBlockIndex,
-    activeCursorPosition,
-    activeSlashContext,
-    adjustBlockDepth,
-    buildBlockTypePatch,
-    clearBlockSelection,
-    draftBlocks,
-    duplicateDraftBlock,
-    endBlockDrag,
-    insertChildDraftBlock,
-    insertDraftBlockAt,
-    moveDraftBlockBySibling,
-    pushToHistory,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setDraftBlocks,
-    setPendingFocusBlockIndex,
-    updateDraftBlock
-  })
-  const {
-    beginBlockDrag,
-    dropBlockAt,
-    getDraggedBlockDepthPreview
-  } = useBlockDragDropActions({
-    blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
-    draftBlocks,
-    dragOverBlockDepth,
-    draggingBlockIndex,
-    endBlockDrag,
-    getMultiBlockInteractionGuard,
-    getMultiBlockOperationRange,
-    moveDraftSubtree,
-    pushToHistory,
-    selectedBlockRange,
-    setBackupMessage,
-    setDragOverBlockDepth,
-    setDragOverBlockIndex,
-    setDraggingBlockIndex
-  })
-  const {
-    blockSearchItems,
-    blockSearchQuery,
-    closeBlockSearch,
-    handleBlockSearchSelect,
-    isBlockSearchOpen,
-    openBlockSearch,
-    setBlockSearchQuery
-  } = useBlockSearchState({
-    activeBlockIndex,
-    draftBlocks,
-    onSelectBlock: (blockIndex) => {
-      setActiveBlockIndex(blockIndex)
-      setPendingFocusBlockIndex(blockIndex)
-    }
   })
   useEffect(() => {
     const visibleEntityIdSet = new Set(filteredStandaloneDatabaseEntityIds)
@@ -597,13 +417,6 @@ export function App() {
       return next.length === current.length ? current : next
     })
   }, [databaseEntities, databaseEntityFilterQuery, databaseEntityFilterScope, databaseEntitySortMode, homeData.documentCatalog, selectedDatabaseColumns])
-
-  useEffect(() => {
-    if (activePage !== 'documents') {
-      closeGlobalSearch()
-      closeBlockSearch()
-    }
-  }, [activePage, closeBlockSearch, closeGlobalSearch])
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -659,30 +472,6 @@ export function App() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [activePage, isGlobalSearchOpen, isEditing, navBack, navForward, redoEdit, selectedBlockRange, undoEdit])
-
-  useEffect(() => {
-    function handleMouseUp() {
-      endBlockRangeSelection()
-    }
-
-    window.addEventListener('mouseup', handleMouseUp)
-    window.addEventListener('blur', handleMouseUp)
-    return () => {
-      window.removeEventListener('mouseup', handleMouseUp)
-      window.removeEventListener('blur', handleMouseUp)
-    }
-  }, [endBlockRangeSelection])
-
-  // Auto-resize textareas to fit content
-  useEffect(() => {
-    if (!isEditing) return
-    const textareas = blockTextareaRefs.current
-    for (const textarea of textareas) {
-      if (!textarea) continue
-      textarea.style.height = 'auto'
-      textarea.style.height = `${textarea.scrollHeight}px`
-    }
-  }, [draftBlocks, isEditing])
 
   const {
     handleBackup,
@@ -810,36 +599,6 @@ export function App() {
     selectedDocument,
     selectedDocumentId,
     ui
-  })
-
-  const {
-    handleBlockContentChange,
-    handleBlockPaste
-  } = useBlockInputActions({
-    buildBlockTypePatch,
-    clearBlockSelection,
-    detectCodeLanguage,
-    draftBlocks,
-    endBlockDrag,
-    getMultiBlockOperationRange,
-    normalizeCodeLanguage,
-    pushToHistory,
-    selectedBlockRange,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setDraftBlocks,
-    setPendingFocusBlockIndex,
-    updateDraftBlock
-  })
-
-  const navigateInlineReferenceAtCursor = useInlineReferenceNavigation({
-    documentTree: homeData.documentTree,
-    draftBlocks,
-    onOpenDocument: openDocumentInDocumentsPage,
-    onOpenDocumentBlock: openDocumentBlockInDocumentsPage,
-    selectedDocumentId,
-    setBackupMessage,
-    uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
   const {
     activeDatabaseSavedView,
@@ -1350,57 +1109,7 @@ return (
 
         {activePage === 'plugins' ? <PluginsSection {...pluginsSectionProps} /> : null}
 
-        {activePage === 'dashboard' || activePage === 'settings' ? (
-          <DashboardSettingsSection
-            aiApiKeyDraft={aiApiKeyDraft}
-            aiAutoSummaryOnSaveDraft={aiAutoSummaryOnSaveDraft}
-            aiBaseUrlDraft={aiBaseUrlDraft}
-            aiEmbeddingApiKeyDraft={aiEmbeddingApiKeyDraft}
-            aiEmbeddingBaseUrlDraft={aiEmbeddingBaseUrlDraft}
-            aiEmbeddingModelDraft={aiEmbeddingModelDraft}
-            aiEnabledDraft={aiEnabledDraft}
-            aiEndpoint={homeData.aiConfig.baseUrl}
-            aiModelDraft={aiModelDraft}
-            aiSaving={aiSaving}
-            appUpdateRefreshing={appUpdateRefreshing}
-            appUpdateState={appUpdateState}
-            isSettingsPage={activePage === 'settings'}
-            isZh={isZh}
-            loading={loading}
-            onAiApiKeyChange={setAiApiKeyDraft}
-            onAiAutoSummaryOnSaveChange={setAiAutoSummaryOnSaveDraft}
-            onAiBaseUrlChange={setAiBaseUrlDraft}
-            onAiEmbeddingApiKeyChange={setAiEmbeddingApiKeyDraft}
-            onAiEmbeddingBaseUrlChange={setAiEmbeddingBaseUrlDraft}
-            onAiEmbeddingModelChange={setAiEmbeddingModelDraft}
-            onAiEnabledChange={setAiEnabledDraft}
-            onAiModelChange={setAiModelDraft}
-            onBackupNow={() => {
-              void handleBackup()
-            }}
-            onCheckForAppUpdates={() => {
-              void checkForAppUpdates()
-            }}
-            onInstallAppUpdate={() => {
-              void installAppUpdate()
-            }}
-            onOpenDocument={openDocumentInDocumentsPage}
-            onOpenPlugins={() => {
-              setActivePage('plugins')
-            }}
-            onRestoreBackup={() => {
-              void handleRestoreBackup()
-            }}
-            onSaveAiConfig={() => {
-              void saveAiConfig()
-            }}
-            onUiLanguageChange={setUiLanguage}
-            recentDocuments={homeData.recentDocuments}
-            summary={homeData.summary}
-            ui={ui}
-            uiLanguage={uiLanguage}
-          />
-        ) : null}
+        {activePage === 'dashboard' || activePage === 'settings' ? <DashboardSettingsSection {...dashboardSettingsSectionProps} /> : null}
       </main>
 
       {activePage === 'documents' && isGlobalSearchOpen && (
