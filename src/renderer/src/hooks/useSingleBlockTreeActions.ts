@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
 import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
@@ -29,12 +30,6 @@ type UseSingleBlockTreeActionsParams = {
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
   setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
-  shiftDraftFragmentDepth: (
-    blocks: DocumentBlockDraft[],
-    depthDelta: number,
-    rootParentBlockId: string | null,
-    rootIds: Set<string>
-  ) => DocumentBlockDraft[]
   splitDraftBlock: (index: number, selectionStart: number, selectionEnd?: number, nextTypeOverride?: DocumentBlock['type']) => void
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
 }
@@ -50,7 +45,6 @@ export function useSingleBlockTreeActions({
   setActiveCursorPosition,
   setDraftBlocks,
   setPendingFocusBlockIndex,
-  shiftDraftFragmentDepth,
   splitDraftBlock,
   updateDraftBlock
 }: UseSingleBlockTreeActionsParams) {
@@ -104,8 +98,7 @@ export function useSingleBlockTreeActions({
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
-    setPendingFocusBlockIndex,
-    shiftDraftFragmentDepth
+    setPendingFocusBlockIndex
   ])
 
   const continueBlockAt = useCallback((index: number, selectionStart: number, selectionEnd = selectionStart) => {
@@ -260,7 +253,7 @@ export function useSingleBlockTreeActions({
         insertionIndex
       )
     )
-  }, [clearBlockSelection, draftBlocks, getBlockSubtreeEndIndex, pushToHistory, resolveDraftInsertionPlacement, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex, shiftDraftFragmentDepth])
+  }, [clearBlockSelection, draftBlocks, getBlockSubtreeEndIndex, pushToHistory, resolveDraftInsertionPlacement, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex])
 
   const moveDraftBlockBySibling = useCallback((index: number, direction: -1 | 1, cursorPosition = activeCursorPosition, contentOverride?: string) => {
     const siblingIndex =

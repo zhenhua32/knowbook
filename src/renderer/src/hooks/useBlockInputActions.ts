@@ -2,6 +2,7 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
+import { materializeDraftFragment } from '../utils/draftTreeFragment'
 import { getNormalizedParentBlockId } from '../utils/draftTreeMove'
 
 type BlockSelectionRange = {
@@ -22,7 +23,6 @@ type UseBlockInputActionsParams = {
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
-  materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
   normalizeCodeLanguage: (language: string | undefined | null) => string | undefined | null
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   selectedBlockRange: BlockSelectionRange | null
@@ -40,7 +40,6 @@ export function useBlockInputActions({
   draftBlocks,
   endBlockDrag,
   getMultiBlockOperationRange,
-  materializeDraftFragment,
   normalizeCodeLanguage,
   pushToHistory,
   selectedBlockRange,
@@ -386,7 +385,6 @@ export function useBlockInputActions({
     getMultiBlockOperationRange,
     getNormalizedParentBlockId,
     looksLikeStructuredBlockPaste,
-    materializeDraftFragment,
     normalizePastedLineBlock,
     parseStructuredPastedBlocks,
     pushToHistory,

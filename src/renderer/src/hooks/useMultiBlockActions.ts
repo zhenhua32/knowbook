@@ -4,6 +4,7 @@ import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { materializeDraftFragment, shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
 import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
@@ -60,7 +61,6 @@ type UseMultiBlockActionsParams = {
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
   getVisibleSiblingSelectionSlice: (range: BlockSelectionRange) => VisibleSelectionSlice | null
-  materializeDraftFragment: (blocks: DocumentBlockDraft[], rootParentBlockId: string | null) => DocumentBlockDraft[]
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   selectedBlockRange: BlockSelectionRange | null
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
@@ -70,12 +70,6 @@ type UseMultiBlockActionsParams = {
   setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
   setSelectedBlockRange: Dispatch<SetStateAction<BlockSelectionRange | null>>
   setSelectionAnchorBlockId: Dispatch<SetStateAction<string | null>>
-  shiftDraftFragmentDepth: (
-    blocks: DocumentBlockDraft[],
-    depthDelta: number,
-    rootParentBlockId: string | null,
-    rootIds: Set<string>
-  ) => DocumentBlockDraft[]
   ui: MultiBlockUiText
 }
 
@@ -89,7 +83,6 @@ export function useMultiBlockActions({
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
   getVisibleSiblingSelectionSlice,
-  materializeDraftFragment,
   pushToHistory,
   selectedBlockRange,
   setActiveBlockIndex,
@@ -99,7 +92,6 @@ export function useMultiBlockActions({
   setPendingFocusBlockIndex,
   setSelectedBlockRange,
   setSelectionAnchorBlockId,
-  shiftDraftFragmentDepth,
   ui
 }: UseMultiBlockActionsParams) {
   const getBlockTypeLabel = useCallback((type: DocumentBlock['type']) => {
@@ -132,6 +124,7 @@ export function useMultiBlockActions({
 
     const firstVisibleEntry = visibleSiblingSlice.visibleEntries[0]
     const lastVisibleEntry = visibleSiblingSlice.visibleEntries[visibleSiblingSlice.visibleEntries.length - 1]
+
     if (!firstVisibleEntry || !lastVisibleEntry) {
       return
     }
@@ -510,7 +503,6 @@ export function useMultiBlockActions({
     draftBlocks,
     endBlockDrag,
     getMultiBlockOperationRange,
-    materializeDraftFragment,
     pushToHistory,
     selectedBlockRange,
     setActiveBlockIndex,
