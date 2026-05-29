@@ -49,15 +49,14 @@ import { usePluginsDomain } from './hooks/usePluginsDomain'
 import { useSettingsDomain } from './hooks/useSettingsDomain'
 import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
 import { useAiDomain } from './hooks/useAiDomain'
+import { DatabasePage } from './pages/DatabasePage'
+import { DocumentsPage } from './pages/DocumentsPage'
 import { AISection } from './sections/AISection'
-import { DatabaseSection } from './sections/DatabaseSection'
 import { DashboardSettingsSection } from './sections/DashboardSettingsSection'
-import { DocumentsSection } from './sections/DocumentsSection'
 import { PluginsSection } from './sections/PluginsSection'
 import { WorkspaceDashboardSection } from './sections/WorkspaceDashboardSection'
 import { WorkspaceGraphSection } from './sections/WorkspaceGraphSection'
 
-const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 
 type BlockSelectionRange = {
@@ -99,6 +98,7 @@ export function App() {
     ui,
     uiLanguage
   } = useAppShellState()
+  const databaseDomain = useDatabaseDomainState()
   const {
     activeDatabaseSavedViewId,
     boardGroupBy,
@@ -155,7 +155,21 @@ export function App() {
     setSelectedDatabaseColumns,
     setSelectedDatabaseEntityIds,
     databaseWorkspaceView
-  } = useDatabaseDomainState()
+  } = databaseDomain
+  const documentsDomain = useDocumentsDomainState({
+    activePage,
+    blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
+    buildBlockTypePatch,
+    documentCatalog: homeData.documentCatalog,
+    documentTree: homeData.documentTree,
+    initialDocumentId: homeData.initialDocumentId,
+    onActivePageChange: (page) => setActivePage(page),
+    onBackupMessage: setBackupMessage,
+    onHomeDataChange: setHomeData,
+    resetAiSession: () => resetAiSessionRef.current(),
+    ui,
+    uiLanguage
+  })
   const {
     activeBlockIndex,
     activeCursorPosition,
@@ -291,20 +305,7 @@ export function App() {
     updateBlockHighlight,
     updateDraftBlock,
     updateGlobalSearchQuery
-  } = useDocumentsDomainState({
-    activePage,
-    blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
-    buildBlockTypePatch,
-    documentCatalog: homeData.documentCatalog,
-    documentTree: homeData.documentTree,
-    initialDocumentId: homeData.initialDocumentId,
-    onActivePageChange: (page) => setActivePage(page),
-    onBackupMessage: setBackupMessage,
-    onHomeDataChange: setHomeData,
-    resetAiSession: () => resetAiSessionRef.current(),
-    ui,
-    uiLanguage
-  })
+  } = documentsDomain
   const {
     aiApiKeyDraft,
     aiAnswer,
@@ -410,14 +411,6 @@ export function App() {
     ui,
     uiLanguage
   })
-  useEffect(() => {
-    const visibleEntityIdSet = new Set(filteredStandaloneDatabaseEntityIds)
-    setSelectedDatabaseEntityIds((current) => {
-      const next = current.filter((entityId) => visibleEntityIdSet.has(entityId))
-      return next.length === current.length ? current : next
-    })
-  }, [databaseEntities, databaseEntityFilterQuery, databaseEntityFilterScope, databaseEntitySortMode, homeData.documentCatalog, selectedDatabaseColumns])
-
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
@@ -600,383 +593,6 @@ export function App() {
     selectedDocumentId,
     ui
   })
-  const {
-    activeDatabaseSavedView,
-    boardColumns,
-    boardGroupableColumns,
-    boardGroupingColumn,
-    databasePageHint,
-    databasePageTitle,
-    databaseSavedViewDirty,
-    filteredCatalog,
-    filteredStandaloneDatabaseEntityIds,
-    filteredStandaloneDatabaseEntityRows,
-    selectedDatabase,
-    selectedDatabaseEntityIdSet,
-    selectedVisibleDatabaseEntitiesHaveLinkedDocument,
-    selectedVisibleDatabaseEntityIds,
-    standaloneDatabases
-  } = useDatabaseDerivedState({
-    activeDatabaseSavedViewId,
-    boardGroupBy,
-    catalogColumns,
-    catalogDocuments,
-    databaseEntities,
-    databaseEntityDatabaseId,
-    databaseEntityFilterQuery,
-    databaseEntityFilterScope,
-    databaseEntitySortMode,
-    databaseEntityViewMode,
-    databaseSavedViews,
-    databaseWorkspaceView,
-    databases,
-    deferredCatalogQuery,
-    documentCatalog: homeData.documentCatalog,
-    isDatabasePageActive: activePage === 'database',
-    selectedDatabaseColumns,
-    selectedDatabaseEntityIds,
-    uiDocumentCatalogHint: ui.documentCatalogHint,
-    uiDocumentCatalogTitle: ui.documentCatalogTitle,
-    uiStandaloneDatabasesHint: ui.standaloneDatabasesHint,
-    uiStandaloneDatabasesTitle: ui.standaloneDatabasesTitle
-  })
-  const {
-    createDatabaseColumn,
-    deleteDatabaseColumn,
-    moveDatabaseColumn,
-    renameDatabaseColumn,
-    updateDatabaseColumnOptions
-  } = useDatabaseColumnActions({
-    databaseColumnNameDraft,
-    databaseColumnOptionsDraft,
-    databaseColumnTypeDraft,
-    databaseWorkspaceView,
-    refreshDatabasePageData,
-    refreshDocumentCatalogData,
-    selectedDatabase,
-    setBackupMessage,
-    setDatabaseColumnNameDraft,
-    setDatabaseColumnOptionsDraft,
-    setDatabaseColumnTypeDraft,
-    setIsCreatingDatabaseColumn,
-    ui
-  })
-  const {
-    createDatabaseEntity,
-    deleteDatabaseEntity,
-    updateDatabaseEntityDocument,
-    updateDatabaseEntityField
-  } = useDatabaseEntityActions({
-    databaseEntityDatabaseId,
-    databaseEntityDocumentId,
-    databaseEntityFieldValues,
-    refreshDatabasePageData,
-    setBackupMessage,
-    setDatabaseEntityDocumentId,
-    setDatabaseEntityFieldValues,
-    setIsCreatingDatabaseEntity,
-    ui
-  })
-  const {
-    applyDatabaseEntityFieldToSelected,
-    clearDatabaseEntityFieldFromSelected,
-    clearSelectedDatabaseEntityDocuments,
-    deleteSelectedDatabaseEntities,
-    selectVisibleDatabaseEntities,
-    toggleDatabaseEntitySelection,
-    updateDatabaseEntityBulkFieldValue
-  } = useDatabaseEntityBulkActions({
-    databaseEntityBulkFieldValues,
-    databaseEntityDatabaseId,
-    filteredStandaloneDatabaseEntityIds,
-    refreshDatabasePageData,
-    selectedVisibleDatabaseEntityIds,
-    setBackupMessage,
-    setDatabaseEntityBulkFieldValues,
-    setSelectedDatabaseEntityIds,
-    ui
-  })
-  const {
-    board: databaseBoardProps,
-    catalog: databaseCatalogProps,
-    standalone: databaseStandaloneProps
-  } = useDatabaseSectionPresentation({
-    activeDatabaseSavedView,
-    activeDatabaseSavedViewId,
-    applyDatabaseEntityFieldToSelected,
-    beginDrag,
-    beginCurrentDatabaseSavedViewCreation,
-    boardColumns,
-    boardGroupBy,
-    boardGroupableColumns,
-    boardGroupingColumn,
-    cancelCurrentDatabaseSavedViewCreation,
-    catalogColumns,
-    catalogQuery,
-    clearDatabaseEntityFieldFromSelected,
-    clearSelectedDatabaseEntityDocuments,
-    createDatabase,
-    createDatabaseColumn,
-    createDatabaseEntity,
-    databaseDescriptionDraft,
-    databaseColumnNameDraft,
-    databaseColumnOptionsDraft,
-    databaseColumnTypeDraft,
-    databaseEntities,
-    databaseEntityBulkFieldValues,
-    databaseEntityDatabaseId,
-    databaseEntityDocumentId,
-    databaseEntityFieldValues,
-    databaseEntityFilterQuery,
-    databaseEntityFilterScope,
-    databaseEntitySortMode,
-    databaseEntityViewMode,
-    databaseNameDraft,
-    databaseSavedViewDirty,
-    databaseSavedViewNameDraft,
-    databaseSavedViews,
-    deleteCurrentDatabase,
-    deleteCurrentDatabaseSavedView,
-    deleteDatabaseColumn,
-    deleteDatabaseEntity,
-    deleteSelectedDatabaseEntities,
-    dragOverBoardColumnId,
-    draggingDocumentId,
-    documentCatalog: homeData.documentCatalog,
-    dropOnBoardTarget,
-    endDrag,
-    filteredCatalog,
-    filteredStandaloneDatabaseEntityRows,
-    handleDatabaseSavedViewSelect,
-    handleBoardColumnDragOver,
-    isCreatingDatabaseColumn,
-    isCreatingDatabase,
-    isCreatingDatabaseEntity,
-    isCreatingDatabaseSavedView,
-    moveDatabaseColumn,
-    openDocumentInDocumentsPage,
-    parentGroupValue: BOARD_GROUP_BY_PARENT,
-    renameDatabaseColumn,
-    saveCurrentDatabaseSavedView,
-    selectVisibleDatabaseEntities,
-    selectedDatabase,
-    selectedDatabaseColumns,
-    selectedDatabaseEntityIdSet,
-    selectedEntitiesHaveLinkedDocument: selectedVisibleDatabaseEntitiesHaveLinkedDocument,
-    selectedDocumentId,
-    selectedVisibleDatabaseEntityIds,
-    setBoardGroupBy,
-    setCatalogQuery,
-    setDatabaseDescriptionDraft,
-    setDatabaseEntityBulkFieldValues,
-    setDatabaseEntityDatabaseId,
-    setDatabaseEntityDocumentId,
-    setDatabaseEntityFieldValues,
-    setDatabaseEntityFilterQuery,
-    setDatabaseEntityFilterScope,
-    setDatabaseEntitySortMode,
-    setDatabaseEntityViewMode,
-    setDatabaseColumnNameDraft,
-    setDatabaseColumnOptionsDraft,
-    setDatabaseColumnTypeDraft,
-    setDatabaseNameDraft,
-    setDatabaseSavedViewNameDraft,
-    setIsCreatingDatabase,
-    setIsCreatingDatabaseColumn,
-    setIsCreatingDatabaseEntity,
-    setSelectedDatabaseEntityIds,
-    standaloneDatabases,
-    toggleDatabaseEntitySelection,
-    updateCurrentDatabaseSavedView,
-    updateDatabaseColumnOptions,
-    updateDatabaseEntityBulkFieldValue,
-    updateDatabaseEntityDocument,
-    updateDatabaseEntityField,
-    updateDocumentDatabaseValue
-  })
-  const {
-    blockEditorRowSharedProps: documentsBlockEditorRowSharedProps,
-    floatingSlashCommandPanelProps: documentsFloatingSlashCommandPanelProps,
-    linkSuggestionPanelProps: documentsLinkSuggestionPanelProps,
-    outlinePanelProps: documentsOutlinePanelProps,
-    selectionToolbarProps: documentsSelectionToolbarProps,
-    visibleEditorRows: visibleDocumentEditorRows
-  } = useDocumentsBlockEditorPresentation({
-    activeBlockIndex,
-    activeLinkContext,
-    activeSlashCommand,
-    activeSlashContext,
-    adjustBlockDepth,
-    adjustSelectedBlocksDepth,
-    applySlashCommand,
-    beginBlockDrag,
-    blockSuggestions,
-    blockHasChildren,
-    blockTextareaRefs,
-    BLOCK_INDENT_SIZE,
-    canMoveSelectedRange,
-    canMoveSelectionDown,
-    canMoveSelectionUp,
-    captureBlockCursor,
-    collapsedBlockIds,
-    clearBlockSelection,
-    continueBlockAt,
-    convertSelectedBlocks,
-    copySelectedBlocks,
-    copySelectedBlocksAsPlainText,
-    cutSelectedBlocks,
-    deleteSelectedBlocks,
-    dismissSlashCommand,
-    draftBlocks,
-    dragOverBlockDepth,
-    dragOverBlockIndex,
-    draggingBlockIndex,
-    downgradeBlockAt,
-    dropBlockAt,
-    duplicateDraftBlock,
-    duplicateSelectedBlocks,
-    endBlockDrag,
-    endBlockRangeSelection,
-    filteredSlashCommands,
-    getDraggedBlockDepthPreview,
-    getMultiBlockOperationRange,
-    getVisibleBlockCountInRange,
-    getVisibleBlocks,
-    handleBlockContentChange,
-    handleBlockMouseEnter,
-    handleBlockPaste,
-    insertDraftBlockAt,
-    insertBlockSuggestion,
-    insertLinkSuggestion,
-    isBlockRangeSelecting,
-    isBlockSelected,
-    isSelectionCoherent,
-    isZh,
-    linkSuggestions,
-    mergeWithPreviousBlock,
-    moveDraftBlockBySibling,
-    moveSelectedBlocks,
-    navigateInlineReferenceAtCursor,
-    notifyBlockMouseDown,
-    onSelectOutlineBlock: (blockIndex) => {
-      setActiveBlockIndex(blockIndex)
-      setPendingFocusBlockIndex(blockIndex)
-    },
-    removeSelectedBlockRange,
-    selectAllBlocks,
-    selectBlockRange,
-    selectedBlockActionCount,
-    selectedBlockCount,
-    selectedBlockConversionType,
-    selectedBlockHasHiddenCollapsedContent,
-    selectedBlockInteractionIssue,
-    selectedBlockRange,
-    selectedDocument,
-    selectedVisibleBlockCount,
-    selectedVisibleSiblingSlice,
-    setDragOverBlockDepth,
-    setDragOverBlockIndex,
-    setSelectedBlockConversionType,
-    setSelectedSlashCommandIndex,
-    slashPanelPos,
-    splitDraftBlock,
-    toggleBlockCollapse,
-    ui,
-    updateBlockHighlight,
-    updateDraftBlock
-  })
-  const {
-    auxPanelProps: documentsAuxPanelProps,
-    previewHeaderProps: documentsPreviewHeaderProps,
-    relationGroups: documentsRelationGroups,
-    statsBarProps: documentsStatsBarProps,
-    summaryCardProps: documentsSummaryCardProps
-  } = useDocumentsDetailPresentation({
-    aiAnswer,
-    aiAsking,
-    aiAutomationsRunning,
-    aiContextError,
-    aiContextResults,
-    aiContextSearching,
-    aiEnabled: homeData.aiConfig.enabled,
-    aiPromptDraft,
-    autoSaveFlash,
-    canRedo,
-    canUndo,
-    detailLoading,
-    documentTree: homeData.documentTree,
-    documentsAuxPanelOpen,
-    draftBlocks,
-    draftSummary,
-    draftTitle,
-    hasApiKey: homeData.aiConfig.hasApiKey,
-    isZh,
-    isSaving,
-    mdCopyFlash,
-    moveTargetId,
-    onAddChild: () => {
-      if (selectedDocument) {
-        void handleCreateDocument(selectedDocument.id)
-      }
-    },
-    onAiPromptChange: setAiPromptDraft,
-    onAskAi: () => {
-      void askAiOnSelectedDocument()
-    },
-    onCopyMarkdown: () => {
-      void copyDocumentAsMarkdown()
-    },
-    onDelete: () => {
-      void deleteSelectedDocument()
-    },
-    onFindRelatedNotes: () => {
-      void findRelatedNotesForPrompt()
-    },
-    onMove: () => {
-      void moveSelectedDocument()
-    },
-    onMoveTargetChange: setMoveTargetId,
-    onOpenDocument: openDocumentInDocumentsPage,
-    onRedo: redoEdit,
-    onRunEnabledAutomations: () => {
-      void runEnabledAiAutomationsOnSelectedDocument()
-    },
-    onRunPluginAction: (action) => {
-      void runPluginDocumentAction(action)
-    },
-    onSave: () => {
-      void saveDocument()
-    },
-    onSaveMarkdown: () => {
-      void saveDocumentAsMarkdown()
-    },
-    onSummaryChange: setDraftSummary,
-    onToggleAuxPanel: toggleDocumentsAuxPanel,
-    onTogglePin: () => {
-      if (selectedDocument) {
-        togglePinDocument(selectedDocument.id)
-      }
-    },
-    onTitleChange: setDraftTitle,
-    onUndo: undoEdit,
-    pinnedDocumentIds,
-    pluginActionBusyKey,
-    pluginDocumentActions,
-    selectedDocument,
-    selectedDocumentId,
-    ui
-  })
-
-  useEffect(() => {
-    if (boardGroupBy === BOARD_GROUP_BY_PARENT) {
-      return
-    }
-
-    if (!boardGroupableColumns.some((column) => column.id === boardGroupBy)) {
-      setBoardGroupBy(BOARD_GROUP_BY_PARENT)
-    }
-  }, [boardGroupBy, boardGroupableColumns])
-
 return (
      <div className="shell" data-testid="shell">
        <div className="sidebar">
@@ -1055,53 +671,57 @@ return (
          ) : null}
 
          {activePage === 'database' ? (
-           <DatabaseSection
-             board={databaseBoardProps}
-             catalog={databaseCatalogProps}
-             databasePageHint={databasePageHint}
-             databasePageTitle={databasePageTitle}
-             databaseWorkspaceView={databaseWorkspaceView}
-             onSwitchDatabaseWorkspaceView={switchDatabaseWorkspaceView}
-             standalone={databaseStandaloneProps}
+           <DatabasePage
+             catalogColumns={catalogColumns}
+             catalogDocuments={catalogDocuments}
+             database={databaseDomain}
+             documentCatalog={homeData.documentCatalog}
+             onCatalogColumnsChange={setCatalogColumns}
+             onCatalogDocumentsChange={setCatalogDocuments}
+             onHomeDataChange={setHomeData}
+             onMessage={setBackupMessage}
+             onOpenDocument={openDocumentInDocumentsPage}
+             selectedDocumentId={selectedDocumentId}
              ui={ui}
+             workspaceBoard={{
+               beginDrag,
+               dragOverBoardColumnId,
+               draggingDocumentId,
+               dropOnBoardTarget,
+               endDrag,
+               handleBoardColumnDragOver
+             }}
            />
          ) : null}
 
          {activePage === 'documents' ? (
-           <DocumentsSection
-             addBlockLabel={ui.addBlock}
-             blockEditorRowSharedProps={documentsBlockEditorRowSharedProps}
-             blockSearchPanelProps={{
-               isOpen: isBlockSearchOpen,
-               items: blockSearchItems,
-               noMatchText: ui.noBlocksMatchSearch,
-               onClose: closeBlockSearch,
-               onQueryChange: setBlockSearchQuery,
-               onSelect: handleBlockSearchSelect,
-               placeholder: ui.searchBlocksPlaceholder,
-               query: blockSearchQuery
+           <DocumentsPage
+             ai={{
+               aiAnswer,
+               aiAsking,
+               aiAutomationsRunning,
+               aiContextError,
+               aiContextResults,
+               aiContextSearching,
+               aiPromptDraft,
+               askAiOnSelectedDocument,
+               findRelatedNotesForPrompt,
+               runEnabledAiAutomationsOnSelectedDocument,
+               setAiPromptDraft
              }}
-             blocksPanelLabel={ui.blocksPanelLabel}
-             documentStatsBarProps={documentsStatsBarProps}
-             documentsAuxPanelProps={documentsAuxPanelProps}
-             editorHelpText={ui.editorHelpText}
-             emptyDocumentStateText={ui.emptyDocumentState}
-             floatingSlashCommandPanelProps={documentsFloatingSlashCommandPanelProps}
-             linkSuggestionPanelProps={documentsLinkSuggestionPanelProps}
-             onAddBlock={addDraftBlock}
-             onEditorKeyDown={(event) => {
-               if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
-                 event.preventDefault()
-                 openBlockSearch()
-               }
+             aiConfig={homeData.aiConfig}
+             documentTree={homeData.documentTree}
+             documents={documentsDomain}
+             isZh={isZh}
+             onCreateDocument={handleCreateDocument}
+             onDeleteSelectedDocument={deleteSelectedDocument}
+             onMoveSelectedDocument={moveSelectedDocument}
+             plugins={{
+               pluginActionBusyKey,
+               pluginDocumentActions,
+               runPluginDocumentAction
              }}
-             outlinePanelProps={documentsOutlinePanelProps}
-             previewHeaderProps={documentsPreviewHeaderProps}
-             relationGroups={documentsRelationGroups}
-             selectedDocument={selectedDocument}
-             selectionToolbarProps={documentsSelectionToolbarProps}
-             summaryCardProps={documentsSummaryCardProps}
-             visibleEditorRows={visibleDocumentEditorRows}
+             ui={ui}
            />
          ) : null}
 
@@ -1111,57 +731,6 @@ return (
 
         {activePage === 'dashboard' || activePage === 'settings' ? <DashboardSettingsSection {...dashboardSettingsSectionProps} /> : null}
       </main>
-
-      {activePage === 'documents' && isGlobalSearchOpen && (
-        <div className="global-search-overlay" onClick={closeGlobalSearch}>
-          <div className="global-search-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="global-search-header">
-              <input
-                autoFocus
-                className="global-search-input"
-                placeholder={ui.globalSearchPlaceholder}
-                type="text"
-                value={globalSearchQuery}
-                onChange={(event) => {
-                  void updateGlobalSearchQuery(event.target.value)
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Escape') closeGlobalSearch()
-                }}
-              />
-              <button className="secondary-button" onClick={closeGlobalSearch} type="button">✕</button>
-            </div>
-            <div className="global-search-results">
-              {globalSearchLoading && <p className="mini-hint">{ui.globalSearchLoading}</p>}
-              {!globalSearchLoading && globalSearchQuery && globalSearchResults.length === 0 && (
-                <p className="mini-hint">{ui.globalSearchNoResults}</p>
-              )}
-              {!globalSearchLoading && !globalSearchQuery && (
-                <p className="mini-hint">{ui.globalSearchPrompt}</p>
-              )}
-              {globalSearchResults.map((result, idx) => (
-                <button
-                  className="global-search-result"
-                  key={idx}
-                  onClick={() => handleGlobalSearchNavigate(result)}
-                  type="button"
-                >
-                  <div className="global-search-result-header">
-                    <span className="global-search-doc-path">{result.documentPath}</span>
-                    <span className={`global-search-match-badge ${result.matchType === 'title' ? 'global-search-match-title' : 'global-search-match-block'}`}>
-                      {result.matchType === 'title' ? ui.titleMatchLabel : result.blockType ?? ui.blockMatchFallback}
-                    </span>
-                  </div>
-                  <strong className="global-search-doc-title">{result.documentTitle}</strong>
-                  {result.snippet && (
-                    <p className="global-search-snippet">{result.snippet}</p>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
