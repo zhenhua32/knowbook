@@ -12,12 +12,9 @@ import type {
   DocumentDatabaseFieldValue,
   DocumentBlock,
   DocumentBlockDraft,
-  DocumentCatalogEntry,
   DocumentDetail,
   DocumentSuggestion,
-  DocumentTreeNode,
   GlobalSearchResult,
-  HomeData,
   LinkedDocument,
   PluginDashboardCard,
   PluginDescriptor,
@@ -29,16 +26,7 @@ import type {
 } from '@shared/contracts'
 import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
-import {
-  UI_LANGUAGE_SETTING_KEY,
-  detectPreferredUiLanguage,
-  getActiveUiText,
-  getUiText,
-  isUiLanguage,
-  setActiveUiLanguage,
-  type UiLanguage
-} from './i18n'
-import { WorkspaceGraph } from './components/WorkspaceGraph'
+import { useAppShellState, PAGE_ORDER, type PageId } from './hooks/useAppShellState'
 import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
 import { isDefaultDocumentDatabase } from './components/database/databaseFieldUtils'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
@@ -49,6 +37,10 @@ import { useBlockInputActions } from './hooks/useBlockInputActions'
 import { useBlockCollapseState } from './hooks/useBlockCollapseState'
 import { useBlockFocusState } from './hooks/useBlockFocusState'
 import { useBlockDragState } from './hooks/useBlockDragState'
+import {
+  BOARD_GROUP_BY_PARENT,
+  useDatabaseDomainState
+} from './hooks/useDatabaseDomainState'
 import { useDatabaseDerivedState } from './hooks/useDatabaseDerivedState'
 import { useDatabaseColumnActions } from './hooks/useDatabaseColumnActions'
 import { useDatabaseEntityActions } from './hooks/useDatabaseEntityActions'
@@ -74,63 +66,20 @@ import { useSlashCommandActions } from './hooks/useSlashCommandActions'
 import { useBlockStructureActions } from './hooks/useBlockStructureActions'
 import { useSingleBlockTreeActions } from './hooks/useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './hooks/useDocumentNavigationState'
-import { usePluginManagement } from './hooks/usePluginManagement'
+import { usePluginsDomain } from './hooks/usePluginsDomain'
 import { useSettingsState } from './hooks/useSettingsState'
 import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
+import { useAiDomain } from './hooks/useAiDomain'
 import { AISection } from './sections/AISection'
 import { DatabaseSection } from './sections/DatabaseSection'
 import { DashboardSettingsSection } from './sections/DashboardSettingsSection'
 import { DocumentsSection } from './sections/DocumentsSection'
 import { PluginsSection } from './sections/PluginsSection'
-
-const emptyState: HomeData = {
-  summary: {
-    databasePath: '',
-    backupRoot: '',
-    documents: 0,
-    blocks: 0,
-    links: 0,
-    lastBackupAt: null
-  },
-  recentDocuments: [],
-  recentEvents: [],
-  documentCatalog: [],
-  databaseColumns: [],
-  aiConfig: {
-    enabled: false,
-    baseUrl: '',
-    embeddingBaseUrl: '',
-    model: '',
-    embeddingModel: '',
-    autoSummaryOnSave: false,
-    hasApiKey: false,
-    hasEmbeddingApiKey: false
-  },
-  documentTree: [],
-  graph: {
-    nodes: [],
-    edges: []
-  },
-  initialDocumentId: null,
-  plugins: [],
-  pluginDashboardCards: [],
-  pluginDocumentActions: [],
-  pluginHost: {
-    roots: [],
-    writableRoot: null
-  }
-}
+import { WorkspaceDashboardSection } from './sections/WorkspaceDashboardSection'
+import { WorkspaceGraphSection } from './sections/WorkspaceGraphSection'
 
 const BLOCK_INDENT_SIZE = 24
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
-const BOARD_GROUP_BY_PARENT = '__parent__'
-
-type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
-type DatabaseWorkspaceView = 'catalog' | 'standalone'
-type StandaloneDatabaseEntityViewMode = DatabaseSavedViewLayoutMode
-type DatabaseEntityFilterScope = '' | '__document__' | string
-type DatabaseEntitySortMode = DatabaseSavedViewSortMode
-const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
 
 type BlockSelectionRange = {
   start: number
@@ -150,50 +99,85 @@ function buildBlockTypePatch(type: string, content: string, checked = false, dep
 }
 
 export function App() {
-  const [uiLanguage, setUiLanguage] = useState<UiLanguage>(detectPreferredUiLanguage())
-  const [uiLanguageHydrated, setUiLanguageHydrated] = useState(false)
-  const [homeData, setHomeData] = useState<HomeData>(emptyState)
-  const [catalogColumns, setCatalogColumns] = useState<DocumentDatabaseColumn[]>([])
-  const [catalogDocuments, setCatalogDocuments] = useState<DocumentCatalogEntry[]>([])
-  const [loading, setLoading] = useState(true)
-  const [activePage, setActivePage] = useState<PageId>('documents')
-  const [catalogQuery, setCatalogQuery] = useState('')
-  const deferredCatalogQuery = useDeferredValue(catalogQuery)
-  const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
-  const [boardGroupBy, setBoardGroupBy] = useState(BOARD_GROUP_BY_PARENT)
-  const [backupMessage, setBackupMessage] = useState<string | null>(null)
-  // 自动清除消息（3秒后）
-  useEffect(() => {
-    if (!backupMessage) return
-    const timer = setTimeout(() => setBackupMessage(null), 3000)
-    return () => clearTimeout(timer)
-  }, [backupMessage])
+  const {
+    activePage,
+    backupMessage,
+    catalogColumns,
+    catalogDocuments,
+    homeData,
+    isZh,
+    loading,
+    pageDescription,
+    pageItems,
+    pageTitle,
+    setActivePage,
+    setBackupMessage,
+    setCatalogColumns,
+    setCatalogDocuments,
+    setHomeData,
+    setUiLanguage,
+    ui,
+    uiLanguage
+  } = useAppShellState()
+  const {
+    activeDatabaseSavedViewId,
+    boardGroupBy,
+    catalogQuery,
+    databaseColumnNameDraft,
+    databaseColumnOptionsDraft,
+    databaseColumnTypeDraft,
+    databaseDescriptionDraft,
+    databaseEntities,
+    databaseEntityBulkFieldValues,
+    databaseEntityDatabaseId,
+    databaseEntityDocumentId,
+    databaseEntityFieldValues,
+    databaseEntityFilterQuery,
+    databaseEntityFilterScope,
+    databaseEntitySortMode,
+    databaseEntityViewMode,
+    databaseNameDraft,
+    databaseSavedViewNameDraft,
+    databaseSavedViews,
+    databases,
+    deferredCatalogQuery,
+    isCreatingDatabase,
+    isCreatingDatabaseColumn,
+    isCreatingDatabaseEntity,
+    isCreatingDatabaseSavedView,
+    selectedDatabaseColumns,
+    selectedDatabaseEntityIds,
+    setActiveDatabaseSavedViewId,
+    setBoardGroupBy,
+    setCatalogQuery,
+    setDatabaseColumnNameDraft,
+    setDatabaseColumnOptionsDraft,
+    setDatabaseColumnTypeDraft,
+    setDatabaseDescriptionDraft,
+    setDatabaseEntities,
+    setDatabaseEntityBulkFieldValues,
+    setDatabaseEntityDatabaseId,
+    setDatabaseEntityDocumentId,
+    setDatabaseEntityFieldValues,
+    setDatabaseEntityFilterQuery,
+    setDatabaseEntityFilterScope,
+    setDatabaseEntitySortMode,
+    setDatabaseEntityViewMode,
+    setDatabaseNameDraft,
+    setDatabaseSavedViewNameDraft,
+    setDatabaseSavedViews,
+    setDatabases,
+    setDatabaseWorkspaceView,
+    setIsCreatingDatabase,
+    setIsCreatingDatabaseColumn,
+    setIsCreatingDatabaseEntity,
+    setIsCreatingDatabaseSavedView,
+    setSelectedDatabaseColumns,
+    setSelectedDatabaseEntityIds,
+    databaseWorkspaceView
+  } = useDatabaseDomainState()
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
-  const [isCreatingDatabaseColumn, setIsCreatingDatabaseColumn] = useState(false)
-  const [databaseColumnNameDraft, setDatabaseColumnNameDraft] = useState('')
-  const [databaseColumnTypeDraft, setDatabaseColumnTypeDraft] = useState<DocumentDatabaseColumnType>('text')
-  const [databaseColumnOptionsDraft, setDatabaseColumnOptionsDraft] = useState('')
-  const [databases, setDatabases] = useState<DocumentDatabase[]>([])
-  const [selectedDatabaseColumns, setSelectedDatabaseColumns] = useState<DocumentDatabaseColumn[]>([])
-  const [databaseEntities, setDatabaseEntities] = useState<DatabaseEntity[]>([])
-  const [isCreatingDatabase, setIsCreatingDatabase] = useState(false)
-  const [databaseNameDraft, setDatabaseNameDraft] = useState('')
-  const [databaseDescriptionDraft, setDatabaseDescriptionDraft] = useState('')
-  const [isCreatingDatabaseEntity, setIsCreatingDatabaseEntity] = useState(false)
-  const [databaseEntityDatabaseId, setDatabaseEntityDatabaseId] = useState('')
-  const [databaseSavedViews, setDatabaseSavedViews] = useState<DatabaseSavedView[]>([])
-  const [activeDatabaseSavedViewId, setActiveDatabaseSavedViewId] = useState('')
-  const [isCreatingDatabaseSavedView, setIsCreatingDatabaseSavedView] = useState(false)
-  const [databaseSavedViewNameDraft, setDatabaseSavedViewNameDraft] = useState('')
-  const [databaseEntityDocumentId, setDatabaseEntityDocumentId] = useState('')
-  const [databaseEntityFieldValues, setDatabaseEntityFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
-  const [databaseEntityBulkFieldValues, setDatabaseEntityBulkFieldValues] = useState<Record<string, DocumentDatabaseFieldValue>>({})
-  const [databaseEntityFilterQuery, setDatabaseEntityFilterQuery] = useState('')
-  const [databaseEntityFilterScope, setDatabaseEntityFilterScope] = useState<DatabaseEntityFilterScope>('')
-  const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
-  const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
-  const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const {
     clearMoveTarget,
@@ -216,8 +200,6 @@ export function App() {
     highlightedBlockId,
     setHighlightedBlockId
   } = useHighlightedBlockState()
-  setActiveUiLanguage(uiLanguage)
-  const ui = getUiText(uiLanguage)
   const {
     detailLoading,
     navBack,
@@ -239,6 +221,13 @@ export function App() {
     onActivePageChange: (page) => setActivePage(page),
     onBeforeOpenDocument: () => setHighlightedBlockId(null)
   })
+  useEffect(() => {
+    if (!homeData.initialDocumentId) {
+      return
+    }
+
+    setSelectedDocumentId((current) => current ?? homeData.initialDocumentId)
+  }, [homeData.initialDocumentId, setSelectedDocumentId])
   const {
     autoSaveFlash,
     canRedo,
@@ -280,68 +269,64 @@ export function App() {
     draftBlocks
   })
   const {
-    aiEnabledDraft,
-    setAiEnabledDraft,
-    aiBaseUrlDraft,
-    setAiBaseUrlDraft,
-    aiEmbeddingBaseUrlDraft,
-    setAiEmbeddingBaseUrlDraft,
-    aiModelDraft,
-    setAiModelDraft,
-    aiEmbeddingModelDraft,
-    setAiEmbeddingModelDraft,
-    aiAutoSummaryOnSaveDraft,
-    setAiAutoSummaryOnSaveDraft,
     aiApiKeyDraft,
-    setAiApiKeyDraft,
-    aiEmbeddingApiKeyDraft,
-    setAiEmbeddingApiKeyDraft,
-    aiSaving,
-    aiPromptDraft,
-    setAiPromptDraft,
     aiAnswer,
     aiAsking,
+    aiAutoSummaryOnSaveDraft,
     aiAutomationsRunning,
+    aiBaseUrlDraft,
+    aiContextError,
     aiContextResults,
     aiContextSearching,
-    aiContextError,
-    saveAiConfig,
-    findRelatedNotesForPrompt,
+    aiEmbeddingApiKeyDraft,
+    aiEmbeddingBaseUrlDraft,
+    aiEmbeddingModelDraft,
+    aiEnabledDraft,
+    aiModelDraft,
+    aiPromptDraft,
+    aiSaving,
     askAiOnSelectedDocument,
+    findRelatedNotesForPrompt,
+    resetAiSession,
     runEnabledAiAutomationsOnSelectedDocument,
-    resetAiSession
-  } = useAiState({
+    saveAiConfig,
+    sectionProps: aiSectionProps,
+    setAiApiKeyDraft,
+    setAiAutoSummaryOnSaveDraft,
+    setAiBaseUrlDraft,
+    setAiEmbeddingApiKeyDraft,
+    setAiEmbeddingBaseUrlDraft,
+    setAiEmbeddingModelDraft,
+    setAiEnabledDraft,
+    setAiModelDraft,
+    setAiPromptDraft
+  } = useAiDomain({
     aiConfig: homeData.aiConfig,
-    selectedDocumentId,
-    ui,
-    onHomeDataChange: setHomeData,
-    onSelectedDocumentChange: setSelectedDocument,
+    isZh,
     onDraftSummaryChange: setDraftSummary,
-    onMessage: setBackupMessage
+    onHomeDataChange: setHomeData,
+    onMessage: setBackupMessage,
+    onOpenDocument: openDocumentInDocumentsPage,
+    onSelectedDocumentChange: setSelectedDocument,
+    selectedDocument,
+    selectedDocumentId,
+    ui
   })
   const {
-    pluginBusyId,
-    pluginSettingBusyKey,
-    pluginSettingDrafts,
     pluginActionBusyKey,
-    pluginInventoryBusy,
-    updatePluginSettingDraft,
-    setPluginEnabled,
-    reloadPlugins,
-    installPluginFromFolder,
-    removePlugin,
-    updatePluginSetting,
-    reloadPlugin,
-    runPluginDocumentAction
-  } = usePluginManagement({
-    plugins: homeData.plugins ?? [],
-    selectedDocumentId,
-    selectedDocument,
-    ui,
-    onHomeDataChange: setHomeData,
-    onSelectedDocumentChange: setSelectedDocument,
+    pluginDashboardCards,
+    pluginDocumentActions,
+    runPluginDocumentAction,
+    sectionProps: pluginsSectionProps
+  } = usePluginsDomain({
+    homeData,
     onDraftSummaryChange: setDraftSummary,
-    onMessage: setBackupMessage
+    onHomeDataChange: setHomeData,
+    onMessage: setBackupMessage,
+    onSelectedDocumentChange: setSelectedDocument,
+    selectedDocument,
+    selectedDocumentId,
+    ui
   })
   const {
     appUpdateState,
@@ -606,139 +591,12 @@ export function App() {
     }
   })
   useEffect(() => {
-    let mounted = true
-
-    window.knowbook.getHomeData().then((data) => {
-      if (mounted) {
-        setHomeData(data)
-        setLoading(false)
-        setSelectedDocumentId((current) => current ?? data.initialDocumentId)
-      }
-    })
-
-    window.knowbook.getDatabases().then((items) => {
-      if (mounted) {
-        setDatabases(items)
-        setDatabaseEntityDatabaseId((current) => current || items[0]?.id || '')
-      }
-    })
-
-    window.knowbook.getSetting(UI_LANGUAGE_SETTING_KEY).then((value) => {
-      if (!mounted) {
-        return
-      }
-
-      if (isUiLanguage(value)) {
-        setUiLanguage(value)
-      }
-      setUiLanguageHydrated(true)
-    })
-
-    return () => {
-      mounted = false
-    }
-  }, [])
-
-  useEffect(() => {
-    setCatalogColumns(homeData.databaseColumns)
-    setCatalogDocuments(homeData.documentCatalog)
-  }, [homeData.databaseColumns, homeData.documentCatalog])
-
-  useEffect(() => {
-    let mounted = true
-
-    if (!databaseEntityDatabaseId) {
-      setDatabaseSavedViews([])
-      setActiveDatabaseSavedViewId('')
-      setIsCreatingDatabaseSavedView(false)
-      setDatabaseSavedViewNameDraft('')
-      setSelectedDatabaseColumns([])
-      setDatabaseEntities([])
-      setDatabaseEntityFieldValues({})
-      setDatabaseEntityBulkFieldValues({})
-      setDatabaseEntityFilterQuery('')
-      setDatabaseEntityFilterScope('')
-      setDatabaseEntitySortMode('updated-desc')
-      setDatabaseEntityViewMode('cards')
-      setSelectedDatabaseEntityIds([])
-      return () => {
-        mounted = false
-      }
-    }
-
-    setDatabaseSavedViews([])
-    setActiveDatabaseSavedViewId('')
-    setIsCreatingDatabaseSavedView(false)
-    setDatabaseSavedViewNameDraft('')
-    setDatabaseEntityFilterQuery('')
-    setDatabaseEntityFilterScope('')
-    setDatabaseEntitySortMode('updated-desc')
-    setDatabaseEntityViewMode('cards')
-
-    Promise.all([
-      window.knowbook.getDatabaseEntities(databaseEntityDatabaseId),
-      window.knowbook.getDocumentDatabaseColumns(databaseEntityDatabaseId),
-      window.knowbook.getDatabaseSavedViews(databaseEntityDatabaseId)
-    ]).then(([items, columns, views]) => {
-      if (mounted) {
-        setDatabaseEntities(items)
-        setSelectedDatabaseColumns(columns)
-        setDatabaseSavedViews(views)
-        setDatabaseEntityFieldValues({})
-        setDatabaseEntityBulkFieldValues({})
-        setSelectedDatabaseEntityIds([])
-      }
-    })
-
-    return () => {
-      mounted = false
-    }
-  }, [databaseEntityDatabaseId])
-
-  useEffect(() => {
-    const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
-
-    if (nextStandaloneDatabases.length === 0) {
-      if (databaseEntityDatabaseId) {
-        setDatabaseEntityDatabaseId('')
-      }
-      return
-    }
-
-    if (!nextStandaloneDatabases.some((database) => database.id === databaseEntityDatabaseId)) {
-      setDatabaseEntityDatabaseId(nextStandaloneDatabases[0].id)
-    }
-  }, [databaseEntityDatabaseId, databases])
-
-  useEffect(() => {
-    if (!databaseEntityFilterScope || databaseEntityFilterScope === '__document__') {
-      return
-    }
-
-    if (!selectedDatabaseColumns.some((column) => column.id === databaseEntityFilterScope)) {
-      setDatabaseEntityFilterScope('')
-    }
-  }, [databaseEntityFilterScope, selectedDatabaseColumns])
-
-  useEffect(() => {
     const visibleEntityIdSet = new Set(filteredStandaloneDatabaseEntityIds)
     setSelectedDatabaseEntityIds((current) => {
       const next = current.filter((entityId) => visibleEntityIdSet.has(entityId))
       return next.length === current.length ? current : next
     })
   }, [databaseEntities, databaseEntityFilterQuery, databaseEntityFilterScope, databaseEntitySortMode, homeData.documentCatalog, selectedDatabaseColumns])
-
-  useEffect(() => {
-    document.documentElement.lang = uiLanguage
-  }, [uiLanguage])
-
-  useEffect(() => {
-    if (!uiLanguageHydrated) {
-      return
-    }
-
-    void window.knowbook.saveSetting(UI_LANGUAGE_SETTING_KEY, uiLanguage)
-  }, [uiLanguage, uiLanguageHydrated])
 
   useEffect(() => {
     if (activePage !== 'documents') {
@@ -983,11 +841,6 @@ export function App() {
     setBackupMessage,
     uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
-  const plugins = homeData.plugins ?? []
-  const pluginDashboardCards = homeData.pluginDashboardCards ?? []
-  const pluginDocumentActions = homeData.pluginDocumentActions ?? []
-  const pluginRoots = homeData.pluginHost?.roots ?? []
-  const pluginWritableRoot = homeData.pluginHost?.writableRoot ?? null
   const {
     activeDatabaseSavedView,
     boardColumns,
@@ -1182,47 +1035,6 @@ export function App() {
     updateDatabaseEntityField,
     updateDocumentDatabaseValue
   })
-  const isZh = uiLanguage === 'zh-CN'
-  const pageItems: Array<{ id: PageId; label: string; description: string }> = [
-    {
-      id: 'documents',
-      label: isZh ? '文档' : 'Documents',
-      description: isZh ? '目录树 + 编辑器' : 'Tree + editor'
-    },
-    {
-      id: 'dashboard',
-      label: isZh ? '总览' : 'Dashboard',
-      description: isZh ? '工作区状态与统计' : 'Workspace summary'
-    },
-    {
-      id: 'database',
-      label: isZh ? '数据库' : 'Database',
-      description: isZh ? '表格与看板视图' : 'Table + board views'
-    },
-    {
-      id: 'graph',
-      label: isZh ? '图谱' : 'Graph',
-      description: isZh ? '知识关系拓扑' : 'Knowledge topology'
-    },
-    {
-      id: 'ai',
-      label: isZh ? 'AI 助手' : 'AI Assistant',
-      description: isZh ? '问答与检索增强' : 'Q&A and semantic retrieval'
-    },
-    {
-      id: 'plugins',
-      label: isZh ? '插件中心' : 'Plugins',
-      description: isZh ? '插件安装与管理' : 'Plugin management'
-    },
-    {
-      id: 'settings',
-      label: isZh ? '配置中心' : 'Settings',
-      description: isZh ? '语言、AI、备份' : 'Language, AI, backup'
-    }
-  ]
-
-  const pageTitle = pageItems.find((item) => item.id === activePage)?.label ?? ''
-  const pageDescription = pageItems.find((item) => item.id === activePage)?.description ?? ''
   const {
     blockEditorRowSharedProps: documentsBlockEditorRowSharedProps,
     floatingSlashCommandPanelProps: documentsFloatingSlashCommandPanelProps,
@@ -1454,21 +1266,16 @@ return (
 
         <main className={`content page-${activePage}`}>
         {activePage === 'dashboard' ? (
-          <section className="hero">
-            <div>
-              <p className="eyebrow">{ui.workspaceStatusEyebrow}</p>
-              <h2>{ui.workspaceStatusTitle}</h2>
-              <p className="hero-copy">{ui.workspaceStatusBody}</p>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <button className="secondary-button" onClick={handleRestoreBackup} type="button">
-                {ui.restoreBackup}
-              </button>
-              <button className="primary-button" onClick={handleBackup} type="button">
-                {ui.runBackupNow}
-              </button>
-            </div>
-          </section>
+          <WorkspaceDashboardSection
+            isAiEnabled={homeData.aiConfig.enabled}
+            onBackupNow={handleBackup}
+            onOpenDocument={openDocumentInDocumentsPage}
+            onRestoreBackup={handleRestoreBackup}
+            pluginDashboardCards={pluginDashboardCards}
+            recentEvents={homeData.recentEvents}
+            summary={homeData.summary}
+            ui={ui}
+          />
         ) : null}
 
         {backupMessage ? (
@@ -1478,101 +1285,15 @@ return (
           </p>
         ) : null}
 
-        {activePage === 'dashboard' ? (
-          <section className="stats-grid">
-            <article className="stat-card">
-              <span className="stat-label">{ui.documentsLabel}</span>
-              <strong>{homeData.summary.documents}</strong>
-            </article>
-            <article className="stat-card">
-              <span className="stat-label">{ui.blocksLabel}</span>
-              <strong>{homeData.summary.blocks}</strong>
-            </article>
-            <article className="stat-card">
-              <span className="stat-label">{ui.linksLabel}</span>
-              <strong>{homeData.summary.links}</strong>
-            </article>
-            <article className="stat-card">
-              <span className="stat-label">{ui.aiLabel}</span>
-              <strong>{ui.aiReadyState(homeData.aiConfig.enabled)}</strong>
-            </article>
-          </section>
-        ) : null}
-
-        {activePage === 'dashboard' ? (
-          <section className="detail-grid">
-            <article className="panel large-panel">
-              <div className="panel-head">
-                <div>
-                  <p className="panel-label">{ui.automationFeedLabel}</p>
-                  <h3>{ui.recentEventsTitle}</h3>
-                </div>
-              </div>
-              {homeData.recentEvents.length > 0 ? (
-                <div className="event-feed">
-                  {homeData.recentEvents.map((event) => (
-                    <button
-                      className="event-feed-item"
-                      disabled={!event.documentId}
-                      key={event.id}
-                      onClick={() => {
-                        if (event.documentId) {
-                          openDocumentInDocumentsPage(event.documentId)
-                        }
-                      }}
-                      type="button"
-                    >
-                      <div className="event-feed-head">
-                        <strong>{event.title}</strong>
-                        <span>{new Date(event.createdAt).toLocaleTimeString(ui.locale, { hour: '2-digit', minute: '2-digit' })}</span>
-                      </div>
-                      <span className="event-feed-description">{event.description}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="mini-hint">{ui.noAutomationEvents}</p>
-              )}
-            </article>
-          </section>
-        ) : null}
-
-        {activePage === 'dashboard' && pluginDashboardCards.length > 0 ? (
-          <section className="plugin-dashboard-grid">
-            {pluginDashboardCards.map((card: PluginDashboardCard) => (
-              <article className="panel plugin-dashboard-card" key={`${card.pluginId}:${card.id}`}>
-                <div className="plugin-dashboard-head">
-                  <p className="panel-label">{ui.pluginCardLabel}</p>
-                  <span className="pill">{card.pluginId}</span>
-                </div>
-                <h3>{card.title}</h3>
-                <p>{card.body}</p>
-              </article>
-            ))}
-          </section>
-        ) : null}
-
-         {activePage === 'graph' ? <section className="graph-grid" data-testid="graph-grid">
-           <article className="panel graph-panel">
-            <div className="panel-head compact-head">
-              <div>
-                <p className="panel-label">{ui.knowledgeGraphLabel}</p>
-                <h3>{ui.knowledgeGraphTitle}</h3>
-              </div>
-              <div className="toolbar-inline">
-                <span className="pill">{homeData.graph.nodes.length} nodes</span>
-                <span className="pill">{homeData.graph.edges.length} edges</span>
-              </div>
-            </div>
-
-            <WorkspaceGraph
-              edges={homeData.graph.edges}
-              nodes={homeData.graph.nodes}
-              selectedDocumentId={selectedDocumentId}
-              onSelect={openDocumentInDocumentsPage}
-            />
-          </article>
-        </section> : null}
+         {activePage === 'graph' ? (
+           <WorkspaceGraphSection
+             edges={homeData.graph.edges}
+             nodes={homeData.graph.nodes}
+             onSelectDocument={openDocumentInDocumentsPage}
+             selectedDocumentId={selectedDocumentId}
+             ui={ui}
+           />
+         ) : null}
 
          {activePage === 'database' ? (
            <DatabaseSection
@@ -1625,64 +1346,9 @@ return (
            />
          ) : null}
 
-        {activePage === 'ai' ? (
-          <AISection
-            aiAnswer={aiAnswer}
-            aiAsking={aiAsking}
-            aiAutomationsRunning={aiAutomationsRunning}
-            aiContextError={aiContextError}
-            aiContextResults={aiContextResults}
-            aiContextSearching={aiContextSearching}
-            aiEnabled={homeData.aiConfig.enabled}
-            aiPromptDraft={aiPromptDraft}
-            hasApiKey={homeData.aiConfig.hasApiKey}
-            isZh={isZh}
-            onAiPromptChange={setAiPromptDraft}
-            onAskAi={() => {
-              void askAiOnSelectedDocument()
-            }}
-            onFindRelatedNotes={() => {
-              void findRelatedNotesForPrompt()
-            }}
-            onOpenDocument={openDocumentInDocumentsPage}
-            onRunEnabledAutomations={() => {
-              void runEnabledAiAutomationsOnSelectedDocument()
-            }}
-            selectedDocument={selectedDocument}
-            ui={ui}
-          />
-        ) : null}
+        {activePage === 'ai' ? <AISection {...aiSectionProps} /> : null}
 
-        {activePage === 'plugins' ? (
-          <PluginsSection
-            onInstallPluginFromFolder={() => {
-              void installPluginFromFolder()
-            }}
-            onReloadPlugin={(plugin) => {
-              void reloadPlugin(plugin)
-            }}
-            onReloadPlugins={() => {
-              void reloadPlugins()
-            }}
-            onRemovePlugin={(plugin) => {
-              void removePlugin(plugin)
-            }}
-            onSetPluginEnabled={(plugin, enabled) => {
-              void setPluginEnabled(plugin, enabled)
-            }}
-            onUpdatePluginSetting={(plugin, setting, value) => {
-              void updatePluginSetting(plugin, setting, value)
-            }}
-            onUpdatePluginSettingDraft={updatePluginSettingDraft}
-            pluginBusyId={pluginBusyId}
-            pluginInventoryBusy={pluginInventoryBusy}
-            pluginRoots={pluginRoots}
-            pluginSettingBusyKey={pluginSettingBusyKey}
-            pluginSettingDrafts={pluginSettingDrafts}
-            plugins={plugins}
-            ui={ui}
-          />
-        ) : null}
+        {activePage === 'plugins' ? <PluginsSection {...pluginsSectionProps} /> : null}
 
         {activePage === 'dashboard' || activePage === 'settings' ? (
           <DashboardSettingsSection
