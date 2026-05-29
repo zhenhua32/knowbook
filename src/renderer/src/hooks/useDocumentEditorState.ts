@@ -3,6 +3,7 @@ import { serializeBlocksToMarkdown } from '@shared/markdown'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
+import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
@@ -13,8 +14,6 @@ type UseDocumentEditorStateParams = {
   onHomeDataChange: (homeData: HomeData) => void
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onMessage: (message: string) => void
-  normalizeDraftBlocks: (blocks: DocumentBlockDraft[]) => DocumentBlockDraft[]
-  validateBlockTreeStructure: (blocks: DocumentBlockDraft[]) => { valid: boolean; errors: string[] }
 }
 
 export function useDocumentEditorState({
@@ -23,9 +22,7 @@ export function useDocumentEditorState({
   ui,
   onHomeDataChange,
   onSelectedDocumentChange,
-  onMessage,
-  normalizeDraftBlocks,
-  validateBlockTreeStructure
+  onMessage
 }: UseDocumentEditorStateParams) {
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
