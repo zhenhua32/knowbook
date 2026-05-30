@@ -1,20 +1,13 @@
 import type {
-  DocumentCatalogEntry,
-  DocumentDatabaseColumn,
   HomeData
 } from '@shared/contracts'
 import type { useAppShellState } from './useAppShellState'
 import type { useDocumentsDomainState } from './useDocumentsDomainState'
-import type { UiText } from '../i18n'
 import { useDocumentCatalogDatabaseActions } from './useDocumentCatalogDatabaseActions'
 import { useWorkspaceBackupActions } from './useWorkspaceBackupActions'
 import { useWorkspaceDocumentManagement } from './useWorkspaceDocumentManagement'
 
-type ShellWorkspaceState = Pick<ReturnType<typeof useAppShellState>,
-  'setBackupMessage'
-  | 'setCatalogDocuments'
-  | 'setHomeData'
->
+type AppShellState = ReturnType<typeof useAppShellState>
 
 type DocumentsWorkspaceState = Pick<ReturnType<typeof useDocumentsDomainState>,
   'clearEditorSession'
@@ -28,19 +21,13 @@ type DocumentsWorkspaceState = Pick<ReturnType<typeof useDocumentsDomainState>,
 >
 
 type UseWorkspaceOperationsParams = {
-  catalogColumns: DocumentDatabaseColumn[]
-  catalogDocuments: DocumentCatalogEntry[]
   documents: DocumentsWorkspaceState
-  shell: ShellWorkspaceState
-  ui: UiText
+  shell: AppShellState
 }
 
 export function useWorkspaceOperations({
-  catalogColumns,
-  catalogDocuments,
   documents,
-  shell,
-  ui
+  shell
 }: UseWorkspaceOperationsParams) {
   const {
     handleBackup,
@@ -51,7 +38,7 @@ export function useWorkspaceOperations({
     setHomeData: shell.setHomeData,
     setSelectedDocument: documents.setSelectedDocument,
     setSelectedDocumentId: documents.setSelectedDocumentId,
-    ui
+    ui: shell.ui
   })
 
   const {
@@ -63,8 +50,8 @@ export function useWorkspaceOperations({
   })
 
   const workspaceDocumentManagement = useWorkspaceDocumentManagement({
-    catalogColumns,
-    catalogDocuments,
+    catalogColumns: shell.catalogColumns,
+    catalogDocuments: shell.catalogDocuments,
     moveTargetId: documents.moveTargetId,
     onClearEditorSession: documents.clearEditorSession,
     onDetailLoadingChange: documents.setDetailLoading,
@@ -76,7 +63,7 @@ export function useWorkspaceOperations({
     onUpdateDocumentDatabaseValue: updateDocumentDatabaseValue,
     selectedDocument: documents.selectedDocument,
     selectedDocumentId: documents.selectedDocumentId,
-    ui
+    ui: shell.ui
   })
 
   return {

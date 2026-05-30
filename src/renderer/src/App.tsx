@@ -13,47 +13,29 @@ export function App() {
   const shell = useAppShellState()
   const databaseDomain = useDatabaseDomainState()
   const documentsDomain = useDocumentsDomainState({
-    activePage: shell.activePage,
-    documentCatalog: shell.homeData.documentCatalog,
-    documentTree: shell.homeData.documentTree,
-    initialDocumentId: shell.homeData.initialDocumentId,
-    onActivePageChange: shell.setActivePage,
-    onBackupMessage: shell.setBackupMessage,
-    onHomeDataChange: shell.setHomeData,
     resetAiSession: () => resetAiSessionRef.current(),
-    ui: shell.ui,
-    uiLanguage: shell.uiLanguage
+    shell
   })
 
   const workspaceOperations = useWorkspaceOperations({
-    catalogColumns: shell.catalogColumns,
-    catalogDocuments: shell.catalogDocuments,
     documents: documentsDomain,
-    shell,
-    ui: shell.ui
+    shell
   })
   const featureDomains = useAppFeatureDomains({
-    activePage: shell.activePage,
     handleBackup: workspaceOperations.handleBackup,
     handleRestoreBackup: workspaceOperations.handleRestoreBackup,
-    homeData: shell.homeData,
-    isZh: shell.isZh,
-    loading: shell.loading,
     documents: documentsDomain,
-    shell,
-    ui: shell.ui,
-    uiLanguage: shell.uiLanguage
+    shell
   })
   resetAiSessionRef.current = featureDomains.ai.resetAiSession
   useAppKeyboardShortcuts({
-    activePage: shell.activePage,
     documents: documentsDomain,
     onClearBlockRangeSelection: () => {
       documentsDomain.setIsBlockRangeSelecting(false)
       documentsDomain.setSelectionAnchorBlockId(null)
       documentsDomain.setSelectedBlockRange(null)
     },
-    setActivePage: shell.setActivePage,
+    shell,
   })
 return (
      <div className="shell" data-testid="shell">

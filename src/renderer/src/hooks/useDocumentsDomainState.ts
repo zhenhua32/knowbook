@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentBlockDraft, HomeData } from '@shared/contracts'
+import type { DocumentBlockDraft } from '@shared/contracts'
 import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
-import type { PageId } from './useAppShellState'
+import type { useAppShellState } from './useAppShellState'
 import { useBlockSearchState } from './useBlockSearchState'
 import { useBlockSelectionState } from './useBlockSelectionState'
 import { useBlockInputActions } from './useBlockInputActions'
@@ -23,37 +23,36 @@ import { useBlockStructureActions } from './useBlockStructureActions'
 import { useSingleBlockTreeActions } from './useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './useDocumentNavigationState'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-import type { UiText, UiLanguage } from '../i18n'
+
+type AppShellState = ReturnType<typeof useAppShellState>
 
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 
 type BuildBlockTypePatch = (type: string, content: string, checked?: boolean, depth?: number, parentBlockId?: string | null) => DocumentBlockDraft
 
 type UseDocumentsDomainStateParams = {
-  activePage: PageId
-  documentCatalog: HomeData['documentCatalog']
-  documentTree: HomeData['documentTree']
-  initialDocumentId: string | null
-  onActivePageChange: (page: PageId) => void
-  onBackupMessage: (message: string | null) => void
-  onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   resetAiSession: () => void
-  ui: UiText
-  uiLanguage: UiLanguage
+  shell: AppShellState
 }
 
 export function useDocumentsDomainState({
-  activePage,
-  documentCatalog,
-  documentTree,
-  initialDocumentId,
-  onActivePageChange,
-  onBackupMessage,
-  onHomeDataChange,
   resetAiSession,
-  ui,
-  uiLanguage
+  shell
 }: UseDocumentsDomainStateParams) {
+  const {
+    activePage,
+    homeData: {
+      documentCatalog,
+      documentTree,
+      initialDocumentId
+    },
+    setActivePage: onActivePageChange,
+    setBackupMessage: onBackupMessage,
+    setHomeData: onHomeDataChange,
+    ui,
+    uiLanguage
+  } = shell
+
   const buildBlockTypePatch: BuildBlockTypePatch = useCallback((type, content, checked = false, depth = 0, parentBlockId) => ({
     type,
     content: type === 'divider' ? '' : content,
