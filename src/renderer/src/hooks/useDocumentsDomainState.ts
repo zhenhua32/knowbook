@@ -22,14 +22,15 @@ import { useSlashCommandActions } from './useSlashCommandActions'
 import { useBlockStructureActions } from './useBlockStructureActions'
 import { useSingleBlockTreeActions } from './useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './useDocumentNavigationState'
+import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
 import type { UiText, UiLanguage } from '../i18n'
+
+const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 
 type BuildBlockTypePatch = (type: string, content: string, checked?: boolean, depth?: number, parentBlockId?: string | null) => DocumentBlockDraft
 
 type UseDocumentsDomainStateParams = {
   activePage: PageId
-  blockDragDepthThreshold: number
-  buildBlockTypePatch: BuildBlockTypePatch
   documentCatalog: HomeData['documentCatalog']
   documentTree: HomeData['documentTree']
   initialDocumentId: string | null
@@ -43,8 +44,6 @@ type UseDocumentsDomainStateParams = {
 
 export function useDocumentsDomainState({
   activePage,
-  blockDragDepthThreshold,
-  buildBlockTypePatch,
   documentCatalog,
   documentTree,
   initialDocumentId,
@@ -55,6 +54,14 @@ export function useDocumentsDomainState({
   ui,
   uiLanguage
 }: UseDocumentsDomainStateParams) {
+  const buildBlockTypePatch: BuildBlockTypePatch = useCallback((type, content, checked = false, depth = 0, parentBlockId) => ({
+    type,
+    content: type === 'divider' ? '' : content,
+    checked: type === 'todo' ? checked : false,
+    depth: normalizeBlockDepth(type, depth),
+    parentBlockId: isNestableBlock(type) ? (parentBlockId?.trim() ? parentBlockId : null) : null
+  }), [])
+
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
@@ -372,7 +379,7 @@ export function useDocumentsDomainState({
     dropBlockAt,
     getDraggedBlockDepthPreview
   } = useBlockDragDropActions({
-    blockDragDepthThreshold,
+    blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
     draftBlocks,
     dragOverBlockDepth,
     draggingBlockIndex,
