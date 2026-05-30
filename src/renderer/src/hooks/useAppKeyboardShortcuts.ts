@@ -1,39 +1,31 @@
 import { useEffect } from 'react'
+import type { useDocumentsDomainState } from './useDocumentsDomainState'
 import { PAGE_ORDER, type PageId } from './useAppShellState'
 
-type BlockSelectionRange = {
-  start: number
-  end: number
-}
+type DocumentsKeyboardState = Pick<ReturnType<typeof useDocumentsDomainState>,
+  'closeGlobalSearch'
+  | 'isEditing'
+  | 'isGlobalSearchOpen'
+  | 'navBack'
+  | 'navForward'
+  | 'openGlobalSearch'
+  | 'redoEdit'
+  | 'selectedBlockRange'
+  | 'undoEdit'
+>
 
 type UseAppKeyboardShortcutsParams = {
   activePage: PageId
-  closeGlobalSearch: () => void
-  isEditing: boolean
-  isGlobalSearchOpen: boolean
-  navBack: () => void
-  navForward: () => void
+  documents: DocumentsKeyboardState
   onClearBlockRangeSelection: () => void
-  openGlobalSearch: () => void
-  redoEdit: () => void
-  selectedBlockRange: BlockSelectionRange | null
   setActivePage: (page: PageId) => void
-  undoEdit: () => void
 }
 
 export function useAppKeyboardShortcuts({
   activePage,
-  closeGlobalSearch,
-  isEditing,
-  isGlobalSearchOpen,
-  navBack,
-  navForward,
+  documents,
   onClearBlockRangeSelection,
-  openGlobalSearch,
-  redoEdit,
-  selectedBlockRange,
-  setActivePage,
-  undoEdit
+  setActivePage
 }: UseAppKeyboardShortcutsParams) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -52,49 +44,49 @@ export function useAppKeyboardShortcuts({
         }
 
         event.preventDefault()
-        if (isGlobalSearchOpen) {
-          closeGlobalSearch()
+        if (documents.isGlobalSearchOpen) {
+          documents.closeGlobalSearch()
         } else {
-          openGlobalSearch()
+          documents.openGlobalSearch()
         }
       }
 
-      if (event.key === 'Escape' && isGlobalSearchOpen && activePage === 'documents') {
-        closeGlobalSearch()
+      if (event.key === 'Escape' && documents.isGlobalSearchOpen && activePage === 'documents') {
+        documents.closeGlobalSearch()
         return
       }
 
-      if (event.key === 'Escape' && activePage === 'documents' && selectedBlockRange) {
+      if (event.key === 'Escape' && activePage === 'documents' && documents.selectedBlockRange) {
         event.preventDefault()
         onClearBlockRangeSelection()
         return
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
-        if (isEditing && activePage === 'documents') {
+        if (documents.isEditing && activePage === 'documents') {
           event.preventDefault()
-          undoEdit()
+          documents.undoEdit()
         }
       }
 
       if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
-        if (isEditing && activePage === 'documents') {
+        if (documents.isEditing && activePage === 'documents') {
           event.preventDefault()
-          redoEdit()
+          documents.redoEdit()
         }
       }
 
       if (event.altKey && event.key === 'ArrowLeft') {
         if (activePage === 'documents') {
           event.preventDefault()
-          navBack()
+          documents.navBack()
         }
       }
 
       if (event.altKey && event.key === 'ArrowRight') {
         if (activePage === 'documents') {
           event.preventDefault()
-          navForward()
+          documents.navForward()
         }
       }
     }
@@ -103,16 +95,8 @@ export function useAppKeyboardShortcuts({
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
     activePage,
-    closeGlobalSearch,
-    isEditing,
-    isGlobalSearchOpen,
-    navBack,
-    navForward,
+    documents,
     onClearBlockRangeSelection,
-    openGlobalSearch,
-    redoEdit,
-    selectedBlockRange,
-    setActivePage,
-    undoEdit
+    setActivePage
   ])
 }

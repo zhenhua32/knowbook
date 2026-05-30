@@ -1,10 +1,26 @@
-import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentDetail, HomeData } from '@shared/contracts'
+import type { HomeData } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
+import type { useAppShellState } from './useAppShellState'
+import type { useDocumentsDomainState } from './useDocumentsDomainState'
 import type { PageId } from './useAppShellState'
 import { useAiDomain } from './useAiDomain'
 import { usePluginsDomain } from './usePluginsDomain'
 import { useSettingsDomain } from './useSettingsDomain'
+
+type ShellFeatureState = Pick<ReturnType<typeof useAppShellState>,
+  'setActivePage'
+  | 'setBackupMessage'
+  | 'setHomeData'
+  | 'setUiLanguage'
+>
+
+type DocumentsFeatureState = Pick<ReturnType<typeof useDocumentsDomainState>,
+  'openDocumentInDocumentsPage'
+  | 'selectedDocument'
+  | 'selectedDocumentId'
+  | 'setDraftSummary'
+  | 'setSelectedDocument'
+>
 
 type UseAppFeatureDomainsParams = {
   activePage: PageId
@@ -13,15 +29,8 @@ type UseAppFeatureDomainsParams = {
   homeData: HomeData
   isZh: boolean
   loading: boolean
-  onHomeDataChange: Dispatch<SetStateAction<HomeData>>
-  onMessage: (message: string | null) => void
-  onOpenDocument: (documentId: string) => void
-  onSelectedDocumentChange: Dispatch<SetStateAction<DocumentDetail | null>>
-  onSetActivePage: Dispatch<SetStateAction<PageId>>
-  onUiLanguageChange: (language: UiLanguage) => void
-  selectedDocument: DocumentDetail | null
-  selectedDocumentId: string | null
-  setDraftSummary: Dispatch<SetStateAction<string>>
+  documents: DocumentsFeatureState
+  shell: ShellFeatureState
   ui: UiText
   uiLanguage: UiLanguage
 }
@@ -33,39 +42,32 @@ export function useAppFeatureDomains({
   homeData,
   isZh,
   loading,
-  onHomeDataChange,
-  onMessage,
-  onOpenDocument,
-  onSelectedDocumentChange,
-  onSetActivePage,
-  onUiLanguageChange,
-  selectedDocument,
-  selectedDocumentId,
-  setDraftSummary,
+  documents,
+  shell,
   ui,
   uiLanguage
 }: UseAppFeatureDomainsParams) {
   const ai = useAiDomain({
     aiConfig: homeData.aiConfig,
     isZh,
-    onDraftSummaryChange: setDraftSummary,
-    onHomeDataChange,
-    onMessage,
-    onOpenDocument,
-    onSelectedDocumentChange,
-    selectedDocument,
-    selectedDocumentId,
+    onDraftSummaryChange: documents.setDraftSummary,
+    onHomeDataChange: shell.setHomeData,
+    onMessage: shell.setBackupMessage,
+    onOpenDocument: documents.openDocumentInDocumentsPage,
+    onSelectedDocumentChange: documents.setSelectedDocument,
+    selectedDocument: documents.selectedDocument,
+    selectedDocumentId: documents.selectedDocumentId,
     ui
   })
 
   const plugins = usePluginsDomain({
     homeData,
-    onDraftSummaryChange: setDraftSummary,
-    onHomeDataChange,
-    onMessage,
-    onSelectedDocumentChange,
-    selectedDocument,
-    selectedDocumentId,
+    onDraftSummaryChange: documents.setDraftSummary,
+    onHomeDataChange: shell.setHomeData,
+    onMessage: shell.setBackupMessage,
+    onSelectedDocumentChange: documents.setSelectedDocument,
+    selectedDocument: documents.selectedDocument,
+    selectedDocumentId: documents.selectedDocumentId,
     ui
   })
 
@@ -96,10 +98,10 @@ export function useAppFeatureDomains({
     onBackupNow: () => {
       void handleBackup()
     },
-    onMessage: (message) => onMessage(message),
-    onOpenDocument,
+    onMessage: (message) => shell.setBackupMessage(message),
+    onOpenDocument: documents.openDocumentInDocumentsPage,
     onOpenPlugins: () => {
-      onSetActivePage('plugins')
+      shell.setActivePage('plugins')
     },
     onRestoreBackup: () => {
       void handleRestoreBackup()
@@ -107,7 +109,7 @@ export function useAppFeatureDomains({
     onSaveAiConfig: () => {
       void ai.saveAiConfig()
     },
-    onUiLanguageChange,
+    onUiLanguageChange: shell.setUiLanguage,
     recentDocuments: homeData.recentDocuments,
     summary: homeData.summary,
     ui,

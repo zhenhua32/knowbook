@@ -1,27 +1,38 @@
 import type { HomeData } from '@shared/contracts'
 import type { PageId } from '../hooks/useAppShellState'
+import type { useDocumentsDomainState } from '../hooks/useDocumentsDomainState'
+import type { useWorkspaceOperations } from '../hooks/useWorkspaceOperations'
 import type { UiLanguage, UiText } from '../i18n'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
 
+type DocumentsSidebarState = Pick<ReturnType<typeof useDocumentsDomainState>,
+  'navCanGoBack'
+  | 'navCanGoForward'
+  | 'navBack'
+  | 'navForward'
+  | 'openDocumentInDocumentsPage'
+  | 'openGlobalSearch'
+  | 'pinnedDocumentIds'
+  | 'selectedDocumentId'
+>
+
+type WorkspaceSidebarActions = Pick<ReturnType<typeof useWorkspaceOperations>,
+  'beginDrag'
+  | 'dragOverRoot'
+  | 'dropOnDocument'
+  | 'dropToRoot'
+  | 'endDrag'
+  | 'handleCreateDocument'
+  | 'handleRootDragLeave'
+  | 'handleRootDragOver'
+  | 'handleTreeNodeDragOver'
+>
+
 type WorkspaceShellSidebarProps = {
   activePage: PageId
-  dragOverRoot: boolean
+  documents: DocumentsSidebarState
   homeData: HomeData
   isZh: boolean
-  navCanGoBack: boolean
-  navCanGoForward: boolean
-  onCreateRoot: () => Promise<unknown> | void
-  onDragEnd: () => void
-  onDragOverNode: (documentId: string) => void
-  onDragStart: (documentId: string) => void
-  onDropOnDocument: (documentId: string) => Promise<void>
-  onDropToRoot: () => Promise<unknown> | void
-  onNavBack: () => void
-  onNavForward: () => void
-  onOpenGlobalSearch: () => void
-  onRootDragLeave: () => void
-  onRootDragOver: () => void
-  onSelectDocument: (documentId: string) => void
   onSelectPage: (pageId: PageId) => void
   pageDescription: string
   pageItems: Array<{
@@ -30,41 +41,25 @@ type WorkspaceShellSidebarProps = {
     description: string
   }>
   pageTitle: string
-  pinnedDocumentIds: Set<string>
-  selectedDocumentId: string | null
   ui: UiText
   uiLanguage: UiLanguage
+  workspace: WorkspaceSidebarActions
 }
 
 export function WorkspaceShellSidebar({
   activePage,
-  dragOverRoot,
+  documents,
   homeData,
   isZh,
-  navCanGoBack,
-  navCanGoForward,
-  onCreateRoot,
-  onDragEnd,
-  onDragOverNode,
-  onDragStart,
-  onDropOnDocument,
-  onDropToRoot,
-  onNavBack,
-  onNavForward,
-  onOpenGlobalSearch,
-  onRootDragLeave,
-  onRootDragOver,
-  onSelectDocument,
   onSelectPage,
   pageDescription,
   pageItems,
   pageTitle,
-  pinnedDocumentIds,
-  selectedDocumentId,
   ui,
-  uiLanguage
+  uiLanguage,
+  workspace
 }: WorkspaceShellSidebarProps) {
-  const pinnedDocuments = homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))
+  const pinnedDocuments = homeData.documentCatalog.filter((document) => documents.pinnedDocumentIds.has(document.id))
 
   return (
     <PageNavWithWorkspaceTree
@@ -80,31 +75,35 @@ export function WorkspaceShellSidebar({
       backTitle={`${ui.back} (Alt+←)`}
       forwardTitle={`${ui.forward} (Alt+→)`}
       rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
-      onOpenGlobalSearch={onOpenGlobalSearch}
+      onOpenGlobalSearch={documents.openGlobalSearch}
       globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-      onCreateRoot={onCreateRoot}
+      onCreateRoot={() => {
+        void workspace.handleCreateDocument(null)
+      }}
       newRootLabel={ui.newRoot}
       dropToRootLabel={ui.dropToRoot}
-      dragOverRoot={dragOverRoot}
-      onRootDragOver={onRootDragOver}
-      onRootDragLeave={onRootDragLeave}
-      onDropToRoot={onDropToRoot}
+      dragOverRoot={workspace.dragOverRoot}
+      onRootDragOver={workspace.handleRootDragOver}
+      onRootDragLeave={workspace.handleRootDragLeave}
+      onDropToRoot={() => {
+        void workspace.dropToRoot()
+      }}
       pinnedSectionLabel={ui.pinnedSectionLabel}
       pinnedDocuments={pinnedDocuments}
-      selectedDocumentId={selectedDocumentId}
-      onSelectDocument={onSelectDocument}
+      selectedDocumentId={documents.selectedDocumentId}
+      onSelectDocument={documents.openDocumentInDocumentsPage}
       documentTreeNodes={homeData.documentTree}
       workspaceGraphNodes={homeData.graph.nodes}
       workspaceGraphEdges={homeData.graph.edges}
-      navCanGoBack={navCanGoBack}
-      navCanGoForward={navCanGoForward}
-      onNavBack={onNavBack}
-      onNavForward={onNavForward}
-      onSelectGraphNode={onSelectDocument}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
-      onDragOverNode={onDragOverNode}
-      onDropOnNode={onDropOnDocument}
+      navCanGoBack={documents.navCanGoBack}
+      navCanGoForward={documents.navCanGoForward}
+      onNavBack={documents.navBack}
+      onNavForward={documents.navForward}
+      onSelectGraphNode={documents.openDocumentInDocumentsPage}
+      onDragStart={workspace.beginDrag}
+      onDragEnd={workspace.endDrag}
+      onDragOverNode={workspace.handleTreeNodeDragOver}
+      onDropOnNode={workspace.dropOnDocument}
       uiLanguage={uiLanguage}
       totalDocumentsCount={homeData.summary.documents}
     />
