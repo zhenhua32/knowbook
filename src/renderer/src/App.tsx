@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import type {
   BackupResult,
   BlockReferenceResult,
@@ -25,30 +25,19 @@ import type {
   WorkspaceGraphNode
 } from '@shared/contracts'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
-import { useAppShellState, PAGE_ORDER, type PageId } from './hooks/useAppShellState'
-import { PageNavWithWorkspaceTree } from './components/PageNavWithWorkspaceTree'
+import { useAppShellState } from './hooks/useAppShellState'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
-import {
-  BOARD_GROUP_BY_PARENT,
-  useDatabaseDomainState
-} from './hooks/useDatabaseDomainState'
-import { useDatabaseDerivedState } from './hooks/useDatabaseDerivedState'
-import { useDatabaseColumnActions } from './hooks/useDatabaseColumnActions'
-import { useDatabaseEntityActions } from './hooks/useDatabaseEntityActions'
-import { useDatabaseEntityBulkActions } from './hooks/useDatabaseEntityBulkActions'
-import { useDatabasePageActions } from './hooks/useDatabasePageActions'
-import { useDatabaseWorkspaceActions } from './hooks/useDatabaseWorkspaceActions'
+import { useAppKeyboardShortcuts } from './hooks/useAppKeyboardShortcuts'
+import { useDatabaseDomainState } from './hooks/useDatabaseDomainState'
 import { useDocumentCatalogDatabaseActions } from './hooks/useDocumentCatalogDatabaseActions'
 import { useDocumentTodoActions } from './hooks/useDocumentTodoActions'
 import { useWorkspaceBackupActions } from './hooks/useWorkspaceBackupActions'
 import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
-import { useDocumentsBlockEditorPresentation } from './hooks/useDocumentsBlockEditorPresentation'
-import { useDocumentsDetailPresentation } from './hooks/useDocumentsDetailPresentation'
-import { useDatabaseSectionPresentation } from './hooks/useDatabaseSectionPresentation'
 import { usePluginsDomain } from './hooks/usePluginsDomain'
 import { useSettingsDomain } from './hooks/useSettingsDomain'
 import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
 import { useAiDomain } from './hooks/useAiDomain'
+import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { DatabasePage } from './pages/DatabasePage'
 import { DocumentsPage } from './pages/DocumentsPage'
 import { AISection } from './sections/AISection'
@@ -58,11 +47,6 @@ import { WorkspaceDashboardSection } from './sections/WorkspaceDashboardSection'
 import { WorkspaceGraphSection } from './sections/WorkspaceGraphSection'
 
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
-
-type BlockSelectionRange = {
-  start: number
-  end: number
-}
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
@@ -99,63 +83,6 @@ export function App() {
     uiLanguage
   } = useAppShellState()
   const databaseDomain = useDatabaseDomainState()
-  const {
-    activeDatabaseSavedViewId,
-    boardGroupBy,
-    catalogQuery,
-    databaseColumnNameDraft,
-    databaseColumnOptionsDraft,
-    databaseColumnTypeDraft,
-    databaseDescriptionDraft,
-    databaseEntities,
-    databaseEntityBulkFieldValues,
-    databaseEntityDatabaseId,
-    databaseEntityDocumentId,
-    databaseEntityFieldValues,
-    databaseEntityFilterQuery,
-    databaseEntityFilterScope,
-    databaseEntitySortMode,
-    databaseEntityViewMode,
-    databaseNameDraft,
-    databaseSavedViewNameDraft,
-    databaseSavedViews,
-    databases,
-    deferredCatalogQuery,
-    isCreatingDatabase,
-    isCreatingDatabaseColumn,
-    isCreatingDatabaseEntity,
-    isCreatingDatabaseSavedView,
-    selectedDatabaseColumns,
-    selectedDatabaseEntityIds,
-    setActiveDatabaseSavedViewId,
-    setBoardGroupBy,
-    setCatalogQuery,
-    setDatabaseColumnNameDraft,
-    setDatabaseColumnOptionsDraft,
-    setDatabaseColumnTypeDraft,
-    setDatabaseDescriptionDraft,
-    setDatabaseEntities,
-    setDatabaseEntityBulkFieldValues,
-    setDatabaseEntityDatabaseId,
-    setDatabaseEntityDocumentId,
-    setDatabaseEntityFieldValues,
-    setDatabaseEntityFilterQuery,
-    setDatabaseEntityFilterScope,
-    setDatabaseEntitySortMode,
-    setDatabaseEntityViewMode,
-    setDatabaseNameDraft,
-    setDatabaseSavedViewNameDraft,
-    setDatabaseSavedViews,
-    setDatabases,
-    setDatabaseWorkspaceView,
-    setIsCreatingDatabase,
-    setIsCreatingDatabaseColumn,
-    setIsCreatingDatabaseEntity,
-    setIsCreatingDatabaseSavedView,
-    setSelectedDatabaseColumns,
-    setSelectedDatabaseEntityIds,
-    databaseWorkspaceView
-  } = databaseDomain
   const documentsDomain = useDocumentsDomainState({
     activePage,
     blockDragDepthThreshold: BLOCK_DRAG_DEPTH_THRESHOLD,
@@ -411,60 +338,24 @@ export function App() {
     ui,
     uiLanguage
   })
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
-        const pageIndex = Number(event.key) - 1
-        const targetPage = PAGE_ORDER[pageIndex]
-        if (targetPage) {
-          event.preventDefault()
-          setActivePage(targetPage)
-        }
-      }
-
-      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
-        if (activePage !== 'documents') {
-          return
-        }
-
-        event.preventDefault()
-        if (isGlobalSearchOpen) {
-          closeGlobalSearch()
-        } else {
-          openGlobalSearch()
-        }
-      }
-      if (event.key === 'Escape' && isGlobalSearchOpen && activePage === 'documents') {
-        closeGlobalSearch()
-        return
-      }
-      if (event.key === 'Escape' && activePage === 'documents' && selectedBlockRange) {
-        event.preventDefault()
-        setIsBlockRangeSelecting(false)
-        setSelectionAnchorBlockId(null)
-        setSelectedBlockRange(null)
-        return
-      }
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
-        if (isEditing && activePage === 'documents') { event.preventDefault(); undoEdit() }
-      }
-      if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
-        if (isEditing && activePage === 'documents') { event.preventDefault(); redoEdit() }
-      }
-      if (event.altKey && event.key === 'ArrowLeft') {
-        if (activePage === 'documents') {
-          event.preventDefault(); navBack()
-        }
-      }
-      if (event.altKey && event.key === 'ArrowRight') {
-        if (activePage === 'documents') {
-          event.preventDefault(); navForward()
-        }
-      }
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [activePage, isGlobalSearchOpen, isEditing, navBack, navForward, redoEdit, selectedBlockRange, undoEdit])
+  useAppKeyboardShortcuts({
+    activePage,
+    closeGlobalSearch,
+    isEditing,
+    isGlobalSearchOpen,
+    navBack,
+    navForward,
+    onClearBlockRangeSelection: () => {
+      setIsBlockRangeSelecting(false)
+      setSelectionAnchorBlockId(null)
+      setSelectedBlockRange(null)
+    },
+    openGlobalSearch,
+    redoEdit,
+    selectedBlockRange,
+    setActivePage,
+    undoEdit
+  })
 
   const {
     handleBackup,
@@ -486,71 +377,6 @@ export function App() {
     setIsSaving,
     setSelectedDocument,
     todoUpdateFailedMessage: ui.todoUpdateFailed
-  })
-
-  const {
-    createDatabase,
-    deleteCurrentDatabase,
-    switchDatabaseWorkspaceView
-  } = useDatabaseWorkspaceActions({
-    databaseEntityDatabaseId,
-    databaseDescriptionDraft,
-    databaseNameDraft,
-    databases,
-    setBackupMessage,
-    setDatabaseColumnNameDraft,
-    setDatabaseColumnOptionsDraft,
-    setDatabaseColumnTypeDraft,
-    setDatabaseDescriptionDraft,
-    setDatabaseEntities,
-    setDatabaseEntityBulkFieldValues,
-    setDatabaseEntityDatabaseId,
-    setDatabaseEntityDocumentId,
-    setDatabaseEntityFieldValues,
-    setDatabaseNameDraft,
-    setDatabaseWorkspaceView,
-    setDatabases,
-    setIsCreatingDatabase,
-    setIsCreatingDatabaseColumn,
-    setIsCreatingDatabaseEntity,
-    setSelectedDatabaseEntityIds,
-    ui
-  })
-
-  const {
-    beginCurrentDatabaseSavedViewCreation,
-    cancelCurrentDatabaseSavedViewCreation,
-    deleteCurrentDatabaseSavedView,
-    handleDatabaseSavedViewSelect,
-    refreshDatabasePageData,
-    refreshDocumentCatalogData,
-    saveCurrentDatabaseSavedView,
-    updateCurrentDatabaseSavedView
-  } = useDatabasePageActions({
-    activeDatabaseSavedViewId,
-    databaseEntityDatabaseId,
-    databaseEntityFilterQuery,
-    databaseEntityFilterScope,
-    databaseEntitySortMode,
-    databaseEntityViewMode,
-    databaseSavedViewNameDraft,
-    databaseSavedViews,
-    setActiveDatabaseSavedViewId,
-    setBackupMessage,
-    setCatalogColumns,
-    setCatalogDocuments,
-    setDatabaseEntities,
-    setDatabaseEntityFilterQuery,
-    setDatabaseEntityFilterScope,
-    setDatabaseEntitySortMode,
-    setDatabaseEntityViewMode,
-    setDatabaseSavedViewNameDraft,
-    setDatabaseSavedViews,
-    setHomeData,
-    setIsCreatingDatabaseSavedView,
-    setSelectedDatabaseColumns,
-    setSelectedDatabaseEntityIds,
-    ui
   })
 
   const {
@@ -596,47 +422,38 @@ export function App() {
 return (
      <div className="shell" data-testid="shell">
        <div className="sidebar">
-            <PageNavWithWorkspaceTree
+          <WorkspaceShellSidebar
             activePage={activePage}
-            pageItems={pageItems}
-            onSelectPage={(pageId) => setActivePage(pageId as PageId)}
-            pageTitle={pageTitle}
-            pageDescription={pageDescription}
-            brandEyebrow={ui.brandEyebrow}
-            navLabel={isZh ? '页面导航' : 'Navigation'}
-            currentPageLabel={isZh ? '当前页面' : 'Current page'}
-            currentPageHint={isZh ? '默认启动页为文档页，配置与特色功能已拆分到独立页面。' : 'Documents is now the default entry page, and feature modules are separated into dedicated pages.'}
-            backTitle={`${ui.back} (Alt+←)`}
-            forwardTitle={`${ui.forward} (Alt+→)`}
-            rootsCountLabel={ui.rootsCount(homeData.documentTree.length)}
-            onOpenGlobalSearch={openGlobalSearch}
-            globalSearchTitle={`${ui.globalSearch} (Ctrl+K)`}
-            onCreateRoot={() => { void handleCreateDocument(null) }}
-            newRootLabel={ui.newRoot}
-            dropToRootLabel={ui.dropToRoot}
             dragOverRoot={dragOverRoot}
-            onRootDragOver={handleRootDragOver}
+            homeData={homeData}
+            isZh={isZh}
+            navCanGoBack={navCanGoBack}
+            navCanGoForward={navCanGoForward}
+            onCreateRoot={() => {
+              void handleCreateDocument(null)
+            }}
+            onDragEnd={endDrag}
+            onDragOverNode={handleTreeNodeDragOver}
+            onDragStart={beginDrag}
+            onDropOnDocument={dropOnDocument}
+            onDropToRoot={() => {
+              void dropToRoot()
+            }}
+            onNavBack={navBack}
+            onNavForward={navForward}
+            onOpenGlobalSearch={openGlobalSearch}
             onRootDragLeave={handleRootDragLeave}
-             onDropToRoot={() => { void dropToRoot() }}
-             pinnedSectionLabel={ui.pinnedSectionLabel}
-             pinnedDocuments={homeData.documentCatalog.filter((document) => pinnedDocumentIds.has(document.id))}
-             selectedDocumentId={selectedDocumentId}
-             onSelectDocument={openDocumentInDocumentsPage}
-             documentTreeNodes={homeData.documentTree}
-             workspaceGraphNodes={homeData.graph.nodes}
-             workspaceGraphEdges={homeData.graph.edges}
-             navCanGoBack={navCanGoBack}
-             navCanGoForward={navCanGoForward}
-             onNavBack={navBack}
-             onNavForward={navForward}
-             onSelectGraphNode={openDocumentInDocumentsPage}
-             onDragStart={beginDrag}
-             onDragEnd={endDrag}
-             onDragOverNode={handleTreeNodeDragOver}
-             onDropOnNode={dropOnDocument}
-             uiLanguage={uiLanguage}
-             totalDocumentsCount={homeData.summary.documents}
-           />
+            onRootDragOver={handleRootDragOver}
+            onSelectDocument={openDocumentInDocumentsPage}
+            onSelectPage={setActivePage}
+            pageDescription={pageDescription}
+            pageItems={pageItems}
+            pageTitle={pageTitle}
+            pinnedDocumentIds={pinnedDocumentIds}
+            selectedDocumentId={selectedDocumentId}
+            ui={ui}
+            uiLanguage={uiLanguage}
+          />
         </div>
 
         <main className={`content page-${activePage}`}>
