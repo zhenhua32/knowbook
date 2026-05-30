@@ -14,19 +14,7 @@ type AiDomain = ReturnType<typeof useAiDomain>
 type PluginsDomain = ReturnType<typeof usePluginsDomain>
 
 type DocumentsPageProps = {
-  ai: Pick<AiDomain,
-    'aiAnswer'
-    | 'aiAsking'
-    | 'aiAutomationsRunning'
-    | 'aiContextError'
-    | 'aiContextResults'
-    | 'aiContextSearching'
-    | 'aiPromptDraft'
-    | 'askAiOnSelectedDocument'
-    | 'findRelatedNotesForPrompt'
-    | 'runEnabledAiAutomationsOnSelectedDocument'
-    | 'setAiPromptDraft'
-  >
+  ai: AiDomain
   aiConfig: HomeData['aiConfig']
   documentTree: HomeData['documentTree']
   documents: DocumentsDomain
@@ -34,7 +22,7 @@ type DocumentsPageProps = {
   onCreateDocument: (parentId: string | null) => Promise<unknown> | void
   onDeleteSelectedDocument: () => Promise<unknown> | void
   onMoveSelectedDocument: () => Promise<unknown> | void
-  plugins: Pick<PluginsDomain, 'pluginActionBusyKey' | 'pluginDocumentActions' | 'runPluginDocumentAction'>
+  plugins: PluginsDomain
   ui: UiText
 }
 

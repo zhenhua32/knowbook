@@ -27,16 +27,11 @@ import type {
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { useAppShellState } from './hooks/useAppShellState'
 import { isNestableBlock, normalizeBlockDepth } from './utils/draftBlockShape'
+import { useAppFeatureDomains } from './hooks/useAppFeatureDomains'
 import { useAppKeyboardShortcuts } from './hooks/useAppKeyboardShortcuts'
 import { useDatabaseDomainState } from './hooks/useDatabaseDomainState'
-import { useDocumentCatalogDatabaseActions } from './hooks/useDocumentCatalogDatabaseActions'
-import { useDocumentTodoActions } from './hooks/useDocumentTodoActions'
-import { useWorkspaceBackupActions } from './hooks/useWorkspaceBackupActions'
 import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
-import { usePluginsDomain } from './hooks/usePluginsDomain'
-import { useSettingsDomain } from './hooks/useSettingsDomain'
-import { useWorkspaceDocumentManagement } from './hooks/useWorkspaceDocumentManagement'
-import { useAiDomain } from './hooks/useAiDomain'
+import { useWorkspaceOperations } from './hooks/useWorkspaceOperations'
 import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { DatabasePage } from './pages/DatabasePage'
 import { DocumentsPage } from './pages/DocumentsPage'
@@ -98,246 +93,91 @@ export function App() {
     uiLanguage
   })
   const {
-    activeBlockIndex,
-    activeCursorPosition,
-    activeLinkContext,
-    activeSlashCommand,
-    activeSlashContext,
-    addDraftBlock,
-    adjustBlockDepth,
-    adjustSelectedBlocksDepth,
-    applySlashCommand,
-    autoSaveFlash,
-    beginBlockDrag,
-    blockHasChildren,
-    blockSearchItems,
-    blockSearchQuery,
-    blockSuggestions,
-    blockTextareaRefs,
-    canMoveSelectedRange,
-    canMoveSelectionDown,
-    canMoveSelectionUp,
-    canRedo,
-    canUndo,
-    captureBlockCursor,
-    clearBlockSelection,
     clearEditorSession,
-    closeBlockSearch,
     closeGlobalSearch,
-    collapsedBlockIds,
-    continueBlockAt,
-    convertSelectedBlocks,
-    copyDocumentAsMarkdown,
-    copySelectedBlocks,
-    copySelectedBlocksAsPlainText,
-    cutSelectedBlocks,
-    deleteSelectedBlocks,
-    detailLoading,
-    dismissSlashCommand,
-    documentsAuxPanelOpen,
-    downgradeBlockAt,
-    dragOverBlockDepth,
-    dragOverBlockIndex,
-    draftBlocks,
-    draftSummary,
-    draftTitle,
-    draggingBlockIndex,
-    dropBlockAt,
-    duplicateDraftBlock,
-    duplicateSelectedBlocks,
-    endBlockDrag,
-    endBlockRangeSelection,
-    filteredSlashCommands,
-    getDraggedBlockDepthPreview,
-    getMultiBlockOperationRange,
-    getVisibleBlockCountInRange,
-    getVisibleBlocks,
-    getVisibleSiblingSelectionSlice,
-    globalSearchLoading,
-    globalSearchQuery,
-    globalSearchResults,
-    handleBlockContentChange,
-    handleBlockMouseEnter,
-    handleBlockPaste,
-    handleBlockSearchSelect,
-    handleGlobalSearchNavigate,
-    insertBlockSuggestion,
-    insertDraftBlockAt,
-    insertLinkSuggestion,
-    isBlockRangeSelecting,
-    isBlockSearchOpen,
-    isBlockSelected,
     isEditing,
     isGlobalSearchOpen,
-    isSaving,
-    isSelectionCoherent,
-    linkSuggestions,
-    mdCopyFlash,
-    mergeWithPreviousBlock,
-    moveDraftBlockBySibling,
-    moveSelectedBlocks,
     moveTargetId,
     navBack,
     navCanGoBack,
     navCanGoForward,
     navForward,
-    navigateInlineReferenceAtCursor,
-    notifyBlockMouseDown,
-    openBlockSearch,
-    openDocumentBlockInDocumentsPage,
     openDocumentInDocumentsPage,
     openGlobalSearch,
     pinnedDocumentIds,
     redoEdit,
-    removeSelectedBlockRange,
-    saveDocument,
-    saveDocumentAsMarkdown,
-    selectAllBlocks,
-    selectBlockRange,
-    selectedBlockActionCount,
-    selectedBlockConversionType,
-    selectedBlockCount,
-    selectedBlockHasHiddenCollapsedContent,
-    selectedBlockInteractionIssue,
     selectedBlockRange,
     selectedDocument,
     selectedDocumentId,
-    selectedVisibleBlockCount,
-    selectedVisibleSiblingSlice,
-    setActiveBlockIndex,
-    setActiveCursorPosition,
-    setBlockSearchQuery,
     setDetailLoading,
-    setDraftBlocks,
     setDraftSummary,
-    setDraftTitle,
-    setDragOverBlockDepth,
-    setDragOverBlockIndex,
     setIsBlockRangeSelecting,
-    setIsSaving,
     setMoveTargetId,
-    setPendingFocusBlockIndex,
-    setSelectedBlockConversionType,
     setSelectedBlockRange,
     setSelectedDocument,
     setSelectedDocumentId,
-    setSelectedSlashCommandIndex,
     setSelectionAnchorBlockId,
-    slashPanelPos,
-    splitDraftBlock,
-    toggleBlockCollapse,
-    toggleDocumentsAuxPanel,
-    togglePinDocument,
-    undoEdit,
-    updateBlockHighlight,
-    updateDraftBlock,
-    updateGlobalSearchQuery
+    undoEdit
   } = documentsDomain
+
   const {
-    aiApiKeyDraft,
-    aiAnswer,
-    aiAsking,
-    aiAutoSummaryOnSaveDraft,
-    aiAutomationsRunning,
-    aiBaseUrlDraft,
-    aiContextError,
-    aiContextResults,
-    aiContextSearching,
-    aiEmbeddingApiKeyDraft,
-    aiEmbeddingBaseUrlDraft,
-    aiEmbeddingModelDraft,
-    aiEnabledDraft,
-    aiModelDraft,
-    aiPromptDraft,
-    aiSaving,
-    askAiOnSelectedDocument,
-    findRelatedNotesForPrompt,
-    resetAiSession,
-    runEnabledAiAutomationsOnSelectedDocument,
-    saveAiConfig,
-    sectionProps: aiSectionProps,
-    setAiApiKeyDraft,
-    setAiAutoSummaryOnSaveDraft,
-    setAiBaseUrlDraft,
-    setAiEmbeddingApiKeyDraft,
-    setAiEmbeddingBaseUrlDraft,
-    setAiEmbeddingModelDraft,
-    setAiEnabledDraft,
-    setAiModelDraft,
-    setAiPromptDraft
-  } = useAiDomain({
-    aiConfig: homeData.aiConfig,
-    isZh,
-    onDraftSummaryChange: setDraftSummary,
-    onHomeDataChange: setHomeData,
-    onMessage: setBackupMessage,
-    onOpenDocument: openDocumentInDocumentsPage,
-    onSelectedDocumentChange: setSelectedDocument,
+    beginDrag,
+    deleteSelectedDocument,
+    dragOverBoardColumnId,
+    dragOverRoot,
+    draggingDocumentId,
+    dropOnBoardTarget,
+    dropOnDocument,
+    dropToRoot,
+    endDrag,
+    handleBackup,
+    handleBoardColumnDragOver,
+    handleCreateDocument,
+    handleRestoreBackup,
+    handleRootDragLeave,
+    handleRootDragOver,
+    handleTreeNodeDragOver,
+    moveSelectedDocument
+  } = useWorkspaceOperations({
+    catalogColumns,
+    catalogDocuments,
+    moveTargetId,
+    onClearEditorSession: clearEditorSession,
     selectedDocument,
     selectedDocumentId,
+    setBackupMessage,
+    setCatalogDocuments,
+    setDetailLoading,
+    setHomeData,
+    setMoveTargetId,
+    setSelectedDocument,
+    setSelectedDocumentId,
     ui
   })
-  resetAiSessionRef.current = resetAiSession
   const {
-    pluginActionBusyKey,
-    pluginDashboardCards,
-    pluginDocumentActions,
-    runPluginDocumentAction,
-    sectionProps: pluginsSectionProps
-  } = usePluginsDomain({
+    ai: aiDomain,
+    plugins: pluginsDomain,
+    settingsSectionProps: dashboardSettingsSectionProps
+  } = useAppFeatureDomains({
+    activePage,
+    handleBackup,
+    handleRestoreBackup,
     homeData,
-    onDraftSummaryChange: setDraftSummary,
-    onHomeDataChange: setHomeData,
-    onMessage: setBackupMessage,
-    onSelectedDocumentChange: setSelectedDocument,
-    selectedDocument,
-    selectedDocumentId,
-    ui
-  })
-  const {
-    sectionProps: dashboardSettingsSectionProps
-  } = useSettingsDomain({
-    aiApiKeyDraft,
-    aiAutoSummaryOnSaveDraft,
-    aiBaseUrlDraft,
-    aiEmbeddingApiKeyDraft,
-    aiEmbeddingBaseUrlDraft,
-    aiEmbeddingModelDraft,
-    aiEnabledDraft,
-    aiEndpoint: homeData.aiConfig.baseUrl,
-    aiModelDraft,
-    aiSaving,
-    isSettingsPage: activePage === 'settings',
     isZh,
     loading,
-    onAiApiKeyChange: setAiApiKeyDraft,
-    onAiAutoSummaryOnSaveChange: setAiAutoSummaryOnSaveDraft,
-    onAiBaseUrlChange: setAiBaseUrlDraft,
-    onAiEmbeddingApiKeyChange: setAiEmbeddingApiKeyDraft,
-    onAiEmbeddingBaseUrlChange: setAiEmbeddingBaseUrlDraft,
-    onAiEmbeddingModelChange: setAiEmbeddingModelDraft,
-    onAiEnabledChange: setAiEnabledDraft,
-    onAiModelChange: setAiModelDraft,
-    onBackupNow: () => {
-      void handleBackup()
-    },
-    onMessage: (message) => setBackupMessage(message),
+    onHomeDataChange: setHomeData,
+    onMessage: setBackupMessage,
     onOpenDocument: openDocumentInDocumentsPage,
-    onOpenPlugins: () => {
-      setActivePage('plugins')
-    },
-    onRestoreBackup: () => {
-      void handleRestoreBackup()
-    },
-    onSaveAiConfig: () => {
-      void saveAiConfig()
-    },
+    onSelectedDocumentChange: setSelectedDocument,
+    onSetActivePage: setActivePage,
     onUiLanguageChange: setUiLanguage,
-    recentDocuments: homeData.recentDocuments,
-    summary: homeData.summary,
+    selectedDocument,
+    selectedDocumentId,
+    setDraftSummary,
     ui,
     uiLanguage
   })
+  resetAiSessionRef.current = aiDomain.resetAiSession
   useAppKeyboardShortcuts({
     activePage,
     closeGlobalSearch,
@@ -355,69 +195,6 @@ export function App() {
     selectedBlockRange,
     setActivePage,
     undoEdit
-  })
-
-  const {
-    handleBackup,
-    handleRestoreBackup,
-    refreshWorkspaceAfterStorageMutation
-  } = useWorkspaceBackupActions({
-    selectedDocumentId,
-    setBackupMessage,
-    setHomeData,
-    setSelectedDocument,
-    setSelectedDocumentId,
-    ui
-  })
-
-  const { toggleTodoBlockChecked } = useDocumentTodoActions({
-    selectedDocument,
-    setBackupMessage,
-    setHomeData,
-    setIsSaving,
-    setSelectedDocument,
-    todoUpdateFailedMessage: ui.todoUpdateFailed
-  })
-
-  const {
-    updateDocumentDatabaseValue
-  } = useDocumentCatalogDatabaseActions({
-    setBackupMessage,
-    setCatalogDocuments,
-    setHomeData
-  })
-
-  const {
-    beginDrag,
-    deleteSelectedDocument,
-    dragOverBoardColumnId,
-    dragOverRoot,
-    draggingDocumentId,
-    dropOnBoardTarget,
-    dropOnDocument,
-    dropToRoot,
-    endDrag,
-    handleBoardColumnDragOver,
-    handleCreateDocument,
-    handleRootDragLeave,
-    handleRootDragOver,
-    handleTreeNodeDragOver,
-    moveSelectedDocument
-  } = useWorkspaceDocumentManagement({
-    catalogColumns,
-    catalogDocuments,
-    moveTargetId,
-    onClearEditorSession: clearEditorSession,
-    onDetailLoadingChange: setDetailLoading,
-    onHomeDataChange: setHomeData,
-    onMessage: setBackupMessage,
-    onMoveTargetIdChange: setMoveTargetId,
-    onSelectedDocumentChange: setSelectedDocument,
-    onSelectedDocumentIdChange: setSelectedDocumentId,
-    onUpdateDocumentDatabaseValue: updateDocumentDatabaseValue,
-    selectedDocument,
-    selectedDocumentId,
-    ui
   })
 return (
      <div className="shell" data-testid="shell">
@@ -463,7 +240,7 @@ return (
             onBackupNow={handleBackup}
             onOpenDocument={openDocumentInDocumentsPage}
             onRestoreBackup={handleRestoreBackup}
-            pluginDashboardCards={pluginDashboardCards}
+            pluginDashboardCards={pluginsDomain.pluginDashboardCards}
             recentEvents={homeData.recentEvents}
             summary={homeData.summary}
             ui={ui}
@@ -513,19 +290,7 @@ return (
 
          {activePage === 'documents' ? (
            <DocumentsPage
-             ai={{
-               aiAnswer,
-               aiAsking,
-               aiAutomationsRunning,
-               aiContextError,
-               aiContextResults,
-               aiContextSearching,
-               aiPromptDraft,
-               askAiOnSelectedDocument,
-               findRelatedNotesForPrompt,
-               runEnabledAiAutomationsOnSelectedDocument,
-               setAiPromptDraft
-             }}
+             ai={aiDomain}
              aiConfig={homeData.aiConfig}
              documentTree={homeData.documentTree}
              documents={documentsDomain}
@@ -533,18 +298,14 @@ return (
              onCreateDocument={handleCreateDocument}
              onDeleteSelectedDocument={deleteSelectedDocument}
              onMoveSelectedDocument={moveSelectedDocument}
-             plugins={{
-               pluginActionBusyKey,
-               pluginDocumentActions,
-               runPluginDocumentAction
-             }}
+             plugins={pluginsDomain}
              ui={ui}
            />
          ) : null}
 
-        {activePage === 'ai' ? <AISection {...aiSectionProps} /> : null}
+        {activePage === 'ai' ? <AISection {...aiDomain.sectionProps} /> : null}
 
-        {activePage === 'plugins' ? <PluginsSection {...pluginsSectionProps} /> : null}
+        {activePage === 'plugins' ? <PluginsSection {...pluginsDomain.sectionProps} /> : null}
 
         {activePage === 'dashboard' || activePage === 'settings' ? <DashboardSettingsSection {...dashboardSettingsSectionProps} /> : null}
       </main>
