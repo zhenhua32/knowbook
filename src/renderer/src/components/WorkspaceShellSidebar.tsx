@@ -1,35 +1,7 @@
-import type { HomeData } from '@shared/contracts'
 import type { PageId } from '../hooks/useAppShellState'
-import type { useAppShellState } from '../hooks/useAppShellState'
-import type { useDocumentsDomainState } from '../hooks/useDocumentsDomainState'
-import type { useWorkspaceOperations } from '../hooks/useWorkspaceOperations'
-import type { UiLanguage, UiText } from '../i18n'
+import type { DocumentsSidebarState, WorkspaceSidebarActions } from '../types/appDomains'
+import type { AppShellState } from '../types/appShell'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
-
-type AppShellState = ReturnType<typeof useAppShellState>
-
-type DocumentsSidebarState = Pick<ReturnType<typeof useDocumentsDomainState>,
-  'navCanGoBack'
-  | 'navCanGoForward'
-  | 'navBack'
-  | 'navForward'
-  | 'openDocumentInDocumentsPage'
-  | 'openGlobalSearch'
-  | 'pinnedDocumentIds'
-  | 'selectedDocumentId'
->
-
-type WorkspaceSidebarActions = Pick<ReturnType<typeof useWorkspaceOperations>,
-  'beginDrag'
-  | 'dragOverRoot'
-  | 'dropOnDocument'
-  | 'dropToRoot'
-  | 'endDrag'
-  | 'handleCreateDocument'
-  | 'handleRootDragLeave'
-  | 'handleRootDragOver'
-  | 'handleTreeNodeDragOver'
->
 
 type WorkspaceShellSidebarProps = {
   documents: DocumentsSidebarState

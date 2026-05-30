@@ -1,26 +1,12 @@
 import { useEffect } from 'react'
-import type { useAppShellState } from './useAppShellState'
-import type { useDocumentsDomainState } from './useDocumentsDomainState'
 import { PAGE_ORDER } from './useAppShellState'
-
-type AppShellState = ReturnType<typeof useAppShellState>
-
-type DocumentsKeyboardState = Pick<ReturnType<typeof useDocumentsDomainState>,
-  'closeGlobalSearch'
-  | 'isEditing'
-  | 'isGlobalSearchOpen'
-  | 'navBack'
-  | 'navForward'
-  | 'openGlobalSearch'
-  | 'redoEdit'
-  | 'selectedBlockRange'
-  | 'undoEdit'
->
+import type { DocumentsKeyboardState } from '../types/appDomains'
+import type { ShellPageState } from '../types/appShell'
 
 type UseAppKeyboardShortcutsParams = {
   documents: DocumentsKeyboardState
   onClearBlockRangeSelection: () => void
-  shell: Pick<AppShellState, 'activePage' | 'setActivePage'>
+  shell: ShellPageState
 }
 
 export function useAppKeyboardShortcuts({

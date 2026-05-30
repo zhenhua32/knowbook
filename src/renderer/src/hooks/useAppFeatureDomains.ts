@@ -1,19 +1,8 @@
-import type { HomeData } from '@shared/contracts'
-import type { useAppShellState } from './useAppShellState'
-import type { useDocumentsDomainState } from './useDocumentsDomainState'
+import type { DocumentsFeatureState } from '../types/appDomains'
+import type { AppShellState } from '../types/appShell'
 import { useAiDomain } from './useAiDomain'
 import { usePluginsDomain } from './usePluginsDomain'
 import { useSettingsDomain } from './useSettingsDomain'
-
-type AppShellState = ReturnType<typeof useAppShellState>
-
-type DocumentsFeatureState = Pick<ReturnType<typeof useDocumentsDomainState>,
-  'openDocumentInDocumentsPage'
-  | 'selectedDocument'
-  | 'selectedDocumentId'
-  | 'setDraftSummary'
-  | 'setSelectedDocument'
->
 
 type UseAppFeatureDomainsParams = {
   handleBackup: () => Promise<void>

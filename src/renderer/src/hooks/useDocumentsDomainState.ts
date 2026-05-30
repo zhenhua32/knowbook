@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
-import type { useAppShellState } from './useAppShellState'
+import type { AppShellState } from '../types/appShell'
 import { useBlockSearchState } from './useBlockSearchState'
 import { useBlockSelectionState } from './useBlockSelectionState'
 import { useBlockInputActions } from './useBlockInputActions'
@@ -23,8 +23,6 @@ import { useBlockStructureActions } from './useBlockStructureActions'
 import { useSingleBlockTreeActions } from './useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './useDocumentNavigationState'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-
-type AppShellState = ReturnType<typeof useAppShellState>
 
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 

@@ -1,9 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
-import type { useAppFeatureDomains } from '../hooks/useAppFeatureDomains'
-import type { useAppShellState } from '../hooks/useAppShellState'
-import type { useDatabaseDomainState } from '../hooks/useDatabaseDomainState'
-import type { useDocumentsDomainState } from '../hooks/useDocumentsDomainState'
-import type { useWorkspaceOperations } from '../hooks/useWorkspaceOperations'
+import type { AppFeatureDomainsState, WorkspaceOperationsState } from '../types/appComposition'
+import type { DatabaseDomainState, DocumentsDomainState } from '../types/appDomains'
+import type { AppShellState } from '../types/appShell'
 import { DatabasePage } from '../pages/DatabasePage'
 import { DocumentsPage } from '../pages/DocumentsPage'
 import { AISection } from '../sections/AISection'
@@ -12,19 +10,12 @@ import { PluginsSection } from '../sections/PluginsSection'
 import { WorkspaceDashboardSection } from '../sections/WorkspaceDashboardSection'
 import { WorkspaceGraphSection } from '../sections/WorkspaceGraphSection'
 
-type PageId = ReturnType<typeof useAppShellState>['activePage']
-type AppShellState = ReturnType<typeof useAppShellState>
-type DatabaseDomain = ReturnType<typeof useDatabaseDomainState>
-type DocumentsDomain = ReturnType<typeof useDocumentsDomainState>
-type WorkspaceOperations = ReturnType<typeof useWorkspaceOperations>
-type AppFeatureDomains = ReturnType<typeof useAppFeatureDomains>
-
 type AppPageContentProps = {
-  database: DatabaseDomain
-  documents: DocumentsDomain
-  features: AppFeatureDomains
+  database: DatabaseDomainState
+  documents: DocumentsDomainState
+  features: AppFeatureDomainsState
   shell: AppShellState
-  workspace: WorkspaceOperations
+  workspace: WorkspaceOperationsState
 }
 
 export function AppPageContent({

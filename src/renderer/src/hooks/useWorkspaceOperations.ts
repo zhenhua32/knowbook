@@ -1,24 +1,8 @@
-import type {
-  HomeData
-} from '@shared/contracts'
-import type { useAppShellState } from './useAppShellState'
-import type { useDocumentsDomainState } from './useDocumentsDomainState'
+import type { DocumentsWorkspaceState } from '../types/appDomains'
+import type { AppShellState } from '../types/appShell'
 import { useDocumentCatalogDatabaseActions } from './useDocumentCatalogDatabaseActions'
 import { useWorkspaceBackupActions } from './useWorkspaceBackupActions'
 import { useWorkspaceDocumentManagement } from './useWorkspaceDocumentManagement'
-
-type AppShellState = ReturnType<typeof useAppShellState>
-
-type DocumentsWorkspaceState = Pick<ReturnType<typeof useDocumentsDomainState>,
-  'clearEditorSession'
-  | 'moveTargetId'
-  | 'selectedDocument'
-  | 'selectedDocumentId'
-  | 'setDetailLoading'
-  | 'setMoveTargetId'
-  | 'setSelectedDocument'
-  | 'setSelectedDocumentId'
->
 
 type UseWorkspaceOperationsParams = {
   documents: DocumentsWorkspaceState

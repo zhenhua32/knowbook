@@ -1,28 +1,22 @@
 import type { HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
-import type { useAiDomain } from '../hooks/useAiDomain'
 import { useDocumentsBlockEditorPresentation } from '../hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPresentation'
-import type { useDocumentsDomainState } from '../hooks/useDocumentsDomainState'
-import type { usePluginsDomain } from '../hooks/usePluginsDomain'
+import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
 import { DocumentsSection } from '../sections/DocumentsSection'
 
 const BLOCK_INDENT_SIZE = 24
 
-type DocumentsDomain = ReturnType<typeof useDocumentsDomainState>
-type AiDomain = ReturnType<typeof useAiDomain>
-type PluginsDomain = ReturnType<typeof usePluginsDomain>
-
 type DocumentsPageProps = {
-  ai: AiDomain
+  ai: AiDomainState
   aiConfig: HomeData['aiConfig']
   documentTree: HomeData['documentTree']
-  documents: DocumentsDomain
+  documents: DocumentsDomainState
   isZh: boolean
   onCreateDocument: (parentId: string | null) => Promise<unknown> | void
   onDeleteSelectedDocument: () => Promise<unknown> | void
   onMoveSelectedDocument: () => Promise<unknown> | void
-  plugins: PluginsDomain
+  plugins: PluginsDomainState
   ui: UiText
 }
 

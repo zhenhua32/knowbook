@@ -3,8 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import {
-  BOARD_GROUP_BY_PARENT,
-  useDatabaseDomainState
+  BOARD_GROUP_BY_PARENT
 } from '../hooks/useDatabaseDomainState'
 import { useDatabaseDerivedState } from '../hooks/useDatabaseDerivedState'
 import { useDatabaseColumnActions } from '../hooks/useDatabaseColumnActions'
@@ -14,16 +13,13 @@ import { useDatabasePageActions } from '../hooks/useDatabasePageActions'
 import { useDatabaseWorkspaceActions } from '../hooks/useDatabaseWorkspaceActions'
 import { useDocumentCatalogDatabaseActions } from '../hooks/useDocumentCatalogDatabaseActions'
 import { useDatabaseSectionPresentation } from '../hooks/useDatabaseSectionPresentation'
-import type { useWorkspaceDocumentManagement } from '../hooks/useWorkspaceDocumentManagement'
+import type { DatabaseDomainState, DatabaseWorkspaceBoardState } from '../types/appDomains'
 import { DatabaseSection } from '../sections/DatabaseSection'
-
-type DatabaseDomain = ReturnType<typeof useDatabaseDomainState>
-type WorkspaceDocumentManagement = ReturnType<typeof useWorkspaceDocumentManagement>
 
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
   catalogDocuments: DocumentCatalogEntry[]
-  database: DatabaseDomain
+  database: DatabaseDomainState
   documentCatalog: HomeData['documentCatalog']
   onCatalogColumnsChange: Dispatch<SetStateAction<DocumentDatabaseColumn[]>>
   onCatalogDocumentsChange: Dispatch<SetStateAction<DocumentCatalogEntry[]>>
@@ -31,14 +27,7 @@ type DatabasePageProps = {
   onMessage: (message: string | null) => void
   onOpenDocument: (documentId: string) => void
   selectedDocumentId: string | null
-  workspaceBoard: Pick<WorkspaceDocumentManagement,
-    'beginDrag'
-    | 'dragOverBoardColumnId'
-    | 'draggingDocumentId'
-    | 'dropOnBoardTarget'
-    | 'endDrag'
-    | 'handleBoardColumnDragOver'
-  >
+  workspaceBoard: DatabaseWorkspaceBoardState
   ui: UiText
 }
 
