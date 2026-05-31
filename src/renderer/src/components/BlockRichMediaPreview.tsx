@@ -41,7 +41,6 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
                   alt={image.alt || ui.blockPreviewImagesLabel}
                   className="block-rich-media-image"
                   decoding="async"
-                  loading="lazy"
                   src={toBlockRichMediaPreviewUrl(image.url)}
                 />
                 <span className="block-rich-media-caption">{image.alt || image.url}</span>

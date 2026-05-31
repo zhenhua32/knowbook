@@ -534,6 +534,36 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   }
                 }
 
+                // Arrow moves to next/prev block natively if caret is at the bounds
+                if (
+                  (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+                  !event.shiftKey &&
+                  !event.altKey &&
+                  !event.metaKey &&
+                  !event.ctrlKey
+                ) {
+                  const el = event.currentTarget
+                  const atTop = el.selectionStart === 0 && el.selectionEnd === 0
+                  const atBottom = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
+                  if (event.key === 'ArrowUp' && atTop && index > 0) {
+                    event.preventDefault()
+                    const prev = blockTextareaRefs.current[index - 1]
+                    if (prev) {
+                      prev.focus()
+                      prev.setSelectionRange(prev.value.length, prev.value.length)
+                    }
+                    return
+                  } else if (event.key === 'ArrowDown' && atBottom && index < draftBlocks.length - 1) {
+                    event.preventDefault()
+                    const next = blockTextareaRefs.current[index + 1]
+                    if (next) {
+                      next.focus()
+                      next.setSelectionRange(0, 0)
+                    }
+                    return
+                  }
+                }
+
                 // Shift+ArrowUp/Down: extend block selection
                 if (event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
                     (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
