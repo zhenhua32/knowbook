@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
+import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import electron from 'electron'
@@ -1203,7 +1204,8 @@ function registerAssetPreviewProtocol(): void {
         return new Response('Asset path is outside the managed web clip asset root.', { status: 403 })
       }
 
-      const body = readFileSync(assetPath)
+      const stream = createReadStream(assetPath)
+      const body = Readable.toWeb(stream) as ReadableStream
       return new Response(body, {
         status: 200,
         headers: {

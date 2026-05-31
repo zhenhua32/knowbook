@@ -1,6 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { memo } from 'react'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
-import { forwardWheelToClosestContentScroller } from '../utils/scrollWheel'
 
 type BlockRichMediaPreviewProps = {
   content: string
@@ -11,8 +10,7 @@ type BlockRichMediaPreviewProps = {
   }
 }
 
-export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
-  const previewRef = useRef<HTMLDivElement | null>(null)
+export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
   const richMedia = extractBlockRichMedia(content)
 
   if (richMedia.images.length === 0 && richMedia.links.length === 0) {
@@ -25,28 +23,8 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
     })
   }
 
-  useEffect(() => {
-    const element = previewRef.current
-    if (!element) {
-      return
-    }
-
-    const handleWheel = (event: WheelEvent) => {
-      if (forwardWheelToClosestContentScroller(element, event.deltaX, event.deltaY)) {
-        event.preventDefault()
-        event.stopPropagation()
-      }
-    }
-
-    element.addEventListener('wheel', handleWheel, { passive: false, capture: true })
-
-    return () => {
-      element.removeEventListener('wheel', handleWheel, { capture: true })
-    }
-  }, [])
-
   return (
-    <div className="block-rich-media-preview" ref={previewRef}>
+    <div className="block-rich-media-preview">
       {richMedia.images.length > 0 ? (
         <div className="block-rich-media-group">
           <p className="block-rich-media-label">{ui.blockPreviewImagesLabel}</p>
@@ -56,9 +34,16 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
                 className="block-rich-media-image-card"
                 key={image.url}
                 onClick={() => openUrl(image.url)}
+                tabIndex={-1}
                 type="button"
               >
-                <img alt={image.alt || ui.blockPreviewImagesLabel} className="block-rich-media-image" src={toBlockRichMediaPreviewUrl(image.url)} />
+                <img
+                  alt={image.alt || ui.blockPreviewImagesLabel}
+                  className="block-rich-media-image"
+                  decoding="async"
+                  loading="lazy"
+                  src={toBlockRichMediaPreviewUrl(image.url)}
+                />
                 <span className="block-rich-media-caption">{image.alt || image.url}</span>
               </button>
             ))}
@@ -75,6 +60,7 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
                 className="block-rich-media-link"
                 key={link.url}
                 onClick={() => openUrl(link.url)}
+                tabIndex={-1}
                 title={link.url}
                 type="button"
               >
@@ -87,4 +73,4 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
       ) : null}
     </div>
   )
-}
+})
