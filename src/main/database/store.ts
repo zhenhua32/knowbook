@@ -1381,6 +1381,36 @@ export class KnowbookStore {
     return this.readSetting(key)
   }
 
+  findDocumentIdsByDatabaseValue(columnId: string, value: DocumentDatabaseFieldValue): string[] {
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+    const columnRow = this.db.prepare(`
+      SELECT id, database_id, name, type, options_json, sort_order
+      FROM document_database_columns
+      WHERE id = ? AND database_id = ?
+    `).get(columnId, defaultDatabaseId) as DocumentDatabaseColumnRow | undefined
+
+    if (!columnRow) {
+      throw new Error('Database column not found.')
+    }
+
+    const column = this.mapDocumentDatabaseColumnRow(columnRow)
+    const serializedValue = this.serializeDocumentDatabaseFieldValue(column, value)
+    if (serializedValue === null) {
+      return []
+    }
+
+    const rows = this.db.prepare(`
+      SELECT document_id
+      FROM document_database_values
+      WHERE entity_id IS NULL AND column_id = ? AND value_text = ? AND document_id IS NOT NULL
+      ORDER BY document_id ASC
+    `).all(columnId, serializedValue) as Array<{ document_id: string | null }>
+
+    return rows
+      .map((row) => row.document_id)
+      .filter((documentId): documentId is string => Boolean(documentId))
+  }
+
   getAiConfigPublic(): AiConfig {
     return this.getAiConfig()
   }

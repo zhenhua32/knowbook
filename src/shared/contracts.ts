@@ -429,11 +429,42 @@ export interface ClipWebPageInput {
   parentId: string | null
 }
 
+export interface ImportWebClipPayloadInput {
+  url: string
+  parentId: string | null
+  title?: string
+  html?: string
+  markdown?: string
+  text?: string
+  sourceSite?: string
+  excerpt?: string
+  author?: string | null
+  publishedAt?: string | null
+  coverImage?: string | null
+}
+
 export interface ClipWebPageResult {
   documentId: string
   title: string
   sourceUrl: string
   warnings: string[]
+  created: boolean
+  duplicateOfDocumentId: string | null
+}
+
+export interface WebClipBridgeStatus {
+  enabled: boolean
+  running: boolean
+  port: number | null
+  token: string
+  endpoint: string | null
+  lastError: string | null
+}
+
+export interface UpdateWebClipBridgeSettingsInput {
+  enabled: boolean
+  port: number
+  regenerateToken?: boolean
 }
 
 export interface UpdateDocumentInput {
@@ -524,11 +555,14 @@ export interface UpdatePluginSettingInput {
 
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
+  onWorkspaceMutated: (listener: () => void) => () => void
   getAppUpdateState: () => Promise<AppUpdateState>
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
   clipWebPage: (input: ClipWebPageInput) => Promise<ClipWebPageResult>
+  getWebClipBridgeStatus: () => Promise<WebClipBridgeStatus>
+  updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => Promise<WebClipBridgeStatus>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   getDocumentCatalog: (databaseId?: string | null) => Promise<DocumentCatalogEntry[]>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
@@ -555,6 +589,7 @@ export interface ElectronApi {
   triggerBackup: () => Promise<BackupResult>
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>
+  openExternalUrl: (url: string) => Promise<void>
   saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>
   getSetting: (key: string) => Promise<string | null>
   saveSetting: (key: string, value: string) => Promise<void>

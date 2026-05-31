@@ -74,11 +74,18 @@ export function useAppShellState() {
   useEffect(() => {
     let mounted = true
 
-    window.knowbook.getHomeData().then((data) => {
-      if (mounted) {
-        setHomeData(data)
-        setLoading(false)
+    const refreshHomeData = async () => {
+      const data = await window.knowbook.getHomeData()
+      if (!mounted) {
+        return
       }
+
+      setHomeData(data)
+      setLoading(false)
+    }
+
+    void refreshHomeData().catch((error) => {
+      console.warn('Failed to load home data.', error)
     })
 
     window.knowbook.getSetting(UI_LANGUAGE_SETTING_KEY).then((value) => {
@@ -92,8 +99,15 @@ export function useAppShellState() {
       setUiLanguageHydrated(true)
     })
 
+    const unsubscribe = window.knowbook.onWorkspaceMutated(() => {
+      void refreshHomeData().catch((error) => {
+        console.warn('Failed to refresh workspace after external mutation.', error)
+      })
+    })
+
     return () => {
       mounted = false
+      unsubscribe()
     }
   }, [])
 

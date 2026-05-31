@@ -767,6 +767,16 @@ dt,
   color: #4e4435;
 }
 
+.settings-card {
+  margin-top: 8px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(91, 72, 44, 0.18);
+  background: rgba(255, 252, 246, 0.86);
+  display: grid;
+  gap: 12px;
+}
+
 .mini-hint {
   margin: 0;
   font-size: 12px;
@@ -1056,6 +1066,96 @@ dt,
 
 .block-inline-textarea.type-todo {
   padding-left: 4px;
+}
+
+.block-rich-media-preview {
+  display: grid;
+  gap: 10px;
+  margin: 4px 0 2px 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(252, 248, 239, 0.92);
+  border: 1px solid rgba(91, 72, 44, 0.12);
+}
+
+.block-rich-media-group {
+  display: grid;
+  gap: 8px;
+}
+
+.block-rich-media-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6b604d;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.block-rich-media-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.block-rich-media-image-card {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(91, 72, 44, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 252, 247, 0.96);
+  text-align: left;
+  cursor: pointer;
+}
+
+.block-rich-media-image-card:hover,
+.block-rich-media-link:hover {
+  transform: translateY(-1px);
+}
+
+.block-rich-media-image {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: rgba(91, 72, 44, 0.06);
+}
+
+.block-rich-media-caption {
+  font-size: 12px;
+  color: #5d5240;
+  word-break: break-word;
+}
+
+.block-rich-media-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.block-rich-media-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1px solid rgba(47, 111, 237, 0.16);
+  border-radius: 999px;
+  background: rgba(240, 247, 255, 0.84);
+  color: #204592;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.block-rich-media-link span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.block-rich-media-link-url {
+  color: #4c6ab1;
+  font-size: 12px;
 }
 
 .block-inline-textarea.type-bulleted-list {

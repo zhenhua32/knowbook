@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KnowBook Web Clipper</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3ecdf;
+        --panel: rgba(255, 252, 246, 0.96);
+        --ink: #2a241b;
+        --muted: #6d614c;
+        --accent: #1f5aa6;
+        --accent-2: #d98c2b;
+        --border: rgba(91, 72, 44, 0.16);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        width: 360px;
+        min-height: 420px;
+        padding: 18px;
+        background:
+          radial-gradient(circle at top right, rgba(217, 140, 43, 0.18), transparent 38%),
+          linear-gradient(180deg, #f7f0e3 0%, var(--bg) 100%);
+        color: var(--ink);
+        font: 13px/1.45 "Segoe UI", "PingFang SC", sans-serif;
+      }
+
+      main {
+        display: grid;
+        gap: 14px;
+      }
+
+      .panel {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: var(--panel);
+        box-shadow: 0 14px 32px rgba(91, 72, 44, 0.08);
+      }
+
+      .label {
+        margin: 0;
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--ink);
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 252, 247, 0.96);
+      }
+
+      textarea {
+        min-height: 72px;
+        resize: vertical;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+      }
+
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 10px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      button.primary {
+        flex: 1;
+        background: linear-gradient(135deg, var(--accent) 0%, #2d78d7 100%);
+        color: white;
+      }
+
+      button.secondary {
+        background: rgba(217, 140, 43, 0.14);
+        color: #8e5a16;
+      }
+
+      button:disabled {
+        cursor: default;
+        opacity: 0.6;
+      }
+
+      .status {
+        min-height: 38px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(31, 90, 166, 0.08);
+        color: #18407b;
+        white-space: pre-wrap;
+      }
+
+      .hint {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <p class="label">KnowBook</p>
+        <h1>网页剪藏</h1>
+        <p>从当前页面采集 HTML 与元数据，直接导入本机桌面版。</p>
+      </section>
+
+      <section class="panel">
+        <label>
+          提交地址
+          <input id="endpoint" placeholder="http://127.0.0.1:3210/clip" type="url" />
+        </label>
+        <label>
+          Bearer Token
+          <input id="token" placeholder="从 KnowBook 设置页复制" type="password" />
+        </label>
+        <p class="hint">先在 KnowBook 设置页启用“浏览器桥接”，再把地址与令牌复制过来。</p>
+      </section>
+
+      <section class="panel">
+        <label>
+          当前页标题
+          <input id="title" placeholder="自动读取当前页标题" type="text" />
+        </label>
+        <label>
+          备注
+          <textarea id="notes" placeholder="可选：附加给这次剪藏的备注，会追加到正文末尾。"></textarea>
+        </label>
+        <div class="actions">
+          <button class="secondary" id="saveSettings" type="button">保存配置</button>
+          <button class="primary" id="clipPage" type="button">剪藏当前页</button>
+        </div>
+        <div class="status" id="status">等待操作。</div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -96,7 +96,11 @@ export function useWorkspaceDocumentManagement({
       onDetailLoadingChange(true)
       onMoveTargetIdChange('')
       onSelectedDocumentIdChange(clipped.documentId)
-      onMessage(clipped.warnings.length > 0 ? ui.webClipImportedWithWarnings(clipped.title, clipped.warnings.length) : ui.webClipImported(clipped.title))
+      onMessage(
+        clipped.created
+          ? (clipped.warnings.length > 0 ? ui.webClipImportedWithWarnings(clipped.title, clipped.warnings.length) : ui.webClipImported(clipped.title))
+          : ui.webClipOpenedExisting(clipped.title)
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.webClipFailed
       onMessage(message)

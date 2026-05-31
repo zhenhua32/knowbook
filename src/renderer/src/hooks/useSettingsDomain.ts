@@ -112,15 +112,33 @@ export function useSettingsDomain({
     onInstallAppUpdate: () => {
       void settingsState.installAppUpdate()
     },
+    onCopyWebClipBridgeEndpoint: () => {
+      void settingsState.copyWebClipBridgeEndpoint()
+    },
+    onCopyWebClipBridgeToken: () => {
+      void settingsState.copyWebClipBridgeToken()
+    },
     onOpenDocument,
     onOpenPlugins,
     onRestoreBackup,
     onSaveAiConfig,
+    onRegenerateWebClipBridgeToken: () => {
+      void settingsState.saveWebClipBridgeSettings(true)
+    },
+    onSaveWebClipBridgeSettings: () => {
+      void settingsState.saveWebClipBridgeSettings(false)
+    },
     onUiLanguageChange,
     recentDocuments,
     summary,
     ui,
-    uiLanguage
+    uiLanguage,
+    webClipBridgeEnabledDraft: settingsState.webClipBridgeEnabledDraft,
+    webClipBridgePortDraft: settingsState.webClipBridgePortDraft,
+    webClipBridgeSaving: settingsState.webClipBridgeSaving,
+    webClipBridgeStatus: settingsState.webClipBridgeStatus,
+    onWebClipBridgeEnabledChange: settingsState.setWebClipBridgeEnabledDraft,
+    onWebClipBridgePortChange: settingsState.setWebClipBridgePortDraft
   }
 
   return {

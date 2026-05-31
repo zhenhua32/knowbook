@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import electron from 'electron'
 import type { OpenDialogOptions } from 'electron'
 import type {
@@ -9,6 +10,7 @@ import type {
   BackupRestoreResult,
   ClipWebPageInput,
   ClipWebPageResult,
+  ImportWebClipPayloadInput,
   CreateDatabaseInput,
   CreateDatabaseEntityInput,
   CreateDatabaseSavedViewInput,
@@ -34,11 +36,13 @@ import type {
   SetPluginEnabledInput,
   UpdatePluginSettingInput,
   UpdateAiConfigInput,
+  UpdateWebClipBridgeSettingsInput,
   UpdateDatabaseSavedViewInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
-  UpdateDocumentInput
+  UpdateDocumentInput,
+  WebClipBridgeStatus
 } from '@shared/contracts'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { MarkdownBackupService } from './backup/exporter'
@@ -47,12 +51,18 @@ import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate }
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { AppUpdateManager } from './update-manager'
+import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain } = electron
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
+const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
+const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
+const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
+const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
+const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
@@ -61,11 +71,20 @@ let embeddingSyncQueue: Promise<void> = Promise.resolve()
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
+const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
 const restoreService = new MarkdownRestoreService(store)
 const workspaceEventBus = new WorkspaceEventBus()
-const webClipper = new WebClipperService(store)
+const webClipper = new WebClipperService(store, webClipAssetRoot)
+const webClipBridge = new WebClipBridgeService({
+  onImport: async (payload: ImportWebClipPayloadInput) => {
+    const result = await webClipper.importWebClipPayload(payload)
+    await emitClipMutationEvents(result)
+    notifyWorkspaceMutation()
+    return result
+  }
+})
 const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
   { path: join(userDataRoot, 'plugins'), source: 'user-data' }
@@ -199,29 +218,16 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:clip-web-page', async (_event, input: ClipWebPageInput) => {
     const result: ClipWebPageResult = await webClipper.clipWebPage(input)
-    const document = store.getDocumentSnapshot(result.documentId)
-
-    if (document) {
-      await workspaceEventBus.emit({
-        type: 'document.created',
-        createdAt: new Date().toISOString(),
-        documentId: document.id,
-        documentTitle: document.title,
-        path: document.path,
-        parentId: document.parentId
-      })
-      await workspaceEventBus.emit({
-        type: 'document.updated',
-        createdAt: new Date().toISOString(),
-        documentId: document.id,
-        documentTitle: document.title,
-        path: document.path,
-        affectedDocumentIds: [document.id],
-        pathChanged: false
-      })
-    }
-
+    await emitClipMutationEvents(result)
     return result
+  })
+
+  ipcMain.handle('knowbook:get-web-clip-bridge-status', () => {
+    return webClipBridge.getStatus()
+  })
+
+  ipcMain.handle('knowbook:update-web-clip-bridge-settings', async (_event, input: UpdateWebClipBridgeSettingsInput) => {
+    return updateWebClipBridgeSettings(input)
   })
 
   ipcMain.handle('knowbook:get-block-reference', (_event, documentPath: string, blockId: string) => {
@@ -528,6 +534,15 @@ function registerIpcHandlers(): void {
     clipboard.writeText(text)
   })
 
+  ipcMain.handle('knowbook:open-external-url', async (_event, url: string) => {
+    const parsed = new URL(url)
+    if (!['http:', 'https:', 'file:'].includes(parsed.protocol)) {
+      throw new Error('Unsupported external URL protocol.')
+    }
+
+    await shell.openExternal(parsed.toString())
+  })
+
   ipcMain.handle('knowbook:save-markdown-file', async (event, defaultFileName: string, content: string): Promise<string | null> => {
     const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
     const saveDialogOptions = {
@@ -560,6 +575,74 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:save-setting', (_event, key: string, value: string): void => {
     store.saveSetting(key, value)
+  })
+}
+
+async function emitClipMutationEvents(result: ClipWebPageResult): Promise<void> {
+  if (!result.created) {
+    return
+  }
+
+  const document = store.getDocumentSnapshot(result.documentId)
+  if (!document) {
+    return
+  }
+
+  await workspaceEventBus.emit({
+    type: 'document.created',
+    createdAt: new Date().toISOString(),
+    documentId: document.id,
+    documentTitle: document.title,
+    path: document.path,
+    parentId: document.parentId
+  })
+  await workspaceEventBus.emit({
+    type: 'document.updated',
+    createdAt: new Date().toISOString(),
+    documentId: document.id,
+    documentTitle: document.title,
+    path: document.path,
+    affectedDocumentIds: [document.id],
+    pathChanged: false
+  })
+}
+
+function notifyWorkspaceMutation(): void {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    window.webContents.send(WORKSPACE_MUTATED_CHANNEL)
+  })
+}
+
+function getStoredWebClipBridgeConfig(): { enabled: boolean; port: number; token: string } {
+  const enabled = store.getSettingPublic(WEB_CLIP_BRIDGE_ENABLED_KEY) === 'true'
+  const storedPort = Number.parseInt(store.getSettingPublic(WEB_CLIP_BRIDGE_PORT_KEY) ?? `${DEFAULT_WEB_CLIP_BRIDGE_PORT}`, 10)
+  const existingToken = store.getSettingPublic(WEB_CLIP_BRIDGE_TOKEN_KEY)
+  const token = existingToken ?? randomUUID().replace(/-/g, '')
+
+  if (!existingToken) {
+    store.saveSetting(WEB_CLIP_BRIDGE_TOKEN_KEY, token)
+  }
+
+  return {
+    enabled,
+    port: Number.isFinite(storedPort) && storedPort > 0 ? storedPort : DEFAULT_WEB_CLIP_BRIDGE_PORT,
+    token
+  }
+}
+
+async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInput): Promise<WebClipBridgeStatus> {
+  const current = getStoredWebClipBridgeConfig()
+  const nextPort = Number.isFinite(input.port) && input.port > 0 ? Math.trunc(input.port) : DEFAULT_WEB_CLIP_BRIDGE_PORT
+  const nextToken = input.regenerateToken ? randomUUID().replace(/-/g, '') : current.token
+
+  store.saveSetting(WEB_CLIP_BRIDGE_ENABLED_KEY, input.enabled ? 'true' : 'false')
+  store.saveSetting(WEB_CLIP_BRIDGE_PORT_KEY, `${nextPort}`)
+  store.saveSetting(WEB_CLIP_BRIDGE_TOKEN_KEY, nextToken)
+
+  return webClipBridge.applyConfig({
+    enabled: input.enabled,
+    port: nextPort,
+    token: nextToken
   })
 }
 
@@ -1086,6 +1169,7 @@ app.whenReady().then(async () => {
   appUpdateManager.initialize()
   registerWorkspaceEventHandlers()
   registerIpcHandlers()
+  await webClipBridge.applyConfig(getStoredWebClipBridgeConfig())
   createWindow()
   startBackupSchedule()
   appUpdateManager.scheduleStartupCheck()
@@ -1109,6 +1193,7 @@ app.on('before-quit', () => {
     clearInterval(backupTimer)
     backupTimer = null
   }
+  void webClipBridge.destroy()
   void pluginHost.destroy()
   store.destroy()
 })

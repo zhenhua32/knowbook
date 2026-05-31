@@ -3,6 +3,7 @@ import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
 import { BlockContextMenu } from './BlockContextMenu'
+import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 
@@ -177,6 +178,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
+  const shouldShowRichMediaPreview = !['code', 'math', 'divider'].includes(block.type)
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -726,6 +728,8 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
             <span className="block-drop-preview-meta">{ui.dropPreviewMeta(dropPreview.effectiveDepth, dropPreview.parentText)}</span>
           </div>
         ) : null}
+
+        {shouldShowRichMediaPreview ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
       </div>
     </div>
   )

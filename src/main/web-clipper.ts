@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import TurndownService from 'turndown'
@@ -6,7 +10,8 @@ import type {
   ClipWebPageResult,
   DocumentBlockDraft,
   DocumentDatabaseColumn,
-  DocumentDatabaseColumnType
+  DocumentDatabaseColumnType,
+  ImportWebClipPayloadInput
 } from '@shared/contracts'
 import { parseMarkdownBackupDocument } from '@shared/markdown'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
@@ -22,6 +27,7 @@ type WebClipFieldKey =
   | 'author'
   | 'clipStatus'
   | 'coverImage'
+  | 'clipHash'
 
 type WebClipFieldDefinition = {
   key: WebClipFieldKey
@@ -39,8 +45,18 @@ type ExtractedWebClip = {
   publishedAt: string | null
   coverImage: string | null
   bodyMarkdown: string
+  contentHash: string
   warnings: string[]
 }
+
+type ExtractedWebClipOverrides = Pick<ImportWebClipPayloadInput,
+  'author'
+  | 'coverImage'
+  | 'excerpt'
+  | 'publishedAt'
+  | 'sourceSite'
+  | 'title'
+>
 
 const WEB_CLIP_FIELDS: WebClipFieldDefinition[] = [
   { key: 'sourceUrl', name: 'Source URL', type: 'text' },
@@ -49,19 +65,60 @@ const WEB_CLIP_FIELDS: WebClipFieldDefinition[] = [
   { key: 'publishedAt', name: 'Published At', type: 'date' },
   { key: 'author', name: 'Author', type: 'text' },
   { key: 'clipStatus', name: 'Clip Status', type: 'select', options: ['clipped', 'partial'] },
-  { key: 'coverImage', name: 'Cover Image', type: 'text' }
+  { key: 'coverImage', name: 'Cover Image', type: 'text' },
+  { key: 'clipHash', name: 'Clip Hash', type: 'text' }
 ]
 
 export class WebClipperService {
-  constructor(private readonly store: KnowbookStore) {}
+  constructor(
+    private readonly store: KnowbookStore,
+    private readonly assetRoot: string
+  ) {}
 
   async clipWebPage(input: ClipWebPageInput): Promise<ClipWebPageResult> {
     const sourceUrl = normalizeWebUrl(input.url)
     const fetched = await fetchHtmlDocument(sourceUrl)
-    const clip = extractWebClip(fetched.html, fetched.finalUrl)
-    const columns = this.ensureWebClipColumns()
+    const clip = await finalizeExtractedWebClip(extractWebClip(fetched.html, fetched.finalUrl), this.assetRoot)
+    return this.persistClip(input.parentId, clip)
+  }
 
-    const documentId = this.store.createDocument(input.parentId)
+  async importWebClipPayload(input: ImportWebClipPayloadInput): Promise<ClipWebPageResult> {
+    const sourceUrl = normalizeWebUrl(input.url)
+
+    let clip: ExtractedWebClip
+    if (input.html?.trim()) {
+      clip = extractWebClip(input.html, sourceUrl, {
+        author: input.author,
+        coverImage: input.coverImage,
+        excerpt: input.excerpt,
+        publishedAt: input.publishedAt,
+        sourceSite: input.sourceSite,
+        title: input.title
+      })
+    } else {
+      clip = buildExtractedClipFromPayload(input, sourceUrl, normalizeImportedBody(input))
+    }
+
+    const finalized = await finalizeExtractedWebClip(clip, this.assetRoot)
+    return this.persistClip(input.parentId, finalized)
+  }
+
+  private async persistClip(parentId: string | null, clip: ExtractedWebClip): Promise<ClipWebPageResult> {
+    const columns = this.ensureWebClipColumns()
+    const duplicateDocumentId = this.findDuplicateDocumentId(clip, columns)
+    if (duplicateDocumentId) {
+      const snapshot = this.store.getDocumentSnapshot(duplicateDocumentId)
+      return {
+        documentId: duplicateDocumentId,
+        title: snapshot?.title ?? clip.title,
+        sourceUrl: clip.sourceUrl,
+        warnings: [...clip.warnings],
+        created: false,
+        duplicateOfDocumentId: duplicateDocumentId
+      }
+    }
+
+    const documentId = this.store.createDocument(parentId)
     const parsed = parseMarkdownBackupDocument(buildClipMarkdownDocument(clip))
     const blocks = toDocumentDraftBlocks(parsed.blocks)
 
@@ -80,7 +137,8 @@ export class WebClipperService {
       { columnId: columns.publishedAt.id, value: clip.publishedAt },
       { columnId: columns.author.id, value: clip.author },
       { columnId: columns.clipStatus.id, value: clipStatus },
-      { columnId: columns.coverImage.id, value: clip.coverImage }
+      { columnId: columns.coverImage.id, value: clip.coverImage },
+      { columnId: columns.clipHash.id, value: clip.contentHash }
     ]
 
     for (const field of fieldValues) {
@@ -99,7 +157,9 @@ export class WebClipperService {
       documentId,
       title: clip.title,
       sourceUrl: clip.sourceUrl,
-      warnings: [...clip.warnings]
+      warnings: [...clip.warnings],
+      created: true,
+      duplicateOfDocumentId: null
     }
   }
 
@@ -146,6 +206,16 @@ export class WebClipperService {
 
     return resolved
   }
+
+  private findDuplicateDocumentId(clip: ExtractedWebClip, columns: Record<WebClipFieldKey, DocumentDatabaseColumn>): string | null {
+    const bySourceUrl = new Set(this.store.findDocumentIdsByDatabaseValue(columns.sourceUrl.id, clip.sourceUrl))
+    if (bySourceUrl.size === 0) {
+      return null
+    }
+
+    const byHash = this.store.findDocumentIdsByDatabaseValue(columns.clipHash.id, clip.contentHash)
+    return byHash.find((documentId) => bySourceUrl.has(documentId)) ?? null
+  }
 }
 
 async function fetchHtmlDocument(url: string): Promise<{ html: string; finalUrl: string }> {
@@ -178,7 +248,7 @@ async function fetchHtmlDocument(url: string): Promise<{ html: string; finalUrl:
   }
 }
 
-function extractWebClip(html: string, sourceUrl: string): ExtractedWebClip {
+function extractWebClip(html: string, sourceUrl: string, overrides: ExtractedWebClipOverrides = {}): ExtractedWebClip {
   const dom = new JSDOM(html, { url: sourceUrl })
   const { document } = dom.window
 
@@ -189,10 +259,12 @@ function extractWebClip(html: string, sourceUrl: string): ExtractedWebClip {
   const readability = new Readability(document.cloneNode(true) as Document)
   const article = readability.parse()
   const sourceSite = firstNonEmpty(
+    overrides.sourceSite,
     getMetaContent(document, 'meta[property="og:site_name"]', 'meta[name="application-name"]'),
     safeHostname(sourceUrl)
   ) ?? safeHostname(sourceUrl)
   const title = firstNonEmpty(
+    overrides.title,
     normalizeTitle(article?.title),
     normalizeTitle(getMetaContent(document, 'meta[property="og:title"]', 'meta[name="twitter:title"]')),
     normalizeTitle(document.title),
@@ -222,17 +294,24 @@ function extractWebClip(html: string, sourceUrl: string): ExtractedWebClip {
     title,
     sourceUrl,
     sourceSite,
-    excerpt: normalizeExcerpt(article?.excerpt ?? getMetaContent(document, 'meta[name="description"]', 'meta[property="og:description"]')),
+    excerpt: normalizeExcerpt(firstNonEmpty(
+      overrides.excerpt,
+      article?.excerpt ?? null,
+      getMetaContent(document, 'meta[name="description"]', 'meta[property="og:description"]')
+    )),
     author: firstNonEmpty(
+      normalizeWhitespace(overrides.author ?? ''),
       normalizeWhitespace(article?.byline ?? ''),
       getMetaContent(document, 'meta[name="author"]', 'meta[property="article:author"]')
     ),
     publishedAt: normalizeDateValue(firstNonEmpty(
+      overrides.publishedAt,
       getMetaContent(document, 'meta[property="article:published_time"]', 'meta[name="date"]', 'meta[name="publish-date"]'),
       document.querySelector('time[datetime]')?.getAttribute('datetime')?.trim() ?? null
     )),
     coverImage: absolutizeUrl(
       firstNonEmpty(
+        overrides.coverImage,
         getMetaContent(document, 'meta[property="og:image"]', 'meta[name="twitter:image"]'),
         document.querySelector('article img')?.getAttribute('src')?.trim() ?? null,
         document.querySelector('img')?.getAttribute('src')?.trim() ?? null
@@ -240,6 +319,57 @@ function extractWebClip(html: string, sourceUrl: string): ExtractedWebClip {
       sourceUrl
     ),
     bodyMarkdown,
+    contentHash: hashClipContent(sourceUrl, title, bodyMarkdown),
+    warnings
+  }
+}
+
+function buildExtractedClipFromPayload(input: ImportWebClipPayloadInput, sourceUrl: string, bodyMarkdown: string): ExtractedWebClip {
+  const title = firstNonEmpty(input.title, safeHostname(sourceUrl), sourceUrl) ?? sourceUrl
+  const sourceSite = firstNonEmpty(input.sourceSite, safeHostname(sourceUrl)) ?? safeHostname(sourceUrl)
+
+  return {
+    title,
+    sourceUrl,
+    sourceSite,
+    excerpt: normalizeExcerpt(input.excerpt),
+    author: normalizeNullableText(input.author),
+    publishedAt: normalizeDateValue(input.publishedAt ?? null),
+    coverImage: absolutizeUrl(input.coverImage ?? null, sourceUrl),
+    bodyMarkdown,
+    contentHash: hashClipContent(sourceUrl, title, bodyMarkdown),
+    warnings: []
+  }
+}
+
+async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: string): Promise<ExtractedWebClip> {
+  const warnings = [...clip.warnings]
+  const imageUrls = [...new Set(extractMarkdownImageUrls(clip.bodyMarkdown))]
+  const resolvedImageUrls = new Map<string, string>()
+
+  for (const imageUrl of imageUrls) {
+    try {
+      resolvedImageUrls.set(imageUrl, await localizeAssetUrl(imageUrl, assetRoot))
+    } catch (error) {
+      warnings.push(`Failed to download image: ${imageUrl}`)
+      console.warn('Failed to localize clipped image.', error)
+    }
+  }
+
+  let coverImage = clip.coverImage
+  if (coverImage) {
+    try {
+      coverImage = await localizeAssetUrl(coverImage, assetRoot)
+    } catch (error) {
+      warnings.push(`Failed to download cover image: ${coverImage}`)
+      console.warn('Failed to localize clipped cover image.', error)
+    }
+  }
+
+  return {
+    ...clip,
+    coverImage,
+    bodyMarkdown: replaceMarkdownImageUrls(clip.bodyMarkdown, resolvedImageUrls),
     warnings
   }
 }
@@ -249,6 +379,10 @@ function buildClipMarkdownDocument(clip: ExtractedWebClip): string {
     `# ${clip.title}`,
     `Source URL: ${clip.sourceUrl}`
   ]
+
+  if (clip.coverImage) {
+    sections.push(`![Cover image](${clip.coverImage})`)
+  }
 
   if (clip.excerpt) {
     sections.push(`> ${clip.excerpt}`)
@@ -264,7 +398,7 @@ function buildClipMarkdownDocument(clip: ExtractedWebClip): string {
 }
 
 function buildFallbackBlocks(clip: ExtractedWebClip): DocumentBlockDraft[] {
-  return [
+  const blocks: DocumentBlockDraft[] = [
     {
       type: 'heading-1',
       content: clip.title,
@@ -278,15 +412,28 @@ function buildFallbackBlocks(clip: ExtractedWebClip): DocumentBlockDraft[] {
       checked: false,
       depth: 0,
       parentBlockId: null
-    },
-    {
+    }
+  ]
+
+  if (clip.coverImage) {
+    blocks.push({
       type: 'paragraph',
-      content: clip.bodyMarkdown,
+      content: `![Cover image](${clip.coverImage})`,
       checked: false,
       depth: 0,
       parentBlockId: null
-    }
-  ]
+    })
+  }
+
+  blocks.push({
+    type: 'paragraph',
+    content: clip.bodyMarkdown,
+    checked: false,
+    depth: 0,
+    parentBlockId: null
+  })
+
+  return blocks
 }
 
 function toDocumentDraftBlocks(blocks: ReturnType<typeof parseMarkdownBackupDocument>['blocks']): DocumentBlockDraft[] {
@@ -366,6 +513,15 @@ function normalizeWebUrl(rawUrl: string): string {
   return url.toString()
 }
 
+function normalizeImportedBody(input: ImportWebClipPayloadInput): string {
+  const body = firstNonEmpty(input.markdown, input.text)
+  if (!body) {
+    throw new Error('Imported web clip payload is missing html, markdown, or text content.')
+  }
+
+  return body.trim()
+}
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
@@ -379,9 +535,13 @@ function normalizeExcerpt(value: string | null | undefined): string {
   return excerpt.length > 180 ? `${excerpt.slice(0, 177).trimEnd()}...` : excerpt
 }
 
-function normalizeTitle(value: string | null | undefined): string | null {
+function normalizeNullableText(value: string | null | undefined): string | null {
   const normalized = normalizeWhitespace(value ?? '')
   return normalized || null
+}
+
+function normalizeTitle(value: string | null | undefined): string | null {
+  return normalizeNullableText(value)
 }
 
 function normalizeDateValue(value: string | null): string | null {
@@ -412,6 +572,10 @@ function absolutizeUrl(value: string | null, baseUrl: string): string | null {
     return null
   }
 
+  if (value.startsWith('data:') || value.startsWith('file:')) {
+    return value
+  }
+
   try {
     return new URL(value, baseUrl).toString()
   } catch {
@@ -425,6 +589,99 @@ function safeHostname(value: string): string {
   } catch {
     return value
   }
+}
+
+function extractMarkdownImageUrls(markdown: string): string[] {
+  const urls: string[] = []
+  const regex = /!\[[^\]]*\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g
+
+  for (const match of markdown.matchAll(regex)) {
+    const rawValue = match[1]?.trim() ?? ''
+    const url = rawValue.replace(/^<|>$/g, '').split(/\s+"/)[0]?.trim() ?? ''
+    if (url) {
+      urls.push(url)
+    }
+  }
+
+  return urls
+}
+
+function replaceMarkdownImageUrls(markdown: string, replacements: Map<string, string>): string {
+  let nextMarkdown = markdown
+
+  for (const [sourceUrl, targetUrl] of replacements.entries()) {
+    nextMarkdown = nextMarkdown.replaceAll(`](${sourceUrl})`, `](${targetUrl})`)
+    nextMarkdown = nextMarkdown.replaceAll(`](<${sourceUrl}>)`, `](<${targetUrl}>)`)
+  }
+
+  return nextMarkdown
+}
+
+async function localizeAssetUrl(assetUrl: string, assetRoot: string): Promise<string> {
+  if (assetUrl.startsWith('data:') || assetUrl.startsWith('file:')) {
+    return assetUrl
+  }
+
+  const response = await fetch(assetUrl, {
+    headers: {
+      Accept: 'image/*,*/*;q=0.8',
+      'User-Agent': WEB_CLIP_USER_AGENT
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(WEB_CLIP_TIMEOUT_MS)
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch asset (${response.status})`)
+  }
+
+  const contentType = response.headers.get('content-type') ?? ''
+  const buffer = Buffer.from(await response.arrayBuffer())
+  const hash = createHash('sha256').update(buffer).digest('hex')
+  const extension = normalizeAssetExtension(assetUrl, contentType)
+  const filePath = join(assetRoot, 'web-clips', hash.slice(0, 2), `${hash}${extension}`)
+  mkdirSync(dirname(filePath), { recursive: true })
+  if (!existsSync(filePath)) {
+    writeFileSync(filePath, buffer)
+  }
+
+  return pathToFileURL(filePath).toString()
+}
+
+function normalizeAssetExtension(assetUrl: string, contentType: string): string {
+  const typeMap: Record<string, string> = {
+    'image/gif': '.gif',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/svg+xml': '.svg',
+    'image/webp': '.webp'
+  }
+  const normalizedType = contentType.split(';')[0]?.trim().toLowerCase()
+
+  if (normalizedType && typeMap[normalizedType]) {
+    return typeMap[normalizedType]
+  }
+
+  try {
+    const extension = extname(new URL(assetUrl).pathname)
+    if (extension) {
+      return extension.slice(0, 8)
+    }
+  } catch {
+    // Ignore URL parsing fallback errors.
+  }
+
+  return '.bin'
+}
+
+function hashClipContent(sourceUrl: string, title: string, bodyMarkdown: string): string {
+  return createHash('sha256')
+    .update(sourceUrl.trim())
+    .update('\n')
+    .update(title.trim())
+    .update('\n')
+    .update(bodyMarkdown.replace(/\s+/g, ' ').trim())
+    .digest('hex')
 }
 
 function escapeRegExp(value: string): string {

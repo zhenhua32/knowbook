@@ -1,4 +1,4 @@
-import type { AppUpdateState, RecentDocument, WorkspaceSummary } from '@shared/contracts'
+import type { AppUpdateState, RecentDocument, WebClipBridgeStatus, WorkspaceSummary } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
 
 type DashboardSettingsSectionProps = {
@@ -37,6 +37,16 @@ type DashboardSettingsSectionProps = {
   appUpdateRefreshing: boolean
   onCheckForAppUpdates: () => void
   onInstallAppUpdate: () => void
+  webClipBridgeStatus: WebClipBridgeStatus | null
+  webClipBridgeEnabledDraft: boolean
+  onWebClipBridgeEnabledChange: (value: boolean) => void
+  webClipBridgePortDraft: string
+  onWebClipBridgePortChange: (value: string) => void
+  webClipBridgeSaving: boolean
+  onSaveWebClipBridgeSettings: () => void
+  onRegenerateWebClipBridgeToken: () => void
+  onCopyWebClipBridgeEndpoint: () => void
+  onCopyWebClipBridgeToken: () => void
 }
 
 function getAppUpdateStatusText(state: AppUpdateState | null, ui: UiText): string {
@@ -101,7 +111,17 @@ export function DashboardSettingsSection({
   appUpdateState,
   appUpdateRefreshing,
   onCheckForAppUpdates,
-  onInstallAppUpdate
+  onInstallAppUpdate,
+  webClipBridgeStatus,
+  webClipBridgeEnabledDraft,
+  onWebClipBridgeEnabledChange,
+  webClipBridgePortDraft,
+  onWebClipBridgePortChange,
+  webClipBridgeSaving,
+  onSaveWebClipBridgeSettings,
+  onRegenerateWebClipBridgeToken,
+  onCopyWebClipBridgeEndpoint,
+  onCopyWebClipBridgeToken
 }: DashboardSettingsSectionProps) {
   return (
     <section className="detail-grid">
@@ -196,16 +216,56 @@ export function DashboardSettingsSection({
             <button className="primary-button" onClick={onBackupNow} type="button">
               {ui.runBackupNow}
             </button>
+            <div className="settings-card">
+              <div>
+                <p className="panel-label">{ui.webClipBridgeLabel}</p>
+                <h3 style={{ margin: '4px 0 0' }}>{ui.webClipBridgeTitle}</h3>
+                <p style={{ margin: '8px 0 0', color: 'rgba(91, 72, 44, 0.76)' }}>{ui.webClipBridgeDescription}</p>
+              </div>
+              <label className="toggle-row">
+                <input checked={webClipBridgeEnabledDraft} onChange={(event) => onWebClipBridgeEnabledChange(event.target.checked)} type="checkbox" />
+                <span>{ui.webClipBridgeEnabledLabel}</span>
+              </label>
+              <label className="editor-label">
+                {ui.webClipBridgePortLabel}
+                <input className="editor-input" onChange={(event) => onWebClipBridgePortChange(event.target.value)} type="number" value={webClipBridgePortDraft} />
+              </label>
+              <label className="editor-label">
+                {ui.webClipBridgeTokenLabel}
+                <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.token ?? ''} />
+              </label>
+              <label className="editor-label">
+                {ui.webClipBridgeEndpointLabel}
+                <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.endpoint ?? ui.webClipBridgeUnavailable} />
+              </label>
+              <dl className="meta-grid">
+                <div>
+                  <dt>{ui.webClipBridgeStatusLabel}</dt>
+                  <dd>{webClipBridgeStatus?.running ? ui.webClipBridgeStatusRunning : ui.webClipBridgeStatusStopped}</dd>
+                </div>
+                <div>
+                  <dt>{ui.webClipBridgeErrorLabel}</dt>
+                  <dd>{webClipBridgeStatus?.lastError ?? ui.common.none}</dd>
+                </div>
+              </dl>
+              <p className="mini-hint">{ui.webClipBridgeHint}</p>
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <button className="secondary-button" disabled={webClipBridgeSaving} onClick={onSaveWebClipBridgeSettings} type="button">
+                  {webClipBridgeSaving ? ui.common.saving : ui.webClipBridgeSave}
+                </button>
+                <button className="secondary-button" disabled={webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">
+                  {ui.webClipBridgeRegenerateToken}
+                </button>
+                <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">
+                  {ui.webClipBridgeCopyEndpoint}
+                </button>
+                <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">
+                  {ui.webClipBridgeCopyToken}
+                </button>
+              </div>
+            </div>
             <div
-              style={{
-                marginTop: '8px',
-                padding: '16px',
-                borderRadius: '18px',
-                border: '1px solid rgba(91, 72, 44, 0.18)',
-                background: 'rgba(255, 252, 246, 0.86)',
-                display: 'grid',
-                gap: '12px'
-              }}
+              className="settings-card"
             >
               <div>
                 <p className="panel-label">{ui.appUpdateLabel}</p>

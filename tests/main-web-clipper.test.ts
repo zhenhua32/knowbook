@@ -64,7 +64,7 @@ async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<
 test('WebClipperService clips a webpage into a child document and stores source fields', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-test-'))
   const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
-  const service = new WebClipperService(store)
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
 
   try {
     const parentId = store.createDocument(null)
@@ -83,6 +83,8 @@ test('WebClipperService clips a webpage into a child document and stores source 
         parentId
       })
 
+      assert.equal(result.created, true)
+      assert.equal(result.duplicateOfDocumentId, null)
       assert.equal(result.title, 'Example Article')
       assert.equal(result.sourceUrl, `${baseUrl}/article`)
       assert.deepEqual(result.warnings, [])
@@ -117,7 +119,37 @@ test('WebClipperService clips a webpage into a child document and stores source 
       assert.equal(clippedEntry.fieldValues[publishedAtColumn.id], '2026-05-31')
       assert.equal(clippedEntry.fieldValues[authorColumn.id], 'Alice Example')
       assert.equal(clippedEntry.fieldValues[clipStatusColumn.id], 'clipped')
-      assert.equal(clippedEntry.fieldValues[coverImageColumn.id], `${baseUrl}/cover.jpg`)
+      assert.match(String(clippedEntry.fieldValues[coverImageColumn.id]), /^file:\/\//)
+    })
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService reuses an existing document when source URL and clip hash already match', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-dup-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    await withHtmlServer(async (baseUrl) => {
+      const first = await service.clipWebPage({
+        url: `${baseUrl}/article`,
+        parentId: null
+      })
+      const second = await service.clipWebPage({
+        url: `${baseUrl}/article`,
+        parentId: null
+      })
+
+      assert.equal(first.created, true)
+      assert.equal(second.created, false)
+      assert.equal(second.documentId, first.documentId)
+      assert.equal(second.duplicateOfDocumentId, first.documentId)
+
+      const matchingEntries = store.getHomeData(join(tempRoot, 'backup')).documentCatalog.filter((entry) => entry.path === 'Example Article')
+      assert.equal(matchingEntries.length, 1)
     })
   } finally {
     store.destroy()

@@ -34,23 +34,35 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
+  UpdateWebClipBridgeSettingsInput,
   UpdateDatabaseSavedViewInput,
   UpdatePluginSettingInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
-  UpdateDocumentInput
+  UpdateDocumentInput,
+  WebClipBridgeStatus
 } from '@shared/contracts'
 
 const { contextBridge, ipcRenderer } = electron
+const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 
 const api: ElectronApi = {
   getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
+  onWorkspaceMutated: (listener) => {
+    const wrapped = () => listener()
+    ipcRenderer.on(WORKSPACE_MUTATED_CHANNEL, wrapped)
+    return () => {
+      ipcRenderer.removeListener(WORKSPACE_MUTATED_CHANNEL, wrapped)
+    }
+  },
   getAppUpdateState: () => ipcRenderer.invoke('knowbook:get-app-update-state') as Promise<AppUpdateState>,
   checkForAppUpdates: () => ipcRenderer.invoke('knowbook:check-for-app-updates') as Promise<AppUpdateState>,
   installAppUpdate: () => ipcRenderer.invoke('knowbook:install-app-update') as Promise<void>,
   getDocumentDetail: (documentId: string) => ipcRenderer.invoke('knowbook:get-document-detail', documentId) as Promise<DocumentDetail | null>,
   clipWebPage: (input: ClipWebPageInput) => ipcRenderer.invoke('knowbook:clip-web-page', input) as Promise<ClipWebPageResult>,
+  getWebClipBridgeStatus: () => ipcRenderer.invoke('knowbook:get-web-clip-bridge-status') as Promise<WebClipBridgeStatus>,
+  updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => ipcRenderer.invoke('knowbook:update-web-clip-bridge-settings', input) as Promise<WebClipBridgeStatus>,
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
@@ -79,6 +91,7 @@ const api: ElectronApi = {
   triggerBackup: () => ipcRenderer.invoke('knowbook:trigger-backup') as Promise<BackupResult>,
   restoreBackupFromFolder: () => ipcRenderer.invoke('knowbook:restore-backup-from-folder') as Promise<BackupRestoreResult | null>,
   writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
+  openExternalUrl: (url: string) => ipcRenderer.invoke('knowbook:open-external-url', url) as Promise<void>,
   saveMarkdownFile: (defaultFileName: string, content: string) => ipcRenderer.invoke('knowbook:save-markdown-file', defaultFileName, content) as Promise<string | null>,
   getSetting: (key: string) => ipcRenderer.invoke('knowbook:get-setting', key) as Promise<string | null>,
   saveSetting: (key: string, value: string) => ipcRenderer.invoke('knowbook:save-setting', key, value) as Promise<void>,
