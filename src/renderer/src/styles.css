@@ -1109,7 +1109,6 @@ dt,
   cursor: pointer;
 }
 
-.block-rich-media-image-card:hover,
 .block-rich-media-link:hover {
   transform: translateY(-1px);
 }

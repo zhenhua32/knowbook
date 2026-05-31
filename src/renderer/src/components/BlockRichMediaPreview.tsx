@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { forwardWheelToClosestContentScroller } from '../utils/scrollWheel'
 
@@ -11,6 +12,7 @@ type BlockRichMediaPreviewProps = {
 }
 
 export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
+  const previewRef = useRef<HTMLDivElement | null>(null)
   const richMedia = extractBlockRichMedia(content)
 
   if (richMedia.images.length === 0 && richMedia.links.length === 0) {
@@ -23,14 +25,28 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
     })
   }
 
-  const handleWheelCapture = (event: React.WheelEvent<HTMLElement>) => {
-    if (forwardWheelToClosestContentScroller(event.currentTarget, event.deltaX, event.deltaY)) {
-      event.preventDefault()
+  useEffect(() => {
+    const element = previewRef.current
+    if (!element) {
+      return
     }
-  }
+
+    const handleWheel = (event: WheelEvent) => {
+      if (forwardWheelToClosestContentScroller(element, event.deltaX, event.deltaY)) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+
+    element.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    return () => {
+      element.removeEventListener('wheel', handleWheel, { capture: true })
+    }
+  }, [])
 
   return (
-    <div className="block-rich-media-preview" onWheelCapture={handleWheelCapture}>
+    <div className="block-rich-media-preview" ref={previewRef}>
       {richMedia.images.length > 0 ? (
         <div className="block-rich-media-group">
           <p className="block-rich-media-label">{ui.blockPreviewImagesLabel}</p>
