@@ -41,6 +41,9 @@ async function startClipSourceServer(articleTitle: string): Promise<ClipSourceSe
     }
 
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    const trailingParagraphs = Array.from({ length: 18 }, (_, index) => (
+      `<p>Trailing paragraph ${index + 1} for scroll validation in clipped documents.</p>`
+    )).join('')
     response.end(`<!doctype html>
       <html>
         <head>
@@ -58,6 +61,7 @@ async function startClipSourceServer(articleTitle: string): Promise<ClipSourceSe
             <p>Alpha paragraph captured through the in-app web clipping flow.</p>
             <p>Beta paragraph with a <a href="/more">relative link</a> and an inline image.</p>
             <img src="/inline.svg" alt="Inline diagram" />
+            ${trailingParagraphs}
           </article>
         </body>
       </html>`)
@@ -136,6 +140,10 @@ async function getEditorValues(page: Page): Promise<string[]> {
   return page.locator('textarea.block-inline-textarea').evaluateAll((elements) =>
     elements.map((element) => (element as HTMLTextAreaElement).value)
   )
+}
+
+async function getContentScrollTop(page: Page): Promise<number> {
+  return page.locator('.content').evaluate((element) => (element as HTMLElement).scrollTop)
 }
 
 test.describe('Web Clipping @electron', () => {
@@ -245,6 +253,54 @@ test.describe('Web Clipping @electron', () => {
 
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Bridge clip body created through the local loopback service.')
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Bridge source')
+      })
+    } finally {
+      await sourceServer.close()
+    }
+  })
+
+  test('keeps the main document page scrolling when the wheel is used over rich media preview cards', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const suffix = Date.now().toString(36)
+    const articleTitle = `Web Clip Scroll ${suffix}`
+    const sourceServer = await startClipSourceServer(articleTitle)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await openDocumentsPage(page)
+        await ensureAuxiliaryPanelOpen(page)
+
+        await getWebClipUrlInput(page).fill(sourceServer.articleUrl)
+        await page.getByRole('button', { name: uiText('Clip webpage', '剪藏网页') }).click()
+
+        await expect(getTitleInput(page)).toHaveValue(articleTitle)
+        await expect(page.locator('.block-rich-media-image-card').first()).toBeVisible()
+
+        await page.locator('.content').evaluate((element) => {
+          (element as HTMLElement).scrollTop = 0
+        })
+        const startScrollTop = await getContentScrollTop(page)
+
+        await page.locator('.block-rich-media-image-card').first().hover()
+        await page.mouse.wheel(0, 900)
+
+        await expect.poll(async () => getContentScrollTop(page)).toBeGreaterThan(startScrollTop)
+
+        const imageMarkdownIndex = await page.locator('textarea.block-inline-textarea').evaluateAll((elements) =>
+          elements.findIndex((element) => (element as HTMLTextAreaElement).value.includes('![Inline diagram]'))
+        )
+        expect(imageMarkdownIndex).toBeGreaterThanOrEqual(0)
+
+        await page.locator('.content').evaluate((element) => {
+          (element as HTMLElement).scrollTop = 0
+        })
+        const textareaStartScrollTop = await getContentScrollTop(page)
+
+        await page.locator('textarea.block-inline-textarea').nth(imageMarkdownIndex).hover()
+        await page.mouse.wheel(0, 900)
+
+        await expect.poll(async () => getContentScrollTop(page)).toBeGreaterThan(textareaStartScrollTop)
       })
     } finally {
       await sourceServer.close()

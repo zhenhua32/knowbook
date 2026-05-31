@@ -6,6 +6,7 @@ import { BlockContextMenu } from './BlockContextMenu'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
+import { forwardWheelToClosestContentScroller } from '../utils/scrollWheel'
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -110,6 +111,12 @@ function resizeBlockTextarea(textarea: HTMLTextAreaElement | null): void {
 
 function isNestableBlockType(type: DocumentBlock['type']): boolean {
   return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+}
+
+function handleTextareaWheelCapture(event: React.WheelEvent<HTMLTextAreaElement>): void {
+  if (forwardWheelToClosestContentScroller(event.currentTarget, event.deltaX, event.deltaY)) {
+    event.preventDefault()
+  }
 }
 
 export function BlockEditorRow(props: BlockEditorRowProps) {
@@ -521,6 +528,7 @@ export function BlockEditorRow(props: BlockEditorRowProps) {
                 resizeBlockTextarea(event.currentTarget)
                 captureBlockCursor(index, event.currentTarget)
               }}
+              onWheelCapture={block.type === 'code' ? undefined : handleTextareaWheelCapture}
               onKeyDown={(event) => {
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {

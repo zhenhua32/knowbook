@@ -1,4 +1,5 @@
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+import { forwardWheelToClosestContentScroller } from '../utils/scrollWheel'
 
 type BlockRichMediaPreviewProps = {
   content: string
@@ -22,8 +23,14 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
     })
   }
 
+  const handleWheelCapture = (event: React.WheelEvent<HTMLElement>) => {
+    if (forwardWheelToClosestContentScroller(event.currentTarget, event.deltaX, event.deltaY)) {
+      event.preventDefault()
+    }
+  }
+
   return (
-    <div className="block-rich-media-preview">
+    <div className="block-rich-media-preview" onWheelCapture={handleWheelCapture}>
       {richMedia.images.length > 0 ? (
         <div className="block-rich-media-group">
           <p className="block-rich-media-label">{ui.blockPreviewImagesLabel}</p>
