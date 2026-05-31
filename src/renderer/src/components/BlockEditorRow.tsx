@@ -104,8 +104,19 @@ function resizeBlockTextarea(textarea: HTMLTextAreaElement | null): void {
     return
   }
 
+  // Preserve scroll positions to prevent the document from jumping 
+  // when we temporarily shrink the textarea to measure its true scrollHeight.
+  const scrollContainer = textarea.closest('.content') || document.documentElement
+  const scrollTop = scrollContainer.scrollTop
+
   textarea.style.height = '0px'
-  textarea.style.height = `${textarea.scrollHeight}px`
+  const newHeight = `${textarea.scrollHeight}px`
+  textarea.style.height = newHeight
+
+  // If the layout thrashing caused the browser to clamp scroll position, restore it
+  if (scrollContainer.scrollTop !== scrollTop) {
+    scrollContainer.scrollTop = scrollTop
+  }
 }
 
 function isNestableBlockType(type: DocumentBlock['type']): boolean {

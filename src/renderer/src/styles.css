@@ -3454,6 +3454,7 @@ del {
 .content {
   height:100vh;
   overflow-y: auto;
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   gap: 20px;
