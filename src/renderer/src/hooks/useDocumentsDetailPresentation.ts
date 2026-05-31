@@ -40,6 +40,7 @@ type UseDocumentsDetailPresentationParams = {
   isSaving: boolean
   mdCopyFlash: boolean
   moveTargetId: string
+  onClipWebPage: DocumentsAuxPanelProps['onClipWebPage']
   onAddChild: DocumentPreviewHeaderProps['onAddChild']
   onAiPromptChange: DocumentsAuxPanelProps['onAiPromptChange']
   onAskAi: DocumentsAuxPanelProps['onAskAi']
@@ -65,6 +66,9 @@ type UseDocumentsDetailPresentationParams = {
   selectedDocument: DocumentDetail | null
   selectedDocumentId: string | null
   ui: DocumentsAuxPanelProps['ui']
+  webClipBusy: boolean
+  webClipUrlDraft: string
+  onWebClipUrlChange: DocumentsAuxPanelProps['onWebClipUrlChange']
 }
 
 export function useDocumentsDetailPresentation({
@@ -90,6 +94,7 @@ export function useDocumentsDetailPresentation({
   isSaving,
   mdCopyFlash,
   moveTargetId,
+  onClipWebPage,
   onAddChild,
   onAiPromptChange,
   onAskAi,
@@ -114,7 +119,10 @@ export function useDocumentsDetailPresentation({
   pluginDocumentActions,
   selectedDocument,
   selectedDocumentId,
-  ui
+  ui,
+  webClipBusy,
+  webClipUrlDraft,
+  onWebClipUrlChange
 }: UseDocumentsDetailPresentationParams) {
   const relationGroups = useMemo<DocumentsRelationGroup[]>(() => {
     if (!selectedDocument) {
@@ -199,15 +207,19 @@ export function useDocumentsDetailPresentation({
         hasApiKey,
         isOpen: documentsAuxPanelOpen,
         isZh,
+        onClipWebPage,
         onAiPromptChange,
         onAskAi,
         onFindRelatedNotes,
         onOpenDocument,
         onRunEnabledAutomations,
         onRunPluginAction,
+        onWebClipUrlChange,
         pluginActionBusyKey,
         pluginDocumentActions,
-        ui
+        ui,
+        webClipBusy,
+        webClipUrlDraft
       }
     : null
 

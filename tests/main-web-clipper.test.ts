@@ -1,0 +1,126 @@
+import assert from 'node:assert/strict'
+import { createServer } from 'node:http'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import type { AddressInfo } from 'node:net'
+import { KnowbookStore } from '../src/main/database/store.ts'
+import { WebClipperService } from '../src/main/web-clipper.ts'
+
+async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
+  const server = createServer((request, response) => {
+    if (request.url === '/cover.jpg') {
+      response.writeHead(200, { 'Content-Type': 'image/jpeg' })
+      response.end('fake-image')
+      return
+    }
+
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    response.end(`<!doctype html>
+      <html>
+        <head>
+          <title>Example Article</title>
+          <meta property="og:title" content="Example Article" />
+          <meta property="og:description" content="A concise article summary for clipping." />
+          <meta property="og:site_name" content="Example Site" />
+          <meta property="article:published_time" content="2026-05-31T08:00:00.000Z" />
+          <meta name="author" content="Alice Example" />
+          <meta property="og:image" content="/cover.jpg" />
+        </head>
+        <body>
+          <article>
+            <h1>Example Article</h1>
+            <p>Alpha paragraph with enough detail to survive readability extraction.</p>
+            <p>Beta paragraph with <strong>formatting</strong> and a <a href="/more">relative link</a>.</p>
+          </article>
+        </body>
+      </html>`)
+  })
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve())
+  })
+
+  const address = server.address() as AddressInfo
+  const baseUrl = `http://127.0.0.1:${address.port}`
+
+  try {
+    await run(baseUrl)
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error)
+          return
+        }
+
+        resolve()
+      })
+    })
+  }
+}
+
+test('WebClipperService clips a webpage into a child document and stores source fields', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store)
+
+  try {
+    const parentId = store.createDocument(null)
+    store.updateDocument(parentId, {
+      title: 'Inbox',
+      summary: 'Inbox summary',
+      blocks: [
+        { type: 'heading-1', content: 'Inbox', checked: false, depth: 0 },
+        { type: 'paragraph', content: 'Incoming notes live here.', checked: false, depth: 0 }
+      ]
+    })
+
+    await withHtmlServer(async (baseUrl) => {
+      const result = await service.clipWebPage({
+        url: `${baseUrl}/article`,
+        parentId
+      })
+
+      assert.equal(result.title, 'Example Article')
+      assert.equal(result.sourceUrl, `${baseUrl}/article`)
+      assert.deepEqual(result.warnings, [])
+
+      const detail = store.getDocumentDetail(result.documentId)
+      assert.ok(detail)
+      assert.equal(detail.title, 'Example Article')
+      assert.equal(detail.path, 'Inbox/Example Article')
+      assert.equal(detail.blocks[0]?.type, 'heading-1')
+      assert.equal(detail.blocks[0]?.content, 'Example Article')
+      assert.equal(detail.blocks.some((block) => block.content.includes('Source URL:')), true)
+      assert.equal(detail.blocks.some((block) => block.content.includes('Alpha paragraph')), true)
+
+      const home = store.getHomeData(join(tempRoot, 'backup'))
+      const clippedEntry = home.documentCatalog.find((entry) => entry.id === result.documentId)
+      const sourceUrlColumn = home.databaseColumns.find((column) => column.name === 'Source URL')
+      const sourceSiteColumn = home.databaseColumns.find((column) => column.name === 'Source Site')
+      const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+      const authorColumn = home.databaseColumns.find((column) => column.name === 'Author')
+      const clipStatusColumn = home.databaseColumns.find((column) => column.name === 'Clip Status')
+      const coverImageColumn = home.databaseColumns.find((column) => column.name === 'Cover Image')
+
+      assert.ok(clippedEntry)
+      assert.ok(sourceUrlColumn)
+      assert.ok(sourceSiteColumn)
+      assert.ok(publishedAtColumn)
+      assert.ok(authorColumn)
+      assert.ok(clipStatusColumn)
+      assert.ok(coverImageColumn)
+      assert.equal(clippedEntry.fieldValues[sourceUrlColumn.id], `${baseUrl}/article`)
+      assert.equal(clippedEntry.fieldValues[sourceSiteColumn.id], 'Example Site')
+      assert.equal(clippedEntry.fieldValues[publishedAtColumn.id], '2026-05-31')
+      assert.equal(clippedEntry.fieldValues[authorColumn.id], 'Alice Example')
+      assert.equal(clippedEntry.fieldValues[clipStatusColumn.id], 'clipped')
+      assert.equal(clippedEntry.fieldValues[coverImageColumn.id], `${baseUrl}/cover.jpg`)
+    })
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

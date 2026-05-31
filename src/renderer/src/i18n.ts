@@ -400,6 +400,11 @@ function createUiText(language: UiLanguage) {
     relationOutgoingEmpty: zh ? '还没有出链。' : 'No outgoing links yet',
     relationBacklinksTitle: zh ? '反向链接' : 'Backlinks',
     relationBacklinksEmpty: zh ? '还没有反向链接。' : 'No backlinks yet',
+    webClipLabel: zh ? '网页剪藏' : 'Web clip',
+    webClipPlaceholder: zh ? '粘贴网页 URL，例如 https://example.com/article' : 'Paste a webpage URL, for example https://example.com/article',
+    clipWebPage: zh ? '剪藏网页' : 'Clip webpage',
+    clippingWebPage: zh ? '剪藏中...' : 'Clipping...',
+    webClipHint: zh ? '会把目标网页提取为当前文档下的新子文档，并自动记录来源字段。' : 'This creates a new child document under the current note and stores source metadata automatically.',
     pluginActionsLabel: zh ? '插件动作' : 'Plugin actions',
     pluginActionsHint: zh
       ? '插件动作是针对“已保存版本”的文档执行的；如果希望插件读取到最新草稿，请先保存。'
@@ -535,6 +540,9 @@ function createUiText(language: UiLanguage) {
       : `Delete "${title}"? Child documents will be kept and reparented.`,
     movedDocumentSuccess: (title: string) => zh ? `已移动文档“${title}”。` : `Moved "${title}" successfully.`,
     moveFailed: zh ? '移动失败。' : 'Move failed.',
+    webClipImported: (title: string) => zh ? `已剪藏网页并创建文档“${title}”。` : `Clipped webpage into "${title}".`,
+    webClipImportedWithWarnings: (title: string, count: number) => zh ? `已剪藏网页并创建文档“${title}”，有 ${count} 条提示。` : `Clipped webpage into "${title}" with ${count} warning${count === 1 ? '' : 's'}.`,
+    webClipFailed: zh ? '网页剪藏失败。' : 'Web clipping failed.',
     aiSettingsSaved: zh ? 'AI 设置已保存。' : 'AI settings saved.',
     pluginStatusUpdated: (name: string, enabled: boolean) => zh
       ? `${enabled ? '已启用' : '已禁用'}插件“${name}”。`

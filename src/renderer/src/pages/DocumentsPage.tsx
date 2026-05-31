@@ -1,4 +1,5 @@
-import type { HomeData } from '@shared/contracts'
+import { useState } from 'react'
+import type { ClipWebPageInput, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { useDocumentsBlockEditorPresentation } from '../hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPresentation'
@@ -13,6 +14,7 @@ type DocumentsPageProps = {
   documentTree: HomeData['documentTree']
   documents: DocumentsDomainState
   isZh: boolean
+  onClipWebPage: (input: ClipWebPageInput) => Promise<unknown> | void
   onCreateDocument: (parentId: string | null) => Promise<unknown> | void
   onDeleteSelectedDocument: () => Promise<unknown> | void
   onMoveSelectedDocument: () => Promise<unknown> | void
@@ -26,12 +28,33 @@ export function DocumentsPage({
   documentTree,
   documents,
   isZh,
+  onClipWebPage,
   onCreateDocument,
   onDeleteSelectedDocument,
   onMoveSelectedDocument,
   plugins,
   ui
 }: DocumentsPageProps) {
+  const [webClipBusy, setWebClipBusy] = useState(false)
+  const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
+
+  const handleClipWebPage = async () => {
+    if (!documents.selectedDocument || !webClipUrlDraft.trim() || webClipBusy) {
+      return
+    }
+
+    setWebClipBusy(true)
+    try {
+      await onClipWebPage({
+        url: webClipUrlDraft,
+        parentId: documents.selectedDocument.id
+      })
+      setWebClipUrlDraft('')
+    } finally {
+      setWebClipBusy(false)
+    }
+  }
+
   const {
     blockEditorRowSharedProps,
     floatingSlashCommandPanelProps,
@@ -153,6 +176,9 @@ export function DocumentsPage({
     isSaving: documents.isSaving,
     mdCopyFlash: documents.mdCopyFlash,
     moveTargetId: documents.moveTargetId,
+    onClipWebPage: () => {
+      void handleClipWebPage()
+    },
     onAddChild: () => {
       if (documents.selectedDocument) {
         void onCreateDocument(documents.selectedDocument.id)
@@ -203,7 +229,10 @@ export function DocumentsPage({
     pluginDocumentActions: plugins.pluginDocumentActions,
     selectedDocument: documents.selectedDocument,
     selectedDocumentId: documents.selectedDocumentId,
-    ui
+    ui,
+    webClipBusy,
+    webClipUrlDraft,
+    onWebClipUrlChange: setWebClipUrlDraft
   })
 
   return (

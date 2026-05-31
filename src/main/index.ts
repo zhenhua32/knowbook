@@ -7,6 +7,8 @@ import type {
   AskAiResult,
   BackupResult,
   BackupRestoreResult,
+  ClipWebPageInput,
+  ClipWebPageResult,
   CreateDatabaseInput,
   CreateDatabaseEntityInput,
   CreateDatabaseSavedViewInput,
@@ -45,6 +47,7 @@ import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate }
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { AppUpdateManager } from './update-manager'
+import { WebClipperService } from './web-clipper'
 
 const { app, BrowserWindow, clipboard, dialog, ipcMain } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
@@ -62,6 +65,7 @@ const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
 const restoreService = new MarkdownRestoreService(store)
 const workspaceEventBus = new WorkspaceEventBus()
+const webClipper = new WebClipperService(store)
 const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
   { path: join(userDataRoot, 'plugins'), source: 'user-data' }
@@ -191,6 +195,33 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-document-detail', (_event, documentId: string) => {
     const document: DocumentDetail | null = store.getDocumentDetail(documentId)
     return document
+  })
+
+  ipcMain.handle('knowbook:clip-web-page', async (_event, input: ClipWebPageInput) => {
+    const result: ClipWebPageResult = await webClipper.clipWebPage(input)
+    const document = store.getDocumentSnapshot(result.documentId)
+
+    if (document) {
+      await workspaceEventBus.emit({
+        type: 'document.created',
+        createdAt: new Date().toISOString(),
+        documentId: document.id,
+        documentTitle: document.title,
+        path: document.path,
+        parentId: document.parentId
+      })
+      await workspaceEventBus.emit({
+        type: 'document.updated',
+        createdAt: new Date().toISOString(),
+        documentId: document.id,
+        documentTitle: document.title,
+        path: document.path,
+        affectedDocumentIds: [document.id],
+        pathChanged: false
+      })
+    }
+
+    return result
   })
 
   ipcMain.handle('knowbook:get-block-reference', (_event, documentPath: string, blockId: string) => {

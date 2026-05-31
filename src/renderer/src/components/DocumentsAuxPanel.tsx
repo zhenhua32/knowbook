@@ -7,6 +7,10 @@ type DocumentsAuxPanelProps = {
   isZh: boolean
   isOpen: boolean
   relationContent: ReactNode
+  webClipUrlDraft: string
+  webClipBusy: boolean
+  onWebClipUrlChange: (value: string) => void
+  onClipWebPage: () => void
   pluginDocumentActions: PluginDocumentAction[]
   pluginActionBusyKey: string | null
   onRunPluginAction: (action: PluginDocumentAction) => void
@@ -32,6 +36,10 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
     isZh,
     isOpen,
     relationContent,
+    webClipUrlDraft,
+    webClipBusy,
+    onWebClipUrlChange,
+    onClipWebPage,
     pluginDocumentActions,
     pluginActionBusyKey,
     onRunPluginAction,
@@ -66,6 +74,29 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
       {relationContent}
 
       <div className="preview-section">
+        <p className="panel-label">{ui.webClipLabel}</p>
+        <div className="ai-panel">
+          <input
+            className="editor-input"
+            onChange={(event) => onWebClipUrlChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault()
+                onClipWebPage()
+              }
+            }}
+            placeholder={ui.webClipPlaceholder}
+            type="url"
+            value={webClipUrlDraft}
+          />
+          <div className="toolbar-inline ai-actions">
+            <button className="secondary-button" disabled={webClipBusy || !webClipUrlDraft.trim()} onClick={onClipWebPage} type="button">
+              {webClipBusy ? ui.clippingWebPage : ui.clipWebPage}
+            </button>
+          </div>
+          <p className="mini-hint">{ui.webClipHint}</p>
+        </div>
+
         {pluginDocumentActions.length > 0 ? (
           <>
             <p className="panel-label">{ui.pluginActionsLabel}</p>

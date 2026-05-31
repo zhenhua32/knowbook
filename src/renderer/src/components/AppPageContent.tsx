@@ -88,6 +88,7 @@ export function AppPageContent({
           documentTree={shell.homeData.documentTree}
           documents={documents}
           isZh={shell.isZh}
+          onClipWebPage={workspace.handleClipWebPage}
           onCreateDocument={workspace.handleCreateDocument}
           onDeleteSelectedDocument={workspace.deleteSelectedDocument}
           onMoveSelectedDocument={workspace.moveSelectedDocument}

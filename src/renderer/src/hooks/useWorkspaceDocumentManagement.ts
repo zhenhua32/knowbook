@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { getBoardDropFieldValue, type BoardDropTarget } from '@shared/board'
 import type {
+  ClipWebPageInput,
   DocumentCatalogEntry,
   DocumentDatabaseColumn,
   DocumentDatabaseFieldValue,
@@ -84,6 +85,24 @@ export function useWorkspaceDocumentManagement({
     onDetailLoadingChange(true)
     onSelectedDocumentIdChange(created.id)
   }, [onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange])
+
+  const handleClipWebPage = useCallback(async (input: ClipWebPageInput) => {
+    try {
+      const clipped = await window.knowbook.clipWebPage(input)
+      const refreshed = await window.knowbook.getHomeData()
+      onHomeDataChange(refreshed)
+      onSelectedDocumentChange(null)
+      onClearEditorSession()
+      onDetailLoadingChange(true)
+      onMoveTargetIdChange('')
+      onSelectedDocumentIdChange(clipped.documentId)
+      onMessage(clipped.warnings.length > 0 ? ui.webClipImportedWithWarnings(clipped.title, clipped.warnings.length) : ui.webClipImported(clipped.title))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.webClipFailed
+      onMessage(message)
+      throw error
+    }
+  }, [onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
 
   const deleteSelectedDocument = useCallback(async () => {
     if (!selectedDocument) {
@@ -227,6 +246,7 @@ export function useWorkspaceDocumentManagement({
     dropToRoot,
     endDrag,
     handleBoardColumnDragOver,
+    handleClipWebPage,
     handleCreateDocument,
     handleRootDragLeave,
     handleRootDragOver,

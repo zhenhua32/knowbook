@@ -424,6 +424,18 @@ export interface CreateDocumentResult {
   id: string
 }
 
+export interface ClipWebPageInput {
+  url: string
+  parentId: string | null
+}
+
+export interface ClipWebPageResult {
+  documentId: string
+  title: string
+  sourceUrl: string
+  warnings: string[]
+}
+
 export interface UpdateDocumentInput {
   title: string
   summary: string
@@ -516,6 +528,7 @@ export interface ElectronApi {
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
+  clipWebPage: (input: ClipWebPageInput) => Promise<ClipWebPageResult>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   getDocumentCatalog: (databaseId?: string | null) => Promise<DocumentCatalogEntry[]>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
