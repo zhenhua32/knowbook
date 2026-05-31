@@ -99,6 +99,19 @@ async function selectLastTwoBodyBlocks(page: Page): Promise<void> {
 }
 
 test.describe('Editor Multi-Block Operations @electron', () => {
+  test('adds a new empty body block from the footer button', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createFreshDocumentEditor(page)
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Start writing here.'])
+
+      await page.getByRole('button', { name: uiText('Add block', '新增块') }).click()
+
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Start writing here.', ''])
+    })
+  })
+
   test('selects a contiguous block range with Shift and deletes it from the toolbar', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 

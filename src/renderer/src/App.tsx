@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import { useAppShellState } from './hooks/useAppShellState'
 import { useAppFeatureDomains } from './hooks/useAppFeatureDomains'
 import { useAppKeyboardShortcuts } from './hooks/useAppKeyboardShortcuts'
@@ -10,10 +10,13 @@ import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
+  const resetAiSession = useCallback(() => {
+    resetAiSessionRef.current()
+  }, [])
   const shell = useAppShellState()
   const databaseDomain = useDatabaseDomainState()
   const documentsDomain = useDocumentsDomainState({
-    resetAiSession: () => resetAiSessionRef.current(),
+    resetAiSession,
     shell
   })
 

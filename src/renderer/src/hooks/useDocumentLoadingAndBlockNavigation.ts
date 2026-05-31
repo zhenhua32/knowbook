@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
 import type { PendingBlockNavigationTarget } from './useDocumentNavigationState'
 
@@ -29,11 +29,25 @@ export function useDocumentLoadingAndBlockNavigation({
   onPendingTargetResolved,
   onPendingTargetMissing
 }: UseDocumentLoadingAndBlockNavigationParams) {
+  const callbackRef = useRef({
+    onDocumentLoaded,
+    onNoDocumentSelected,
+    onPendingTargetMissing,
+    onPendingTargetResolved
+  })
+
+  callbackRef.current = {
+    onDocumentLoaded,
+    onNoDocumentSelected,
+    onPendingTargetMissing,
+    onPendingTargetResolved
+  }
+
   useEffect(() => {
     if (!selectedDocumentId) {
       setSelectedDocument(null)
       setDetailLoading(false)
-      onNoDocumentSelected()
+      callbackRef.current.onNoDocumentSelected()
       return
     }
 
@@ -47,13 +61,13 @@ export function useDocumentLoadingAndBlockNavigation({
 
       if (!detail) {
         setSelectedDocument(null)
-        onNoDocumentSelected()
+        callbackRef.current.onNoDocumentSelected()
         setDetailLoading(false)
         return
       }
 
       setSelectedDocument(detail)
-      onDocumentLoaded(detail)
+      callbackRef.current.onDocumentLoaded(detail)
       setDetailLoading(false)
     }).catch(() => {
       if (mounted) {
@@ -64,7 +78,7 @@ export function useDocumentLoadingAndBlockNavigation({
     return () => {
       mounted = false
     }
-  }, [onDocumentLoaded, onNoDocumentSelected, selectedDocumentId, setDetailLoading, setSelectedDocument])
+  }, [selectedDocumentId, setDetailLoading, setSelectedDocument])
 
   useEffect(() => {
     if (!pendingBlockNavigationTarget || pendingBlockNavigationTarget.documentId !== selectedDocumentId) {
@@ -78,17 +92,15 @@ export function useDocumentLoadingAndBlockNavigation({
     const targetIndex = draftBlocks.findIndex((block) => block.id === pendingBlockNavigationTarget.blockId)
     if (targetIndex === -1) {
       clearPendingTarget()
-      onPendingTargetMissing()
+      callbackRef.current.onPendingTargetMissing()
       return
     }
 
-    onPendingTargetResolved(targetIndex, pendingBlockNavigationTarget.blockId)
+    callbackRef.current.onPendingTargetResolved(targetIndex, pendingBlockNavigationTarget.blockId)
     clearPendingTarget()
   }, [
     clearPendingTarget,
     draftBlocks,
-    onPendingTargetMissing,
-    onPendingTargetResolved,
     pendingBlockNavigationTarget,
     selectedDocument,
     selectedDocumentId
