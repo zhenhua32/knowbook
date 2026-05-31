@@ -13,6 +13,8 @@ export type BlockRichMedia = {
   links: BlockRichMediaLink[]
 }
 
+const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
+
 const IMAGE_REGEX = /!\[([^\]]*)\]\(([^)]+)\)/g
 const LINK_REGEX = /(?<!!)\[([^\]]+)\]\(([^)]+)\)/g
 const PLAIN_URL_REGEX = /(?:^|[\s(])((?:https?:\/\/|file:\/\/)[^\s<>)\]]+)/g
@@ -63,6 +65,14 @@ export function extractBlockRichMedia(content: string): BlockRichMedia {
   }
 
   return { images, links }
+}
+
+export function toBlockRichMediaPreviewUrl(url: string): string {
+  if (!url.startsWith('file://')) {
+    return url
+  }
+
+  return `${KNOWBOOK_ASSET_PREVIEW_SCHEME}://preview/?source=${encodeURIComponent(url)}`
 }
 
 function normalizeMarkdownTarget(rawTarget: string): string | null {

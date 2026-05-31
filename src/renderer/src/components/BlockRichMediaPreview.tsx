@@ -1,4 +1,4 @@
-import { extractBlockRichMedia } from '../utils/blockRichMedia'
+import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 
 type BlockRichMediaPreviewProps = {
   content: string
@@ -35,7 +35,7 @@ export function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProp
                 onClick={() => openUrl(image.url)}
                 type="button"
               >
-                <img alt={image.alt || ui.blockPreviewImagesLabel} className="block-rich-media-image" src={image.url} />
+                <img alt={image.alt || ui.blockPreviewImagesLabel} className="block-rich-media-image" src={toBlockRichMediaPreviewUrl(image.url)} />
                 <span className="block-rich-media-caption">{image.alt || image.url}</span>
               </button>
             ))}

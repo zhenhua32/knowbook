@@ -159,7 +159,17 @@ test.describe('Web Clipping @electron', () => {
         await expect(page.locator('.flash-message')).toContainText(/Clipped webpage into|已剪藏网页并创建文档/)
         await expect(getTitleInput(page)).toHaveValue(articleTitle)
         await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${articleTitle}`)
-        await expect(page.locator('.block-rich-media-image')).toHaveCount(2)
+        await expect.poll(async () => {
+          return page.locator('.block-rich-media-image').evaluateAll((elements) =>
+            elements.map((element) => ({
+              complete: (element as HTMLImageElement).complete,
+              naturalWidthPositive: (element as HTMLImageElement).naturalWidth > 0
+            }))
+          )
+        }).toEqual([
+          { complete: true, naturalWidthPositive: true },
+          { complete: true, naturalWidthPositive: true }
+        ])
         await expect(page.locator('.block-rich-media-link').first()).toBeVisible()
 
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain(`Source URL: ${sourceServer.articleUrl}`)
@@ -221,7 +231,17 @@ test.describe('Web Clipping @electron', () => {
         await expect(getTreeButton(page, bridgeTitle)).toBeVisible()
         await getTreeButton(page, bridgeTitle).click()
         await expect(getTitleInput(page)).toHaveValue(bridgeTitle)
-        await expect(page.locator('.block-rich-media-image')).toHaveCount(2)
+        await expect.poll(async () => {
+          return page.locator('.block-rich-media-image').evaluateAll((elements) =>
+            elements.map((element) => ({
+              complete: (element as HTMLImageElement).complete,
+              naturalWidthPositive: (element as HTMLImageElement).naturalWidth > 0
+            }))
+          )
+        }).toEqual([
+          { complete: true, naturalWidthPositive: true },
+          { complete: true, naturalWidthPositive: true }
+        ])
 
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Bridge clip body created through the local loopback service.')
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Bridge source')

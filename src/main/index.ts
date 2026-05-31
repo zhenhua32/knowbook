@@ -1,8 +1,9 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import electron from 'electron'
 import type { OpenDialogOptions } from 'electron'
+import { fileURLToPath } from 'node:url'
 import type {
   AskAiInput,
   AskAiResult,
@@ -54,15 +55,29 @@ import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, shell } = electron
+const { app, BrowserWindow, clipboard, dialog, ipcMain, shell, protocol } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
+const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: KNOWBOOK_ASSET_PREVIEW_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true
+    }
+  }
+])
 
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
@@ -1164,7 +1179,67 @@ function startBackupSchedule(): void {
   }, BACKUP_INTERVAL_MS)
 }
 
+function registerAssetPreviewProtocol(): void {
+  protocol.handle(KNOWBOOK_ASSET_PREVIEW_SCHEME, (request) => {
+    try {
+      const requestUrl = new URL(request.url)
+      const source = requestUrl.searchParams.get('source')
+      if (!source) {
+        return new Response('Missing asset source.', { status: 400 })
+      }
+
+      const sourceUrl = new URL(source)
+      if (sourceUrl.protocol !== 'file:') {
+        return new Response('Unsupported asset source.', { status: 400 })
+      }
+
+      const assetPath = resolve(fileURLToPath(sourceUrl))
+      const allowedRoot = resolve(webClipAssetRoot)
+      const normalizedAssetPath = process.platform === 'win32' ? assetPath.toLowerCase() : assetPath
+      const normalizedAllowedRoot = process.platform === 'win32' ? allowedRoot.toLowerCase() : allowedRoot
+      const allowedPrefix = `${normalizedAllowedRoot}${sep}`
+
+      if (normalizedAssetPath !== normalizedAllowedRoot && !normalizedAssetPath.startsWith(allowedPrefix)) {
+        return new Response('Asset path is outside the managed web clip asset root.', { status: 403 })
+      }
+
+      const body = readFileSync(assetPath)
+      return new Response(body, {
+        status: 200,
+        headers: {
+          'cache-control': 'public, max-age=31536000, immutable',
+          'content-type': getAssetContentType(assetPath)
+        }
+      })
+    } catch (error) {
+      console.warn('Failed to resolve local web clip asset preview.', error)
+      return new Response('Asset preview failed.', { status: 404 })
+    }
+  })
+}
+
+function getAssetContentType(filePath: string): string {
+  const extension = extname(filePath).toLowerCase()
+
+  switch (extension) {
+    case '.gif':
+      return 'image/gif'
+    case '.jpeg':
+    case '.jpg':
+      return 'image/jpeg'
+    case '.png':
+      return 'image/png'
+    case '.svg':
+      return 'image/svg+xml'
+    case '.webp':
+      return 'image/webp'
+    default:
+      return 'application/octet-stream'
+  }
+}
+
 app.whenReady().then(async () => {
+  registerAssetPreviewProtocol()
   await pluginHost.loadAll()
   appUpdateManager.initialize()
   registerWorkspaceEventHandlers()

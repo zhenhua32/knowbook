@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { extractBlockRichMedia } from '../src/renderer/src/utils/blockRichMedia.ts'
+import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../src/renderer/src/utils/blockRichMedia.ts'
 
 test('extractBlockRichMedia collects markdown images, markdown links, and plain urls', () => {
   const media = extractBlockRichMedia([
@@ -33,4 +33,15 @@ test('extractBlockRichMedia ignores unsupported protocols and de-duplicates repe
     { label: 'Repeat', url: 'https://example.com/a' },
     { label: 'Local', url: 'file:///tmp/local.txt' }
   ])
+})
+
+test('toBlockRichMediaPreviewUrl rewrites local file urls to the app preview scheme', () => {
+  assert.equal(
+    toBlockRichMediaPreviewUrl('file:///C:/Users/example/asset.png'),
+    'knowbook-asset://preview/?source=file%3A%2F%2F%2FC%3A%2FUsers%2Fexample%2Fasset.png'
+  )
+  assert.equal(
+    toBlockRichMediaPreviewUrl('https://example.com/asset.png'),
+    'https://example.com/asset.png'
+  )
 })
