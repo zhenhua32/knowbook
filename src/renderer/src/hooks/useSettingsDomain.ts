@@ -10,9 +10,6 @@ type UseSettingsDomainParams = {
   aiApiKeyDraft: string
   aiAutoSummaryOnSaveDraft: boolean
   aiBaseUrlDraft: string
-  aiEmbeddingApiKeyDraft: string
-  aiEmbeddingBaseUrlDraft: string
-  aiEmbeddingModelDraft: string
   aiEnabledDraft: boolean
   aiEndpoint: string
   aiModelDraft: string
@@ -23,9 +20,6 @@ type UseSettingsDomainParams = {
   onAiApiKeyChange: (value: string) => void
   onAiAutoSummaryOnSaveChange: (value: boolean) => void
   onAiBaseUrlChange: (value: string) => void
-  onAiEmbeddingApiKeyChange: (value: string) => void
-  onAiEmbeddingBaseUrlChange: (value: string) => void
-  onAiEmbeddingModelChange: (value: string) => void
   onAiEnabledChange: (value: boolean) => void
   onAiModelChange: (value: string) => void
   onBackupNow: () => void
@@ -45,9 +39,6 @@ export function useSettingsDomain({
   aiApiKeyDraft,
   aiAutoSummaryOnSaveDraft,
   aiBaseUrlDraft,
-  aiEmbeddingApiKeyDraft,
-  aiEmbeddingBaseUrlDraft,
-  aiEmbeddingModelDraft,
   aiEnabledDraft,
   aiEndpoint,
   aiModelDraft,
@@ -58,9 +49,6 @@ export function useSettingsDomain({
   onAiApiKeyChange,
   onAiAutoSummaryOnSaveChange,
   onAiBaseUrlChange,
-  onAiEmbeddingApiKeyChange,
-  onAiEmbeddingBaseUrlChange,
-  onAiEmbeddingModelChange,
   onAiEnabledChange,
   onAiModelChange,
   onBackupNow,
@@ -85,9 +73,6 @@ export function useSettingsDomain({
     aiApiKeyDraft,
     aiAutoSummaryOnSaveDraft,
     aiBaseUrlDraft,
-    aiEmbeddingApiKeyDraft,
-    aiEmbeddingBaseUrlDraft,
-    aiEmbeddingModelDraft,
     aiEnabledDraft,
     aiEndpoint,
     aiModelDraft,
@@ -100,9 +85,6 @@ export function useSettingsDomain({
     onAiApiKeyChange,
     onAiAutoSummaryOnSaveChange,
     onAiBaseUrlChange,
-    onAiEmbeddingApiKeyChange,
-    onAiEmbeddingBaseUrlChange,
-    onAiEmbeddingModelChange,
     onAiEnabledChange,
     onAiModelChange,
     onBackupNow,

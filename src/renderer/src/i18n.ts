@@ -144,17 +144,14 @@ function createUiText(language: UiLanguage) {
     enableAiFeatures: zh ? '启用 AI 功能' : 'Enable AI features',
     autoSummaryWhenEmpty: zh ? '摘要为空时自动生成摘要' : 'Auto-generate summary when summary is empty',
     baseUrl: zh ? '基础地址' : 'Base URL',
-    embeddingBaseUrl: zh ? '向量地址（留空则自动推导）' : 'Embedding Base URL (leave blank to auto-derive)',
     model: zh ? '模型' : 'Model',
-    embeddingModel: zh ? '向量模型' : 'Embedding model',
     apiKeyLabel: zh ? 'API Key（留空表示保持当前值）' : 'API Key (leave blank to keep current)',
-    embeddingApiKeyLabel: zh ? '向量 API Key（留空则使用上述 Key）' : 'Embedding API Key (leave blank to use above)',
     currentKey: (configured: boolean) => zh
       ? `当前密钥：${configured ? '已配置' : '未配置'}`
       : `Current key: ${configured ? 'configured' : 'missing'}`,
     aiHintOverview: zh
-      ? 'Chat 模型负责问答，Embedding 模型负责本地语义检索与 RAG 上下文缓存。'
-      : 'Chat model answers questions. Embedding model powers local semantic retrieval and RAG context caching.',
+      ? 'Chat 模型负责问答、自动摘要和相关笔记检索增强。'
+      : 'Chat models power Q&A, auto-summary, and related-note retrieval enhancements.',
     aiHintSummary: zh
       ? '自动摘要只会在文档保存时触发，并且仅在当前摘要为空或仍为默认占位内容时运行。'
       : 'Auto-summary runs only on document save when the current summary is empty or still using the default placeholder.',
@@ -440,7 +437,7 @@ function createUiText(language: UiLanguage) {
     thinking: zh ? '思考中...' : 'Thinking...',
     manualAiHint: zh ? '手动执行会立刻复用当前已启用的摘要自动化。' : 'Manual run reuses the currently enabled summary automation for this document immediately.',
     matchPercent: (score: number) => zh ? `${score}% 匹配` : `${score}% match`,
-    semanticHint: zh ? '语义检索会扫描工作区内其他文档，并将最相关的结果送入 AI 提示词。' : 'Semantic retrieval will search the rest of the workspace and feed the strongest matches into the AI prompt.',
+    semanticHint: zh ? '相关笔记检索会基于标题、摘要与正文关键词在工作区内查找上下文。' : 'Related-note retrieval searches workspace titles, summaries, and block content with local keyword matching.',
     emptyDocumentState: zh ? '从左侧树或最近文档列表中选择一个文档，以查看它的块内容和关联关系。' : 'Select a document from the tree or recent list to inspect its blocks and relationships.',
     storageLabel: zh ? '存储' : 'Storage',
     storageTitle: zh ? 'SQLite 与树形 Markdown 备份' : 'SQLite and nested markdown backup',
@@ -647,7 +644,7 @@ function createUiText(language: UiLanguage) {
     globalSearchPrompt: zh ? '输入关键字搜索所有文档标题和内容块。' : 'Type to search all document titles and blocks.',
     titleMatchLabel: zh ? '标题' : 'Title',
     blockMatchFallback: zh ? '块' : 'block',
-    semanticSearchFailed: zh ? '语义检索失败。' : 'Semantic search failed.',
+    semanticSearchFailed: zh ? '相关笔记检索失败。' : 'Related note search failed.',
     aiRequestFailed: zh ? 'AI 请求失败。' : 'AI request failed.',
     copyFailed: zh ? '复制失败。' : 'Copy failed.',
     copyTextFailed: zh ? '复制文本失败。' : 'Copy text failed.',

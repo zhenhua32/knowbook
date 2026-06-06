@@ -31,7 +31,7 @@
 - **Shared** (`src/shared/`): Contracts, types, and small utilities used by both main and renderer.
 
 ## Core Module Responsibilities
-- `src/main/database/store.ts` — SQLite schema, document/tree operations, database entities, embeddings cache, semantic search candidates, workspace events.
+- `src/main/database/store.ts` — SQLite schema, document/tree operations, database entities, related-note search candidates, workspace events.
 - `src/main/backup/exporter.ts` — Markdown export/backup of all documents.
 - `src/main/plugin-host.ts` (and related plugin SDK files) — Workspace plugin system, plugin lifecycle, plugin actions/dashboard cards.
 - `src/main/event-bus.ts` — Internal workspace event bus; plugins and features subscribe to document/AI/plugin events.
@@ -40,7 +40,7 @@
 
 ## Important Conventions & Quirks
 - **Database file location**: `app.getPath('userData')/storage/knowbook.db` (created by main). Tests create isolated temp DBs.
-- **Embeddings & AI**: Optional OpenAI-compatible endpoints. Embeddings are cached per `(document, model, contentHash)` in SQLite. Auto-summary runs via an event-bus subscriber on document update when AI is enabled.
+- **AI & related notes**: Optional OpenAI-compatible endpoints. Related-note retrieval uses local keyword matching over document title, summary, and block content. Auto-summary runs via an event-bus subscriber on document update when AI is enabled.
 - **Plugins**: Two plugin roots — workspace `plugins/` (dev) and user-data `plugins/`. Workspace plugins can't be replaced by user install (error); user-data plugins can be replaced. Plugin manifest fields: id, name, version, entry (optional), enabledByDefault.
 - **Document tree**: Hierarchical by `parentId`. Path is materialized (e.g., `Home/Product/Specs`). Renaming/moving rewrites descendant paths automatically. Path normalization uses title; siblings get `Untitled`, `Untitled 1`, ... on conflict.
 - **Block references & linking**: Stored as `blockId` references. When a document title changes, link labels are updated; outgoing/incoming links are computed via markdown link parsing.
@@ -55,7 +55,7 @@
 ## Working with AI Features (non-breaking guidance)
 - All AI operations go through `window.knowbook.*` IPC methods and require `aiConfig.enabled` + API key.
 - To add new AI automation: (1) add IPC handler in main, (2) define event subscription (event-bus) if it should run automatically, (3) update contracts types, (4) optionally add UI toggle in renderer settings.
-- Embedding sync is queued and debounced. When AI config changes (model/embeddingModel), backfill or delete stale embeddings via event-bus handlers already present.
+- Related-note retrieval is computed on demand from SQLite-backed document candidates. AI config changes do not trigger any background embedding sync or vector backfill.
 
 ## Plugin Development Notes
 - Plugin host loads manifests and entry modules. If entry is omitted, host may auto-resolve common entry names.

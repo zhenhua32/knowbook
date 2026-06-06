@@ -172,21 +172,7 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     type: 'ai.config.updated',
     createdAt: '2026-05-02T00:00:00.000Z',
     model: 'gpt-4o-mini',
-    embeddingModel: 'text-embedding-3-small',
-    previousEmbeddingModel: 'old',
-    embeddingModelChanged: true,
     aiEnabled: true
   })
-  assert.equal(aiConfigChanged.description.includes('switched the embedding model'), true)
-
-  const aiConfigSameEmbedding = createWorkspaceEventRecord({
-    type: 'ai.config.updated',
-    createdAt: '2026-05-02T00:00:00.000Z',
-    model: 'gpt-4o-mini',
-    embeddingModel: 'text-embedding-3-small',
-    previousEmbeddingModel: 'text-embedding-3-small',
-    embeddingModelChanged: false,
-    aiEnabled: true
-  })
-  assert.equal(aiConfigSameEmbedding.description, 'Saved AI settings for chat model gpt-4o-mini.')
+  assert.equal(aiConfigChanged.description, 'Saved AI settings for chat model gpt-4o-mini.')
 })

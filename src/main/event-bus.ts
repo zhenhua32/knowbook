@@ -47,9 +47,6 @@ export type WorkspaceEvent =
       type: 'ai.config.updated'
       createdAt: string
       model: string
-      embeddingModel: string
-      previousEmbeddingModel: string
-      embeddingModelChanged: boolean
       aiEnabled: boolean
     }
 
@@ -99,9 +96,7 @@ export function createWorkspaceEventRecord(event: WorkspaceEvent): Omit<Workspac
       return buildRecord(event.type, 'Document deleted', description, null, event.createdAt)
     }
     case 'ai.config.updated': {
-      const description = event.embeddingModelChanged
-        ? `Saved AI settings and switched the embedding model to ${event.embeddingModel}.`
-        : `Saved AI settings for chat model ${event.model}.`
+      const description = `Saved AI settings for chat model ${event.model}.`
       return buildRecord(event.type, 'AI settings updated', description, null, event.createdAt)
     }
   }

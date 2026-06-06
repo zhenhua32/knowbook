@@ -125,8 +125,6 @@ async function saveAiSettings(
   page: Page,
   baseUrl: string,
   model: string,
-  embeddingBaseUrl: string,
-  embeddingModel: string,
   autoSummaryOnSave = true
 ): Promise<void> {
   await openSettingsPage(page)
@@ -141,8 +139,6 @@ async function saveAiSettings(
   await page.getByLabel(uiText('Base URL', '基础地址')).fill(baseUrl)
   await page.getByLabel(uiText('Model', '模型')).fill(model)
   await page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）')).fill('test-api-key')
-  await page.getByLabel(uiText('Embedding Base URL (leave blank to auto-derive)', '向量地址（留空则自动推导）')).fill(embeddingBaseUrl)
-  await page.getByLabel(uiText('Embedding model', '向量模型')).fill(embeddingModel)
 
   await page.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置') }).click()
   await expect(page.locator('.flash-message')).toContainText(/AI settings saved\.|AI 设置已保存。/)
@@ -154,11 +150,8 @@ test.describe('AI Settings @electron', () => {
 
     const baseUrl = 'https://example.invalid/v1'
     const model = 'gpt-4.1-mini'
-    const embeddingBaseUrl = 'https://example.invalid/embeddings'
-    const embeddingModel = 'text-embedding-3-small'
-
     await withElectronApp(async ({ page }) => {
-      await saveAiSettings(page, baseUrl, model, embeddingBaseUrl, embeddingModel)
+      await saveAiSettings(page, baseUrl, model)
 
       await openDashboardPage(page)
       await expect(page.locator('.meta-grid')).toContainText(baseUrl)
@@ -168,8 +161,6 @@ test.describe('AI Settings @electron', () => {
       await expect(page.getByLabel(uiText('Auto-generate summary when summary is empty', '摘要为空时自动生成摘要'))).toBeChecked()
       await expect(page.getByLabel(uiText('Base URL', '基础地址'))).toHaveValue(baseUrl)
       await expect(page.getByLabel(uiText('Model', '模型'))).toHaveValue(model)
-      await expect(page.getByLabel(uiText('Embedding Base URL (leave blank to auto-derive)', '向量地址（留空则自动推导）'))).toHaveValue(embeddingBaseUrl)
-      await expect(page.getByLabel(uiText('Embedding model', '向量模型'))).toHaveValue(embeddingModel)
       await expect(page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）'))).toHaveValue('')
     })
   })
@@ -187,7 +178,7 @@ test.describe('AI Settings @electron', () => {
       const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
       await expect(runAutomationsButton).toBeEnabled()
 
-      await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini', 'https://example.invalid/embeddings', 'text-embedding-3-small')
+      await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini')
 
       await openAiPage(page)
       await expect(page.locator('.ai-panel .pill, .panel-head .pill')).toContainText(`AI Config Doc ${suffix}`)
@@ -204,7 +195,7 @@ test.describe('AI Settings @electron', () => {
 
     try {
       await withElectronApp(async ({ page }) => {
-        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', mockAiServer.baseUrl, 'text-embedding-3-small', false)
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', false)
 
         await openDocumentsPage(page)
         await createRootDocument(
@@ -215,7 +206,7 @@ test.describe('AI Settings @electron', () => {
 
         await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')
 
-        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', mockAiServer.baseUrl, 'text-embedding-3-small', true)
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', true)
 
         await openDocumentsPage(page)
         await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')

@@ -243,12 +243,9 @@ export interface DocumentDetail {
 export interface AiConfig {
   enabled: boolean
   baseUrl: string
-  embeddingBaseUrl: string
   model: string
-  embeddingModel: string
   autoSummaryOnSave: boolean
   hasApiKey: boolean
-  hasEmbeddingApiKey: boolean
 }
 
 export interface SemanticSearchResult {
@@ -503,10 +500,7 @@ export interface UpdateDocumentDatabaseValueInput {
 export interface UpdateAiConfigInput {
   enabled: boolean
   baseUrl: string
-  embeddingBaseUrl?: string
-  embeddingApiKey?: string
   model: string
-  embeddingModel: string
   autoSummaryOnSave: boolean
   apiKey?: string
 }

@@ -199,11 +199,6 @@ interface BlockReferenceRow {
   content: string
 }
 
-interface DocumentEmbeddingRow {
-  content_hash: string
-  embedding_json: string
-}
-
 interface WorkspaceEventRow {
   id: string
   type: WorkspaceEventType
@@ -736,15 +731,10 @@ export class KnowbookStore {
   updateAiConfig(input: UpdateAiConfigInput): void {
     this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
-    this.saveSetting('ai.embeddingBaseUrl', input.embeddingBaseUrl?.trim() ?? '')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
-    this.saveSetting('ai.embeddingModel', input.embeddingModel.trim() || 'text-embedding-3-small')
     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
-    }
-    if (typeof input.embeddingApiKey === 'string' && input.embeddingApiKey.trim().length > 0) {
-      this.saveSetting('ai.embeddingApiKey', input.embeddingApiKey.trim())
     }
   }
 
@@ -1024,10 +1014,6 @@ export class KnowbookStore {
     return this.readSetting('ai.apiKey')
   }
 
-  getEmbeddingApiKey(): string | null {
-    return this.readSetting('ai.embeddingApiKey')
-  }
-
   getSemanticSearchCandidates(input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> = {}): SemanticSearchCandidate[] {
     const documents = input.excludeDocumentId
       ? this.db.prepare(`
@@ -1093,60 +1079,6 @@ export class KnowbookStore {
         contentHash: createHash('sha256').update(content).digest('hex')
       }
     })
-  }
-
-  getCachedDocumentEmbedding(documentId: string, model: string, contentHash: string): number[] | null {
-    const row = this.db.prepare(`
-      SELECT content_hash, embedding_json
-      FROM document_embeddings
-      WHERE document_id = ? AND model = ?
-    `).get(documentId, model) as DocumentEmbeddingRow | undefined
-
-    if (!row || row.content_hash !== contentHash) {
-      return null
-    }
-
-    try {
-      const embedding = JSON.parse(row.embedding_json) as unknown
-      if (!Array.isArray(embedding) || embedding.some((value) => typeof value !== 'number')) {
-        return null
-      }
-      return embedding
-    } catch {
-      return null
-    }
-  }
-
-  saveDocumentEmbedding(documentId: string, model: string, contentHash: string, embedding: number[]): void {
-    const now = new Date().toISOString()
-    this.db.prepare(`
-      INSERT INTO document_embeddings (document_id, model, content_hash, embedding_json, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(document_id, model)
-      DO UPDATE SET content_hash = excluded.content_hash, embedding_json = excluded.embedding_json, updated_at = excluded.updated_at
-    `).run(documentId, model, contentHash, JSON.stringify(embedding), now)
-  }
-
-  deleteDocumentEmbeddings(documentId: string, model?: string): void {
-    if (model) {
-      this.db.prepare(`
-        DELETE FROM document_embeddings
-        WHERE document_id = ? AND model = ?
-      `).run(documentId, model)
-      return
-    }
-
-    this.db.prepare(`
-      DELETE FROM document_embeddings
-      WHERE document_id = ?
-    `).run(documentId)
-  }
-
-  deleteEmbeddingsByModel(model: string): void {
-    this.db.prepare(`
-      DELETE FROM document_embeddings
-      WHERE model = ?
-    `).run(model)
   }
 
   private getDocumentIdsInPathSubtree(rootPath: string): string[] {
@@ -2245,16 +2177,12 @@ export class KnowbookStore {
 
   private getAiConfig(): AiConfig {
     const baseUrl = this.readSetting('ai.baseUrl') ?? 'https://api.openai.com/v1'
-    const embeddingBaseUrl = this.readSetting('ai.embeddingBaseUrl') ?? ''
     return {
       enabled: this.readSetting('ai.enabled') !== 'false',
       baseUrl,
-      embeddingBaseUrl,
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
-      embeddingModel: this.readSetting('ai.embeddingModel') ?? 'text-embedding-3-small',
       autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
-      hasApiKey: Boolean(this.readSetting('ai.apiKey')),
-      hasEmbeddingApiKey: Boolean(this.readSetting('ai.embeddingApiKey'))
+      hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
 
@@ -2872,7 +2800,6 @@ export class KnowbookStore {
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')
       this.saveSetting('ai.model', 'gpt-4.1-mini')
-      this.saveSetting('ai.embeddingModel', 'text-embedding-3-small')
       this.saveSetting('ai.autoSummaryOnSave', 'false')
     })
 

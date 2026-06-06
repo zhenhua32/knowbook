@@ -25,12 +25,9 @@ const emptyState: HomeData = {
   aiConfig: {
     enabled: false,
     baseUrl: '',
-    embeddingBaseUrl: '',
     model: '',
-    embeddingModel: '',
     autoSummaryOnSave: false,
-    hasApiKey: false,
-    hasEmbeddingApiKey: false
+    hasApiKey: false
   },
   documentTree: [],
   graph: {

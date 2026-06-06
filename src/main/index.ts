@@ -49,7 +49,7 @@ import type {
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { MarkdownBackupService } from './backup/exporter'
 import { MarkdownRestoreService } from './backup/importer'
-import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore, type SemanticSearchCandidate } from './database/store'
+import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { AppUpdateManager } from './update-manager'
@@ -82,7 +82,6 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
-let embeddingSyncQueue: Promise<void> = Promise.resolve()
 
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
@@ -147,22 +146,6 @@ function registerWorkspaceEventHandlers(): void {
 
   workspaceEventBus.subscribe(async (event) => {
     await pluginHost.handleWorkspaceEvent(event)
-  })
-
-  workspaceEventBus.subscribe((event) => {
-    switch (event.type) {
-      case 'document.created':
-        queueEmbeddingSyncForDocuments([event.documentId])
-        break
-      case 'document.updated':
-      case 'document.moved':
-      case 'document.deleted':
-        queueEmbeddingSyncForDocuments(event.affectedDocumentIds)
-        break
-      case 'ai.config.updated':
-        queueEmbeddingBackfill(event.embeddingModelChanged ? event.previousEmbeddingModel : null)
-        break
-    }
   })
 
   workspaceEventBus.subscribe(async (event) => {
@@ -411,18 +394,13 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
-    const previousConfig = store.getHomeData(backupRoot).aiConfig
     store.updateAiConfig(input)
-    const nextEmbeddingModel = input.embeddingModel.trim() || 'text-embedding-3-small'
     const nextModel = input.model.trim() || 'gpt-4.1-mini'
 
     await workspaceEventBus.emit({
       type: 'ai.config.updated',
       createdAt: new Date().toISOString(),
       model: nextModel,
-      embeddingModel: nextEmbeddingModel,
-      previousEmbeddingModel: previousConfig.embeddingModel,
-      embeddingModelChanged: previousConfig.embeddingModel !== nextEmbeddingModel,
       aiEnabled: input.enabled
     })
   })
@@ -679,7 +657,7 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
       query: input.prompt,
       excludeDocumentId: input.documentId,
       limit: 4
-    }, home.aiConfig, apiKey)
+    })
   } catch (error) {
     console.warn('Semantic retrieval failed. Falling back to current document only.', error)
   }
@@ -776,12 +754,7 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
 }
 
 async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<SemanticSearchResult[]> {
-  // 不检查 aiConfig.enabled 和 apiKey，因为文本搜索不需要它们
-  // 向量搜索会在 buildSemanticContextNotes 内部处理失败并降级
-  const home = store.getHomeData(backupRoot)
-  const apiKey = store.getAiApiKey() ?? ''
-  
-  const notes = await buildSemanticContextNotes(input, home.aiConfig, apiKey)
+  const notes = await buildSemanticContextNotes(input)
   return notes.map(({ content, contentHash, ...note }) => note)
 }
 
@@ -867,9 +840,7 @@ function shouldGenerateSummary(summary: string, blockContents: string[]): boolea
 }
 
 async function buildSemanticContextNotes(
-  input: SearchSemanticNotesInput,
-  aiConfig: HomeData['aiConfig'],
-  apiKey: string
+  input: SearchSemanticNotesInput
 ): Promise<SemanticContextNote[]> {
   const query = input.query.trim()
   if (!query) {
@@ -883,47 +854,8 @@ async function buildSemanticContextNotes(
     return []
   }
 
-  const embeddingsSucceeded = await ensureDocumentEmbeddings(candidates, aiConfig, apiKey)
   const normalizedLimit = Math.min(Math.max(input.limit ?? 4, 1), 8)
 
-  if (embeddingsSucceeded) {
-    const embeddingApiKey = store.getEmbeddingApiKey()
-    const [queryEmbedding] = await createEmbeddings([query], aiConfig.baseUrl, apiKey, aiConfig.embeddingModel, aiConfig.embeddingBaseUrl, embeddingApiKey ?? undefined).catch(() => [null])
-    if (queryEmbedding) {
-      const scored = candidates
-        .map((candidate) => {
-          const embedding = store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
-          if (!embedding) {
-            return null
-          }
-          return {
-            ...candidate,
-            score: cosineSimilarity(queryEmbedding, embedding)
-          }
-        })
-        .filter((candidate): candidate is SemanticSearchCandidate & { score: number } => candidate !== null)
-        .sort((left, right) => right.score - left.score)
-
-      if (scored.length > 0) {
-        const topMatches = scored.slice(0, normalizedLimit)
-        const filteredMatches = topMatches.filter((candidate) => candidate.score > 0.08)
-        const finalMatches = filteredMatches.length > 0 ? filteredMatches : topMatches.slice(0, 1).filter((candidate) => candidate.score > 0)
-        return finalMatches.map((candidate) => ({
-          documentId: candidate.documentId,
-          title: candidate.title,
-          path: candidate.path,
-          summary: candidate.summary,
-          snippet: candidate.snippet,
-          score: Number(candidate.score.toFixed(3)),
-          content: candidate.content,
-          contentHash: candidate.contentHash
-        }))
-      }
-      // If vector search produced no results, fall through to text-based search
-    }
-  }
-
-  // Fallback to keyword-based text search when vector embeddings are unavailable
   const scored = candidates
     .map((candidate) => {
       const text = (candidate.title + ' ' + candidate.summary + ' ' + candidate.content + ' ' + candidate.snippet).toLowerCase()
@@ -944,220 +876,6 @@ async function buildSemanticContextNotes(
     content: candidate.content,
     contentHash: candidate.contentHash
   }))
-}
-
-async function ensureDocumentEmbeddings(
-  candidates: SemanticSearchCandidate[],
-  aiConfig: HomeData['aiConfig'],
-  apiKey: string
-): Promise<boolean> {
-  const staleCandidates = candidates.filter((candidate) => {
-    return !store.getCachedDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash)
-  })
-
-  if (staleCandidates.length === 0) {
-    return true
-  }
-
-  const chunks = chunkArray(staleCandidates, 20)
-  for (const chunk of chunks) {
-    try {
-      const embeddings = await createEmbeddings(
-        chunk.map((candidate) => candidate.content),
-        aiConfig.baseUrl,
-        apiKey,
-        aiConfig.embeddingModel,
-        aiConfig.embeddingBaseUrl,
-        store.getEmbeddingApiKey() ?? undefined
-      )
-
-      embeddings.forEach((embedding, index) => {
-        const candidate = chunk[index]
-        if (!candidate) {
-          return
-        }
-        store.saveDocumentEmbedding(candidate.documentId, aiConfig.embeddingModel, candidate.contentHash, embedding)
-      })
-    } catch (error) {
-      console.warn('Failed to generate embeddings, using text fallback:', error)
-      return false
-    }
-  }
-  return true
-}
-
-function queueEmbeddingSyncForDocuments(documentIds: string[]): void {
-  const uniqueDocumentIds = [...new Set(documentIds.filter((documentId) => documentId.trim().length > 0))]
-  if (uniqueDocumentIds.length === 0) {
-    return
-  }
-
-  embeddingSyncQueue = embeddingSyncQueue
-    .catch(() => undefined)
-    .then(async () => {
-      for (const documentId of uniqueDocumentIds) {
-        try {
-          await syncEmbeddingForDocument(documentId)
-        } catch (error) {
-          console.warn(`Failed to sync embedding for document ${documentId}.`, error)
-        }
-      }
-    })
-}
-
-function queueEmbeddingBackfill(staleModel: string | null = null): void {
-  embeddingSyncQueue = embeddingSyncQueue
-    .catch(() => undefined)
-    .then(async () => {
-      try {
-        await backfillAllEmbeddings(staleModel)
-      } catch (error) {
-        console.warn('Failed to backfill embeddings after AI config change.', error)
-      }
-    })
-}
-
-async function syncEmbeddingForDocument(documentId: string): Promise<void> {
-  const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
-    return
-  }
-
-  const apiKey = store.getAiApiKey()
-  if (!apiKey) {
-    return
-  }
-
-  const candidate = store.getSemanticSearchCandidates().find((item) => item.documentId === documentId)
-  if (!candidate) {
-    store.deleteDocumentEmbeddings(documentId)
-    return
-  }
-
-  if (store.getCachedDocumentEmbedding(candidate.documentId, home.aiConfig.embeddingModel, candidate.contentHash)) {
-    return
-  }
-
-  const [embedding] = await createEmbeddings(
-    [candidate.content],
-    home.aiConfig.baseUrl,
-    apiKey,
-    home.aiConfig.embeddingModel,
-    home.aiConfig.embeddingBaseUrl,
-    store.getEmbeddingApiKey() ?? undefined
-  )
-
-  if (!embedding) {
-    return
-  }
-
-  store.saveDocumentEmbedding(candidate.documentId, home.aiConfig.embeddingModel, candidate.contentHash, embedding)
-}
-
-async function backfillAllEmbeddings(staleModel: string | null = null): Promise<void> {
-  const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
-    return
-  }
-
-  const apiKey = store.getAiApiKey()
-  if (!apiKey) {
-    return
-  }
-
-  if (staleModel && staleModel !== home.aiConfig.embeddingModel) {
-    store.deleteEmbeddingsByModel(staleModel)
-  }
-
-  const candidates = store.getSemanticSearchCandidates()
-  if (candidates.length === 0) {
-    return
-  }
-
-  await ensureDocumentEmbeddings(candidates, home.aiConfig, apiKey)
-}
-
-async function createEmbeddings(
-  inputs: string[],
-  baseUrl: string,
-  apiKey: string,
-  embeddingModel: string,
-  embeddingBaseUrl?: string,
-  embeddingApiKey?: string
-): Promise<number[][]> {
-  if (inputs.length === 0) {
-    return []
-  }
-
-  // 使用 embeddingBaseUrl 或自动推导嵌入端点
-  let endpoint: string
-  if (embeddingBaseUrl && embeddingBaseUrl.trim()) {
-    endpoint = `${embeddingBaseUrl.replace(/\/$/, '')}/embeddings`
-  } else {
-    // 从 baseUrl 推导：移除可能的聊天路径（如 /chat/completions）
-    const normalizedBaseUrl = baseUrl.replace(/\/$/, '')
-    const baseUrlWithoutChat = normalizedBaseUrl.replace(/\/chat\/completions$/, '')
-    endpoint = `${baseUrlWithoutChat}/embeddings`
-  }
-
-  // 使用 embeddingApiKey 或默认 apiKey
-  const effectiveApiKey = embeddingApiKey && embeddingApiKey.trim() ? embeddingApiKey : apiKey
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${effectiveApiKey}`
-    },
-    body: JSON.stringify({
-      model: embeddingModel,
-      input: inputs
-    })
-  })
-
-  if (!response.ok) {
-    const errorBody = await response.text()
-    throw new Error(`Embedding request failed (${response.status}): ${errorBody}`)
-  }
-
-  const payload = (await response.json()) as {
-    data?: Array<{ embedding?: number[] }>
-  }
-  const embeddings = payload.data?.map((item) => item.embedding ?? []) ?? []
-  if (embeddings.length !== inputs.length || embeddings.some((embedding) => embedding.length === 0)) {
-    throw new Error('Embedding response was incomplete.')
-  }
-
-  return embeddings
-}
-
-function cosineSimilarity(left: number[], right: number[]): number {
-  if (left.length === 0 || right.length === 0 || left.length !== right.length) {
-    return 0
-  }
-
-  let dotProduct = 0
-  let leftNorm = 0
-  let rightNorm = 0
-
-  for (let index = 0; index < left.length; index += 1) {
-    dotProduct += left[index] * right[index]
-    leftNorm += left[index] * left[index]
-    rightNorm += right[index] * right[index]
-  }
-
-  if (leftNorm === 0 || rightNorm === 0) {
-    return 0
-  }
-
-  return dotProduct / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm))
-}
-
-function chunkArray<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = []
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size))
-  }
-  return chunks
 }
 
 function sanitizeMarkdownFileName(fileName: string): string {

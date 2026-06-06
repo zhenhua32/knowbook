@@ -23,12 +23,9 @@ export function useAiState({
 }: UseAiStateParams) {
   const [aiEnabledDraft, setAiEnabledDraft] = useState(aiConfig.enabled)
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState(aiConfig.baseUrl)
-  const [aiEmbeddingBaseUrlDraft, setAiEmbeddingBaseUrlDraft] = useState(aiConfig.embeddingBaseUrl || '')
   const [aiModelDraft, setAiModelDraft] = useState(aiConfig.model)
-  const [aiEmbeddingModelDraft, setAiEmbeddingModelDraft] = useState(aiConfig.embeddingModel)
   const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(aiConfig.autoSummaryOnSave)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
-  const [aiEmbeddingApiKeyDraft, setAiEmbeddingApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
@@ -41,17 +38,12 @@ export function useAiState({
   useEffect(() => {
     setAiEnabledDraft(aiConfig.enabled)
     setAiBaseUrlDraft(aiConfig.baseUrl)
-    setAiEmbeddingBaseUrlDraft(aiConfig.embeddingBaseUrl || '')
     setAiModelDraft(aiConfig.model)
-    setAiEmbeddingModelDraft(aiConfig.embeddingModel)
     setAiAutoSummaryOnSaveDraft(aiConfig.autoSummaryOnSave)
     setAiApiKeyDraft('')
-    setAiEmbeddingApiKeyDraft('')
   }, [
     aiConfig.autoSummaryOnSave,
     aiConfig.baseUrl,
-    aiConfig.embeddingBaseUrl,
-    aiConfig.embeddingModel,
     aiConfig.enabled,
     aiConfig.model
   ])
@@ -69,10 +61,7 @@ export function useAiState({
       await window.knowbook.updateAiConfig({
         enabled: aiEnabledDraft,
         baseUrl: aiBaseUrlDraft,
-        embeddingBaseUrl: aiEmbeddingBaseUrlDraft,
-        embeddingApiKey: aiEmbeddingApiKeyDraft,
         model: aiModelDraft,
-        embeddingModel: aiEmbeddingModelDraft,
         autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
         apiKey: aiApiKeyDraft
       })
@@ -90,9 +79,6 @@ export function useAiState({
     aiAutoSummaryOnSaveDraft,
     aiApiKeyDraft,
     aiBaseUrlDraft,
-    aiEmbeddingApiKeyDraft,
-    aiEmbeddingBaseUrlDraft,
-    aiEmbeddingModelDraft,
     aiEnabledDraft,
     aiModelDraft,
     onHomeDataChange,
@@ -179,18 +165,12 @@ export function useAiState({
     setAiEnabledDraft,
     aiBaseUrlDraft,
     setAiBaseUrlDraft,
-    aiEmbeddingBaseUrlDraft,
-    setAiEmbeddingBaseUrlDraft,
     aiModelDraft,
     setAiModelDraft,
-    aiEmbeddingModelDraft,
-    setAiEmbeddingModelDraft,
     aiAutoSummaryOnSaveDraft,
     setAiAutoSummaryOnSaveDraft,
     aiApiKeyDraft,
     setAiApiKeyDraft,
-    aiEmbeddingApiKeyDraft,
-    setAiEmbeddingApiKeyDraft,
     aiSaving,
     aiPromptDraft,
     setAiPromptDraft,

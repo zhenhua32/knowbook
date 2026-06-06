@@ -22,12 +22,6 @@ type DashboardSettingsSectionProps = {
   onAiModelChange: (value: string) => void
   aiApiKeyDraft: string
   onAiApiKeyChange: (value: string) => void
-  aiEmbeddingBaseUrlDraft: string
-  onAiEmbeddingBaseUrlChange: (value: string) => void
-  aiEmbeddingModelDraft: string
-  onAiEmbeddingModelChange: (value: string) => void
-  aiEmbeddingApiKeyDraft: string
-  onAiEmbeddingApiKeyChange: (value: string) => void
   aiSaving: boolean
   onSaveAiConfig: () => void
   onOpenPlugins: () => void
@@ -97,12 +91,6 @@ export function DashboardSettingsSection({
   onAiModelChange,
   aiApiKeyDraft,
   onAiApiKeyChange,
-  aiEmbeddingBaseUrlDraft,
-  onAiEmbeddingBaseUrlChange,
-  aiEmbeddingModelDraft,
-  onAiEmbeddingModelChange,
-  aiEmbeddingApiKeyDraft,
-  onAiEmbeddingApiKeyChange,
   aiSaving,
   onSaveAiConfig,
   onOpenPlugins,
@@ -179,30 +167,6 @@ export function DashboardSettingsSection({
             <label className="editor-label">
               {ui.apiKeyLabel}
               <input className="editor-input" onChange={(event) => onAiApiKeyChange(event.target.value)} type="password" value={aiApiKeyDraft} />
-            </label>
-            <label className="editor-label">
-              {ui.embeddingBaseUrl}
-              <input
-                className="editor-input"
-                onChange={(event) => onAiEmbeddingBaseUrlChange(event.target.value)}
-                placeholder={isZh ? '留空则自动推导' : 'Leave blank to auto-derive'}
-                type="text"
-                value={aiEmbeddingBaseUrlDraft}
-              />
-            </label>
-            <label className="editor-label">
-              {ui.embeddingModel}
-              <input className="editor-input" onChange={(event) => onAiEmbeddingModelChange(event.target.value)} type="text" value={aiEmbeddingModelDraft} />
-            </label>
-            <label className="editor-label">
-              {ui.embeddingApiKeyLabel}
-              <input
-                className="editor-input"
-                onChange={(event) => onAiEmbeddingApiKeyChange(event.target.value)}
-                placeholder={isZh ? '留空则使用上述 Key' : 'Leave blank to use above key'}
-                type="password"
-                value={aiEmbeddingApiKeyDraft}
-              />
             </label>
             <button className="secondary-button" disabled={aiSaving} onClick={onSaveAiConfig} type="button">
               {aiSaving ? ui.common.saving : ui.saveAiSettings}

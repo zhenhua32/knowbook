@@ -12,7 +12,6 @@ test('appSchema includes all core tables', () => {
   assert.equal(has('CREATE TABLE IF NOT EXISTS links'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS document_database_columns'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS document_database_values'), true)
-  assert.equal(has('CREATE TABLE IF NOT EXISTS document_embeddings'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS workspace_events'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS app_settings'), true)
 })
@@ -28,5 +27,4 @@ test('appSchema includes indices for high-frequency queries', () => {
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id);'), true)
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_blocks_document_id ON blocks(document_id);'), true)
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_workspace_events_created_at ON workspace_events(created_at);'), true)
-  assert.equal(has('CREATE INDEX IF NOT EXISTS idx_document_embeddings_model ON document_embeddings(model);'), true)
 })

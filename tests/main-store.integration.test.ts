@@ -292,23 +292,6 @@ test('deleteDatabase removes standalone database data but refuses the default da
   })
 })
 
-test('embedding cache supports save/get/delete lifecycle', () => {
-  withStore((store, backupRoot) => {
-    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
-
-    store.saveDocumentEmbedding(home.id, 'text-embedding-3-small', 'hash-1', [0.1, 0.2, 0.3])
-
-    assert.deepEqual(
-      store.getCachedDocumentEmbedding(home.id, 'text-embedding-3-small', 'hash-1'),
-      [0.1, 0.2, 0.3]
-    )
-    assert.equal(store.getCachedDocumentEmbedding(home.id, 'text-embedding-3-small', 'hash-2'), null)
-
-    store.deleteDocumentEmbeddings(home.id, 'text-embedding-3-small')
-    assert.equal(store.getCachedDocumentEmbedding(home.id, 'text-embedding-3-small', 'hash-1'), null)
-  })
-})
-
 test('links are re-synced after target title change', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog
@@ -419,7 +402,6 @@ test('ai config persists defaults, api key, and auto-summary flag', () => {
       enabled: false,
       baseUrl: 'https://example.ai/v1',
       model: 'gpt-4.1-mini',
-      embeddingModel: 'text-embedding-3-small',
       autoSummaryOnSave: true,
       apiKey: 'secret-key'
     })
@@ -432,7 +414,7 @@ test('ai config persists defaults, api key, and auto-summary flag', () => {
   })
 })
 
-test('semantic search candidates support exclusion and embedding deletion by model', () => {
+test('semantic search candidates support exclusion', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog
     const home = byPath(catalog, 'Home')
@@ -440,16 +422,6 @@ test('semantic search candidates support exclusion and embedding deletion by mod
     const candidates = store.getSemanticSearchCandidates({ excludeDocumentId: home.id })
     assert.equal(candidates.some((item) => item.documentId === home.id), false)
     assert.equal(candidates.length > 0, true)
-
-    const kept = candidates[0]
-    assert.ok(kept)
-    store.saveDocumentEmbedding(kept.documentId, 'm1', kept.contentHash, [0.2, 0.3])
-    store.saveDocumentEmbedding(kept.documentId, 'm2', kept.contentHash, [0.4, 0.5])
-    assert.deepEqual(store.getCachedDocumentEmbedding(kept.documentId, 'm1', kept.contentHash), [0.2, 0.3])
-
-    store.deleteEmbeddingsByModel('m1')
-    assert.equal(store.getCachedDocumentEmbedding(kept.documentId, 'm1', kept.contentHash), null)
-    assert.deepEqual(store.getCachedDocumentEmbedding(kept.documentId, 'm2', kept.contentHash), [0.4, 0.5])
   })
 })
 

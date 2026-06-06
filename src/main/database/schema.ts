@@ -106,17 +106,6 @@ CREATE TABLE IF NOT EXISTS document_database_values (
   PRIMARY KEY (document_id, column_id)
 );
 
-CREATE TABLE IF NOT EXISTS document_embeddings (
-  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  model TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
-  embedding_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (document_id, model)
-);
-
-CREATE INDEX IF NOT EXISTS idx_document_embeddings_model ON document_embeddings(model);
-
 CREATE TABLE IF NOT EXISTS workspace_events (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
