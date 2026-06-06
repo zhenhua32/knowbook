@@ -37,6 +37,7 @@ export function useWorkspaceOperations({
     catalogColumns: shell.catalogColumns,
     catalogDocuments: shell.catalogDocuments,
     moveTargetId: documents.moveTargetId,
+    onCancelPendingAutoSave: documents.cancelPendingAutoSave,
     onClearEditorSession: documents.clearEditorSession,
     onDetailLoadingChange: documents.setDetailLoading,
     onHomeDataChange: shell.setHomeData,

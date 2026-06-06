@@ -37,16 +37,25 @@ export function useDocumentEditorState({
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const clearAutoSaveTimer = useCallback(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+      autoSaveTimerRef.current = null
+    }
+  }, [])
+
   const clearHistoryState = useCallback(() => {
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
       historyDebounceTimerRef.current = null
     }
 
+    clearAutoSaveTimer()
+
     editHistoryRef.current = []
     editHistoryPointerRef.current = -1
     isRestoringHistoryRef.current = false
-  }, [])
+  }, [clearAutoSaveTimer])
 
   const initializeHistoryState = useCallback((blocks: DocumentBlockDraft[]) => {
     const snapshot = blocks.map((block) => ({ ...block }))
@@ -218,19 +227,22 @@ export function useDocumentEditorState({
       onSelectedDocumentChange(refreshedDetail)
       triggerTransientFlash(setAutoSaveFlash)
       return true
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Document not found') {
+        return false
+      }
+
+      throw error
     } finally {
       setIsSaving(false)
     }
   }, [draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, triggerTransientFlash, ui, validateBlockTreeStructure])
 
   const saveDocument = useCallback(async () => {
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current)
-      autoSaveTimerRef.current = null
-    }
+    clearAutoSaveTimer()
 
     await persistDraft(false)
-  }, [persistDraft])
+  }, [clearAutoSaveTimer, persistDraft])
 
   useEffect(() => {
     if (isEditing && !isRestoringHistoryRef.current) {
@@ -252,22 +264,18 @@ export function useDocumentEditorState({
     }, 800)
 
     return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current)
-      }
+      clearAutoSaveTimer()
     }
-  }, [draftBlocksState, draftSummary, draftTitle, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
+  }, [clearAutoSaveTimer, draftBlocksState, draftSummary, draftTitle, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
 
   useEffect(() => {
     return () => {
       if (historyDebounceTimerRef.current) {
         clearTimeout(historyDebounceTimerRef.current)
       }
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current)
-      }
+      clearAutoSaveTimer()
     }
-  }, [])
+  }, [clearAutoSaveTimer])
 
   const buildDocumentMarkdown = useCallback((document: Pick<DocumentDetail, 'title' | 'blocks'>) => {
     const body = serializeBlocksToMarkdown(document.blocks)
@@ -301,6 +309,7 @@ export function useDocumentEditorState({
     autoSaveFlash,
     canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
     canUndo: editHistoryPointerRef.current > 0,
+    cancelPendingAutoSave: clearAutoSaveTimer,
     clearEditorSession,
     copyDocumentAsMarkdown,
     draftBlocks: draftBlocksState,

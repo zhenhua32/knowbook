@@ -17,6 +17,7 @@ type UseWorkspaceDocumentManagementParams = {
   selectedDocument: DocumentDetail | null
   selectedDocumentId: string | null
   ui: UiText
+  onCancelPendingAutoSave: () => void
   onClearEditorSession: () => void
   onDetailLoadingChange: (loading: boolean) => void
   onHomeDataChange: (homeData: HomeData) => void
@@ -34,6 +35,7 @@ export function useWorkspaceDocumentManagement({
   selectedDocument,
   selectedDocumentId,
   ui,
+  onCancelPendingAutoSave,
   onClearEditorSession,
   onDetailLoadingChange,
   onHomeDataChange,
@@ -77,6 +79,7 @@ export function useWorkspaceDocumentManagement({
   }, [endDrag, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, selectedDocumentId, ui.moveFailed])
 
   const handleCreateDocument = useCallback(async (parentId: string | null) => {
+    onCancelPendingAutoSave()
     const created = await window.knowbook.createDocument(parentId)
     const refreshed = await window.knowbook.getHomeData()
     onHomeDataChange(refreshed)
@@ -84,10 +87,11 @@ export function useWorkspaceDocumentManagement({
     onClearEditorSession()
     onDetailLoadingChange(true)
     onSelectedDocumentIdChange(created.id)
-  }, [onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange])
+  }, [onCancelPendingAutoSave, onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange])
 
   const handleClipWebPage = useCallback(async (input: ClipWebPageInput) => {
     try {
+      onCancelPendingAutoSave()
       const clipped = await window.knowbook.clipWebPage(input)
       const refreshed = await window.knowbook.getHomeData()
       onHomeDataChange(refreshed)
@@ -106,7 +110,7 @@ export function useWorkspaceDocumentManagement({
       onMessage(message)
       throw error
     }
-  }, [onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
+  }, [onCancelPendingAutoSave, onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
 
   const deleteSelectedDocument = useCallback(async () => {
     if (!selectedDocument) {
@@ -118,6 +122,7 @@ export function useWorkspaceDocumentManagement({
       return
     }
 
+    onCancelPendingAutoSave()
     await window.knowbook.deleteDocument(selectedDocument.id)
     const refreshed = await window.knowbook.getHomeData()
     onHomeDataChange(refreshed)
@@ -130,7 +135,7 @@ export function useWorkspaceDocumentManagement({
     if (nextId) {
       onDetailLoadingChange(true)
     }
-  }, [onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange, selectedDocument, ui])
+  }, [onCancelPendingAutoSave, onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange, selectedDocument, ui])
 
   const moveSelectedDocument = useCallback(async () => {
     if (!selectedDocument || !moveTargetId) {

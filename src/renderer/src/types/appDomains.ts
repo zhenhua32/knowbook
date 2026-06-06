@@ -35,7 +35,8 @@ export type DocumentsKeyboardState = Pick<DocumentsDomainState,
 >
 
 export type DocumentsWorkspaceState = Pick<DocumentsDomainState,
-  'clearEditorSession'
+  'cancelPendingAutoSave'
+  | 'clearEditorSession'
   | 'moveTargetId'
   | 'selectedDocument'
   | 'selectedDocumentId'
