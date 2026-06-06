@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -6,6 +6,18 @@ import { toDraftBlock } from '../utils/draftBlockShape'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
+
+type DraftBlockSnapshot = {
+  id: string | undefined
+  type: string
+  content: string
+  checked: boolean
+  depth: number
+  parentBlockId: string | null
+  language: string | null
+  highlight: string | null
+  tags: string[]
+}
 
 type UseDocumentEditorStateParams = {
   selectedDocumentId: string | null
@@ -68,6 +80,42 @@ export function useDocumentEditorState({
     setter(true)
     setTimeout(() => setter(false), 2000)
   }, [])
+
+  const createComparableBlockSnapshot = useCallback((blocks: DocumentBlockDraft[]): DraftBlockSnapshot[] => (
+    normalizeDraftBlocks(blocks).map((block) => ({
+      id: block.id,
+      type: block.type,
+      content: block.content,
+      checked: Boolean(block.checked),
+      depth: block.depth,
+      parentBlockId: block.parentBlockId ?? null,
+      language: block.language ?? null,
+      highlight: block.highlight ?? null,
+      tags: [...(block.tags ?? [])].sort()
+    }))
+  ), [normalizeDraftBlocks])
+
+  const normalizeComparableTitle = useCallback((title: string) => title.trim() || 'Untitled', [])
+
+  const draftSnapshot = useMemo(() => JSON.stringify({
+    title: normalizeComparableTitle(draftTitle),
+    summary: draftSummary.trim(),
+    blocks: createComparableBlockSnapshot(draftBlocksState)
+  }), [createComparableBlockSnapshot, draftBlocksState, draftSummary, draftTitle, normalizeComparableTitle])
+
+  const selectedDocumentSnapshot = useMemo(() => {
+    if (!selectedDocument) {
+      return null
+    }
+
+    return JSON.stringify({
+      title: normalizeComparableTitle(selectedDocument.title),
+      summary: selectedDocument.summary.trim(),
+      blocks: createComparableBlockSnapshot(selectedDocument.blocks.map(toDraftBlock))
+    })
+  }, [createComparableBlockSnapshot, normalizeComparableTitle, selectedDocument, toDraftBlock])
+
+  const hasPendingDraftChanges = Boolean(selectedDocumentId && selectedDocument && draftSnapshot !== selectedDocumentSnapshot)
 
   const setDraftBlocks = useCallback((next: DraftBlockUpdater) => {
     setDraftBlocksState((previous) => {
@@ -251,7 +299,7 @@ export function useDocumentEditorState({
   }, [draftBlocksState, isEditing, scheduleHistorySnapshot])
 
   useEffect(() => {
-    if (!isEditing || isSaving || !selectedDocumentId || !selectedDocument) {
+    if (!isEditing || isSaving || !hasPendingDraftChanges || !selectedDocumentId || !selectedDocument) {
       return
     }
 
@@ -266,7 +314,7 @@ export function useDocumentEditorState({
     return () => {
       clearAutoSaveTimer()
     }
-  }, [clearAutoSaveTimer, draftBlocksState, draftSummary, draftTitle, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
+  }, [clearAutoSaveTimer, hasPendingDraftChanges, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
 
   useEffect(() => {
     return () => {
