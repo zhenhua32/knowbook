@@ -6,6 +6,7 @@ type DocumentTreeProps = {
   nodes: DocumentTreeNode[]
   selectedDocumentId: string | null
   onSelect: (documentId: string) => void
+  onOpenContextMenu: (node: DocumentTreeNode, x: number, y: number) => void
   draggingDocumentId: string | null
   dragOverDocumentId: string | null
   onDragStart: (documentId: string) => void
@@ -18,6 +19,7 @@ export function DocumentTree({
   nodes,
   selectedDocumentId,
   onSelect,
+  onOpenContextMenu,
   draggingDocumentId,
   dragOverDocumentId,
   onDragStart,
@@ -36,6 +38,10 @@ export function DocumentTree({
             onClick={() => onSelect(node.id)}
             type="button"
             draggable
+            onContextMenu={(event) => {
+              event.preventDefault()
+              onOpenContextMenu(node, event.clientX, event.clientY)
+            }}
             onDragStart={(event) => {
               event.dataTransfer.effectAllowed = 'move'
               event.dataTransfer.setData('text/plain', node.id)
@@ -63,6 +69,7 @@ export function DocumentTree({
                 nodes={node.children}
                 selectedDocumentId={selectedDocumentId}
                 onSelect={onSelect}
+                onOpenContextMenu={onOpenContextMenu}
                 draggingDocumentId={draggingDocumentId}
                 dragOverDocumentId={dragOverDocumentId}
                 onDragStart={onDragStart}

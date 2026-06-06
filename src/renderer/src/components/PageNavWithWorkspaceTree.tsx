@@ -3,6 +3,7 @@ import type { DocumentTreeNode } from '@shared/contracts'
 import { PageRail } from './PageRail'
 import { WorkspaceGraph } from './WorkspaceGraph'
 import { DocumentTree } from './DocumentTree'
+import { DocumentTreeContextMenu } from './DocumentTreeContextMenu'
 import type { UiLanguage } from '../i18n'
 import { getUiText } from '../i18n'
 
@@ -38,8 +39,18 @@ type PageNavWithWorkspaceTreeProps = {
     title: string
     path: string
   }>
+  pinnedDocumentIds: Set<string>
+  activeDocumentReadyId: string | null
   selectedDocumentId: string | null
+  detailLoading: boolean
+  isSaving: boolean
   onSelectDocument: (documentId: string) => void
+  onTogglePinDocument: (documentId: string) => void
+  onCopyDocumentMarkdown: (documentId: string) => void
+  onExportDocumentMarkdown: (documentId: string) => void
+  onCreateChildDocument: (parentId: string) => void
+  onDeleteDocument: (documentId: string, title: string) => void
+  onSaveDocument: () => void
   documentTreeNodes: DocumentTreeNode[]
   workspaceGraphNodes: any[]
   workspaceGraphEdges: any[]
@@ -83,8 +94,18 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     onDropToRoot,
     pinnedSectionLabel,
     pinnedDocuments,
+    pinnedDocumentIds,
+    activeDocumentReadyId,
     selectedDocumentId,
+    detailLoading,
+    isSaving,
     onSelectDocument,
+    onTogglePinDocument,
+    onCopyDocumentMarkdown,
+    onExportDocumentMarkdown,
+    onCreateChildDocument,
+    onDeleteDocument,
+    onSaveDocument,
     onDragStart,
     onDragEnd,
     onDragOverNode,
@@ -104,12 +125,25 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
   } = props
 
   const [showWorkspaceGraph, setShowWorkspaceGraph] = useState(false)
+  const [treeContextMenu, setTreeContextMenu] = useState<{ node: DocumentTreeNode; x: number; y: number } | null>(null)
   const ui = getUiText(uiLanguage)
   const isZh = uiLanguage === 'zh-CN'
 
   const handleGraphToggle = () => {
     setShowWorkspaceGraph(!showWorkspaceGraph)
   }
+
+  const handleTreeContextMenu = (node: DocumentTreeNode, x: number, y: number) => {
+    onSelectDocument(node.id)
+    setTreeContextMenu({ node, x, y })
+  }
+
+  const canSaveContextDocument = Boolean(
+    treeContextMenu
+    && selectedDocumentId === treeContextMenu.node.id
+    && activeDocumentReadyId === treeContextMenu.node.id
+    && !detailLoading
+  )
 
   return (
     <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
@@ -208,6 +242,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
                   nodes={documentTreeNodes}
                   selectedDocumentId={selectedDocumentId}
                   onSelect={onSelectDocument}
+                  onOpenContextMenu={handleTreeContextMenu}
                   draggingDocumentId={null}
                   dragOverDocumentId={null}
                   onDragStart={onDragStart}
@@ -224,6 +259,36 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
           </div>
         )}
       </div>
+
+      {treeContextMenu ? (
+        <DocumentTreeContextMenu
+          x={treeContextMenu.x}
+          y={treeContextMenu.y}
+          ui={ui}
+          isZh={isZh}
+          documentTitle={treeContextMenu.node.title}
+          isPinned={pinnedDocumentIds.has(treeContextMenu.node.id)}
+          canSave={canSaveContextDocument}
+          isSaving={isSaving && canSaveContextDocument}
+          onTogglePin={() => onTogglePinDocument(treeContextMenu.node.id)}
+          onCopyMarkdown={() => {
+            void onCopyDocumentMarkdown(treeContextMenu.node.id)
+          }}
+          onSaveMarkdown={() => {
+            void onExportDocumentMarkdown(treeContextMenu.node.id)
+          }}
+          onAddChild={() => {
+            void onCreateChildDocument(treeContextMenu.node.id)
+          }}
+          onSave={() => {
+            void onSaveDocument()
+          }}
+          onDelete={() => {
+            void onDeleteDocument(treeContextMenu.node.id, treeContextMenu.node.title)
+          }}
+          onClose={() => setTreeContextMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }

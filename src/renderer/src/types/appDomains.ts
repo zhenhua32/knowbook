@@ -12,14 +12,19 @@ export type PluginsDomainState = ReturnType<typeof usePluginsDomain>
 type WorkspaceDocumentManagementState = ReturnType<typeof useWorkspaceDocumentManagement>
 
 export type DocumentsSidebarState = Pick<DocumentsDomainState,
-  'navCanGoBack'
+  'detailLoading'
+  | 'isSaving'
+  | 'navCanGoBack'
   | 'navCanGoForward'
   | 'navBack'
   | 'navForward'
   | 'openDocumentInDocumentsPage'
   | 'openGlobalSearch'
   | 'pinnedDocumentIds'
+  | 'saveDocument'
+  | 'selectedDocument'
   | 'selectedDocumentId'
+  | 'togglePinDocument'
 >
 
 export type DocumentsKeyboardState = Pick<DocumentsDomainState,
@@ -56,10 +61,13 @@ export type DocumentsFeatureState = Pick<DocumentsDomainState,
 
 export type WorkspaceSidebarActions = Pick<WorkspaceDocumentManagementState,
   'beginDrag'
+  | 'copyDocumentMarkdown'
+  | 'deleteDocumentById'
   | 'dragOverRoot'
   | 'dropOnDocument'
   | 'dropToRoot'
   | 'endDrag'
+  | 'exportDocumentMarkdown'
   | 'handleCreateDocument'
   | 'handleRootDragLeave'
   | 'handleRootDragOver'

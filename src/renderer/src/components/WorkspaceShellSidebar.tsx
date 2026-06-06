@@ -45,8 +45,28 @@ export function WorkspaceShellSidebar({
       }}
       pinnedSectionLabel={shell.ui.pinnedSectionLabel}
       pinnedDocuments={pinnedDocuments}
+      pinnedDocumentIds={documents.pinnedDocumentIds}
+      activeDocumentReadyId={documents.selectedDocument?.id ?? null}
       selectedDocumentId={documents.selectedDocumentId}
+      detailLoading={documents.detailLoading}
+      isSaving={documents.isSaving}
       onSelectDocument={documents.openDocumentInDocumentsPage}
+      onTogglePinDocument={documents.togglePinDocument}
+      onCopyDocumentMarkdown={(documentId) => {
+        void workspace.copyDocumentMarkdown(documentId)
+      }}
+      onExportDocumentMarkdown={(documentId) => {
+        void workspace.exportDocumentMarkdown(documentId)
+      }}
+      onCreateChildDocument={(parentId) => {
+        void workspace.handleCreateDocument(parentId)
+      }}
+      onDeleteDocument={(documentId, title) => {
+        void workspace.deleteDocumentById(documentId, title)
+      }}
+      onSaveDocument={() => {
+        void documents.saveDocument()
+      }}
       documentTreeNodes={shell.homeData.documentTree}
       workspaceGraphNodes={shell.homeData.graph.nodes}
       workspaceGraphEdges={shell.homeData.graph.edges}

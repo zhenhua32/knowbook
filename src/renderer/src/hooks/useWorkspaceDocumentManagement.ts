@@ -9,6 +9,7 @@ import type {
   HomeData
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
 
 type UseWorkspaceDocumentManagementParams = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -48,6 +49,35 @@ export function useWorkspaceDocumentManagement({
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
   const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
+
+  const getDocumentDetailForAction = useCallback(async (documentId: string) => {
+    const detail = await window.knowbook.getDocumentDetail(documentId)
+    if (!detail) {
+      throw new Error('Document not found')
+    }
+
+    return detail
+  }, [])
+
+  const refreshSelectionAfterDocumentMutation = useCallback(async (refreshedHome: HomeData, deletedDocumentId?: string) => {
+    if (selectedDocumentId && selectedDocumentId !== deletedDocumentId) {
+      const refreshedDetail = await window.knowbook.getDocumentDetail(selectedDocumentId)
+      onSelectedDocumentChange(refreshedDetail)
+      return
+    }
+
+    if (selectedDocumentId === deletedDocumentId) {
+      const nextId = refreshedHome.initialDocumentId
+      onMoveTargetIdChange('')
+      onSelectedDocumentChange(null)
+      onSelectedDocumentIdChange(nextId)
+      onClearEditorSession()
+
+      if (nextId) {
+        onDetailLoadingChange(true)
+      }
+    }
+  }, [onClearEditorSession, onDetailLoadingChange, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, selectedDocumentId])
 
   const endDrag = useCallback(() => {
     setDraggingDocumentId(null)
@@ -112,30 +142,57 @@ export function useWorkspaceDocumentManagement({
     }
   }, [onCancelPendingAutoSave, onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
 
+  const deleteDocumentById = useCallback(async (documentId: string, documentTitle: string) => {
+    const accepted = window.confirm(ui.confirmDeleteDocument(documentTitle))
+    if (!accepted) {
+      return
+    }
+
+    if (selectedDocumentId === documentId) {
+      onCancelPendingAutoSave()
+    }
+
+    await window.knowbook.deleteDocument(documentId)
+    const refreshed = await window.knowbook.getHomeData()
+    onHomeDataChange(refreshed)
+    await refreshSelectionAfterDocumentMutation(refreshed, documentId)
+  }, [onCancelPendingAutoSave, onHomeDataChange, refreshSelectionAfterDocumentMutation, selectedDocumentId, ui])
+
   const deleteSelectedDocument = useCallback(async () => {
     if (!selectedDocument) {
       return
     }
 
-    const accepted = window.confirm(ui.confirmDeleteDocument(selectedDocument.title))
-    if (!accepted) {
-      return
+    await deleteDocumentById(selectedDocument.id, selectedDocument.title)
+  }, [deleteDocumentById, selectedDocument])
+
+  const copyDocumentMarkdown = useCallback(async (documentId: string) => {
+    try {
+      const detail = await getDocumentDetailForAction(documentId)
+      await window.knowbook.writeClipboardText(buildDocumentMarkdown(detail))
+      onMessage(ui.markdownCopied)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Document not found'
+      onMessage(message)
     }
+  }, [getDocumentDetailForAction, onMessage, ui.markdownCopied])
 
-    onCancelPendingAutoSave()
-    await window.knowbook.deleteDocument(selectedDocument.id)
-    const refreshed = await window.knowbook.getHomeData()
-    onHomeDataChange(refreshed)
+  const exportDocumentMarkdown = useCallback(async (documentId: string) => {
+    try {
+      const detail = await getDocumentDetailForAction(documentId)
+      const savedPath = await window.knowbook.saveMarkdownFile(
+        getDocumentMarkdownFileName(detail),
+        buildDocumentMarkdown(detail)
+      )
 
-    const nextId = refreshed.initialDocumentId
-    onSelectedDocumentChange(null)
-    onSelectedDocumentIdChange(nextId)
-    onClearEditorSession()
-
-    if (nextId) {
-      onDetailLoadingChange(true)
+      if (savedPath) {
+        onMessage(ui.markdownExportedPath(savedPath))
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Document not found'
+      onMessage(message)
     }
-  }, [onCancelPendingAutoSave, onClearEditorSession, onDetailLoadingChange, onHomeDataChange, onSelectedDocumentChange, onSelectedDocumentIdChange, selectedDocument, ui])
+  }, [getDocumentDetailForAction, onMessage, ui])
 
   const moveSelectedDocument = useCallback(async () => {
     if (!selectedDocument || !moveTargetId) {
@@ -246,6 +303,8 @@ export function useWorkspaceDocumentManagement({
 
   return {
     beginDrag,
+    copyDocumentMarkdown,
+    deleteDocumentById,
     deleteSelectedDocument,
     dragOverBoardColumnId,
     dragOverRoot,
@@ -254,6 +313,7 @@ export function useWorkspaceDocumentManagement({
     dropOnDocument,
     dropToRoot,
     endDrag,
+    exportDocumentMarkdown,
     handleBoardColumnDragOver,
     handleClipWebPage,
     handleCreateDocument,

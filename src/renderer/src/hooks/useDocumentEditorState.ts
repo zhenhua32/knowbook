@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { serializeBlocksToMarkdown } from '@shared/markdown'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
+import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
@@ -325,11 +325,6 @@ export function useDocumentEditorState({
     }
   }, [clearAutoSaveTimer])
 
-  const buildDocumentMarkdown = useCallback((document: Pick<DocumentDetail, 'title' | 'blocks'>) => {
-    const body = serializeBlocksToMarkdown(document.blocks)
-    return body.trim() === '' ? `# ${document.title}\n` : `# ${document.title}\n\n${body}`
-  }, [])
-
   const copyDocumentAsMarkdown = useCallback(async () => {
     if (!selectedDocument) {
       return
@@ -345,13 +340,12 @@ export function useDocumentEditorState({
       return
     }
 
-    const baseName = selectedDocument.path.split('/').filter(Boolean).at(-1) || selectedDocument.title || 'document'
-    const savedPath = await window.knowbook.saveMarkdownFile(`${baseName}.md`, buildDocumentMarkdown(selectedDocument))
+    const savedPath = await window.knowbook.saveMarkdownFile(getDocumentMarkdownFileName(selectedDocument), buildDocumentMarkdown(selectedDocument))
 
     if (savedPath) {
       onMessage(ui.markdownExportedPath(savedPath))
     }
-  }, [buildDocumentMarkdown, onMessage, selectedDocument, ui])
+  }, [onMessage, selectedDocument, ui])
 
   return {
     autoSaveFlash,

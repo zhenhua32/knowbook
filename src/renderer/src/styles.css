@@ -2957,6 +2957,15 @@ del {
   background: rgba(47, 111, 237, 0.08);
 }
 
+.context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.context-menu-item:disabled:hover {
+  background: none;
+}
+
 .context-menu-item-active {
   background: rgba(47, 111, 237, 0.12);
   color: #2f6fed;
@@ -2969,6 +2978,29 @@ del {
 .context-menu-item-danger:hover {
   background: rgba(255, 80, 80, 0.15);
   color: #d32f2f;
+}
+
+.document-tree-context-menu {
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 24px));
+}
+
+.document-tree-context-title {
+  margin: 0;
+  padding: 10px 12px 4px;
+  color: #2a241b;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.document-tree-context-hint {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: #6c624f;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* Floating Slash Command Panel */
