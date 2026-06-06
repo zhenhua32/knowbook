@@ -273,6 +273,7 @@ export function useDocumentEditorState({
 
       onHomeDataChange(refreshedHome)
       onSelectedDocumentChange(refreshedDetail)
+      setDraftSummary(refreshedDetail?.summary ?? '')
       triggerTransientFlash(setAutoSaveFlash)
       return true
     } catch (error) {
