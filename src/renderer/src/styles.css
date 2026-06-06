@@ -593,6 +593,81 @@ dt,
   margin-bottom: 18px;
 }
 
+.document-header-shell {
+  gap: 22px;
+  align-items: flex-start;
+}
+
+.document-header-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.document-header-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.document-header-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.document-header-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.document-header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.25;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.document-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: min(44vw, 430px);
+}
+
+.document-header-action {
+  flex: 0 0 auto;
+}
+
+.document-header-aux-button {
+  min-width: 0;
+}
+
+.document-header-more-button {
+  min-width: 42px;
+  width: 42px;
+  padding-left: 0;
+  padding-right: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.document-header-pill {
+  padding: 6px 10px;
+}
+
 .toolbar-inline {
   display: inline-flex;
   align-items: center;
@@ -2733,17 +2808,27 @@ del {
 }
 
 /* Wave 31: Auto-save flash */
-.autosave-flash {
-  font-size: 12px;
-  color: #4caf50;
-  font-weight: 500;
-  animation: fadeInOut 2s ease forwards;
-}
 @keyframes fadeInOut {
   0% { opacity: 0; }
   15% { opacity: 1; }
   80% { opacity: 1; }
   100% { opacity: 0; }
+}
+
+.autosave-flash {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(70, 163, 89, 0.12);
+  color: #2d7a42;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.autosave-flash-copy {
+  background: rgba(47, 111, 237, 0.1);
+  color: #18429f;
 }
 
 /* Wave 32: Pin button & pinned section */
@@ -2758,6 +2843,46 @@ del {
 }
 .pin-button:hover {
   color: #f5a623;
+}
+
+.document-header-pin-button {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.document-header-action-menu {
+  min-width: 260px;
+  max-width: min(320px, calc(100vw - 24px));
+}
+
+.document-header-menu-move {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.document-header-menu-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.document-header-menu-move-button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 1080px) {
+  .document-header-shell {
+    flex-direction: column;
+  }
+
+  .document-header-actions {
+    max-width: none;
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 .pinned-section {
   padding: 6px 8px 4px;

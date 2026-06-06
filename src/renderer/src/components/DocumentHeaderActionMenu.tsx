@@ -1,0 +1,133 @@
+import type { UiText } from '../i18n'
+
+type MoveOption = {
+  id: string
+  label: string
+}
+
+type DocumentHeaderActionMenuProps = {
+  x: number
+  y: number
+  ui: UiText
+  isZh: boolean
+  canUndo: boolean
+  canRedo: boolean
+  documentsAuxPanelOpen: boolean
+  moveTargetId: string
+  moveOptions: MoveOption[]
+  onClose: () => void
+  onCopyMarkdown: () => void
+  onSaveMarkdown: () => void
+  onUndo: () => void
+  onRedo: () => void
+  onMoveTargetChange: (value: string) => void
+  onMove: () => void
+  onToggleAuxPanel: () => void
+}
+
+export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
+  const {
+    x,
+    y,
+    ui,
+    isZh,
+    canUndo,
+    canRedo,
+    documentsAuxPanelOpen,
+    moveTargetId,
+    moveOptions,
+    onClose,
+    onCopyMarkdown,
+    onSaveMarkdown,
+    onUndo,
+    onRedo,
+    onMoveTargetChange,
+    onMove,
+    onToggleAuxPanel
+  } = props
+
+  const auxLabel = documentsAuxPanelOpen
+    ? (isZh ? '收起辅助区' : 'Hide auxiliary')
+    : (isZh ? '展开辅助区' : 'Show auxiliary')
+
+  const runAndClose = (action: () => void) => {
+    onClose()
+    action()
+  }
+
+  return (
+    <>
+      <div
+        className="context-menu-overlay"
+        onClick={onClose}
+        onContextMenu={(event) => event.preventDefault()}
+        style={{ position: 'fixed', inset: 0 }}
+      />
+
+      <div
+        className="block-context-menu document-header-action-menu"
+        onContextMenu={(event) => event.preventDefault()}
+        style={{ position: 'fixed', top: `${y}px`, left: `${x}px`, zIndex: 1000 }}
+      >
+        <div className="context-menu-section">
+          <div className="context-menu-group">
+            <button className="context-menu-item" onClick={() => runAndClose(onCopyMarkdown)} type="button">
+              {ui.copyMarkdown}
+            </button>
+            <button className="context-menu-item" onClick={() => runAndClose(onSaveMarkdown)} type="button">
+              {ui.saveMarkdown}
+            </button>
+            <button
+              className="context-menu-item"
+              disabled={!canUndo}
+              onClick={() => runAndClose(onUndo)}
+              title={isZh ? '撤销 (Ctrl+Z)' : 'Undo (Ctrl+Z)'}
+              type="button"
+            >
+              {isZh ? '撤销' : 'Undo'}
+            </button>
+            <button
+              className="context-menu-item"
+              disabled={!canRedo}
+              onClick={() => runAndClose(onRedo)}
+              title={isZh ? '重做 (Ctrl+Y)' : 'Redo (Ctrl+Y)'}
+              type="button"
+            >
+              {isZh ? '重做' : 'Redo'}
+            </button>
+            <button className="context-menu-item" onClick={() => runAndClose(onToggleAuxPanel)} type="button">
+              {auxLabel}
+            </button>
+          </div>
+        </div>
+
+        <div className="context-menu-section">
+          <p className="context-menu-label">{ui.common.move}</p>
+          <div className="document-header-menu-move">
+            <select
+              className="editor-select compact-select document-header-menu-select"
+              onChange={(event) => onMoveTargetChange(event.target.value)}
+              value={moveTargetId}
+            >
+              <option value="">{ui.moveToPlaceholder}</option>
+              <option value="__root__">{ui.rootOption}</option>
+              {moveOptions.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              className="secondary-button document-header-menu-move-button"
+              disabled={!moveTargetId}
+              onClick={() => runAndClose(onMove)}
+              type="button"
+            >
+              {ui.common.move}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
