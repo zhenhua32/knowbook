@@ -58,10 +58,10 @@ function RelationList({
       <p className="panel-label">{title}</p>
       {links.length > 0 ? (
         <div className="relation-list">
-          {links.map((link) => (
-            <button className="relation-chip" key={`${title}-${link.id}`} onClick={() => onSelect(link.id)} type="button">
-              <strong>{link.title}</strong>
-              <span>{link.path}</span>
+           {links.map((link) => (
+              <button className="relation-chip" key={`${title}-${link.id}`} onClick={() => onSelect(link.id)} title={`${link.title}\n${link.path}`} type="button">
+               <strong>{link.title}</strong>
+               <span>{link.path}</span>
               {link.contextSnippet ? (
                 <span className="relation-chip-context">{link.contextSnippet.slice(0, 120)}{link.contextSnippet.length > 120 ? '…' : ''}</span>
               ) : (
@@ -156,10 +156,10 @@ export function DocumentsSection({
           <DocumentsAuxPanel
             {...documentsAuxPanelProps}
             selectionAiContent={selectionAiContent}
-            relationContent={(
-              <div className="relation-grid document-aux-relation-grid">
-                {relationGroups.map((group) => (
-                  <RelationList
+             relationContent={(
+               <div className="document-aux-relation-grid">
+                 {relationGroups.map((group) => (
+                   <RelationList
                     emptyText={group.emptyText}
                     key={group.title}
                     links={group.links}

@@ -1972,6 +1972,16 @@ del {
   border-radius: 14px;
   background: rgba(255, 251, 245, 0.88);
   color: #2d251c;
+  text-align: left;
+  max-width: 100%;
+}
+
+.relation-chip strong,
+.relation-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .relation-chip-active {
