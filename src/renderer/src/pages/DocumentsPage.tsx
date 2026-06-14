@@ -304,12 +304,7 @@ export function DocumentsPage({
         floatingSlashCommandPanelProps={floatingSlashCommandPanelProps}
         linkSuggestionPanelProps={linkSuggestionPanelProps}
         onAddBlock={documents.addDraftBlock}
-        onEditorKeyDown={(event) => {
-          if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
-            event.preventDefault()
-            documents.openBlockSearch()
-          }
-        }}
+        onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
         previewHeaderProps={previewHeaderProps}
         relationGroups={relationGroups}

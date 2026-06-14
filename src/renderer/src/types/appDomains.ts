@@ -28,11 +28,14 @@ export type DocumentsSidebarState = Pick<DocumentsDomainState,
 >
 
 export type DocumentsKeyboardState = Pick<DocumentsDomainState,
-  'closeGlobalSearch'
+  'closeBlockSearch'
+  | 'closeGlobalSearch'
+  | 'isBlockSearchOpen'
   | 'isEditing'
   | 'isGlobalSearchOpen'
   | 'navBack'
   | 'navForward'
+  | 'openBlockSearch'
   | 'openGlobalSearch'
   | 'redoEdit'
   | 'selectedBlockRange'

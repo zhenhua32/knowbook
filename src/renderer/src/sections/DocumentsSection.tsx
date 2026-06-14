@@ -109,10 +109,10 @@ export function DocumentsSection({
             {summaryCardProps ? <DocumentSummaryCard {...summaryCardProps} /> : null}
             {outlinePanelProps ? <DocumentOutlinePanel {...outlinePanelProps} /> : null}
 
-            <div className="preview-section">
-              <p className="panel-label">{blocksPanelLabel}</p>
-              <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
+              <div className="preview-section">
                 <BlockSearchPanel {...blockSearchPanelProps} />
+                <p className="panel-label">{blocksPanelLabel}</p>
+               <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
                 {selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {blockEditorRowSharedProps
                   ? visibleEditorRows.map((row) => (

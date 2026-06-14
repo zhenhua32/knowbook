@@ -25,6 +25,19 @@ export function useAppKeyboardShortcuts({
         }
       }
 
+      if ((event.ctrlKey || event.metaKey) && event.key === 'f') {
+        if (shell.activePage !== 'documents') {
+          return
+        }
+
+        event.preventDefault()
+        if (documents.isBlockSearchOpen) {
+          documents.closeBlockSearch()
+        } else {
+          documents.openBlockSearch()
+        }
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
         if (shell.activePage !== 'documents') {
           return

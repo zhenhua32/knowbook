@@ -1,8 +1,9 @@
+import { useState, useEffect, useRef, useCallback } from 'react'
+
 type BlockSearchItem = {
   index: number
   type: string
   contentPreview: string
-  isHighlighted: boolean
 }
 
 type BlockSearchPanelProps = {
@@ -28,44 +29,105 @@ export function BlockSearchPanel(props: BlockSearchPanelProps) {
     onSelect
   } = props
 
-  if (!isOpen) {
-    return null
-  }
+  const [activeIndex, setActiveIndex] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveIndex(0)
+      setTimeout(() => inputRef.current?.focus(), 0)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    setActiveIndex(0)
+  }, [query])
+
+  const scrollActiveIntoView = useCallback((idx: number) => {
+    const container = resultsRef.current
+    if (!container) return
+    const child = container.children[idx] as HTMLElement | undefined
+    if (child) {
+      child.scrollIntoView({ block: 'nearest' })
+    }
+  }, [])
+
+  const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+
+    if (items.length === 0) return
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      const next = (activeIndex + 1) % items.length
+      setActiveIndex(next)
+      scrollActiveIntoView(next)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      const prev = (activeIndex - 1 + items.length) % items.length
+      setActiveIndex(prev)
+      scrollActiveIntoView(prev)
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      onSelect(items[activeIndex].index)
+    }
+  }, [activeIndex, items, onClose, onSelect, scrollActiveIntoView])
+
+  if (!isOpen) return null
+
+  const matchCount = items.length
 
   return (
-    <div className="block-search-panel">
-      <div className="block-search-header">
+    <div className="block-find-panel" onKeyDown={handleKeyDown}>
+      <div className="block-find-input-row">
         <input
-          autoFocus
-          className="block-search-input"
+          ref={inputRef}
+          className="block-find-input"
           onChange={(event) => onQueryChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              onClose()
-            }
-          }}
           placeholder={placeholder}
           type="text"
           value={query}
         />
-        <button className="secondary-button" onClick={onClose} type="button">
-          ✕
-        </button>
+        {query && (
+          <span className="block-find-count">
+            {matchCount > 0 ? `${activeIndex + 1} / ${matchCount}` : noMatchText}
+          </span>
+        )}
+        <button className="block-find-nav-btn" disabled={matchCount === 0} onClick={() => {
+          const prev = (activeIndex - 1 + matchCount) % matchCount
+          setActiveIndex(prev)
+          scrollActiveIntoView(prev)
+        }} type="button">↑</button>
+        <button className="block-find-nav-btn" disabled={matchCount === 0} onClick={() => {
+          const next = (activeIndex + 1) % matchCount
+          setActiveIndex(next)
+          scrollActiveIntoView(next)
+        }} type="button">↓</button>
+        <button className="block-find-close" onClick={onClose} type="button">✕</button>
       </div>
-      <div className="block-search-results">
-        {items.map((item) => (
-          <div
-            className={`block-search-result${item.isHighlighted ? ' block-search-result-highlighted' : ''}`}
-            key={`${item.index}-${item.type}`}
-            onClick={() => onSelect(item.index)}
-          >
-            <span className="block-type-badge">{item.type}</span>
-            <span className="block-content">{item.contentPreview}</span>
-          </div>
-        ))}
-        {items.length === 0 && query && <p className="mini-hint">{noMatchText}</p>}
-      </div>
+      {query && (
+        <div className="block-find-results" ref={resultsRef}>
+          {items.length === 0
+            ? <p className="block-find-empty">{noMatchText}</p>
+            : items.map((item, idx) => (
+              <div
+                className={`block-find-result${idx === activeIndex ? ' block-find-result-active' : ''}`}
+                key={`${item.index}-${item.type}-${idx}`}
+                onClick={() => onSelect(item.index)}
+                onMouseEnter={() => setActiveIndex(idx)}
+              >
+                <span className="block-find-result-index">{item.index + 1}</span>
+                <span className="block-find-result-preview">{item.contentPreview}</span>
+              </div>
+            ))
+          }
+        </div>
+      )}
     </div>
   )
 }
