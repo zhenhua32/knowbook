@@ -47,8 +47,9 @@ export function useAppFeatureDomains({
     aiApiKeyDraft: ai.aiApiKeyDraft,
     aiAutoSummaryOnSaveDraft: ai.aiAutoSummaryOnSaveDraft,
     aiBaseUrlDraft: ai.aiBaseUrlDraft,
-    aiEnabledDraft: ai.aiEnabledDraft,
-    aiEndpoint: shell.homeData.aiConfig.baseUrl,
+     aiEnabledDraft: ai.aiEnabledDraft,
+     aiRelatedNotesEnabledDraft: ai.aiRelatedNotesEnabledDraft,
+     aiEndpoint: shell.homeData.aiConfig.baseUrl,
     aiModelDraft: ai.aiModelDraft,
     aiSaving: ai.aiSaving,
     isSettingsPage: shell.activePage === 'settings',
@@ -57,8 +58,9 @@ export function useAppFeatureDomains({
     onAiApiKeyChange: ai.setAiApiKeyDraft,
     onAiAutoSummaryOnSaveChange: ai.setAiAutoSummaryOnSaveDraft,
     onAiBaseUrlChange: ai.setAiBaseUrlDraft,
-    onAiEnabledChange: ai.setAiEnabledDraft,
-    onAiModelChange: ai.setAiModelDraft,
+     onAiEnabledChange: ai.setAiEnabledDraft,
+     onAiModelChange: ai.setAiModelDraft,
+     onAiRelatedNotesEnabledChange: ai.setAiRelatedNotesEnabledDraft,
     onBackupNow: () => {
       void handleBackup()
     },

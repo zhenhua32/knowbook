@@ -733,8 +733,9 @@ export class KnowbookStore {
     this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
     this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
-    this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
-    if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
+     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
+     this.saveSetting('ai.relatedNotesEnabled', input.relatedNotesEnabled ? 'true' : 'false')
+     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
   }
@@ -2235,8 +2236,9 @@ export class KnowbookStore {
       enabled: this.readSetting('ai.enabled') !== 'false',
       baseUrl,
       model: this.readSetting('ai.model') ?? 'gpt-4.1-mini',
-      autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
-      hasApiKey: Boolean(this.readSetting('ai.apiKey'))
+       autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
+       relatedNotesEnabled: this.readSetting('ai.relatedNotesEnabled') !== 'false',
+       hasApiKey: Boolean(this.readSetting('ai.apiKey'))
     }
   }
 

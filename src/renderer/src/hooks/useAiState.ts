@@ -26,6 +26,7 @@ export function useAiState({
   const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState(aiConfig.baseUrl)
   const [aiModelDraft, setAiModelDraft] = useState(aiConfig.model)
   const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(aiConfig.autoSummaryOnSave)
+  const [aiRelatedNotesEnabledDraft, setAiRelatedNotesEnabledDraft] = useState(aiConfig.relatedNotesEnabled)
   const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
@@ -40,14 +41,16 @@ export function useAiState({
     setAiEnabledDraft(aiConfig.enabled)
     setAiBaseUrlDraft(aiConfig.baseUrl)
     setAiModelDraft(aiConfig.model)
-    setAiAutoSummaryOnSaveDraft(aiConfig.autoSummaryOnSave)
-    setAiApiKeyDraft('')
-  }, [
-    aiConfig.autoSummaryOnSave,
-    aiConfig.baseUrl,
-    aiConfig.enabled,
-    aiConfig.model
-  ])
+     setAiAutoSummaryOnSaveDraft(aiConfig.autoSummaryOnSave)
+     setAiRelatedNotesEnabledDraft(aiConfig.relatedNotesEnabled)
+     setAiApiKeyDraft('')
+   }, [
+     aiConfig.autoSummaryOnSave,
+     aiConfig.baseUrl,
+     aiConfig.enabled,
+     aiConfig.model,
+     aiConfig.relatedNotesEnabled
+   ])
 
   const resetAiSession = useCallback(() => {
     setAiAnswer('')
@@ -59,13 +62,14 @@ export function useAiState({
     setAiSaving(true)
 
     try {
-      await window.knowbook.updateAiConfig({
-        enabled: aiEnabledDraft,
-        baseUrl: aiBaseUrlDraft,
-        model: aiModelDraft,
-        autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-        apiKey: aiApiKeyDraft
-      })
+       await window.knowbook.updateAiConfig({
+         enabled: aiEnabledDraft,
+         baseUrl: aiBaseUrlDraft,
+         model: aiModelDraft,
+         autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
+         relatedNotesEnabled: aiRelatedNotesEnabledDraft,
+         apiKey: aiApiKeyDraft
+       })
 
       const refreshed = await window.knowbook.getHomeData()
       onHomeDataChange(refreshed)
@@ -82,10 +86,11 @@ export function useAiState({
     aiBaseUrlDraft,
     aiEnabledDraft,
     aiModelDraft,
-    onHomeDataChange,
-    onMessage,
-    ui
-  ])
+     aiRelatedNotesEnabledDraft,
+     onHomeDataChange,
+     onMessage,
+     ui
+   ])
 
   const findRelatedNotesForPrompt = useCallback(async () => {
     if (!selectedDocumentId || !aiPromptDraft.trim()) {
@@ -168,9 +173,11 @@ export function useAiState({
     setAiBaseUrlDraft,
     aiModelDraft,
     setAiModelDraft,
-    aiAutoSummaryOnSaveDraft,
-    setAiAutoSummaryOnSaveDraft,
-    aiApiKeyDraft,
+     aiAutoSummaryOnSaveDraft,
+     setAiAutoSummaryOnSaveDraft,
+     aiRelatedNotesEnabledDraft,
+     setAiRelatedNotesEnabledDraft,
+     aiApiKeyDraft,
     setAiApiKeyDraft,
     aiSaving,
     aiPromptDraft,

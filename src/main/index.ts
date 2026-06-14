@@ -658,16 +658,18 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
     throw new Error('Missing API key. Save an API key in AI settings.')
   }
 
-  let relatedNotes: SemanticContextNote[] = []
-  try {
-    relatedNotes = await buildSemanticContextNotes({
-      query: input.prompt,
-      excludeDocumentId: input.documentId,
-      limit: 4
-    })
-  } catch (error) {
-    console.warn('Semantic retrieval failed. Falling back to current document only.', error)
-  }
+   let relatedNotes: SemanticContextNote[] = []
+   if (home.aiConfig.relatedNotesEnabled) {
+     try {
+       relatedNotes = await buildSemanticContextNotes({
+         query: input.prompt,
+         excludeDocumentId: input.documentId,
+         limit: 4
+       })
+     } catch (error) {
+       console.warn('Semantic retrieval failed. Falling back to current document only.', error)
+     }
+   }
 
   const prompt = store.buildAiPrompt(input, relatedNotes)
   const answer = await requestAiChatCompletion({

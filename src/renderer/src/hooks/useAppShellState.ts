@@ -23,12 +23,13 @@ const emptyState: HomeData = {
   documentCatalog: [],
   databaseColumns: [],
   aiConfig: {
-    enabled: false,
-    baseUrl: '',
-    model: '',
-    autoSummaryOnSave: false,
-    hasApiKey: false
-  },
+     enabled: false,
+     baseUrl: '',
+     model: '',
+     autoSummaryOnSave: false,
+     relatedNotesEnabled: true,
+     hasApiKey: false
+   },
   documentTree: [],
   graph: {
     nodes: [],

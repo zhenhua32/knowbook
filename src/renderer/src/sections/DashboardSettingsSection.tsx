@@ -16,6 +16,8 @@ type DashboardSettingsSectionProps = {
   onAiEnabledChange: (value: boolean) => void
   aiAutoSummaryOnSaveDraft: boolean
   onAiAutoSummaryOnSaveChange: (value: boolean) => void
+  aiRelatedNotesEnabledDraft: boolean
+  onAiRelatedNotesEnabledChange: (value: boolean) => void
   aiBaseUrlDraft: string
   onAiBaseUrlChange: (value: string) => void
   aiModelDraft: string
@@ -85,6 +87,8 @@ export function DashboardSettingsSection({
   onAiEnabledChange,
   aiAutoSummaryOnSaveDraft,
   onAiAutoSummaryOnSaveChange,
+  aiRelatedNotesEnabledDraft,
+  onAiRelatedNotesEnabledChange,
   aiBaseUrlDraft,
   onAiBaseUrlChange,
   aiModelDraft,
@@ -152,11 +156,15 @@ export function DashboardSettingsSection({
               <input checked={aiEnabledDraft} onChange={(event) => onAiEnabledChange(event.target.checked)} type="checkbox" />
               <span>{ui.enableAiFeatures}</span>
             </label>
-            <label className="toggle-row">
-              <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => onAiAutoSummaryOnSaveChange(event.target.checked)} type="checkbox" />
-              <span>{ui.autoSummaryWhenEmpty}</span>
-            </label>
-            <label className="editor-label">
+             <label className="toggle-row">
+               <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => onAiAutoSummaryOnSaveChange(event.target.checked)} type="checkbox" />
+               <span>{ui.autoSummaryWhenEmpty}</span>
+             </label>
+             <label className="toggle-row">
+               <input checked={aiRelatedNotesEnabledDraft} onChange={(event) => onAiRelatedNotesEnabledChange(event.target.checked)} type="checkbox" />
+               <span>{ui.relatedNotesOnAsk}</span>
+             </label>
+             <label className="editor-label">
               {ui.baseUrl}
               <input className="editor-input" onChange={(event) => onAiBaseUrlChange(event.target.value)} type="text" value={aiBaseUrlDraft} />
             </label>

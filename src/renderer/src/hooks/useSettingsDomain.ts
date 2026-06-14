@@ -11,6 +11,7 @@ type UseSettingsDomainParams = {
   aiAutoSummaryOnSaveDraft: boolean
   aiBaseUrlDraft: string
   aiEnabledDraft: boolean
+  aiRelatedNotesEnabledDraft: boolean
   aiEndpoint: string
   aiModelDraft: string
   aiSaving: boolean
@@ -22,6 +23,7 @@ type UseSettingsDomainParams = {
   onAiBaseUrlChange: (value: string) => void
   onAiEnabledChange: (value: boolean) => void
   onAiModelChange: (value: string) => void
+  onAiRelatedNotesEnabledChange: (value: boolean) => void
   onBackupNow: () => void
   onMessage: (message: string) => void
   onOpenDocument: (documentId: string) => void
@@ -40,6 +42,7 @@ export function useSettingsDomain({
   aiAutoSummaryOnSaveDraft,
   aiBaseUrlDraft,
   aiEnabledDraft,
+  aiRelatedNotesEnabledDraft,
   aiEndpoint,
   aiModelDraft,
   aiSaving,
@@ -51,6 +54,7 @@ export function useSettingsDomain({
   onAiBaseUrlChange,
   onAiEnabledChange,
   onAiModelChange,
+  onAiRelatedNotesEnabledChange,
   onBackupNow,
   onMessage,
   onOpenDocument,
@@ -74,6 +78,7 @@ export function useSettingsDomain({
     aiAutoSummaryOnSaveDraft,
     aiBaseUrlDraft,
     aiEnabledDraft,
+    aiRelatedNotesEnabledDraft,
     aiEndpoint,
     aiModelDraft,
     aiSaving,
@@ -86,6 +91,7 @@ export function useSettingsDomain({
     onAiAutoSummaryOnSaveChange,
     onAiBaseUrlChange,
     onAiEnabledChange,
+    onAiRelatedNotesEnabledChange,
     onAiModelChange,
     onBackupNow,
     onCheckForAppUpdates: () => {

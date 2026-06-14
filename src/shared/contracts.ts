@@ -245,6 +245,7 @@ export interface AiConfig {
   baseUrl: string
   model: string
   autoSummaryOnSave: boolean
+  relatedNotesEnabled: boolean
   hasApiKey: boolean
 }
 
@@ -502,6 +503,7 @@ export interface UpdateAiConfigInput {
   baseUrl: string
   model: string
   autoSummaryOnSave: boolean
+  relatedNotesEnabled: boolean
   apiKey?: string
 }
 
