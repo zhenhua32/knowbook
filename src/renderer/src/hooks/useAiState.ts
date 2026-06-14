@@ -118,6 +118,7 @@ export function useAiState({
 
     setAiAsking(true)
     setAiContextError('')
+    setAiContextResults([])
 
     try {
       const result = await window.knowbook.askAiAboutDocument({
@@ -125,7 +126,6 @@ export function useAiState({
         prompt: aiPromptDraft.trim()
       })
       setAiAnswer(result.answer)
-      setAiContextResults(result.references)
     } catch (error) {
       const message = getErrorMessage(error, ui.aiRequestFailed)
       setAiAnswer(message)
