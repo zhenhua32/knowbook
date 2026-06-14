@@ -46,17 +46,19 @@ export function BlockContextMenu(props: BlockContextMenuProps) {
         <div className="context-menu-section">
           <p className="context-menu-label">{isZh ? '转换为' : 'Convert to'}</p>
           <div className="context-menu-group">
-            {[
-              { type: 'paragraph', label: typeOptions.paragraph },
-              { type: 'heading-1', label: typeOptions['heading-1'] },
-              { type: 'heading-2', label: typeOptions['heading-2'] },
-              { type: 'todo', label: typeOptions.todo },
-              { type: 'code', label: typeOptions.code },
-              { type: 'quote', label: typeOptions.quote },
-              { type: 'bulleted-list', label: typeOptions['bulleted-list'] },
-              { type: 'numbered-list', label: typeOptions['numbered-list'] },
-              { type: 'divider', label: typeOptions.divider }
-            ].map((option) => (
+             {[
+               { type: 'paragraph', label: typeOptions.paragraph },
+               { type: 'heading-1', label: typeOptions['heading-1'] },
+               { type: 'heading-2', label: typeOptions['heading-2'] },
+               { type: 'todo', label: typeOptions.todo },
+               { type: 'code', label: typeOptions.code },
+               { type: 'math', label: typeOptions.math },
+               { type: 'quote', label: typeOptions.quote },
+               { type: 'bulleted-list', label: typeOptions['bulleted-list'] },
+               { type: 'numbered-list', label: typeOptions['numbered-list'] },
+               { type: 'table', label: typeOptions.table },
+               { type: 'divider', label: typeOptions.divider }
+             ].map((option) => (
               <button
                 key={option.type}
                 className={`context-menu-item${blockType === option.type ? ' context-menu-item-active' : ''}`}

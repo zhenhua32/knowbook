@@ -24,6 +24,8 @@ type MarkdownBlockMetadata = {
   highlight?: string
 }
 
+import { isMarkdownTable } from './markdownTable'
+
 const MARKDOWN_BLOCK_METADATA_PREFIX = '<!-- knowbook:block '
 const MARKDOWN_BLOCK_METADATA_SUFFIX = ' -->'
 
@@ -143,6 +145,8 @@ function renderMarkdownBlock(
       return ['$$', block.content, '$$'].join('\n')
     case 'code':
       return ['```' + (block.language ?? fallbackCodeLanguage), block.content, '```'].join('\n')
+    case 'table':
+      return block.content
     default:
       return block.content
   }
@@ -390,6 +394,20 @@ function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlock[] {
         depth: 0
       }
       index += 1
+    } else if (line.includes('|') && index + 1 < lines.length && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(lines[index + 1]?.trim() ?? '')) {
+      const tableLines: string[] = [line]
+      index += 1
+      while (index < lines.length && (lines[index] ?? '').trim() !== '') {
+        tableLines.push(lines[index] ?? '')
+        index += 1
+      }
+
+      block = {
+        type: 'table',
+        content: tableLines.join('\n'),
+        checked: false,
+        depth: 0
+      }
     } else {
       const todoMatch = line.match(/^(\s*)-\s\[([xX ])\]\s+(.*)$/)
       const bulletMatch = line.match(/^(\s*)-\s+(.*)$/)

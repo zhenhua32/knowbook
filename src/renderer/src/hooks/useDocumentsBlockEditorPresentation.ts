@@ -210,13 +210,14 @@ export function useDocumentsBlockEditorPresentation({
         canMoveDown: canMoveSelectionDown,
         canMoveUp: canMoveSelectionUp,
         clearLabel: ui.clear,
-        conversionOptions: {
-          paragraph: getBlockConversionLabel('paragraph'),
-          todo: getBlockConversionLabel('todo'),
-          quote: getBlockConversionLabel('quote'),
-          'bulleted-list': getBlockConversionLabel('bulleted-list'),
-          'numbered-list': getBlockConversionLabel('numbered-list')
-        },
+         conversionOptions: {
+           paragraph: getBlockConversionLabel('paragraph'),
+           todo: getBlockConversionLabel('todo'),
+           quote: getBlockConversionLabel('quote'),
+           'bulleted-list': getBlockConversionLabel('bulleted-list'),
+           'numbered-list': getBlockConversionLabel('numbered-list'),
+           table: getBlockConversionLabel('table')
+         },
         convertLabel: ui.convert,
         copyBlocksLabel: ui.copyBlocks,
         copyTextLabel: ui.copyText,

@@ -67,6 +67,7 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
         <option value="quote">{typeOptions.quote}</option>
         <option value="bulleted-list">{typeOptions['bulleted-list']}</option>
         <option value="numbered-list">{typeOptions['numbered-list']}</option>
+        <option value="table">{typeOptions.table}</option>
         <option value="divider">{typeOptions.divider}</option>
       </select>
 

@@ -6,6 +6,7 @@ import { BlockContextMenu } from './BlockContextMenu'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
+import { renderMarkdownTableHtml } from '../utils/markdownTable'
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -192,8 +193,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
    } = props
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  const isTableBlock = block.type === 'table'
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
-  const shouldShowRichMediaPreview = !['code', 'math', 'divider'].includes(block.type)
+  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
+  const tableHtml = isTableBlock ? renderMarkdownTableHtml(block.content) : null
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -342,6 +345,34 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
              selectBlockRange(index)
              onOpenSelectionAiEditor()
            }}
+            typeOptions={{
+              paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
+              'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
+              'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+              todo: ui.blockTypeOptions?.todo || 'Todo',
+              code: ui.blockTypeOptions?.code || 'Code',
+              math: ui.blockTypeOptions?.math || 'Math',
+              quote: ui.blockTypeOptions?.quote || 'Quote',
+              'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
+              'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+              table: ui.blockTypeOptions?.table || 'Table',
+              divider: ui.blockTypeOptions?.divider || 'Divider'
+            }}
+            ui={ui}
+            isZh={isZh}
+          />
+        </div>
+
+       {/* ── Context Menu ── */}
+      {showContextMenu && (
+        <BlockContextMenu
+          x={contextMenuPos.x}
+          y={contextMenuPos.y}
+          blockType={block.type}
+          onTypeChange={handleBlockTypeChange}
+          onDuplicate={() => duplicateDraftBlock(index)}
+          onDelete={handleDeleteBlock}
+          onClose={() => setShowContextMenu(false)}
            typeOptions={{
              paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
              'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
@@ -352,44 +383,23 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
              quote: ui.blockTypeOptions?.quote || 'Quote',
              'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
              'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+             table: ui.blockTypeOptions?.table || 'Table',
              divider: ui.blockTypeOptions?.divider || 'Divider'
            }}
            ui={ui}
            isZh={isZh}
          />
-       </div>
-
-      {/* ── Context Menu ── */}
-      {showContextMenu && (
-        <BlockContextMenu
-          x={contextMenuPos.x}
-          y={contextMenuPos.y}
-          blockType={block.type}
-          onTypeChange={handleBlockTypeChange}
-          onDuplicate={() => duplicateDraftBlock(index)}
-          onDelete={handleDeleteBlock}
-          onClose={() => setShowContextMenu(false)}
-          typeOptions={{
-            paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
-            'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
-            'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
-            todo: ui.blockTypeOptions?.todo || 'Todo',
-            code: ui.blockTypeOptions?.code || 'Code',
-            math: ui.blockTypeOptions?.math || 'Math',
-            quote: ui.blockTypeOptions?.quote || 'Quote',
-            'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
-            'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
-            divider: ui.blockTypeOptions?.divider || 'Divider'
-          }}
-          ui={ui}
-          isZh={isZh}
-        />
       )}
 
       {/* ── Content area ── */}
       <div className="block-content-area">
         {block.type === 'divider' ? (
           <div className="block-divider-line" />
+        ) : isTableBlock ? (
+          <div
+            className="block-table-content"
+            dangerouslySetInnerHTML={{ __html: tableHtml ?? block.content }}
+          />
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-start' }}>
             {/* Type-specific prefix */}

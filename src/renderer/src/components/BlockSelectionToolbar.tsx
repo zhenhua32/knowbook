@@ -94,8 +94,9 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
           <option value="paragraph">{conversionOptions.paragraph}</option>
           <option value="todo">{conversionOptions.todo}</option>
           <option value="quote">{conversionOptions.quote}</option>
-          <option value="bulleted-list">{conversionOptions['bulleted-list']}</option>
-          <option value="numbered-list">{conversionOptions['numbered-list']}</option>
+           <option value="bulleted-list">{conversionOptions['bulleted-list']}</option>
+           <option value="numbered-list">{conversionOptions['numbered-list']}</option>
+           <option value="table">{conversionOptions.table}</option>
         </select>
         <button className="secondary-button" onClick={onConvert} type="button">
           {convertLabel}
