@@ -63,16 +63,18 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
 
   if (!isOpen) {
     return (
-      <p className="mini-hint">
-        {isZh
-          ? '辅助区已收起：可点击“展开辅助区”查看关系、插件动作与 AI 面板。'
-          : 'Auxiliary panel is hidden. Click "Show auxiliary" to open relations, plugin actions, and AI panel.'}
-      </p>
+      <div className="document-aux-sidebar-empty">
+        <p className="mini-hint">
+          {isZh
+            ? '辅助区已收起：可点击“展开辅助区”查看关系、插件动作与 AI 面板。'
+            : 'Auxiliary panel is hidden. Click "Show auxiliary" to open relations, plugin actions, and AI panel.'}
+        </p>
+      </div>
     )
   }
 
   return (
-    <>
+    <div className="document-aux-sidebar-content">
       {relationContent}
       {selectionAiContent ?? null}
 
@@ -175,6 +177,6 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
           {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
         </div>
       </div>
-    </>
+    </div>
   )
 }

@@ -141,26 +141,6 @@ export function DocumentsSection({
 
             {floatingSlashCommandPanelProps ? <FloatingSlashCommandPanel {...floatingSlashCommandPanelProps} /> : null}
 
-            {documentsAuxPanelProps ? (
-              <DocumentsAuxPanel
-                {...documentsAuxPanelProps}
-                selectionAiContent={selectionAiContent}
-                relationContent={(
-                  <div className="relation-grid">
-                    {relationGroups.map((group) => (
-                      <RelationList
-                        emptyText={group.emptyText}
-                        key={group.title}
-                        links={group.links}
-                        onSelect={documentsAuxPanelProps.onOpenDocument}
-                        title={group.title}
-                      />
-                    ))}
-                  </div>
-                )}
-              />
-            ) : null}
-
             {documentStatsBarProps ? <DocumentStatsBar {...documentStatsBarProps} /> : null}
           </>
         ) : (
@@ -169,6 +149,28 @@ export function DocumentsSection({
           </div>
         )}
       </article>
+
+      {documentsAuxPanelProps && selectedDocument ? (
+        <aside className="panel document-aux-sidebar">
+          <DocumentsAuxPanel
+            {...documentsAuxPanelProps}
+            selectionAiContent={selectionAiContent}
+            relationContent={(
+              <div className="relation-grid document-aux-relation-grid">
+                {relationGroups.map((group) => (
+                  <RelationList
+                    emptyText={group.emptyText}
+                    key={group.title}
+                    links={group.links}
+                    onSelect={documentsAuxPanelProps.onOpenDocument}
+                    title={group.title}
+                  />
+                ))}
+              </div>
+            )}
+          />
+        </aside>
+      ) : null}
     </section>
   )
 }
