@@ -11,7 +11,7 @@ import { DocumentSummaryCard } from '../components/DocumentSummaryCard'
 import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
-type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
+type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
 type RelationGroup = {
   title: string
@@ -116,16 +116,17 @@ export function DocumentsSection({
                 {selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {blockEditorRowSharedProps
                   ? visibleEditorRows.map((row) => (
-                    <BlockEditorRow
-                      key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`}
-                      {...blockEditorRowSharedProps}
-                      block={row.block}
-                      dropPreview={row.dropPreview}
-                      indentPx={row.indentPx}
-                      index={row.index}
-                      isSelected={row.isSelected}
-                      numberLabel={row.numberLabel}
-                    />
+                     <BlockEditorRow
+                       key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`}
+                       {...blockEditorRowSharedProps}
+                       block={row.block}
+                       dropPreview={row.dropPreview}
+                       indentPx={row.indentPx}
+                       index={row.index}
+                       isSelected={row.isSelected}
+                       isSearchMatch={row.isSearchMatch}
+                       numberLabel={row.numberLabel}
+                     />
                   ))
                   : null}
                 <button className="secondary-button" onClick={onAddBlock} type="button">

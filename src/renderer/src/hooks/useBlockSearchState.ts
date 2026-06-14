@@ -45,8 +45,7 @@ export function useBlockSearchState({ activeBlockIndex, draftBlocks, onSelectBlo
 
   const handleBlockSearchSelect = useCallback((blockIndex: number) => {
     onSelectBlock(blockIndex)
-    closeBlockSearch()
-  }, [closeBlockSearch, onSelectBlock])
+  }, [onSelectBlock])
 
   return {
     blockSearchItems,

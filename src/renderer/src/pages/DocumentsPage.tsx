@@ -88,6 +88,7 @@ export function DocumentsPage({
     adjustSelectedBlocksDepth: documents.adjustSelectedBlocksDepth,
     applySlashCommand: documents.applySlashCommand,
     beginBlockDrag: documents.beginBlockDrag,
+    blockSearchQuery: documents.blockSearchQuery,
     blockSuggestions: documents.blockSuggestions,
     blockHasChildren: documents.blockHasChildren,
     blockTextareaRefs: documents.blockTextareaRefs,

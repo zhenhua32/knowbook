@@ -24,6 +24,7 @@ export type BlockEditorRowProps = {
   // Row state
   isSelected: boolean
   isHighlighted: boolean
+  isSearchMatch?: boolean
   dropPreview: BlockDropPreview | null
   indentPx: number
   numberLabel: string
@@ -135,6 +136,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     selectedDocument,
     isSelected,
     isHighlighted,
+    isSearchMatch,
     dropPreview,
     indentPx,
     numberLabel,
@@ -255,7 +257,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
   return (
     <div
-      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}`}
+      className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
         ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : undefined),

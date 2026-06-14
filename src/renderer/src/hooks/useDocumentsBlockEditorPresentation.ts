@@ -22,6 +22,7 @@ type FloatingSlashCommandPanelProps = ComponentProps<typeof FloatingSlashCommand
 
 type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps & {
   activeLinkContext: { query: string } | null
+  blockSearchQuery: string
   blockSuggestions: DocumentBlockDraft[]
   canMoveSelectionDown: boolean
   canMoveSelectionUp: boolean
@@ -60,6 +61,7 @@ export function useDocumentsBlockEditorPresentation({
   adjustSelectedBlocksDepth,
   applySlashCommand,
   beginBlockDrag,
+  blockSearchQuery,
   blockSuggestions,
   blockHasChildren,
   blockTextareaRefs,
@@ -168,6 +170,10 @@ export function useDocumentsBlockEditorPresentation({
         indentPx,
         index,
         isSelected,
+        isSearchMatch: blockSearchQuery.trim().length > 0 && (
+          block.content.toLowerCase().includes(blockSearchQuery.toLowerCase()) ||
+          block.type.toLowerCase().includes(blockSearchQuery.toLowerCase())
+        ),
         numberLabel
       }
     })
@@ -179,6 +185,7 @@ export function useDocumentsBlockEditorPresentation({
     draftBlocks,
     getBlockDropPreview,
     getVisibleBlocks,
+    blockSearchQuery,
     isBlockSelected,
     isNestableBlock,
     selectedDocument
