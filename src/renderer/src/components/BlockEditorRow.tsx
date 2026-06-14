@@ -237,6 +237,15 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     setShowContextMenu(true)
   }
 
+  const handleDeleteBlock = () => {
+    if (selectedBlockRange && isSelected) {
+      deleteSelectedBlocks()
+      return
+    }
+
+    removeSelectedBlockRange({ start: index, end: index })
+  }
+
   return (
     <div
       className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}`}
@@ -323,33 +332,23 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
           isActive={showBlockToolbar}
           onHighlightChange={(highlight) => updateBlockHighlight(index, highlight)}
           onTypeChange={handleBlockTypeChange}
-        onDuplicate={() => duplicateDraftBlock(index)}
-        onDelete={() => {
-          if (selectedBlockRange && isSelected) {
-            deleteSelectedBlocks()
-          } else {
-            if (index > 0) {
-              mergeWithPreviousBlock(index)
-            } else {
-              updateDraftBlock(index, { content: '', type: 'paragraph' })
-            }
-          }
-        }}
-        typeOptions={{
-          paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
-          'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
-          'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
-          todo: ui.blockTypeOptions?.todo || 'Todo',
-          code: ui.blockTypeOptions?.code || 'Code',
-          math: ui.blockTypeOptions?.math || 'Math',
-          quote: ui.blockTypeOptions?.quote || 'Quote',
-          'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
-          'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
-          divider: ui.blockTypeOptions?.divider || 'Divider'
-        }}
-        ui={ui}
-        isZh={isZh}
-      />
+          onDuplicate={() => duplicateDraftBlock(index)}
+          onDelete={handleDeleteBlock}
+          typeOptions={{
+            paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
+            'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
+            'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+            todo: ui.blockTypeOptions?.todo || 'Todo',
+            code: ui.blockTypeOptions?.code || 'Code',
+            math: ui.blockTypeOptions?.math || 'Math',
+            quote: ui.blockTypeOptions?.quote || 'Quote',
+            'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
+            'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+            divider: ui.blockTypeOptions?.divider || 'Divider'
+          }}
+          ui={ui}
+          isZh={isZh}
+        />
       </div>
 
       {/* ── Context Menu ── */}
@@ -360,13 +359,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
           blockType={block.type}
           onTypeChange={handleBlockTypeChange}
           onDuplicate={() => duplicateDraftBlock(index)}
-          onDelete={() => {
-            if (index > 0) {
-              mergeWithPreviousBlock(index)
-            } else {
-              updateDraftBlock(index, { content: '', type: 'paragraph' })
-            }
-          }}
+          onDelete={handleDeleteBlock}
           onClose={() => setShowContextMenu(false)}
           typeOptions={{
             paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',

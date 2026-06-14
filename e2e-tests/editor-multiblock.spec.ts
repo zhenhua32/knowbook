@@ -3,6 +3,7 @@ import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron
 
 async function createFreshDocumentEditor(page: Page): Promise<Locator> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await expect(page.locator('.document-summary-card .editor-input').first()).toHaveValue(/Untitled/i)
 
   const editor = page.locator('textarea.block-inline-textarea').nth(1)
   await expect(editor).toBeVisible()
@@ -96,6 +97,13 @@ async function selectLastTwoBodyBlocks(page: Page): Promise<void> {
 
   await expect(page.locator('.block-selection-toolbar')).toBeVisible()
   await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+}
+
+async function openBodyBlockToolbar(page: Page, bodyIndex: number): Promise<void> {
+  const row = page.locator('.block-editor-row').nth(bodyIndex + 1)
+  await expect(row).toBeVisible()
+  await row.locator('.block-drag-handle').click({ force: true })
+  await expect(row.locator('.block-edit-toolbar')).toBeVisible()
 }
 
 test.describe('Editor Multi-Block Operations @electron', () => {
@@ -217,6 +225,35 @@ test.describe('Editor Multi-Block Operations @electron', () => {
 
       await expect(toolbar).toHaveCount(0)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Gamma'])
+    })
+  })
+
+  test('deletes a single block from the block toolbar', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
+
+      await openBodyBlockToolbar(page, 1)
+      await page.locator('.block-editor-row').nth(2).locator('.block-toolbar-delete').click()
+
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha'])
+    })
+  })
+
+  test('deletes a single block from the block context menu', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await createParagraphBlocks(page, ['Alpha', 'Beta'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
+
+      await page.locator('textarea.block-inline-textarea').nth(2).click({ button: 'right' })
+      await expect(page.locator('.block-context-menu')).toBeVisible()
+      await page.locator('.block-context-menu').getByRole('button', { name: uiText('Delete', '删除') }).click()
+
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha'])
     })
   })
 
