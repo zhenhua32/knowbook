@@ -521,6 +521,25 @@ export interface AskAiResult {
   references: SemanticSearchResult[]
 }
 
+export type DocumentBlockAiEditMode = 'summarize' | 'rewrite' | 'table' | 'custom'
+
+export interface PreviewDocumentBlockAiEditInput {
+  documentId: string
+  documentTitle: string
+  documentPath: string
+  documentSummary: string
+  selectedBlocks: DocumentBlockDraft[]
+  mode: DocumentBlockAiEditMode
+  instruction?: string
+}
+
+export interface PreviewDocumentBlockAiEditResult {
+  documentId: string
+  mode: DocumentBlockAiEditMode
+  instruction: string
+  replacementText: string
+}
+
 export interface RunDocumentAiAutomationsResult {
   summaryGenerated: boolean
 }
@@ -572,6 +591,7 @@ export interface ElectronApi {
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   searchSemanticNotes: (input: SearchSemanticNotesInput) => Promise<SemanticSearchResult[]>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
+  previewDocumentBlockAiEdit: (input: PreviewDocumentBlockAiEditInput) => Promise<PreviewDocumentBlockAiEditResult>
   runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
   setPluginEnabled: (input: SetPluginEnabledInput) => Promise<void>
   reloadPlugins: () => Promise<void>

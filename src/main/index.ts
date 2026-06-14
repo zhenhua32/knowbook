@@ -29,6 +29,8 @@ import type {
   HomeData,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
+  PreviewDocumentBlockAiEditInput,
+  PreviewDocumentBlockAiEditResult,
   RenameDocumentDatabaseColumnInput,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
@@ -414,6 +416,11 @@ function registerIpcHandlers(): void {
     return result
   })
 
+  ipcMain.handle('knowbook:preview-document-block-ai-edit', async (_event, input: PreviewDocumentBlockAiEditInput) => {
+    const result = await previewDocumentBlockAiEdit(input)
+    return result
+  })
+
   ipcMain.handle('knowbook:run-document-ai-automations', async (_event, documentId: string) => {
     const result = await runDocumentAiAutomations(documentId)
     return result
@@ -663,46 +670,54 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
   }
 
   const prompt = store.buildAiPrompt(input, relatedNotes)
-  const endpoint = `${home.aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: home.aiConfig.model,
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an assistant helping users organize and improve their notes.'
-        },
-        {
-          role: 'user',
-          content: prompt
-        }
-      ],
-      temperature: 0.3
-    })
+  const answer = await requestAiChatCompletion({
+    apiKey,
+    baseUrl: home.aiConfig.baseUrl,
+    emptyResponseMessage: 'AI returned an empty response.',
+    failureLabel: 'AI request',
+    model: home.aiConfig.model,
+    systemPrompt: 'You are an assistant helping users organize and improve their notes.',
+    temperature: 0.3,
+    userPrompt: prompt
   })
-
-  if (!response.ok) {
-    const errorBody = await response.text()
-    throw new Error(`AI request failed (${response.status}): ${errorBody}`)
-  }
-
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-  }
-  const answer = payload.choices?.[0]?.message?.content?.trim()
-
-  if (!answer) {
-    throw new Error('AI returned an empty response.')
-  }
 
   return {
     answer,
     references: relatedNotes.map(({ content, contentHash, ...note }) => note)
+  }
+}
+
+async function previewDocumentBlockAiEdit(
+  input: PreviewDocumentBlockAiEditInput
+): Promise<PreviewDocumentBlockAiEditResult> {
+  const home = store.getHomeData(backupRoot)
+  if (!home.aiConfig.enabled) {
+    throw new Error('AI is disabled. Enable AI in settings first.')
+  }
+
+  const apiKey = store.getAiApiKey()
+  if (!apiKey) {
+    throw new Error('Missing API key. Save an API key in AI settings.')
+  }
+
+  const resolvedInstruction = resolveDocumentBlockAiEditInstruction(input)
+  const prompt = store.buildDocumentBlockAiEditPrompt(input, resolvedInstruction)
+  const replacementText = await requestAiChatCompletion({
+    apiKey,
+    baseUrl: home.aiConfig.baseUrl,
+    emptyResponseMessage: 'AI returned an empty block edit response.',
+    failureLabel: 'AI block edit request',
+    model: home.aiConfig.model,
+    systemPrompt: 'You transform selected note content. Return only the edited replacement content, with no meta commentary.',
+    temperature: input.mode === 'table' ? 0.2 : 0.3,
+    userPrompt: prompt
+  })
+
+  return {
+    documentId: input.documentId,
+    mode: input.mode,
+    instruction: resolvedInstruction,
+    replacementText: normalizeDocumentBlockAiEditResponse(input.mode, replacementText)
   }
 }
 
@@ -773,45 +788,23 @@ async function generateDocumentSummary(
     return null
   }
 
-  const endpoint = `${aiConfig.baseUrl.replace(/\/$/, '')}/chat/completions`
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: aiConfig.model,
-      messages: [
-        {
-          role: 'system',
-          content: 'You summarize notes for a knowledge management app. Produce one concise Chinese summary sentence with no markdown, no bullet points, and no surrounding quotes.'
-        },
-        {
-          role: 'user',
-          content: [
-            `Document title: ${detail.title}`,
-            `Document path: ${detail.path}`,
-            'Document content:',
-            content,
-            '',
-            'Return a compact summary in Chinese, ideally under 60 Chinese characters.'
-          ].join('\n')
-        }
-      ],
-      temperature: 0.2
-    })
+  const summary = await requestAiChatCompletion({
+    apiKey,
+    baseUrl: aiConfig.baseUrl,
+    emptyResponseMessage: 'AI returned an empty summary response.',
+    failureLabel: 'AI summary request',
+    model: aiConfig.model,
+    systemPrompt: 'You summarize notes for a knowledge management app. Produce one concise Chinese summary sentence with no markdown, no bullet points, and no surrounding quotes.',
+    temperature: 0.2,
+    userPrompt: [
+      `Document title: ${detail.title}`,
+      `Document path: ${detail.path}`,
+      'Document content:',
+      content,
+      '',
+      'Return a compact summary in Chinese, ideally under 60 Chinese characters.'
+    ].join('\n')
   })
-
-  if (!response.ok) {
-    const errorBody = await response.text()
-    throw new Error(`AI summary request failed (${response.status}): ${errorBody}`)
-  }
-
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-  }
-  const summary = payload.choices?.[0]?.message?.content?.trim() ?? ''
   const normalizedSummary = summary
     .replace(/[\r\n]+/g, ' ')
     .replace(/[“”"'`]/g, '')
@@ -837,6 +830,114 @@ function shouldGenerateSummary(summary: string, blockContents: string[]): boolea
     .length
 
   return contentLength >= 40
+}
+
+function resolveDocumentBlockAiEditInstruction(input: PreviewDocumentBlockAiEditInput): string {
+  switch (input.mode) {
+    case 'summarize':
+      return 'Summarize the selected content into concise note content.'
+    case 'rewrite':
+      return 'Rewrite the selected content for clarity and readability while preserving meaning.'
+    case 'table':
+      return 'Convert the selected content into a single Markdown table.'
+    case 'custom': {
+      const instruction = input.instruction?.trim()
+      if (!instruction) {
+        throw new Error('Custom AI edit instruction is required.')
+      }
+
+      return instruction
+    }
+  }
+}
+
+function normalizeDocumentBlockAiEditResponse(
+  mode: PreviewDocumentBlockAiEditInput['mode'],
+  responseText: string
+): string {
+  if (mode !== 'table') {
+    return responseText
+  }
+
+  const fencedMatch = responseText.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
+  return fencedMatch?.[1]?.trim() || responseText
+}
+
+function buildAiChatCompletionsEndpoint(baseUrl: string): string {
+  const trimmedBaseUrl = baseUrl.trim()
+  if (!trimmedBaseUrl) {
+    throw new Error('Missing AI Base URL. Save a Base URL in AI settings.')
+  }
+
+  let endpointUrl: URL
+  try {
+    endpointUrl = new URL(trimmedBaseUrl)
+  } catch {
+    throw new Error(`Invalid AI Base URL "${trimmedBaseUrl}". Include http:// or https://.`)
+  }
+
+  endpointUrl.search = ''
+  endpointUrl.hash = ''
+  const normalizedPath = endpointUrl.pathname.replace(/\/$/, '')
+  endpointUrl.pathname = `${normalizedPath}/chat/completions`.replace(/\/{2,}/g, '/')
+  return endpointUrl.toString()
+}
+
+async function requestAiChatCompletion(input: {
+  apiKey: string
+  baseUrl: string
+  emptyResponseMessage: string
+  failureLabel: string
+  model: string
+  systemPrompt: string
+  temperature: number
+  userPrompt: string
+}): Promise<string> {
+  const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
+
+  let response: Response
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${input.apiKey}`
+      },
+      body: JSON.stringify({
+        model: input.model,
+        messages: [
+          {
+            role: 'system',
+            content: input.systemPrompt
+          },
+          {
+            role: 'user',
+            content: input.userPrompt
+          }
+        ],
+        temperature: input.temperature
+      })
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`${input.failureLabel} failed before the AI service responded. Check the AI Base URL, network connectivity, proxy, and TLS certificate. Endpoint: ${endpoint}. Reason: ${reason}`)
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text()
+    throw new Error(`${input.failureLabel} failed (${response.status}): ${errorBody}`)
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>
+  }
+  const content = payload.choices?.[0]?.message?.content?.trim()
+
+  if (!content) {
+    throw new Error(input.emptyResponseMessage)
+  }
+
+  return content
 }
 
 async function buildSemanticContextNotes(

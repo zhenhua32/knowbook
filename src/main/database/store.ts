@@ -28,6 +28,7 @@ import type {
   HomeData,
   LinkedDocument,
   MoveDocumentDatabaseColumnInput,
+  PreviewDocumentBlockAiEditInput,
   RecentDocument,
   RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
@@ -1007,6 +1008,59 @@ export class KnowbookStore {
       '',
       `User request: ${input.prompt}`,
       'Answer in concise Chinese with actionable suggestions. Use related workspace context when it is relevant, and mention note paths when you rely on them.'
+    ].join('\n')
+  }
+
+  buildDocumentBlockAiEditPrompt(
+    input: PreviewDocumentBlockAiEditInput,
+    resolvedInstruction: string
+  ): string {
+    const selectedBlocks = input.selectedBlocks
+      .map((block) => ({
+        ...block,
+        type: block.type.trim() || 'paragraph',
+        content: block.content
+      }))
+      .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
+
+    if (selectedBlocks.length === 0) {
+      throw new Error('Selected blocks not found')
+    }
+
+    const selectedContent = selectedBlocks
+      .map((block, index) => [`Block ${index + 1}:`, `[${block.type}]`, block.content].join(' '))
+      .join('\n')
+
+    const modeSpecificRules = input.mode === 'table'
+      ? [
+          'Return exactly one Markdown table as plain text.',
+          'Do not wrap the table in code fences.',
+          'Do not insert blank lines between table rows.'
+        ]
+      : [
+          'Return only the replacement note content.',
+          'Do not add explanations, prefaces, or surrounding quotes.',
+          'You may use multiple paragraphs or supported markdown block shortcuts when helpful.'
+        ]
+
+    return [
+      'You edit selected note blocks for a local-first knowledge management app.',
+      `Document title: ${input.documentTitle}`,
+      `Document path: ${input.documentPath}`,
+      `Document summary: ${input.documentSummary}`,
+      `Selected block count: ${selectedBlocks.length}`,
+      'Selected blocks:',
+      selectedContent,
+      '',
+      `Requested transformation: ${resolvedInstruction}`,
+      '',
+      'Output rules:',
+      '- Keep the response in the same language as the source unless the instruction explicitly asks otherwise.',
+      '- Do not mention the app, the prompt, or that you are an AI.',
+      '- Preserve factual meaning unless the instruction explicitly asks for a transformation.',
+      ...modeSpecificRules.map((rule) => `- ${rule}`),
+      '',
+      'Return the replacement content only.'
     ].join('\n')
   }
 

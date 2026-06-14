@@ -1464,6 +1464,24 @@ dt,
   margin-top: 10px;
 }
 
+.ai-selection-panel {
+  padding: 14px;
+  border: 1px solid rgba(47, 111, 237, 0.14);
+  border-radius: 16px;
+  background: rgba(240, 247, 255, 0.56);
+}
+
+.ai-selection-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-selection-mode-grid {
+  flex-wrap: wrap;
+}
+
 .ai-actions {
   justify-content: flex-start;
 }
@@ -1536,6 +1554,11 @@ dt,
   color: #2a241b;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.ai-selection-preview {
+  max-height: 280px;
+  overflow: auto;
 }
 
 .link-helper-panel {

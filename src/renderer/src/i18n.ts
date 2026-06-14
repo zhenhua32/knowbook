@@ -428,8 +428,29 @@ function createUiText(language: UiLanguage) {
     pluginActionsHint: zh
       ? '插件动作是针对“已保存版本”的文档执行的；如果希望插件读取到最新草稿，请先保存。'
       : 'Plugin actions run against the saved document. Finish editing first if you want the plugin to see your latest draft.',
+    aiEditSelection: zh ? 'AI 编辑' : 'AI edit',
     askAiLabel: zh ? '询问 AI' : 'Ask AI',
     askAiPlaceholder: zh ? '例如：基于当前文档，给我 3 条结构优化建议' : 'For example: give me 3 structural improvement ideas for this document.',
+    aiSelectionLabel: zh ? 'AI 编辑选区' : 'AI edit selection',
+    aiSelectionModeSummarize: zh ? '总结' : 'Summarize',
+    aiSelectionModeRewrite: zh ? '润色改写' : 'Rewrite',
+    aiSelectionModeTable: zh ? '转成表格' : 'Table',
+    aiSelectionModeCustom: zh ? '自定义指令' : 'Custom',
+    aiSelectionCustomPlaceholder: zh ? '例如：改成会议纪要、压缩成 3 条、翻译成英文' : 'For example: rewrite as meeting notes, compress into 3 bullets, or translate to English',
+    aiSelectionGeneratePreview: zh ? '生成预览' : 'Generate preview',
+    aiSelectionGeneratingPreview: zh ? '生成中...' : 'Generating...',
+    aiSelectionPreviewLabel: zh ? '预览结果' : 'Preview',
+    aiSelectionApplyPreview: zh ? '应用到文档' : 'Apply to document',
+    aiSelectionDiscardPreview: zh ? '丢弃预览' : 'Discard preview',
+    aiSelectionDisabledHint: zh ? '当前未启用 AI。请先在设置里开启 AI 功能。' : 'AI is currently disabled. Enable AI in settings first.',
+    aiSelectionMissingApiKeyHint: zh ? '当前未保存 API Key。请先在设置里保存后再生成预览。' : 'No API key is saved yet. Save one in settings before generating a preview.',
+    aiSelectionPreviewStale: zh ? '当前预览已经过期：你修改了标题、摘要或选区内容，请重新生成。' : 'This preview is stale because the title, summary, or selected blocks changed. Generate it again.',
+    aiSelectionSummary: (selectedCount: number, actionCount: number) => zh
+      ? `当前选区 ${selectedCount} 个块，实际会替换 ${actionCount} 个块。`
+      : `${selectedCount} selected block${selectedCount === 1 ? '' : 's'}, replacing ${actionCount} block${actionCount === 1 ? '' : 's'} when applied.`,
+    aiSelectionHint: (actionCount: number) => zh
+      ? `预览会基于当前草稿选区生成；确认应用后，会用结果替换这 ${actionCount} 个块。`
+      : `The preview uses the current draft selection. Applying it will replace these ${actionCount} block${actionCount === 1 ? '' : 's'}.`,
     runEnabledAutomations: zh ? '运行已启用自动化' : 'Run enabled automations',
     runningAutomations: zh ? '正在运行自动化...' : 'Running automations...',
     findRelatedNotes: zh ? '查找相关笔记' : 'Find related notes',

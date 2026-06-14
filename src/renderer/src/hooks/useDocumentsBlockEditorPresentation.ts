@@ -30,6 +30,7 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   copySelectedBlocks: () => void
   copySelectedBlocksAsPlainText: () => void
   cutSelectedBlocks: () => void
+  onOpenSelectionAiEditor: () => void
   dragOverBlockDepth: number | null
   dragOverBlockIndex: number | null
   draggingBlockIndex: number | null
@@ -74,6 +75,7 @@ export function useDocumentsBlockEditorPresentation({
   copySelectedBlocks,
   copySelectedBlocksAsPlainText,
   cutSelectedBlocks,
+  onOpenSelectionAiEditor,
   deleteSelectedBlocks,
   dismissSlashCommand,
   draftBlocks,
@@ -221,6 +223,7 @@ export function useDocumentsBlockEditorPresentation({
         cutLabel: ui.cut,
         deleteLabel: ui.common.delete,
         duplicateLabel: ui.duplicate,
+        aiEditLabel: ui.aiEditSelection,
         hasCrossParent: selectedBlockCount > 1 && !selectedBlockInteractionIssue && !selectedVisibleSiblingSlice,
         hasHiddenCollapsedContent: selectedBlockHasHiddenCollapsedContent,
         hintLabel: ui.blockSelectionHint({
@@ -244,6 +247,7 @@ export function useDocumentsBlockEditorPresentation({
         onCut: cutSelectedBlocks,
         onDelete: deleteSelectedBlocks,
         onDuplicate: duplicateSelectedBlocks,
+        onOpenAiEdit: onOpenSelectionAiEditor,
         onMoveDown: () => moveSelectedBlocks(1),
         onMoveUp: () => moveSelectedBlocks(-1),
         rangeEnd: selectedBlockRange.end,

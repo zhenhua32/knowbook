@@ -121,6 +121,47 @@ async function createRootDocument(page: Page, title: string, body: string): Prom
   await expect(getPreviewTitle(page)).toHaveText(title)
 }
 
+async function createFreshDocumentEditor(page: Page): Promise<Locator> {
+  await page.getByTitle(uiText('New root', '新建根文档')).click()
+
+  const editor = page.locator('textarea.block-inline-textarea').nth(1)
+  await expect(editor).toBeVisible()
+  return editor
+}
+
+async function createParagraphBlocks(page: Page, values: string[]): Promise<void> {
+  const editors = page.locator('textarea.block-inline-textarea')
+  await createFreshDocumentEditor(page)
+
+  for (let index = 0; index < values.length; index += 1) {
+    const editor = editors.nth(index + 1)
+    await expect(editor).toBeVisible()
+    await editor.fill(values[index])
+
+    if (index < values.length - 1) {
+      await editor.press('Control+Enter')
+    }
+  }
+}
+
+async function selectFirstTwoBodyBlocks(page: Page): Promise<void> {
+  const editors = page.locator('textarea.block-inline-textarea')
+  const firstBody = editors.nth(1)
+
+  await firstBody.click()
+  await firstBody.press('End')
+  await firstBody.press('Shift+ArrowDown')
+
+  await expect(page.locator('.block-selection-toolbar')).toBeVisible()
+  await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+}
+
+async function getBodyBlockValues(page: Page): Promise<string[]> {
+  return page.locator('textarea.block-inline-textarea').evaluateAll((textareas) =>
+    textareas.slice(1).map((textarea) => (textarea as HTMLTextAreaElement).value)
+  )
+}
+
 async function saveAiSettings(
   page: Page,
   baseUrl: string,
@@ -228,6 +269,69 @@ test.describe('AI Settings @electron', () => {
       expect(summaryRequests[0]?.authorization).toBe('Bearer test-api-key')
       expect(summaryRequests[0]?.body).toContain(`Document title: AI Automation Doc ${suffix}`)
       expect(summaryRequests[0]?.body).toContain('Document content:')
+    } finally {
+      await mockAiServer.close()
+    }
+  })
+
+  test('previews and applies an AI summary over the selected block range', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const generatedSummary = '这是 AI 生成的两段内容总结。'
+    const mockAiServer = await startMockAiServer(generatedSummary)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', false)
+        await openDocumentsPage(page)
+        await createParagraphBlocks(page, ['Alpha facts', 'Beta details', 'Gamma remains'])
+        await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha facts', 'Beta details', 'Gamma remains'])
+
+        await selectFirstTwoBodyBlocks(page)
+        const toolbar = page.locator('.block-selection-toolbar')
+        await toolbar.getByRole('button', { name: uiText('AI edit', 'AI 编辑') }).click()
+
+        await expect(page.getByText(uiText('AI edit selection', 'AI 编辑选区'))).toBeVisible()
+        await page.getByRole('button', { name: uiText('Generate preview', '生成预览') }).click()
+        await expect(page.locator('.ai-selection-preview')).toContainText(generatedSummary)
+
+        await page.getByRole('button', { name: uiText('Apply to document', '应用到文档') }).click()
+        await expect.poll(() => getBodyBlockValues(page)).toEqual([generatedSummary, 'Gamma remains'])
+      })
+
+      const summaryRequests = mockAiServer.requests.filter((request) => request.url === '/chat/completions')
+      expect(summaryRequests[0]?.body).toContain('Selected block count: 2')
+      expect(summaryRequests[0]?.body).toContain('Alpha facts')
+      expect(summaryRequests[0]?.body).toContain('Beta details')
+    } finally {
+      await mockAiServer.close()
+    }
+  })
+
+  test('applies table conversion as a single multiline block', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const generatedTable = ['| Name | Value |', '| --- | --- |', '| Alpha | 1 |', '| Beta | 2 |'].join('\n')
+    const mockAiServer = await startMockAiServer(generatedTable)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', false)
+        await openDocumentsPage(page)
+        await createParagraphBlocks(page, ['Alpha 1', 'Beta 2', 'Gamma remains'])
+        await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha 1', 'Beta 2', 'Gamma remains'])
+
+        await selectFirstTwoBodyBlocks(page)
+        const toolbar = page.locator('.block-selection-toolbar')
+        await toolbar.getByRole('button', { name: uiText('AI edit', 'AI 编辑') }).click()
+
+        await page.getByRole('button', { name: uiText('Table', '转成表格') }).click()
+        await page.getByRole('button', { name: uiText('Generate preview', '生成预览') }).click()
+        await expect(page.locator('.ai-selection-preview')).toContainText('| Name | Value |')
+
+        await page.getByRole('button', { name: uiText('Apply to document', '应用到文档') }).click()
+        await expect.poll(() => getBodyBlockValues(page)).toEqual([generatedTable, 'Gamma remains'])
+      })
     } finally {
       await mockAiServer.close()
     }

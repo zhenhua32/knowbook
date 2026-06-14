@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type UseAiStateParams = {
   aiConfig: AiConfig
@@ -70,7 +71,7 @@ export function useAiState({
       onHomeDataChange(refreshed)
       onMessage(ui.aiSettingsSaved)
     } catch (error) {
-      const message = error instanceof Error ? error.message : ui.aiRequestFailed
+      const message = getErrorMessage(error, ui.aiRequestFailed)
       onMessage(message)
     } finally {
       setAiSaving(false)
@@ -102,7 +103,7 @@ export function useAiState({
       })
       setAiContextResults(results)
     } catch (error) {
-      const message = error instanceof Error ? error.message : ui.semanticSearchFailed
+      const message = getErrorMessage(error, ui.semanticSearchFailed)
       setAiContextResults([])
       setAiContextError(message)
     } finally {
@@ -126,7 +127,7 @@ export function useAiState({
       setAiAnswer(result.answer)
       setAiContextResults(result.references)
     } catch (error) {
-      const message = error instanceof Error ? error.message : ui.aiRequestFailed
+      const message = getErrorMessage(error, ui.aiRequestFailed)
       setAiAnswer(message)
       setAiContextResults([])
     } finally {
@@ -153,7 +154,7 @@ export function useAiState({
       onDraftSummaryChange(refreshedDetail?.summary ?? '')
       onMessage(ui.aiAutomationResult(result))
     } catch (error) {
-      const message = error instanceof Error ? error.message : ui.aiAutomationFailed
+      const message = getErrorMessage(error, ui.aiAutomationFailed)
       onMessage(message)
     } finally {
       setAiAutomationsRunning(false)

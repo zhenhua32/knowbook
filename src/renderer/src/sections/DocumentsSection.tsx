@@ -1,4 +1,4 @@
-import type { ComponentProps, KeyboardEventHandler } from 'react'
+import type { ComponentProps, KeyboardEventHandler, ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSearchPanel } from '../components/BlockSearchPanel'
@@ -36,6 +36,7 @@ type DocumentsSectionProps = {
   editorHelpText: string
   floatingSlashCommandPanelProps: ComponentProps<typeof FloatingSlashCommandPanel> | null
   documentsAuxPanelProps: Omit<ComponentProps<typeof DocumentsAuxPanel>, 'relationContent'> | null
+  selectionAiContent?: ReactNode
   relationGroups: RelationGroup[]
   documentStatsBarProps: ComponentProps<typeof DocumentStatsBar> | null
   emptyDocumentStateText: string
@@ -93,6 +94,7 @@ export function DocumentsSection({
   editorHelpText,
   floatingSlashCommandPanelProps,
   documentsAuxPanelProps,
+  selectionAiContent,
   relationGroups,
   documentStatsBarProps,
   emptyDocumentStateText
@@ -142,6 +144,7 @@ export function DocumentsSection({
             {documentsAuxPanelProps ? (
               <DocumentsAuxPanel
                 {...documentsAuxPanelProps}
+                selectionAiContent={selectionAiContent}
                 relationContent={(
                   <div className="relation-grid">
                     {relationGroups.map((group) => (

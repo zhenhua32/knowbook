@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import type { ClipWebPageInput, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
+import { useDocumentSelectionAiState } from '../hooks/useDocumentSelectionAiState'
 import { useDocumentsBlockEditorPresentation } from '../hooks/useDocumentsBlockEditorPresentation'
 import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPresentation'
 import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
@@ -37,6 +39,21 @@ export function DocumentsPage({
 }: DocumentsPageProps) {
   const [webClipBusy, setWebClipBusy] = useState(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
+
+  const selectionAi = useDocumentSelectionAiState({
+    aiEnabled: aiConfig.enabled,
+    documentsAuxPanelOpen: documents.documentsAuxPanelOpen,
+    draftBlocks: documents.draftBlocks,
+    draftSummary: documents.draftSummary,
+    draftTitle: documents.draftTitle,
+    getMultiBlockOperationRange: documents.getMultiBlockOperationRange,
+    handleBlockPaste: documents.handleBlockPaste,
+    hasApiKey: aiConfig.hasApiKey,
+    onOpenAuxPanel: documents.toggleDocumentsAuxPanel,
+    selectedBlockRange: documents.selectedBlockRange,
+    selectedDocument: documents.selectedDocument,
+    ui
+  })
 
   const handleClipWebPage = async () => {
     if (!documents.selectedDocument || !webClipUrlDraft.trim() || webClipBusy) {
@@ -86,6 +103,7 @@ export function DocumentsPage({
     copySelectedBlocks: documents.copySelectedBlocks,
     copySelectedBlocksAsPlainText: documents.copySelectedBlocksAsPlainText,
     cutSelectedBlocks: documents.cutSelectedBlocks,
+    onOpenSelectionAiEditor: selectionAi.openSelectionAiEditor,
     deleteSelectedBlocks: documents.deleteSelectedBlocks,
     dismissSlashCommand: documents.dismissSlashCommand,
     draftBlocks: documents.draftBlocks,
@@ -234,6 +252,35 @@ export function DocumentsPage({
     onWebClipUrlChange: setWebClipUrlDraft
   })
 
+  const selectionAiContent = documents.selectedBlockRange && selectionAi.selectedBlocksAvailable
+    ? (
+        <DocumentSelectionAiPanel
+          aiEnabled={aiConfig.enabled}
+          canApplyPreview={selectionAi.canApplyPreview}
+          canGeneratePreview={selectionAi.canGeneratePreview}
+          customInstruction={selectionAi.customInstruction}
+          hasApiKey={aiConfig.hasApiKey}
+          isPreviewStale={selectionAi.isPreviewStale}
+          mode={selectionAi.mode}
+          onApplyPreview={() => {
+            selectionAi.applyPreview()
+          }}
+          onClearPreview={selectionAi.clearPreview}
+          onCustomInstructionChange={selectionAi.setCustomInstruction}
+          onGeneratePreview={() => {
+            void selectionAi.generatePreview()
+          }}
+          onModeChange={selectionAi.setMode}
+          previewBusy={selectionAi.previewBusy}
+          previewError={selectionAi.previewError}
+          previewText={selectionAi.previewText}
+          selectedBlockActionCount={selectionAi.selectedBlockActionCount}
+          selectedBlockCount={selectionAi.selectedBlockCount}
+          ui={ui}
+        />
+      )
+    : null
+
   return (
     <>
       <DocumentsSection
@@ -267,6 +314,7 @@ export function DocumentsPage({
         previewHeaderProps={previewHeaderProps}
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
+        selectionAiContent={selectionAiContent}
         selectionToolbarProps={selectionToolbarProps}
         summaryCardProps={summaryCardProps}
         visibleEditorRows={visibleEditorRows}

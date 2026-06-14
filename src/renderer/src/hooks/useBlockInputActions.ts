@@ -117,6 +117,26 @@ export function useBlockInputActions({
     )
   }, [])
 
+  const looksLikeMarkdownTable = useCallback((text: string) => {
+    const lines = text
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+
+    if (lines.length < 2) {
+      return false
+    }
+
+    const headerLine = lines[0]
+    const separatorLine = lines[1]
+    if (!headerLine.includes('|') || !separatorLine.includes('|')) {
+      return false
+    }
+
+    return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(separatorLine)
+  }, [])
+
   const adjustPastedBlocksDepth = useCallback((blocks: DocumentBlockDraft[], targetDepth: number): DocumentBlockDraft[] => {
     if (blocks.length === 0) {
       return blocks
@@ -318,9 +338,11 @@ export function useBlockInputActions({
     if (activeRange) {
       const templateBlock = draftBlocks[activeRange.start] ?? currentBlock
       const lines = normalizedText.split('\n')
-      let nextBlocks = looksLikeStructuredBlockPaste(normalizedText)
-        ? parseStructuredPastedBlocks(normalizedText)
-        : lines.filter((line) => line.trim() !== '').map((line) => normalizePastedLineBlock(templateBlock, line))
+      let nextBlocks = looksLikeMarkdownTable(normalizedText)
+        ? [normalizePastedLineBlock(templateBlock, normalizedText)]
+        : looksLikeStructuredBlockPaste(normalizedText)
+          ? parseStructuredPastedBlocks(normalizedText)
+          : lines.filter((line) => line.trim() !== '').map((line) => normalizePastedLineBlock(templateBlock, line))
 
       if (nextBlocks.length === 0) {
         return false
@@ -355,6 +377,25 @@ export function useBlockInputActions({
 
     const before = currentBlock.content.slice(0, selectionStart)
     const after = currentBlock.content.slice(selectionEnd)
+
+    if (looksLikeMarkdownTable(normalizedText)) {
+      const nextBlocks = materializeDraftFragment([
+        normalizePastedLineBlock(currentBlock, `${before}${normalizedText}${after}`)
+      ], getNormalizedParentBlockId(currentBlock))
+
+      setDraftBlocks((previous) => {
+        const next = [...previous]
+        next.splice(index, 1, ...nextBlocks)
+        return next
+      })
+
+      setActiveBlockIndex(index)
+      setActiveCursorPosition(`${before}${normalizedText}`.length)
+      setPendingFocusBlockIndex(index)
+      endBlockDrag()
+      return true
+    }
+
     const lines = normalizedText.split('\n')
     const firstLine = lines[0] ?? ''
     const lastLine = lines[lines.length - 1] ?? ''
@@ -384,6 +425,7 @@ export function useBlockInputActions({
     endBlockDrag,
     getMultiBlockOperationRange,
     getNormalizedParentBlockId,
+    looksLikeMarkdownTable,
     looksLikeStructuredBlockPaste,
     normalizePastedLineBlock,
     parseStructuredPastedBlocks,

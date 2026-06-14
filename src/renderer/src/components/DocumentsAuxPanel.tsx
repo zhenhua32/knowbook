@@ -7,6 +7,7 @@ type DocumentsAuxPanelProps = {
   isZh: boolean
   isOpen: boolean
   relationContent: ReactNode
+  selectionAiContent?: ReactNode
   webClipUrlDraft: string
   webClipBusy: boolean
   onWebClipUrlChange: (value: string) => void
@@ -36,6 +37,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
     isZh,
     isOpen,
     relationContent,
+    selectionAiContent,
     webClipUrlDraft,
     webClipBusy,
     onWebClipUrlChange,
@@ -72,6 +74,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
   return (
     <>
       {relationContent}
+      {selectionAiContent ?? null}
 
       <div className="preview-section">
         <p className="panel-label">{ui.webClipLabel}</p>

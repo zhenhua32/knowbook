@@ -18,6 +18,7 @@ type BlockSelectionToolbarProps = {
   copyTextLabel: string
   cutLabel: string
   duplicateLabel: string
+  aiEditLabel: string
   deleteLabel: string
   moveUpLabel: string
   moveDownLabel: string
@@ -28,6 +29,7 @@ type BlockSelectionToolbarProps = {
   onCopyText: () => void
   onCut: () => void
   onDuplicate: () => void
+  onOpenAiEdit: () => void
   onDelete: () => void
   onMoveUp: () => void
   onMoveDown: () => void
@@ -56,6 +58,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
     copyTextLabel,
     cutLabel,
     duplicateLabel,
+    aiEditLabel,
     deleteLabel,
     moveUpLabel,
     moveDownLabel,
@@ -66,6 +69,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
     onCopyText,
     onCut,
     onDuplicate,
+    onOpenAiEdit,
     onDelete,
     onMoveUp,
     onMoveDown,
@@ -107,6 +111,9 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
         </button>
         <button className="secondary-button" onClick={onDuplicate} type="button">
           {duplicateLabel}
+        </button>
+        <button className="secondary-button" onClick={onOpenAiEdit} type="button">
+          {aiEditLabel}
         </button>
         <button className="danger-button" onClick={onDelete} type="button">
           {deleteLabel}
