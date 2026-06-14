@@ -1174,6 +1174,7 @@ dt,
 }
 
 .block-rich-media-image-card {
+  --block-rich-media-image-max-height: clamp(180px, 40vh, 360px);
   display: grid;
   gap: 8px;
   padding: 8px;
@@ -1184,16 +1185,29 @@ dt,
   cursor: pointer;
 }
 
+.block-rich-media-image-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-height: var(--block-rich-media-image-max-height);
+  overflow: hidden;
+  border-radius: 10px;
+  background: rgba(91, 72, 44, 0.06);
+}
+
 .block-rich-media-link:hover {
   transform: translateY(-1px);
 }
 
 .block-rich-media-image {
-  width: 100%;
-  max-height: 220px;
-  object-fit: cover;
-  border-radius: 10px;
-  background: rgba(91, 72, 44, 0.06);
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: var(--block-rich-media-image-max-height);
+  object-fit: contain;
+  object-position: center;
 }
 
 .block-rich-media-caption {

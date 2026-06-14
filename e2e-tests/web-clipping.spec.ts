@@ -146,6 +146,29 @@ async function getContentScrollTop(page: Page): Promise<number> {
   return page.locator('.content').evaluate((element) => (element as HTMLElement).scrollTop)
 }
 
+async function getRichMediaImageMetrics(page: Page): Promise<Array<{
+  naturalWidth: number
+  naturalHeight: number
+  renderedWidth: number
+  renderedHeight: number
+  viewportHeight: number
+}>> {
+  return page.locator('.block-rich-media-image').evaluateAll((elements) =>
+    elements.map((element) => {
+      const image = element as HTMLImageElement
+      const rect = image.getBoundingClientRect()
+
+      return {
+        naturalWidth: image.naturalWidth,
+        naturalHeight: image.naturalHeight,
+        renderedWidth: rect.width,
+        renderedHeight: rect.height,
+        viewportHeight: window.innerHeight
+      }
+    })
+  )
+}
+
 test.describe('Web Clipping @electron', () => {
   test('clips a webpage from the document auxiliary panel and opens the imported child document', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
@@ -178,6 +201,12 @@ test.describe('Web Clipping @electron', () => {
           { complete: true, naturalWidthPositive: true },
           { complete: true, naturalWidthPositive: true }
         ])
+        const imageMetrics = await getRichMediaImageMetrics(page)
+        expect(imageMetrics.length).toBe(2)
+        for (const metric of imageMetrics) {
+          expect(metric.renderedHeight).toBeLessThanOrEqual(Math.min(metric.viewportHeight * 0.4, 360) + 2)
+          expect(Math.abs((metric.renderedWidth / metric.renderedHeight) - (metric.naturalWidth / metric.naturalHeight))).toBeLessThan(0.03)
+        }
         await expect(page.locator('.block-rich-media-link').first()).toBeVisible()
 
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain(`Source URL: ${sourceServer.articleUrl}`)

@@ -37,12 +37,14 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
                 tabIndex={-1}
                 type="button"
               >
-                <img
-                  alt={image.alt || ui.blockPreviewImagesLabel}
-                  className="block-rich-media-image"
-                  decoding="async"
-                  src={toBlockRichMediaPreviewUrl(image.url)}
-                />
+                <span className="block-rich-media-image-frame">
+                  <img
+                    alt={image.alt || ui.blockPreviewImagesLabel}
+                    className="block-rich-media-image"
+                    decoding="async"
+                    src={toBlockRichMediaPreviewUrl(image.url)}
+                  />
+                </span>
                 <span className="block-rich-media-caption">{image.alt || image.url}</span>
               </button>
             ))}
