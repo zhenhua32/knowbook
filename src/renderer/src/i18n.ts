@@ -674,6 +674,7 @@ function createUiText(language: UiLanguage) {
     blockTypeChangeHint: zh ? '改变块类型' : 'Change block type',
     blockToolbarDuplicate: zh ? '复制' : 'Duplicate',
     blockToolbarDelete: zh ? '删除' : 'Delete',
+    blockToolbarAiEdit: zh ? 'AI 编辑' : 'AI edit',
     codeBlockLanguageLabel: zh ? '语言' : 'Language',
     codeBlockLanguageHint: zh ? '点击修改代码块的编程语言' : 'Click to edit the programming language'
   }

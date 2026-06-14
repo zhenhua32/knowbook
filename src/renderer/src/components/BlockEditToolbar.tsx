@@ -12,13 +12,14 @@ type BlockEditToolbarProps = {
   onHighlightChange?: (highlight: BlockHighlightColor | undefined) => void
   onDuplicate: () => void
   onDelete: () => void
+  onAiEdit: () => void
   typeOptions: Record<string, string>
   ui: any
   isZh: boolean
 }
 
 export function BlockEditToolbar(props: BlockEditToolbarProps) {
-  const { block, index, isActive, onTypeChange, onHighlightChange, onDuplicate, onDelete, typeOptions, ui, isZh } = props
+  const { block, index, isActive, onTypeChange, onHighlightChange, onDuplicate, onDelete, onAiEdit, typeOptions, ui, isZh } = props
 
   if (!isActive) {
     return null
@@ -109,6 +110,15 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
         type="button"
       >
         🗑
+      </button>
+
+      <button
+        className="block-toolbar-btn block-toolbar-ai-edit"
+        onClick={onAiEdit}
+        title={ui.blockToolbarAiEdit}
+        type="button"
+      >
+        ✨
       </button>
     </div>
   )

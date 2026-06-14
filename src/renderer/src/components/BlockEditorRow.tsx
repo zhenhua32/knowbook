@@ -93,6 +93,9 @@ export type BlockEditorRowProps = {
   // Callbacks: selection/interaction guards
   canMoveSelectedRange: (range: { start: number; end: number }, delta: -1 | 1) => boolean
 
+  // Callbacks: AI
+  onOpenSelectionAiEditor: () => void
+
   // Constants & UI
   BLOCK_INDENT_SIZE: number
   ui: any
@@ -181,11 +184,12 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     getVisibleBlockCountInRange,
     getMultiBlockOperationRange,
     removeSelectedBlockRange,
-    canMoveSelectedRange,
-    BLOCK_INDENT_SIZE,
-    ui,
-    isZh
-  } = props
+     canMoveSelectedRange,
+     onOpenSelectionAiEditor,
+     BLOCK_INDENT_SIZE,
+     ui,
+     isZh
+   } = props
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
@@ -324,32 +328,36 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         ) : null}
       </div>
 
-      {/* ── Block Edit Toolbar (Notion style) ── */}
-      <div ref={blockToolbarRef}>
-        <BlockEditToolbar
-          block={block}
-          index={index}
-          isActive={showBlockToolbar}
-          onHighlightChange={(highlight) => updateBlockHighlight(index, highlight)}
-          onTypeChange={handleBlockTypeChange}
-          onDuplicate={() => duplicateDraftBlock(index)}
-          onDelete={handleDeleteBlock}
-          typeOptions={{
-            paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
-            'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
-            'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
-            todo: ui.blockTypeOptions?.todo || 'Todo',
-            code: ui.blockTypeOptions?.code || 'Code',
-            math: ui.blockTypeOptions?.math || 'Math',
-            quote: ui.blockTypeOptions?.quote || 'Quote',
-            'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
-            'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
-            divider: ui.blockTypeOptions?.divider || 'Divider'
-          }}
-          ui={ui}
-          isZh={isZh}
-        />
-      </div>
+   {/* ── Block Edit Toolbar (Notion style) ── */}
+       <div ref={blockToolbarRef}>
+         <BlockEditToolbar
+           block={block}
+           index={index}
+           isActive={showBlockToolbar}
+           onHighlightChange={(highlight) => updateBlockHighlight(index, highlight)}
+           onTypeChange={handleBlockTypeChange}
+           onDuplicate={() => duplicateDraftBlock(index)}
+           onDelete={handleDeleteBlock}
+           onAiEdit={() => {
+             selectBlockRange(index)
+             onOpenSelectionAiEditor()
+           }}
+           typeOptions={{
+             paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
+             'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
+             'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+             todo: ui.blockTypeOptions?.todo || 'Todo',
+             code: ui.blockTypeOptions?.code || 'Code',
+             math: ui.blockTypeOptions?.math || 'Math',
+             quote: ui.blockTypeOptions?.quote || 'Quote',
+             'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
+             'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
+             divider: ui.blockTypeOptions?.divider || 'Divider'
+           }}
+           ui={ui}
+           isZh={isZh}
+         />
+       </div>
 
       {/* ── Context Menu ── */}
       {showContextMenu && (
