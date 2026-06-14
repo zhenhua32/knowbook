@@ -3039,7 +3039,10 @@ del {
   border-radius: 10px;
   box-shadow: 0 4px 16px rgba(30, 24, 15, 0.24), 0 1px 4px rgba(30, 24, 15, 0.12);
   min-width: 180px;
-  overflow: hidden;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
   z-index: 1000;
 }
 

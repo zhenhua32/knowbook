@@ -1,4 +1,5 @@
 import type { UiText } from '../i18n'
+import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
 
 type DocumentTreeContextMenuProps = {
   x: number
@@ -42,6 +43,8 @@ export function DocumentTreeContextMenu(props: DocumentTreeContextMenuProps) {
     action()
   }
 
+  const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
+
   return (
     <>
       <div
@@ -53,8 +56,9 @@ export function DocumentTreeContextMenu(props: DocumentTreeContextMenuProps) {
 
       <div
         className="block-context-menu document-tree-context-menu"
+        ref={menuRef}
         onContextMenu={(event) => event.preventDefault()}
-        style={{ position: 'fixed', top: `${y}px`, left: `${x}px`, zIndex: 1000 }}
+        style={menuStyle}
       >
         <div className="context-menu-section">
           <p className="document-tree-context-title" title={documentTitle}>{documentTitle}</p>

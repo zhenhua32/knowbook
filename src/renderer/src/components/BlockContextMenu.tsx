@@ -1,4 +1,5 @@
 import type { DocumentBlock } from '@shared/contracts'
+import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
 
 type BlockContextMenuProps = {
   x: number
@@ -15,6 +16,7 @@ type BlockContextMenuProps = {
 
 export function BlockContextMenu(props: BlockContextMenuProps) {
   const { x, y, blockType, onTypeChange, onDuplicate, onDelete, onClose, typeOptions, ui, isZh } = props
+  const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
 
   return (
     <>
@@ -36,12 +38,9 @@ export function BlockContextMenu(props: BlockContextMenuProps) {
       {/* 菜单面板 */}
       <div
         className="block-context-menu"
-        style={{
-          position: 'fixed',
-          top: `${y}px`,
-          left: `${x}px`,
-          zIndex: 1000
-        }}
+        ref={menuRef}
+        onContextMenu={(e) => e.preventDefault()}
+        style={menuStyle}
       >
         {/* 转换类型子菜单 */}
         <div className="context-menu-section">

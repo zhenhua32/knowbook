@@ -1,4 +1,5 @@
 import type { UiText } from '../i18n'
+import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
 
 type MoveOption = {
   id: string
@@ -55,6 +56,8 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     action()
   }
 
+  const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
+
   return (
     <>
       <div
@@ -66,8 +69,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
 
       <div
         className="block-context-menu document-header-action-menu"
+        ref={menuRef}
         onContextMenu={(event) => event.preventDefault()}
-        style={{ position: 'fixed', top: `${y}px`, left: `${x}px`, zIndex: 1000 }}
+        style={menuStyle}
       >
         <div className="context-menu-section">
           <div className="context-menu-group">
