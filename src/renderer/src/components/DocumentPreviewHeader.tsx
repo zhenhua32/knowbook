@@ -14,7 +14,6 @@ type DocumentPreviewHeaderProps = {
   selectedDocumentId: string | null
   isPinned: boolean
   onTogglePin: () => void
-  autoSaveFlash: boolean
   mdCopyFlash: boolean
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
@@ -43,7 +42,6 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     selectedDocumentId,
     isPinned,
     onTogglePin,
-    autoSaveFlash,
     mdCopyFlash,
     onCopyMarkdown,
     onSaveMarkdown,
@@ -85,7 +83,6 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
         <div className="document-header-meta">
           <p className="panel-label">{ui.documentPreviewLabel}</p>
           <div className="document-header-status">
-            {autoSaveFlash ? <span className="autosave-flash">{ui.autoSaved}</span> : null}
             {mdCopyFlash ? <span className="autosave-flash autosave-flash-copy">{ui.markdownCopied}</span> : null}
             {detailLoading ? <span className="pill document-header-pill">{ui.common.loading}</span> : null}
           </div>

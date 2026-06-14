@@ -117,7 +117,6 @@ export function useDocumentsDomainState({
   }, [initialDocumentId, setSelectedDocumentId])
 
   const {
-    autoSaveFlash,
     canRedo,
     canUndo,
     cancelPendingAutoSave,
@@ -482,7 +481,6 @@ export function useDocumentsDomainState({
     addDraftBlock,
     adjustBlockDepth,
     adjustSelectedBlocksDepth,
-    autoSaveFlash,
     applySlashCommand,
     beginBlockDrag,
     blockHasChildren,

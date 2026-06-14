@@ -41,7 +41,6 @@ export function useDocumentEditorState({
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocksState, setDraftBlocksState] = useState<DocumentBlockDraft[]>([])
-  const [autoSaveFlash, setAutoSaveFlash] = useState(false)
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
   const editHistoryPointerRef = useRef<number>(-1)
@@ -274,7 +273,6 @@ export function useDocumentEditorState({
       onHomeDataChange(refreshedHome)
       onSelectedDocumentChange(refreshedDetail)
       setDraftSummary(refreshedDetail?.summary ?? '')
-      triggerTransientFlash(setAutoSaveFlash)
       return true
     } catch (error) {
       if (error instanceof Error && error.message === 'Document not found') {
@@ -349,7 +347,6 @@ export function useDocumentEditorState({
   }, [onMessage, selectedDocument, ui])
 
   return {
-    autoSaveFlash,
     canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
     canUndo: editHistoryPointerRef.current > 0,
     cancelPendingAutoSave: clearAutoSaveTimer,

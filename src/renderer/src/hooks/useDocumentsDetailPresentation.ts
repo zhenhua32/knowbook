@@ -26,7 +26,6 @@ type UseDocumentsDetailPresentationParams = {
   aiContextSearching: boolean
   aiEnabled: boolean
   aiPromptDraft: string
-  autoSaveFlash: boolean
   canRedo: boolean
   canUndo: boolean
   detailLoading: boolean
@@ -80,7 +79,6 @@ export function useDocumentsDetailPresentation({
   aiContextSearching,
   aiEnabled,
   aiPromptDraft,
-  autoSaveFlash,
   canRedo,
   canUndo,
   detailLoading,
@@ -233,7 +231,6 @@ export function useDocumentsDetailPresentation({
   }, [flattenedDocumentTree, selectedDocumentId])
 
   const previewHeaderProps: DocumentPreviewHeaderProps = {
-    autoSaveFlash,
     canRedo,
     canUndo,
     detailLoading,

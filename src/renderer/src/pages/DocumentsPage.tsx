@@ -162,7 +162,6 @@ export function DocumentsPage({
     aiContextSearching: ai.aiContextSearching,
     aiEnabled: aiConfig.enabled,
     aiPromptDraft: ai.aiPromptDraft,
-    autoSaveFlash: documents.autoSaveFlash,
     canRedo: documents.canRedo,
     canUndo: documents.canUndo,
     detailLoading: documents.detailLoading,
