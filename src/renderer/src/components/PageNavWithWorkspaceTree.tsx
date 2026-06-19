@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import { PageRail } from './PageRail'
-import { WorkspaceGraph } from './WorkspaceGraph'
 import { DocumentTree } from './DocumentTree'
 import { DocumentTreeContextMenu } from './DocumentTreeContextMenu'
 import type { UiLanguage } from '../i18n'
@@ -52,13 +51,10 @@ type PageNavWithWorkspaceTreeProps = {
   onDeleteDocument: (documentId: string, title: string) => void
   onSaveDocument: () => void
   documentTreeNodes: DocumentTreeNode[]
-  workspaceGraphNodes: any[]
-  workspaceGraphEdges: any[]
   navCanGoBack: boolean
   navCanGoForward: boolean
   onNavBack: () => void
   onNavForward: () => void
-  onSelectGraphNode: (documentId: string) => void
   onDragStart: (documentId: string) => void
   onDragEnd: () => void
   onDragOverNode: (documentId: string) => void
@@ -111,29 +107,21 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     onDragOverNode,
     onDropOnNode,
     documentTreeNodes,
-    workspaceGraphNodes,
-    workspaceGraphEdges,
     navCanGoBack,
     navCanGoForward,
     onNavBack,
     onNavForward,
-    onSelectGraphNode,
     uiLanguage,
     isNavCollapsed = false,
     onToggleNavCollapse,
     totalDocumentsCount
   } = props
 
-  const [showWorkspaceGraph, setShowWorkspaceGraph] = useState(false)
   const [treeContextMenu, setTreeContextMenu] = useState<{ node: DocumentTreeNode; x: number; y: number } | null>(null)
   const ui = getUiText(uiLanguage)
   const isZh = uiLanguage === 'zh-CN'
   const collapseSidebarLabel = isZh ? '收起左侧栏' : 'Collapse sidebar'
   const expandSidebarLabel = isZh ? '展开左侧栏' : 'Expand sidebar'
-
-  const handleGraphToggle = () => {
-    setShowWorkspaceGraph(!showWorkspaceGraph)
-  }
 
   const handleTreeContextMenu = (node: DocumentTreeNode, x: number, y: number) => {
     onSelectDocument(node.id)
@@ -166,104 +154,68 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         onSelectPage={onSelectPage}
       />
 
-      {/* Workspace Tree and Graph Section */}
+      {/* Workspace Tree Section */}
       <div className="workspace-nav-content">
-        {/* Workspace Graph (Compact View) */}
-        {showWorkspaceGraph && workspaceGraphNodes.length > 0 && (
-          <div className="workspace-graph-section">
-            <div className="panel-head compact-head">
-              <div className="graph-toolbar">
-                <button
-                  className="icon-btn"
-                  onClick={() => setShowWorkspaceGraph(false)}
-                  title={ui.workspaceTreeLabel}
-                  type="button"
-                >📂</button>
-                <span className="pill">{workspaceGraphNodes.length} {ui.nodes}</span>
-                <span className="pill">{workspaceGraphEdges.length} {ui.edges}</span>
-              </div>
-            </div>
-            <WorkspaceGraph
-              nodes={workspaceGraphNodes}
-              edges={workspaceGraphEdges}
-              selectedDocumentId={selectedDocumentId}
-              onSelect={onSelectGraphNode}
-              isCompact={true}
-            />
+        <div className="tree-nav-section">
+          <div className="tree-toolbar-compact">
+            <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
+            <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
+            <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
+            <button className="icon-btn" onClick={onCreateRoot} title={newRootLabel} type="button">+</button>
           </div>
-        )}
 
-        {/* Tree Navigation */}
-        {!showWorkspaceGraph && (
-          <div className="tree-nav-section">
-            {/* Compact Single Row Toolbar */}
-            <div className="tree-toolbar-compact">
-              <button
-                className="icon-btn"
-                onClick={handleGraphToggle}
-                title={ui.knowledgeGraphLabel}
-                type="button"
-              >🕸️</button>
-              <div className="toolbar-divider" />
-              <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
-              <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
-              <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
-              <button className="icon-btn" onClick={onCreateRoot} title={newRootLabel} type="button">+</button>
+          <div
+            className={`root-drop-zone-compact${dragOverRoot ? ' root-drop-zone-active' : ''}`}
+            onDragOver={(event) => {
+              event.preventDefault()
+              onRootDragOver()
+            }}
+            onDragLeave={onRootDragLeave}
+            onDrop={(event) => {
+              event.preventDefault()
+              onDropToRoot()
+            }}
+          >
+            {dropToRootLabel}
+          </div>
+
+          {pinnedDocuments.length > 0 && (
+            <div className="pinned-section-compact">
+              {pinnedDocuments.map((document) => (
+                <button
+                  key={document.id}
+                  className={`pinned-doc-item-compact${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
+                  onClick={() => onSelectDocument(document.id)}
+                  type="button"
+                  title={document.title}
+                >
+                  <span className="pinned-doc-title-compact">{document.title}</span>
+                </button>
+              ))}
             </div>
+          )}
 
-            <div
-              className={`root-drop-zone-compact${dragOverRoot ? ' root-drop-zone-active' : ''}`}
-              onDragOver={(event) => {
-                event.preventDefault()
-                onRootDragOver()
-              }}
-              onDragLeave={onRootDragLeave}
-              onDrop={(event) => {
-                event.preventDefault()
-                onDropToRoot()
-              }}
-            >
-              {dropToRootLabel}
-            </div>
-
-            {pinnedDocuments.length > 0 && (
-              <div className="pinned-section-compact">
-                {pinnedDocuments.map((document) => (
-                  <button
-                    key={document.id}
-                    className={`pinned-doc-item-compact${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
-                    onClick={() => onSelectDocument(document.id)}
-                    type="button"
-                    title={document.title}
-                  >
-                    <span className="pinned-doc-title-compact">{document.title}</span>
-                  </button>
-                ))}
+          <div className="tree-wrapper">
+            {documentTreeNodes && documentTreeNodes.length > 0 ? (
+              <DocumentTree
+                nodes={documentTreeNodes}
+                selectedDocumentId={selectedDocumentId}
+                onSelect={onSelectDocument}
+                onOpenContextMenu={handleTreeContextMenu}
+                draggingDocumentId={null}
+                dragOverDocumentId={null}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onDragOverNode={onDragOverNode}
+                onDropOnNode={onDropOnNode}
+              />
+            ) : (
+              <div style={{ padding: '20px', textAlign: 'center', color: '#6b5b4a', fontSize: '13px' }}>
+                {isZh ? '还没有文档' : 'No documents yet'}
               </div>
             )}
-
-            <div className="tree-wrapper">
-              {documentTreeNodes && documentTreeNodes.length > 0 ? (
-                <DocumentTree
-                  nodes={documentTreeNodes}
-                  selectedDocumentId={selectedDocumentId}
-                  onSelect={onSelectDocument}
-                  onOpenContextMenu={handleTreeContextMenu}
-                  draggingDocumentId={null}
-                  dragOverDocumentId={null}
-                  onDragStart={onDragStart}
-                  onDragEnd={onDragEnd}
-                  onDragOverNode={onDragOverNode}
-                  onDropOnNode={onDropOnNode}
-                />
-              ) : (
-                <div style={{ padding: '20px', textAlign: 'center', color: '#6b5b4a', fontSize: '13px' }}>
-                  {isZh ? '还没有文档' : 'No documents yet'}
-                </div>
-              )}
-            </div>
           </div>
-        )}
+        </div>
       </div>
 
       {treeContextMenu ? (

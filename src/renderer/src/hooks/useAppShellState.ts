@@ -31,10 +31,6 @@ const emptyState: HomeData = {
      hasApiKey: false
    },
   documentTree: [],
-  graph: {
-    nodes: [],
-    edges: []
-  },
   initialDocumentId: null,
   plugins: [],
   pluginDashboardCards: [],
@@ -45,9 +41,9 @@ const emptyState: HomeData = {
   }
 }
 
-export type PageId = 'dashboard' | 'documents' | 'database' | 'graph' | 'ai' | 'plugins' | 'settings'
+export type PageId = 'dashboard' | 'documents' | 'database' | 'ai' | 'plugins' | 'settings'
 
-export const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'graph', 'ai', 'plugins', 'settings']
+export const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'ai', 'plugins', 'settings']
 
 type PageItem = {
   id: PageId
@@ -151,11 +147,6 @@ export function useAppShellState() {
       id: 'database',
       label: isZh ? '数据库' : 'Database',
       description: isZh ? '表格与看板视图' : 'Table + board views'
-    },
-    {
-      id: 'graph',
-      label: isZh ? '图谱' : 'Graph',
-      description: isZh ? '知识关系拓扑' : 'Knowledge topology'
     },
     {
       id: 'ai',

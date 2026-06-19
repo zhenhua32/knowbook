@@ -153,19 +153,6 @@ export interface DocumentTreeNode {
   children: DocumentTreeNode[]
 }
 
-export interface WorkspaceGraphNode {
-  id: string
-  title: string
-  path: string
-  depth: number
-}
-
-export interface WorkspaceGraphEdge {
-  sourceId: string
-  targetId: string
-  kind: 'tree' | 'link'
-}
-
 export interface DocumentBlock {
   id: string
   type: string
@@ -390,10 +377,6 @@ export interface HomeData {
   databaseColumns: DocumentDatabaseColumn[]
   aiConfig: AiConfig
   documentTree: DocumentTreeNode[]
-  graph: {
-    nodes: WorkspaceGraphNode[]
-    edges: WorkspaceGraphEdge[]
-  }
   initialDocumentId: string | null
   plugins?: PluginDescriptor[]
   pluginDashboardCards?: PluginDashboardCard[]

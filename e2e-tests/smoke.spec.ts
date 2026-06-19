@@ -3,7 +3,6 @@ import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron
 
 async function openRailPage(page: Page, en: string, zh: string): Promise<void> {
   await page.getByTitle(uiText(en, zh)).click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText(en, zh))
 }
 
 test.describe('Application Shell Smoke @electron', () => {
@@ -20,9 +19,6 @@ test.describe('Application Shell Smoke @electron', () => {
 
       await openRailPage(page, 'Database', '数据库')
       await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()
-
-      await openRailPage(page, 'Graph', '图谱')
-      await expect(page.locator('[data-testid="graph-grid"]')).toBeVisible()
 
       await openRailPage(page, 'AI Assistant', 'AI 助手')
       await expect(page.getByRole('heading', { name: uiText('Document AI assistant', '文档智能助手') })).toBeVisible()

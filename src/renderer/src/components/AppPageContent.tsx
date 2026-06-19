@@ -8,7 +8,6 @@ import { AISection } from '../sections/AISection'
 import { DashboardSettingsSection } from '../sections/DashboardSettingsSection'
 import { PluginsSection } from '../sections/PluginsSection'
 import { WorkspaceDashboardSection } from '../sections/WorkspaceDashboardSection'
-import { WorkspaceGraphSection } from '../sections/WorkspaceGraphSection'
 
 type AppPageContentProps = {
   database: DatabaseDomainState
@@ -45,16 +44,6 @@ export function AppPageContent({
           {shell.backupMessage}
           <button className="flash-close" onClick={() => shell.setBackupMessage(null)} type="button">✕</button>
         </p>
-      ) : null}
-
-      {shell.activePage === 'graph' ? (
-        <WorkspaceGraphSection
-          edges={shell.homeData.graph.edges}
-          nodes={shell.homeData.graph.nodes}
-          onSelectDocument={documents.openDocumentInDocumentsPage}
-          selectedDocumentId={documents.selectedDocumentId}
-          ui={shell.ui}
-        />
       ) : null}
 
       {shell.activePage === 'database' ? (

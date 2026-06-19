@@ -68,13 +68,10 @@ export function WorkspaceShellSidebar({
         void documents.saveDocument()
       }}
       documentTreeNodes={shell.homeData.documentTree}
-      workspaceGraphNodes={shell.homeData.graph.nodes}
-      workspaceGraphEdges={shell.homeData.graph.edges}
       navCanGoBack={documents.navCanGoBack}
       navCanGoForward={documents.navCanGoForward}
       onNavBack={documents.navBack}
       onNavForward={documents.navForward}
-      onSelectGraphNode={documents.openDocumentInDocumentsPage}
       onDragStart={workspace.beginDrag}
       onDragEnd={workspace.endDrag}
       onDragOverNode={workspace.handleTreeNodeDragOver}

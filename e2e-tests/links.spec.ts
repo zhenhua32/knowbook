@@ -32,7 +32,7 @@ async function openDocument(page: Page, title: string): Promise<void> {
 }
 
 async function ensureAuxPanelVisible(page: Page): Promise<void> {
-  const relationGrid = page.locator('.relation-grid')
+  const relationGrid = page.locator('.document-aux-relation-grid')
 
   if (await relationGrid.isVisible().catch(() => false)) {
     return
@@ -46,22 +46,17 @@ async function ensureAuxPanelVisible(page: Page): Promise<void> {
   await expect(relationGrid).toBeVisible()
 }
 
-async function openGraphPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Graph', '图谱')).click()
-  await expect(page.locator('[data-testid="graph-grid"]')).toBeVisible()
-}
-
 async function seedLinkedDocuments(page: Page, suffix: string): Promise<{ sourceTitle: string; targetTitle: string }> {
-  const targetTitle = `Graph Target ${suffix}`
-  const sourceTitle = `Graph Source ${suffix}`
+  const targetTitle = `Linked Target ${suffix}`
+  const sourceTitle = `Linked Source ${suffix}`
 
-  await createRootDocument(page, targetTitle, 'Target body for graph tests')
+  await createRootDocument(page, targetTitle, 'Target body for link tests')
   await createRootDocument(page, sourceTitle, `Follow [[${targetTitle}]] from this note`)
 
   return { sourceTitle, targetTitle }
 }
 
-test.describe('Links and Knowledge Graph @electron', () => {
+test.describe('Links @electron', () => {
   test('follows a document link with Ctrl+Click inside the editor', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
@@ -98,53 +93,7 @@ test.describe('Links and Knowledge Graph @electron', () => {
       await openDocument(page, targetTitle)
       await ensureAuxPanelVisible(page)
 
-      await expect(page.locator('.relation-grid')).toContainText(sourceTitle)
-    })
-  })
-
-  test('renders graph nodes and link edges for linked documents', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    const suffix = Date.now().toString(36)
-
-    await withElectronApp(async ({ page }) => {
-      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
-
-      const { sourceTitle, targetTitle } = await seedLinkedDocuments(page, suffix)
-      await openGraphPage(page)
-
-      await expect(page.locator('.graph-node-label', { hasText: targetTitle })).toBeVisible()
-      await expect(page.locator('.graph-node-label', { hasText: sourceTitle })).toBeVisible()
-      await expect(page.locator('.graph-edge-link').first()).toBeVisible()
-    })
-  })
-
-  test('opens the target document when clicking a graph node', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    const suffix = Date.now().toString(36)
-
-    await withElectronApp(async ({ page }) => {
-      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
-
-      const { targetTitle } = await seedLinkedDocuments(page, suffix)
-      await openGraphPage(page)
-
-      await page.locator('.graph-surface').evaluate((surface, title) => {
-        const groups = Array.from(surface.querySelectorAll<SVGGElement>('.graph-node-group'))
-        const targetGroup = groups.find((group) =>
-          group.querySelector('.graph-node-label')?.textContent?.trim() === title
-        )
-
-        if (!targetGroup) {
-          throw new Error(`Graph node not found: ${title}`)
-        }
-
-        targetGroup.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
-      }, targetTitle)
-
-      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
-      await expect(getPreviewTitle(page)).toHaveText(targetTitle)
+      await expect(page.locator('.document-aux-relation-grid')).toContainText(sourceTitle)
     })
   })
 })

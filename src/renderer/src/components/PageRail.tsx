@@ -24,7 +24,6 @@ const pageIcons: Record<string, string> = {
   documents: '📂',
   dashboard: '📊',
   database: '🗄️',
-  graph: '🕸️',
   ai: '🤖',
   plugins: '🔌',
   settings: '⚙️'

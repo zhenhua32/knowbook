@@ -54,7 +54,7 @@ test('stable Electron E2E specs exist', () => {
     'e2e-tests/smoke.spec.ts',
     'e2e-tests/document-crud.spec.ts',
     'e2e-tests/database-views.spec.ts',
-    'e2e-tests/links-and-graph.spec.ts',
+    'e2e-tests/links.spec.ts',
     'e2e-tests/ai-automation.spec.ts',
     'e2e-tests/plugins.spec.ts',
     'e2e-tests/editor-shortcuts.spec.ts',

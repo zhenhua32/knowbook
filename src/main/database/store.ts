@@ -39,8 +39,6 @@ import type {
   UpdateDocumentInput,
   WorkspaceEventRecord,
   WorkspaceEventType,
-  WorkspaceGraphEdge,
-  WorkspaceGraphNode,
   WorkspaceSummary,
   GlobalSearchResult,
   SearchSemanticNotesInput,
@@ -115,11 +113,6 @@ interface DocumentTreeRow {
   path: string
   parent_id: string | null
   updated_at: string
-}
-
-interface GraphLinkRow {
-  source_document_id: string
-  target_document_id: string
 }
 
 interface DocumentDetailRow {
@@ -301,7 +294,6 @@ export class KnowbookStore {
     const recentDocuments = this.getRecentDocuments()
     const recentEvents = this.getRecentWorkspaceEvents()
     const documentTree = this.getDocumentTree()
-    const graph = this.getWorkspaceGraph()
     const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
 
     return {
@@ -312,7 +304,6 @@ export class KnowbookStore {
       databaseColumns,
       aiConfig: this.getAiConfig(),
       documentTree,
-      graph,
       initialDocumentId: recentDocuments[0]?.id ?? documentTree[0]?.id ?? null
     }
   }
@@ -1647,46 +1638,6 @@ export class KnowbookStore {
     }
 
     return normalize(roots)
-  }
-
-  private getWorkspaceGraph(): { nodes: WorkspaceGraphNode[]; edges: WorkspaceGraphEdge[] } {
-    const rows = this.db.prepare(`
-      SELECT id, title, path, parent_id, updated_at
-      FROM documents
-      ORDER BY path ASC
-    `).all() as DocumentTreeRow[]
-
-    const nodes: WorkspaceGraphNode[] = rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      path: row.path,
-      depth: Math.max(0, row.path.split('/').length - 1)
-    }))
-
-    const treeEdges: WorkspaceGraphEdge[] = rows
-      .filter((row) => Boolean(row.parent_id))
-      .map((row) => ({
-        sourceId: row.parent_id as string,
-        targetId: row.id,
-        kind: 'tree' as const
-      }))
-
-    const linkRows = this.db.prepare(`
-      SELECT source_document_id, target_document_id
-      FROM links
-      ORDER BY source_document_id ASC, target_document_id ASC
-    `).all() as GraphLinkRow[]
-
-    const linkEdges: WorkspaceGraphEdge[] = linkRows.map((row) => ({
-      sourceId: row.source_document_id,
-      targetId: row.target_document_id,
-      kind: 'link'
-    }))
-
-    return {
-      nodes,
-      edges: [...treeEdges, ...linkEdges]
-    }
   }
 
   private generateSiblingTitle(parentId: string | null, baseTitle: string): string {
