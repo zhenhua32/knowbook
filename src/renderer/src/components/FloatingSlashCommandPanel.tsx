@@ -1,3 +1,5 @@
+import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
+
 type FloatingSlashCommandPanelProps = {
   x: number
   y: number
@@ -24,16 +26,13 @@ export function FloatingSlashCommandPanel(props: FloatingSlashCommandPanelProps)
     onSelectCommand,
     onHoverCommand
   } = props
+  const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
 
   return (
     <div
       className="floating-slash-command-panel"
-      style={{
-        position: 'fixed',
-        top: `${y}px`,
-        left: `${x}px`,
-        zIndex: 1001
-      }}
+      ref={menuRef}
+      style={{ ...menuStyle, zIndex: 1001 }}
     >
       <div className="slash-command-search">
         <span className="slash-command-search-icon">/</span>
