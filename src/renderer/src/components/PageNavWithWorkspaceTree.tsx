@@ -128,6 +128,8 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
   const [treeContextMenu, setTreeContextMenu] = useState<{ node: DocumentTreeNode; x: number; y: number } | null>(null)
   const ui = getUiText(uiLanguage)
   const isZh = uiLanguage === 'zh-CN'
+  const collapseSidebarLabel = isZh ? '收起左侧栏' : 'Collapse sidebar'
+  const expandSidebarLabel = isZh ? '展开左侧栏' : 'Expand sidebar'
 
   const handleGraphToggle = () => {
     setShowWorkspaceGraph(!showWorkspaceGraph)
@@ -151,9 +153,13 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
       <PageRail
         activePage={activePage}
         brandEyebrow={brandEyebrow}
+        collapseTitle={collapseSidebarLabel}
         currentPageLabel={currentPageLabel}
         currentPageHint={currentPageHint}
+        expandTitle={expandSidebarLabel}
+        isCollapsed={isNavCollapsed}
         navLabel={navLabel}
+        onToggleCollapse={onToggleNavCollapse}
         pageDescription={pageDescription}
         pageItems={pageItems}
         pageTitle={pageTitle}

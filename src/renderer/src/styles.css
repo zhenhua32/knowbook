@@ -44,6 +44,11 @@ select {
   flex-shrink:0;
   overflow: hidden;
   border-right:1px solid rgba(71, 55, 32, 0.08);
+  transition: width 0.18s ease;
+}
+
+.sidebar.collapsed {
+  width: 64px;
 }
 
 /* ===== Modern Scrollbar Styles ===== */
@@ -3596,9 +3601,10 @@ del {
 }
 
 .sidebar-combined.collapsed {
-  width: 200px;
+  width: 100%;
 }
 
+.sidebar-combined.collapsed .workspace-nav-content,
 .sidebar-combined.collapsed .tree-wrapper,
 .sidebar-combined.collapsed .workspace-graph-section,
 .sidebar-combined.collapsed .tree-nav-section {
@@ -3686,6 +3692,10 @@ del {
   display: block;
 }
 
+.rail-toggle-btn {
+  flex-shrink: 0;
+}
+
 /* Adjust sidebar-combined for horizontal rail */
 .sidebar-combined {
   display: flex;
@@ -3693,6 +3703,40 @@ del {
   flex:1;
   min-height:0;
   overflow: hidden;
+}
+
+.sidebar.collapsed .sidebar-combined {
+  justify-content: flex-start;
+}
+
+.sidebar.collapsed .rail-horizontal {
+  flex: 0 0 auto;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 6px;
+  height: auto;
+  padding: 8px 4px;
+  border-bottom: none;
+}
+
+.sidebar.collapsed .brand-mini {
+  margin-bottom: 2px;
+}
+
+.sidebar.collapsed .page-nav-horizontal {
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: 100%;
+  align-items: center;
+}
+
+.sidebar.collapsed .nav-icon-btn {
+  width: 40px;
+  height: 40px;
+}
+
+.sidebar.collapsed .rail-toggle-btn {
+  margin-top: 2px;
 }
 
 .workspace-nav-content {

@@ -64,6 +64,7 @@ export function useAppShellState() {
   const [loading, setLoading] = useState(true)
   const [activePage, setActivePage] = useState<PageId>('documents')
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  const [isNavCollapsed, setIsNavCollapsed] = useState(false)
 
   setActiveUiLanguage(uiLanguage)
   const ui = getUiText(uiLanguage)
@@ -184,6 +185,7 @@ export function useAppShellState() {
     catalogColumns,
     catalogDocuments,
     homeData,
+    isNavCollapsed,
     isZh,
     loading,
     pageDescription: activePageItem?.description ?? '',
@@ -194,7 +196,9 @@ export function useAppShellState() {
     setCatalogColumns,
     setCatalogDocuments,
     setHomeData,
+    setIsNavCollapsed,
     setUiLanguage,
+    toggleNavCollapse: () => setIsNavCollapsed((previous) => !previous),
     ui,
     uiLanguage
   }

@@ -14,6 +14,10 @@ type PageRailProps = {
   navLabel: string
   currentPageLabel: string
   currentPageHint: string
+  isCollapsed?: boolean
+  onToggleCollapse?: () => void
+  collapseTitle?: string
+  expandTitle?: string
 }
 
 const pageIcons: Record<string, string> = {
@@ -32,8 +36,14 @@ export function PageRail(props: PageRailProps) {
     pageItems,
     onSelectPage,
     pageTitle,
-    brandEyebrow
+    brandEyebrow,
+    isCollapsed = false,
+    onToggleCollapse,
+    collapseTitle,
+    expandTitle
   } = props
+
+  const toggleTitle = isCollapsed ? expandTitle : collapseTitle
 
   return (
     <div className="rail-horizontal">
@@ -53,9 +63,22 @@ export function PageRail(props: PageRailProps) {
           </button>
         ))}
       </div>
-      <div className="current-page-mini" title={pageTitle}>
-        <span className="current-page-text">{pageTitle}</span>
-      </div>
+      {onToggleCollapse ? (
+        <button
+          aria-label={toggleTitle}
+          className="nav-icon-btn rail-toggle-btn"
+          onClick={onToggleCollapse}
+          title={toggleTitle}
+          type="button"
+        >
+          <span className="nav-icon">{isCollapsed ? '»' : '«'}</span>
+        </button>
+      ) : null}
+      {!isCollapsed ? (
+        <div className="current-page-mini" title={pageTitle}>
+          <span className="current-page-text">{pageTitle}</span>
+        </div>
+      ) : null}
     </div>
   )
 }

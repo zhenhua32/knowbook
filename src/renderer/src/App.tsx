@@ -42,7 +42,7 @@ export function App() {
   })
 return (
      <div className="shell" data-testid="shell">
-       <div className="sidebar">
+       <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
           <WorkspaceShellSidebar
             documents={documentsDomain}
             shell={shell}

@@ -80,6 +80,8 @@ export function WorkspaceShellSidebar({
       onDragOverNode={workspace.handleTreeNodeDragOver}
       onDropOnNode={workspace.dropOnDocument}
       uiLanguage={shell.uiLanguage}
+      isNavCollapsed={shell.isNavCollapsed}
+      onToggleNavCollapse={shell.toggleNavCollapse}
       totalDocumentsCount={shell.homeData.summary.documents}
     />
   )

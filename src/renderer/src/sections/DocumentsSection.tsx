@@ -151,7 +151,7 @@ export function DocumentsSection({
         )}
       </article>
 
-      {documentsAuxPanelProps && selectedDocument ? (
+      {documentsAuxPanelProps?.isOpen && selectedDocument ? (
         <aside className="panel document-aux-sidebar">
           <DocumentsAuxPanel
             {...documentsAuxPanelProps}
