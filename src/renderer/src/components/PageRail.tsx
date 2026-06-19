@@ -46,7 +46,7 @@ export function PageRail(props: PageRailProps) {
   const toggleTitle = isCollapsed ? expandTitle : collapseTitle
 
   return (
-    <div className="rail-horizontal">
+    <div className="rail-horizontal" title={pageTitle}>
       <div className="brand-mini" title={brandEyebrow}>
         <span className="brand-mark-mini">KB</span>
       </div>
@@ -73,11 +73,6 @@ export function PageRail(props: PageRailProps) {
         >
           <span className="nav-icon">{isCollapsed ? '»' : '«'}</span>
         </button>
-      ) : null}
-      {!isCollapsed ? (
-        <div className="current-page-mini" title={pageTitle}>
-          <span className="current-page-text">{pageTitle}</span>
-        </div>
       ) : null}
     </div>
   )
