@@ -288,6 +288,7 @@ export function DocumentsPage({
     <>
       <DocumentsSection
         addBlockLabel={ui.addBlock}
+        auxPanelWidth={documents.documentsAuxPanelWidth}
         blockEditorRowSharedProps={blockEditorRowSharedProps}
         blockSearchPanelProps={{
           isOpen: documents.isBlockSearchOpen,
@@ -308,6 +309,7 @@ export function DocumentsPage({
         isWideMode={documents.documentsWideMode}
         linkSuggestionPanelProps={linkSuggestionPanelProps}
         onAddBlock={documents.addDraftBlock}
+        onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
         previewHeaderProps={previewHeaderProps}

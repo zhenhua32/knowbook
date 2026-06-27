@@ -536,8 +536,13 @@ dt,
   align-items: start;
 }
 
-.workspace-grid:has(.document-aux-sidebar) {
-  grid-template-columns: minmax(0, 1fr) 360px;
+.workspace-grid-with-aux {
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr) 14px minmax(280px, var(--document-aux-width, 360px));
+}
+
+.workspace-grid-resizing {
+  cursor: col-resize;
 }
 
 .database-grid {
@@ -590,18 +595,83 @@ dt,
   top: 32px;
   align-self: start;
   min-width: 0;
+  height: calc(100vh - 64px);
   max-height: calc(100vh - 64px);
+  padding: 0;
   overflow: hidden;
+}
+
+.document-aux-resizer {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  width: 14px;
+  min-height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.document-aux-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.document-aux-resizer-handle {
+  position: relative;
+  width: 2px;
+  min-height: 100%;
+  border-radius: 999px;
+  background: rgba(91, 72, 44, 0.08);
+  transition: background 0.14s ease;
+}
+
+.document-aux-resizer-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 72px;
+  border-radius: 999px;
+  background: rgba(47, 111, 237, 0.16);
+  box-shadow:
+    0 -14px 0 rgba(47, 111, 237, 0.12),
+    0 14px 0 rgba(47, 111, 237, 0.12);
+  transform: translate(-50%, -50%);
+}
+
+.document-aux-resizer:hover .document-aux-resizer-handle,
+.document-aux-resizer-active .document-aux-resizer-handle {
+  background: rgba(47, 111, 237, 0.18);
 }
 
 .document-aux-sidebar-content,
 .document-aux-sidebar-empty {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  max-height: calc(100vh - 128px);
+  gap: 0;
+  height: 100%;
+  max-height: none;
   overflow-y: auto;
   min-width: 0;
+}
+
+.document-aux-sidebar-empty {
+  padding: 18px;
+}
+
+.document-aux-sidebar-content > .document-aux-relation-grid,
+.document-aux-sidebar-content > .preview-section {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 18px;
+}
+
+.document-aux-sidebar-content > * + * {
+  border-top: 1px solid rgba(82, 66, 39, 0.08);
 }
 
 .document-aux-relation-grid {
@@ -2170,12 +2240,18 @@ del {
     grid-column: span 2;
   }
 
-  .workspace-grid:has(.document-aux-sidebar) {
+  .workspace-grid-with-aux {
+    gap: 16px;
     grid-template-columns: 1fr;
+  }
+
+  .document-aux-resizer {
+    display: none;
   }
 
   .document-aux-sidebar {
     position: static;
+    height: auto;
     max-height: none;
   }
 

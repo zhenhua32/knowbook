@@ -69,8 +69,10 @@ export function useDocumentsDomainState({
   const {
     clearMoveTarget,
     documentsAuxPanelOpen,
+    documentsAuxPanelWidth,
     documentsWideMode,
     moveTargetId,
+    setDocumentsAuxPanelWidth,
     setMoveTargetId,
     toggleDocumentsAuxPanel,
     toggleDocumentsWideMode
@@ -512,6 +514,7 @@ export function useDocumentsDomainState({
     detailLoading,
     dismissSlashCommand,
     documentsAuxPanelOpen,
+    documentsAuxPanelWidth,
     documentsWideMode,
     downgradeBlockAt,
     dragOverBlockDepth,
@@ -584,6 +587,7 @@ export function useDocumentsDomainState({
     selectedVisibleSiblingSlice,
     setActiveBlockIndex,
     setActiveCursorPosition,
+    setDocumentsAuxPanelWidth,
     setBlockSearchQuery,
     setDetailLoading,
     setDraftBlocks,

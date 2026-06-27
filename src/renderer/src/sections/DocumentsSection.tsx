@@ -1,4 +1,4 @@
-import type { ComponentProps, KeyboardEventHandler, ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSearchPanel } from '../components/BlockSearchPanel'
@@ -20,6 +20,7 @@ type RelationGroup = {
 }
 
 type DocumentsSectionProps = {
+  auxPanelWidth: number
   isWideMode: boolean
   selectedDocument: DocumentDetail | null
   previewHeaderProps: ComponentProps<typeof DocumentPreviewHeader>
@@ -32,6 +33,7 @@ type DocumentsSectionProps = {
   blockEditorRowSharedProps: SharedBlockEditorRowProps | null
   onEditorKeyDown: KeyboardEventHandler<HTMLDivElement>
   onAddBlock: () => void
+  onAuxPanelWidthChange: (value: number) => void
   addBlockLabel: string
   linkSuggestionPanelProps: ComponentProps<typeof LinkSuggestionPanel> | null
   editorHelpText: string
@@ -79,6 +81,7 @@ function RelationList({
 }
 
 export function DocumentsSection({
+  auxPanelWidth,
   isWideMode,
   selectedDocument,
   previewHeaderProps,
@@ -91,6 +94,7 @@ export function DocumentsSection({
   blockEditorRowSharedProps,
   onEditorKeyDown,
   onAddBlock,
+  onAuxPanelWidthChange,
   addBlockLabel,
   linkSuggestionPanelProps,
   editorHelpText,
@@ -101,8 +105,88 @@ export function DocumentsSection({
   documentStatsBarProps,
   emptyDocumentStateText
 }: DocumentsSectionProps) {
+  const workspaceGridRef = useRef<HTMLElement | null>(null)
+  const [isResizingAuxPanel, setIsResizingAuxPanel] = useState(false)
+  const auxPanelProps = documentsAuxPanelProps?.isOpen && selectedDocument ? documentsAuxPanelProps : null
+  const showAuxPanel = Boolean(auxPanelProps)
+
+  const clampAuxPanelWidth = useCallback((candidateWidth: number) => {
+    const containerWidth = workspaceGridRef.current?.getBoundingClientRect().width ?? 0
+    const minWidth = 280
+    const maxWidth = containerWidth > 0
+      ? Math.min(760, Math.max(minWidth, containerWidth - 420))
+      : 760
+
+    return Math.max(minWidth, Math.min(Math.round(candidateWidth), maxWidth))
+  }, [])
+
+  const effectiveAuxPanelWidth = showAuxPanel ? clampAuxPanelWidth(auxPanelWidth) : auxPanelWidth
+
+  useEffect(() => {
+    if (!showAuxPanel || effectiveAuxPanelWidth === auxPanelWidth) {
+      return
+    }
+
+    onAuxPanelWidthChange(effectiveAuxPanelWidth)
+  }, [auxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+
+  useEffect(() => {
+    return () => {
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+  }, [])
+
+  const handleAuxPanelResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!showAuxPanel) {
+      return
+    }
+
+    event.preventDefault()
+
+    const startClientX = event.clientX
+    const startWidth = effectiveAuxPanelWidth
+
+    setIsResizingAuxPanel(true)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = startClientX - moveEvent.clientX
+      onAuxPanelWidthChange(clampAuxPanelWidth(startWidth + delta))
+    }
+
+    const stopResizing = () => {
+      setIsResizingAuxPanel(false)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', stopResizing)
+      window.removeEventListener('pointercancel', stopResizing)
+    }
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', stopResizing)
+    window.addEventListener('pointercancel', stopResizing)
+  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+
+  const workspaceGridStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!showAuxPanel) {
+      return undefined
+    }
+
+    return {
+      ['--document-aux-width' as string]: `${effectiveAuxPanelWidth}px`
+    } as CSSProperties
+  }, [effectiveAuxPanelWidth, showAuxPanel])
+
   return (
-    <section className="workspace-grid" data-testid="workspace-grid">
+    <section
+      className={`workspace-grid${showAuxPanel ? ' workspace-grid-with-aux' : ''}${isResizingAuxPanel ? ' workspace-grid-resizing' : ''}`}
+      data-testid="workspace-grid"
+      ref={workspaceGridRef}
+      style={workspaceGridStyle}
+    >
       <article className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}>
         <DocumentPreviewHeader {...previewHeaderProps} />
 
@@ -153,10 +237,20 @@ export function DocumentsSection({
         )}
       </article>
 
-      {documentsAuxPanelProps?.isOpen && selectedDocument ? (
+      {showAuxPanel ? (
+        <div
+          aria-hidden="true"
+          className={`document-aux-resizer${isResizingAuxPanel ? ' document-aux-resizer-active' : ''}`}
+          onPointerDown={handleAuxPanelResizeStart}
+        >
+          <span className="document-aux-resizer-handle" />
+        </div>
+      ) : null}
+
+      {auxPanelProps ? (
         <aside className="panel document-aux-sidebar">
           <DocumentsAuxPanel
-            {...documentsAuxPanelProps}
+            {...auxPanelProps}
             selectionAiContent={selectionAiContent}
              relationContent={(
                <div className="document-aux-relation-grid">
@@ -165,7 +259,7 @@ export function DocumentsSection({
                     emptyText={group.emptyText}
                     key={group.title}
                     links={group.links}
-                    onSelect={documentsAuxPanelProps.onOpenDocument}
+                    onSelect={auxPanelProps.onOpenDocument}
                     title={group.title}
                   />
                 ))}
