@@ -14,6 +14,7 @@ type DocumentHeaderActionMenuProps = {
   canUndo: boolean
   canRedo: boolean
   documentsAuxPanelOpen: boolean
+  documentsWideMode: boolean
   moveTargetId: string
   moveOptions: MoveOption[]
   onClose: () => void
@@ -24,6 +25,7 @@ type DocumentHeaderActionMenuProps = {
   onMoveTargetChange: (value: string) => void
   onMove: () => void
   onToggleAuxPanel: () => void
+  onToggleWideMode: () => void
 }
 
 export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
@@ -35,6 +37,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     canUndo,
     canRedo,
     documentsAuxPanelOpen,
+    documentsWideMode,
     moveTargetId,
     moveOptions,
     onClose,
@@ -44,12 +47,14 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     onRedo,
     onMoveTargetChange,
     onMove,
-    onToggleAuxPanel
+    onToggleAuxPanel,
+    onToggleWideMode
   } = props
 
   const auxLabel = documentsAuxPanelOpen
     ? (isZh ? '收起辅助区' : 'Hide auxiliary')
     : (isZh ? '展开辅助区' : 'Show auxiliary')
+  const wideModeLabel = documentsWideMode ? ui.wideModeDisable : ui.wideModeEnable
 
   const runAndClose = (action: () => void) => {
     onClose()
@@ -101,6 +106,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
             </button>
             <button className="context-menu-item" onClick={() => runAndClose(onToggleAuxPanel)} type="button">
               {auxLabel}
+            </button>
+            <button className="context-menu-item" onClick={() => runAndClose(onToggleWideMode)} type="button">
+              {wideModeLabel}
             </button>
           </div>
         </div>

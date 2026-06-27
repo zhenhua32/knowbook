@@ -186,6 +186,7 @@ export function DocumentsPage({
     detailLoading: documents.detailLoading,
     documentTree,
     documentsAuxPanelOpen: documents.documentsAuxPanelOpen,
+    documentsWideMode: documents.documentsWideMode,
     draftBlocks: documents.draftBlocks,
     draftSummary: documents.draftSummary,
     draftTitle: documents.draftTitle,
@@ -235,6 +236,7 @@ export function DocumentsPage({
     },
     onSummaryChange: documents.setDraftSummary,
     onToggleAuxPanel: documents.toggleDocumentsAuxPanel,
+    onToggleWideMode: documents.toggleDocumentsWideMode,
     onTogglePin: () => {
       if (documents.selectedDocument) {
         documents.togglePinDocument(documents.selectedDocument.id)
@@ -303,6 +305,7 @@ export function DocumentsPage({
         editorHelpText={ui.editorHelpText}
         emptyDocumentStateText={ui.emptyDocumentState}
         floatingSlashCommandPanelProps={floatingSlashCommandPanelProps}
+        isWideMode={documents.documentsWideMode}
         linkSuggestionPanelProps={linkSuggestionPanelProps}
         onAddBlock={documents.addDraftBlock}
         onEditorKeyDown={() => {}}

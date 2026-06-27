@@ -31,6 +31,8 @@ type DocumentPreviewHeaderProps = {
   onMove: () => void
   documentsAuxPanelOpen: boolean
   onToggleAuxPanel: () => void
+  documentsWideMode: boolean
+  onToggleWideMode: () => void
   detailLoading: boolean
 }
 
@@ -59,6 +61,8 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     onMove,
     documentsAuxPanelOpen,
     onToggleAuxPanel,
+    documentsWideMode,
+    onToggleWideMode,
     detailLoading
   } = props
 
@@ -143,6 +147,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           canUndo={canUndo}
           canRedo={canRedo}
           documentsAuxPanelOpen={documentsAuxPanelOpen}
+          documentsWideMode={documentsWideMode}
           moveTargetId={moveTargetId}
           moveOptions={moveOptions}
           onClose={() => setActionMenuOpen(false)}
@@ -153,6 +158,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           onMoveTargetChange={onMoveTargetChange}
           onMove={onMove}
           onToggleAuxPanel={onToggleAuxPanel}
+          onToggleWideMode={onToggleWideMode}
         />
       ) : null}
     </div>

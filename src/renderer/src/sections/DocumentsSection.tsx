@@ -20,6 +20,7 @@ type RelationGroup = {
 }
 
 type DocumentsSectionProps = {
+  isWideMode: boolean
   selectedDocument: DocumentDetail | null
   previewHeaderProps: ComponentProps<typeof DocumentPreviewHeader>
   summaryCardProps: ComponentProps<typeof DocumentSummaryCard> | null
@@ -78,6 +79,7 @@ function RelationList({
 }
 
 export function DocumentsSection({
+  isWideMode,
   selectedDocument,
   previewHeaderProps,
   summaryCardProps,
@@ -101,7 +103,7 @@ export function DocumentsSection({
 }: DocumentsSectionProps) {
   return (
     <section className="workspace-grid" data-testid="workspace-grid">
-      <article className="panel preview-panel">
+      <article className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}>
         <DocumentPreviewHeader {...previewHeaderProps} />
 
         {selectedDocument ? (
@@ -109,7 +111,7 @@ export function DocumentsSection({
             {summaryCardProps ? <DocumentSummaryCard {...summaryCardProps} /> : null}
             {outlinePanelProps ? <DocumentOutlinePanel {...outlinePanelProps} /> : null}
 
-              <div className="preview-section">
+              <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`}>
                 <BlockSearchPanel {...blockSearchPanelProps} />
                 <p className="panel-label">{blocksPanelLabel}</p>
                <div className="block-editor-list" onKeyDown={onEditorKeyDown}>

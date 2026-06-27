@@ -570,6 +570,21 @@ dt,
   min-width: 0;
 }
 
+.preview-panel > .document-summary-card,
+.preview-panel > .document-outline-panel,
+.preview-panel > .document-stats-bar {
+  max-width: 860px;
+  width: 100%;
+  margin-inline: auto;
+}
+
+.preview-panel.preview-panel-wide > .document-summary-card,
+.preview-panel.preview-panel-wide > .document-outline-panel,
+.preview-panel.preview-panel-wide > .document-stats-bar {
+  max-width: none;
+  margin-inline: 0;
+}
+
 .document-aux-sidebar {
   position: sticky;
   top: 32px;
@@ -897,9 +912,15 @@ dt,
 }
 
 .preview-section {
-  margin-top: 4px;
-  padding: 20px;
+  width: min(100%, 860px);
+  margin: 12px auto 0;
+  padding: 12px 20px 20px;
   position: relative;
+}
+
+.preview-section.preview-section-wide {
+  width: 100%;
+  max-width: none;
 }
 
 .plugin-document-actions {
@@ -923,6 +944,7 @@ dt,
 .block-editor-list {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   margin-top: 12px;
 }
 
@@ -950,8 +972,8 @@ dt,
   display: flex;
   align-items: flex-start;
   gap: 0;
-  padding: 2px 0;
-  border-radius: 4px;
+  padding: 6px 0;
+  border-radius: 10px;
   position: relative;
   overflow: visible;
 }
@@ -1078,7 +1100,7 @@ dt,
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 /* 鈹€鈹€ Styled inline textarea per block type 鈹€鈹€ */
@@ -1088,11 +1110,21 @@ dt,
   outline: none;
   background: transparent;
   resize: none;
-  padding: 3px 2px;
-  line-height: 1.6;
+  padding: 5px 2px;
+  font-size: 1rem;
+  line-height: 1.78;
+  letter-spacing: 0.01em;
   color: #1f1d19;
   font-family: inherit;
   overflow: hidden;
+}
+
+.block-inline-textarea.type-text,
+.block-inline-textarea.type-todo,
+.block-inline-textarea.type-bulleted-list,
+.block-inline-textarea.type-numbered-list,
+.block-inline-textarea.type-quote {
+  font-size: 1.03rem;
 }
 
 .block-inline-textarea:focus {
@@ -1107,21 +1139,23 @@ dt,
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 1.65em;
   font-weight: 700;
-  line-height: 1.3;
+  line-height: 1.25;
   padding: 6px 2px;
+  letter-spacing: 0;
 }
 
 .block-inline-textarea.type-heading-2 {
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 1.3em;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.3;
   padding: 4px 2px;
+  letter-spacing: 0;
 }
 
 .block-inline-textarea.type-quote {
   border-left: 3px solid rgba(91, 72, 44, 0.25);
-  padding-left: 14px;
+  padding: 6px 2px 6px 14px;
   color: #4a4236;
   font-style: italic;
 }
@@ -1133,6 +1167,7 @@ dt,
   border-radius: 6px;
   padding: 10px 12px;
   line-height: 1.5;
+  letter-spacing: 0;
   white-space: pre;
   overflow-x: auto;
 }
@@ -1141,6 +1176,7 @@ dt,
   font-family: 'Cambria Math', 'Latin Modern Math', serif;
   font-style: italic;
   color: #3a3428;
+  letter-spacing: 0;
 }
 
 .block-inline-textarea.type-todo {
@@ -2084,6 +2120,19 @@ del {
   .content,
   .rail {
     padding: 20px;
+  }
+
+  .preview-panel {
+    padding: 24px 20px;
+  }
+
+  .preview-section {
+    width: 100%;
+    padding: 8px 0 16px;
+  }
+
+  .block-editor-list {
+    gap: 6px;
   }
 
   .hero {

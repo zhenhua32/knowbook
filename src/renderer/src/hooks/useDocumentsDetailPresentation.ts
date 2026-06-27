@@ -31,6 +31,7 @@ type UseDocumentsDetailPresentationParams = {
   detailLoading: boolean
   documentTree: DocumentTreeNode[]
   documentsAuxPanelOpen: boolean
+  documentsWideMode: boolean
   draftBlocks: DocumentBlockDraft[]
   draftSummary: string
   draftTitle: string
@@ -56,6 +57,7 @@ type UseDocumentsDetailPresentationParams = {
   onSaveMarkdown: DocumentPreviewHeaderProps['onSaveMarkdown']
   onSummaryChange: DocumentSummaryCardProps['onSummaryChange']
   onToggleAuxPanel: DocumentPreviewHeaderProps['onToggleAuxPanel']
+  onToggleWideMode: DocumentPreviewHeaderProps['onToggleWideMode']
   onTogglePin: DocumentPreviewHeaderProps['onTogglePin']
   onTitleChange: DocumentSummaryCardProps['onTitleChange']
   onUndo: DocumentPreviewHeaderProps['onUndo']
@@ -84,6 +86,7 @@ export function useDocumentsDetailPresentation({
   detailLoading,
   documentTree,
   documentsAuxPanelOpen,
+  documentsWideMode,
   draftBlocks,
   draftSummary,
   draftTitle,
@@ -109,6 +112,7 @@ export function useDocumentsDetailPresentation({
   onSaveMarkdown,
   onSummaryChange,
   onToggleAuxPanel,
+  onToggleWideMode,
   onTogglePin,
   onTitleChange,
   onUndo,
@@ -235,6 +239,7 @@ export function useDocumentsDetailPresentation({
     canUndo,
     detailLoading,
     documentsAuxPanelOpen,
+    documentsWideMode,
     isPinned: selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false,
     isSaving,
     isZh,
@@ -250,6 +255,7 @@ export function useDocumentsDetailPresentation({
     onSave,
     onSaveMarkdown,
     onToggleAuxPanel,
+    onToggleWideMode,
     onTogglePin,
     onUndo,
     selectedDocumentId,

@@ -69,9 +69,11 @@ export function useDocumentsDomainState({
   const {
     clearMoveTarget,
     documentsAuxPanelOpen,
+    documentsWideMode,
     moveTargetId,
     setMoveTargetId,
-    toggleDocumentsAuxPanel
+    toggleDocumentsAuxPanel,
+    toggleDocumentsWideMode
   } = useDocumentsUiState()
   const {
     dragOverBlockDepth,
@@ -510,6 +512,7 @@ export function useDocumentsDomainState({
     detailLoading,
     dismissSlashCommand,
     documentsAuxPanelOpen,
+    documentsWideMode,
     downgradeBlockAt,
     dragOverBlockDepth,
     dragOverBlockIndex,
@@ -602,6 +605,7 @@ export function useDocumentsDomainState({
     splitDraftBlock,
     toggleBlockCollapse,
     toggleDocumentsAuxPanel,
+    toggleDocumentsWideMode,
     togglePinDocument,
     undoEdit,
     updateBlockHighlight,
