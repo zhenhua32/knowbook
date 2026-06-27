@@ -614,6 +614,16 @@ dt,
   justify-content: space-between;
   gap: 22px;
   align-items: flex-start;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  margin: -32px -32px 18px;
+  padding: 22px 32px 16px;
+  border-bottom: 1px solid rgba(82, 66, 39, 0.08);
+  border-radius: 24px 24px 18px 18px;
+  background: linear-gradient(180deg, rgba(255, 251, 245, 0.98) 0%, rgba(255, 249, 242, 0.94) 100%);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 28px rgba(82, 66, 39, 0.08);
 }
 
 .document-header-main {
@@ -621,16 +631,14 @@ dt,
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 
-.document-header-meta {
+.document-header-status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
-  flex-wrap: wrap;
 }
 
 .document-header-status {
@@ -642,15 +650,16 @@ dt,
 
 .document-header-title-row {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 
 .document-header-title {
   flex: 1 1 auto;
   min-width: 0;
-  line-height: 1.25;
+  font-size: clamp(1.15rem, 1vw + 0.95rem, 1.55rem);
+  line-height: 1.2;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
@@ -660,26 +669,87 @@ dt,
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-  max-width: min(44vw, 430px);
+  gap: 10px;
+  flex-wrap: nowrap;
+  max-width: none;
 }
 
-.document-header-action {
-  flex: 0 0 auto;
-}
-
-.document-header-aux-button {
-  min-width: 0;
-}
-
-.document-header-more-button {
-  min-width: 42px;
+.document-header-icon-button {
   width: 42px;
-  padding-left: 0;
-  padding-right: 0;
-  font-size: 20px;
-  line-height: 1;
+  height: 42px;
+  border: 1px solid rgba(47, 111, 237, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 252, 247, 0.96);
+  color: #2950a3;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+  transition:
+    transform 0.14s ease,
+    background 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease,
+    color 0.14s ease;
+}
+
+.document-header-icon-button:hover {
+  background: rgba(240, 247, 255, 0.96);
+  border-color: rgba(47, 111, 237, 0.28);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.65),
+    0 8px 18px rgba(47, 111, 237, 0.08);
+  transform: translateY(-1px);
+}
+
+.document-header-icon-button.active {
+  background: rgba(240, 247, 255, 0.98);
+  border-color: rgba(47, 111, 237, 0.32);
+  color: #1d4aa7;
+  box-shadow:
+    inset 0 0 0 1px rgba(47, 111, 237, 0.08),
+    0 10px 20px rgba(47, 111, 237, 0.1);
+}
+
+.document-header-icon-button:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.document-header-icon-button-danger {
+  color: #9d4141;
+  border-color: rgba(165, 45, 45, 0.16);
+  background: rgba(255, 245, 245, 0.98);
+}
+
+.document-header-icon-button-danger:hover {
+  background: rgba(255, 238, 238, 0.98);
+  border-color: rgba(165, 45, 45, 0.28);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.65),
+    0 8px 18px rgba(165, 45, 45, 0.08);
+}
+
+.document-header-pin-button.active {
+  color: #b86c17;
+  border-color: rgba(203, 122, 32, 0.26);
+  background: rgba(255, 244, 221, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    0 10px 22px rgba(203, 122, 32, 0.1);
+}
+
+.document-header-icon-svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+.document-header-icon-fill {
+  fill: currentColor;
 }
 
 .document-header-pill {
@@ -3011,23 +3081,8 @@ del {
 }
 
 /* Wave 32: Pin button & pinned section */
-.pin-button {
-  font-size: 16px;
-  padding: 2px 8px;
-  color: #888;
-  transition: color 0.15s;
-}
-.pin-button-active {
-  color: #f5a623;
-}
-.pin-button:hover {
-  color: #f5a623;
-}
-
 .document-header-pin-button {
   flex: 0 0 auto;
-  align-self: flex-start;
-  margin-top: 2px;
 }
 
 .document-header-action-menu {
@@ -3055,12 +3110,31 @@ del {
 @media (max-width: 1080px) {
   .document-header-shell {
     flex-direction: column;
+    gap: 14px;
   }
 
   .document-header-actions {
     max-width: none;
     width: 100%;
     justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 720px) {
+  .document-header-shell {
+    margin: -24px -20px 14px;
+    padding: 18px 20px 14px;
+    border-radius: 24px 24px 16px 16px;
+  }
+
+  .document-header-title-row {
+    align-items: flex-start;
+  }
+
+  .document-header-icon-button {
+    width: 40px;
+    height: 40px;
   }
 }
 .pinned-section {

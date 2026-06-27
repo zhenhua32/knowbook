@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react'
+import { useState, type MouseEvent, type MouseEventHandler, type ReactNode } from 'react'
 import type { UiText } from '../i18n'
 import { DocumentHeaderActionMenu } from './DocumentHeaderActionMenu'
 
@@ -67,11 +67,14 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
   } = props
 
   const hasDocument = Boolean(selectedDocumentId)
+  const hasHeaderStatus = mdCopyFlash || detailLoading
   const [actionMenuOpen, setActionMenuOpen] = useState(false)
   const [actionMenuPosition, setActionMenuPosition] = useState({ x: 0, y: 0 })
   const auxButtonLabel = documentsAuxPanelOpen
     ? (isZh ? '收起辅助区' : 'Hide auxiliary')
     : (isZh ? '展开辅助区' : 'Show auxiliary')
+  const pinButtonLabel = isPinned ? ui.unpinDocument : ui.pinDocument
+  const saveButtonLabel = isSaving ? ui.common.saving : ui.common.save
 
   const handleOpenActionMenu = (event: MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect()
@@ -84,57 +87,56 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
   return (
     <div className="panel-head document-header-shell">
       <div className="document-header-main">
-        <div className="document-header-meta">
-          <p className="panel-label">{ui.documentPreviewLabel}</p>
-          <div className="document-header-status">
-            {mdCopyFlash ? <span className="autosave-flash autosave-flash-copy">{ui.markdownCopied}</span> : null}
-            {detailLoading ? <span className="pill document-header-pill">{ui.common.loading}</span> : null}
+        {hasHeaderStatus ? (
+          <div className="document-header-status-row">
+            <div className="document-header-status">
+              {mdCopyFlash ? <span className="autosave-flash autosave-flash-copy">{ui.markdownCopied}</span> : null}
+              {detailLoading ? <span className="pill document-header-pill">{ui.common.loading}</span> : null}
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="document-header-title-row">
           {hasDocument ? (
-            <button
-              className={`secondary-button pin-button document-header-pin-button${isPinned ? ' pin-button-active' : ''}`}
+            <DocumentHeaderIconButton
+              active={isPinned}
+              ariaPressed={isPinned}
+              className="document-header-pin-button"
+              label={pinButtonLabel}
               onClick={onTogglePin}
-              type="button"
-              title={isPinned ? ui.unpinDocument : ui.pinDocument}
-              aria-label={isPinned ? ui.unpinDocument : ui.pinDocument}
             >
-              {isPinned ? '★' : '☆'}
-            </button>
+              <StarIcon filled={isPinned} />
+            </DocumentHeaderIconButton>
           ) : null}
           <h3 className="document-header-title">{selectedDocumentTitle ?? ui.selectDocument}</h3>
         </div>
       </div>
       {hasDocument ? (
         <div className="document-header-actions">
-          <button
-            className="secondary-button document-header-action document-header-aux-button"
+          <DocumentHeaderIconButton
+            active={documentsAuxPanelOpen}
+            ariaPressed={documentsAuxPanelOpen}
+            className="document-header-aux-button"
+            label={auxButtonLabel}
             onClick={onToggleAuxPanel}
-            type="button"
-            title={auxButtonLabel}
-            aria-label={auxButtonLabel}
           >
-            {ui.auxiliaryPanelShort}
-          </button>
-          <button className="secondary-button document-header-action" onClick={onAddChild} type="button">
-            {ui.addChild}
-          </button>
-          <button className="secondary-button document-header-action" disabled={isSaving} onClick={onSave} type="button">
-            {isSaving ? ui.common.saving : ui.common.save}
-          </button>
-          <button className="danger-button document-header-action" onClick={onDelete} type="button">
-            {ui.common.delete}
-          </button>
-          <button
-            className="secondary-button document-header-action document-header-more-button"
+            <AuxiliaryPanelIcon />
+          </DocumentHeaderIconButton>
+          <DocumentHeaderIconButton label={ui.addChild} onClick={onAddChild}>
+            <AddChildIcon />
+          </DocumentHeaderIconButton>
+          <DocumentHeaderIconButton disabled={isSaving} label={saveButtonLabel} onClick={onSave}>
+            <SaveIcon />
+          </DocumentHeaderIconButton>
+          <DocumentHeaderIconButton danger label={ui.common.delete} onClick={onDelete}>
+            <DeleteIcon />
+          </DocumentHeaderIconButton>
+          <DocumentHeaderIconButton
+            className="document-header-more-button"
+            label={ui.moreActions}
             onClick={handleOpenActionMenu}
-            type="button"
-            title={ui.moreActions}
-            aria-label={ui.moreActions}
           >
-            ⋯
-          </button>
+            <MoreIcon />
+          </DocumentHeaderIconButton>
         </div>
       ) : null}
 
@@ -162,5 +164,100 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
         />
       ) : null}
     </div>
+  )
+}
+
+type DocumentHeaderIconButtonProps = {
+  active?: boolean
+  ariaPressed?: boolean
+  children: ReactNode
+  className?: string
+  danger?: boolean
+  disabled?: boolean
+  label: string
+  onClick: MouseEventHandler<HTMLButtonElement>
+}
+
+function DocumentHeaderIconButton({
+  active = false,
+  ariaPressed,
+  children,
+  className,
+  danger = false,
+  disabled = false,
+  label,
+  onClick
+}: DocumentHeaderIconButtonProps) {
+  return (
+    <button
+      aria-label={label}
+      aria-pressed={ariaPressed}
+      className={`icon-btn document-header-icon-button${active ? ' active' : ''}${danger ? ' document-header-icon-button-danger' : ''}${className ? ` ${className}` : ''}`}
+      disabled={disabled}
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      {children}
+    </button>
+  )
+}
+
+function AuxiliaryPanelIcon() {
+  return (
+    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
+      <rect height="12" rx="2.5" width="14" x="3" y="4" />
+      <path d="M8 4v12" />
+    </svg>
+  )
+}
+
+function AddChildIcon() {
+  return (
+    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
+      <path d="M10 5v10" />
+      <path d="M5 10h10" />
+    </svg>
+  )
+}
+
+function SaveIcon() {
+  return (
+    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
+      <path d="M10 4v8" />
+      <path d="M6.5 9.5 10 13l3.5-3.5" />
+      <path d="M4 15h12" />
+    </svg>
+  )
+}
+
+function DeleteIcon() {
+  return (
+    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
+      <path d="M6.5 6.5v8" />
+      <path d="M10 6.5v8" />
+      <path d="M13.5 6.5v8" />
+      <path d="M4.5 5.5h11" />
+      <path d="M7.5 3.5h5" />
+      <path d="M6 5.5v10a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-10" />
+    </svg>
+  )
+}
+
+function MoreIcon() {
+  return (
+    <svg aria-hidden="true" className="document-header-icon-svg document-header-icon-fill" viewBox="0 0 20 20">
+      <circle cx="5" cy="10" r="1.5" />
+      <circle cx="10" cy="10" r="1.5" />
+      <circle cx="15" cy="10" r="1.5" />
+    </svg>
+  )
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg aria-hidden="true" className={`document-header-icon-svg${filled ? ' document-header-icon-fill' : ''}`} viewBox="0 0 20 20">
+      <path d="m10 3 2.1 4.3 4.7.7-3.4 3.3.8 4.7-4.2-2.2-4.2 2.2.8-4.7L3.2 8l4.7-.7Z" />
+    </svg>
   )
 }
