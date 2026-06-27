@@ -592,11 +592,11 @@ dt,
 
 .document-aux-sidebar {
   position: sticky;
-  top: 32px;
+  top: 0;
   align-self: start;
   min-width: 0;
-  height: calc(100vh - 64px);
-  max-height: calc(100vh - 64px);
+  height: 100vh;
+  max-height: 100vh;
   padding: 0;
   overflow: hidden;
 }
@@ -1766,10 +1766,14 @@ dt,
 
 .ai-answer {
   margin: 0;
-  padding: 12px;
-  border-radius: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
   background: rgba(247, 243, 235, 0.95);
   color: #2a241b;
+  font-family: 'Iowan Old Style', 'Palatino Linotype', 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', serif;
+  font-size: 1rem;
+  line-height: 1.82;
+  letter-spacing: 0.01em;
   white-space: pre-wrap;
   word-break: break-word;
 }
