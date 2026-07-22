@@ -64,6 +64,7 @@ type RegisteredPlugin = {
   documentActions: Map<string, RegisteredDocumentAction>
   settings: Map<string, RegisteredPluginSetting>
   eventHandlers: Array<{ eventTypes: Set<WorkspaceEventType>; handler: PluginEventHandler }>
+  runtimeTimers: Map<number, ReturnType<typeof setTimeout>>
   dispose?: () => void | Promise<void>
   context?: vm.Context
 }
@@ -121,6 +122,15 @@ type InstallCandidate = {
 type InstallPluginOptions = {
   replaceExisting?: boolean
 }
+
+type PluginInvocationOptions = {
+  argumentMode?: 'json' | 'direct'
+  resultMode?: 'raw' | 'json'
+}
+
+const PLUGIN_SYNC_TIMEOUT_MS = 1_000
+const PLUGIN_ASYNC_TIMEOUT_MS = 5_000
+const PLUGIN_RESULT_MAX_BYTES = 1_000_000
 
 export type PluginInstallPreview = {
   manifest: PluginManifest
@@ -430,7 +440,8 @@ export class PluginHost {
         plugin,
         action.handler,
         [{ document: structuredClone(document) }],
-        `document action ${action.action.id}`
+        `document action ${action.action.id}`,
+        { resultMode: 'json' }
       )
       const normalizedResult = normalizePluginActionResult(rawResult, action.action.label)
       this.store.recordWorkspaceEvent({
@@ -441,7 +452,7 @@ export class PluginHost {
       })
       return normalizedResult
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown plugin action error.'
+      const errorMessage = this.getPluginErrorMessage(error, 'Unknown plugin action error.')
       this.store.recordWorkspaceEvent({
         type: 'plugin.action.failed',
         title: `${plugin.manifest.name}: ${action.action.label}`,
@@ -495,7 +506,8 @@ export class PluginHost {
             dashboardCards: new Map(),
             documentActions: new Map(),
             settings: new Map(),
-            eventHandlers: []
+            eventHandlers: [],
+            runtimeTimers: new Map()
           })
         } catch (error) {
           console.error(`Failed to load plugin manifest at ${manifestPath}.`, error)
@@ -709,7 +721,6 @@ export class PluginHost {
       plugin.settings.clear()
       plugin.eventHandlers = []
 
-      const api = this.createPluginApi(plugin)
       const entryPath = resolve(plugin.directory, plugin.manifest.entry ?? 'index.js')
       if (!this.isPathInsideRoot(entryPath, plugin.directory)) {
         plugin.status = 'error'
@@ -730,39 +741,44 @@ export class PluginHost {
       }
 
       const source = readFileSync(entryPath, 'utf8')
-      const module: PluginCommonJsModule = { exports: {} }
-      const exports = module.exports
-      const context = vm.createContext(
-        {
-          console: createPluginConsole(plugin.manifest.id),
-          setTimeout,
-          clearTimeout,
-          exports,
-          module
+      const context = vm.createContext({}, {
+        name: `knowbook-plugin-${plugin.manifest.id}`,
+        codeGeneration: {
+          strings: false,
+          wasm: false
         },
-        {
-          name: `knowbook-plugin-${plugin.manifest.id}`,
-          codeGeneration: {
-            strings: false,
-            wasm: false
-          }
-        }
-      )
+        microtaskMode: 'afterEvaluate'
+      })
       plugin.context = context
-      const script = new vm.Script(`(function (exports, module) {\n${source}\n})(exports, module)`, {
+      this.installPluginRuntimeGlobals(plugin, context)
+      const api = this.createPluginApi(plugin)
+      const script = new vm.Script(`
+        (() => {
+          const module = { exports: {} }
+          const exports = module.exports
+          ;(function (exports, module) {\n${source}\n})(exports, module)
+          return module
+        })()
+      `, {
         filename: entryPath
       })
 
-      script.runInContext(context, { timeout: 1000, displayErrors: true })
+      const module = script.runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      }) as PluginCommonJsModule
 
       const activate = this.resolveActivate(module.exports)
       if (!activate) {
         plugin.status = 'error'
         plugin.error = 'Plugin entry must export an activate(api) function.'
+        this.releasePluginRuntime(plugin)
         return
       }
 
-      const result = await this.invokePluginFunction(plugin, activate, [api], 'activation')
+      const result = await this.invokePluginFunction(plugin, activate, [api], 'activation', {
+        argumentMode: 'direct'
+      })
 
       // result could be dispose function or void/Promise
       if (typeof result === 'function') {
@@ -780,7 +796,8 @@ export class PluginHost {
       plugin.status = 'running'
     } catch (error) {
       plugin.status = 'error'
-      plugin.error = String(error)
+      plugin.error = this.getPluginErrorMessage(error, 'Plugin activation failed.')
+      this.releasePluginRuntime(plugin)
     }
   }
 
@@ -805,8 +822,7 @@ export class PluginHost {
       }
     }
 
-    plugin.dispose = undefined
-    plugin.context = undefined
+    this.releasePluginRuntime(plugin)
     plugin.dashboardCards.clear()
     plugin.documentActions.clear()
     plugin.eventHandlers = []
@@ -815,7 +831,318 @@ export class PluginHost {
     }
   }
 
+  private installPluginRuntimeGlobals(plugin: RegisteredPlugin, context: vm.Context): void {
+    const hostCall = (operation: string, ...args: unknown[]): unknown => {
+      try {
+        if (plugin.context !== context) {
+          throw new Error('Plugin runtime is no longer active.')
+        }
+
+        switch (operation) {
+          case 'console': {
+            const level = args[0]
+            const message = args[1]
+            if (typeof level !== 'string' || typeof message !== 'string') {
+              throw new Error('Invalid plugin console call.')
+            }
+            const prefix = `[plugin:${plugin.manifest.id}]`
+            if (level === 'error') {
+              console.error(prefix, message)
+            } else if (level === 'warn') {
+              console.warn(prefix, message)
+            } else if (level === 'info') {
+              console.info(prefix, message)
+            } else {
+              console.log(prefix, message)
+            }
+            return undefined
+          }
+          case 'timer.set': {
+            const callback = args[0]
+            const delay = args[1]
+            const serializedArgs = args[2]
+            if (typeof callback !== 'function' || typeof delay !== 'number' || typeof serializedArgs !== 'string') {
+              throw new Error('Invalid plugin timer call.')
+            }
+            if (Buffer.byteLength(serializedArgs, 'utf8') > PLUGIN_RESULT_MAX_BYTES) {
+              throw new Error('Plugin timer arguments are too large.')
+            }
+
+            const timerId = ++this.invocationSequence
+            const timeout = setTimeout(() => {
+              plugin.runtimeTimers.delete(timerId)
+              if (plugin.context !== context) {
+                return
+              }
+
+              let callbackArgs: unknown[]
+              try {
+                const parsed = JSON.parse(serializedArgs)
+                callbackArgs = Array.isArray(parsed) ? parsed : []
+              } catch (error) {
+                this.handlePluginError(plugin, 'timer argument parsing', error)
+                return
+              }
+
+              void this.invokePluginFunction(plugin, callback as (...callbackArgs: unknown[]) => unknown, callbackArgs, 'timer callback')
+                .catch((error) => this.handlePluginError(plugin, 'timer callback', error))
+            }, Math.min(Math.max(delay, 0), 60_000))
+            plugin.runtimeTimers.set(timerId, timeout)
+            return timerId
+          }
+          case 'timer.clear': {
+            const timerId = args[0]
+            if (typeof timerId !== 'number') {
+              return undefined
+            }
+            const timeout = plugin.runtimeTimers.get(timerId)
+            if (timeout) {
+              clearTimeout(timeout)
+              plugin.runtimeTimers.delete(timerId)
+            }
+            return undefined
+          }
+          default:
+            throw new Error('Unknown plugin runtime operation.')
+        }
+      } catch (error) {
+        throw error instanceof Error ? error.message : 'Plugin runtime operation failed.'
+      }
+    }
+
+    Object.setPrototypeOf(hostCall, null)
+    Object.freeze(hostCall)
+
+    const bridgeKey = `__knowbookRuntimeBridge${++this.invocationSequence}`
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    Object.defineProperty(contextRecord, bridgeKey, {
+      configurable: true,
+      enumerable: false,
+      value: hostCall,
+      writable: false
+    })
+
+    try {
+      new vm.Script(`
+        ((hostCall) => {
+          const freeze = Object.freeze
+          const safeString = String
+          const safeNumber = Number
+          const stringify = JSON.stringify.bind(JSON)
+          const format = (value) => {
+            try {
+              return typeof value === 'string' ? value : safeString(value)
+            } catch {
+              return '[unprintable]'
+            }
+          }
+          const write = (level) => freeze((...args) => hostCall('console', level, args.map(format).join(' ')))
+          const safeConsole = freeze({
+            log: write('log'),
+            info: write('info'),
+            warn: write('warn'),
+            error: write('error'),
+            debug: write('debug')
+          })
+          const safeSetTimeout = freeze((callback, delay = 0, ...args) => {
+            if (typeof callback !== 'function') {
+              throw new TypeError('setTimeout callback must be a function.')
+            }
+            const normalizedDelay = safeNumber(delay)
+            return hostCall('timer.set', callback, Number.isFinite(normalizedDelay) ? normalizedDelay : 0, stringify(args))
+          })
+          const safeClearTimeout = freeze((timerId) => hostCall('timer.clear', safeNumber(timerId)))
+          Object.defineProperties(globalThis, {
+            console: { enumerable: false, configurable: false, writable: false, value: safeConsole },
+            setTimeout: { enumerable: false, configurable: false, writable: false, value: safeSetTimeout },
+            clearTimeout: { enumerable: false, configurable: false, writable: false, value: safeClearTimeout }
+          })
+        })(${bridgeKey})
+      `).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      })
+    } finally {
+      delete contextRecord[bridgeKey]
+    }
+  }
+
+  private releasePluginRuntime(plugin: RegisteredPlugin): void {
+    for (const timeout of plugin.runtimeTimers.values()) {
+      clearTimeout(timeout)
+    }
+    plugin.runtimeTimers.clear()
+    plugin.dispose = undefined
+    plugin.context = undefined
+  }
+
   private createPluginApi(plugin: RegisteredPlugin): PluginApi {
+    const context = plugin.context
+    if (!context) {
+      throw new Error('Plugin context is unavailable while creating the API bridge.')
+    }
+
+    const hostApi = this.createHostPluginApi(plugin)
+    const parseInput = (value: unknown): unknown => {
+      if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > PLUGIN_RESULT_MAX_BYTES) {
+        throw new Error('Plugin bridge payload is invalid or too large.')
+      }
+      return JSON.parse(value)
+    }
+    const requireString = (value: unknown): string => {
+      if (typeof value !== 'string') {
+        throw new Error('Plugin bridge string argument is invalid.')
+      }
+      return value
+    }
+    const requireFunction = <T extends (...args: any[]) => unknown>(value: unknown): T => {
+      if (typeof value !== 'function') {
+        throw new Error('Plugin bridge callback is invalid.')
+      }
+      return value as T
+    }
+    const hostCall = (operation: string, ...args: unknown[]): unknown => {
+      try {
+        if (plugin.context !== context) {
+          throw new Error('Plugin runtime is no longer active.')
+        }
+
+        switch (operation) {
+          case 'dashboard.contribute': {
+            const card = hostApi.contributeDashboardCard(parseInput(args[0]) as PluginDashboardCardInput)
+            return JSON.stringify({
+              id: card.id,
+              pluginId: card.pluginId,
+              title: card.title,
+              body: card.body
+            })
+          }
+          case 'dashboard.update': {
+            const card = plugin.dashboardCards.get(requireString(args[0]))
+            if (!card) {
+              throw new Error('Plugin dashboard card not found.')
+            }
+            card.update(parseInput(args[1]) as Partial<Pick<PluginDashboardCard, 'title' | 'body'>>)
+            return undefined
+          }
+          case 'documentAction.contribute':
+            hostApi.contributeDocumentAction(
+              parseInput(args[0]) as Omit<PluginDocumentAction, 'pluginId'>,
+              requireFunction<PluginDocumentActionHandler>(args[1])
+            )
+            return undefined
+          case 'setting.contribute': {
+            const setting = hostApi.contributeSetting(
+              parseInput(args[0]) as Parameters<PluginApi['contributeSetting']>[0]
+            )
+            return JSON.stringify({ id: setting.id, pluginId: setting.pluginId })
+          }
+          case 'setting.get': {
+            const setting = plugin.settings.get(requireString(args[0]))
+            if (!setting) {
+              throw new Error('Plugin setting not found.')
+            }
+            return JSON.stringify(setting.getValue())
+          }
+          case 'setting.set': {
+            const setting = plugin.settings.get(requireString(args[0]))
+            if (!setting) {
+              throw new Error('Plugin setting not found.')
+            }
+            setting.setValue(parseInput(args[1]) as PluginSettingValue)
+            return undefined
+          }
+          case 'event.subscribe':
+            hostApi.onWorkspaceEvent(
+              parseInput(args[0]) as WorkspaceEventType | WorkspaceEventType[],
+              requireFunction<PluginEventHandler>(args[1])
+            )
+            return undefined
+          case 'workspace.getDocumentDetail':
+            return JSON.stringify(hostApi.workspace.getDocumentDetail(requireString(args[0])))
+          case 'documents.updateSummary':
+            hostApi.documents.updateSummary(requireString(args[0]), requireString(args[1]))
+            return undefined
+          case 'log':
+            hostApi.log(
+              requireString(args[0]),
+              requireString(args[1]),
+              args[2] == null ? null : requireString(args[2])
+            )
+            return undefined
+          default:
+            throw new Error(`Unknown plugin bridge operation: ${operation}`)
+        }
+      } catch (error) {
+        throw error instanceof Error ? error.message : 'Plugin bridge operation failed.'
+      }
+    }
+
+    Object.setPrototypeOf(hostCall, null)
+    Object.freeze(hostCall)
+
+    const bridgeKey = `__knowbookHostBridge${++this.invocationSequence}`
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    Object.defineProperty(contextRecord, bridgeKey, {
+      configurable: true,
+      enumerable: false,
+      value: hostCall,
+      writable: false
+    })
+
+    try {
+      return new vm.Script(`
+        ((hostCall) => {
+          const freeze = Object.freeze
+          const safeString = String
+          const parse = JSON.parse.bind(JSON)
+          const stringify = JSON.stringify.bind(JSON)
+          const api = {
+            contributeDashboardCard(cardInput) {
+              const descriptor = parse(hostCall('dashboard.contribute', stringify(cardInput)))
+              return freeze({
+                ...descriptor,
+                update: freeze((patch) => hostCall('dashboard.update', descriptor.id, stringify(patch)))
+              })
+            },
+            contributeDocumentAction(actionInput, handler) {
+              return hostCall('documentAction.contribute', stringify(actionInput), handler)
+            },
+            contributeSetting(settingInput) {
+              const descriptor = parse(hostCall('setting.contribute', stringify(settingInput)))
+              return freeze({
+                ...descriptor,
+                getValue: freeze(() => parse(hostCall('setting.get', descriptor.id))),
+                setValue: freeze((value) => hostCall('setting.set', descriptor.id, stringify(value)))
+              })
+            },
+            onWorkspaceEvent(eventTypes, handler) {
+              return hostCall('event.subscribe', stringify(eventTypes), handler)
+            },
+            workspace: freeze({
+              getDocumentDetail: freeze((documentId) => parse(hostCall('workspace.getDocumentDetail', safeString(documentId))))
+            }),
+            documents: freeze({
+              updateSummary: freeze((documentId, summary) => hostCall('documents.updateSummary', safeString(documentId), safeString(summary)))
+            }),
+            log: freeze((title, description, documentId) => hostCall('log', safeString(title), safeString(description), documentId == null ? null : safeString(documentId)))
+          }
+          api.contributeDashboardCard = freeze(api.contributeDashboardCard)
+          api.contributeDocumentAction = freeze(api.contributeDocumentAction)
+          api.contributeSetting = freeze(api.contributeSetting)
+          api.onWorkspaceEvent = freeze(api.onWorkspaceEvent)
+          return freeze(api)
+        })(${bridgeKey})
+      `).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      }) as PluginApi
+    } finally {
+      delete contextRecord[bridgeKey]
+    }
+  }
+
+  private createHostPluginApi(plugin: RegisteredPlugin): PluginApi {
     return {
       contributeDashboardCard: (cardInput) => {
         const cardId = cardInput.id.trim()
@@ -949,24 +1276,114 @@ export class PluginHost {
     plugin: RegisteredPlugin,
     callback: (...args: any[]) => T | Promise<T>,
     args: unknown[],
-    operation: string
+    operation: string,
+    options: PluginInvocationOptions = {}
   ): Promise<T> {
     if (!plugin.context) {
       throw new Error(`Plugin context is unavailable during ${operation}.`)
     }
 
+    const context = plugin.context
+    const invocationArgs = this.createPluginInvocationArguments(plugin, args, options.argumentMode ?? 'json')
     const invocationKey = `__knowbookInvocation${++this.invocationSequence}`
-    const contextRecord = plugin.context as vm.Context & Record<string, unknown>
-    contextRecord[invocationKey] = { callback, args }
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    const invocation = Object.create(null) as { callback: typeof callback; args: unknown[] }
+    Object.defineProperties(invocation, {
+      callback: { enumerable: true, value: callback, writable: false },
+      args: { enumerable: true, value: invocationArgs, writable: false }
+    })
+    Object.freeze(invocation)
+    Object.defineProperty(contextRecord, invocationKey, {
+      configurable: true,
+      enumerable: false,
+      value: invocation,
+      writable: false
+    })
 
     try {
-      const result = new vm.Script(`${invocationKey}.callback(...${invocationKey}.args)`).runInContext(plugin.context, {
-        timeout: 1_000,
+      const result = new vm.Script(`${invocationKey}.callback(...${invocationKey}.args)`).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
         displayErrors: true
       }) as T | Promise<T>
-      return await this.withAsyncTimeout(Promise.resolve(result), 5_000, operation)
+      const settledResult = await this.withAsyncTimeout(Promise.resolve(result), PLUGIN_ASYNC_TIMEOUT_MS, operation)
+      return options.resultMode === 'json'
+        ? this.clonePluginResultToHost(plugin, settledResult, operation)
+        : settledResult
     } finally {
       delete contextRecord[invocationKey]
+    }
+  }
+
+  private createPluginInvocationArguments(
+    plugin: RegisteredPlugin,
+    args: unknown[],
+    mode: 'json' | 'direct'
+  ): unknown[] {
+    const context = plugin.context
+    if (!context) {
+      throw new Error('Plugin context is unavailable while preparing invocation arguments.')
+    }
+
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    const argumentKey = `__knowbookArguments${++this.invocationSequence}`
+    const value = mode === 'json' ? JSON.stringify(args) : args
+    if (mode === 'json' && (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > PLUGIN_RESULT_MAX_BYTES)) {
+      throw new Error('Plugin invocation arguments are too large.')
+    }
+
+    Object.defineProperty(contextRecord, argumentKey, {
+      configurable: true,
+      enumerable: false,
+      value,
+      writable: false
+    })
+
+    try {
+      const expression = mode === 'json'
+        ? `JSON.parse(${argumentKey})`
+        : `[...${argumentKey}]`
+      return new vm.Script(expression).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      }) as unknown[]
+    } finally {
+      delete contextRecord[argumentKey]
+    }
+  }
+
+  private clonePluginResultToHost<T>(plugin: RegisteredPlugin, result: T, operation: string): T {
+    if (result === undefined) {
+      return result
+    }
+
+    const context = plugin.context
+    if (!context) {
+      throw new Error(`Plugin context is unavailable after ${operation}.`)
+    }
+
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    const resultKey = `__knowbookResult${++this.invocationSequence}`
+    Object.defineProperty(contextRecord, resultKey, {
+      configurable: true,
+      enumerable: false,
+      value: result,
+      writable: false
+    })
+
+    try {
+      const serialized = new vm.Script(`JSON.stringify(${resultKey})`).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      })
+      if (typeof serialized !== 'string') {
+        throw new Error(`Plugin ${operation} returned an unsupported value.`)
+      }
+      if (Buffer.byteLength(serialized, 'utf8') > PLUGIN_RESULT_MAX_BYTES) {
+        throw new Error(`Plugin ${operation} returned too much data.`)
+      }
+      return JSON.parse(serialized) as T
+    } finally {
+      delete contextRecord[resultKey]
     }
   }
 
@@ -987,14 +1404,25 @@ export class PluginHost {
   }
 
   private handlePluginError(plugin: RegisteredPlugin, phase: string, error: unknown): void {
-    const errorMessage = error instanceof Error ? error.message : `Unknown error during ${phase}.`
+    const errorMessage = this.getPluginErrorMessage(error, `Unknown error during ${phase}.`)
     plugin.status = 'error'
     plugin.error = errorMessage
+    this.releasePluginRuntime(plugin)
     plugin.dashboardCards.clear()
     plugin.documentActions.clear()
     plugin.settings.clear()
     plugin.eventHandlers = []
     console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, error)
+  }
+
+  private getPluginErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) {
+      return error.message
+    }
+    if (typeof error === 'string' && error.trim()) {
+      return error.trim()
+    }
+    return fallback
   }
 
   private toPluginDescriptor(plugin: RegisteredPlugin): PluginDescriptor {
@@ -1039,14 +1467,4 @@ function normalizePluginActionResult(
     message: rawResult?.message?.trim() || `${actionLabel} completed.`,
     refreshDocument: rawResult?.refreshDocument ?? false
   }
-}
-
-function createPluginConsole(pluginId: string): Console {
-  return {
-    ...console,
-    log: (...args: unknown[]) => console.log(`[plugin:${pluginId}]`, ...args),
-    info: (...args: unknown[]) => console.info(`[plugin:${pluginId}]`, ...args),
-    warn: (...args: unknown[]) => console.warn(`[plugin:${pluginId}]`, ...args),
-    error: (...args: unknown[]) => console.error(`[plugin:${pluginId}]`, ...args)
-  } as Console
 }
