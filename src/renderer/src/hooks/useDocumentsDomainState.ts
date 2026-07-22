@@ -62,6 +62,7 @@ export function useDocumentsDomainState({
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
+  const flushPendingDocumentChangesRef = useRef<() => Promise<boolean>>(async () => true)
   const updateBackupMessage: Dispatch<SetStateAction<string | null>> = useCallback((value) => {
     onBackupMessage(typeof value === 'function' ? value(null) : value)
   }, [onBackupMessage])
@@ -109,7 +110,10 @@ export function useDocumentsDomainState({
     togglePinDocument
   } = useDocumentNavigationState({
     onActivePageChange,
-    onBeforeOpenDocument: () => setHighlightedBlockId(null)
+    onBeforeOpenDocument: async () => {
+      setHighlightedBlockId(null)
+      return flushPendingDocumentChangesRef.current()
+    }
   })
 
   useEffect(() => {
@@ -129,6 +133,7 @@ export function useDocumentsDomainState({
     draftBlocks,
     draftSummary,
     draftTitle,
+    flushPendingChanges,
     isEditing,
     isSaving,
     loadDocumentIntoEditor,
@@ -152,6 +157,7 @@ export function useDocumentsDomainState({
     selectedDocumentId,
     ui
   })
+  flushPendingDocumentChangesRef.current = flushPendingChanges
   const {
     blockHasChildren,
     collapsedBlockIds,
@@ -522,6 +528,7 @@ export function useDocumentsDomainState({
     draftBlocks,
     draftSummary,
     draftTitle,
+    flushPendingChanges,
     draggingBlockIndex,
     dropBlockAt,
     duplicateDraftBlock,

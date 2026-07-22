@@ -49,7 +49,7 @@
 
 ## Environment & Paths
 - Dev renderer URL: `process.env.ELECTRON_RENDERER_URL` (Vite dev server), else loads `renderer/index.html`.
-- Preload script in prod build: `../preload/index.mjs` (note `.mjs` in built output).
+- Preload script in prod build: `../preload/index.cjs` (CommonJS is required by Electron's sandboxed preload loader).
 - Tests run with `ELECTRON_RUN_AS_NODE=1` and `tsx` register.
 
 ## Working with AI Features (non-breaking guidance)

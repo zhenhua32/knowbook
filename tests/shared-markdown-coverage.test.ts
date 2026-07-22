@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseMarkdownBackupDocument, renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
+import { renderMarkdownTableHtml } from '../src/shared/markdownTable.ts'
+
+test('renderMarkdownTableHtml escapes untrusted cell content', () => {
+  const html = renderMarkdownTableHtml([
+    '| Header | Other |',
+    '| --- | --- |',
+    '| <img src=x onerror="alert(1)"> & text | safe |'
+  ].join('\n'))
+
+  assert.ok(html)
+  assert.equal(html.includes('<img'), false)
+  assert.equal(html.includes('onerror="alert(1)"'), false)
+  assert.equal(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; text'), true)
+})
 
 test('serializeBlocksToMarkdown renders all major block types', () => {
   const output = serializeBlocksToMarkdown([

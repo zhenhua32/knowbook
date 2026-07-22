@@ -1,4 +1,5 @@
 import type { UiText } from '../i18n'
+import { createPortal } from 'react-dom'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
 
 type MoveOption = {
@@ -63,7 +64,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
 
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
 
-  return (
+  return createPortal((
     <>
       <div
         className="context-menu-overlay"
@@ -141,5 +142,5 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
         </div>
       </div>
     </>
-  )
+  ), document.body)
 }

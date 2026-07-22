@@ -93,13 +93,15 @@ async function startMockAiServer(summary: string): Promise<{
 }
 
 async function openSettingsPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Settings', '配置中心')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('Settings', '配置中心'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Settings', '配置中心'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
 }
 
 async function openDashboardPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Dashboard', '总览')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('Dashboard', '总览'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Dashboard', '总览'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
 }
 
 async function openDocumentsPage(page: Page): Promise<void> {
@@ -108,8 +110,9 @@ async function openDocumentsPage(page: Page): Promise<void> {
 }
 
 async function openAiPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('AI Assistant', 'AI 助手')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('AI Assistant', 'AI 助手'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('AI Assistant', 'AI 助手'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
 }
 
 async function createRootDocument(page: Page, title: string, body: string): Promise<void> {
@@ -123,6 +126,7 @@ async function createRootDocument(page: Page, title: string, body: string): Prom
 
 async function createFreshDocumentEditor(page: Page): Promise<Locator> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
 
   const editor = page.locator('textarea.block-inline-textarea').nth(1)
   await expect(editor).toBeVisible()
@@ -217,7 +221,7 @@ test.describe('AI Settings @electron', () => {
 
       await openAiPage(page)
       const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
-      await expect(runAutomationsButton).toBeEnabled()
+      await expect(runAutomationsButton).toBeDisabled()
 
       await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini')
 

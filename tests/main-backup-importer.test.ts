@@ -417,3 +417,36 @@ test('MarkdownRestoreService keeps standalone databases when restoring a legacy 
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('MarkdownRestoreService rolls back all changes when a restore step fails', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-transaction-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
+  const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
+
+  try {
+    new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    const before = targetStore.getHomeData(backupRoot).documentCatalog
+    const originalUpdateDocument = targetStore.updateDocument.bind(targetStore)
+    let updateCount = 0
+    targetStore.updateDocument = ((...args: Parameters<KnowbookStore['updateDocument']>) => {
+      const result = originalUpdateDocument(...args)
+      updateCount += 1
+      if (updateCount === 2) {
+        throw new Error('Injected restore failure')
+      }
+      return result
+    }) as KnowbookStore['updateDocument']
+
+    assert.throws(
+      () => new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot),
+      /Injected restore failure/
+    )
+    assert.equal(updateCount, 2)
+    assert.deepEqual(targetStore.getHomeData(backupRoot).documentCatalog, before)
+  } finally {
+    sourceStore.destroy()
+    targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

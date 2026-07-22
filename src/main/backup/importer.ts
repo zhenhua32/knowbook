@@ -82,44 +82,53 @@ export class MarkdownRestoreService {
           ? depthDifference
           : left.documentPath.localeCompare(right.documentPath)
       })
-    const sourceStandaloneDatabases = sourceFiles
+    const discoveredStandaloneDatabases = sourceFiles
       .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
     const sourceStandaloneDatabaseManifest = sourceFiles.find(
       (source): source is RestoreSourceStandaloneDatabaseManifest => source.kind === 'standalone-database-manifest'
     )
 
-    let created = 0
-    let updated = 0
-    let deleted = 0
-    const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
-    let placeholdersCreated = 0
-    const restoredDocumentIds = new Set<string>()
-    const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+    const manifestDatabaseIds = sourceStandaloneDatabaseManifest
+      ? new Set(sourceStandaloneDatabaseManifest.sourceDatabaseIds)
+      : null
+    const sourceStandaloneDatabases = manifestDatabaseIds
+      ? discoveredStandaloneDatabases.filter((source) => manifestDatabaseIds.has(source.sourceDatabaseId))
+      : discoveredStandaloneDatabases
 
-    for (const source of sourceDocuments) {
-      const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
-      placeholdersCreated += result.placeholdersCreated
-      restoredDocumentIds.add(result.documentId)
-      if (result.mode === 'created') {
-        created += 1
-      } else {
-        updated += 1
+    return this.store.runInTransaction(() => {
+      let created = 0
+      let updated = 0
+      let deleted = 0
+      const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
+      let placeholdersCreated = 0
+      const restoredDocumentIds = new Set<string>()
+      const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+
+      for (const source of sourceDocuments) {
+        const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
+        placeholdersCreated += result.placeholdersCreated
+        restoredDocumentIds.add(result.documentId)
+        if (result.mode === 'created') {
+          created += 1
+        } else {
+          updated += 1
+        }
       }
-    }
 
-    deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
-  this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
+      deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+      this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
 
-    return {
-      restored: sourceDocuments.length,
-      created,
-      updated,
-      deleted,
-      conflictsResolved,
-      placeholdersCreated,
-      root,
-      at: new Date().toISOString()
-    }
+      return {
+        restored: sourceDocuments.length,
+        created,
+        updated,
+        deleted,
+        conflictsResolved,
+        placeholdersCreated,
+        root,
+        at: new Date().toISOString()
+      }
+    })
   }
 
   private collectMarkdownFiles(root: string): string[] {

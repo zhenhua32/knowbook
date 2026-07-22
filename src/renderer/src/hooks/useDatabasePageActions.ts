@@ -78,7 +78,12 @@ export function useDatabasePageActions({
     ])
     setCatalogColumns(refreshedColumns)
     setCatalogDocuments(refreshedCatalog)
-  }, [setCatalogColumns, setCatalogDocuments])
+    setHomeData((previous) => ({
+      ...previous,
+      databaseColumns: refreshedColumns,
+      documentCatalog: refreshedCatalog
+    }))
+  }, [setCatalogColumns, setCatalogDocuments, setHomeData])
 
   const refreshDatabasePageData = useCallback(async (
     targetDatabaseId: string | null = databaseEntityDatabaseId,

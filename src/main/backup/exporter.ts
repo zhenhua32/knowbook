@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { dirname, join, resolve, sep } from 'node:path'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
 import type { ExportDocument, ExportStandaloneDatabase, KnowbookStore } from '../database/store'
@@ -18,13 +19,23 @@ export class MarkdownBackupService {
   exportAll(): BackupResult {
     const documents = this.store.getExportDocuments()
     const standaloneDatabases = this.store.getExportStandaloneDatabases()
-    for (const document of documents) {
-      this.writeDocument(document)
+    const backupParent = dirname(this.backupRoot)
+    mkdirSync(backupParent, { recursive: true })
+    const stagingRoot = mkdtempSync(join(backupParent, '.knowbook-markdown-'))
+
+    try {
+      for (const document of documents) {
+        this.writeDocument(stagingRoot, document)
+      }
+      for (const database of standaloneDatabases) {
+        this.writeStandaloneDatabase(stagingRoot, database)
+      }
+      this.writeStandaloneDatabaseManifest(stagingRoot, standaloneDatabases)
+      this.replaceBackupSnapshot(stagingRoot)
+    } catch (error) {
+      rmSync(stagingRoot, { recursive: true, force: true })
+      throw error
     }
-    for (const database of standaloneDatabases) {
-      this.writeStandaloneDatabase(database)
-    }
-    this.writeStandaloneDatabaseManifest(standaloneDatabases)
 
     const at = new Date().toISOString()
     this.store.saveSetting('backup.lastRunAt', at)
@@ -36,22 +47,78 @@ export class MarkdownBackupService {
     }
   }
 
-  private writeDocument(document: ExportDocument): void {
-    const filePath = join(this.backupRoot, ...document.path.split('/')) + '.md'
+  private writeDocument(root: string, document: ExportDocument): void {
+    const segments = document.path.split('/').map((segment) => this.toSafePathSegment(segment))
+    const filePath = join(root, ...segments) + '.md'
+    this.assertPathInsideRoot(filePath, root)
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, this.renderMarkdown(document), 'utf8')
   }
 
-  private writeStandaloneDatabase(database: ExportStandaloneDatabase): void {
-    const filePath = join(this.backupRoot, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${database.id}.md`)
+  private writeStandaloneDatabase(root: string, database: ExportStandaloneDatabase): void {
+    const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${this.toSafePathSegment(database.id)}.md`)
+    this.assertPathInsideRoot(filePath, root)
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, this.renderStandaloneDatabase(database), 'utf8')
   }
 
-  private writeStandaloneDatabaseManifest(databases: ExportStandaloneDatabase[]): void {
-    const filePath = join(this.backupRoot, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), STANDALONE_DATABASE_MANIFEST_FILE_NAME)
+  private writeStandaloneDatabaseManifest(root: string, databases: ExportStandaloneDatabase[]): void {
+    const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), STANDALONE_DATABASE_MANIFEST_FILE_NAME)
     mkdirSync(dirname(filePath), { recursive: true })
     writeFileSync(filePath, this.renderStandaloneDatabaseManifest(databases), 'utf8')
+  }
+
+  private replaceBackupSnapshot(stagingRoot: string): void {
+    const previousRoot = `${this.backupRoot}.previous-${randomUUID()}`
+    const hadPreviousSnapshot = existsSync(this.backupRoot)
+
+    if (hadPreviousSnapshot) {
+      renameSync(this.backupRoot, previousRoot)
+    }
+
+    try {
+      renameSync(stagingRoot, this.backupRoot)
+    } catch (error) {
+      if (hadPreviousSnapshot && !existsSync(this.backupRoot)) {
+        renameSync(previousRoot, this.backupRoot)
+      }
+      throw error
+    }
+
+    if (hadPreviousSnapshot) {
+      rmSync(previousRoot, { recursive: true, force: true })
+    }
+  }
+
+  private assertPathInsideRoot(filePath: string, root: string): void {
+    const normalizedRoot = resolve(root)
+    const normalizedFilePath = resolve(filePath)
+    if (normalizedFilePath !== normalizedRoot && !normalizedFilePath.startsWith(`${normalizedRoot}${sep}`)) {
+      throw new Error('Backup path resolved outside the backup root.')
+    }
+  }
+
+  private toSafePathSegment(segment: string): string {
+    const isReservedWindowsName = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(segment)
+    const needsEncoding = segment.length === 0
+      || segment.length > 100
+      || segment === '.'
+      || segment === '..'
+      || /[<>:"/\\|?*\x00-\x1F]/.test(segment)
+      || /[. ]$/.test(segment)
+      || isReservedWindowsName
+
+    if (!needsEncoding) {
+      return segment
+    }
+
+    const readable = segment
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+      .replace(/[. ]+$/g, '')
+      .trim()
+      .slice(0, 80) || 'Untitled'
+    const digest = createHash('sha256').update(segment).digest('hex').slice(0, 10)
+    return `${readable}--${digest}`
   }
 
   private renderMarkdown(document: ExportDocument): string {

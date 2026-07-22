@@ -107,7 +107,8 @@ export function DocumentsSection({
 }: DocumentsSectionProps) {
   const workspaceGridRef = useRef<HTMLElement | null>(null)
   const [isResizingAuxPanel, setIsResizingAuxPanel] = useState(false)
-  const auxPanelProps = documentsAuxPanelProps?.isOpen && selectedDocument ? documentsAuxPanelProps : null
+  const documentReady = Boolean(selectedDocument && !previewHeaderProps.detailLoading)
+  const auxPanelProps = documentsAuxPanelProps?.isOpen && documentReady ? documentsAuxPanelProps : null
   const showAuxPanel = Boolean(auxPanelProps)
 
   const clampAuxPanelWidth = useCallback((candidateWidth: number) => {
@@ -190,7 +191,7 @@ export function DocumentsSection({
       <article className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}>
         <DocumentPreviewHeader {...previewHeaderProps} />
 
-        {selectedDocument ? (
+        {selectedDocument && documentReady ? (
           <>
             {summaryCardProps ? <DocumentSummaryCard {...summaryCardProps} /> : null}
             {outlinePanelProps ? <DocumentOutlinePanel {...outlinePanelProps} /> : null}

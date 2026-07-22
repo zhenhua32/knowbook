@@ -6,7 +6,7 @@ import { BlockContextMenu } from './BlockContextMenu'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { renderMarkdownTableHtml } from '../utils/markdownTable'
+import { parseMarkdownTable } from '../utils/markdownTable'
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -198,7 +198,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const isTableBlock = block.type === 'table'
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
-  const tableHtml = isTableBlock ? renderMarkdownTableHtml(block.content) : null
+  const parsedTable = isTableBlock ? parseMarkdownTable(block.content) : null
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -398,10 +398,40 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         {block.type === 'divider' ? (
           <div className="block-divider-line" />
         ) : isTableBlock ? (
-          <div
-            className="block-table-content"
-            dangerouslySetInnerHTML={{ __html: tableHtml ?? block.content }}
-          />
+          <div className="block-table-content">
+            {parsedTable ? (
+              <table className="block-markdown-table">
+                <thead>
+                  <tr>
+                    {parsedTable.headers.map((header, columnIndex) => (
+                      <th
+                        key={`header-${columnIndex}`}
+                        style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
+                      >
+                        {header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {parsedTable.rows.map((row, rowIndex) => (
+                    <tr key={`row-${rowIndex}`}>
+                      {row.map((cell, columnIndex) => (
+                        <td
+                          key={`cell-${rowIndex}-${columnIndex}`}
+                          style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
+                        >
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <pre>{block.content}</pre>
+            )}
+          </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-start' }}>
             {/* Type-specific prefix */}

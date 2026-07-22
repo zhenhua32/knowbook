@@ -8,7 +8,7 @@ export type PendingBlockNavigationTarget = {
 
 type UseDocumentNavigationStateParams = {
   onActivePageChange: (page: 'documents') => void
-  onBeforeOpenDocument?: () => void
+  onBeforeOpenDocument?: (documentId: string) => boolean | void | Promise<boolean | void>
 }
 
 export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDocument }: UseDocumentNavigationStateParams) {
@@ -22,19 +22,41 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
   const navHistoryRef = useRef<string[]>([])
   const navPointerRef = useRef<number>(-1)
   const isNavJumpRef = useRef<boolean>(false)
+  const navigationSequenceRef = useRef(0)
+
+  const prepareNavigation = useCallback(async (documentId: string): Promise<boolean> => {
+    const sequence = ++navigationSequenceRef.current
+    if (documentId !== selectedDocumentId) {
+      const allowed = await onBeforeOpenDocument?.(documentId)
+      if (allowed === false || sequence !== navigationSequenceRef.current) {
+        return false
+      }
+    }
+
+    return sequence === navigationSequenceRef.current
+  }, [onBeforeOpenDocument, selectedDocumentId])
 
   const openDocumentInDocumentsPage = useCallback((documentId: string) => {
-    onBeforeOpenDocument?.()
-    setPendingBlockNavigationTarget(null)
-    setSelectedDocumentId(documentId)
-    onActivePageChange('documents')
-  }, [onActivePageChange, onBeforeOpenDocument])
+    void prepareNavigation(documentId).then((allowed) => {
+      if (!allowed) {
+        return
+      }
+      setPendingBlockNavigationTarget(null)
+      setSelectedDocumentId(documentId)
+      onActivePageChange('documents')
+    })
+  }, [onActivePageChange, prepareNavigation])
 
   const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
-    setPendingBlockNavigationTarget({ documentId, blockId })
-    setSelectedDocumentId(documentId)
-    onActivePageChange('documents')
-  }, [onActivePageChange])
+    void prepareNavigation(documentId).then((allowed) => {
+      if (!allowed) {
+        return
+      }
+      setPendingBlockNavigationTarget({ documentId, blockId })
+      setSelectedDocumentId(documentId)
+      onActivePageChange('documents')
+    })
+  }, [onActivePageChange, prepareNavigation])
 
   const togglePinDocument = useCallback((documentId: string) => {
     setPinnedDocumentIds((previous) => {
@@ -56,12 +78,18 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     }
 
     const newPointer = pointer - 1
-    navPointerRef.current = newPointer
-    isNavJumpRef.current = true
-    setSelectedDocumentId(navHistoryRef.current[newPointer])
-    setNavCanGoBack(newPointer > 0)
-    setNavCanGoForward(true)
-  }, [])
+    const targetDocumentId = navHistoryRef.current[newPointer]
+    void prepareNavigation(targetDocumentId).then((allowed) => {
+      if (!allowed) {
+        return
+      }
+      navPointerRef.current = newPointer
+      isNavJumpRef.current = true
+      setSelectedDocumentId(targetDocumentId)
+      setNavCanGoBack(newPointer > 0)
+      setNavCanGoForward(true)
+    })
+  }, [prepareNavigation])
 
   const navForward = useCallback(() => {
     const history = navHistoryRef.current
@@ -71,12 +99,18 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     }
 
     const newPointer = pointer + 1
-    navPointerRef.current = newPointer
-    isNavJumpRef.current = true
-    setSelectedDocumentId(history[newPointer])
-    setNavCanGoBack(true)
-    setNavCanGoForward(newPointer < history.length - 1)
-  }, [])
+    const targetDocumentId = history[newPointer]
+    void prepareNavigation(targetDocumentId).then((allowed) => {
+      if (!allowed) {
+        return
+      }
+      navPointerRef.current = newPointer
+      isNavJumpRef.current = true
+      setSelectedDocumentId(targetDocumentId)
+      setNavCanGoBack(true)
+      setNavCanGoForward(newPointer < history.length - 1)
+    })
+  }, [prepareNavigation])
 
   useEffect(() => {
     let mounted = true

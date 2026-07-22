@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { BlockEditToolbar } from '../src/renderer/src/components/BlockEditToolbar.tsx'
 import { CodeBlockLanguageSelector } from '../src/renderer/src/components/CodeBlockLanguageSelector.tsx'

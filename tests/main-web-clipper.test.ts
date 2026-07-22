@@ -64,7 +64,7 @@ async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<
 test('WebClipperService clips a webpage into a child document and stores source fields', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-test-'))
   const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
-  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'), { allowPrivateNetwork: true })
 
   try {
     const parentId = store.createDocument(null)
@@ -130,7 +130,7 @@ test('WebClipperService clips a webpage into a child document and stores source 
 test('WebClipperService reuses an existing document when source URL and clip hash already match', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-dup-test-'))
   const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
-  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'), { allowPrivateNetwork: true })
 
   try {
     await withHtmlServer(async (baseUrl) => {
@@ -151,6 +151,22 @@ test('WebClipperService reuses an existing document when source URL and clip has
       const matchingEntries = store.getHomeData(join(tempRoot, 'backup')).documentCatalog.filter((entry) => entry.path === 'Example Article')
       assert.equal(matchingEntries.length, 1)
     })
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService blocks local network targets by default', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-ssrf-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    await assert.rejects(
+      () => service.clipWebPage({ url: 'http://127.0.0.1/private', parentId: null }),
+      /cannot access local or private network addresses/
+    )
   } finally {
     store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

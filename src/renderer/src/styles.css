@@ -3168,6 +3168,8 @@ del {
 .document-header-action-menu {
   min-width: 260px;
   max-width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
 }
 
 .document-header-menu-move {

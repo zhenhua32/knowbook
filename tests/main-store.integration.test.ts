@@ -49,6 +49,25 @@ test('KnowbookStore seeds baseline data and creates sibling documents with uniqu
   })
 })
 
+test('updateDocument prevents path injection and resolves sibling title collisions', () => {
+  withStore((store, backupRoot) => {
+    const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')
+    const firstId = store.createDocument(product.id)
+    const secondId = store.createDocument(product.id)
+    const blocks = [{ type: 'paragraph' as const, content: 'content', checked: false, depth: 0 }]
+
+    store.updateDocument(firstId, { title: 'Specs', summary: '', blocks })
+    store.updateDocument(secondId, { title: 'specs', summary: '', blocks })
+
+    assert.equal(store.getDocumentSnapshot(firstId)?.path, 'Home/Product/Specs')
+    assert.equal(store.getDocumentSnapshot(secondId)?.path, 'Home/Product/specs 1')
+    assert.throws(
+      () => store.updateDocument(secondId, { title: '../../outside', summary: '', blocks }),
+      /cannot contain path separators/
+    )
+  })
+})
+
 test('updateDocument rewrites descendant paths and normalizes parentBlockId relationships', () => {
   withStore((store, backupRoot) => {
     const initialCatalog = store.getHomeData(backupRoot).documentCatalog
@@ -202,6 +221,37 @@ test('document database columns and standalone entities stay isolated per databa
     assert.equal(projectEntity.documentId, null)
     assert.equal(projectEntity.fieldValues[projectsColumn.id], 'Alice')
     assert.equal(store.getDatabaseEntities(projectsDatabase.id)[0]?.fieldValues[projectsColumn.id], 'Alice')
+  })
+})
+
+test('database entity writes are atomic when a field is invalid', () => {
+  withStore((store) => {
+    const database = store.createDatabase({ name: 'Atomic entities' })
+    const column = store.createDocumentDatabaseColumn({
+      databaseId: database.id,
+      name: 'Owner',
+      type: 'text'
+    })
+    const entity = store.createDatabaseEntity({
+      databaseId: database.id,
+      fieldValues: { [column.id]: 'Before' }
+    })
+
+    assert.throws(() => {
+      store.createDatabaseEntity({
+        databaseId: database.id,
+        fieldValues: { [column.id]: 'Valid', missing: 'Invalid' }
+      })
+    }, /Database column not found/)
+    assert.equal(store.getDatabaseEntities(database.id).length, 1)
+
+    assert.throws(() => {
+      store.updateDatabaseEntity({
+        entityId: entity.id,
+        fieldValues: { [column.id]: 'After', missing: 'Invalid' }
+      })
+    }, /Database column not found/)
+    assert.equal(store.getDatabaseEntities(database.id)[0]?.fieldValues[column.id], 'Before')
   })
 })
 

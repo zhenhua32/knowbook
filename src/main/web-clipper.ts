@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { isIP } from 'node:net'
 import { dirname, extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Readability } from '@mozilla/readability'
@@ -18,6 +20,14 @@ import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 
 const WEB_CLIP_TIMEOUT_MS = 15_000
 const WEB_CLIP_USER_AGENT = 'KnowBook/0.1 WebClip'
+const MAX_HTML_BYTES = 5 * 1024 * 1024
+const MAX_ASSET_BYTES = 20 * 1024 * 1024
+const MAX_REDIRECTS = 5
+const MAX_LOCALIZED_IMAGES = 50
+
+type WebClipperOptions = {
+  allowPrivateNetwork?: boolean
+}
 
 type WebClipFieldKey =
   | 'sourceUrl'
@@ -72,13 +82,14 @@ const WEB_CLIP_FIELDS: WebClipFieldDefinition[] = [
 export class WebClipperService {
   constructor(
     private readonly store: KnowbookStore,
-    private readonly assetRoot: string
+    private readonly assetRoot: string,
+    private readonly options: WebClipperOptions = {}
   ) {}
 
   async clipWebPage(input: ClipWebPageInput): Promise<ClipWebPageResult> {
     const sourceUrl = normalizeWebUrl(input.url)
-    const fetched = await fetchHtmlDocument(sourceUrl)
-    const clip = await finalizeExtractedWebClip(extractWebClip(fetched.html, fetched.finalUrl), this.assetRoot)
+    const fetched = await fetchHtmlDocument(sourceUrl, Boolean(this.options.allowPrivateNetwork))
+    const clip = await finalizeExtractedWebClip(extractWebClip(fetched.html, fetched.finalUrl), this.assetRoot, Boolean(this.options.allowPrivateNetwork))
     return this.persistClip(input.parentId, clip)
   }
 
@@ -99,7 +110,7 @@ export class WebClipperService {
       clip = buildExtractedClipFromPayload(input, sourceUrl, normalizeImportedBody(input))
     }
 
-    const finalized = await finalizeExtractedWebClip(clip, this.assetRoot)
+    const finalized = await finalizeExtractedWebClip(clip, this.assetRoot, Boolean(this.options.allowPrivateNetwork))
     return this.persistClip(input.parentId, finalized)
   }
 
@@ -218,15 +229,14 @@ export class WebClipperService {
   }
 }
 
-async function fetchHtmlDocument(url: string): Promise<{ html: string; finalUrl: string }> {
-  const response = await fetch(url, {
+async function fetchHtmlDocument(url: string, allowPrivateNetwork: boolean): Promise<{ html: string; finalUrl: string }> {
+  const response = await fetchWithValidatedRedirects(url, {
     headers: {
       Accept: 'text/html,application/xhtml+xml',
       'User-Agent': WEB_CLIP_USER_AGENT
     },
-    redirect: 'follow',
     signal: AbortSignal.timeout(WEB_CLIP_TIMEOUT_MS)
-  })
+  }, allowPrivateNetwork)
 
   if (!response.ok) {
     throw new Error(`Failed to fetch webpage (${response.status}).`)
@@ -237,7 +247,7 @@ async function fetchHtmlDocument(url: string): Promise<{ html: string; finalUrl:
     throw new Error(`Unsupported page type: ${contentType || 'unknown'}`)
   }
 
-  const html = await response.text()
+  const html = (await readResponseBody(response, MAX_HTML_BYTES)).toString('utf8')
   if (!html.trim()) {
     throw new Error('Fetched webpage is empty.')
   }
@@ -342,14 +352,18 @@ function buildExtractedClipFromPayload(input: ImportWebClipPayloadInput, sourceU
   }
 }
 
-async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: string): Promise<ExtractedWebClip> {
+async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: string, allowPrivateNetwork: boolean): Promise<ExtractedWebClip> {
   const warnings = [...clip.warnings]
   const imageUrls = [...new Set(extractMarkdownImageUrls(clip.bodyMarkdown))]
   const resolvedImageUrls = new Map<string, string>()
 
-  for (const imageUrl of imageUrls) {
+  if (imageUrls.length > MAX_LOCALIZED_IMAGES) {
+    warnings.push(`Skipped ${imageUrls.length - MAX_LOCALIZED_IMAGES} images because the clip exceeded the image limit.`)
+  }
+
+  for (const imageUrl of imageUrls.slice(0, MAX_LOCALIZED_IMAGES)) {
     try {
-      resolvedImageUrls.set(imageUrl, await localizeAssetUrl(imageUrl, assetRoot))
+      resolvedImageUrls.set(imageUrl, await localizeAssetUrl(imageUrl, assetRoot, allowPrivateNetwork))
     } catch (error) {
       warnings.push(`Failed to download image: ${imageUrl}`)
       console.warn('Failed to localize clipped image.', error)
@@ -359,7 +373,7 @@ async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: strin
   let coverImage = clip.coverImage
   if (coverImage) {
     try {
-      coverImage = await localizeAssetUrl(coverImage, assetRoot)
+      coverImage = await localizeAssetUrl(coverImage, assetRoot, allowPrivateNetwork)
     } catch (error) {
       warnings.push(`Failed to download cover image: ${coverImage}`)
       console.warn('Failed to localize clipped cover image.', error)
@@ -617,26 +631,28 @@ function replaceMarkdownImageUrls(markdown: string, replacements: Map<string, st
   return nextMarkdown
 }
 
-async function localizeAssetUrl(assetUrl: string, assetRoot: string): Promise<string> {
+async function localizeAssetUrl(assetUrl: string, assetRoot: string, allowPrivateNetwork: boolean): Promise<string> {
   if (assetUrl.startsWith('data:') || assetUrl.startsWith('file:')) {
     return assetUrl
   }
 
-  const response = await fetch(assetUrl, {
+  const response = await fetchWithValidatedRedirects(assetUrl, {
     headers: {
       Accept: 'image/*,*/*;q=0.8',
       'User-Agent': WEB_CLIP_USER_AGENT
     },
-    redirect: 'follow',
     signal: AbortSignal.timeout(WEB_CLIP_TIMEOUT_MS)
-  })
+  }, allowPrivateNetwork)
 
   if (!response.ok) {
     throw new Error(`Failed to fetch asset (${response.status})`)
   }
 
   const contentType = response.headers.get('content-type') ?? ''
-  const buffer = Buffer.from(await response.arrayBuffer())
+  if (!contentType.toLowerCase().startsWith('image/')) {
+    throw new Error(`Unsupported asset type: ${contentType || 'unknown'}`)
+  }
+  const buffer = await readResponseBody(response, MAX_ASSET_BYTES)
   const hash = createHash('sha256').update(buffer).digest('hex')
   const extension = normalizeAssetExtension(assetUrl, contentType)
   const filePath = join(assetRoot, 'web-clips', hash.slice(0, 2), `${hash}${extension}`)
@@ -646,6 +662,135 @@ async function localizeAssetUrl(assetUrl: string, assetRoot: string): Promise<st
   }
 
   return pathToFileURL(filePath).toString()
+}
+
+async function fetchWithValidatedRedirects(
+  initialUrl: string,
+  init: RequestInit,
+  allowPrivateNetwork: boolean
+): Promise<Response> {
+  let currentUrl = initialUrl
+
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    await assertSafeRemoteUrl(currentUrl, allowPrivateNetwork)
+    const response = await fetch(currentUrl, { ...init, redirect: 'manual' })
+    if (response.status < 300 || response.status >= 400) {
+      return response
+    }
+
+    const location = response.headers.get('location')
+    await response.body?.cancel()
+    if (!location) {
+      throw new Error('Redirect response is missing a location header.')
+    }
+    if (redirectCount === MAX_REDIRECTS) {
+      throw new Error('Too many redirects while fetching web clip content.')
+    }
+
+    currentUrl = new URL(location, currentUrl).toString()
+  }
+
+  throw new Error('Too many redirects while fetching web clip content.')
+}
+
+async function assertSafeRemoteUrl(value: string, allowPrivateNetwork: boolean): Promise<void> {
+  const url = new URL(value)
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Only http and https URLs may be fetched.')
+  }
+  if (url.username || url.password) {
+    throw new Error('URLs with embedded credentials are not supported.')
+  }
+  if (allowPrivateNetwork) {
+    return
+  }
+
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    throw new Error('Web clipping cannot access local or private network addresses.')
+  }
+
+  const addresses = isIP(hostname)
+    ? [{ address: hostname }]
+    : await lookup(hostname, { all: true, verbatim: true })
+  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
+    throw new Error('Web clipping cannot access local or private network addresses.')
+  }
+}
+
+function isPublicIpAddress(address: string): boolean {
+  const normalized = address.toLowerCase()
+  if (normalized.startsWith('::ffff:')) {
+    const mappedAddress = normalized.slice('::ffff:'.length)
+    if (isIP(mappedAddress) === 4) {
+      return isPublicIpAddress(mappedAddress)
+    }
+
+    const mappedParts = mappedAddress.split(':')
+    if (mappedParts.length === 2) {
+      const high = Number.parseInt(mappedParts[0], 16)
+      const low = Number.parseInt(mappedParts[1], 16)
+      if (Number.isInteger(high) && Number.isInteger(low)) {
+        return isPublicIpAddress(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`)
+      }
+    }
+
+    return false
+  }
+
+  if (isIP(normalized) === 4) {
+    const octets = normalized.split('.').map(Number)
+    const [first, second] = octets
+    return !(first === 0
+      || first === 10
+      || first === 127
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254)
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 198 && (second === 18 || second === 19))
+      || first >= 224)
+  }
+
+  if (isIP(normalized) === 6) {
+    return normalized !== '::'
+      && normalized !== '::1'
+      && !normalized.startsWith('fc')
+      && !normalized.startsWith('fd')
+      && !/^fe[89ab]/.test(normalized)
+      && !normalized.startsWith('ff')
+  }
+
+  return false
+}
+
+async function readResponseBody(response: Response, maxBytes: number): Promise<Buffer> {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`Response exceeds the ${maxBytes}-byte size limit.`)
+  }
+
+  if (!response.body) {
+    return Buffer.alloc(0)
+  }
+
+  const reader = response.body.getReader()
+  const chunks: Buffer[] = []
+  let totalBytes = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) {
+      break
+    }
+    totalBytes += value.byteLength
+    if (totalBytes > maxBytes) {
+      await reader.cancel()
+      throw new Error(`Response exceeds the ${maxBytes}-byte size limit.`)
+    }
+    chunks.push(Buffer.from(value))
+  }
+
+  return Buffer.concat(chunks, totalBytes)
 }
 
 function normalizeAssetExtension(assetUrl: string, contentType: string): string {

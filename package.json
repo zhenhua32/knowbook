@@ -22,7 +22,7 @@
     "release:preflight": "node scripts/release-preflight.mjs",
     "release:verify-local": "npm run dist && node scripts/release-preflight.mjs --require-artifacts",
     "preview": "electron-vite preview",
-    "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\"",
+    "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
     "test:e2e": "npm run build && playwright test --grep @electron",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "postinstall": "electron-builder install-app-deps"

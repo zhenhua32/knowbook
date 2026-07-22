@@ -118,8 +118,9 @@ async function getFreePort(): Promise<number> {
 }
 
 async function openSettingsPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Settings', '配置中心')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('Settings', '配置中心'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Settings', '配置中心'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
 }
 
 async function openDocumentsPage(page: Page): Promise<void> {

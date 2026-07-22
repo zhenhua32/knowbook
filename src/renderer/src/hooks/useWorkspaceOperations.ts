@@ -17,6 +17,7 @@ export function useWorkspaceOperations({
     handleBackup,
     handleRestoreBackup
   } = useWorkspaceBackupActions({
+    flushPendingDocumentChanges: documents.flushPendingChanges,
     selectedDocumentId: documents.selectedDocumentId,
     setBackupMessage: shell.setBackupMessage,
     setHomeData: shell.setHomeData,
@@ -38,6 +39,7 @@ export function useWorkspaceOperations({
     catalogDocuments: shell.catalogDocuments,
     moveTargetId: documents.moveTargetId,
     onCancelPendingAutoSave: documents.cancelPendingAutoSave,
+    onFlushPendingDocumentChanges: documents.flushPendingChanges,
     onClearEditorSession: documents.clearEditorSession,
     onDetailLoadingChange: documents.setDetailLoading,
     onHomeDataChange: shell.setHomeData,

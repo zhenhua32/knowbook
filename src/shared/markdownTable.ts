@@ -50,6 +50,15 @@ export function isMarkdownTable(content: string): boolean {
   return parseMarkdownTable(content) !== null
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function renderMarkdownTableHtml(content: string): string | null {
   const table = parseMarkdownTable(content)
   if (!table) {
@@ -60,11 +69,11 @@ export function renderMarkdownTableHtml(content: string): string | null {
     a ? ` style="text-align:${a}"` : ''
 
   const headerCells = table.headers
-    .map((h) => `<th${alignAttr(table.alignments[table.headers.indexOf(h)])}>${h}</th>`)
+    .map((header, index) => `<th${alignAttr(table.alignments[index])}>${escapeHtml(header)}</th>`)
     .join('')
 
   const bodyRows = table.rows.map((row) => {
-    const cells = row.map((cell, i) => `<td${alignAttr(table.alignments[i])}>${cell}</td>`).join('')
+    const cells = row.map((cell, i) => `<td${alignAttr(table.alignments[i])}>${escapeHtml(cell)}</td>`).join('')
     return `<tr>${cells}</tr>`
   }).join('')
 

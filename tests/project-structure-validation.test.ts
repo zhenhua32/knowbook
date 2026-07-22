@@ -16,7 +16,7 @@ test('package.json keeps the expected build and test scripts', () => {
   assert.equal(packageJson.name, 'knowbook')
   assert.equal(typeof packageJson.version, 'string')
   assert.equal(scripts?.build, 'npm run typecheck && electron-vite build')
-  assert.equal(scripts?.test, 'cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test "tests/**/*.test.ts"')
+  assert.equal(scripts?.test, 'cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test "tests/**/*.test.ts" "tests/**/*.test.tsx"')
   assert.equal(scripts?.['test:e2e'], 'npm run build && playwright test --grep @electron')
 })
 

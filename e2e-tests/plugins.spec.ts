@@ -26,14 +26,16 @@ function getTreeButton(page: Page, title: string): Locator {
 }
 
 async function openPluginsPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Plugins', '插件中心')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('Plugins', '插件中心'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Plugins', '插件中心'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
   await expect(page.locator('.plugin-list')).toBeVisible()
 }
 
 async function openDashboardPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Dashboard', '总览')).first().click()
-  await expect(page.locator('.current-page-text')).toHaveText(uiText('Dashboard', '总览'))
+  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Dashboard', '总览'))).first()
+  await navigationButton.click()
+  await expect(navigationButton).toHaveClass(/active/)
 }
 
 async function openDocumentsPage(page: Page): Promise<void> {
@@ -199,8 +201,7 @@ test.describe('Plugin System @electron', () => {
 
       const pluginItem = getPluginItem(page)
       const settingRow = pluginItem.locator('.plugin-setting-item').filter({ hasText: 'Summary prefix' }).first()
-      await settingRow.getByLabel('Summary prefix').fill('')
-      await settingRow.getByRole('button', { name: /Save Summary prefix|保存“Summary prefix”/ }).click()
+      await expect(settingRow.getByLabel('Summary prefix')).toHaveValue('')
 
       await openDocumentsPage(page)
       const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the summary action.')

@@ -1,6 +1,7 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import vm from 'node:vm'
+import semver from 'semver'
 import type {
   DocumentDetail,
   InstallPluginResult,
@@ -64,16 +65,12 @@ type RegisteredPlugin = {
   settings: Map<string, RegisteredPluginSetting>
   eventHandlers: Array<{ eventTypes: Set<WorkspaceEventType>; handler: PluginEventHandler }>
   dispose?: () => void | Promise<void>
+  context?: vm.Context
 }
 
 type PluginCommonJsModule = {
   exports: PluginModuleExports | PluginActivateFunction
 }
-
-type PluginCommonJsWrapper = (
-  exports: PluginCommonJsModule['exports'],
-  module: PluginCommonJsModule
-) => void
 
 type PluginActivateFunction = (api: PluginApi) =>
   | void
@@ -134,10 +131,12 @@ export type PluginInstallPreview = {
 
 export class PluginHost {
   private readonly plugins = new Map<string, RegisteredPlugin>()
+  private invocationSequence = 0
 
   constructor(
     private readonly store: KnowbookStore,
-    private readonly roots: Array<{ path: string; source: PluginSource }>
+    private readonly roots: Array<{ path: string; source: PluginSource }>,
+    private readonly currentVersion = '0.1.2'
   ) {}
 
   async loadAll(): Promise<void> {
@@ -402,7 +401,7 @@ export class PluginHost {
         }
 
         try {
-          await subscription.handler(structuredClone(event))
+          await this.invokePluginFunction(plugin, subscription.handler, [structuredClone(event)], `workspace event ${event.type}`)
         } catch (error) {
           this.handlePluginError(plugin, `workspace event ${event.type}`, error)
         }
@@ -427,7 +426,12 @@ export class PluginHost {
     }
 
     try {
-      const rawResult = await action.handler({ document: structuredClone(document) })
+      const rawResult = await this.invokePluginFunction(
+        plugin,
+        action.handler,
+        [{ document: structuredClone(document) }],
+        `document action ${action.action.id}`
+      )
       const normalizedResult = normalizePluginActionResult(rawResult, action.action.label)
       this.store.recordWorkspaceEvent({
         type: 'plugin.action.executed',
@@ -512,14 +516,36 @@ export class PluginHost {
       throw new Error('Plugin manifest requires id, name, and version.')
     }
 
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id) || id === '.' || id === '..') {
+      throw new Error('Plugin id may only contain letters, numbers, dots, underscores, and hyphens.')
+    }
+
+    if (!semver.valid(version)) {
+      throw new Error('Plugin version must be a valid semantic version.')
+    }
+
+    const knowbookVersionRange = raw.engines?.knowbook?.trim()
+    if (knowbookVersionRange && !semver.validRange(knowbookVersionRange)) {
+      throw new Error('Plugin engines.knowbook must be a valid semantic version range.')
+    }
+
+    const entry = raw.entry?.trim() || 'index.js'
+    const entrySegments = entry.replace(/\\/g, '/').split('/')
+    if (isAbsolute(entry) || entrySegments.some((segment) => segment === '..') || entrySegments.every((segment) => !segment || segment === '.')) {
+      throw new Error('Plugin entry must be a relative path inside the plugin directory.')
+    }
+
     return {
       id,
       name,
       version,
       description: raw.description?.trim() || undefined,
       author: raw.author?.trim() || undefined,
-      entry: raw.entry?.trim() || 'index.js',
-      enabledByDefault: raw.enabledByDefault ?? true
+      entry,
+      enabledByDefault: raw.enabledByDefault ?? true,
+      engines: knowbookVersionRange
+        ? { knowbook: knowbookVersionRange }
+        : undefined
     }
   }
 
@@ -626,6 +652,11 @@ export class PluginHost {
     return this.roots.find((root) => root.source === 'user-data')?.path ?? null
   }
 
+  private isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+    const relativePath = relative(resolve(rootPath), resolve(candidatePath))
+    return relativePath.length > 0 && relativePath !== '..' && !relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(relativePath)
+  }
+
   private resolveInstallCandidate(sourceDirectory: string): InstallCandidate {
     const sourceStats = statSync(sourceDirectory, { throwIfNoEntry: false })
     if (!sourceStats?.isDirectory()) {
@@ -644,7 +675,10 @@ export class PluginHost {
     }
 
     mkdirSync(writableRoot, { recursive: true })
-    const targetDirectory = join(writableRoot, manifest.id)
+    const targetDirectory = resolve(writableRoot, manifest.id)
+    if (!this.isPathInsideRoot(targetDirectory, writableRoot)) {
+      throw new Error('Plugin install target is outside the writable plugin root.')
+    }
     const existingPlugin = this.plugins.get(manifest.id) ?? null
 
     return {
@@ -662,9 +696,8 @@ export class PluginHost {
     }
 
     // Check version compatibility
-    const currentVersion = '0.1.0' // This should come from package.json or a config
-    if (!isPluginVersionCompatible(plugin.manifest, currentVersion)) {
-      const message = getVersionCompatibilityMessage(plugin.manifest, currentVersion)
+    if (!isPluginVersionCompatible(plugin.manifest, this.currentVersion)) {
+      const message = getVersionCompatibilityMessage(plugin.manifest, this.currentVersion)
       plugin.status = 'error'
       plugin.error = message ?? 'Version compatibility check failed'
       return
@@ -677,11 +710,22 @@ export class PluginHost {
       plugin.eventHandlers = []
 
       const api = this.createPluginApi(plugin)
-      const entryPath = join(plugin.directory, plugin.manifest.entry ?? 'index.js')
+      const entryPath = resolve(plugin.directory, plugin.manifest.entry ?? 'index.js')
+      if (!this.isPathInsideRoot(entryPath, plugin.directory)) {
+        plugin.status = 'error'
+        plugin.error = 'Plugin entry resolves outside the plugin directory.'
+        return
+      }
       
       if (!existsSync(entryPath)) {
         plugin.status = 'error'
         plugin.error = `Missing entry file: ${entryPath}`
+        return
+      }
+
+      if (!this.isPathInsideRoot(realpathSync(entryPath), realpathSync(plugin.directory))) {
+        plugin.status = 'error'
+        plugin.error = 'Plugin entry resolves outside the plugin directory.'
         return
       }
 
@@ -692,7 +736,9 @@ export class PluginHost {
         {
           console: createPluginConsole(plugin.manifest.id),
           setTimeout,
-          clearTimeout
+          clearTimeout,
+          exports,
+          module
         },
         {
           name: `knowbook-plugin-${plugin.manifest.id}`,
@@ -702,12 +748,12 @@ export class PluginHost {
           }
         }
       )
-      const script = new vm.Script(`(function (exports, module) {\n${source}\n})`, {
+      plugin.context = context
+      const script = new vm.Script(`(function (exports, module) {\n${source}\n})(exports, module)`, {
         filename: entryPath
       })
 
-      const wrapper = script.runInContext(context, { timeout: 1000, displayErrors: true }) as PluginCommonJsWrapper
-      wrapper(exports, module)
+      script.runInContext(context, { timeout: 1000, displayErrors: true })
 
       const activate = this.resolveActivate(module.exports)
       if (!activate) {
@@ -716,8 +762,7 @@ export class PluginHost {
         return
       }
 
-      // activate is PluginActivateFunction, call it with api
-      const result = await activate(api)
+      const result = await this.invokePluginFunction(plugin, activate, [api], 'activation')
 
       // result could be dispose function or void/Promise
       if (typeof result === 'function') {
@@ -754,13 +799,14 @@ export class PluginHost {
   private async deactivatePlugin(plugin: RegisteredPlugin): Promise<void> {
     if (plugin.dispose) {
       try {
-        await plugin.dispose()
+        await this.invokePluginFunction(plugin, plugin.dispose, [], 'dispose')
       } catch (error) {
         console.error(`Plugin ${plugin.manifest.id} dispose failed.`, error)
       }
     }
 
     plugin.dispose = undefined
+    plugin.context = undefined
     plugin.dashboardCards.clear()
     plugin.documentActions.clear()
     plugin.eventHandlers = []
@@ -895,6 +941,47 @@ export class PluginHost {
           description: description.trim(),
           documentId: documentId ?? null
         })
+      }
+    }
+  }
+
+  private async invokePluginFunction<T>(
+    plugin: RegisteredPlugin,
+    callback: (...args: any[]) => T | Promise<T>,
+    args: unknown[],
+    operation: string
+  ): Promise<T> {
+    if (!plugin.context) {
+      throw new Error(`Plugin context is unavailable during ${operation}.`)
+    }
+
+    const invocationKey = `__knowbookInvocation${++this.invocationSequence}`
+    const contextRecord = plugin.context as vm.Context & Record<string, unknown>
+    contextRecord[invocationKey] = { callback, args }
+
+    try {
+      const result = new vm.Script(`${invocationKey}.callback(...${invocationKey}.args)`).runInContext(plugin.context, {
+        timeout: 1_000,
+        displayErrors: true
+      }) as T | Promise<T>
+      return await this.withAsyncTimeout(Promise.resolve(result), 5_000, operation)
+    } finally {
+      delete contextRecord[invocationKey]
+    }
+  }
+
+  private async withAsyncTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error(`Plugin ${operation} timed out after ${timeoutMs}ms.`)), timeoutMs)
+        })
+      ])
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout)
       }
     }
   }

@@ -548,7 +548,8 @@ export class KnowbookStore {
       ? (this.db.prepare('SELECT path FROM documents WHERE id = ?').get(document.parent_id) as { path: string } | undefined)?.path
       : null
 
-    const normalizedTitle = input.title.trim() || 'Untitled'
+    const requestedTitle = this.normalizeDocumentTitle(input.title)
+    const normalizedTitle = this.generateSiblingTitle(document.parent_id, requestedTitle, document.id)
     const normalizedSummary = input.summary.trim()
     const normalizedBlocks = this.normalizeBlocks(input.blocks)
     const oldPath = document.path
@@ -562,7 +563,7 @@ export class KnowbookStore {
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
       SET path = REPLACE(path, ?, ?)
-      WHERE path LIKE ?
+      WHERE path LIKE ? ESCAPE '\\'
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
     const insertBlockStatement = this.db.prepare(`
@@ -574,7 +575,7 @@ export class KnowbookStore {
       updateDocumentStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
 
       if (newPath !== oldPath) {
-        updateDescendantsStatement.run(`${oldPath}/`, `${newPath}/`, `${oldPath}/%`)
+        updateDescendantsStatement.run(`${oldPath}/`, `${newPath}/`, `${this.escapeLikePattern(oldPath)}/%`)
       }
 
       deleteBlocksStatement.run(documentId)
@@ -631,6 +632,17 @@ export class KnowbookStore {
     const oldPrefix = `${document.path}/`
     const newPrefix = parentPath ? `${parentPath}/` : ''
 
+    const directChildren = this.db.prepare(`
+      SELECT id, title
+      FROM documents
+      WHERE parent_id = ?
+    `).all(document.id) as Array<{ id: string; title: string }>
+    for (const child of directChildren) {
+      if (this.documentTitleExists(document.parent_id, child.title, child.id)) {
+        throw new Error(`Cannot delete document because sibling title already exists: ${child.title}`)
+      }
+    }
+
     const reparentChildrenStatement = this.db.prepare(`
       UPDATE documents
       SET parent_id = ?, updated_at = ?
@@ -639,19 +651,19 @@ export class KnowbookStore {
     const rewriteDescendantPathStatement = this.db.prepare(`
       UPDATE documents
       SET path = REPLACE(path, ?, ?), updated_at = ?
-      WHERE path LIKE ?
+      WHERE path LIKE ? ESCAPE '\\'
     `)
     const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
     const affectedDescendantIds = this.db.prepare(`
       SELECT id
       FROM documents
-      WHERE path LIKE ?
+      WHERE path LIKE ? ESCAPE '\\'
       ORDER BY path ASC
-    `).all(`${oldPrefix}%`) as Array<{ id: string }>
+    `).all(`${this.escapeLikePattern(oldPrefix)}%`) as Array<{ id: string }>
 
     const transaction = this.db.transaction(() => {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
-      rewriteDescendantPathStatement.run(oldPrefix, newPrefix, now, `${oldPrefix}%`)
+      rewriteDescendantPathStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
     })
 
@@ -688,6 +700,10 @@ export class KnowbookStore {
       throw new Error('Document cannot be moved into its own subtree')
     }
 
+    if (this.documentTitleExists(targetParent?.id ?? null, document.title, document.id)) {
+      throw new Error('Target parent already contains a document with this title')
+    }
+
     const newPath = targetParent ? `${targetParent.path}/${document.title}` : document.title
     if (document.parent_id === (targetParent?.id ?? null) && newPath === document.path) {
       return [document.id]
@@ -707,12 +723,12 @@ export class KnowbookStore {
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
       SET path = REPLACE(path, ?, ?), updated_at = ?
-      WHERE path LIKE ?
+      WHERE path LIKE ? ESCAPE '\\'
     `)
 
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
-      updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${oldPrefix}%`)
+      updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
     })
 
     transaction()
@@ -1131,9 +1147,9 @@ export class KnowbookStore {
     const rows = this.db.prepare(`
       SELECT id
       FROM documents
-      WHERE path = ? OR path LIKE ?
+      WHERE path = ? OR path LIKE ? ESCAPE '\\'
       ORDER BY path ASC
-    `).all(rootPath, `${rootPath}/%`) as Array<{ id: string }>
+    `).all(rootPath, `${this.escapeLikePattern(rootPath)}/%`) as Array<{ id: string }>
 
     return rows.map((row) => row.id)
   }
@@ -1640,11 +1656,28 @@ export class KnowbookStore {
     return normalize(roots)
   }
 
-  private generateSiblingTitle(parentId: string | null, baseTitle: string): string {
+  private normalizeDocumentTitle(title: string): string {
+    const normalized = title.trim() || 'Untitled'
+    if (/[/\\\x00-\x1F]/.test(normalized) || normalized === '.' || normalized === '..') {
+      throw new Error('Document title cannot contain path separators, control characters, or dot segments')
+    }
+
+    return normalized
+  }
+
+  runInTransaction<T>(operation: () => T): T {
+    return this.db.transaction(operation)()
+  }
+
+  private escapeLikePattern(value: string): string {
+    return value.replace(/[\\%_]/g, (character) => `\\${character}`)
+  }
+
+  private generateSiblingTitle(parentId: string | null, baseTitle: string, excludeDocumentId?: string): string {
     let candidate = baseTitle
     let index = 1
 
-    while (this.documentTitleExists(parentId, candidate)) {
+    while (this.documentTitleExists(parentId, candidate, excludeDocumentId)) {
       candidate = `${baseTitle} ${index}`
       index += 1
     }
@@ -2159,14 +2192,14 @@ export class KnowbookStore {
     return byTitle ?? null
   }
 
-  private documentTitleExists(parentId: string | null, title: string): boolean {
+  private documentTitleExists(parentId: string | null, title: string, excludeDocumentId?: string): boolean {
     if (parentId) {
       const row = this.db.prepare(`
         SELECT id
         FROM documents
-        WHERE parent_id = ? AND title = ?
+        WHERE parent_id = ? AND title = ? COLLATE NOCASE AND (? IS NULL OR id != ?)
         LIMIT 1
-      `).get(parentId, title) as { id: string } | undefined
+      `).get(parentId, title, excludeDocumentId ?? null, excludeDocumentId ?? null) as { id: string } | undefined
 
       return Boolean(row)
     }
@@ -2174,9 +2207,9 @@ export class KnowbookStore {
     const row = this.db.prepare(`
       SELECT id
       FROM documents
-      WHERE parent_id IS NULL AND title = ?
+      WHERE parent_id IS NULL AND title = ? COLLATE NOCASE AND (? IS NULL OR id != ?)
       LIMIT 1
-    `).get(title) as { id: string } | undefined
+    `).get(title, excludeDocumentId ?? null, excludeDocumentId ?? null) as { id: string } | undefined
 
     return Boolean(row)
   }
@@ -2567,25 +2600,21 @@ export class KnowbookStore {
 
   createDatabaseEntity(input: CreateDatabaseEntityInput): DatabaseEntity {
     const { databaseId, documentId = null, fieldValues = {} } = input
-    
     const entityId = randomUUID()
     const now = new Date().toISOString()
-    
-    // 验证数据库是否存在
+
     const dbExists = this.db.prepare('SELECT id FROM databases WHERE id = ?').get(databaseId)
     if (!dbExists) {
       throw new Error('Database not found.')
     }
-    
-    // 验证文档是否存在（如果提供了 documentId）
+
     if (documentId) {
       const docExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId)
       if (!docExists) {
         throw new Error('Document not found.')
       }
     }
-    
-    // 验证 documentId 在此数据库中是否唯一（如果提供了）
+
     if (documentId) {
       const existing = this.db.prepare(
         'SELECT id FROM database_entities WHERE database_id = ? AND document_id = ?'
@@ -2594,17 +2623,8 @@ export class KnowbookStore {
         throw new Error('A database entity already exists for this document in this database.')
       }
     }
-    
-    this.db.prepare(`
-      INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(entityId, databaseId, documentId, now, now)
-    
-    // 插入字段值
-    const valueInsert = this.db.prepare(
-      'INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at) VALUES (?, ?, ?, ?)'
-    )
-    
+
+    const preparedValues: Array<{ columnId: string; valueText: string }> = []
     for (const [columnId, value] of Object.entries(fieldValues)) {
       const columnRow = this.db.prepare(`
         SELECT id, database_id, name, type, options_json, sort_order
@@ -2617,14 +2637,26 @@ export class KnowbookStore {
       }
 
       const valueText = this.serializeDocumentDatabaseFieldValue(this.mapDocumentDatabaseColumnRow(columnRow), value)
-      if (valueText === null) {
-        continue
+      if (valueText !== null) {
+        preparedValues.push({ columnId, valueText })
       }
-
-      valueInsert.run(entityId, columnId, valueText, now)
     }
-    
-    // 获取完整的实体数据
+
+    const insertEntity = this.db.prepare(`
+      INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `)
+    const insertValue = this.db.prepare(
+      'INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at) VALUES (?, ?, ?, ?)'
+    )
+
+    this.db.transaction(() => {
+      insertEntity.run(entityId, databaseId, documentId, now, now)
+      for (const preparedValue of preparedValues) {
+        insertValue.run(entityId, preparedValue.columnId, preparedValue.valueText, now)
+      }
+    })()
+
     return this.getDatabaseEntity(entityId)
   }
   
@@ -2681,8 +2713,7 @@ export class KnowbookStore {
   
   updateDatabaseEntity(input: UpdateDatabaseEntityInput): void {
     const { entityId, fieldValues, documentId } = input
-    
-    // 验证实体存在
+
     const entity = this.db.prepare('SELECT * FROM database_entities WHERE id = ?').get(entityId) as
       | { id: string; database_id: string; document_id: string | null }
       | undefined
@@ -2693,7 +2724,6 @@ export class KnowbookStore {
     
     const now = new Date().toISOString()
     
-    // 如果提供了 documentId，验证并更新
     if (documentId !== undefined) {
       if (documentId) {
         const docExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId)
@@ -2709,22 +2739,10 @@ export class KnowbookStore {
           throw new Error('A database entity already exists for this document in this database.')
         }
       }
-      
-      this.db.prepare('UPDATE database_entities SET document_id = ?, updated_at = ? WHERE id = ?').run(
-        documentId,
-        now,
-        entityId
-      )
     }
-    
-    // 更新字段值（如果提供了）
-    if (fieldValues) {
-      const deleteValue = this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ? AND column_id = ?')
-      const insertValue = this.db.prepare(
-        `INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
-         VALUES (?, ?, ?, ?)`
-      )
 
+    const preparedValues: Array<{ columnId: string; valueText: string | null }> = []
+    if (fieldValues) {
       for (const [columnId, value] of Object.entries(fieldValues)) {
         const columnRow = this.db.prepare(`
           SELECT id, database_id, name, type, options_json, sort_order
@@ -2737,21 +2755,39 @@ export class KnowbookStore {
         }
 
         const valueText = this.serializeDocumentDatabaseFieldValue(this.mapDocumentDatabaseColumnRow(columnRow), value)
-
-        if (valueText === null) {
-          deleteValue.run(entityId, columnId)
-          continue
-        }
-
-        deleteValue.run(entityId, columnId)
-        insertValue.run(entityId, columnId, valueText, now)
+        preparedValues.push({ columnId, valueText })
       }
     }
+
+    const updateEntity = this.db.prepare('UPDATE database_entities SET document_id = ?, updated_at = ? WHERE id = ?')
+    const touchEntity = this.db.prepare('UPDATE database_entities SET updated_at = ? WHERE id = ?')
+    const deleteValue = this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ? AND column_id = ?')
+    const insertValue = this.db.prepare(`
+      INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
+      VALUES (?, ?, ?, ?)
+    `)
+
+    this.db.transaction(() => {
+      if (documentId !== undefined) {
+        updateEntity.run(documentId, now, entityId)
+      } else if (fieldValues) {
+        touchEntity.run(now, entityId)
+      }
+
+      for (const preparedValue of preparedValues) {
+        deleteValue.run(entityId, preparedValue.columnId)
+        if (preparedValue.valueText !== null) {
+          insertValue.run(entityId, preparedValue.columnId, preparedValue.valueText, now)
+        }
+      }
+    })()
   }
   
   deleteDatabaseEntity(entityId: string): void {
-    this.db.prepare('DELETE FROM database_entities WHERE id = ?').run(entityId)
-    this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ?').run(entityId)
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ?').run(entityId)
+      this.db.prepare('DELETE FROM database_entities WHERE id = ?').run(entityId)
+    })()
   }
   
   getDatabaseEntities(databaseId: string): DatabaseEntity[] {

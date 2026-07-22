@@ -47,6 +47,9 @@ export function useDocumentEditorState({
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const selectedDocumentIdRef = useRef(selectedDocumentId)
+  const saveSequenceRef = useRef(0)
+  selectedDocumentIdRef.current = selectedDocumentId
 
   const clearAutoSaveTimer = useCallback(() => {
     if (autoSaveTimerRef.current) {
@@ -245,6 +248,9 @@ export function useDocumentEditorState({
       return false
     }
 
+    const persistedDocumentId = selectedDocumentId
+    const saveSequence = ++saveSequenceRef.current
+
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocksState)
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
@@ -259,7 +265,7 @@ export function useDocumentEditorState({
     setIsSaving(true)
 
     try {
-      await window.knowbook.updateDocument(selectedDocumentId, {
+      await window.knowbook.updateDocument(persistedDocumentId, {
         title: draftTitle,
         summary: draftSummary,
         blocks: normalizedDraftBlocks
@@ -267,12 +273,16 @@ export function useDocumentEditorState({
 
       const [refreshedHome, refreshedDetail] = await Promise.all([
         window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(selectedDocumentId)
+        window.knowbook.getDocumentDetail(persistedDocumentId)
       ])
 
-      onHomeDataChange(refreshedHome)
-      onSelectedDocumentChange(refreshedDetail)
-      setDraftSummary(refreshedDetail?.summary ?? '')
+      if (saveSequence === saveSequenceRef.current) {
+        onHomeDataChange(refreshedHome)
+        if (selectedDocumentIdRef.current === persistedDocumentId) {
+          onSelectedDocumentChange(refreshedDetail)
+          setDraftSummary(refreshedDetail?.summary ?? '')
+        }
+      }
       return true
     } catch (error) {
       if (error instanceof Error && error.message === 'Document not found') {
@@ -281,7 +291,9 @@ export function useDocumentEditorState({
 
       throw error
     } finally {
-      setIsSaving(false)
+      if (saveSequence === saveSequenceRef.current) {
+        setIsSaving(false)
+      }
     }
   }, [draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, triggerTransientFlash, ui, validateBlockTreeStructure])
 
@@ -290,6 +302,20 @@ export function useDocumentEditorState({
 
     await persistDraft(false)
   }, [clearAutoSaveTimer, persistDraft])
+
+  const flushPendingChanges = useCallback(async (): Promise<boolean> => {
+    clearAutoSaveTimer()
+    if (!hasPendingDraftChanges) {
+      return true
+    }
+
+    try {
+      return await persistDraft(false)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : 'Failed to save document.')
+      return false
+    }
+  }, [clearAutoSaveTimer, hasPendingDraftChanges, onMessage, persistDraft])
 
   useEffect(() => {
     if (isEditing && !isRestoringHistoryRef.current) {
@@ -355,6 +381,7 @@ export function useDocumentEditorState({
     draftBlocks: draftBlocksState,
     draftSummary,
     draftTitle,
+    flushPendingChanges,
     isEditing,
     isSaving,
     loadDocumentIntoEditor: resetEditorFromDocument,

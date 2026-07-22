@@ -58,7 +58,7 @@ import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, shell, protocol } = electron
+const { app, BrowserWindow, clipboard, dialog, ipcMain: electronIpcMain, shell, protocol } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
@@ -68,6 +68,8 @@ const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
+const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
+const AI_REQUEST_TIMEOUT_MS = 60_000
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -82,8 +84,36 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
+app.on('render-process-gone', (_event, _webContents, details) => {
+  console.error('Renderer process exited unexpectedly.', details)
+})
+
+app.on('child-process-gone', (_event, details) => {
+  console.error('Electron child process exited unexpectedly.', details)
+})
+
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
+
+const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
+  handle(channel, listener) {
+    electronIpcMain.handle(channel, (event, ...args) => {
+      if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+        throw new Error('IPC request rejected: untrusted renderer sender.')
+      }
+      return listener(event, ...args)
+    })
+  }
+}
+
+if (process.env['KNOWBOOK_DISABLE_HARDWARE_ACCELERATION'] === '1') {
+  app.disableHardwareAcceleration()
+}
+
+const userDataOverride = process.env['KNOWBOOK_USER_DATA_DIR']?.trim()
+if (userDataOverride) {
+  app.setPath('userData', resolve(userDataOverride))
+}
 
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
@@ -93,7 +123,9 @@ const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
 const restoreService = new MarkdownRestoreService(store)
 const workspaceEventBus = new WorkspaceEventBus()
-const webClipper = new WebClipperService(store, webClipAssetRoot)
+const webClipper = new WebClipperService(store, webClipAssetRoot, {
+  allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1'
+})
 const webClipBridge = new WebClipBridgeService({
   onImport: async (payload: ImportWebClipPayloadInput) => {
     const result = await webClipper.importWebClipPayload(payload)
@@ -105,7 +137,7 @@ const webClipBridge = new WebClipBridgeService({
 const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
   { path: join(userDataRoot, 'plugins'), source: 'user-data' }
-])
+], app.getVersion())
 const appUpdateManager = new AppUpdateManager()
 
 type SemanticContextNote = SemanticSearchResult & {
@@ -122,11 +154,25 @@ function createWindow(): void {
     backgroundColor: '#f4f0e8',
     title: 'KnowBook',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
       nodeIntegration: false
     }
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openManagedExternalUrl(url).catch((error) => {
+      console.warn('Blocked or failed to open external URL.', error)
+    })
+    return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    event.preventDefault()
+    void openManagedExternalUrl(url).catch((error) => {
+      console.warn('Blocked or failed to navigate renderer to an external URL.', error)
+    })
   })
 
   mainWindow.on('closed', () => {
@@ -146,43 +192,53 @@ function registerWorkspaceEventHandlers(): void {
     store.recordWorkspaceEvent(record)
   })
 
-  workspaceEventBus.subscribe(async (event) => {
-    await pluginHost.handleWorkspaceEvent(event)
+  workspaceEventBus.subscribe((event) => {
+    setImmediate(() => {
+      void pluginHost.handleWorkspaceEvent(event).catch((error) => {
+        console.warn('Plugin workspace event handling failed.', error)
+      })
+    })
   })
 
-  workspaceEventBus.subscribe(async (event) => {
+  workspaceEventBus.subscribe((event) => {
     if (event.type !== 'document.updated') {
       return
     }
 
-    const aiConfig = store.getAiConfigPublic()
-    if (!aiConfig.enabled || !aiConfig.autoSummaryOnSave) {
-      return
-    }
+    setImmediate(() => {
+      void (async () => {
+        const aiConfig = store.getAiConfigPublic()
+        if (!aiConfig.enabled || !aiConfig.autoSummaryOnSave) {
+          return
+        }
 
-    const apiKey = store.getAiApiKey()
-    if (!apiKey) {
-      return
-    }
+        const apiKey = store.getAiApiKey()
+        if (!apiKey) {
+          return
+        }
 
-    const detail = store.getDocumentDetail(event.documentId)
-    if (!detail || !shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
-      return
-    }
+        const detail = store.getDocumentDetail(event.documentId)
+        if (!detail || !shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+          return
+        }
 
-    const generatedSummary = await generateDocumentSummary(detail, aiConfig, apiKey)
-    if (!generatedSummary || generatedSummary === detail.summary.trim()) {
-      return
-    }
+        const generatedSummary = await generateDocumentSummary(detail, aiConfig, apiKey)
+        if (!generatedSummary || generatedSummary === detail.summary.trim()) {
+          return
+        }
 
-    store.updateDocumentSummary(detail.id, generatedSummary)
-    await workspaceEventBus.emit({
-      type: 'document.summary.generated',
-      createdAt: new Date().toISOString(),
-      documentId: detail.id,
-      documentTitle: detail.title,
-      path: detail.path,
-      summary: generatedSummary
+        store.updateDocumentSummary(detail.id, generatedSummary)
+        await workspaceEventBus.emit({
+          type: 'document.summary.generated',
+          createdAt: new Date().toISOString(),
+          documentId: detail.id,
+          documentTitle: detail.title,
+          path: detail.path,
+          summary: generatedSummary
+        })
+      })().catch((error) => {
+        console.warn(`Automatic summary failed for document ${event.documentId}.`, error)
+      })
     })
   })
 }
@@ -536,12 +592,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:open-external-url', async (_event, url: string) => {
-    const parsed = new URL(url)
-    if (!['http:', 'https:', 'file:'].includes(parsed.protocol)) {
-      throw new Error('Unsupported external URL protocol.')
-    }
-
-    await shell.openExternal(parsed.toString())
+    await openManagedExternalUrl(url)
   })
 
   ipcMain.handle('knowbook:save-markdown-file', async (event, defaultFileName: string, content: string): Promise<string | null> => {
@@ -571,10 +622,16 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:get-setting', (_event, key: string): string | null => {
+    if (!RENDERER_SETTING_KEYS.has(key)) {
+      throw new Error('Setting is not available to the renderer.')
+    }
     return store.getSettingPublic(key)
   })
 
   ipcMain.handle('knowbook:save-setting', (_event, key: string, value: string): void => {
+    if (!RENDERER_SETTING_KEYS.has(key)) {
+      throw new Error('Setting is not available to the renderer.')
+    }
     store.saveSetting(key, value)
   })
 }
@@ -918,7 +975,8 @@ async function requestAiChatCompletion(input: {
           }
         ],
         temperature: input.temperature
-      })
+      }),
+      signal: AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -926,7 +984,7 @@ async function requestAiChatCompletion(input: {
   }
 
   if (!response.ok) {
-    const errorBody = await response.text()
+    const errorBody = (await response.text()).slice(0, 4_000)
     throw new Error(`${input.failureLabel} failed (${response.status}): ${errorBody}`)
   }
 
@@ -994,6 +1052,37 @@ function sanitizeMarkdownFileName(fileName: string): string {
   return normalized.toLowerCase().endsWith('.md') ? normalized : `${normalized}.md`
 }
 
+function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+  const candidate = resolve(candidatePath)
+  const root = resolve(rootPath)
+  const normalizedCandidate = process.platform === 'win32' ? candidate.toLowerCase() : candidate
+  const normalizedRoot = process.platform === 'win32' ? root.toLowerCase() : root
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`)
+}
+
+async function openManagedExternalUrl(url: string): Promise<void> {
+  const parsed = new URL(url)
+  if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+    await shell.openExternal(parsed.toString())
+    return
+  }
+
+  if (parsed.protocol === 'file:') {
+    const filePath = fileURLToPath(parsed)
+    if (!isPathInsideRoot(filePath, webClipAssetRoot)) {
+      throw new Error('Local file is outside the managed web clip asset root.')
+    }
+
+    const errorMessage = await shell.openPath(filePath)
+    if (errorMessage) {
+      throw new Error(errorMessage)
+    }
+    return
+  }
+
+  throw new Error('Unsupported external URL protocol.')
+}
+
 function startBackupSchedule(): void {
   void backupService.exportAll()
   backupTimer = setInterval(() => {
@@ -1016,12 +1105,7 @@ function registerAssetPreviewProtocol(): void {
       }
 
       const assetPath = resolve(fileURLToPath(sourceUrl))
-      const allowedRoot = resolve(webClipAssetRoot)
-      const normalizedAssetPath = process.platform === 'win32' ? assetPath.toLowerCase() : assetPath
-      const normalizedAllowedRoot = process.platform === 'win32' ? allowedRoot.toLowerCase() : allowedRoot
-      const allowedPrefix = `${normalizedAllowedRoot}${sep}`
-
-      if (normalizedAssetPath !== normalizedAllowedRoot && !normalizedAssetPath.startsWith(allowedPrefix)) {
+      if (!isPathInsideRoot(assetPath, webClipAssetRoot)) {
         return new Response('Asset path is outside the managed web clip asset root.', { status: 403 })
       }
 

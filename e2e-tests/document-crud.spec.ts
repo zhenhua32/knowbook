@@ -14,7 +14,7 @@ function getTreeButton(page: Page, title: string) {
 }
 
 function getMoveTargetSelect(page: Page) {
-  return page.locator('.preview-panel .compact-select').first()
+  return page.locator('.document-header-action-menu .compact-select').first()
 }
 
 test.describe('Document CRUD Operations @electron', () => {
@@ -59,6 +59,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(parentTitle)
       await getSummaryInput(page).fill(`Parent summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
@@ -99,22 +100,26 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(sourceParentTitle)
       await getSummaryInput(page).fill(`Source parent summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(targetParentTitle)
       await getSummaryInput(page).fill(`Target parent summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await getTreeButton(page, sourceParentTitle).click()
       await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(childTitle)
       await getSummaryInput(page).fill(`Child summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(grandchildTitle)
       await getSummaryInput(page).fill(`Grandchild summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
@@ -124,6 +129,8 @@ test.describe('Document CRUD Operations @electron', () => {
       await getTreeButton(page, childTitle).click()
       await expect(page.locator('.document-path')).toContainText(`${sourceParentTitle}/${childTitle}`)
 
+      await page.getByRole('button', { name: uiText('More actions', '更多操作') }).click()
+      await expect(page.locator('.document-header-action-menu')).toBeVisible()
       await getMoveTargetSelect(page).selectOption({ label: targetParentTitle })
       await page.getByRole('button', { name: uiText('Move', '移动') }).click()
 

@@ -885,3 +885,93 @@ test('PluginHost marks plugin as error when workspace event handler throws', asy
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost rejects unsafe manifest paths and incompatible KnowBook versions', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-manifest-security-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const unsafeRoot = join(workspaceRoot, 'unsafe-entry')
+  const incompatibleRoot = join(workspaceRoot, 'future-plugin')
+  mkdirSync(unsafeRoot, { recursive: true })
+  mkdirSync(incompatibleRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+
+  writeFileSync(join(unsafeRoot, 'plugin.json'), JSON.stringify({
+    id: 'unsafe-entry',
+    name: 'Unsafe Entry',
+    version: '1.0.0',
+    entry: '../outside.js'
+  }), 'utf8')
+  writeFileSync(join(incompatibleRoot, 'plugin.json'), JSON.stringify({
+    id: 'future-plugin',
+    name: 'Future Plugin',
+    version: '1.0.0',
+    entry: 'index.js',
+    engines: { knowbook: '>=9.0.0' }
+  }), 'utf8')
+  writeFileSync(join(incompatibleRoot, 'index.js'), 'module.exports.activate = function () {}\n', 'utf8')
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [
+    { path: workspaceRoot, source: 'workspace' },
+    { path: userDataRoot, source: 'user-data' }
+  ], '0.1.2')
+
+  try {
+    await host.loadAll()
+    const plugins = host.getHomeDataSnapshot().plugins
+    assert.equal(plugins.some((plugin) => plugin.id === 'unsafe-entry'), false)
+    const incompatible = plugins.find((plugin) => plugin.id === 'future-plugin')
+    assert.ok(incompatible)
+    assert.equal(incompatible.status, 'error')
+    assert.equal((incompatible.error ?? '').includes('>=9.0.0'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost stops synchronous activation that exceeds the execution limit', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-timeout-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const pluginRoot = join(workspaceRoot, 'blocking-plugin')
+  mkdirSync(pluginRoot, { recursive: true })
+
+  writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+    id: 'blocking-plugin',
+    name: 'Blocking Plugin',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    'module.exports.activate = function activate() { while (true) {} }\n',
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [{ path: workspaceRoot, source: 'workspace' }])
+
+  try {
+    await host.loadAll()
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'blocking-plugin')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').toLowerCase().includes('timed out'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

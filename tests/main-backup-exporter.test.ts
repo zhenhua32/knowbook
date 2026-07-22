@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -200,6 +200,40 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
       }
     ])
     assert.deepEqual(parsedStandaloneDatabase.blocks, [])
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownBackupService replaces stale files and keeps unsafe document paths inside the backup root', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-snapshot-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  let documents = [{
+    id: 'unsafe-doc',
+    title: '..',
+    path: '../../outside',
+    summary: '',
+    updatedAt: '2026-05-02T00:00:00.000Z',
+    documentDatabaseColumns: [],
+    documentDatabaseFieldValues: {},
+    blocks: [{ id: 'b1', type: 'paragraph', content: 'safe', checked: false, depth: 0, parentBlockId: null, sortOrder: 0 }]
+  }]
+  const store = {
+    getExportDocuments: () => documents,
+    getExportStandaloneDatabases: () => [],
+    saveSetting: () => undefined
+  }
+
+  try {
+    const service = new MarkdownBackupService(store as never, backupRoot)
+    service.exportAll()
+    assert.equal(existsSync(join(tempRoot, 'outside.md')), false)
+
+    const staleFile = join(backupRoot, 'stale.md')
+    writeFileSync(staleFile, 'stale', 'utf8')
+    documents = []
+    service.exportAll()
+    assert.equal(existsSync(staleFile), false)
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }

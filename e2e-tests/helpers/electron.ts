@@ -25,16 +25,21 @@ export function uiText(en: string, zh: string): RegExp {
 export async function launchElectronApp(): Promise<ElectronAppContext> {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
   const app = await electron.launch({
-    args: ['.'],
+    args: ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu', '.'],
     cwd: repoRoot,
     env: {
       ...process.env,
       APPDATA: tempRoot,
-      LOCALAPPDATA: tempRoot
+      LOCALAPPDATA: tempRoot,
+      KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
+      KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
+      KNOWBOOK_USER_DATA_DIR: tempRoot
     }
   })
 
   const page = await app.firstWindow()
+  page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
+  page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
   await page.waitForLoadState('domcontentloaded')
   await expect(page.locator('[data-testid="shell"]')).toBeVisible()
 
