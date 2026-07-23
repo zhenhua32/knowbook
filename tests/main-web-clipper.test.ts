@@ -61,6 +61,72 @@ async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<
   }
 }
 
+async function withLazyArticleServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
+  const server = createServer((request, response) => {
+    if (request.url?.endsWith('.jpg') || request.url === '/site-logo.svg') {
+      response.writeHead(200, { 'Content-Type': request.url.endsWith('.svg') ? 'image/svg+xml' : 'image/jpeg' })
+      response.end(`image:${request.url}`)
+      return
+    }
+    if (request.url === '/lazy-placeholder.gif') {
+      response.writeHead(200, { 'Content-Type': 'image/gif' })
+      response.end('placeholder')
+      return
+    }
+
+    const origin = `http://${request.headers.host}`
+    const encodedHero = Buffer.from(`${origin}/hero.jpg`, 'utf8').toString('base64')
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    response.end(`<!doctype html>
+      <html>
+        <head>
+          <title>GPU Lab Review - Example Tech</title>
+          <meta name="description" content="Example Tech focuses on every technology category across the entire site." />
+          <meta property="og:image" content="/site-logo.svg" />
+        </head>
+        <body>
+          <header><img src="/site-logo.svg" alt="logo" /></header>
+          <h1>GPU Lab Review</h1>
+          <div id="post_body" class="newsCo">
+            <p>This is the real article introduction with enough detail to become the useful clipping summary and readable body.</p>
+            <p><img class="lazy" src="/lazy-placeholder.gif" data-original="${encodedHero}" /></p>
+            <p><img class="lazy" src="/lazy-placeholder.gif" data-original="${encodedHero}" /></p>
+            <p><a href="/gallery.jpg"><img class="expwatermark" src="blob:${origin}/runtime-watermark" /></a></p>
+            <p><img class="expwatermark" src="blob:${origin}/unrecoverable-watermark" /></p>
+            <h1>Performance</h1>
+            <p>The benchmark section contains useful prose and should remain part of the clipped document.</p>
+            <table>
+              <tr><th>Mode</th><th>Score</th></tr>
+              <tr><td>Default</td><td>100</td></tr>
+            </table>
+            <script>
+              var title_text = "Frame rate comparison";
+              var unit_text = "fps";
+              var data_arr = [
+                {"type":"Game A","GPU One":"120","GPU Two":"110"},
+                {"type":"Game B","GPU One":"90","GPU Two":"88"}
+              ];
+            </script>
+          </div>
+        </body>
+      </html>`)
+  })
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', () => resolve())
+  })
+  const address = server.address() as AddressInfo
+  const baseUrl = `http://127.0.0.1:${address.port}`
+
+  try {
+    await run(baseUrl)
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve())
+    })
+  }
+}
+
 test('WebClipperService clips a webpage into a child document and stores source fields', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-test-'))
   const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
@@ -95,7 +161,7 @@ test('WebClipperService clips a webpage into a child document and stores source 
       assert.equal(detail.path, 'Inbox/Example Article')
       assert.equal(detail.blocks[0]?.type, 'heading-1')
       assert.equal(detail.blocks[0]?.content, 'Example Article')
-      assert.equal(detail.blocks.some((block) => block.content.includes('Source URL:')), true)
+      assert.equal(detail.blocks.some((block) => block.content.includes('来源：')), true)
       assert.equal(detail.blocks.some((block) => block.content.includes('Alpha paragraph')), true)
 
       const home = store.getHomeData(join(tempRoot, 'backup'))
@@ -120,6 +186,56 @@ test('WebClipperService clips a webpage into a child document and stores source 
       assert.equal(clippedEntry.fieldValues[authorColumn.id], 'Alice Example')
       assert.equal(clippedEntry.fieldValues[clipStatusColumn.id], 'clipped')
       assert.match(String(clippedEntry.fieldValues[coverImageColumn.id]), /^file:\/\//)
+    })
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService normalizes lazy images, runtime blob images, titles, tables, and duplicate covers', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-rich-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'), { allowPrivateNetwork: true })
+
+  try {
+    await withLazyArticleServer(async (baseUrl) => {
+      const result = await service.clipWebPage({
+        url: `${baseUrl}/review`,
+        parentId: null
+      })
+
+      assert.equal(result.created, true)
+      assert.equal(result.title, 'GPU Lab Review')
+      assert.deepEqual(result.warnings, [])
+
+      const detail = store.getDocumentDetail(result.documentId)
+      assert.ok(detail)
+      const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+      const localizedImages = [...markdown.matchAll(/!\[[^\]]*\]\((file:\/\/[^)]+)\)/g)].map((match) => match[1])
+
+      assert.equal(detail.blocks[0]?.type, 'heading-1')
+      assert.equal(detail.blocks[0]?.content, 'GPU Lab Review')
+      assert.equal(detail.blocks.some((block) => block.type === 'heading-2' && block.content === 'Performance'), true)
+      assert.equal(detail.blocks.some((block) => block.type === 'table' && block.content.includes('| Mode | Score |')), true)
+      assert.equal(detail.blocks.some((block) => block.type === 'heading-2' && block.content === 'Frame rate comparison'), true)
+      assert.equal(detail.blocks.some((block) => block.type === 'table' && block.content.includes('| 项目 | GPU One | GPU Two |')), true)
+      assert.equal(detail.blocks.some((block) => block.content.includes('来源：[Example Tech]')), true)
+      assert.equal(markdown.includes('blob:'), false)
+      assert.equal(markdown.includes('lazy-placeholder.gif'), false)
+      assert.equal(markdown.includes('site-logo.svg'), false)
+      assert.equal(localizedImages.length, 2)
+      assert.equal(new Set(localizedImages).size, 2)
+
+      const home = store.getHomeData(join(tempRoot, 'backup'))
+      const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+      const sourceSiteColumn = home.databaseColumns.find((column) => column.name === 'Source Site')
+      const coverImageColumn = home.databaseColumns.find((column) => column.name === 'Cover Image')
+      assert.ok(entry)
+      assert.ok(sourceSiteColumn)
+      assert.ok(coverImageColumn)
+      assert.equal(entry.fieldValues[sourceSiteColumn.id], 'Example Tech')
+      assert.equal(entry.fieldValues[coverImageColumn.id], localizedImages[0])
     })
   } finally {
     store.destroy()

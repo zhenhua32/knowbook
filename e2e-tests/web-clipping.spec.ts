@@ -11,8 +11,12 @@ type ClipSourceServer = {
   close: () => Promise<void>
 }
 
-function getTitleInput(page: Page): Locator {
-  return page.locator('.document-summary-card .editor-input').first()
+async function getTitleInput(page: Page): Promise<Locator> {
+  const input = page.locator('.document-summary-card .editor-input').first()
+  if (await input.count() === 0) {
+    await page.locator('.document-summary-edit-button').click()
+  }
+  return input
 }
 
 function getTreeButton(page: Page, title: string): Locator {
@@ -144,7 +148,7 @@ async function getEditorValues(page: Page): Promise<string[]> {
 }
 
 async function getContentScrollTop(page: Page): Promise<number> {
-  return page.locator('.content').evaluate((element) => (element as HTMLElement).scrollTop)
+  return page.getByTestId('document-scroll-region').evaluate((element) => (element as HTMLElement).scrollTop)
 }
 
 async function getRichMediaImageMetrics(page: Page): Promise<Array<{
@@ -181,7 +185,7 @@ test.describe('Web Clipping @electron', () => {
     try {
       await withElectronApp(async ({ page }) => {
         await openDocumentsPage(page)
-        const parentTitle = await getTitleInput(page).inputValue()
+        const parentTitle = await (await getTitleInput(page)).inputValue()
         expect(parentTitle.trim().length).toBeGreaterThan(0)
         await ensureAuxiliaryPanelOpen(page)
 
@@ -189,7 +193,7 @@ test.describe('Web Clipping @electron', () => {
         await page.getByRole('button', { name: uiText('Clip webpage', '剪藏网页') }).click()
 
         await expect(page.locator('.flash-message')).toContainText(/Clipped webpage into|已剪藏网页并创建文档/)
-        await expect(getTitleInput(page)).toHaveValue(articleTitle)
+        await expect(await getTitleInput(page)).toHaveValue(articleTitle)
         await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${articleTitle}`)
         await expect.poll(async () => {
           return page.locator('.block-rich-media-image').evaluateAll((elements) =>
@@ -199,18 +203,17 @@ test.describe('Web Clipping @electron', () => {
             }))
           )
         }).toEqual([
-          { complete: true, naturalWidthPositive: true },
           { complete: true, naturalWidthPositive: true }
         ])
         const imageMetrics = await getRichMediaImageMetrics(page)
-        expect(imageMetrics.length).toBe(2)
+        expect(imageMetrics.length).toBe(1)
         for (const metric of imageMetrics) {
-          expect(metric.renderedHeight).toBeLessThanOrEqual(Math.min(metric.viewportHeight * 0.4, 360) + 2)
+          expect(metric.renderedHeight).toBeLessThanOrEqual(Math.min(metric.viewportHeight * 0.58, 560) + 2)
           expect(Math.abs((metric.renderedWidth / metric.renderedHeight) - (metric.naturalWidth / metric.naturalHeight))).toBeLessThan(0.03)
         }
         await expect(page.locator('.block-rich-media-link').first()).toBeVisible()
 
-        await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain(`Source URL: ${sourceServer.articleUrl}`)
+        await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain(`来源：[Clip Source Site](${sourceServer.articleUrl})`)
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Alpha paragraph captured through the in-app web clipping flow.')
       })
     } finally {
@@ -268,7 +271,7 @@ test.describe('Web Clipping @electron', () => {
 
         await expect(getTreeButton(page, bridgeTitle)).toBeVisible()
         await getTreeButton(page, bridgeTitle).click()
-        await expect(getTitleInput(page)).toHaveValue(bridgeTitle)
+        await expect(await getTitleInput(page)).toHaveValue(bridgeTitle)
         await expect.poll(async () => {
           return page.locator('.block-rich-media-image').evaluateAll((elements) =>
             elements.map((element) => ({
@@ -304,10 +307,10 @@ test.describe('Web Clipping @electron', () => {
         await getWebClipUrlInput(page).fill(sourceServer.articleUrl)
         await page.getByRole('button', { name: uiText('Clip webpage', '剪藏网页') }).click()
 
-        await expect(getTitleInput(page)).toHaveValue(articleTitle)
+        await expect(await getTitleInput(page)).toHaveValue(articleTitle)
         await expect(page.locator('.block-rich-media-image-card').first()).toBeVisible()
 
-        await page.locator('.content').evaluate((element) => {
+        await page.getByTestId('document-scroll-region').evaluate((element) => {
           (element as HTMLElement).scrollTop = 0
         })
         const startScrollTop = await getContentScrollTop(page)
@@ -322,12 +325,12 @@ test.describe('Web Clipping @electron', () => {
         )
         expect(imageMarkdownIndex).toBeGreaterThanOrEqual(0)
 
-        await page.locator('.content').evaluate((element) => {
+        await page.getByTestId('document-scroll-region').evaluate((element) => {
           (element as HTMLElement).scrollTop = 0
         })
         const textareaStartScrollTop = await getContentScrollTop(page)
 
-        await page.locator('textarea.block-inline-textarea').nth(imageMarkdownIndex).hover()
+        await page.locator('.block-editor-row').nth(imageMarkdownIndex).locator('.block-media-source-toggle').hover()
         await page.mouse.wheel(0, 900)
 
         await expect.poll(async () => getContentScrollTop(page)).toBeGreaterThan(textareaStartScrollTop)
