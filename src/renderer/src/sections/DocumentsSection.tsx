@@ -188,7 +188,10 @@ export function DocumentsSection({
       ref={workspaceGridRef}
       style={workspaceGridStyle}
     >
-      <article className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}>
+      <article
+        className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}
+        data-testid="document-scroll-region"
+      >
         <DocumentPreviewHeader {...previewHeaderProps} />
 
         {selectedDocument && documentReady ? (

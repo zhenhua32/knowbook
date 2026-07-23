@@ -4548,6 +4548,7 @@ select:focus-visible {
 }
 
 .content.page-documents {
+  overflow: hidden;
   padding: 0;
   background: var(--kb-canvas);
 }
@@ -4569,8 +4570,11 @@ select:focus-visible {
 }
 
 .workspace-grid {
+  flex: 1 1 auto;
   gap: 0;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   align-items: stretch;
   background: var(--kb-canvas);
 }
@@ -4581,9 +4585,13 @@ select:focus-visible {
 
 .preview-panel {
   min-width: 0;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   padding: 0 42px 56px;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 0;
   border-radius: 0;
   background: var(--kb-canvas);
@@ -5380,6 +5388,8 @@ select:focus-visible {
 }
 
 .document-aux-resizer {
+  height: 100%;
+  min-height: 0;
   width: 10px;
   background: var(--kb-bg);
 }
@@ -5396,11 +5406,25 @@ select:focus-visible {
 }
 
 .document-aux-sidebar {
+  position: relative;
+  top: auto;
+  align-self: stretch;
+  height: 100%;
+  max-height: none;
   border: 0;
   border-left: 1px solid var(--kb-line);
   border-radius: 0;
   background: #fafbfc;
   box-shadow: none;
+}
+
+.document-aux-sidebar-content,
+.document-aux-sidebar-empty {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .document-aux-sidebar-content > * + * {

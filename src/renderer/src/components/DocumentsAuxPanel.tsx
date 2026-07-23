@@ -74,7 +74,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
   }
 
   return (
-    <div className="document-aux-sidebar-content">
+    <div className="document-aux-sidebar-content" data-testid="document-aux-scroll-region">
       {relationContent}
       {selectionAiContent ?? null}
 
