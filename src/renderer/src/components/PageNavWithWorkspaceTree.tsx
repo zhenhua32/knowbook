@@ -158,10 +158,27 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
       <div className="workspace-nav-content">
         <div className="tree-nav-section">
           <div className="tree-toolbar-compact">
-            <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">←</button>
-            <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">→</button>
-            <button className="icon-btn" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">🔍</button>
-            <button className="icon-btn" onClick={onCreateRoot} title={newRootLabel} type="button">+</button>
+            <div className="tree-history-actions">
+              <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">
+                <ArrowIcon direction="left" />
+              </button>
+              <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">
+                <ArrowIcon direction="right" />
+              </button>
+            </div>
+            <button className="sidebar-search-button" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">
+              <SearchIcon />
+              <span>{ui.globalSearch}</span>
+              <kbd>Ctrl K</kbd>
+            </button>
+          </div>
+
+          <div className="sidebar-section-heading">
+            <span>{isZh ? '我的文档' : 'My documents'}</span>
+            <span className="sidebar-section-count">{totalDocumentsCount ?? 0}</span>
+            <button className="sidebar-create-button" onClick={onCreateRoot} title={newRootLabel} type="button">
+              <PlusIcon />
+            </button>
           </div>
 
           <div
@@ -176,22 +193,27 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
               onDropToRoot()
             }}
           >
+            <DropIcon />
             {dropToRootLabel}
           </div>
 
           {pinnedDocuments.length > 0 && (
-            <div className="pinned-section-compact">
-              {pinnedDocuments.map((document) => (
-                <button
-                  key={document.id}
-                  className={`pinned-doc-item-compact${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
-                  onClick={() => onSelectDocument(document.id)}
-                  type="button"
-                  title={document.title}
-                >
-                  <span className="pinned-doc-title-compact">{document.title}</span>
-                </button>
-              ))}
+            <div className="pinned-section-shell">
+              <p className="sidebar-subsection-label">{pinnedSectionLabel}</p>
+              <div className="pinned-section-compact">
+                {pinnedDocuments.map((document) => (
+                  <button
+                    key={document.id}
+                    className={`pinned-doc-item-compact${selectedDocumentId === document.id ? ' pinned-doc-item-active' : ''}`}
+                    onClick={() => onSelectDocument(document.id)}
+                    type="button"
+                    title={document.title}
+                  >
+                    <PinIcon />
+                    <span className="pinned-doc-title-compact">{document.title}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -248,5 +270,47 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         />
       ) : null}
     </div>
+  )
+}
+
+function ArrowIcon({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg aria-hidden="true" className="sidebar-icon-svg" viewBox="0 0 20 20">
+      <path d={direction === 'left' ? 'm12.5 5-5 5 5 5' : 'm7.5 5 5 5-5 5'} />
+    </svg>
+  )
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" className="sidebar-icon-svg" viewBox="0 0 20 20">
+      <circle cx="9" cy="9" r="5.5" />
+      <path d="m13 13 3.5 3.5" />
+    </svg>
+  )
+}
+
+function PlusIcon() {
+  return (
+    <svg aria-hidden="true" className="sidebar-icon-svg" viewBox="0 0 20 20">
+      <path d="M10 4v12M4 10h12" />
+    </svg>
+  )
+}
+
+function DropIcon() {
+  return (
+    <svg aria-hidden="true" className="sidebar-icon-svg" viewBox="0 0 20 20">
+      <path d="M10 3v9m0 0 3-3m-3 3L7 9" />
+      <path d="M4 15.5h12" />
+    </svg>
+  )
+}
+
+function PinIcon() {
+  return (
+    <svg aria-hidden="true" className="sidebar-icon-svg" viewBox="0 0 20 20">
+      <path d="m7 3 6 6M11.5 2.5l6 6-3 1.5-3.5 3.5.5 3-1 1-3-4-4-3 1-1 3 .5L11 7l.5-4.5Z" />
+    </svg>
   )
 }

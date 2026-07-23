@@ -59,7 +59,10 @@ export function DocumentTree({
               await onDropOnNode(node.id)
             }}
           >
-            <span>{node.title}</span>
+            <span className="tree-button-main">
+              <DocumentIcon />
+              <span className="tree-document-title">{node.title}</span>
+            </span>
             <small>{new Date(node.updatedAt).toLocaleDateString(ui.locale)}</small>
           </button>
           <p className="tree-path" title={node.path}>{node.path}</p>
@@ -82,5 +85,14 @@ export function DocumentTree({
         </li>
       ))}
     </ul>
+  )
+}
+
+function DocumentIcon() {
+  return (
+    <svg aria-hidden="true" className="tree-document-icon" viewBox="0 0 20 20">
+      <path d="M5 2.75h6.5L15 6.25v11H5z" />
+      <path d="M11.5 2.75v3.5H15M7.5 10h5M7.5 13h5" />
+    </svg>
   )
 }

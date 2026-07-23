@@ -5,6 +5,7 @@ import { BlockEditToolbar } from './BlockEditToolbar'
 import { BlockContextMenu } from './BlockContextMenu'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
+import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { parseMarkdownTable } from '../utils/markdownTable'
 
@@ -198,6 +199,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const isTableBlock = block.type === 'table'
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
+  const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content) : { images: [], links: [] }
+  const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
   const parsedTable = isTableBlock ? parseMarkdownTable(block.content) : null
 
   // 状态管理
@@ -205,6 +208,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
   const [editingLanguage, setEditingLanguage] = useState(false)
   const [showBlockToolbar, setShowBlockToolbar] = useState(false)
+  const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -433,7 +437,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
             )}
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+          <div className={`block-editor-input-row${hasRichMedia ? ' block-editor-input-row-media' : ''}`}>
             {/* Type-specific prefix */}
             {block.type === 'todo' && (
               <input
@@ -469,9 +473,42 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               )
             )}
 
-            {/* The textarea */}
-            <textarea
-              className={`block-inline-textarea type-${block.type}`}
+            <div className="block-editor-input-column">
+              {hasRichMedia ? (
+                <button
+                  aria-expanded={isMediaSourceExpanded}
+                  className="block-media-source-toggle"
+                  onClick={() => {
+                    setIsMediaSourceExpanded(true)
+                    requestAnimationFrame(() => textareaRef.current?.focus())
+                  }}
+                  type="button"
+                >
+                  <span className="block-media-source-toggle-icon">
+                    <svg aria-hidden="true" viewBox="0 0 20 20">
+                      <path d="M4 5.5h12M4 10h8M4 14.5h10" />
+                    </svg>
+                  </span>
+                  <span className="block-media-source-toggle-copy">
+                    <strong>{isZh ? '媒体内容' : 'Media content'}</strong>
+                    <small>
+                      {[
+                        richMedia.images.length > 0
+                          ? (isZh ? `${richMedia.images.length} 张图片` : `${richMedia.images.length} image${richMedia.images.length > 1 ? 's' : ''}`)
+                          : null,
+                        richMedia.links.length > 0
+                          ? (isZh ? `${richMedia.links.length} 个链接` : `${richMedia.links.length} link${richMedia.links.length > 1 ? 's' : ''}`)
+                          : null
+                      ].filter(Boolean).join(' · ')}
+                    </small>
+                  </span>
+                  <span className="block-media-source-toggle-action">{isZh ? '编辑源内容' : 'Edit source'}</span>
+                </button>
+              ) : null}
+
+              {/* The textarea */}
+              <textarea
+              className={`block-inline-textarea type-${block.type}${hasRichMedia ? ' block-rich-media-source-input' : ''}${isMediaSourceExpanded ? ' expanded' : ''}`}
               spellCheck={false}
               ref={(element) => {
                 textareaRef.current = element
@@ -572,8 +609,16 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 }
               }}
               onFocus={(event) => {
+                if (hasRichMedia) {
+                  setIsMediaSourceExpanded(true)
+                }
                 resizeBlockTextarea(event.currentTarget)
                 captureBlockCursor(index, event.currentTarget)
+              }}
+              onBlur={() => {
+                if (hasRichMedia) {
+                  setIsMediaSourceExpanded(false)
+                }
               }}
               onKeyDown={(event) => {
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
@@ -802,6 +847,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               rows={1}
               value={block.content}
             />
+            </div>
           </div>
         )}
 

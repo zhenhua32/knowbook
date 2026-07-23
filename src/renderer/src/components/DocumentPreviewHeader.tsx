@@ -95,6 +95,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
             </div>
           </div>
         ) : null}
+        <span className="document-header-kicker">{isZh ? '当前文档' : 'Current document'}</span>
         <div className="document-header-title-row">
           {hasDocument ? (
             <DocumentHeaderIconButton
@@ -124,11 +125,14 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           <DocumentHeaderIconButton label={ui.addChild} onClick={onAddChild}>
             <AddChildIcon />
           </DocumentHeaderIconButton>
-          <DocumentHeaderIconButton disabled={isSaving} label={saveButtonLabel} onClick={onSave}>
+          <DocumentHeaderIconButton
+            className="document-header-save-button"
+            disabled={isSaving}
+            label={saveButtonLabel}
+            onClick={onSave}
+            showLabel
+          >
             <SaveIcon />
-          </DocumentHeaderIconButton>
-          <DocumentHeaderIconButton danger label={ui.common.delete} onClick={onDelete}>
-            <DeleteIcon />
           </DocumentHeaderIconButton>
           <DocumentHeaderIconButton
             className="document-header-more-button"
@@ -161,6 +165,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           onMove={onMove}
           onToggleAuxPanel={onToggleAuxPanel}
           onToggleWideMode={onToggleWideMode}
+          onDelete={onDelete}
         />
       ) : null}
     </div>
@@ -176,6 +181,7 @@ type DocumentHeaderIconButtonProps = {
   disabled?: boolean
   label: string
   onClick: MouseEventHandler<HTMLButtonElement>
+  showLabel?: boolean
 }
 
 function DocumentHeaderIconButton({
@@ -186,7 +192,8 @@ function DocumentHeaderIconButton({
   danger = false,
   disabled = false,
   label,
-  onClick
+  onClick,
+  showLabel = false
 }: DocumentHeaderIconButtonProps) {
   return (
     <button
@@ -199,6 +206,7 @@ function DocumentHeaderIconButton({
       type="button"
     >
       {children}
+      {showLabel ? <span className="document-header-button-label">{label}</span> : null}
     </button>
   )
 }
@@ -227,19 +235,6 @@ function SaveIcon() {
       <path d="M10 4v8" />
       <path d="M6.5 9.5 10 13l3.5-3.5" />
       <path d="M4 15h12" />
-    </svg>
-  )
-}
-
-function DeleteIcon() {
-  return (
-    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
-      <path d="M6.5 6.5v8" />
-      <path d="M10 6.5v8" />
-      <path d="M13.5 6.5v8" />
-      <path d="M4.5 5.5h11" />
-      <path d="M7.5 3.5h5" />
-      <path d="M6 5.5v10a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-10" />
     </svg>
   )
 }

@@ -216,7 +216,8 @@ export function DocumentsSection({
                      />
                   ))
                   : null}
-                <button className="secondary-button" onClick={onAddBlock} type="button">
+                <button className="secondary-button add-block-button" onClick={onAddBlock} type="button">
+                  <span aria-hidden="true">＋</span>
                   {addBlockLabel}
                 </button>
                 {linkSuggestionPanelProps ? (

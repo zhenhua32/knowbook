@@ -190,6 +190,8 @@ export function useDocumentsDetailPresentation({
         path: selectedDocument.path,
         summary: draftSummary,
         summaryLabel: ui.common.summary,
+        editLabel: isZh ? '编辑属性' : 'Edit properties',
+        collapseLabel: isZh ? '收起属性' : 'Collapse properties',
         title: draftTitle,
         titleLabel: ui.common.title,
         updatedText: ui.updatedAt(selectedDocument.updatedAt)

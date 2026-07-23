@@ -27,6 +27,7 @@ type DocumentHeaderActionMenuProps = {
   onMove: () => void
   onToggleAuxPanel: () => void
   onToggleWideMode: () => void
+  onDelete: () => void
 }
 
 export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
@@ -49,7 +50,8 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     onMoveTargetChange,
     onMove,
     onToggleAuxPanel,
-    onToggleWideMode
+    onToggleWideMode,
+    onDelete
   } = props
 
   const auxLabel = documentsAuxPanelOpen
@@ -139,6 +141,16 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
               {ui.common.move}
             </button>
           </div>
+        </div>
+
+        <div className="context-menu-section">
+          <button
+            className="context-menu-item context-menu-item-danger"
+            onClick={() => runAndClose(onDelete)}
+            type="button"
+          >
+            {ui.common.delete}
+          </button>
         </div>
       </div>
     </>

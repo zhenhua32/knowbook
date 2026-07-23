@@ -424,6 +424,8 @@ function createUiText(language: UiLanguage) {
     webClipBridgeUnavailable: zh ? '尚未启动' : 'Not running yet',
     blockPreviewImagesLabel: zh ? '图片预览' : 'Image previews',
     blockPreviewLinksLabel: zh ? '链接预览' : 'Link previews',
+    blockPreviewImageUnavailable: zh ? '图片暂时无法预览' : 'Image preview unavailable',
+    blockPreviewOpenImage: zh ? '打开原图' : 'Open original image',
     openExternalLink: zh ? '打开' : 'Open',
     pluginActionsLabel: zh ? '插件动作' : 'Plugin actions',
     pluginActionsHint: zh

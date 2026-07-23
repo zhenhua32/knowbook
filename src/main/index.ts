@@ -161,7 +161,7 @@ function createWindow(): void {
     height: 880,
     minWidth: 1180,
     minHeight: 760,
-    backgroundColor: '#f4f0e8',
+    backgroundColor: '#f3f5f9',
     title: 'KnowBook',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),

@@ -3,10 +3,12 @@ import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { BlockEditToolbar } from '../src/renderer/src/components/BlockEditToolbar.tsx'
+import { BlockRichMediaPreview } from '../src/renderer/src/components/BlockRichMediaPreview.tsx'
 import { CodeBlockLanguageSelector } from '../src/renderer/src/components/CodeBlockLanguageSelector.tsx'
 import { DocumentOutlinePanel } from '../src/renderer/src/components/DocumentOutlinePanel.tsx'
 import { DocumentStatsBar } from '../src/renderer/src/components/DocumentStatsBar.tsx'
 import { DocumentSummaryCard } from '../src/renderer/src/components/DocumentSummaryCard.tsx'
+import { PageRail } from '../src/renderer/src/components/PageRail.tsx'
 
 test('DocumentStatsBar SSR hides optional counters when zero', () => {
   const html = renderToStaticMarkup(
@@ -51,7 +53,7 @@ test('DocumentStatsBar SSR shows optional counters when non-zero', () => {
   assert.equal(html.includes('3</strong> todos'), true)
 })
 
-test('DocumentSummaryCard SSR renders path, labels, and current values', () => {
+test('DocumentSummaryCard SSR renders compact metadata before editing', () => {
   const html = renderToStaticMarkup(
     <DocumentSummaryCard
       path="Home/Product"
@@ -60,16 +62,19 @@ test('DocumentSummaryCard SSR renders path, labels, and current values', () => {
       updatedText="Updated now"
       titleLabel="Title"
       summaryLabel="Summary"
+      editLabel="Edit properties"
+      collapseLabel="Collapse properties"
       onTitleChange={() => undefined}
       onSummaryChange={() => undefined}
     />
   )
 
   assert.equal(html.includes('Home/Product'), true)
-  assert.equal(html.includes('Title'), true)
+  assert.equal(html.includes('Title'), false)
   assert.equal(html.includes('Summary'), true)
   assert.equal(html.includes('Updated now'), true)
-  assert.equal(html.includes('value="Product"'), true)
+  assert.equal(html.includes('Edit properties'), true)
+  assert.equal(html.includes('value="Product"'), false)
   assert.equal(html.includes('Summary text'), true)
 })
 
@@ -147,4 +152,56 @@ test('CodeBlockLanguageSelector SSR exposes current language and localized place
   assert.equal(en.includes('None (auto-detect)'), true)
   assert.equal(en.includes('javascript'), true)
   assert.equal(en.includes('typescript'), true)
+})
+
+test('BlockRichMediaPreview SSR renders compact accessible image and link cards', () => {
+  const html = renderToStaticMarkup(
+    <BlockRichMediaPreview
+      content={[
+        '![Cover](https://example.com/cover.png)',
+        'Source URL: https://example.com/article'
+      ].join('\n')}
+      ui={{
+        blockPreviewImagesLabel: 'Image previews',
+        blockPreviewImageUnavailable: 'Image preview unavailable',
+        blockPreviewOpenImage: 'Open original image',
+        blockPreviewLinksLabel: 'Link previews',
+        openExternalLink: 'Open'
+      }}
+    />
+  )
+
+  assert.equal(html.includes('block-rich-media-image-card'), true)
+  assert.equal(html.includes('Open original image: Cover'), true)
+  assert.equal(html.includes('block-rich-media-link-copy'), true)
+  assert.equal(html.includes('example.com/article'), true)
+  assert.equal(html.includes('tabindex="-1"'), false)
+})
+
+test('PageRail SSR renders labeled SVG navigation without emoji icons', () => {
+  const html = renderToStaticMarkup(
+    <PageRail
+      activePage="documents"
+      brandEyebrow="Local workspace"
+      collapseTitle="Collapse"
+      currentPageHint=""
+      currentPageLabel="Current page"
+      isCollapsed={false}
+      navLabel="Navigation"
+      onSelectPage={() => undefined}
+      onToggleCollapse={() => undefined}
+      pageDescription="Tree and editor"
+      pageItems={[
+        { id: 'documents', label: 'Documents', description: 'Tree and editor' },
+        { id: 'settings', label: 'Settings', description: 'Preferences' }
+      ]}
+      pageTitle="Documents"
+    />
+  )
+
+  assert.equal(html.includes('aria-label="Navigation"'), true)
+  assert.equal(html.includes('nav-icon-svg'), true)
+  assert.equal(html.includes('Documents'), true)
+  assert.equal(html.includes('📂'), false)
+  assert.equal(html.includes('⚙️'), false)
 })
