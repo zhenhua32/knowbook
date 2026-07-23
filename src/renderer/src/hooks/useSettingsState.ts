@@ -116,7 +116,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       const parsedPort = Number.parseInt(webClipBridgePortDraft, 10)
       const status = await window.knowbook.updateWebClipBridgeSettings({
         enabled: webClipBridgeEnabledDraft,
-        port: Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 3210,
+        port: Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65_535 ? parsedPort : 3210,
         regenerateToken
       })
       setWebClipBridgeStatus(status)

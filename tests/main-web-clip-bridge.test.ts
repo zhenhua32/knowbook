@@ -92,3 +92,32 @@ test('WebClipBridgeService rejects unauthorized payloads', async () => {
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('WebClipBridgeService reports malformed JSON as a client error', async () => {
+  const bridge = new WebClipBridgeService({
+    onImport: async () => {
+      throw new Error('onImport must not be called')
+    }
+  })
+
+  try {
+    const status = await bridge.applyConfig({
+      enabled: true,
+      port: 0,
+      token: 'test-token'
+    })
+    const response = await fetch(status.endpoint!, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-token',
+        'Content-Type': 'application/json'
+      },
+      body: '{broken-json'
+    })
+
+    assert.equal(response.status, 400)
+    assert.match(await response.text(), /valid JSON/)
+  } finally {
+    await bridge.destroy()
+  }
+})

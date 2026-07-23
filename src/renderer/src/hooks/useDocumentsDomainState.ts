@@ -134,6 +134,7 @@ export function useDocumentsDomainState({
     draftSummary,
     draftTitle,
     flushPendingChanges,
+    hasPendingDraftChanges,
     isEditing,
     isSaving,
     loadDocumentIntoEditor,
@@ -158,6 +159,41 @@ export function useDocumentsDomainState({
     ui
   })
   flushPendingDocumentChangesRef.current = flushPendingChanges
+
+  useEffect(() => {
+    if (!selectedDocumentId || !selectedDocument || isSaving || hasPendingDraftChanges) {
+      return
+    }
+
+    const catalogEntry = documentCatalog.find((entry) => entry.id === selectedDocumentId)
+    if (!catalogEntry || catalogEntry.updatedAt === selectedDocument.updatedAt) {
+      return
+    }
+
+    let cancelled = false
+    void window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
+      if (cancelled || !detail) {
+        return
+      }
+      setSelectedDocument(detail)
+      loadDocumentIntoEditor(detail, true)
+    }).catch((error) => {
+      console.warn('Failed to refresh externally updated document.', error)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    documentCatalog,
+    hasPendingDraftChanges,
+    isSaving,
+    loadDocumentIntoEditor,
+    selectedDocument,
+    selectedDocumentId,
+    setSelectedDocument
+  ])
+
   const {
     blockHasChildren,
     collapsedBlockIds,

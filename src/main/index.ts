@@ -94,6 +94,16 @@ app.on('child-process-gone', (_event, details) => {
 
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
+let shutdownComplete = false
+let shutdownPromise: Promise<void> | null = null
+const summaryGenerationRequests = new Map<string, {
+  apiKey: string
+  baseUrl: string
+  controller: AbortController
+  model: string
+  promise: Promise<string | null>
+  sourceVersion: string
+}>()
 
 const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
   handle(channel, listener) {
@@ -219,23 +229,34 @@ function registerWorkspaceEventHandlers(): void {
 
         const detail = store.getDocumentDetail(event.documentId)
         if (!detail || !shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+          cancelDocumentSummaryGeneration(event.documentId)
           return
         }
 
-        const generatedSummary = await generateDocumentSummary(detail, aiConfig, apiKey)
+        const generatedSummary = await generateDocumentSummaryDeduplicated(detail, aiConfig, apiKey)
         if (!generatedSummary || generatedSummary === detail.summary.trim()) {
           return
         }
 
-        store.updateDocumentSummary(detail.id, generatedSummary)
+        const latestAiConfig = store.getAiConfigPublic()
+        if (!latestAiConfig.enabled || !latestAiConfig.autoSummaryOnSave) {
+          return
+        }
+
+        const updatedDetail = commitGeneratedSummaryIfCurrent(detail, generatedSummary)
+        if (!updatedDetail) {
+          return
+        }
+
         await workspaceEventBus.emit({
           type: 'document.summary.generated',
           createdAt: new Date().toISOString(),
-          documentId: detail.id,
-          documentTitle: detail.title,
-          path: detail.path,
+          documentId: updatedDetail.id,
+          documentTitle: updatedDetail.title,
+          path: updatedDetail.path,
           summary: generatedSummary
         })
+        notifyWorkspaceMutation()
       })().catch((error) => {
         console.warn(`Automatic summary failed for document ${event.documentId}.`, error)
       })
@@ -419,6 +440,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:delete-document', async (_event, documentId: string) => {
     const document = store.getDocumentSnapshot(documentId)
+    cancelDocumentSummaryGeneration(documentId)
     const affectedDocumentIds = store.deleteDocument(documentId)
 
     if (document) {
@@ -453,6 +475,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
     store.updateAiConfig(input)
+    if (!input.enabled || !input.autoSummaryOnSave) {
+      cancelAllDocumentSummaryGeneration()
+    }
     const nextModel = input.model.trim() || 'gpt-4.1-mini'
 
     await workspaceEventBus.emit({
@@ -683,14 +708,18 @@ function getStoredWebClipBridgeConfig(): { enabled: boolean; port: number; token
 
   return {
     enabled,
-    port: Number.isFinite(storedPort) && storedPort > 0 ? storedPort : DEFAULT_WEB_CLIP_BRIDGE_PORT,
+    port: Number.isInteger(storedPort) && storedPort > 0 && storedPort <= 65_535
+      ? storedPort
+      : DEFAULT_WEB_CLIP_BRIDGE_PORT,
     token
   }
 }
 
 async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInput): Promise<WebClipBridgeStatus> {
   const current = getStoredWebClipBridgeConfig()
-  const nextPort = Number.isFinite(input.port) && input.port > 0 ? Math.trunc(input.port) : DEFAULT_WEB_CLIP_BRIDGE_PORT
+  const nextPort = Number.isInteger(input.port) && input.port > 0 && input.port <= 65_535
+    ? input.port
+    : DEFAULT_WEB_CLIP_BRIDGE_PORT
   const nextToken = input.regenerateToken ? randomUUID().replace(/-/g, '') : current.token
 
   store.saveSetting(WEB_CLIP_BRIDGE_ENABLED_KEY, input.enabled ? 'true' : 'false')
@@ -805,22 +834,24 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
   }
 
   if (home.aiConfig.autoSummaryOnSave && shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
-    const generatedSummary = await generateDocumentSummary(detail, home.aiConfig, apiKey)
+    const generatedSummary = await generateDocumentSummaryDeduplicated(detail, home.aiConfig, apiKey)
     if (generatedSummary && generatedSummary !== detail.summary.trim()) {
-      store.updateDocumentSummary(detail.id, generatedSummary)
-      detail = {
-        ...detail,
-        summary: generatedSummary
+      const latestAiConfig = store.getAiConfigPublic()
+      const updatedDetail = latestAiConfig.enabled && latestAiConfig.autoSummaryOnSave
+        ? commitGeneratedSummaryIfCurrent(detail, generatedSummary)
+        : null
+      if (updatedDetail) {
+        detail = updatedDetail
+        result.summaryGenerated = true
+        await workspaceEventBus.emit({
+          type: 'document.summary.generated',
+          createdAt: new Date().toISOString(),
+          documentId: detail.id,
+          documentTitle: detail.title,
+          path: detail.path,
+          summary: generatedSummary
+        })
       }
-      result.summaryGenerated = true
-      await workspaceEventBus.emit({
-        type: 'document.summary.generated',
-        createdAt: new Date().toISOString(),
-        documentId: detail.id,
-        documentTitle: detail.title,
-        path: detail.path,
-        summary: generatedSummary
-      })
     }
   }
 
@@ -835,7 +866,8 @@ async function searchSemanticNotes(input: SearchSemanticNotesInput): Promise<Sem
 async function generateDocumentSummary(
   detail: DocumentDetail,
   aiConfig: HomeData['aiConfig'],
-  apiKey: string
+  apiKey: string,
+  signal?: AbortSignal
 ): Promise<string | null> {
   const content = detail.blocks
     .map((block) => block.content.trim())
@@ -862,7 +894,8 @@ async function generateDocumentSummary(
       content,
       '',
       'Return a compact summary in Chinese, ideally under 60 Chinese characters.'
-    ].join('\n')
+    ].join('\n'),
+    signal
   })
   const normalizedSummary = summary
     .replace(/[\r\n]+/g, ' ')
@@ -873,6 +906,59 @@ async function generateDocumentSummary(
     .slice(0, 120)
 
   return normalizedSummary || null
+}
+
+async function generateDocumentSummaryDeduplicated(
+  detail: DocumentDetail,
+  aiConfig: HomeData['aiConfig'],
+  apiKey: string
+): Promise<string | null> {
+  const sourceVersion = getDocumentSummarySourceVersion(detail)
+  const existing = summaryGenerationRequests.get(detail.id)
+  if (existing
+    && existing.sourceVersion === sourceVersion
+    && existing.baseUrl === aiConfig.baseUrl
+    && existing.model === aiConfig.model
+    && existing.apiKey === apiKey) {
+    return existing.promise
+  }
+
+  existing?.controller.abort()
+  const controller = new AbortController()
+  const promise = generateDocumentSummary(detail, aiConfig, apiKey, controller.signal)
+    .catch((error) => {
+      if (controller.signal.aborted) {
+        return null
+      }
+      throw error
+    })
+    .finally(() => {
+      if (summaryGenerationRequests.get(detail.id)?.promise === promise) {
+        summaryGenerationRequests.delete(detail.id)
+      }
+    })
+
+  summaryGenerationRequests.set(detail.id, {
+    apiKey,
+    baseUrl: aiConfig.baseUrl,
+    controller,
+    model: aiConfig.model,
+    promise,
+    sourceVersion
+  })
+  return promise
+}
+
+function cancelDocumentSummaryGeneration(documentId: string): void {
+  summaryGenerationRequests.get(documentId)?.controller.abort()
+  summaryGenerationRequests.delete(documentId)
+}
+
+function cancelAllDocumentSummaryGeneration(): void {
+  for (const request of summaryGenerationRequests.values()) {
+    request.controller.abort()
+  }
+  summaryGenerationRequests.clear()
 }
 
 function shouldGenerateSummary(summary: string, blockContents: string[]): boolean {
@@ -889,6 +975,31 @@ function shouldGenerateSummary(summary: string, blockContents: string[]): boolea
     .length
 
   return contentLength >= 40
+}
+
+function commitGeneratedSummaryIfCurrent(
+  sourceDetail: DocumentDetail,
+  generatedSummary: string
+): DocumentDetail | null {
+  const sourceVersion = getDocumentSummarySourceVersion(sourceDetail)
+  return store.runInTransaction(() => {
+    const latestDetail = store.getDocumentDetail(sourceDetail.id)
+    if (!latestDetail || getDocumentSummarySourceVersion(latestDetail) !== sourceVersion) {
+      return null
+    }
+
+    store.updateDocumentSummary(sourceDetail.id, generatedSummary)
+    return store.getDocumentDetail(sourceDetail.id)
+  })
+}
+
+function getDocumentSummarySourceVersion(detail: DocumentDetail): string {
+  return JSON.stringify([
+    detail.title,
+    detail.path,
+    detail.summary,
+    detail.blocks.map((block) => [block.id, block.type, block.content, block.checked, block.depth, block.parentBlockId])
+  ])
 }
 
 function resolveDocumentBlockAiEditInstruction(input: PreviewDocumentBlockAiEditInput): string {
@@ -951,6 +1062,7 @@ async function requestAiChatCompletion(input: {
   systemPrompt: string
   temperature: number
   userPrompt: string
+  signal?: AbortSignal
 }): Promise<string> {
   const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
 
@@ -976,7 +1088,9 @@ async function requestAiChatCompletion(input: {
         ],
         temperature: input.temperature
       }),
-      signal: AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
+      signal: input.signal
+        ? AbortSignal.any([input.signal, AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)])
+        : AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
     })
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error)
@@ -1084,10 +1198,44 @@ async function openManagedExternalUrl(url: string): Promise<void> {
 }
 
 function startBackupSchedule(): void {
-  void backupService.exportAll()
+  runScheduledBackup()
   backupTimer = setInterval(() => {
-    backupService.exportAll()
+    runScheduledBackup()
   }, BACKUP_INTERVAL_MS)
+}
+
+function runScheduledBackup(): void {
+  try {
+    backupService.exportAll()
+  } catch (error) {
+    console.warn('Scheduled workspace backup failed.', error)
+  }
+}
+
+async function shutdownServices(): Promise<void> {
+  if (backupTimer) {
+    clearInterval(backupTimer)
+    backupTimer = null
+  }
+  cancelAllDocumentSummaryGeneration()
+
+  try {
+    backupService.exportAll()
+  } catch (error) {
+    console.warn('Final workspace backup failed during shutdown.', error)
+  }
+
+  const results = await Promise.allSettled([
+    webClipBridge.destroy(),
+    pluginHost.destroy()
+  ])
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      console.warn('Service cleanup failed during shutdown.', result.reason)
+    }
+  }
+
+  store.destroy()
 }
 
 function registerAssetPreviewProtocol(): void {
@@ -1169,13 +1317,20 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
-  backupService.exportAll()
-  if (backupTimer) {
-    clearInterval(backupTimer)
-    backupTimer = null
+app.on('before-quit', (event) => {
+  if (shutdownComplete) {
+    return
   }
-  void webClipBridge.destroy()
-  void pluginHost.destroy()
-  store.destroy()
+
+  event.preventDefault()
+  if (!shutdownPromise) {
+    shutdownPromise = shutdownServices()
+      .catch((error) => {
+        console.error('Unexpected shutdown failure.', error)
+      })
+      .finally(() => {
+        shutdownComplete = true
+        app.quit()
+      })
+  }
 })

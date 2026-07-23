@@ -162,6 +162,11 @@ export function useEditorAssistState({
       if (mounted) {
         setLinkSuggestions(suggestions)
       }
+    }).catch((error) => {
+      if (mounted) {
+        setLinkSuggestions([])
+        console.warn('Failed to load document link suggestions.', error)
+      }
     })
 
     if (selectedDocumentPresent) {

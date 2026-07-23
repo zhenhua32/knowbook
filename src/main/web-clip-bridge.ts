@@ -4,6 +4,12 @@ import type { ClipWebPageResult, ImportWebClipPayloadInput, WebClipBridgeStatus 
 
 const MAX_BRIDGE_PAYLOAD_BYTES = 4 * 1024 * 1024
 
+class BridgeRequestError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message)
+  }
+}
+
 type WebClipBridgeConfig = {
   enabled: boolean
   port: number
@@ -99,7 +105,7 @@ export class WebClipBridgeService {
       try {
         await this.handleRequest(request, response)
       } catch (error) {
-        writeJson(response, 500, {
+        writeJson(response, error instanceof BridgeRequestError ? error.statusCode : 500, {
           error: error instanceof Error ? error.message : 'Bridge server failed unexpectedly.'
         })
       }
@@ -132,16 +138,27 @@ export class WebClipBridgeService {
     }
 
     this.server = null
-    await new Promise<void>((resolve, reject) => {
-      currentServer.close((error) => {
-        if (error) {
-          reject(error)
-          return
-        }
+    currentServer.closeIdleConnections()
+    let forceCloseTimer: ReturnType<typeof setTimeout> | null = null
+    try {
+      await new Promise<void>((resolve, reject) => {
+        forceCloseTimer = setTimeout(() => {
+          currentServer.closeAllConnections()
+        }, 2_000)
+        currentServer.close((error) => {
+          if (error) {
+            reject(error)
+            return
+          }
 
-        resolve()
+          resolve()
+        })
       })
-    })
+    } finally {
+      if (forceCloseTimer) {
+        clearTimeout(forceCloseTimer)
+      }
+    }
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -192,17 +209,21 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
     totalBytes += buffer.byteLength
     if (totalBytes > MAX_BRIDGE_PAYLOAD_BYTES) {
-      throw new Error('Bridge payload is too large.')
+      throw new BridgeRequestError('Bridge payload is too large.', 413)
     }
     chunks.push(buffer)
   }
 
   const body = Buffer.concat(chunks).toString('utf8').trim()
   if (!body) {
-    throw new Error('Bridge payload is empty.')
+    throw new BridgeRequestError('Bridge payload is empty.', 400)
   }
 
-  return JSON.parse(body) as T
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    throw new BridgeRequestError('Bridge payload must be valid JSON.', 400)
+  }
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {

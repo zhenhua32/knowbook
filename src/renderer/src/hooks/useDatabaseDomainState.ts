@@ -56,6 +56,10 @@ export function useDatabaseDomainState() {
         setDatabases(items)
         setDatabaseEntityDatabaseId((current) => current || items[0]?.id || '')
       }
+    }).catch((error) => {
+      if (mounted) {
+        console.warn('Failed to load databases.', error)
+      }
     })
 
     return () => {
@@ -106,6 +110,10 @@ export function useDatabaseDomainState() {
         setDatabaseEntityFieldValues({})
         setDatabaseEntityBulkFieldValues({})
         setSelectedDatabaseEntityIds([])
+      }
+    }).catch((error) => {
+      if (mounted) {
+        console.warn('Failed to load database workspace data.', error)
       }
     })
 

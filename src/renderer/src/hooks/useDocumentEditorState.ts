@@ -382,6 +382,7 @@ export function useDocumentEditorState({
     draftSummary,
     draftTitle,
     flushPendingChanges,
+    hasPendingDraftChanges,
     isEditing,
     isSaving,
     loadDocumentIntoEditor: resetEditorFromDocument,

@@ -172,3 +172,95 @@ test('WebClipperService blocks local network targets by default', async () => {
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('WebClipperService rolls back the entire clip when metadata persistence fails', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-rollback-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const catalogBefore = store.getHomeData(join(tempRoot, 'backup')).documentCatalog.map((entry) => entry.id)
+  const originalUpdateValue = store.updateDocumentDatabaseValue.bind(store)
+  let updateCount = 0
+
+  store.updateDocumentDatabaseValue = ((...args: Parameters<KnowbookStore['updateDocumentDatabaseValue']>) => {
+    updateCount += 1
+    if (updateCount === 2) {
+      throw new Error('simulated metadata failure')
+    }
+    return originalUpdateValue(...args)
+  }) as KnowbookStore['updateDocumentDatabaseValue']
+
+  try {
+    await assert.rejects(
+      () => service.importWebClipPayload({
+        url: 'https://example.com/atomic-clip',
+        parentId: null,
+        title: 'Atomic Clip',
+        text: 'This document must not survive a partial metadata write.'
+      }),
+      /simulated metadata failure/
+    )
+
+    const homeAfter = store.getHomeData(join(tempRoot, 'backup'))
+    assert.deepEqual(homeAfter.documentCatalog.map((entry) => entry.id), catalogBefore)
+    assert.equal(homeAfter.databaseColumns.some((column) => column.name === 'Source URL'), false)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService does not reuse user columns with incompatible types', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-column-type-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    const incompatibleColumn = store.createDocumentDatabaseColumn({
+      name: 'Source URL',
+      type: 'checkbox'
+    })
+    const result = await service.importWebClipPayload({
+      url: 'https://example.com/typed-columns',
+      parentId: null,
+      title: 'Typed Columns',
+      text: 'The clipper should create and use its own text metadata column.'
+    })
+
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const sourceUrlTextColumn = home.databaseColumns.find((column) => column.name === 'Source URL' && column.type === 'text')
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    assert.ok(sourceUrlTextColumn)
+    assert.ok(entry)
+    assert.equal(entry.fieldValues[sourceUrlTextColumn.id], 'https://example.com/typed-columns')
+    assert.equal(entry.fieldValues[incompatibleColumn.id], undefined)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService rejects malformed runtime payloads before touching the store', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-input-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const documentCountBefore = store.getHomeData(join(tempRoot, 'backup')).summary.documents
+
+  try {
+    await assert.rejects(
+      () => service.importWebClipPayload({ url: 42 } as never),
+      /URL is required/
+    )
+    await assert.rejects(
+      () => service.importWebClipPayload({
+        url: 'https://example.com',
+        parentId: null,
+        text: ['not', 'text']
+      } as never),
+      /field "text" must be a string/
+    )
+    assert.equal(store.getHomeData(join(tempRoot, 'backup')).summary.documents, documentCountBefore)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

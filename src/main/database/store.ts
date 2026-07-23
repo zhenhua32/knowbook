@@ -500,16 +500,19 @@ export class KnowbookStore {
 
   createDocument(parentId: string | null): string {
     const now = new Date().toISOString()
+    const parent = parentId
+      ? (this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined)
+      : undefined
+    if (parentId && !parent) {
+      throw new Error('Parent document not found')
+    }
+
     const title = this.generateSiblingTitle(parentId, 'Untitled')
     const id = randomUUID()
     const slug = `doc-${id.slice(0, 8)}`
 
     const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(parentId) as { max_sort_order: number }
     const sortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
-
-    const parent = parentId
-      ? (this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined)
-      : undefined
 
     const path = parent ? `${parent.path}/${title}` : title
     const insertDocument = this.db.prepare(`
@@ -525,10 +528,10 @@ export class KnowbookStore {
       insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, sortOrder, now, now)
       insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, '[]', null, null, now, now)
       insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, '[]', null, null, now, now)
+      this.resyncLinksForAllDocuments()
     })
 
     transaction()
-    this.resyncLinksForAllDocuments()
     return id
   }
 
@@ -596,21 +599,29 @@ export class KnowbookStore {
           now
         )
       })
+
+      if (newPath !== oldPath) {
+        this.resyncLinksForAllDocuments()
+      } else {
+        this.resyncLinksForSourceDocument(documentId)
+      }
     })
 
     transaction()
-    this.resyncLinksForAllDocuments()
     return newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]
   }
 
   updateDocumentSummary(documentId: string, summary: string): void {
     const normalizedSummary = summary.trim()
     const now = new Date().toISOString()
-    this.db.prepare(`
+    const result = this.db.prepare(`
       UPDATE documents
       SET summary = ?, updated_at = ?
       WHERE id = ?
     `).run(normalizedSummary, now, documentId)
+    if (result.changes === 0) {
+      throw new Error('Document not found')
+    }
   }
 
   deleteDocument(documentId: string): string[] {
@@ -665,10 +676,10 @@ export class KnowbookStore {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
+      this.resyncLinksForAllDocuments()
     })
 
     transaction()
-    this.resyncLinksForAllDocuments()
     return affectedDescendantIds.map((row) => row.id)
   }
 
@@ -729,10 +740,10 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      this.resyncLinksForAllDocuments()
     })
 
     transaction()
-    this.resyncLinksForAllDocuments()
     return this.getDocumentIdsInPathSubtree(newPath)
   }
 
@@ -2113,15 +2124,30 @@ export class KnowbookStore {
   }
 
   private resyncLinksForAllDocuments(): void {
+    this.resyncLinks()
+  }
+
+  private resyncLinksForSourceDocument(documentId: string): void {
+    this.resyncLinks(documentId)
+  }
+
+  private resyncLinks(sourceDocumentId?: string): void {
     const documents = this.db.prepare(`
       SELECT id, title, path
       FROM documents
     `).all() as DocumentLookupRow[]
-    const blocks = this.db.prepare(`
-      SELECT document_id, content
-      FROM blocks
-      ORDER BY document_id ASC, sort_order ASC
-    `).all() as BlockReferenceRow[]
+    const blocks = sourceDocumentId
+      ? this.db.prepare(`
+          SELECT document_id, content
+          FROM blocks
+          WHERE document_id = ?
+          ORDER BY sort_order ASC
+        `).all(sourceDocumentId) as BlockReferenceRow[]
+      : this.db.prepare(`
+          SELECT document_id, content
+          FROM blocks
+          ORDER BY document_id ASC, sort_order ASC
+        `).all() as BlockReferenceRow[]
 
     const pathMap = new Map<string, DocumentLookupRow>()
     const titleMap = new Map<string, DocumentLookupRow | null>()
@@ -2135,16 +2161,23 @@ export class KnowbookStore {
       }
     }
 
-    const deleteLinks = this.db.prepare('DELETE FROM links')
+    const deleteLinks = sourceDocumentId
+      ? this.db.prepare('DELETE FROM links WHERE source_document_id = ?')
+      : this.db.prepare('DELETE FROM links')
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
       VALUES (?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
-      deleteLinks.run()
+      if (sourceDocumentId) {
+        deleteLinks.run(sourceDocumentId)
+      } else {
+        deleteLinks.run()
+      }
 
       const seen = new Set<string>()
+      const createdAt = new Date().toISOString()
       for (const block of blocks) {
         for (const token of this.extractLinkTargets(block.content)) {
           const target = this.resolveDocumentReference(token, pathMap, titleMap)
@@ -2158,7 +2191,7 @@ export class KnowbookStore {
           }
 
           seen.add(linkKey)
-          insertLink.run(randomUUID(), block.document_id, target.id, token, new Date().toISOString())
+          insertLink.run(randomUUID(), block.document_id, target.id, token, createdAt)
         }
       }
     })

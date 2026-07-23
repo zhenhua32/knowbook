@@ -26,7 +26,7 @@ function getSummaryInput(page: Page): Locator {
   return page.locator('.document-summary-card .editor-textarea').first()
 }
 
-async function startMockAiServer(summary: string): Promise<{
+async function startMockAiServer(summary: string, responseDelayMs = 0): Promise<{
   baseUrl: string
   requests: MockAiRequest[]
   close: () => Promise<void>
@@ -49,18 +49,25 @@ async function startMockAiServer(summary: string): Promise<{
       })
 
       if (request.method === 'POST' && request.url === '/chat/completions') {
-        response.writeHead(200, { 'Content-Type': 'application/json' })
-        response.end(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: summary
+        const sendResponse = () => {
+          response.writeHead(200, { 'Content-Type': 'application/json' })
+          response.end(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: summary
+                  }
                 }
-              }
-            ]
-          })
-        )
+              ]
+            })
+          )
+        }
+        if (responseDelayMs > 0) {
+          setTimeout(sendResponse, responseDelayMs)
+        } else {
+          sendResponse()
+        }
         return
       }
 
@@ -273,6 +280,61 @@ test.describe('AI Settings @electron', () => {
       expect(summaryRequests[0]?.authorization).toBe('Bearer test-api-key')
       expect(summaryRequests[0]?.body).toContain(`Document title: AI Automation Doc ${suffix}`)
       expect(summaryRequests[0]?.body).toContain('Document content:')
+    } finally {
+      await mockAiServer.close()
+    }
+  })
+
+  test('shows an automatically generated summary without requiring page navigation', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const generatedSummary = '后台自动摘要已即时同步到当前编辑器。'
+    const mockAiServer = await startMockAiServer(generatedSummary)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', true)
+        await openDocumentsPage(page)
+        await createRootDocument(
+          page,
+          `AI Live Summary ${Date.now().toString(36)}`,
+          'This document contains enough content for automatic summarization and the result should appear while the editor remains open.'
+        )
+
+        await expect(getSummaryInput(page)).toHaveValue(generatedSummary)
+      })
+    } finally {
+      await mockAiServer.close()
+    }
+  })
+
+  test('does not overwrite a newer manual summary when an automatic AI response arrives late', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const generatedSummary = '这条过期的 AI 摘要不应覆盖用户的新摘要。'
+    const manualSummary = '用户在 AI 请求期间手动填写的新摘要。'
+    const mockAiServer = await startMockAiServer(generatedSummary, 800)
+
+    try {
+      await withElectronApp(async ({ page }) => {
+        await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', true)
+        await openDocumentsPage(page)
+        await createRootDocument(
+          page,
+          `AI Stale Response ${Date.now().toString(36)}`,
+          'This document has enough content to trigger an automatic summary request that deliberately responds after the user edits the summary.'
+        )
+
+        await expect.poll(() => mockAiServer.requests.filter((request) => request.url === '/chat/completions').length).toBe(1)
+        await getSummaryInput(page).fill(manualSummary)
+        await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+        await expect(getSummaryInput(page)).toHaveValue(manualSummary)
+
+        await page.waitForTimeout(1_000)
+        await openDashboardPage(page)
+        await openDocumentsPage(page)
+        await expect(getSummaryInput(page)).toHaveValue(manualSummary)
+      })
     } finally {
       await mockAiServer.close()
     }

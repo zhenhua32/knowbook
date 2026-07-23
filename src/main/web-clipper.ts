@@ -24,6 +24,8 @@ const MAX_HTML_BYTES = 5 * 1024 * 1024
 const MAX_ASSET_BYTES = 20 * 1024 * 1024
 const MAX_REDIRECTS = 5
 const MAX_LOCALIZED_IMAGES = 50
+const MAX_WEB_URL_BYTES = 8 * 1024
+const MAX_WEB_CLIP_METADATA_BYTES = 32 * 1024
 
 type WebClipperOptions = {
   allowPrivateNetwork?: boolean
@@ -87,100 +89,108 @@ export class WebClipperService {
   ) {}
 
   async clipWebPage(input: ClipWebPageInput): Promise<ClipWebPageResult> {
-    const sourceUrl = normalizeWebUrl(input.url)
+    const normalizedInput = normalizeClipWebPageInput(input)
+    const sourceUrl = normalizeWebUrl(normalizedInput.url)
     const fetched = await fetchHtmlDocument(sourceUrl, Boolean(this.options.allowPrivateNetwork))
     const clip = await finalizeExtractedWebClip(extractWebClip(fetched.html, fetched.finalUrl), this.assetRoot, Boolean(this.options.allowPrivateNetwork))
-    return this.persistClip(input.parentId, clip)
+    return this.persistClip(normalizedInput.parentId, clip)
   }
 
   async importWebClipPayload(input: ImportWebClipPayloadInput): Promise<ClipWebPageResult> {
-    const sourceUrl = normalizeWebUrl(input.url)
+    const normalizedInput = normalizeImportWebClipPayload(input)
+    const sourceUrl = normalizeWebUrl(normalizedInput.url)
 
     let clip: ExtractedWebClip
-    if (input.html?.trim()) {
-      clip = extractWebClip(input.html, sourceUrl, {
-        author: input.author,
-        coverImage: input.coverImage,
-        excerpt: input.excerpt,
-        publishedAt: input.publishedAt,
-        sourceSite: input.sourceSite,
-        title: input.title
+    if (normalizedInput.html?.trim()) {
+      clip = extractWebClip(normalizedInput.html, sourceUrl, {
+        author: normalizedInput.author,
+        coverImage: normalizedInput.coverImage,
+        excerpt: normalizedInput.excerpt,
+        publishedAt: normalizedInput.publishedAt,
+        sourceSite: normalizedInput.sourceSite,
+        title: normalizedInput.title
       })
     } else {
-      clip = buildExtractedClipFromPayload(input, sourceUrl, normalizeImportedBody(input))
+      clip = buildExtractedClipFromPayload(normalizedInput, sourceUrl, normalizeImportedBody(normalizedInput))
     }
 
     const finalized = await finalizeExtractedWebClip(clip, this.assetRoot, Boolean(this.options.allowPrivateNetwork))
-    return this.persistClip(input.parentId, finalized)
+    return this.persistClip(normalizedInput.parentId, finalized)
   }
 
   private async persistClip(parentId: string | null, clip: ExtractedWebClip): Promise<ClipWebPageResult> {
-    const columns = this.ensureWebClipColumns()
-    const duplicateDocumentId = this.findDuplicateDocumentId(clip, columns)
-    if (duplicateDocumentId) {
-      const snapshot = this.store.getDocumentSnapshot(duplicateDocumentId)
+    return this.store.runInTransaction(() => {
+      const columns = this.ensureWebClipColumns()
+      const duplicateDocumentId = this.findDuplicateDocumentId(clip, columns)
+      if (duplicateDocumentId) {
+        const snapshot = this.store.getDocumentSnapshot(duplicateDocumentId)
+        return {
+          documentId: duplicateDocumentId,
+          title: snapshot?.title ?? clip.title,
+          sourceUrl: clip.sourceUrl,
+          warnings: [...clip.warnings],
+          created: false,
+          duplicateOfDocumentId: duplicateDocumentId
+        }
+      }
+
+      const documentId = this.store.createDocument(parentId)
+      const parsed = parseMarkdownBackupDocument(buildClipMarkdownDocument(clip))
+      const blocks = toDocumentDraftBlocks(parsed.blocks)
+
+      this.store.updateDocument(documentId, {
+        title: clip.title,
+        summary: DEFAULT_DOCUMENT_SUMMARY,
+        blocks: blocks.length > 0 ? blocks : buildFallbackBlocks(clip)
+      })
+
+      const clippedAt = new Date().toISOString().slice(0, 10)
+      const clipStatus = clip.warnings.length > 0 ? 'partial' : 'clipped'
+      const fieldValues = [
+        { columnId: columns.sourceUrl.id, value: clip.sourceUrl },
+        { columnId: columns.sourceSite.id, value: clip.sourceSite },
+        { columnId: columns.clippedAt.id, value: clippedAt },
+        { columnId: columns.publishedAt.id, value: clip.publishedAt },
+        { columnId: columns.author.id, value: clip.author },
+        { columnId: columns.clipStatus.id, value: clipStatus },
+        { columnId: columns.coverImage.id, value: clip.coverImage },
+        { columnId: columns.clipHash.id, value: clip.contentHash }
+      ]
+
+      for (const field of fieldValues) {
+        if (!field.value) {
+          continue
+        }
+
+        this.store.updateDocumentDatabaseValue({
+          documentId,
+          columnId: field.columnId,
+          value: field.value
+        })
+      }
+
       return {
-        documentId: duplicateDocumentId,
-        title: snapshot?.title ?? clip.title,
+        documentId,
+        title: clip.title,
         sourceUrl: clip.sourceUrl,
         warnings: [...clip.warnings],
-        created: false,
-        duplicateOfDocumentId: duplicateDocumentId
+        created: true,
+        duplicateOfDocumentId: null
       }
-    }
-
-    const documentId = this.store.createDocument(parentId)
-    const parsed = parseMarkdownBackupDocument(buildClipMarkdownDocument(clip))
-    const blocks = toDocumentDraftBlocks(parsed.blocks)
-
-    this.store.updateDocument(documentId, {
-      title: clip.title,
-      summary: DEFAULT_DOCUMENT_SUMMARY,
-      blocks: blocks.length > 0 ? blocks : buildFallbackBlocks(clip)
     })
-
-    const clippedAt = new Date().toISOString().slice(0, 10)
-    const clipStatus = clip.warnings.length > 0 ? 'partial' : 'clipped'
-    const fieldValues = [
-      { columnId: columns.sourceUrl.id, value: clip.sourceUrl },
-      { columnId: columns.sourceSite.id, value: clip.sourceSite },
-      { columnId: columns.clippedAt.id, value: clippedAt },
-      { columnId: columns.publishedAt.id, value: clip.publishedAt },
-      { columnId: columns.author.id, value: clip.author },
-      { columnId: columns.clipStatus.id, value: clipStatus },
-      { columnId: columns.coverImage.id, value: clip.coverImage },
-      { columnId: columns.clipHash.id, value: clip.contentHash }
-    ]
-
-    for (const field of fieldValues) {
-      if (!field.value) {
-        continue
-      }
-
-      this.store.updateDocumentDatabaseValue({
-        documentId,
-        columnId: field.columnId,
-        value: field.value
-      })
-    }
-
-    return {
-      documentId,
-      title: clip.title,
-      sourceUrl: clip.sourceUrl,
-      warnings: [...clip.warnings],
-      created: true,
-      duplicateOfDocumentId: null
-    }
   }
 
   private ensureWebClipColumns(): Record<WebClipFieldKey, DocumentDatabaseColumn> {
     const existingColumns = this.store.getDocumentDatabaseColumns()
-    const byName = new Map(existingColumns.map((column) => [column.name.toLowerCase(), column]))
+    const byNameAndType = new Map(existingColumns.map((column) => [
+      `${column.name.toLowerCase()}\u0000${column.type}`,
+      column
+    ]))
     const resolved = {} as Record<WebClipFieldKey, DocumentDatabaseColumn>
 
     for (const definition of WEB_CLIP_FIELDS) {
-      let column = byName.get(definition.name.toLowerCase())
+      const signature = `${definition.name.toLowerCase()}\u0000${definition.type}`
+      let column = byNameAndType.get(signature)
 
       if (!column) {
         column = this.store.createDocumentDatabaseColumn({
@@ -188,7 +198,7 @@ export class WebClipperService {
           type: definition.type,
           options: definition.options
         })
-        byName.set(definition.name.toLowerCase(), column)
+        byNameAndType.set(signature, column)
       } else if (definition.type === 'select' && column.type === 'select' && definition.options) {
         const mergedOptions = [...column.options]
         let changed = false
@@ -662,6 +672,70 @@ async function localizeAssetUrl(assetUrl: string, assetRoot: string, allowPrivat
   }
 
   return pathToFileURL(filePath).toString()
+}
+
+function normalizeClipWebPageInput(input: ClipWebPageInput): ClipWebPageInput {
+  if (!input || typeof input !== 'object' || typeof input.url !== 'string' || !input.url.trim()) {
+    throw new Error('Web clip URL is required.')
+  }
+  assertTextSize(input.url, MAX_WEB_URL_BYTES, 'Web clip URL')
+  if (input.parentId != null && typeof input.parentId !== 'string') {
+    throw new Error('Web clip parent id must be a string or null.')
+  }
+  return {
+    url: input.url,
+    parentId: typeof input.parentId === 'string' ? input.parentId : null
+  }
+}
+
+function normalizeImportWebClipPayload(input: ImportWebClipPayloadInput): ImportWebClipPayloadInput {
+  const normalizedBase = normalizeClipWebPageInput(input)
+  const candidate = input as ImportWebClipPayloadInput & Record<string, unknown>
+  const optionalTextFields = [
+    'title',
+    'html',
+    'markdown',
+    'text',
+    'sourceSite',
+    'excerpt',
+    'author',
+    'publishedAt',
+    'coverImage'
+  ] as const
+
+  for (const field of optionalTextFields) {
+    const value = candidate[field]
+    if (value != null && typeof value !== 'string') {
+      throw new Error(`Web clip field "${field}" must be a string or null.`)
+    }
+    if (typeof value === 'string') {
+      const maxBytes = field === 'html' || field === 'markdown' || field === 'text'
+        ? MAX_HTML_BYTES
+        : field === 'coverImage'
+          ? MAX_WEB_URL_BYTES
+          : MAX_WEB_CLIP_METADATA_BYTES
+      assertTextSize(value, maxBytes, `Web clip field "${field}"`)
+    }
+  }
+
+  return {
+    ...normalizedBase,
+    title: typeof candidate.title === 'string' ? candidate.title : undefined,
+    html: typeof candidate.html === 'string' ? candidate.html : undefined,
+    markdown: typeof candidate.markdown === 'string' ? candidate.markdown : undefined,
+    text: typeof candidate.text === 'string' ? candidate.text : undefined,
+    sourceSite: typeof candidate.sourceSite === 'string' ? candidate.sourceSite : undefined,
+    excerpt: typeof candidate.excerpt === 'string' ? candidate.excerpt : undefined,
+    author: typeof candidate.author === 'string' ? candidate.author : null,
+    publishedAt: typeof candidate.publishedAt === 'string' ? candidate.publishedAt : null,
+    coverImage: typeof candidate.coverImage === 'string' ? candidate.coverImage : null
+  }
+}
+
+function assertTextSize(value: string, maxBytes: number, label: string): void {
+  if (Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw new Error(`${label} exceeds the ${maxBytes}-byte size limit.`)
+  }
 }
 
 async function fetchWithValidatedRedirects(

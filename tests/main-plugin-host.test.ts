@@ -546,10 +546,12 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
   const userDataRoot = join(tempRoot, 'user-plugins')
   const installedRoot = join(userDataRoot, 'quick-note')
   const sourceRoot = join(tempRoot, 'source-plugin')
+  const brokenSourceRoot = join(tempRoot, 'broken-source-plugin')
 
   mkdirSync(workspaceRoot, { recursive: true })
   mkdirSync(installedRoot, { recursive: true })
   mkdirSync(sourceRoot, { recursive: true })
+  mkdirSync(brokenSourceRoot, { recursive: true })
 
   writeFileSync(
     join(installedRoot, 'plugin.json'),
@@ -592,6 +594,21 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
     'module.exports.activate = function activate() { return undefined }\n',
     'utf8'
   )
+  writeFileSync(
+    join(brokenSourceRoot, 'plugin.json'),
+    JSON.stringify(
+      {
+        id: 'quick-note',
+        name: 'Quick Note',
+        version: '0.3.0',
+        entry: 'missing.js',
+        enabledByDefault: true
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
 
   const store = {
     getSettingPublic: () => null,
@@ -620,6 +637,15 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
     assert.equal(updated.operation, 'updated')
     assert.equal(updated.previousVersion, '0.1.0')
     assert.equal(updated.plugin.version, '0.2.0')
+
+    await assert.rejects(
+      () => host.installPluginFromDirectory(brokenSourceRoot, { replaceExisting: true }),
+      /entry is missing/
+    )
+    const preservedPlugin = host.getHomeDataSnapshot().plugins.find((plugin) => plugin.id === 'quick-note')
+    assert.ok(preservedPlugin)
+    assert.equal(preservedPlugin.version, '0.2.0')
+    assert.equal(preservedPlugin.status, 'running')
   } finally {
     await host.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
@@ -970,6 +996,156 @@ test('PluginHost stops synchronous activation that exceeds the execution limit',
     assert.ok(plugin)
     assert.equal(plugin.status, 'error')
     assert.equal((plugin.error ?? '').toLowerCase().includes('timed out'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost can recover an errored plugin after its entry is fixed and reloaded', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-recovery-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const pluginRoot = join(workspaceRoot, 'recoverable-plugin')
+  mkdirSync(pluginRoot, { recursive: true })
+
+  writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+    id: 'recoverable-plugin',
+    name: 'Recoverable Plugin',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    'module.exports.activate = function activate() { throw new Error("broken activation") }\n',
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [{ path: workspaceRoot, source: 'workspace' }])
+
+  try {
+    await host.loadAll()
+    const failed = host.getHomeDataSnapshot().plugins.find((plugin) => plugin.id === 'recoverable-plugin')
+    assert.ok(failed)
+    assert.equal(failed.status, 'error')
+
+    writeFileSync(
+      join(pluginRoot, 'index.js'),
+      `module.exports.activate = function activate(api) {
+        api.contributeDashboardCard({ id: 'recovered', title: 'Recovered', body: 'running' })
+      }\n`,
+      'utf8'
+    )
+    await host.reloadPlugin('recoverable-plugin')
+
+    const snapshot = host.getHomeDataSnapshot()
+    const recovered = snapshot.plugins.find((plugin) => plugin.id === 'recoverable-plugin')
+    assert.ok(recovered)
+    assert.equal(recovered.status, 'running')
+    assert.equal(snapshot.dashboardCards.some((card) => card.id === 'recovered'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost keeps host objects out of the plugin VM and preserves safe timers', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-sandbox-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const pluginRoot = join(workspaceRoot, 'sandbox-probe')
+  mkdirSync(pluginRoot, { recursive: true })
+
+  writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+    id: 'sandbox-probe',
+    name: 'Sandbox Probe',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    `module.exports.activate = function activate(api) {
+      let escaped = false
+      const tryEscape = (probe) => {
+        try {
+          probe()
+          escaped = true
+        } catch {}
+      }
+
+      tryEscape(() => module.constructor.constructor('return process')())
+      tryEscape(() => globalThis.constructor.constructor('return process')())
+      tryEscape(() => console.log.constructor('return process')())
+      tryEscape(() => setTimeout.constructor('return process')())
+      tryEscape(() => api.log.constructor('return process')())
+
+      const detail = api.workspace.getDocumentDetail('doc-1')
+      tryEscape(() => detail.constructor.constructor('return process')())
+
+      try {
+        api.contributeDashboardCard({ id: '', title: 'Invalid', body: 'Invalid' })
+      } catch (error) {
+        tryEscape(() => error.constructor.constructor('return process')())
+      }
+
+      api.contributeDocumentAction(
+        { id: 'inspect-argument', label: 'Inspect argument' },
+        ({ document }) => {
+          try {
+            document.constructor.constructor('return process')()
+            return 'escaped'
+          } catch {
+            return 'blocked'
+          }
+        }
+      )
+
+      const card = api.contributeDashboardCard({
+        id: 'sandbox-status',
+        title: 'Sandbox status',
+        body: escaped ? 'escaped' : 'blocked'
+      })
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          card.update({ body: (escaped ? 'escaped' : 'blocked') + '-timer' })
+          resolve()
+        }, 5)
+      })
+    }
+    `,
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: (documentId: string) => createMockDetail(documentId),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [{ path: workspaceRoot, source: 'workspace' }])
+
+  try {
+    await host.loadAll()
+    const snapshot = host.getHomeDataSnapshot()
+    const plugin = snapshot.plugins.find((item) => item.id === 'sandbox-probe')
+    const card = snapshot.dashboardCards.find((item) => item.id === 'sandbox-status')
+    assert.ok(plugin)
+    assert.ok(card)
+    assert.equal(plugin.status, 'running')
+    assert.equal(card.body, 'blocked-timer')
+
+    const result = await host.runDocumentAction({
+      pluginId: 'sandbox-probe',
+      actionId: 'inspect-argument',
+      documentId: 'doc-1'
+    })
+    assert.equal(result.message, 'blocked')
   } finally {
     await host.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

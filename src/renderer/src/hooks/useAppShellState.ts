@@ -92,6 +92,11 @@ export function useAppShellState() {
         setUiLanguage(value)
       }
       setUiLanguageHydrated(true)
+    }).catch((error) => {
+      if (mounted) {
+        setUiLanguageHydrated(true)
+        console.warn('Failed to load the saved UI language.', error)
+      }
     })
 
     const unsubscribe = window.knowbook.onWorkspaceMutated(() => {

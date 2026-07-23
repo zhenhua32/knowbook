@@ -366,6 +366,50 @@ test('links are re-synced after target title change', () => {
   })
 })
 
+test('content-only document updates rebuild links only for the edited source document', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+    const product = byPath(catalog, 'Home/Product')
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+    const otherSourceId = store.createDocument(home.id)
+
+    store.updateDocument(otherSourceId, {
+      title: 'Other Source',
+      summary: '',
+      blocks: [
+        { type: 'paragraph', content: 'Keep this unrelated link: [[Roadmap]]', checked: false, depth: 0 }
+      ]
+    })
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_unrelated_link_delete
+      BEFORE DELETE ON links
+      WHEN OLD.source_document_id <> '${product.id}'
+      BEGIN
+        SELECT RAISE(ABORT, 'unrelated link deleted');
+      END;
+    `)
+
+    store.updateDocument(product.id, {
+      title: product.title,
+      summary: 'Content-only update',
+      blocks: [
+        { type: 'paragraph', content: 'The edited source now links to [[Home]].', checked: false, depth: 0 }
+      ]
+    })
+
+    const updatedProduct = store.getDocumentDetail(product.id)
+    const otherSource = store.getDocumentDetail(otherSourceId)
+    assert.ok(updatedProduct)
+    assert.ok(otherSource)
+    assert.equal(updatedProduct.outgoingLinks.some((item) => item.id === home.id), true)
+    assert.equal(updatedProduct.outgoingLinks.some((item) => item.id === roadmap.id), false)
+    assert.equal(otherSource.outgoingLinks.some((item) => item.id === roadmap.id), true)
+  })
+})
+
 test('document suggestions and global search return expected ranked matches', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog
@@ -571,8 +615,10 @@ test('updateDocument persists manual block highlight from document input', () =>
 
 test('store throws expected errors for missing entities', () => {
   withStore((store) => {
+    assert.throws(() => store.createDocument('missing-parent'), /Parent document not found/)
     assert.throws(() => store.deleteDocument('missing-id'), /Document not found/)
     assert.throws(() => store.moveDocument('missing-id', null), /Document not found/)
+    assert.throws(() => store.updateDocumentSummary('missing-id', 'summary'), /Document not found/)
     assert.throws(() => store.buildAiPrompt({ documentId: 'missing-id', prompt: 'x' }), /Document not found/)
   })
 })

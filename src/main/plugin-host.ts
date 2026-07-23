@@ -1,4 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import vm from 'node:vm'
 import semver from 'semver'
@@ -248,43 +249,89 @@ export class PluginHost {
       throw new Error(`A user-data plugin with id "${candidate.manifest.id}" is already installed.`)
     }
 
-    if (existingUserPlugin) {
-      await this.deactivatePlugin(existingUserPlugin)
-      this.plugins.delete(existingUserPlugin.manifest.id)
+    const writableRoot = this.getWritableRoot()
+    if (!writableRoot) {
+      throw new Error('No writable plugin root is configured.')
     }
-
-    if (candidate.targetExists) {
-      rmSync(candidate.targetDirectory, { recursive: true, force: true })
-    }
-
-    cpSync(sourceDirectory, candidate.targetDirectory, {
-      recursive: true,
-      errorOnExist: false,
-      force: false
-    })
-
-    await this.reloadAll()
-
-    const installedPlugin = this.plugins.get(candidate.manifest.id)
-    if (!installedPlugin) {
-      throw new Error('Installed plugin could not be discovered after reload.')
-    }
-
+    const operationRoot = resolve(writableRoot, '.knowbook-operations')
+    mkdirSync(operationRoot, { recursive: true })
+    const stagingDirectory = resolve(operationRoot, `install-${candidate.manifest.id}-${randomUUID()}`)
+    const previousDirectory = resolve(operationRoot, `previous-${candidate.manifest.id}-${randomUUID()}`)
     const operation = existingUserPlugin || candidate.targetExists ? 'updated' : 'installed'
     const previousVersion = existingUserPlugin?.manifest.version ?? null
-    this.store.recordWorkspaceEvent({
-      type: operation === 'updated' ? 'plugin.updated' : 'plugin.installed',
-      title: `${operation === 'updated' ? 'Plugin updated' : 'Plugin installed'}: ${installedPlugin.manifest.name}`,
-      description:
-        operation === 'updated'
-          ? `Updated plugin ${installedPlugin.manifest.name} from ${previousVersion ?? 'an unknown version'} to ${installedPlugin.manifest.version}.`
-          : `Installed plugin ${installedPlugin.manifest.name} into ${candidate.targetDirectory}.`
-    })
+    let previousDirectoryCreated = false
+    let targetReplaced = false
 
-    return {
-      plugin: this.toPluginDescriptor(installedPlugin),
-      operation,
-      previousVersion
+    try {
+      cpSync(sourceDirectory, stagingDirectory, {
+        recursive: true,
+        errorOnExist: true,
+        force: false
+      })
+      const stagedManifest = this.parseManifest(join(stagingDirectory, 'plugin.json'))
+      if (stagedManifest.id !== candidate.manifest.id) {
+        throw new Error('Staged plugin manifest id changed during installation.')
+      }
+      this.validatePluginPackageDirectory(stagingDirectory, stagedManifest)
+
+      if (existingUserPlugin) {
+        await this.deactivatePlugin(existingUserPlugin)
+        this.plugins.delete(existingUserPlugin.manifest.id)
+      }
+
+      if (candidate.targetExists) {
+        renameSync(candidate.targetDirectory, previousDirectory)
+        previousDirectoryCreated = true
+      }
+      renameSync(stagingDirectory, candidate.targetDirectory)
+      targetReplaced = true
+
+      try {
+        await this.reloadAll()
+        const installedPlugin = this.plugins.get(candidate.manifest.id)
+        if (!installedPlugin) {
+          throw new Error('Installed plugin could not be discovered after reload.')
+        }
+        if (installedPlugin.status === 'error') {
+          throw new Error(installedPlugin.error || 'Installed plugin failed to activate.')
+        }
+
+        this.store.recordWorkspaceEvent({
+          type: operation === 'updated' ? 'plugin.updated' : 'plugin.installed',
+          title: `${operation === 'updated' ? 'Plugin updated' : 'Plugin installed'}: ${installedPlugin.manifest.name}`,
+          description:
+            operation === 'updated'
+              ? `Updated plugin ${installedPlugin.manifest.name} from ${previousVersion ?? 'an unknown version'} to ${installedPlugin.manifest.version}.`
+              : `Installed plugin ${installedPlugin.manifest.name} into ${candidate.targetDirectory}.`
+        })
+
+        if (previousDirectoryCreated) {
+          try {
+            rmSync(previousDirectory, { recursive: true, force: true })
+          } catch (error) {
+            console.warn(`Failed to remove previous plugin directory ${previousDirectory}.`, error)
+          }
+        }
+
+        return {
+          plugin: this.toPluginDescriptor(installedPlugin),
+          operation,
+          previousVersion
+        }
+      } catch (error) {
+        if (targetReplaced && existsSync(candidate.targetDirectory)) {
+          rmSync(candidate.targetDirectory, { recursive: true, force: true })
+        }
+        if (previousDirectoryCreated && existsSync(previousDirectory)) {
+          renameSync(previousDirectory, candidate.targetDirectory)
+        }
+        await this.reloadAll()
+        throw error
+      }
+    } finally {
+      if (existsSync(stagingDirectory)) {
+        rmSync(stagingDirectory, { recursive: true, force: true })
+      }
     }
   }
 
@@ -300,7 +347,12 @@ export class PluginHost {
 
     await this.deactivatePlugin(plugin)
     this.plugins.delete(pluginId)
-    rmSync(plugin.directory, { recursive: true, force: true })
+    try {
+      rmSync(plugin.directory, { recursive: true, force: true })
+    } catch (error) {
+      await this.reloadAll()
+      throw error
+    }
     await this.reloadAll()
     this.store.recordWorkspaceEvent({
       type: 'plugin.removed',
@@ -329,7 +381,19 @@ export class PluginHost {
       return
     }
 
-    const nextManifest = this.parseManifest(manifestPath)
+    let nextManifest: PluginManifest
+    try {
+      nextManifest = this.parseManifest(manifestPath)
+    } catch (error) {
+      plugin.status = 'error'
+      plugin.error = error instanceof Error ? error.message : 'Plugin manifest is invalid.'
+      this.store.recordWorkspaceEvent({
+        type: 'plugin.reloaded',
+        title: `Plugin reload failed: ${plugin.manifest.name}`,
+        description: plugin.error
+      })
+      return
+    }
     if (nextManifest.id !== pluginId) {
       plugin.status = 'error'
       plugin.error = `Plugin manifest id changed from ${pluginId} to ${nextManifest.id}. Use full reload to re-index plugin ids.`
@@ -452,14 +516,14 @@ export class PluginHost {
       })
       return normalizedResult
     } catch (error) {
-      const errorMessage = this.getPluginErrorMessage(error, 'Unknown plugin action error.')
+      const errorMessage = this.getPluginErrorMessage(plugin, error, 'Unknown plugin action error.')
       this.store.recordWorkspaceEvent({
         type: 'plugin.action.failed',
         title: `${plugin.manifest.name}: ${action.action.label}`,
         description: errorMessage,
         documentId: document.id
       })
-      throw error
+      throw new Error(errorMessage)
     }
   }
 
@@ -664,6 +728,18 @@ export class PluginHost {
     return this.roots.find((root) => root.source === 'user-data')?.path ?? null
   }
 
+  private validatePluginPackageDirectory(directory: string, manifest: PluginManifest): void {
+    const entryPath = resolve(directory, manifest.entry ?? 'index.js')
+    if (!this.isPathInsideRoot(entryPath, directory) || !existsSync(entryPath)) {
+      throw new Error('Plugin entry is missing or outside the plugin directory.')
+    }
+
+    const resolvedEntryPath = realpathSync(entryPath)
+    if (!this.isPathInsideRoot(resolvedEntryPath, realpathSync(directory)) || !statSync(resolvedEntryPath).isFile()) {
+      throw new Error('Plugin entry must be a file inside the plugin directory.')
+    }
+  }
+
   private isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
     const relativePath = relative(resolve(rootPath), resolve(candidatePath))
     return relativePath.length > 0 && relativePath !== '..' && !relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(relativePath)
@@ -703,9 +779,11 @@ export class PluginHost {
   }
 
   private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {
-    if (plugin.status === 'error') {
-      return
+    if (plugin.context) {
+      await this.deactivatePlugin(plugin)
     }
+    plugin.status = 'disabled'
+    plugin.error = undefined
 
     // Check version compatibility
     if (!isPluginVersionCompatible(plugin.manifest, this.currentVersion)) {
@@ -741,7 +819,7 @@ export class PluginHost {
       }
 
       const source = readFileSync(entryPath, 'utf8')
-      const context = vm.createContext({}, {
+      const context = vm.createContext(Object.create(null), {
         name: `knowbook-plugin-${plugin.manifest.id}`,
         codeGeneration: {
           strings: false,
@@ -796,7 +874,7 @@ export class PluginHost {
       plugin.status = 'running'
     } catch (error) {
       plugin.status = 'error'
-      plugin.error = this.getPluginErrorMessage(error, 'Plugin activation failed.')
+      plugin.error = this.getPluginErrorMessage(plugin, error, 'Plugin activation failed.')
       this.releasePluginRuntime(plugin)
     }
   }
@@ -818,7 +896,10 @@ export class PluginHost {
       try {
         await this.invokePluginFunction(plugin, plugin.dispose, [], 'dispose')
       } catch (error) {
-        console.error(`Plugin ${plugin.manifest.id} dispose failed.`, error)
+        console.error(
+          `Plugin ${plugin.manifest.id} dispose failed.`,
+          this.getPluginErrorMessage(plugin, error, 'Unknown dispose error.')
+        )
       }
     }
 
@@ -1404,7 +1485,7 @@ export class PluginHost {
   }
 
   private handlePluginError(plugin: RegisteredPlugin, phase: string, error: unknown): void {
-    const errorMessage = this.getPluginErrorMessage(error, `Unknown error during ${phase}.`)
+    const errorMessage = this.getPluginErrorMessage(plugin, error, `Unknown error during ${phase}.`)
     plugin.status = 'error'
     plugin.error = errorMessage
     this.releasePluginRuntime(plugin)
@@ -1412,15 +1493,49 @@ export class PluginHost {
     plugin.documentActions.clear()
     plugin.settings.clear()
     plugin.eventHandlers = []
-    console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, error)
+    console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, errorMessage)
   }
 
-  private getPluginErrorMessage(error: unknown, fallback: string): string {
+  private getPluginErrorMessage(plugin: RegisteredPlugin, error: unknown, fallback: string): string {
     if (error instanceof Error && error.message) {
       return error.message
     }
     if (typeof error === 'string' && error.trim()) {
       return error.trim()
+    }
+
+    const context = plugin.context
+    if (context) {
+      const errorKey = `__knowbookError${++this.invocationSequence}`
+      const contextRecord = context as vm.Context & Record<string, unknown>
+      Object.defineProperty(contextRecord, errorKey, {
+        configurable: true,
+        enumerable: false,
+        value: error,
+        writable: false
+      })
+      try {
+        const message = new vm.Script(`
+          (() => {
+            try {
+              const value = ${errorKey}
+              return value && typeof value.message === 'string' ? value.message : ''
+            } catch {
+              return ''
+            }
+          })()
+        `).runInContext(context, {
+          timeout: PLUGIN_SYNC_TIMEOUT_MS,
+          displayErrors: false
+        })
+        if (typeof message === 'string' && message.trim()) {
+          return message.trim().slice(0, 4_000)
+        }
+      } catch {
+        // The fallback below is intentionally host-owned and does not inspect the plugin value.
+      } finally {
+        delete contextRecord[errorKey]
+      }
     }
     return fallback
   }

@@ -5,7 +5,21 @@ export function CrossDocumentBlockReference({ documentPath, blockId }: { documen
   const [blockRef, setBlockRef] = useState<BlockReferenceResult | null>(null)
 
   useEffect(() => {
-    window.knowbook.getBlockReference(documentPath, blockId).then(setBlockRef)
+    let cancelled = false
+    setBlockRef(null)
+    void window.knowbook.getBlockReference(documentPath, blockId).then((result) => {
+      if (!cancelled) {
+        setBlockRef(result)
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        console.warn('Failed to resolve cross-document block reference.', error)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [documentPath, blockId])
 
   if (!blockRef) {
