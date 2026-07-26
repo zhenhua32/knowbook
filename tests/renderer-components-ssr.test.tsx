@@ -129,6 +129,29 @@ test('DocumentOutlinePanel SSR uses empty heading fallback labels', () => {
   assert.equal(html.includes('Untitled H2'), true)
 })
 
+test('DocumentOutlinePanel SSR nests level 2 headings under the preceding level 1 heading', () => {
+  const html = renderToStaticMarkup(
+    <DocumentOutlinePanel
+      title="Outline"
+      items={[
+        { index: 0, level: 1, title: 'Introduction' },
+        { index: 1, level: 2, title: 'Context' },
+        { index: 2, level: 2, title: 'Goals' },
+        { index: 3, level: 1, title: 'Implementation' }
+      ]}
+      emptyHeadingTitleLevel1="Untitled H1"
+      emptyHeadingTitleLevel2="Untitled H2"
+      onSelect={() => undefined}
+    />
+  )
+
+  assert.match(
+    html,
+    /toc-entry-h1[^]*Introduction[^]*toc-children[^]*Context[^]*Goals[^]*<\/ol><\/li><li class="toc-entry toc-entry-h1"[^]*Implementation/
+  )
+  assert.equal((html.match(/class="toc-children"/g) ?? []).length, 1)
+})
+
 test('CodeBlockLanguageSelector SSR exposes current language and localized placeholder', () => {
   const zh = renderToStaticMarkup(
     <CodeBlockLanguageSelector

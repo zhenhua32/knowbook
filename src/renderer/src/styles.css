@@ -4888,25 +4888,54 @@ select:focus-visible {
 }
 
 .toc-list {
-  flex-flow: row wrap;
-  gap: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin-top: 7px;
+  padding: 0;
+  list-style: none;
 }
 
-.toc-item,
-.toc-item-h1,
-.toc-item-h2 {
-  width: auto;
+.toc-entry {
+  min-width: 0;
+  list-style: none;
+}
+
+.toc-list > .toc-entry-h2 {
+  padding-left: 25px;
+}
+
+.toc-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 5px 12px;
+  padding: 0 0 0 12px;
+  border-left: 1px solid var(--kb-line);
+  list-style: none;
+}
+
+.toc-item {
+  width: 100%;
   padding: 5px 8px;
   border-radius: 7px;
-  background: #f6f7fa;
+  background: transparent;
   color: var(--kb-text-soft);
   font-size: 11px;
+  text-align: left;
+}
+
+.toc-item-h1 {
+  font-weight: 700;
+}
+
+.toc-item-h2 {
+  color: var(--kb-text-muted);
   font-weight: 550;
 }
 
 .toc-item:hover {
-  background: var(--kb-accent-soft);
+  background: #f6f7fa;
   color: var(--kb-accent-strong);
 }
 
