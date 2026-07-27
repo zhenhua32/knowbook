@@ -19,7 +19,7 @@ const requiredFiles = [
   '.github/workflows/release.yml',
   'build/icon.png',
   '发布与签名说明.md',
-  '首个正式发版流程.md'
+  '发版流程.md'
 ]
 
 const failures = []

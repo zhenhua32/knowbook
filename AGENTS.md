@@ -19,7 +19,7 @@
 
 ## Test / Verification
 - Unit/integration tests: `tests/` (Node-style `node:test` in main process)
-- E2E tests: `e2e-tests/` (Playwright; config in `playwright.config.ts`)
+- E2E tests: `e2e-tests/` (Playwright Electron; `npm run test:e2e` builds the app first)
 - Run tests: `npm run test`
 - Lint/typecheck: `npm run typecheck` (no separate lint script; use tsc)
 - After changes, at minimum run: `npm run typecheck && npm run test`
@@ -41,7 +41,7 @@
 ## Important Conventions & Quirks
 - **Database file location**: `app.getPath('userData')/storage/knowbook.db` (created by main). Tests create isolated temp DBs.
 - **AI & related notes**: Optional OpenAI-compatible endpoints. Related-note retrieval uses local keyword matching over document title, summary, and block content. Auto-summary runs via an event-bus subscriber on document update when AI is enabled.
-- **Plugins**: Two plugin roots — workspace `plugins/` (dev) and user-data `plugins/`. Workspace plugins can't be replaced by user install (error); user-data plugins can be replaced. Plugin manifest fields: id, name, version, entry (optional), enabledByDefault.
+- **Plugins**: Two plugin roots — workspace `plugins/` (dev) and user-data `plugins/`. Workspace plugins can't be replaced by user install (error); user-data plugins can be replaced. Plugin manifest fields: id, name, version, entry (optional), enabledByDefault, engines.knowbook (optional).
 - **Document tree**: Hierarchical by `parentId`. Path is materialized (e.g., `Home/Product/Specs`). Renaming/moving rewrites descendant paths automatically. Path normalization uses title; siblings get `Untitled`, `Untitled 1`, ... on conflict.
 - **Block references & linking**: Stored as `blockId` references. When a document title changes, link labels are updated; outgoing/incoming links are computed via markdown link parsing.
 - **Database columns**: Types include `text`/`select`/`multi-select`/`checkbox`/`date`. Select/multi-select validation and option pruning occur when options change (invalid values become undefined).
@@ -66,11 +66,11 @@
 - `better-sqlite3` is native — after `npm install`, `postinstall` rebuilds it. CI/test environments must provide build tools or skip native modules.
 - Always run `npm run typecheck` before committing — strict TypeScript with path mappings (`@renderer`, `@shared`).
 - IPC payloads must match `contracts.ts` exactly — mismatches cause runtime type errors in renderer.
-- E2E tests (Playwright) expect dev server on `http://localhost:5173`; CI config sets retries and trace-on-first-retry.
+- E2E tests launch the built Electron app through `e2e-tests/helpers/electron.ts`; run `npm run test:e2e` so `out/` exists first.
 
 ## Adding Tests
 - Main-process tests: use `node:test` + temp DB factory (`withStore` pattern from existing tests).
-- Renderer tests: existing tests use React testing patterns (`@testing-library/react` style); see `tests/renderer-*.test.tsx`.
+- Renderer tests: existing coverage mixes SSR rendering tests and source-level behavior/structure assertions; see `tests/renderer-*.test.ts(x)`.
 - E2E: add `.spec.ts` in `e2e-tests/` and update `playwright.config.ts` if needed.
 
 ## References (kept intentionally minimal)
