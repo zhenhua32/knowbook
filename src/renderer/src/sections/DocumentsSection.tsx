@@ -171,6 +171,32 @@ export function DocumentsSection({
     window.addEventListener('pointercancel', stopResizing)
   }, [clampAuxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
 
+  const handleAuxPanelResizeKeyDown: KeyboardEventHandler<HTMLDivElement> = useCallback((event) => {
+    if (!showAuxPanel) {
+      return
+    }
+
+    const step = event.shiftKey ? 48 : 16
+    let nextWidth: number | null = null
+
+    if (event.key === 'ArrowLeft') {
+      nextWidth = effectiveAuxPanelWidth + step
+    } else if (event.key === 'ArrowRight') {
+      nextWidth = effectiveAuxPanelWidth - step
+    } else if (event.key === 'Home') {
+      nextWidth = 280
+    } else if (event.key === 'End') {
+      nextWidth = clampAuxPanelWidth(760)
+    }
+
+    if (nextWidth === null) {
+      return
+    }
+
+    event.preventDefault()
+    onAuxPanelWidthChange(clampAuxPanelWidth(nextWidth))
+  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+
   const workspaceGridStyle = useMemo<CSSProperties | undefined>(() => {
     if (!showAuxPanel) {
       return undefined
@@ -244,9 +270,16 @@ export function DocumentsSection({
 
       {showAuxPanel ? (
         <div
-          aria-hidden="true"
+          aria-label={previewHeaderProps.isZh ? '调整辅助区宽度' : 'Resize auxiliary panel'}
+          aria-orientation="vertical"
+          aria-valuemax={clampAuxPanelWidth(760)}
+          aria-valuemin={280}
+          aria-valuenow={effectiveAuxPanelWidth}
           className={`document-aux-resizer${isResizingAuxPanel ? ' document-aux-resizer-active' : ''}`}
+          onKeyDown={handleAuxPanelResizeKeyDown}
           onPointerDown={handleAuxPanelResizeStart}
+          role="separator"
+          tabIndex={0}
         >
           <span className="document-aux-resizer-handle" />
         </div>

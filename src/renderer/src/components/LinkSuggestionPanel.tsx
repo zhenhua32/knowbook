@@ -32,7 +32,7 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
       <div className="relation-list">
         {blockSuggestions.length > 0 && (
           <>
-            <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{blocksLabel}</p>
+            <p className="panel-label link-helper-section-label">{blocksLabel}</p>
             {blockSuggestions.map((block) => (
               <button
                 className="relation-chip"
@@ -48,7 +48,7 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
         )}
         {linkSuggestions.length > 0 && (
           <>
-            <p className="panel-label" style={{ marginTop: '12px', fontSize: '0.85rem' }}>{linkedDocsLabel}</p>
+            <p className="panel-label link-helper-section-label">{linkedDocsLabel}</p>
             {linkSuggestions.map((suggestion) => (
               <button
                 className="relation-chip"

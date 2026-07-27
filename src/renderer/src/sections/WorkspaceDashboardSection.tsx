@@ -30,7 +30,7 @@ export function WorkspaceDashboardSection({
           <h2>{ui.workspaceStatusTitle}</h2>
           <p className="hero-copy">{ui.workspaceStatusBody}</p>
         </div>
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        <div className="settings-actions">
           <button className="secondary-button" onClick={onRestoreBackup} type="button">
             {ui.restoreBackup}
           </button>

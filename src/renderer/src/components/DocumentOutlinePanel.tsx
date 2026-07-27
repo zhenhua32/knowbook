@@ -47,7 +47,7 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
   )
 
   return (
-    <div className="toc-panel">
+    <div className="document-outline-panel toc-panel">
       <p className="panel-label">{title}</p>
       <nav aria-label={title}>
         <ol className="toc-list">

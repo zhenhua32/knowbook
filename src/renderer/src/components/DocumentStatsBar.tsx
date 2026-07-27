@@ -26,7 +26,7 @@ export function DocumentStatsBar(props: DocumentStatsBarProps) {
   } = props
 
   return (
-    <div className="doc-stats-bar">
+    <div className="document-stats-bar doc-stats-bar">
       <span className="doc-stat"><strong>{blockCount}</strong> {blocksLabel}</span>
       <span className="doc-stat-divider">·</span>
       <span className="doc-stat"><strong>{wordCount}</strong> {wordsLabel}</span>

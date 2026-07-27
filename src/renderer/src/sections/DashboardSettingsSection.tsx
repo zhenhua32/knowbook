@@ -144,7 +144,7 @@ export function DashboardSettingsSection({
           </div>
         </dl>
         {isSettingsPage ? (
-          <div className="editor-fields" style={{ marginTop: '16px' }}>
+          <div className="editor-fields settings-editor-fields">
             <label className="editor-label">
               {ui.languageSwitchLabel}
               <select className="editor-input" onChange={(event) => onUiLanguageChange(event.target.value as UiLanguage)} value={uiLanguage}>
@@ -191,8 +191,8 @@ export function DashboardSettingsSection({
             <div className="settings-card">
               <div>
                 <p className="panel-label">{ui.webClipBridgeLabel}</p>
-                <h3 style={{ margin: '4px 0 0' }}>{ui.webClipBridgeTitle}</h3>
-                <p style={{ margin: '8px 0 0', color: 'rgba(91, 72, 44, 0.76)' }}>{ui.webClipBridgeDescription}</p>
+                <h3 className="settings-card-title">{ui.webClipBridgeTitle}</h3>
+                <p className="settings-card-description">{ui.webClipBridgeDescription}</p>
               </div>
               <label className="toggle-row">
                 <input checked={webClipBridgeEnabledDraft} onChange={(event) => onWebClipBridgeEnabledChange(event.target.checked)} type="checkbox" />
@@ -221,7 +221,7 @@ export function DashboardSettingsSection({
                 </div>
               </dl>
               <p className="mini-hint">{ui.webClipBridgeHint}</p>
-              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <div className="settings-actions">
                 <button className="secondary-button" disabled={webClipBridgeSaving} onClick={onSaveWebClipBridgeSettings} type="button">
                   {webClipBridgeSaving ? ui.common.saving : ui.webClipBridgeSave}
                 </button>
@@ -241,8 +241,8 @@ export function DashboardSettingsSection({
             >
               <div>
                 <p className="panel-label">{ui.appUpdateLabel}</p>
-                <h3 style={{ margin: '4px 0 0' }}>{ui.appUpdateTitle}</h3>
-                <p style={{ margin: '8px 0 0', color: 'rgba(91, 72, 44, 0.76)' }}>{ui.appUpdateDescription}</p>
+                <h3 className="settings-card-title">{ui.appUpdateTitle}</h3>
+                <p className="settings-card-description">{ui.appUpdateDescription}</p>
               </div>
               <dl className="meta-grid">
                 <div>
@@ -264,11 +264,11 @@ export function DashboardSettingsSection({
               </dl>
               <div>
                 <strong>{ui.releaseNotesLabel}</strong>
-                <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', color: 'rgba(91, 72, 44, 0.8)' }}>
+                <p className="settings-release-notes">
                   {appUpdateState?.releaseNotes ?? ui.noReleaseNotes}
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <div className="settings-actions">
                 <button
                   className="secondary-button"
                   disabled={appUpdateRefreshing || appUpdateState?.status === 'checking' || appUpdateState?.updatesEnabled === false}

@@ -51,7 +51,6 @@ export function DocumentTreeContextMenu(props: DocumentTreeContextMenuProps) {
         className="context-menu-overlay"
         onClick={onClose}
         onContextMenu={(event) => event.preventDefault()}
-        style={{ position: 'fixed', inset: 0 }}
       />
 
       <div

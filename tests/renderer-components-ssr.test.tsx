@@ -28,6 +28,7 @@ test('DocumentStatsBar SSR hides optional counters when zero', () => {
 
   assert.equal(html.includes('10</strong> blocks'), true)
   assert.equal(html.includes('100</strong> words'), true)
+  assert.equal(html.includes('class="document-stats-bar doc-stats-bar"'), true)
   assert.equal(html.includes('500</strong> chars'), true)
   assert.equal(html.includes('code</span>'), false)
   assert.equal(html.includes('todos</span>'), false)
@@ -127,6 +128,7 @@ test('DocumentOutlinePanel SSR uses empty heading fallback labels', () => {
   assert.equal(html.includes('Outline'), true)
   assert.equal(html.includes('Untitled H1'), true)
   assert.equal(html.includes('Untitled H2'), true)
+  assert.equal(html.includes('class="document-outline-panel toc-panel"'), true)
 })
 
 test('DocumentOutlinePanel SSR nests level 2 headings under the preceding level 1 heading', () => {

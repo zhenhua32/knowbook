@@ -232,7 +232,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
                 onDropOnNode={onDropOnNode}
               />
             ) : (
-              <div style={{ padding: '20px', textAlign: 'center', color: '#6b5b4a', fontSize: '13px' }}>
+              <div className="sidebar-empty-state">
                 {isZh ? '还没有文档' : 'No documents yet'}
               </div>
             )}

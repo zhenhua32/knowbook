@@ -414,7 +414,7 @@ export function DatabaseSection({
 
             {standalone.databases.length > 0 ? (
               <>
-                <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px' }}>
+                <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced">
                   {standalone.databases.map((database) => (
                     <button
                       className={database.id === standalone.entityDatabaseId ? 'primary-button' : 'secondary-button'}
@@ -429,7 +429,7 @@ export function DatabaseSection({
 
                 {standalone.selectedDatabase ? (
                   <>
-                    <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
+                    <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
                       <span className="pill">{ui.databaseSavedViewsLabel}</span>
                       <select
                         className="editor-input database-saved-view-select"
@@ -501,7 +501,7 @@ export function DatabaseSection({
 
                     {standalone.databaseEntities.length > 0 ? (
                       <>
-                        <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
+                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
                           <input
                             className="editor-input database-entity-filter-query"
                             onChange={(event) => standalone.onFilterQueryChange(event.target.value)}
@@ -548,7 +548,7 @@ export function DatabaseSection({
                           <span className="pill">{ui.filteredRowsCount(standalone.filteredEntityRows.length, standalone.databaseEntities.length)}</span>
                         </div>
 
-                        <div className="toolbar-inline" style={{ flexWrap: 'wrap', marginBottom: '12px', justifyContent: 'flex-start' }}>
+                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
                           <button
                             className="secondary-button database-entity-select-visible-button"
                             disabled={standalone.filteredEntityRows.length === 0}
@@ -578,7 +578,7 @@ export function DatabaseSection({
                                 <p className="panel-label">{ui.databaseEntityBulkEditLabel}</p>
                                 <h4>{ui.databaseEntityBulkEditTitle(selectedEntityCount)}</h4>
                               </div>
-                              <div className="toolbar-inline" style={{ justifyContent: 'flex-start' }}>
+                              <div className="toolbar-inline toolbar-inline-start">
                                 <button
                                   className="secondary-button database-entity-bulk-document-clear-button"
                                   disabled={!standalone.selectedEntitiesHaveLinkedDocument}
@@ -651,7 +651,7 @@ export function DatabaseSection({
                               selectedEntityIds={standalone.selectedEntityIdSet}
                             />
                           ) : (
-                            <div className="document-list" style={{ marginBottom: '16px' }}>
+                            <div className="document-list database-document-list-spaced">
                               {standalone.filteredEntityRows.map(({ entity, linkedDocument }) => {
                                 const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
 
@@ -681,7 +681,7 @@ export function DatabaseSection({
                                           </button>
                                         </div>
                                       </div>
-                                      <label className="editor-label" style={{ marginBottom: '12px' }}>
+                                      <label className="editor-label database-editor-label-spaced">
                                         {ui.linkToDocumentOptional}
                                         <select
                                           className="editor-input database-entity-document-select"
