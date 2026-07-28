@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -234,6 +234,51 @@ test('MarkdownBackupService replaces stale files and keeps unsafe document paths
     documents = []
     service.exportAll()
     assert.equal(existsSync(staleFile), false)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownBackupService keeps documents in the reserved metadata namespace', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-reserved-path-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = {
+    getExportDocuments: () => [{
+      id: 'reserved-document',
+      title: 'index',
+      path: '__knowbook/databases/index',
+      summary: 'Must not be overwritten by the database manifest.',
+      updatedAt: '2026-05-02T00:00:00.000Z',
+      documentDatabaseColumns: [],
+      documentDatabaseFieldValues: {},
+      blocks: [{
+        id: 'reserved-block',
+        type: 'paragraph',
+        content: 'Reserved document body',
+        checked: false,
+        depth: 0,
+        parentBlockId: null,
+        sortOrder: 0
+      }]
+    }],
+    getExportStandaloneDatabases: () => [],
+    saveSetting: () => undefined
+  }
+
+  try {
+    new MarkdownBackupService(store as never, backupRoot).exportAll()
+
+    const manifestPath = join(backupRoot, '__knowbook', 'databases', 'index.md')
+    const escapedRoot = readdirSync(backupRoot).find((entry) => entry.startsWith('__knowbook-document-'))
+    assert.ok(escapedRoot)
+    const documentPath = join(backupRoot, escapedRoot, 'databases', 'index.md')
+
+    const manifest = parseMarkdownBackupDocument(readFileSync(manifestPath, 'utf8'))
+    const document = parseMarkdownBackupDocument(readFileSync(documentPath, 'utf8'))
+    assert.equal(manifest.frontmatter.kind, 'standalone-database-manifest')
+    assert.equal(document.frontmatter.id, 'reserved-document')
+    assert.equal(document.frontmatter.path, '__knowbook/databases/index')
+    assert.equal(document.blocks[0]?.content, 'Reserved document body')
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 function getTitleInput(page: Page) {
   return page.locator('.document-summary-card .editor-input').first()
@@ -29,6 +29,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
 
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(nextTitle)
@@ -59,6 +60,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(parentTitle)
       await getSummaryInput(page).fill(`Parent summary ${uniqueSuffix}`)
@@ -67,6 +69,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(parentTitle)
 
       await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(childTitle)
       await getSummaryInput(page).fill(`Child summary ${uniqueSuffix}`)
@@ -100,12 +103,14 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(sourceParentTitle)
       await getSummaryInput(page).fill(`Source parent summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(targetParentTitle)
       await getSummaryInput(page).fill(`Target parent summary ${uniqueSuffix}`)
@@ -113,12 +118,14 @@ test.describe('Document CRUD Operations @electron', () => {
 
       await getTreeButton(page, sourceParentTitle).click()
       await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(childTitle)
       await getSummaryInput(page).fill(`Child summary ${uniqueSuffix}`)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
       await getTitleInput(page).fill(grandchildTitle)
       await getSummaryInput(page).fill(`Grandchild summary ${uniqueSuffix}`)
@@ -137,6 +144,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(`${targetParentTitle}/${childTitle}`)
 
       await getTreeButton(page, grandchildTitle).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(grandchildTitle)
       await expect(page.locator('.document-path')).toContainText(`${targetParentTitle}/${childTitle}/${grandchildTitle}`)
     })

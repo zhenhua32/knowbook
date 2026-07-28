@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type MockAiRequest = {
   method: string
@@ -124,6 +124,7 @@ async function openAiPage(page: Page): Promise<void> {
 
 async function createRootDocument(page: Page, title: string, body: string): Promise<void> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
   await getTitleInput(page).fill(title)
   await getBodyEditor(page).fill(body)
@@ -133,6 +134,7 @@ async function createRootDocument(page: Page, title: string, body: string): Prom
 
 async function createFreshDocumentEditor(page: Page): Promise<Locator> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
 
   const editor = page.locator('textarea.block-inline-textarea').nth(1)
@@ -261,6 +263,7 @@ test.describe('AI Settings @electron', () => {
         await saveAiSettings(page, mockAiServer.baseUrl, 'gpt-4.1-mini', true)
 
         await openDocumentsPage(page)
+        await ensureDocumentMetadataEditor(page)
         await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')
 
         await openAiPage(page)
@@ -273,6 +276,7 @@ test.describe('AI Settings @electron', () => {
         await expect.poll(() => mockAiServer.requests.filter((request) => request.url === '/chat/completions').length).toBe(summaryRequestCountBeforeRun + 1)
 
         await openDocumentsPage(page)
+        await ensureDocumentMetadataEditor(page)
         await expect(getSummaryInput(page)).toHaveValue(generatedSummary)
       })
 
@@ -333,6 +337,7 @@ test.describe('AI Settings @electron', () => {
         await page.waitForTimeout(1_000)
         await openDashboardPage(page)
         await openDocumentsPage(page)
+        await ensureDocumentMetadataEditor(page)
         await expect(getSummaryInput(page)).toHaveValue(manualSummary)
       })
     } finally {

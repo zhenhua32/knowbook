@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 function getTitleInput(page: Page): Locator {
   return page.locator('.document-summary-card .editor-input').first()
@@ -19,6 +19,7 @@ function getTreeButton(page: Page, title: string): Locator {
 
 async function createRootDocument(page: Page, title: string, body: string): Promise<void> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
   await getTitleInput(page).fill(title)
   await getBodyEditor(page).fill(body)

@@ -565,7 +565,7 @@ export class KnowbookStore {
     `)
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
-      SET path = REPLACE(path, ?, ?)
+      SET path = ? || substr(path, ?)
       WHERE path LIKE ? ESCAPE '\\'
     `)
     const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
@@ -578,7 +578,8 @@ export class KnowbookStore {
       updateDocumentStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
 
       if (newPath !== oldPath) {
-        updateDescendantsStatement.run(`${oldPath}/`, `${newPath}/`, `${this.escapeLikePattern(oldPath)}/%`)
+        const oldPrefix = `${oldPath}/`
+        updateDescendantsStatement.run(`${newPath}/`, oldPrefix.length + 1, `${this.escapeLikePattern(oldPath)}/%`)
       }
 
       deleteBlocksStatement.run(documentId)
@@ -661,7 +662,7 @@ export class KnowbookStore {
     `)
     const rewriteDescendantPathStatement = this.db.prepare(`
       UPDATE documents
-      SET path = REPLACE(path, ?, ?), updated_at = ?
+      SET path = ? || substr(path, ?), updated_at = ?
       WHERE path LIKE ? ESCAPE '\\'
     `)
     const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
@@ -674,7 +675,7 @@ export class KnowbookStore {
 
     const transaction = this.db.transaction(() => {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
-      rewriteDescendantPathStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
       this.resyncLinksForAllDocuments()
     })
@@ -733,13 +734,13 @@ export class KnowbookStore {
     `)
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
-      SET path = REPLACE(path, ?, ?), updated_at = ?
+      SET path = ? || substr(path, ?), updated_at = ?
       WHERE path LIKE ? ESCAPE '\\'
     `)
 
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
-      updateDescendantsStatement.run(oldPrefix, newPrefix, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       this.resyncLinksForAllDocuments()
     })
 

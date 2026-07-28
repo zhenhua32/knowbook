@@ -1,8 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function createFreshDocumentEditor(page: Page): Promise<Locator> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(page.locator('.document-summary-card .editor-input').first()).toHaveValue(/Untitled/i)
 
   const editor = page.locator('textarea.block-inline-textarea').nth(1)

@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 function getPluginItem(page: Page): Locator {
   return page.locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
@@ -45,6 +45,7 @@ async function openDocumentsPage(page: Page): Promise<void> {
 
 async function createRootDocument(page: Page, title: string, body: string): Promise<string> {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
   const initialTitle = await getTitleInput(page).inputValue()
   await getTitleInput(page).fill(title)

@@ -22,6 +22,16 @@ export function uiText(en: string, zh: string): RegExp {
   return new RegExp(`^(?:${escapeForRegExp(en)}|${escapeForRegExp(zh)})$`, 'i')
 }
 
+export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
+  const titleInput = page.locator('.document-summary-card .editor-input').first()
+  if (!await titleInput.isVisible().catch(() => false)) {
+    const editButton = page.locator('.document-summary-edit-button')
+    await expect(editButton).toBeVisible()
+    await editButton.click()
+  }
+  await expect(titleInput).toBeVisible()
+}
+
 export async function launchElectronApp(): Promise<ElectronAppContext> {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
   const app = await electron.launch({

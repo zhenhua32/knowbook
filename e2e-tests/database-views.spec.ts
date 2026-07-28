@@ -91,8 +91,7 @@ async function createStandaloneTextEntity(page: Page, fieldLabel: string, value:
   await form.getByRole('button', { name: uiText('Create Entity', '创建实体') }).click()
 
   const flashMessage = page.locator('.flash-message')
-  await expect(flashMessage).toBeVisible()
-  expect(await flashMessage.textContent()).toMatch(/Database entity created successfully\.|数据库实体已创建。/)
+  await expect(flashMessage).toContainText(/Database entity created successfully\.|数据库实体已创建。/)
 }
 
 async function getStandaloneEntityTextValues(page: Page): Promise<string[]> {

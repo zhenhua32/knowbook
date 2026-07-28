@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 function getTitleInput(page: Page) {
   return page.locator('.document-summary-card .editor-input').first()
@@ -11,6 +11,7 @@ function getSummaryInput(page: Page) {
 
 async function createRootDocument(page: Page, title: string) {
   await page.getByTitle(uiText('New root', '新建根文档')).click()
+  await ensureDocumentMetadataEditor(page)
   await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
   await getTitleInput(page).fill(title)
   await getSummaryInput(page).fill(`Menu summary ${title}`)

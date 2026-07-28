@@ -36,9 +36,8 @@ type PluginDocumentActionHandler = (context: { document: DocumentDetail }) =>
   | void
   | string
   | { message?: string; refreshDocument?: boolean }
-  | Promise<void | string | { message?: string; refreshDocument?: boolean }>
 
-type PluginEventHandler = (event: WorkspaceEvent) => void | Promise<void>
+type PluginEventHandler = (event: WorkspaceEvent) => void
 
 type RegisteredDocumentAction = {
   action: PluginDocumentAction
@@ -66,7 +65,7 @@ type RegisteredPlugin = {
   settings: Map<string, RegisteredPluginSetting>
   eventHandlers: Array<{ eventTypes: Set<WorkspaceEventType>; handler: PluginEventHandler }>
   runtimeTimers: Map<number, ReturnType<typeof setTimeout>>
-  dispose?: () => void | Promise<void>
+  dispose?: () => void
   context?: vm.Context
 }
 
@@ -76,8 +75,7 @@ type PluginCommonJsModule = {
 
 type PluginActivateFunction = (api: PluginApi) =>
   | void
-  | (() => void | Promise<void>)
-  | Promise<void | (() => void | Promise<void>)>
+  | (() => void)
 
 type PluginModuleExports = {
   activate?: PluginActivateFunction
@@ -130,7 +128,6 @@ type PluginInvocationOptions = {
 }
 
 const PLUGIN_SYNC_TIMEOUT_MS = 1_000
-const PLUGIN_ASYNC_TIMEOUT_MS = 5_000
 const PLUGIN_RESULT_MAX_BYTES = 1_000_000
 
 export type PluginInstallPreview = {
@@ -858,9 +855,9 @@ export class PluginHost {
         argumentMode: 'direct'
       })
 
-      // result could be dispose function or void/Promise
+      // A synchronous activation may return a disposer.
       if (typeof result === 'function') {
-        plugin.dispose = result as () => void | Promise<void>
+        plugin.dispose = result as () => void
       }
       
       if (recordLoadEvent) {
@@ -1355,7 +1352,7 @@ export class PluginHost {
 
   private async invokePluginFunction<T>(
     plugin: RegisteredPlugin,
-    callback: (...args: any[]) => T | Promise<T>,
+    callback: (...args: any[]) => T,
     args: unknown[],
     operation: string,
     options: PluginInvocationOptions = {}
@@ -1385,13 +1382,51 @@ export class PluginHost {
       const result = new vm.Script(`${invocationKey}.callback(...${invocationKey}.args)`).runInContext(context, {
         timeout: PLUGIN_SYNC_TIMEOUT_MS,
         displayErrors: true
-      }) as T | Promise<T>
-      const settledResult = await this.withAsyncTimeout(Promise.resolve(result), PLUGIN_ASYNC_TIMEOUT_MS, operation)
+      }) as T
+      if (this.isPluginPromiseLike(plugin, result)) {
+        const error = new Error(
+          `Plugin ${operation} returned a Promise. Asynchronous plugin callbacks are not supported; schedule deferred side effects with setTimeout instead.`
+        )
+        this.handlePluginError(plugin, operation, error)
+        throw error
+      }
       return options.resultMode === 'json'
-        ? this.clonePluginResultToHost(plugin, settledResult, operation)
-        : settledResult
+        ? this.clonePluginResultToHost(plugin, result, operation)
+        : result
     } finally {
       delete contextRecord[invocationKey]
+    }
+  }
+
+  private isPluginPromiseLike(plugin: RegisteredPlugin, result: unknown): boolean {
+    const context = plugin.context
+    if (!context) {
+      return false
+    }
+
+    const contextRecord = context as vm.Context & Record<string, unknown>
+    const resultKey = `__knowbookPromiseProbe${++this.invocationSequence}`
+    Object.defineProperty(contextRecord, resultKey, {
+      configurable: true,
+      enumerable: false,
+      value: result,
+      writable: false
+    })
+
+    try {
+      return new vm.Script(`
+        (() => {
+          const value = ${resultKey}
+          return value !== null
+            && (typeof value === 'object' || typeof value === 'function')
+            && typeof value.then === 'function'
+        })()
+      `).runInContext(context, {
+        timeout: PLUGIN_SYNC_TIMEOUT_MS,
+        displayErrors: true
+      }) as boolean
+    } finally {
+      delete contextRecord[resultKey]
     }
   }
 
@@ -1465,22 +1500,6 @@ export class PluginHost {
       return JSON.parse(serialized) as T
     } finally {
       delete contextRecord[resultKey]
-    }
-  }
-
-  private async withAsyncTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<T>((_resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error(`Plugin ${operation} timed out after ${timeoutMs}ms.`)), timeoutMs)
-        })
-      ])
-    } finally {
-      if (timeout) {
-        clearTimeout(timeout)
-      }
     }
   }
 

@@ -67,14 +67,14 @@ SQLite 是唯一事实源。默认数据库位于 Electron `app.getPath('userDat
 
 ## 数据与恢复
 
-Markdown 备份是完整快照，不是增量同步。恢复会在识别出的恢复范围内创建、更新和删除内容；恢复独立 Database 时，带 manifest 的快照也会删除快照中不存在的独立 Database。
+Markdown 备份是完整快照，不是增量同步。只有目录包含标准位置的 KnowBook manifest 时，恢复才会按快照语义删除缺失文档和独立 Database；普通 Markdown 或旧版备份只做非破坏性导入。
 
 恢复前应：
 
 1. 退出正在写入同一数据目录的其他 KnowBook 实例。
 2. 复制 `knowbook.db`、`knowbook.db-wal` 和 `knowbook.db-shm`（若存在）。
-3. 确认选择的是 KnowBook 生成的完整 Markdown 备份目录。
-4. 不要把任意 Markdown 文件夹当作“导入”目录；当前恢复动作按快照语义处理。
+3. 需要完整同步时，确认选择的是 KnowBook 生成的完整 Markdown 备份目录。
+4. 导入普通 Markdown 后检查生成的路径和块结构。
 
 详细操作见 [使用文档.md](使用文档.md)。
 
@@ -101,5 +101,4 @@ Markdown 备份是完整快照，不是增量同步。恢复会在识别出的�
 - 独立 Database 暂无专属 Board 视图。
 - 插件仅支持本地安装，尚无远程市场。
 - 自动化目前主要覆盖文档摘要。
-- Markdown 恢复采用快照语义，选择目录前必须先做数据库级备份。
-
+- 带 manifest 的 Markdown 恢复采用快照语义，选择目录前必须先做数据库级备份。

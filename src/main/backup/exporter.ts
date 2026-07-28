@@ -9,6 +9,8 @@ const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
 const STANDALONE_DATABASE_BACKUP_ROOT = '__knowbook/databases'
 const STANDALONE_DATABASE_MANIFEST_FILE_NAME = 'index.md'
+const INTERNAL_BACKUP_ROOT_SEGMENT = '__knowbook'
+const ESCAPED_DOCUMENT_ROOT_PREFIX = '__knowbook-document-'
 
 export class MarkdownBackupService {
   constructor(
@@ -48,7 +50,9 @@ export class MarkdownBackupService {
   }
 
   private writeDocument(root: string, document: ExportDocument): void {
-    const segments = document.path.split('/').map((segment) => this.toSafePathSegment(segment))
+    const segments = document.path
+      .split('/')
+      .map((segment, index) => this.toSafeDocumentPathSegment(segment, index))
     const filePath = join(root, ...segments) + '.md'
     this.assertPathInsideRoot(filePath, root)
     mkdirSync(dirname(filePath), { recursive: true })
@@ -119,6 +123,18 @@ export class MarkdownBackupService {
       .slice(0, 80) || 'Untitled'
     const digest = createHash('sha256').update(segment).digest('hex').slice(0, 10)
     return `${readable}--${digest}`
+  }
+
+  private toSafeDocumentPathSegment(segment: string, index: number): string {
+    if (
+      index === 0
+      && (segment === INTERNAL_BACKUP_ROOT_SEGMENT || segment.startsWith(ESCAPED_DOCUMENT_ROOT_PREFIX))
+    ) {
+      const digest = createHash('sha256').update(segment).digest('hex')
+      return `${ESCAPED_DOCUMENT_ROOT_PREFIX}${digest}`
+    }
+
+    return this.toSafePathSegment(segment)
   }
 
   private renderMarkdown(document: ExportDocument): string {

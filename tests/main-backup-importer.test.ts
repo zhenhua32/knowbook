@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -321,6 +321,32 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
     assert.equal(notesDetail.summary, 'Notes backup summary')
     assert.equal(byBlockId(specsDetail, 'spec-task').content, 'Canonical backup node')
     assert.equal(byBlockId(notesDetail, 'notes-body').content, 'Original notes content')
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService imports ordinary markdown without deleting existing documents', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-ordinary-markdown-test-'))
+  const importRoot = join(tempRoot, 'markdown')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const originalDocumentIds = new Set(
+      store.getHomeData(importRoot).documentCatalog.map((document) => document.id)
+    )
+    writeFileSync(join(tempRoot, 'README.md'), '# Imported README\n\nImported without backup metadata.\n', 'utf8')
+
+    const result = new MarkdownRestoreService(store).restoreFromDirectory(tempRoot)
+    const refreshedCatalog = store.getHomeData(importRoot).documentCatalog
+
+    assert.equal(result.restored, 1)
+    assert.equal(result.deleted, 0)
+    assert.equal(refreshedCatalog.some((document) => document.path === 'README'), true)
+    for (const documentId of originalDocumentIds) {
+      assert.equal(refreshedCatalog.some((document) => document.id === documentId), true)
+    }
   } finally {
     store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

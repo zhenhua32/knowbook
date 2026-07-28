@@ -111,6 +111,35 @@ test('updateDocument rewrites descendant paths and normalizes parentBlockId rela
   })
 })
 
+test('document path rewrites only replace the leading subtree prefix', () => {
+  withStore((store, backupRoot) => {
+    const rootId = store.createDocument(null)
+    const middleId = store.createDocument(rootId)
+    const repeatedRootId = store.createDocument(middleId)
+    const leafId = store.createDocument(repeatedRootId)
+    const targetId = store.createDocument(null)
+    const blocks = [{ type: 'paragraph' as const, content: 'content', checked: false, depth: 0 }]
+
+    store.updateDocument(rootId, { title: 'Alpha', summary: '', blocks })
+    store.updateDocument(middleId, { title: 'Middle', summary: '', blocks })
+    store.updateDocument(repeatedRootId, { title: 'Alpha', summary: '', blocks })
+    store.updateDocument(leafId, { title: 'Leaf', summary: '', blocks })
+    store.updateDocument(targetId, { title: 'Target', summary: '', blocks })
+
+    store.updateDocument(rootId, { title: 'Renamed', summary: '', blocks })
+    assert.equal(store.getDocumentSnapshot(leafId)?.path, 'Renamed/Middle/Alpha/Leaf')
+
+    store.updateDocument(rootId, { title: 'Alpha', summary: '', blocks })
+    store.moveDocument(rootId, targetId)
+    assert.equal(store.getDocumentSnapshot(leafId)?.path, 'Target/Alpha/Middle/Alpha/Leaf')
+
+    store.moveDocument(rootId, null)
+    store.deleteDocument(rootId)
+    assert.equal(store.getDocumentSnapshot(leafId)?.path, 'Middle/Alpha/Leaf')
+    assert.equal(store.getDocumentSnapshot(middleId)?.parentId, null)
+  })
+})
+
 test('moveDocument blocks invalid subtree moves and supports moving to root', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog

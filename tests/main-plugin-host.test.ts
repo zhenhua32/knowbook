@@ -1002,6 +1002,48 @@ test('PluginHost stops synchronous activation that exceeds the execution limit',
   }
 })
 
+test('PluginHost rejects asynchronous callbacks before their continuation can escape the VM limit', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-async-timeout-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const pluginRoot = join(workspaceRoot, 'async-blocking-plugin')
+  mkdirSync(pluginRoot, { recursive: true })
+
+  writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+    id: 'async-blocking-plugin',
+    name: 'Async Blocking Plugin',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(
+    join(pluginRoot, 'index.js'),
+    `module.exports.activate = async function activate() {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      while (true) {}
+    }\n`,
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: () => createMockDetail(),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [{ path: workspaceRoot, source: 'workspace' }])
+
+  try {
+    await host.loadAll()
+    const plugin = host.getHomeDataSnapshot().plugins.find((item) => item.id === 'async-blocking-plugin')
+    assert.ok(plugin)
+    assert.equal(plugin.status, 'error')
+    assert.equal((plugin.error ?? '').includes('Asynchronous plugin callbacks are not supported'), true)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('PluginHost can recover an errored plugin after its entry is fixed and reloaded', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-recovery-test-'))
   const workspaceRoot = join(tempRoot, 'workspace-plugins')
@@ -1110,12 +1152,9 @@ test('PluginHost keeps host objects out of the plugin VM and preserves safe time
         title: 'Sandbox status',
         body: escaped ? 'escaped' : 'blocked'
       })
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          card.update({ body: (escaped ? 'escaped' : 'blocked') + '-timer' })
-          resolve()
-        }, 5)
-      })
+      setTimeout(() => {
+        card.update({ body: (escaped ? 'escaped' : 'blocked') + '-timer' })
+      }, 5)
     }
     `,
     'utf8'
@@ -1132,6 +1171,7 @@ test('PluginHost keeps host objects out of the plugin VM and preserves safe time
 
   try {
     await host.loadAll()
+    await new Promise((resolve) => setTimeout(resolve, 20))
     const snapshot = host.getHomeDataSnapshot()
     const plugin = snapshot.plugins.find((item) => item.id === 'sandbox-probe')
     const card = snapshot.dashboardCards.find((item) => item.id === 'sandbox-status')

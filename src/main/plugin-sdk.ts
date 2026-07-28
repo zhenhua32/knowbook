@@ -62,9 +62,10 @@ export abstract class KnowBookPlugin {
 
   /**
    * Activate the plugin. This is called when the plugin is loaded.
-   * Override this method to set up your plugin.
+   * Override this method to set up your plugin. Plugin callbacks must complete
+   * synchronously; use the sandboxed setTimeout for deferred side effects.
    */
-  abstract activate(api: PluginApi): void | Promise<void | (() => void | Promise<void>)>
+  abstract activate(api: PluginApi): void | (() => void)
 
   /**
    * Helper to create a dashboard card

@@ -65,6 +65,7 @@ const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', '
 const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
+const STANDALONE_DATABASE_MANIFEST_RELATIVE_PATH = '__knowbook/databases/index.md'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 
@@ -85,7 +86,10 @@ export class MarkdownRestoreService {
     const discoveredStandaloneDatabases = sourceFiles
       .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
     const sourceStandaloneDatabaseManifest = sourceFiles.find(
-      (source): source is RestoreSourceStandaloneDatabaseManifest => source.kind === 'standalone-database-manifest'
+      (source): source is RestoreSourceStandaloneDatabaseManifest => (
+        source.kind === 'standalone-database-manifest'
+        && this.isAuthoritativeBackupManifest(root, source.sourceFilePath)
+      )
     )
 
     const manifestDatabaseIds = sourceStandaloneDatabaseManifest
@@ -115,7 +119,9 @@ export class MarkdownRestoreService {
         }
       }
 
-      deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+      if (sourceStandaloneDatabaseManifest) {
+        deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+      }
       this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
 
       return {
@@ -287,6 +293,11 @@ export class MarkdownRestoreService {
     }
 
     return documentSegments.slice(0, documentSegments.length - relativeSegments.length).join('/')
+  }
+
+  private isAuthoritativeBackupManifest(root: string, filePath: string): boolean {
+    return relative(root, filePath).replace(/\\/g, '/').toLowerCase()
+      === STANDALONE_DATABASE_MANIFEST_RELATIVE_PATH
   }
 
   private restoreDocument(

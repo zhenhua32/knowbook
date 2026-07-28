@@ -19,6 +19,17 @@ type DraftBlockSnapshot = {
   tags: string[]
 }
 
+function cloneDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+  return blocks.map((block) => ({
+    ...block,
+    tags: block.tags ? [...block.tags] : undefined
+  }))
+}
+
+function areDraftBlockSnapshotsEqual(left: DocumentBlockDraft[] | undefined, right: DocumentBlockDraft[]): boolean {
+  return Boolean(left) && JSON.stringify(left) === JSON.stringify(right)
+}
+
 type UseDocumentEditorStateParams = {
   selectedDocumentId: string | null
   selectedDocument: DocumentDetail | null
@@ -46,9 +57,11 @@ export function useDocumentEditorState({
   const editHistoryPointerRef = useRef<number>(-1)
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingHistorySnapshotRef = useRef<DocumentBlockDraft[] | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedDocumentIdRef = useRef(selectedDocumentId)
   const saveSequenceRef = useRef(0)
+  const [, setHistoryRevision] = useState(0)
   selectedDocumentIdRef.current = selectedDocumentId
 
   const clearAutoSaveTimer = useCallback(() => {
@@ -63,6 +76,7 @@ export function useDocumentEditorState({
       clearTimeout(historyDebounceTimerRef.current)
       historyDebounceTimerRef.current = null
     }
+    pendingHistorySnapshotRef.current = null
 
     clearAutoSaveTimer()
 
@@ -72,10 +86,11 @@ export function useDocumentEditorState({
   }, [clearAutoSaveTimer])
 
   const initializeHistoryState = useCallback((blocks: DocumentBlockDraft[]) => {
-    const snapshot = blocks.map((block) => ({ ...block }))
+    const snapshot = cloneDraftBlocks(blocks)
     editHistoryRef.current = [snapshot]
     editHistoryPointerRef.current = 0
     isRestoringHistoryRef.current = false
+    pendingHistorySnapshotRef.current = null
   }, [])
 
   const triggerTransientFlash = useCallback((setter: (value: boolean) => void) => {
@@ -164,6 +179,21 @@ export function useDocumentEditorState({
     resetEditorFromDocument(null, false)
   }, [resetEditorFromDocument])
 
+  const commitHistorySnapshot = useCallback((blocks: DocumentBlockDraft[]) => {
+    const snapshot = cloneDraftBlocks(blocks)
+    const history = editHistoryRef.current
+    const pointer = editHistoryPointerRef.current
+    if (areDraftBlockSnapshotsEqual(history[pointer], snapshot)) {
+      return
+    }
+
+    const trimmed = history.slice(0, pointer + 1)
+    trimmed.push(snapshot)
+    editHistoryRef.current = trimmed.slice(-80)
+    editHistoryPointerRef.current = editHistoryRef.current.length - 1
+    setHistoryRevision((current) => current + 1)
+  }, [])
+
   const pushToHistory = useCallback((blocks: DocumentBlockDraft[]) => {
     if (isRestoringHistoryRef.current) {
       return
@@ -173,14 +203,9 @@ export function useDocumentEditorState({
       clearTimeout(historyDebounceTimerRef.current)
       historyDebounceTimerRef.current = null
     }
-
-    const history = editHistoryRef.current
-    const pointer = editHistoryPointerRef.current
-    const trimmed = history.slice(0, pointer + 1)
-    trimmed.push(blocks.map((block) => ({ ...block })))
-    editHistoryRef.current = trimmed.slice(-80)
-    editHistoryPointerRef.current = editHistoryRef.current.length - 1
-  }, [])
+    pendingHistorySnapshotRef.current = null
+    commitHistorySnapshot(blocks)
+  }, [commitHistorySnapshot])
 
   const scheduleHistorySnapshot = useCallback((blocks: DocumentBlockDraft[]) => {
     if (isRestoringHistoryRef.current) {
@@ -191,36 +216,42 @@ export function useDocumentEditorState({
       clearTimeout(historyDebounceTimerRef.current)
     }
 
+    pendingHistorySnapshotRef.current = cloneDraftBlocks(blocks)
     historyDebounceTimerRef.current = setTimeout(() => {
       historyDebounceTimerRef.current = null
-      const history = editHistoryRef.current
-      const pointer = editHistoryPointerRef.current
-      const trimmed = history.slice(0, pointer + 1)
-      trimmed.push(blocks.map((block) => ({ ...block })))
-      editHistoryRef.current = trimmed.slice(-80)
-      editHistoryPointerRef.current = editHistoryRef.current.length - 1
+      const pendingSnapshot = pendingHistorySnapshotRef.current
+      pendingHistorySnapshotRef.current = null
+      if (pendingSnapshot) {
+        commitHistorySnapshot(pendingSnapshot)
+      }
     }, 600)
-  }, [])
+  }, [commitHistorySnapshot])
 
   const undoEdit = useCallback(() => {
+    if (historyDebounceTimerRef.current) {
+      clearTimeout(historyDebounceTimerRef.current)
+      historyDebounceTimerRef.current = null
+    }
+    const pendingSnapshot = pendingHistorySnapshotRef.current
+    pendingHistorySnapshotRef.current = null
+    if (pendingSnapshot) {
+      commitHistorySnapshot(pendingSnapshot)
+    }
+
     const pointer = editHistoryPointerRef.current
     if (pointer <= 0) {
       return
     }
 
-    if (historyDebounceTimerRef.current) {
-      clearTimeout(historyDebounceTimerRef.current)
-      historyDebounceTimerRef.current = null
-    }
-
     isRestoringHistoryRef.current = true
     const nextPointer = pointer - 1
     editHistoryPointerRef.current = nextPointer
-    setDraftBlocks(editHistoryRef.current[nextPointer].map((block) => ({ ...block })))
+    setDraftBlocks(cloneDraftBlocks(editHistoryRef.current[nextPointer]))
+    setHistoryRevision((current) => current + 1)
     setTimeout(() => {
       isRestoringHistoryRef.current = false
     }, 0)
-  }, [setDraftBlocks])
+  }, [commitHistorySnapshot, setDraftBlocks])
 
   const redoEdit = useCallback(() => {
     const history = editHistoryRef.current
@@ -237,7 +268,8 @@ export function useDocumentEditorState({
     isRestoringHistoryRef.current = true
     const nextPointer = pointer + 1
     editHistoryPointerRef.current = nextPointer
-    setDraftBlocks(history[nextPointer].map((block) => ({ ...block })))
+    setDraftBlocks(cloneDraftBlocks(history[nextPointer]))
+    setHistoryRevision((current) => current + 1)
     setTimeout(() => {
       isRestoringHistoryRef.current = false
     }, 0)
