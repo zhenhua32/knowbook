@@ -1323,6 +1323,15 @@ dt,
   letter-spacing: 0;
 }
 
+.block-inline-textarea.type-table {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.88em;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(246, 240, 228, 0.55);
+}
+
 .block-inline-textarea.type-todo {
   padding-left: 4px;
 }
@@ -1506,7 +1515,8 @@ dt,
 .block-table-content {
   width: 100%;
   overflow-x: auto;
-  padding: 4px 0;
+  margin-top: 8px;
+  padding: 8px 0 4px;
 }
 
 .block-markdown-table {
@@ -1886,6 +1896,7 @@ dt,
 
 .block-code-wrapper {
   position: relative;
+  margin-top: 8px;
   border-radius: 14px;
   overflow: hidden;
   background: #0d1117;
@@ -3061,6 +3072,39 @@ del {
   max-width: min(320px, calc(100vw - 24px));
   max-height: calc(100vh - 24px);
   overflow-y: auto;
+}
+
+.block-math-preview {
+  width: 100%;
+  margin-top: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid rgba(91, 72, 44, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 251, 245, 0.8);
+  color: #3a3428;
+}
+
+.block-math-preview .katex-display {
+  margin: 0;
+}
+
+.block-structured-preview-loading {
+  margin-top: 8px;
+  padding: 10px 12px;
+  color: rgba(91, 72, 44, 0.58);
+  font-size: 0.82rem;
+}
+
+.settings-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-inline-field .editor-input {
+  min-width: 0;
+  flex: 1;
 }
 
 .document-header-menu-move {

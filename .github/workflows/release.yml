@@ -35,6 +35,12 @@ jobs:
       - name: Run release preflight
         run: npm run release:preflight
 
+      - name: Build application for Electron E2E
+        run: npm run build
+
+      - name: Run Electron E2E tests
+        run: xvfb-run --auto-servernum npx playwright test --grep @electron
+
   package:
     name: Package (${{ matrix.os }})
     needs: validate

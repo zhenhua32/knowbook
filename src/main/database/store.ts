@@ -33,6 +33,7 @@ import type {
   RenameDocumentDatabaseColumnInput,
   UpdateAiConfigInput,
   UpdateDatabaseSavedViewInput,
+  UpdateDatabaseMetadataInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
@@ -754,7 +755,9 @@ export class KnowbookStore {
     this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
      this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
      this.saveSetting('ai.relatedNotesEnabled', input.relatedNotesEnabled ? 'true' : 'false')
-     if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
+    if (input.clearApiKey) {
+      this.deleteSetting('ai.apiKey')
+    } else if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
       this.saveSetting('ai.apiKey', input.apiKey.trim())
     }
   }
@@ -1383,6 +1386,10 @@ export class KnowbookStore {
     `).run(key, value, now)
   }
 
+  deleteSetting(key: string): void {
+    this.db.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
+  }
+
   getSettingPublic(key: string): string | null {
     return this.readSetting(key)
   }
@@ -1454,6 +1461,11 @@ export class KnowbookStore {
 
   destroy(): void {
     this.db.close()
+  }
+
+  async backupDatabase(destinationPath: string): Promise<void> {
+    mkdirSync(dirname(destinationPath), { recursive: true })
+    await this.db.backup(destinationPath)
   }
 
   private getSummary(backupRoot: string): WorkspaceSummary {
@@ -2593,7 +2605,7 @@ export class KnowbookStore {
     }
   }
 
-  updateDatabaseMetadata(input: { databaseId: string; name: string; description: string }): void {
+  updateDatabaseMetadata(input: UpdateDatabaseMetadataInput): void {
     const name = input.name.trim()
     if (!name) {
       throw new Error('Database name is required.')

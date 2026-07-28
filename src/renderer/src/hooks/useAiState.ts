@@ -92,6 +92,41 @@ export function useAiState({
      ui
    ])
 
+  const clearAiApiKey = useCallback(async () => {
+    if (!window.confirm(ui.confirmClearAiApiKey)) {
+      return
+    }
+
+    setAiSaving(true)
+    try {
+      await window.knowbook.updateAiConfig({
+        enabled: aiEnabledDraft,
+        baseUrl: aiBaseUrlDraft,
+        model: aiModelDraft,
+        autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
+        relatedNotesEnabled: aiRelatedNotesEnabledDraft,
+        clearApiKey: true
+      })
+      const refreshed = await window.knowbook.getHomeData()
+      setAiApiKeyDraft('')
+      onHomeDataChange(refreshed)
+      onMessage(ui.aiApiKeyCleared)
+    } catch (error) {
+      onMessage(getErrorMessage(error, ui.aiRequestFailed))
+    } finally {
+      setAiSaving(false)
+    }
+  }, [
+    aiAutoSummaryOnSaveDraft,
+    aiBaseUrlDraft,
+    aiEnabledDraft,
+    aiModelDraft,
+    aiRelatedNotesEnabledDraft,
+    onHomeDataChange,
+    onMessage,
+    ui
+  ])
+
   const findRelatedNotesForPrompt = useCallback(async () => {
     if (!selectedDocumentId || !aiPromptDraft.trim()) {
       return
@@ -189,6 +224,7 @@ export function useAiState({
     aiContextSearching,
     aiContextError,
     saveAiConfig,
+    clearAiApiKey,
     findRelatedNotesForPrompt,
     askAiOnSelectedDocument,
     runEnabledAiAutomationsOnSelectedDocument,

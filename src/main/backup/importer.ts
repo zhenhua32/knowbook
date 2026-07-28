@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import type {
+  BackupRestorePreview,
   BackupRestoreResult,
   DatabaseEntity,
   DatabaseSavedViewLayoutMode,
@@ -60,6 +61,12 @@ type RestoreSourceStandaloneDatabaseManifest = {
 
 type RestoreSourceFile = RestoreSourceDocument | RestoreSourceStandaloneDatabase | RestoreSourceStandaloneDatabaseManifest
 
+type PreparedRestoreSources = {
+  sourceDocuments: RestoreSourceDocument[]
+  sourceStandaloneDatabases: RestoreSourceStandaloneDatabase[]
+  sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
+}
+
 const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
 const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc'])
 const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
@@ -72,32 +79,55 @@ const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 export class MarkdownRestoreService {
   constructor(private readonly store: KnowbookStore) {}
 
-  restoreFromDirectory(root: string): BackupRestoreResult {
-    const markdownFiles = this.collectMarkdownFiles(root)
-    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath))
-    const sourceDocuments = sourceFiles
-      .filter((source): source is RestoreSourceDocument => source.kind === 'document')
-      .sort((left, right) => {
-        const depthDifference = this.getDocumentPathDepth(left.documentPath) - this.getDocumentPathDepth(right.documentPath)
-        return depthDifference !== 0
-          ? depthDifference
-          : left.documentPath.localeCompare(right.documentPath)
-      })
-    const discoveredStandaloneDatabases = sourceFiles
-      .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
-    const sourceStandaloneDatabaseManifest = sourceFiles.find(
-      (source): source is RestoreSourceStandaloneDatabaseManifest => (
-        source.kind === 'standalone-database-manifest'
-        && this.isAuthoritativeBackupManifest(root, source.sourceFilePath)
-      )
+  previewFromDirectory(root: string): BackupRestorePreview {
+    const {
+      sourceDocuments,
+      sourceStandaloneDatabases,
+      sourceStandaloneDatabaseManifest
+    } = this.prepareRestoreSources(root)
+    const restoredDocumentIds = new Set<string>()
+    let created = 0
+    let updated = 0
+
+    for (const source of sourceDocuments) {
+      const existingById = source.sourceDocumentId ? this.store.getDocumentSnapshot(source.sourceDocumentId) : null
+      const existing = existingById ?? this.store.getDocumentSnapshotByPath(source.documentPath)
+      if (existing) {
+        updated += 1
+        restoredDocumentIds.add(existing.id)
+      } else {
+        created += 1
+      }
+    }
+
+    const standaloneDatabaseChanges = this.previewStandaloneDatabaseChanges(
+      sourceStandaloneDatabases,
+      Boolean(sourceStandaloneDatabaseManifest)
     )
 
-    const manifestDatabaseIds = sourceStandaloneDatabaseManifest
-      ? new Set(sourceStandaloneDatabaseManifest.sourceDatabaseIds)
-      : null
-    const sourceStandaloneDatabases = manifestDatabaseIds
-      ? discoveredStandaloneDatabases.filter((source) => manifestDatabaseIds.has(source.sourceDatabaseId))
-      : discoveredStandaloneDatabases
+    return {
+      root,
+      restored: sourceDocuments.length,
+      created,
+      updated,
+      deleted: sourceStandaloneDatabaseManifest
+        ? this.findMissingDocuments(sourceDocuments, restoredDocumentIds).length
+        : 0,
+      conflictsResolved: this.countResolvableConflicts(sourceDocuments),
+      placeholdersCreated: this.countMissingParentPlaceholders(sourceDocuments),
+      standaloneDatabases: sourceStandaloneDatabases.length,
+      standaloneDatabasesCreated: standaloneDatabaseChanges.created,
+      standaloneDatabasesUpdated: standaloneDatabaseChanges.updated,
+      standaloneDatabasesDeleted: standaloneDatabaseChanges.deleted
+    }
+  }
+
+  restoreFromDirectory(root: string): BackupRestoreResult {
+    const {
+      sourceDocuments,
+      sourceStandaloneDatabases,
+      sourceStandaloneDatabaseManifest
+    } = this.prepareRestoreSources(root)
 
     return this.store.runInTransaction(() => {
       let created = 0
@@ -135,6 +165,40 @@ export class MarkdownRestoreService {
         at: new Date().toISOString()
       }
     })
+  }
+
+  private prepareRestoreSources(root: string): PreparedRestoreSources {
+    const markdownFiles = this.collectMarkdownFiles(root)
+    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath))
+    const sourceDocuments = sourceFiles
+      .filter((source): source is RestoreSourceDocument => source.kind === 'document')
+      .sort((left, right) => {
+        const depthDifference = this.getDocumentPathDepth(left.documentPath) - this.getDocumentPathDepth(right.documentPath)
+        return depthDifference !== 0
+          ? depthDifference
+          : left.documentPath.localeCompare(right.documentPath)
+      })
+    const discoveredStandaloneDatabases = sourceFiles
+      .filter((source): source is RestoreSourceStandaloneDatabase => source.kind === 'standalone-database')
+    const sourceStandaloneDatabaseManifest = sourceFiles.find(
+      (source): source is RestoreSourceStandaloneDatabaseManifest => (
+        source.kind === 'standalone-database-manifest'
+        && this.isAuthoritativeBackupManifest(root, source.sourceFilePath)
+      )
+    )
+
+    const manifestDatabaseIds = sourceStandaloneDatabaseManifest
+      ? new Set(sourceStandaloneDatabaseManifest.sourceDatabaseIds)
+      : null
+    const sourceStandaloneDatabases = manifestDatabaseIds
+      ? discoveredStandaloneDatabases.filter((source) => manifestDatabaseIds.has(source.sourceDatabaseId))
+      : discoveredStandaloneDatabases
+
+    return {
+      sourceDocuments,
+      sourceStandaloneDatabases,
+      sourceStandaloneDatabaseManifest
+    }
   }
 
   private collectMarkdownFiles(root: string): string[] {
@@ -984,10 +1048,78 @@ export class MarkdownRestoreService {
     return conflicts
   }
 
+  private countMissingParentPlaceholders(sourceDocuments: RestoreSourceDocument[]): number {
+    const availablePaths = new Set(this.store.getAllDocumentSnapshots().map((snapshot) => snapshot.path))
+    const sourcePaths = new Set(sourceDocuments.map((source) => source.documentPath))
+    const placeholderPaths = new Set<string>()
+
+    for (const source of sourceDocuments) {
+      const segments = source.documentPath.split('/').filter(Boolean)
+      for (let index = 1; index < segments.length; index += 1) {
+        const parentPath = segments.slice(0, index).join('/')
+        if (!availablePaths.has(parentPath) && !sourcePaths.has(parentPath)) {
+          placeholderPaths.add(parentPath)
+          availablePaths.add(parentPath)
+        }
+      }
+    }
+
+    return placeholderPaths.size
+  }
+
+  private previewStandaloneDatabaseChanges(
+    sourceDatabases: RestoreSourceStandaloneDatabase[],
+    shouldDeleteMissingDatabases: boolean
+  ): { created: number; updated: number; deleted: number } {
+    const existingDatabases = this.store.getDatabases()
+    const existingById = new Map(existingDatabases.map((database) => [database.id, database]))
+    const existingByName = new Map(
+      existingDatabases
+        .filter((database) => !this.isDefaultDocumentDatabase(database.name, database.description))
+        .map((database) => [this.getDatabaseLookupKey(database.name), database])
+    )
+    const matchedDatabaseIds = new Set<string>()
+    let created = 0
+    let updated = 0
+
+    for (const source of sourceDatabases) {
+      const existing = existingById.get(source.sourceDatabaseId)
+        ?? existingByName.get(this.getDatabaseLookupKey(source.name))
+      if (existing) {
+        updated += 1
+        matchedDatabaseIds.add(existing.id)
+      } else {
+        created += 1
+      }
+    }
+
+    const deleted = shouldDeleteMissingDatabases
+      ? existingDatabases.filter((database) => (
+          !this.isDefaultDocumentDatabase(database.name, database.description)
+          && !matchedDatabaseIds.has(database.id)
+        )).length
+      : 0
+
+    return { created, updated, deleted }
+  }
+
   private deleteMissingDocuments(sourceDocuments: RestoreSourceDocument[], restoredDocumentIds: Set<string>): number {
+    const deletable = this.findMissingDocuments(sourceDocuments, restoredDocumentIds)
+
+    for (const snapshot of deletable) {
+      this.store.deleteDocument(snapshot.id)
+    }
+
+    return deletable.length
+  }
+
+  private findMissingDocuments(
+    sourceDocuments: RestoreSourceDocument[],
+    restoredDocumentIds: Set<string>
+  ): Array<{ id: string; title: string; path: string; parentId: string | null }> {
     const sourcePaths = new Set(sourceDocuments.map((source) => source.documentPath))
     const scopePaths = [...new Set(sourceDocuments.map((source) => source.restoreScopePath))]
-    const deletable = this.store
+    return this.store
       .getAllDocumentSnapshots()
       .filter((snapshot) => !restoredDocumentIds.has(snapshot.id))
       .filter((snapshot) => this.isWithinRestoreScope(snapshot.path, scopePaths, sourcePaths))
@@ -995,12 +1127,6 @@ export class MarkdownRestoreService {
         const depthDifference = this.getDocumentPathDepth(right.path) - this.getDocumentPathDepth(left.path)
         return depthDifference !== 0 ? depthDifference : left.path.localeCompare(right.path)
       })
-
-    for (const snapshot of deletable) {
-      this.store.deleteDocument(snapshot.id)
-    }
-
-    return deletable.length
   }
 
   private isWithinRestoreScope(documentPath: string, scopePaths: string[], sourcePaths: Set<string>): boolean {

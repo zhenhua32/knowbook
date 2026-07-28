@@ -4,11 +4,14 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { BlockEditToolbar } from '../src/renderer/src/components/BlockEditToolbar.tsx'
 import { BlockRichMediaPreview } from '../src/renderer/src/components/BlockRichMediaPreview.tsx'
+import { CodeBlockPreview } from '../src/renderer/src/components/CodeBlockPreview.tsx'
 import { CodeBlockLanguageSelector } from '../src/renderer/src/components/CodeBlockLanguageSelector.tsx'
 import { DocumentOutlinePanel } from '../src/renderer/src/components/DocumentOutlinePanel.tsx'
 import { DocumentStatsBar } from '../src/renderer/src/components/DocumentStatsBar.tsx'
 import { DocumentSummaryCard } from '../src/renderer/src/components/DocumentSummaryCard.tsx'
 import { PageRail } from '../src/renderer/src/components/PageRail.tsx'
+import { MarkdownTablePreview } from '../src/renderer/src/components/MarkdownTablePreview.tsx'
+import { MathBlockPreview } from '../src/renderer/src/components/MathBlockPreview.tsx'
 
 test('DocumentStatsBar SSR hides optional counters when zero', () => {
   const html = renderToStaticMarkup(
@@ -177,6 +180,28 @@ test('CodeBlockLanguageSelector SSR exposes current language and localized place
   assert.equal(en.includes('None (auto-detect)'), true)
   assert.equal(en.includes('javascript'), true)
   assert.equal(en.includes('typescript'), true)
+})
+
+test('structured block previews SSR render editable-source companions safely', () => {
+  const codeHtml = renderToStaticMarkup(
+    <CodeBlockPreview code={'const answer = 42'} label="Code preview" language="typescript" />
+  )
+  const mathHtml = renderToStaticMarkup(
+    <MathBlockPreview expression={'x^2 + y^2'} label="Math preview" />
+  )
+  const tableHtml = renderToStaticMarkup(
+    <MarkdownTablePreview
+      content={'| Name | Value |\n| --- | ---: |\n| Answer | 42 |'}
+      label="Table preview"
+    />
+  )
+
+  assert.equal(codeHtml.includes('aria-label="Code preview"'), true)
+  assert.equal(codeHtml.includes('hljs-keyword'), true)
+  assert.equal(mathHtml.includes('aria-label="Math preview"'), true)
+  assert.equal(mathHtml.includes('katex-display'), true)
+  assert.equal(tableHtml.includes('aria-label="Table preview"'), true)
+  assert.equal(tableHtml.includes('<td style="text-align:right">42</td>'), true)
 })
 
 test('BlockRichMediaPreview SSR renders compact accessible image and link cards', () => {

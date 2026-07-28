@@ -150,6 +150,9 @@ function createUiText(language: UiLanguage) {
     baseUrl: zh ? '基础地址' : 'Base URL',
     model: zh ? '模型' : 'Model',
     apiKeyLabel: zh ? 'API Key（留空表示保持当前值）' : 'API Key (leave blank to keep current)',
+    clearAiApiKey: zh ? '清除 API Key' : 'Clear API key',
+    confirmClearAiApiKey: zh ? '确定清除本机保存的 AI API Key 吗？' : 'Clear the AI API key stored on this device?',
+    aiApiKeyCleared: zh ? '已清除本机保存的 AI API Key。' : 'The stored AI API key was cleared.',
     currentKey: (configured: boolean) => zh
       ? `当前密钥：${configured ? '已配置' : '未配置'}`
       : `Current key: ${configured ? 'configured' : 'missing'}`,
@@ -261,6 +264,10 @@ function createUiText(language: UiLanguage) {
     databaseName: zh ? '数据库名称' : 'Database name',
     databaseDescription: zh ? '描述' : 'Description',
     createDatabase: zh ? '创建数据库' : 'Create database',
+    editCurrentDatabase: zh ? '编辑数据库信息' : 'Edit database details',
+    databaseNameRequired: zh ? '数据库名称不能为空。' : 'Database name is required.',
+    databaseUpdated: (name: string) => zh ? `已更新数据库“${name}”。` : `Updated database "${name}".`,
+    databaseUpdateFailed: zh ? '更新数据库失败。' : 'Failed to update database.',
     fieldType: zh ? '字段类型' : 'Field type',
     options: zh ? '选项' : 'Options',
     optionsCommaHint: zh ? '使用逗号分隔多个选项' : 'Separate options with commas',
@@ -570,7 +577,9 @@ function createUiText(language: UiLanguage) {
     backupRestored: (restored: number, created: number, updated: number, deleted: number, conflicts: number, placeholders: number, at: string) => zh
       ? `已恢复 ${restored} 个备份文档（新建 ${created}，更新 ${updated}，删除过期文档 ${deleted}，解决路径冲突 ${conflicts}，补父级占位 ${placeholders}），时间：${new Date(at).toLocaleString(locale)}。`
       : `Restored ${restored} backup documents (${created} created, ${updated} updated, ${deleted} stale deleted, ${conflicts} conflicts resolved, ${placeholders} parent placeholders) at ${new Date(at).toLocaleString(locale)}.`,
+    backupSafetyCopyCreated: (path: string) => zh ? `恢复前安全副本：${path}` : `Pre-restore safety copy: ${path}`,
     backupRestoreFailed: zh ? '恢复备份失败。' : 'Failed to restore backup.',
+    documentSaveFailed: zh ? '保存文档失败。' : 'Failed to save document.',
     cannotSaveInvalidBlockTree: (errors: string[]) => zh
       ? `无法保存：块树结构无效。${errors.join('；')}`
       : `Cannot save: invalid block tree structure. ${errors.join('; ')}`,

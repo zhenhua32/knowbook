@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { BoardColumn, BoardDropTarget } from '@shared/board'
 import type {
   DatabaseEntity,
@@ -96,6 +97,7 @@ type StandaloneDatabasePanelProps = {
   onUpdateSavedView: () => void
   onDeleteSavedView: () => void
   onDeleteDatabase: () => void
+  onUpdateDatabaseMetadata: (name: string, description: string) => void
   filterQuery: string
   onFilterQueryChange: (value: string) => void
   filterScope: DatabaseEntityFilterScope
@@ -166,6 +168,22 @@ export function DatabaseSection({
   board
 }: DatabaseSectionProps) {
   const selectedEntityCount = standalone.selectedEntityIds.length
+  const [editingDatabaseId, setEditingDatabaseId] = useState<string | null>(null)
+  const [metadataNameDraft, setMetadataNameDraft] = useState('')
+  const [metadataDescriptionDraft, setMetadataDescriptionDraft] = useState('')
+
+  useEffect(() => {
+    setEditingDatabaseId(null)
+  }, [standalone.selectedDatabase?.id])
+
+  const beginDatabaseMetadataEdit = () => {
+    if (!standalone.selectedDatabase) {
+      return
+    }
+    setMetadataNameDraft(standalone.selectedDatabase.name)
+    setMetadataDescriptionDraft(standalone.selectedDatabase.description)
+    setEditingDatabaseId(standalone.selectedDatabase.id)
+  }
 
   return (
     <section className="database-grid" data-testid="database-grid">
@@ -494,10 +512,52 @@ export function DatabaseSection({
                       >
                         {ui.deleteCurrentDatabaseView}
                       </button>
+                      <button className="secondary-button" onClick={beginDatabaseMetadataEdit} type="button">
+                        {ui.editCurrentDatabase}
+                      </button>
                       <button className="secondary-button database-delete-button" onClick={standalone.onDeleteDatabase} type="button">
                         {ui.deleteCurrentDatabase}
                       </button>
                     </div>
+
+                    {editingDatabaseId === standalone.selectedDatabase.id ? (
+                      <div className="database-schema-form database-metadata-form">
+                        <label className="editor-label">
+                          {ui.databaseName}
+                          <input
+                            className="editor-input"
+                            onChange={(event) => setMetadataNameDraft(event.target.value)}
+                            type="text"
+                            value={metadataNameDraft}
+                          />
+                        </label>
+                        <label className="editor-label">
+                          {ui.databaseDescription}
+                          <input
+                            className="editor-input"
+                            onChange={(event) => setMetadataDescriptionDraft(event.target.value)}
+                            type="text"
+                            value={metadataDescriptionDraft}
+                          />
+                        </label>
+                        <div className="database-schema-actions">
+                          <button
+                            className="secondary-button"
+                            disabled={!metadataNameDraft.trim()}
+                            onClick={() => {
+                              standalone.onUpdateDatabaseMetadata(metadataNameDraft, metadataDescriptionDraft)
+                              setEditingDatabaseId(null)
+                            }}
+                            type="button"
+                          >
+                            {ui.common.save}
+                          </button>
+                          <button className="secondary-button" onClick={() => setEditingDatabaseId(null)} type="button">
+                            {ui.common.cancel}
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {standalone.databaseEntities.length > 0 ? (
                       <>

@@ -24,6 +24,7 @@ type DashboardSettingsSectionProps = {
   onAiModelChange: (value: string) => void
   aiApiKeyDraft: string
   onAiApiKeyChange: (value: string) => void
+  onClearAiApiKey: () => void
   aiSaving: boolean
   onSaveAiConfig: () => void
   onOpenPlugins: () => void
@@ -95,6 +96,7 @@ export function DashboardSettingsSection({
   onAiModelChange,
   aiApiKeyDraft,
   onAiApiKeyChange,
+  onClearAiApiKey,
   aiSaving,
   onSaveAiConfig,
   onOpenPlugins,
@@ -172,10 +174,15 @@ export function DashboardSettingsSection({
               {ui.model}
               <input className="editor-input" onChange={(event) => onAiModelChange(event.target.value)} type="text" value={aiModelDraft} />
             </label>
-            <label className="editor-label">
-              {ui.apiKeyLabel}
-              <input className="editor-input" onChange={(event) => onAiApiKeyChange(event.target.value)} type="password" value={aiApiKeyDraft} />
-            </label>
+            <div className="editor-label">
+              <label htmlFor="ai-api-key">{ui.apiKeyLabel}</label>
+              <div className="settings-inline-field">
+                <input id="ai-api-key" className="editor-input" onChange={(event) => onAiApiKeyChange(event.target.value)} type="password" value={aiApiKeyDraft} />
+                <button className="secondary-button" disabled={aiSaving} onClick={onClearAiApiKey} type="button">
+                  {ui.clearAiApiKey}
+                </button>
+              </div>
+            </div>
             <button className="secondary-button" disabled={aiSaving} onClick={onSaveAiConfig} type="button">
               {aiSaving ? ui.common.saving : ui.saveAiSettings}
             </button>

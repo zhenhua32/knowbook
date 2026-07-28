@@ -217,6 +217,7 @@ test.describe('Plugin System @electron', () => {
 
       await getTreeButton(page, title).click()
       await expect(getPreviewTitle(page)).toHaveText(title)
+      await ensureDocumentMetadataEditor(page)
       await expect(getSummaryInput(page)).toHaveValue(initialSeedTitle)
     })
   })

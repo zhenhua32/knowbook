@@ -48,6 +48,7 @@ export function DatabasePage({
   const {
     createDatabase,
     deleteCurrentDatabase,
+    updateCurrentDatabaseMetadata,
     switchDatabaseWorkspaceView
   } = useDatabaseWorkspaceActions({
     databaseEntityDatabaseId: database.databaseEntityDatabaseId,
@@ -258,6 +259,7 @@ export function DatabasePage({
     databaseSavedViewNameDraft: database.databaseSavedViewNameDraft,
     databaseSavedViews: database.databaseSavedViews,
     deleteCurrentDatabase,
+    updateCurrentDatabaseMetadata,
     deleteCurrentDatabaseSavedView,
     deleteDatabaseColumn,
     deleteDatabaseEntity,

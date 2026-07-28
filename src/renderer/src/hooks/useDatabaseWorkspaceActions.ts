@@ -171,9 +171,35 @@ export function useDatabaseWorkspaceActions({
     ui
   ])
 
+  const updateCurrentDatabaseMetadata = useCallback(async (name: string, description: string) => {
+    if (!selectedDatabase) {
+      return
+    }
+
+    const normalizedName = name.trim()
+    if (!normalizedName) {
+      setBackupMessage(ui.databaseNameRequired)
+      return
+    }
+
+    try {
+      await window.knowbook.updateDatabaseMetadata({
+        databaseId: selectedDatabase.id,
+        name: normalizedName,
+        description: description.trim()
+      })
+      setDatabases(await window.knowbook.getDatabases())
+      setBackupMessage(ui.databaseUpdated(normalizedName))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ui.databaseUpdateFailed
+      setBackupMessage(message)
+    }
+  }, [selectedDatabase, setBackupMessage, setDatabases, ui])
+
   return {
     createDatabase,
     deleteCurrentDatabase,
+    updateCurrentDatabaseMetadata,
     switchDatabaseWorkspaceView
   }
 }

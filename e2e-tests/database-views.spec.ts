@@ -124,6 +124,30 @@ async function expectSchemaColumnNames(page: Page, expectedNames: string[]): Pro
 }
 
 test.describe('Database Views @electron', () => {
+  test('renames a standalone database and updates its description', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openDatabasePage(page)
+      await openStandaloneDatabasesView(page)
+
+      const suffix = Date.now().toString(36)
+      const originalName = `Metadata ${suffix}`
+      const updatedName = `Metadata Updated ${suffix}`
+      await createDatabase(page, originalName, 'Original description')
+      await selectDatabase(page, originalName)
+
+      await page.getByRole('button', { name: uiText('Edit database details', '编辑数据库信息') }).click()
+      const metadataForm = page.locator('.database-metadata-form')
+      await metadataForm.getByLabel(uiText('Database name', '数据库名称')).fill(updatedName)
+      await metadataForm.getByLabel(uiText('Description', '描述')).fill('Updated description')
+      await metadataForm.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(getDatabaseButton(page, updatedName)).toBeVisible()
+      await expect(page.locator('.flash-message')).toContainText(updatedName)
+    })
+  })
+
   test('isolates schema columns between the default database and an independent database', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
     test.slow()

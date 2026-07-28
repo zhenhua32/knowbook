@@ -9,6 +9,7 @@ import type {
   AskAiInput,
   AskAiResult,
   BackupResult,
+  BackupRestorePreview,
   BackupRestoreResult,
   ClipWebPageInput,
   ClipWebPageResult,
@@ -42,6 +43,7 @@ import type {
   UpdateAiConfigInput,
   UpdateWebClipBridgeSettingsInput,
   UpdateDatabaseSavedViewInput,
+  UpdateDatabaseMetadataInput,
   UpdateDatabaseEntityInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
@@ -49,6 +51,7 @@ import type {
   WebClipBridgeStatus
 } from '@shared/contracts'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
+import { buildDocumentSummarySource } from '@shared/ai-summary'
 import { MarkdownBackupService } from './backup/exporter'
 import { MarkdownRestoreService } from './backup/importer'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
@@ -58,7 +61,7 @@ import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain: electronIpcMain, shell, protocol } = electron
+const { app, BrowserWindow, clipboard, dialog, ipcMain: electronIpcMain, safeStorage, shell, protocol } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
@@ -70,6 +73,7 @@ const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
 const AI_REQUEST_TIMEOUT_MS = 60_000
+const SAFE_STORAGE_KEY_PREFIX = 'safe-storage:v1:'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -128,6 +132,7 @@ if (userDataOverride) {
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
+const restoreSafetyBackupRoot = join(userDataRoot, 'backups', 'restore-safety')
 const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
 const store = new KnowbookStore(databasePath)
 const backupService = new MarkdownBackupService(store, backupRoot)
@@ -147,8 +152,54 @@ const webClipBridge = new WebClipBridgeService({
 const pluginHost = new PluginHost(store, [
   { path: join(process.cwd(), 'plugins'), source: 'workspace' },
   { path: join(userDataRoot, 'plugins'), source: 'user-data' }
-], app.getVersion())
+], app.getVersion(), () => notifyWorkspaceMutation())
 const appUpdateManager = new AppUpdateManager()
+
+function protectAiApiKey(apiKey: string): string {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return apiKey
+  }
+
+  return `${SAFE_STORAGE_KEY_PREFIX}${safeStorage.encryptString(apiKey).toString('base64')}`
+}
+
+function getDecryptedAiApiKey(): string | null {
+  const storedApiKey = store.getAiApiKey()
+  if (!storedApiKey) {
+    return null
+  }
+
+  if (!storedApiKey.startsWith(SAFE_STORAGE_KEY_PREFIX)) {
+    if (safeStorage.isEncryptionAvailable()) {
+      store.saveSetting('ai.apiKey', protectAiApiKey(storedApiKey))
+    }
+    return storedApiKey
+  }
+
+  try {
+    return safeStorage.decryptString(Buffer.from(storedApiKey.slice(SAFE_STORAGE_KEY_PREFIX.length), 'base64'))
+  } catch (error) {
+    console.error('Failed to decrypt the stored AI API key.', error)
+    return null
+  }
+}
+
+function formatRestorePreviewDetail(preview: BackupRestorePreview): string {
+  return [
+    `文档：${preview.restored} 个（新建 ${preview.created}，更新 ${preview.updated}，删除 ${preview.deleted}）`,
+    `独立数据库：${preview.standaloneDatabases} 个（新建 ${preview.standaloneDatabasesCreated}，更新 ${preview.standaloneDatabasesUpdated}，删除 ${preview.standaloneDatabasesDeleted}）`,
+    `路径冲突：${preview.conflictsResolved} 个；父级占位：${preview.placeholdersCreated} 个`,
+    '',
+    '继续后会先创建数据库安全副本，再应用恢复内容。'
+  ].join('\n')
+}
+
+async function createRestoreSafetyBackup(): Promise<string> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const destinationPath = join(restoreSafetyBackupRoot, `knowbook-before-restore-${timestamp}-${randomUUID()}.db`)
+  await store.backupDatabase(destinationPath)
+  return destinationPath
+}
 
 type SemanticContextNote = SemanticSearchResult & {
   content: string
@@ -222,7 +273,7 @@ function registerWorkspaceEventHandlers(): void {
           return
         }
 
-        const apiKey = store.getAiApiKey()
+        const apiKey = getDecryptedAiApiKey()
         if (!apiKey) {
           return
         }
@@ -379,6 +430,15 @@ function registerIpcHandlers(): void {
     return databases
   })
 
+  ipcMain.handle('knowbook:update-database-metadata', (_event, input: UpdateDatabaseMetadataInput) => {
+    store.updateDatabaseMetadata(input)
+    const updatedDatabase = store.getDatabases().find((database) => database.id === input.databaseId)
+    if (!updatedDatabase) {
+      throw new Error('Database not found after metadata update.')
+    }
+    return updatedDatabase
+  })
+
   ipcMain.handle('knowbook:delete-database', (_event, databaseId: string) => {
     store.deleteDatabase(databaseId)
   })
@@ -474,7 +534,12 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
-    store.updateAiConfig(input)
+    store.updateAiConfig({
+      ...input,
+      apiKey: typeof input.apiKey === 'string' && input.apiKey.trim()
+        ? protectAiApiKey(input.apiKey.trim())
+        : input.apiKey
+    })
     if (!input.enabled || !input.autoSummaryOnSave) {
       cancelAllDocumentSummaryGeneration()
     }
@@ -609,7 +674,34 @@ function registerIpcHandlers(): void {
       return null
     }
 
-    return restoreService.restoreFromDirectory(result.filePaths[0])
+    const restoreRoot = result.filePaths[0]
+    const preview = restoreService.previewFromDirectory(restoreRoot)
+    const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
+    const confirmationOptions = {
+      type: 'warning' as const,
+      title: '确认恢复备份',
+      message: deletionCount > 0
+        ? `此恢复将删除 ${deletionCount} 项当前数据，是否继续？`
+        : '已完成恢复预检，是否继续？',
+      detail: formatRestorePreviewDetail(preview),
+      buttons: ['继续恢复', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true
+    }
+    const confirmation = targetWindow
+      ? await dialog.showMessageBox(targetWindow, confirmationOptions)
+      : await dialog.showMessageBox(confirmationOptions)
+
+    if (confirmation.response !== 0) {
+      return null
+    }
+
+    const safetyBackupPath = await createRestoreSafetyBackup()
+    return {
+      ...restoreService.restoreFromDirectory(restoreRoot),
+      safetyBackupPath
+    }
   })
 
   ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {
@@ -739,7 +831,7 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
     throw new Error('AI is disabled. Enable AI in settings first.')
   }
 
-  const apiKey = store.getAiApiKey()
+  const apiKey = getDecryptedAiApiKey()
   if (!apiKey) {
     throw new Error('Missing API key. Save an API key in AI settings.')
   }
@@ -783,7 +875,7 @@ async function previewDocumentBlockAiEdit(
     throw new Error('AI is disabled. Enable AI in settings first.')
   }
 
-  const apiKey = store.getAiApiKey()
+  const apiKey = getDecryptedAiApiKey()
   if (!apiKey) {
     throw new Error('Missing API key. Save an API key in AI settings.')
   }
@@ -819,7 +911,7 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
     throw new Error('Auto summary is disabled. Enable summary automation in AI settings first.')
   }
 
-  const apiKey = store.getAiApiKey()
+  const apiKey = getDecryptedAiApiKey()
   if (!apiKey) {
     throw new Error('Missing API key. Save an API key in AI settings.')
   }
@@ -869,11 +961,7 @@ async function generateDocumentSummary(
   apiKey: string,
   signal?: AbortSignal
 ): Promise<string | null> {
-  const content = detail.blocks
-    .map((block) => block.content.trim())
-    .filter((blockContent) => blockContent.length > 0)
-    .slice(0, 24)
-    .join('\n')
+  const content = buildDocumentSummarySource(detail.blocks.map((block) => block.content))
 
   if (content.length < 40) {
     return null
@@ -885,7 +973,7 @@ async function generateDocumentSummary(
     emptyResponseMessage: 'AI returned an empty summary response.',
     failureLabel: 'AI summary request',
     model: aiConfig.model,
-    systemPrompt: 'You summarize notes for a knowledge management app. Produce one concise Chinese summary sentence with no markdown, no bullet points, and no surrounding quotes.',
+    systemPrompt: 'You summarize notes for a knowledge management app. Produce one concise summary sentence in the same primary language as the document, with no markdown, no bullet points, and no surrounding quotes.',
     temperature: 0.2,
     userPrompt: [
       `Document title: ${detail.title}`,
@@ -893,7 +981,7 @@ async function generateDocumentSummary(
       'Document content:',
       content,
       '',
-      'Return a compact summary in Chinese, ideally under 60 Chinese characters.'
+      'Return only a compact one-sentence summary in the document language.'
     ].join('\n'),
     signal
   })

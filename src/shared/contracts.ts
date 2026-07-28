@@ -79,6 +79,12 @@ export interface CreateDatabaseInput {
   description?: string
 }
 
+export interface UpdateDatabaseMetadataInput {
+  databaseId: string
+  name: string
+  description: string
+}
+
 export interface CreateDatabaseSavedViewInput {
   databaseId: string
   name: string
@@ -399,6 +405,21 @@ export interface BackupRestoreResult {
   placeholdersCreated: number
   root: string
   at: string
+  safetyBackupPath?: string
+}
+
+export interface BackupRestorePreview {
+  root: string
+  restored: number
+  created: number
+  updated: number
+  deleted: number
+  conflictsResolved: number
+  placeholdersCreated: number
+  standaloneDatabases: number
+  standaloneDatabasesCreated: number
+  standaloneDatabasesUpdated: number
+  standaloneDatabasesDeleted: number
 }
 
 export interface CreateDocumentResult {
@@ -454,33 +475,6 @@ export interface UpdateDocumentInput {
   blocks: DocumentBlockDraft[]
 }
 
-export interface CreateDocumentDatabaseColumnInput {
-  name: string
-  type: DocumentDatabaseColumnType
-  options?: string[]
-}
-
-export interface RenameDocumentDatabaseColumnInput {
-  columnId: string
-  name: string
-}
-
-export interface MoveDocumentDatabaseColumnInput {
-  columnId: string
-  direction: 'left' | 'right'
-}
-
-export interface UpdateDocumentDatabaseColumnOptionsInput {
-  columnId: string
-  options: string[]
-}
-
-export interface UpdateDocumentDatabaseValueInput {
-  documentId: string
-  columnId: string
-  value: DocumentDatabaseFieldValue
-}
-
 export interface UpdateAiConfigInput {
   enabled: boolean
   baseUrl: string
@@ -488,6 +482,7 @@ export interface UpdateAiConfigInput {
   autoSummaryOnSave: boolean
   relatedNotesEnabled: boolean
   apiKey?: string
+  clearApiKey?: boolean
 }
 
 export interface SearchSemanticNotesInput {
@@ -593,6 +588,7 @@ export interface ElectronApi {
   getSetting: (key: string) => Promise<string | null>
   saveSetting: (key: string, value: string) => Promise<void>
   createDocumentDatabase: (input: CreateDatabaseInput) => Promise<DocumentDatabase>
+  updateDatabaseMetadata: (input: UpdateDatabaseMetadataInput) => Promise<DocumentDatabase>
   getDatabases: () => Promise<DocumentDatabase[]>
   deleteDatabase: (databaseId: string) => Promise<void>
   getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>

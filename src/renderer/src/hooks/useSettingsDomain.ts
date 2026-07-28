@@ -19,6 +19,7 @@ type UseSettingsDomainParams = {
   isZh: boolean
   loading: boolean
   onAiApiKeyChange: (value: string) => void
+  onClearAiApiKey: () => void
   onAiAutoSummaryOnSaveChange: (value: boolean) => void
   onAiBaseUrlChange: (value: string) => void
   onAiEnabledChange: (value: boolean) => void
@@ -50,6 +51,7 @@ export function useSettingsDomain({
   isZh,
   loading,
   onAiApiKeyChange,
+  onClearAiApiKey,
   onAiAutoSummaryOnSaveChange,
   onAiBaseUrlChange,
   onAiEnabledChange,
@@ -88,6 +90,7 @@ export function useSettingsDomain({
     isZh,
     loading,
     onAiApiKeyChange,
+    onClearAiApiKey,
     onAiAutoSummaryOnSaveChange,
     onAiBaseUrlChange,
     onAiEnabledChange,

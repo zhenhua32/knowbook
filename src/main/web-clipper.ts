@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { Readability } from '@mozilla/readability'
 import { JSDOM } from 'jsdom'
 import TurndownService from 'turndown'
+import { Agent } from 'undici'
 import type {
   ClipWebPageInput,
   ClipWebPageResult,
@@ -267,7 +268,7 @@ async function fetchHtmlDocument(
 
   for (const [index, candidateUrl] of candidates.entries()) {
     try {
-      const response = await fetchWithValidatedRedirects(candidateUrl, {
+      const fetched = await fetchWithValidatedRedirects(candidateUrl, {
         headers: {
           Accept: 'text/html,application/xhtml+xml',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
@@ -276,32 +277,36 @@ async function fetchHtmlDocument(
         },
         signal: AbortSignal.timeout(WEB_CLIP_TIMEOUT_MS)
       }, allowPrivateNetwork)
+      try {
+        const { response } = fetched
+        if (!response.ok) {
+          lastFailure = new Error(`Failed to fetch webpage (${response.status}).`)
+          continue
+        }
 
-      if (!response.ok) {
-        lastFailure = new Error(`Failed to fetch webpage (${response.status}).`)
-        continue
-      }
+        const contentType = response.headers.get('content-type') ?? ''
+        if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
+          lastFailure = new Error(`Unsupported page type: ${contentType || 'unknown'}`)
+          continue
+        }
 
-      const contentType = response.headers.get('content-type') ?? ''
-      if (!/text\/html|application\/xhtml\+xml/i.test(contentType)) {
-        lastFailure = new Error(`Unsupported page type: ${contentType || 'unknown'}`)
-        continue
-      }
+        const html = (await readResponseBody(response, MAX_HTML_BYTES)).toString('utf8')
+        if (!html.trim()) {
+          lastFailure = new Error('Fetched webpage is empty.')
+          continue
+        }
+        if (looksLikeScriptChallenge(html)) {
+          lastFailure = new Error('The webpage requires browser execution before its article content is available.')
+          continue
+        }
 
-      const html = (await readResponseBody(response, MAX_HTML_BYTES)).toString('utf8')
-      if (!html.trim()) {
-        lastFailure = new Error('Fetched webpage is empty.')
-        continue
-      }
-      if (looksLikeScriptChallenge(html)) {
-        lastFailure = new Error('The webpage requires browser execution before its article content is available.')
-        continue
-      }
-
-      return {
-        html,
-        documentUrl: response.url || candidateUrl,
-        canonicalUrl: index === 0 ? (response.url || url) : url
+        return {
+          html,
+          documentUrl: response.url || candidateUrl,
+          canonicalUrl: index === 0 ? (response.url || url) : url
+        }
+      } finally {
+        await fetched.release()
       }
     } catch (error) {
       lastFailure = error instanceof Error ? error : new Error(String(error))
@@ -1573,7 +1578,7 @@ async function localizeAssetUrl(
     return persistLocalizedAsset(dataAsset.buffer, assetRoot, dataAsset.extension)
   }
 
-  const response = await fetchWithValidatedRedirects(assetUrl, {
+  const fetched = await fetchWithValidatedRedirects(assetUrl, {
     headers: {
       Accept: 'image/*,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.7',
@@ -1582,18 +1587,22 @@ async function localizeAssetUrl(
     },
     signal: AbortSignal.timeout(WEB_CLIP_TIMEOUT_MS)
   }, allowPrivateNetwork)
+  try {
+    const { response } = fetched
+    if (!response.ok) {
+      throw new Error(`Failed to fetch asset (${response.status})`)
+    }
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch asset (${response.status})`)
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.toLowerCase().startsWith('image/')) {
+      throw new Error(`Unsupported asset type: ${contentType || 'unknown'}`)
+    }
+    const buffer = await readResponseBody(response, MAX_ASSET_BYTES)
+    const extension = normalizeAssetExtension(assetUrl, contentType)
+    return persistLocalizedAsset(buffer, assetRoot, extension)
+  } finally {
+    await fetched.release()
   }
-
-  const contentType = response.headers.get('content-type') ?? ''
-  if (!contentType.toLowerCase().startsWith('image/')) {
-    throw new Error(`Unsupported asset type: ${contentType || 'unknown'}`)
-  }
-  const buffer = await readResponseBody(response, MAX_ASSET_BYTES)
-  const extension = normalizeAssetExtension(assetUrl, contentType)
-  return persistLocalizedAsset(buffer, assetRoot, extension)
 }
 
 function persistLocalizedAsset(buffer: Buffer, assetRoot: string, extension: string): string {
@@ -1715,18 +1724,45 @@ async function fetchWithValidatedRedirects(
   initialUrl: string,
   init: RequestInit,
   allowPrivateNetwork: boolean
-): Promise<Response> {
+): Promise<{ response: Response; release: () => Promise<void> }> {
   let currentUrl = initialUrl
 
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
-    await assertSafeRemoteUrl(currentUrl, allowPrivateNetwork)
-    const response = await fetch(currentUrl, { ...init, redirect: 'manual' })
+    const resolvedAddress = await resolveSafeRemoteUrl(currentUrl, allowPrivateNetwork)
+    const dispatcher = resolvedAddress
+      ? new Agent({
+          connect: {
+            lookup: (_hostname, _options, callback) => {
+              callback(null, resolvedAddress.address, resolvedAddress.family)
+            }
+          }
+        })
+      : null
+    let response: Response
+    try {
+      response = await fetch(currentUrl, {
+        ...init,
+        redirect: 'manual',
+        ...(dispatcher ? { dispatcher } : {})
+      } as RequestInit & { dispatcher?: Agent })
+    } catch (error) {
+      await dispatcher?.close()
+      throw error
+    }
+
     if (response.status < 300 || response.status >= 400) {
-      return response
+      return {
+        response,
+        release: async () => {
+          await response.body?.cancel().catch(() => undefined)
+          await dispatcher?.close()
+        }
+      }
     }
 
     const location = response.headers.get('location')
     await response.body?.cancel()
+    await dispatcher?.close()
     if (!location) {
       throw new Error('Redirect response is missing a location header.')
     }
@@ -1740,7 +1776,10 @@ async function fetchWithValidatedRedirects(
   throw new Error('Too many redirects while fetching web clip content.')
 }
 
-async function assertSafeRemoteUrl(value: string, allowPrivateNetwork: boolean): Promise<void> {
+async function resolveSafeRemoteUrl(
+  value: string,
+  allowPrivateNetwork: boolean
+): Promise<{ address: string; family: number } | null> {
   const url = new URL(value)
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Only http and https URLs may be fetched.')
@@ -1748,21 +1787,22 @@ async function assertSafeRemoteUrl(value: string, allowPrivateNetwork: boolean):
   if (url.username || url.password) {
     throw new Error('URLs with embedded credentials are not supported.')
   }
-  if (allowPrivateNetwork) {
-    return
-  }
-
   const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
-  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  if (!allowPrivateNetwork && (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local'))) {
     throw new Error('Web clipping cannot access local or private network addresses.')
   }
 
   const addresses = isIP(hostname)
-    ? [{ address: hostname }]
+    ? [{ address: hostname, family: isIP(hostname) }]
     : await lookup(hostname, { all: true, verbatim: true })
-  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
+  if (addresses.length === 0) {
+    throw new Error('Web clipping could not resolve the remote address.')
+  }
+  if (!allowPrivateNetwork && addresses.some(({ address }) => !isPublicIpAddress(address))) {
     throw new Error('Web clipping cannot access local or private network addresses.')
   }
+
+  return addresses[0]
 }
 
 function isPublicIpAddress(address: string): boolean {

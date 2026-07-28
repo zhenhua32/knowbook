@@ -56,6 +56,9 @@ export function useAppFeatureDomains({
     isZh: shell.isZh,
     loading: shell.loading,
     onAiApiKeyChange: ai.setAiApiKeyDraft,
+    onClearAiApiKey: () => {
+      void ai.clearAiApiKey()
+    },
     onAiAutoSummaryOnSaveChange: ai.setAiAutoSummaryOnSaveDraft,
     onAiBaseUrlChange: ai.setAiBaseUrlDraft,
      onAiEnabledChange: ai.setAiEnabledDraft,

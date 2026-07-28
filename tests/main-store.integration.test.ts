@@ -534,6 +534,16 @@ test('ai config persists defaults, api key, and auto-summary flag', () => {
     assert.equal(config.baseUrl, 'https://example.ai/v1')
     assert.equal(config.autoSummaryOnSave, true)
     assert.equal(config.hasApiKey, true)
+
+    store.updateAiConfig({
+      enabled: false,
+      baseUrl: 'https://example.ai/v1',
+      model: 'gpt-4.1-mini',
+      autoSummaryOnSave: true,
+      relatedNotesEnabled: false,
+      clearApiKey: true
+    })
+    assert.equal(store.getAiConfigPublic().hasApiKey, false)
   })
 })
 

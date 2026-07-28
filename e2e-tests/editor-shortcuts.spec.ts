@@ -105,6 +105,9 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
       await editor.fill('$$ E = mc^2')
 
       await expect(editor).toHaveClass(/type-math/)
+      await expect(page.getByRole('math', { name: uiText('Math preview', '公式预览') })).toBeVisible()
+      await editor.fill('x^2 + y^2')
+      await expect(page.getByRole('math', { name: uiText('Math preview', '公式预览') })).toContainText('x')
     })
   })
 
@@ -128,6 +131,28 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
 
       await expect(editor).toHaveClass(/type-code/)
       await expect(page.locator('.block-code-language-badge').first()).toBeVisible()
+      await expect(page.getByRole('region', { name: uiText('Code preview', '代码预览') })).toBeVisible()
+      await expect(page.locator('.block-code-hljs .hljs-keyword').first()).toContainText('const')
+    })
+  })
+
+  test('keeps markdown table source editable while rendering a live preview', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('| Name | Value |\n| --- | ---: |\n| Alpha | 1 |')
+      const row = editor.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " block-editor-row ")][1]')
+      await row.locator('.block-drag-handle').click()
+      await row.locator('.block-type-selector').selectOption('table')
+
+      await expect(editor).toHaveClass(/type-table/)
+      const preview = page.getByRole('region', { name: uiText('Table preview', '表格预览') })
+      await expect(preview).toContainText('Alpha')
+
+      await editor.fill('| Name | Value |\n| --- | ---: |\n| Beta | 2 |')
+      await expect(preview).toContainText('Beta')
+      await expect(preview).not.toContainText('Alpha')
     })
   })
 

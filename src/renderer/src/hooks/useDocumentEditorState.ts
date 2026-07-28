@@ -4,6 +4,7 @@ import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
 import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
@@ -61,8 +62,14 @@ export function useDocumentEditorState({
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedDocumentIdRef = useRef(selectedDocumentId)
   const saveSequenceRef = useRef(0)
+  const draftTitleRef = useRef(draftTitle)
+  const draftSummaryRef = useRef(draftSummary)
+  const draftBlocksRef = useRef(draftBlocksState)
   const [, setHistoryRevision] = useState(0)
   selectedDocumentIdRef.current = selectedDocumentId
+  draftTitleRef.current = draftTitle
+  draftSummaryRef.current = draftSummary
+  draftBlocksRef.current = draftBlocksState
 
   const clearAutoSaveTimer = useCallback(() => {
     if (autoSaveTimerRef.current) {
@@ -284,6 +291,7 @@ export function useDocumentEditorState({
     const saveSequence = ++saveSequenceRef.current
 
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocksState)
+    const submittedBlocksSnapshot = JSON.stringify(createComparableBlockSnapshot(normalizedDraftBlocks))
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
       if (!silentValidationFailure) {
@@ -312,7 +320,17 @@ export function useDocumentEditorState({
         onHomeDataChange(refreshedHome)
         if (selectedDocumentIdRef.current === persistedDocumentId) {
           onSelectedDocumentChange(refreshedDetail)
-          setDraftSummary(refreshedDetail?.summary ?? '')
+          if (refreshedDetail) {
+            if (draftTitleRef.current === draftTitle) {
+              setDraftTitle(refreshedDetail.title)
+            }
+            if (draftSummaryRef.current === draftSummary) {
+              setDraftSummary(refreshedDetail.summary)
+            }
+            if (JSON.stringify(createComparableBlockSnapshot(draftBlocksRef.current)) === submittedBlocksSnapshot) {
+              setDraftBlocksState(normalizeDraftBlocks(refreshedDetail.blocks.map(toDraftBlock)))
+            }
+          }
         }
       }
       return true
@@ -321,13 +339,14 @@ export function useDocumentEditorState({
         return false
       }
 
-      throw error
+      onMessage(getErrorMessage(error, ui.documentSaveFailed))
+      return false
     } finally {
       if (saveSequence === saveSequenceRef.current) {
         setIsSaving(false)
       }
     }
-  }, [draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, triggerTransientFlash, ui, validateBlockTreeStructure])
+  }, [createComparableBlockSnapshot, draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, toDraftBlock, ui, validateBlockTreeStructure])
 
   const saveDocument = useCallback(async () => {
     clearAutoSaveTimer()
@@ -341,13 +360,8 @@ export function useDocumentEditorState({
       return true
     }
 
-    try {
-      return await persistDraft(false)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'Failed to save document.')
-      return false
-    }
-  }, [clearAutoSaveTimer, hasPendingDraftChanges, onMessage, persistDraft])
+    return persistDraft(false)
+  }, [clearAutoSaveTimer, hasPendingDraftChanges, persistDraft])
 
   useEffect(() => {
     if (isEditing && !isRestoringHistoryRef.current) {

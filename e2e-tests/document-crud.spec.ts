@@ -149,4 +149,42 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(`${targetParentTitle}/${childTitle}/${grandchildTitle}`)
     })
   })
+
+  test('reconciles a sibling title normalized by the main process', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const duplicateTitle = `E2E Duplicate ${Date.now().toString(36)}`
+
+    await withElectronApp(async ({ page }) => {
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(duplicateTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+      await expect(getTitleInput(page)).toHaveValue(duplicateTitle)
+
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(duplicateTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(getTitleInput(page)).toHaveValue(`${duplicateTitle} 1`)
+      await expect(page.locator('.preview-panel .panel-head h3')).toHaveText(`${duplicateTitle} 1`)
+      await expect(page.locator('.document-path')).toContainText(`${duplicateTitle} 1`)
+    })
+  })
+
+  test('surfaces a document save validation failure without losing the draft', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill('Invalid/Title')
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await expect(page.locator('.flash-message')).toContainText('Document title cannot contain path separators')
+      await expect(getTitleInput(page)).toHaveValue('Invalid/Title')
+      await expect(page.getByRole('button', { name: uiText('Save', '保存') })).toBeEnabled()
+    })
+  })
 })

@@ -20,6 +20,25 @@ function byBlockId(detail: DocumentDetail, blockId: string) {
   return found
 }
 
+test('KnowbookStore creates a consistent pre-restore database safety copy', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-safety-backup-test-'))
+  const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
+  let copiedStore: KnowbookStore | null = null
+
+  try {
+    const sourceCount = sourceStore.getAllDocumentSnapshots().length
+    const destinationPath = join(tempRoot, 'safety', 'before-restore.sqlite')
+    await sourceStore.backupDatabase(destinationPath)
+
+    copiedStore = new KnowbookStore(destinationPath)
+    assert.equal(copiedStore.getAllDocumentSnapshots().length, sourceCount)
+  } finally {
+    copiedStore?.destroy()
+    sourceStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('MarkdownRestoreService restores exported markdown into a fresh store', () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-test-'))
   const backupRoot = join(tempRoot, 'backup')
@@ -149,7 +168,17 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
     const exportedCount = sourceStore.getExportDocuments().length
     new MarkdownBackupService(sourceStore, backupRoot).exportAll()
 
-    const restoreResult = new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot)
+    const restoreService = new MarkdownRestoreService(targetStore)
+    const snapshotsBeforePreview = targetStore.getAllDocumentSnapshots()
+    const restorePreview = restoreService.previewFromDirectory(backupRoot)
+    assert.equal(restorePreview.restored, exportedCount)
+    assert.equal(restorePreview.created + restorePreview.updated, exportedCount)
+    assert.equal(restorePreview.deleted, 0)
+    assert.equal(restorePreview.standaloneDatabases, sourceStore.getExportStandaloneDatabases().length)
+    assert.equal(restorePreview.standaloneDatabasesCreated, sourceStore.getExportStandaloneDatabases().length)
+    assert.deepEqual(targetStore.getAllDocumentSnapshots(), snapshotsBeforePreview)
+
+    const restoreResult = restoreService.restoreFromDirectory(backupRoot)
     assert.equal(restoreResult.restored, exportedCount)
     assert.equal(restoreResult.created + restoreResult.updated, exportedCount)
     assert.equal(restoreResult.deleted, 0)

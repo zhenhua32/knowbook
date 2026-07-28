@@ -46,6 +46,7 @@ type UseDatabaseSectionPresentationParams = {
   databaseSavedViewNameDraft: DatabaseStandaloneProps['savedViewNameDraft']
   databaseSavedViews: DatabaseStandaloneProps['savedViews']
   deleteCurrentDatabase: () => Promise<void>
+  updateCurrentDatabaseMetadata: (name: string, description: string) => Promise<void>
   deleteCurrentDatabaseSavedView: () => Promise<void>
   deleteDatabaseColumn: DatabaseCatalogProps['onDeleteColumn']
   deleteDatabaseEntity: DatabaseStandaloneProps['onDeleteEntity']
@@ -141,6 +142,7 @@ export function useDatabaseSectionPresentation({
   databaseSavedViewNameDraft,
   databaseSavedViews,
   deleteCurrentDatabase,
+  updateCurrentDatabaseMetadata,
   deleteCurrentDatabaseSavedView,
   deleteDatabaseColumn,
   deleteDatabaseEntity,
@@ -315,6 +317,9 @@ export function useDatabaseSectionPresentation({
     onDeleteColumn: deleteDatabaseColumn,
     onDeleteDatabase: () => {
       void deleteCurrentDatabase()
+    },
+    onUpdateDatabaseMetadata: (name, description) => {
+      void updateCurrentDatabaseMetadata(name, description)
     },
     onDeleteEntity: deleteDatabaseEntity,
     onDeleteSavedView: () => {

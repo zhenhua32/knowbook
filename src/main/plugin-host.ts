@@ -144,7 +144,8 @@ export class PluginHost {
   constructor(
     private readonly store: KnowbookStore,
     private readonly roots: Array<{ path: string; source: PluginSource }>,
-    private readonly currentVersion = '0.1.2'
+    private readonly currentVersion = '0.1.2',
+    private readonly onWorkspaceMutation: ((documentId: string) => void) | null = null
   ) {}
 
   async loadAll(): Promise<void> {
@@ -1337,6 +1338,7 @@ export class PluginHost {
       documents: {
         updateSummary: (documentId: string, summary: string) => {
           this.store.updateDocumentSummary(documentId, summary.trim())
+          this.onWorkspaceMutation?.(documentId)
         }
       },
       log: (title: string, description: string, documentId?: string | null) => {

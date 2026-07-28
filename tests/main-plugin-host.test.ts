@@ -156,6 +156,7 @@ test('PluginHost persists plugin settings and exposes updated values to plugin a
 
   const settings = new Map<string, string>()
   const summaryUpdates: Array<{ documentId: string; summary: string }> = []
+  const mutatedDocumentIds: string[] = []
   const store = {
     getSettingPublic: (key: string) => settings.get(key) ?? null,
     saveSetting: (key: string, value: string) => {
@@ -171,7 +172,7 @@ test('PluginHost persists plugin settings and exposes updated values to plugin a
   const host = new PluginHost(store as never, [
     { path: workspaceRoot, source: 'workspace' },
     { path: userDataRoot, source: 'user-data' }
-  ])
+  ], '0.1.2', (documentId) => mutatedDocumentIds.push(documentId))
 
   try {
     await host.loadAll()
@@ -194,6 +195,7 @@ test('PluginHost persists plugin settings and exposes updated values to plugin a
 
     assert.equal(result.refreshDocument, true)
     assert.equal(summaryUpdates[0]?.summary, 'Configured: First content block')
+    assert.deepEqual(mutatedDocumentIds, ['doc-1'])
   } finally {
     await host.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

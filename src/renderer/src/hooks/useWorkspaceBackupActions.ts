@@ -60,7 +60,7 @@ export function useWorkspaceBackupActions({
       }
 
       await refreshWorkspaceAfterStorageMutation()
-      setBackupMessage(ui.backupRestored(
+      const restoredMessage = ui.backupRestored(
         result.restored,
         result.created,
         result.updated,
@@ -68,7 +68,10 @@ export function useWorkspaceBackupActions({
         result.conflictsResolved,
         result.placeholdersCreated,
         result.at
-      ))
+      )
+      setBackupMessage(result.safetyBackupPath
+        ? `${restoredMessage} ${ui.backupSafetyCopyCreated(result.safetyBackupPath)}`
+        : restoredMessage)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.backupRestoreFailed
       setBackupMessage(message)

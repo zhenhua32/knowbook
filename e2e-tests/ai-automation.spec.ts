@@ -216,6 +216,14 @@ test.describe('AI Settings @electron', () => {
       await expect(page.getByLabel(uiText('Base URL', '基础地址'))).toHaveValue(baseUrl)
       await expect(page.getByLabel(uiText('Model', '模型'))).toHaveValue(model)
       await expect(page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）'))).toHaveValue('')
+
+      page.once('dialog', async (dialog) => {
+        expect(dialog.type()).toBe('confirm')
+        await dialog.accept()
+      })
+      await page.getByRole('button', { name: uiText('Clear API key', '清除 API Key') }).click()
+      await expect(page.locator('.flash-message')).toContainText(/stored AI API key was cleared|已清除本机保存的 AI API Key/)
+      await expect.poll(async () => page.evaluate(async () => (await window.knowbook.getHomeData()).aiConfig.hasApiKey)).toBe(false)
     })
   })
 

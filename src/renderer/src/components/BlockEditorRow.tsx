@@ -1,13 +1,23 @@
-import { useState, useRef, useEffect, memo } from 'react'
+import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
 import { BlockContextMenu } from './BlockContextMenu'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
+import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { parseMarkdownTable } from '../utils/markdownTable'
+
+const CodeBlockPreview = lazy(async () => {
+  const module = await import('./CodeBlockPreview')
+  return { default: module.CodeBlockPreview }
+})
+
+const MathBlockPreview = lazy(async () => {
+  const module = await import('./MathBlockPreview')
+  return { default: module.MathBlockPreview }
+})
 
 export type BlockDropPreview = {
   positionLabel: string
@@ -196,12 +206,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
    } = props
 
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
-  const isTableBlock = block.type === 'table'
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
   const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content) : { images: [], links: [] }
   const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
-  const parsedTable = isTableBlock ? parseMarkdownTable(block.content) : null
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -401,41 +409,6 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
       <div className="block-content-area">
         {block.type === 'divider' ? (
           <div className="block-divider-line" />
-        ) : isTableBlock ? (
-          <div className="block-table-content">
-            {parsedTable ? (
-              <table className="block-markdown-table">
-                <thead>
-                  <tr>
-                    {parsedTable.headers.map((header, columnIndex) => (
-                      <th
-                        key={`header-${columnIndex}`}
-                        style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
-                      >
-                        {header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {parsedTable.rows.map((row, rowIndex) => (
-                    <tr key={`row-${rowIndex}`}>
-                      {row.map((cell, columnIndex) => (
-                        <td
-                          key={`cell-${rowIndex}-${columnIndex}`}
-                          style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
-                        >
-                          {cell}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <pre>{block.content}</pre>
-            )}
-          </div>
         ) : (
           <div className={`block-editor-input-row${hasRichMedia ? ' block-editor-input-row-media' : ''}`}>
             {/* Type-specific prefix */}
@@ -540,6 +513,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                             ? isZh
                               ? '公式'
                               : 'Math'
+                            : block.type === 'table'
+                              ? isZh
+                                ? '使用 Markdown 表格语法编辑'
+                                : 'Edit using Markdown table syntax'
                             : block.type === 'bulleted-list'
                               ? isZh
                                 ? '列表项'
@@ -860,6 +837,23 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         ) : null}
 
         {shouldShowRichMediaPreview ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
+        {block.type === 'table' ? (
+          <MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />
+        ) : null}
+        {block.type === 'code' && block.content.trim() ? (
+          <Suspense fallback={<div className="block-structured-preview-loading">{ui.common.loading}</div>}>
+            <CodeBlockPreview
+              code={block.content}
+              label={isZh ? '代码预览' : 'Code preview'}
+              language={effectiveCodeLanguage}
+            />
+          </Suspense>
+        ) : null}
+        {block.type === 'math' && block.content.trim() ? (
+          <Suspense fallback={<div className="block-structured-preview-loading">{ui.common.loading}</div>}>
+            <MathBlockPreview expression={block.content} label={isZh ? '公式预览' : 'Math preview'} />
+          </Suspense>
+        ) : null}
       </div>
     </div>
   )
