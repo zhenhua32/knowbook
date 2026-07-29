@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseMarkdownBackupDocument, renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
-import { renderMarkdownTableHtml } from '../src/shared/markdownTable.ts'
+import { parseMarkdownTable, renderMarkdownTableHtml } from '../src/shared/markdownTable.ts'
 
 test('renderMarkdownTableHtml escapes untrusted cell content', () => {
   const html = renderMarkdownTableHtml([
@@ -14,6 +14,14 @@ test('renderMarkdownTableHtml escapes untrusted cell content', () => {
   assert.equal(html.includes('<img'), false)
   assert.equal(html.includes('onerror="alert(1)"'), false)
   assert.equal(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; text'), true)
+})
+
+test('parseMarkdownTable rejects delimiter rows with a different column count', () => {
+  assert.equal(parseMarkdownTable([
+    '| Name | Status |',
+    '| --- |',
+    '| KnowBook | Ready |'
+  ].join('\n')), null)
 })
 
 test('serializeBlocksToMarkdown renders all major block types', () => {

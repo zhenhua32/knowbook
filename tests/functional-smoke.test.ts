@@ -122,6 +122,44 @@ test('buildBoardColumns groups checkbox fields into yes and no buckets', () => {
   assert.deepEqual(columns[1]?.items.map((item) => item.id), ['doc-1'])
 })
 
+test('buildBoardColumns groups date fields by sorted values and missing values', () => {
+  const dueColumn = createColumn({
+    id: 'due',
+    name: 'Due',
+    type: 'date'
+  })
+
+  const columns = buildBoardColumns([
+    createDocument({ id: 'doc-1', path: 'C', fieldValues: { due: '2026-07-30' } }),
+    createDocument({ id: 'doc-2', path: 'A', fieldValues: { due: '2026-07-29' } }),
+    createDocument({ id: 'doc-3', path: 'B', fieldValues: {} }),
+    createDocument({ id: 'doc-4', path: 'D', fieldValues: { due: true } })
+  ], dueColumn)
+
+  assert.deepEqual(columns.map((column) => column.title), ['No Due', '2026-07-29', '2026-07-30'])
+  assert.deepEqual(columns[0]?.items.map((item) => item.id), ['doc-3', 'doc-4'])
+  assert.deepEqual(columns[1]?.items.map((item) => item.id), ['doc-2'])
+  assert.deepEqual(columns[2]?.items.map((item) => item.id), ['doc-1'])
+})
+
+test('buildBoardColumns separates empty and populated text fields', () => {
+  const notesColumn = createColumn({
+    id: 'notes',
+    name: 'Notes',
+    type: 'text'
+  })
+
+  const columns = buildBoardColumns([
+    createDocument({ id: 'doc-1', path: 'C', fieldValues: { notes: 'has notes' } }),
+    createDocument({ id: 'doc-2', path: 'A', fieldValues: { notes: '' } }),
+    createDocument({ id: 'doc-3', path: 'B', fieldValues: {} })
+  ], notesColumn)
+
+  assert.deepEqual(columns.map((column) => column.title), ['Empty Notes', 'With Notes'])
+  assert.deepEqual(columns[0]?.items.map((item) => item.id), ['doc-2', 'doc-3'])
+  assert.deepEqual(columns[1]?.items.map((item) => item.id), ['doc-1'])
+})
+
 test('getBoardDropFieldValue respects select, multi-select, and checkbox semantics', () => {
   const selectColumn = createColumn({ id: 'status', type: 'select', options: ['Todo', 'Done'] })
   const multiSelectColumn = createColumn({ id: 'tags', type: 'multi-select', options: ['AI', 'UX'] })

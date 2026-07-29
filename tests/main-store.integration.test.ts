@@ -526,6 +526,7 @@ test('ai config persists defaults, api key, and auto-summary flag', () => {
       baseUrl: 'https://example.ai/v1',
       model: 'gpt-4.1-mini',
       autoSummaryOnSave: true,
+      relatedNotesEnabled: true,
       apiKey: 'secret-key'
     })
 
@@ -659,5 +660,104 @@ test('store throws expected errors for missing entities', () => {
     assert.throws(() => store.moveDocument('missing-id', null), /Document not found/)
     assert.throws(() => store.updateDocumentSummary('missing-id', 'summary'), /Document not found/)
     assert.throws(() => store.buildAiPrompt({ documentId: 'missing-id', prompt: 'x' }), /Document not found/)
+  })
+})
+
+test('public snapshots, summaries, and settings round-trip through the store', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+
+    assert.equal(store.getDocumentSnapshotByPath('Home')?.id, home.id)
+    assert.equal(store.getAllDocumentSnapshots().some((snapshot) => snapshot.id === home.id), true)
+
+    store.updateDocumentSummary(home.id, '  concise summary  ')
+    assert.equal(store.getDocumentDetail(home.id)?.summary, 'concise summary')
+
+    store.saveSetting('test.setting', 'first')
+    store.saveSetting('test.setting', 'second')
+    assert.equal(store.getSettingPublic('test.setting'), 'second')
+    store.deleteSetting('test.setting')
+    assert.equal(store.getSettingPublic('test.setting'), null)
+  })
+})
+
+test('database metadata, columns, lookups, and entity lifecycle cover successful mutations', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+    const standalone = store.createDatabase({ name: '  Projects  ', description: ' initial ' })
+    store.updateDatabaseMetadata({
+      databaseId: standalone.id,
+      name: ' Work ',
+      description: ' Active projects '
+    })
+
+    const updatedDatabase = store.getDatabases().find((database) => database.id === standalone.id)
+    assert.equal(updatedDatabase?.name, 'Work')
+    assert.equal(updatedDatabase?.description, 'Active projects')
+
+    const first = store.createDocumentDatabaseColumn({ name: 'First', type: 'text' })
+    const second = store.createDocumentDatabaseColumn({ name: 'Second', type: 'select', options: ['Open', 'Done'] })
+    store.renameDocumentDatabaseColumn({ columnId: second.id, name: ' Status ' })
+    store.moveDocumentDatabaseColumn({ columnId: second.id, direction: 'left' })
+
+    const reordered = store.getDocumentDatabaseColumns()
+    assert.equal(reordered.find((column) => column.id === second.id)?.name, 'Status')
+    assert.equal(reordered.findIndex((column) => column.id === second.id) < reordered.findIndex((column) => column.id === first.id), true)
+
+    store.updateDocumentDatabaseValue({ documentId: home.id, columnId: second.id, value: 'Open' })
+    assert.deepEqual(store.findDocumentIdsByDatabaseValue(second.id, 'Open'), [home.id])
+    assert.deepEqual(store.findDocumentIdsByDatabaseValue(second.id, null), [])
+
+    const owner = store.createDocumentDatabaseColumn({
+      databaseId: standalone.id,
+      name: 'Owner',
+      type: 'text'
+    })
+    const entity = store.createDatabaseEntity({
+      databaseId: standalone.id,
+      fieldValues: { [owner.id]: 'Alice' }
+    })
+    store.updateDatabaseEntity({
+      entityId: entity.id,
+      fieldValues: { [owner.id]: ' Bob ' }
+    })
+
+    const updatedEntity = store.getDatabaseEntities(standalone.id)[0]
+    assert.equal(updatedEntity?.fieldValues[owner.id], 'Bob')
+
+    store.deleteDatabaseEntity(entity.id)
+    assert.deepEqual(store.getDatabaseEntities(standalone.id), [])
+
+    store.deleteDocumentDatabaseColumn(first.id)
+    assert.equal(store.getDocumentDatabaseColumns().some((column) => column.id === first.id), false)
+  })
+})
+
+test('block AI edit prompts validate selection and enforce table-only output rules', () => {
+  withStore((store) => {
+    assert.throws(() => store.buildDocumentBlockAiEditPrompt({
+      documentId: 'doc',
+      documentTitle: 'Title',
+      documentPath: 'Title',
+      documentSummary: '',
+      selectedBlocks: [{ type: 'paragraph', content: '  ', checked: false, depth: 0 }],
+      mode: 'rewrite'
+    }, 'Rewrite'), /Selected blocks not found/)
+
+    const prompt = store.buildDocumentBlockAiEditPrompt({
+      documentId: 'doc',
+      documentTitle: 'Title',
+      documentPath: 'Home/Title',
+      documentSummary: 'Summary',
+      selectedBlocks: [
+        { type: ' paragraph ', content: 'Alpha', checked: false, depth: 0 },
+        { type: 'divider', content: '', checked: false, depth: 0 }
+      ],
+      mode: 'table'
+    }, 'Convert to a table')
+
+    assert.equal(prompt.includes('Selected block count: 2'), true)
+    assert.equal(prompt.includes('Return exactly one Markdown table as plain text.'), true)
+    assert.equal(prompt.includes('Do not wrap the table in code fences.'), true)
   })
 })

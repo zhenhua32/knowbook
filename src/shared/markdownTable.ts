@@ -31,6 +31,9 @@ export function parseMarkdownTable(content: string): ParsedMarkdownTable | null 
 
   const headers = parseRow(headerLine)
   const separatorCells = parseRow(separatorLine)
+  if (headers.length !== separatorCells.length) {
+    return null
+  }
 
   const alignments: Array<'left' | 'center' | 'right' | null> = separatorCells.map((cell) => {
     const left = cell.startsWith(':')

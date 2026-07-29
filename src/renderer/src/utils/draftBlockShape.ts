@@ -18,6 +18,7 @@ export function toDraftBlock(
     checked: Boolean(block.checked),
     depth: normalizeBlockDepth(block.type, block.depth),
     parentBlockId: block.parentBlockId ?? null,
+    tags: block.tags ? [...block.tags] : undefined,
     language: block.language,
     highlight: block.highlight
   }

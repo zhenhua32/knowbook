@@ -18,14 +18,19 @@ test('package.json keeps the expected build and test scripts', () => {
   assert.equal(scripts?.build, 'npm run typecheck && electron-vite build')
   assert.equal(scripts?.test, 'cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test "tests/**/*.test.ts" "tests/**/*.test.tsx"')
   assert.equal(scripts?.['test:e2e'], 'npm run build && playwright test --grep @electron')
+  assert.equal(scripts?.typecheck?.includes('tsconfig.test.json'), true)
 })
 
 test('tsconfig.json exposes core compiler settings', () => {
   const tsconfig = readJson('tsconfig.json')
   const compilerOptions = tsconfig.compilerOptions as Record<string, unknown> | undefined
+  const testTsconfig = readJson('tsconfig.test.json')
+  const testCompilerOptions = testTsconfig.compilerOptions as Record<string, unknown> | undefined
 
   assert.equal(typeof compilerOptions?.target, 'string')
   assert.equal(typeof compilerOptions?.module, 'string')
+  assert.equal(testTsconfig.extends, './tsconfig.json')
+  assert.equal(testCompilerOptions?.allowImportingTsExtensions, true)
 })
 
 test('core workspace modules exist', () => {

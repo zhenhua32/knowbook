@@ -1925,7 +1925,8 @@ export class KnowbookStore {
           return null
         }
 
-        return value.trim().length > 0 ? value : null
+        const nextValue = value.trim()
+        return nextValue.length > 0 ? nextValue : null
       }
       case 'select': {
         if (typeof value !== 'string') {

@@ -32,6 +32,14 @@ export function normalizeDocumentDatabaseFieldValue(value: DocumentDatabaseField
 
 export function areDocumentDatabaseFieldValuesEqual(left: DocumentDatabaseFieldValue, right: DocumentDatabaseFieldValue): boolean {
   if (Array.isArray(left) || Array.isArray(right)) {
+    if (left !== null && !Array.isArray(left)) {
+      return false
+    }
+
+    if (right !== null && !Array.isArray(right)) {
+      return false
+    }
+
     const leftValues = Array.isArray(left) ? [...left].sort() : []
     const rightValues = Array.isArray(right) ? [...right].sort() : []
 

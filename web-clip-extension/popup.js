@@ -118,7 +118,7 @@ function appendNotes(text, notes) {
     return text
   }
 
-  return [text, '', `Extension notes: ${notes}`].filter(Boolean).join('\n')
+  return [text, `Extension notes: ${notes}`].filter(Boolean).join('\n\n')
 }
 
 function collectPagePayload() {

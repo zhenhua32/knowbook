@@ -88,6 +88,7 @@ test('BlockEditToolbar SSR renders manual highlight controls when enabled', () =
       block={{ type: 'paragraph', content: 'Hello', checked: false, depth: 0, highlight: 'yellow' }}
       index={0}
       isActive={true}
+      onAiEdit={() => undefined}
       onDelete={() => undefined}
       onDuplicate={() => undefined}
       onHighlightChange={() => undefined}

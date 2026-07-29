@@ -24,7 +24,7 @@
     "preview": "electron-vite preview",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
     "test:e2e": "npm run build && playwright test --grep @electron",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
