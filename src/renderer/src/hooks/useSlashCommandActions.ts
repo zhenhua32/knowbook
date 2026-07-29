@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
 import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
+import { removeSlashCommand } from '../utils/editorAssist'
 
 type SlashCommandLike = {
   id: string
@@ -128,7 +129,12 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
       return
     }
 
-    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
+    const slashRemoval = removeSlashCommand(
+      currentBlock.content,
+      activeSlashContext.start,
+      activeCursorPosition
+    )
+    const nextContent = slashRemoval.content
 
     if (command.kind === 'type') {
       setDraftBlocks((previous) =>
@@ -141,7 +147,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
             : block
         )
       )
-      setActiveCursorPosition(nextContent.length)
+      setActiveCursorPosition(slashRemoval.cursorPosition)
       setPendingFocusBlockIndex(activeBlockIndex)
       return
     }
@@ -186,20 +192,29 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     }
 
     if (command.action === 'move-up' || command.action === 'move-down') {
-      moveDraftBlockBySibling(activeBlockIndex, command.action === 'move-up' ? -1 : 1, nextContent.length, nextContent)
+      moveDraftBlockBySibling(
+        activeBlockIndex,
+        command.action === 'move-up' ? -1 : 1,
+        slashRemoval.cursorPosition,
+        nextContent
+      )
       return
     }
 
     if (command.action === 'indent' || command.action === 'outdent') {
       if (!isNestableBlock(currentBlock.type)) {
         updateDraftBlock(activeBlockIndex, { content: nextContent })
-        setActiveCursorPosition(nextContent.length)
+        setActiveCursorPosition(slashRemoval.cursorPosition)
         setPendingFocusBlockIndex(activeBlockIndex)
         return
       }
 
       updateDraftBlock(activeBlockIndex, { content: nextContent })
-      adjustBlockDepth(activeBlockIndex, command.action === 'indent' ? 1 : -1, nextContent.length)
+      adjustBlockDepth(
+        activeBlockIndex,
+        command.action === 'indent' ? 1 : -1,
+        slashRemoval.cursorPosition
+      )
       return
     }
 
@@ -241,9 +256,13 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
       return
     }
 
-    const nextContent = stripSlashCommand(currentBlock.content, activeSlashContext.start, activeCursorPosition)
-    updateDraftBlock(activeBlockIndex, { content: nextContent })
-    setActiveCursorPosition(nextContent.length)
+    const slashRemoval = removeSlashCommand(
+      currentBlock.content,
+      activeSlashContext.start,
+      activeCursorPosition
+    )
+    updateDraftBlock(activeBlockIndex, { content: slashRemoval.content })
+    setActiveCursorPosition(slashRemoval.cursorPosition)
     setPendingFocusBlockIndex(activeBlockIndex)
   }, [activeBlockIndex, activeCursorPosition, activeSlashContext, draftBlocks, setActiveCursorPosition, setPendingFocusBlockIndex, updateDraftBlock])
 
@@ -257,10 +276,4 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     dismissSlashCommand,
     removeDraftBlock
   }
-}
-
-function stripSlashCommand(content: string, start: number, cursorPosition: number) {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const next = `${content.slice(0, start)}${content.slice(safeCursor)}`
-  return next.trim() === '' ? '' : next
 }

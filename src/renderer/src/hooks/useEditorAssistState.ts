@@ -2,16 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 import { getUiText, type UiLanguage } from '../i18n'
-
-type LinkContext = {
-  query: string
-  start: number
-}
-
-type SlashCommandContext = {
-  query: string
-  start: number
-}
+import { getOpenLinkContext, getSlashCommandContext } from '../utils/editorAssist'
 
 type BlockSlashCommand = {
   id: string
@@ -225,47 +216,6 @@ export function useEditorAssistState({
     selectedSlashCommandIndex,
     setSelectedSlashCommandIndex,
     slashPanelPos
-  }
-}
-
-function getOpenLinkContext(content: string, cursorPosition: number): LinkContext | null {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const beforeCursor = content.slice(0, safeCursor)
-  const start = beforeCursor.lastIndexOf('[[')
-
-  if (start === -1) {
-    return null
-  }
-
-  const openSegment = beforeCursor.slice(start + 2)
-  if (openSegment.includes(']]') || openSegment.includes('\n')) {
-    return null
-  }
-
-  return {
-    query: openSegment.trim(),
-    start
-  }
-}
-
-function getSlashCommandContext(content: string, cursorPosition: number): SlashCommandContext | null {
-  const safeCursor = Math.max(0, Math.min(cursorPosition, content.length))
-  const beforeCursor = content.slice(0, safeCursor)
-  const lineStart = beforeCursor.lastIndexOf('\n') + 1
-  const lineBeforeCursor = beforeCursor.slice(lineStart)
-  const trimmedStart = lineBeforeCursor.trimStart()
-
-  if (!trimmedStart.startsWith('/')) {
-    return null
-  }
-
-  if (trimmedStart.includes(' ')) {
-    return null
-  }
-
-  return {
-    query: trimmedStart.slice(1),
-    start: lineStart + lineBeforeCursor.indexOf('/')
   }
 }
 

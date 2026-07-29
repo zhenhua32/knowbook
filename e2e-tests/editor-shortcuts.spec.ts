@@ -171,4 +171,25 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
       await expect(editor).toHaveValue('Immediate undo value')
     })
   })
+
+  test('dismisses a slash command without moving the cursor to trailing text', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('   /todo after')
+      for (let index = 0; index < 6; index += 1) {
+        await editor.press('ArrowLeft')
+      }
+
+      await expect(page.locator('.floating-slash-command-panel')).toBeVisible()
+      await editor.press('Escape')
+
+      await expect(editor).toHaveValue('    after')
+      await expect(page.locator('.floating-slash-command-panel')).toHaveCount(0)
+      await expect.poll(() => editor.evaluate(
+        (element) => (element as HTMLTextAreaElement).selectionStart
+      )).toBe(3)
+    })
+  })
 })

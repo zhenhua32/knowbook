@@ -52,6 +52,14 @@ import type {
 } from '@shared/contracts'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { buildDocumentSummarySource } from '@shared/ai-summary'
+import {
+  getDocumentSummarySourceVersion,
+  normalizeDocumentBlockAiEditResponse,
+  normalizeGeneratedDocumentSummary,
+  requestAiChatCompletion,
+  resolveDocumentBlockAiEditInstruction,
+  shouldGenerateDocumentSummary
+} from './ai-service'
 import { MarkdownBackupService } from './backup/exporter'
 import { MarkdownRestoreService } from './backup/importer'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
@@ -72,7 +80,6 @@ const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
-const AI_REQUEST_TIMEOUT_MS = 60_000
 const SAFE_STORAGE_KEY_PREFIX = 'safe-storage:v1:'
 
 protocol.registerSchemesAsPrivileged([
@@ -279,7 +286,11 @@ function registerWorkspaceEventHandlers(): void {
         }
 
         const detail = store.getDocumentDetail(event.documentId)
-        if (!detail || !shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+        if (!detail || !shouldGenerateDocumentSummary(
+          detail.summary,
+          detail.blocks.map((block) => block.content),
+          DEFAULT_DOCUMENT_SUMMARY
+        )) {
           cancelDocumentSummaryGeneration(event.documentId)
           return
         }
@@ -925,7 +936,11 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
     summaryGenerated: false
   }
 
-  if (home.aiConfig.autoSummaryOnSave && shouldGenerateSummary(detail.summary, detail.blocks.map((block) => block.content))) {
+  if (home.aiConfig.autoSummaryOnSave && shouldGenerateDocumentSummary(
+    detail.summary,
+    detail.blocks.map((block) => block.content),
+    DEFAULT_DOCUMENT_SUMMARY
+  )) {
     const generatedSummary = await generateDocumentSummaryDeduplicated(detail, home.aiConfig, apiKey)
     if (generatedSummary && generatedSummary !== detail.summary.trim()) {
       const latestAiConfig = store.getAiConfigPublic()
@@ -985,15 +1000,7 @@ async function generateDocumentSummary(
     ].join('\n'),
     signal
   })
-  const normalizedSummary = summary
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/[“”"'`]/g, '')
-    .replace(/^[-*\d.\s]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 120)
-
-  return normalizedSummary || null
+  return normalizeGeneratedDocumentSummary(summary)
 }
 
 async function generateDocumentSummaryDeduplicated(
@@ -1049,22 +1056,6 @@ function cancelAllDocumentSummaryGeneration(): void {
   summaryGenerationRequests.clear()
 }
 
-function shouldGenerateSummary(summary: string, blockContents: string[]): boolean {
-  const normalizedSummary = summary.trim()
-  if (normalizedSummary && normalizedSummary !== DEFAULT_DOCUMENT_SUMMARY) {
-    return false
-  }
-
-  const contentLength = blockContents
-    .map((content) => content.trim())
-    .filter((content) => content.length > 0)
-    .join(' ')
-    .trim()
-    .length
-
-  return contentLength >= 40
-}
-
 function commitGeneratedSummaryIfCurrent(
   sourceDetail: DocumentDetail,
   generatedSummary: string
@@ -1079,127 +1070,6 @@ function commitGeneratedSummaryIfCurrent(
     store.updateDocumentSummary(sourceDetail.id, generatedSummary)
     return store.getDocumentDetail(sourceDetail.id)
   })
-}
-
-function getDocumentSummarySourceVersion(detail: DocumentDetail): string {
-  return JSON.stringify([
-    detail.title,
-    detail.path,
-    detail.summary,
-    detail.blocks.map((block) => [block.id, block.type, block.content, block.checked, block.depth, block.parentBlockId])
-  ])
-}
-
-function resolveDocumentBlockAiEditInstruction(input: PreviewDocumentBlockAiEditInput): string {
-  switch (input.mode) {
-    case 'summarize':
-      return 'Summarize the selected content into concise note content.'
-    case 'rewrite':
-      return 'Rewrite the selected content for clarity and readability while preserving meaning.'
-    case 'table':
-      return 'Convert the selected content into a single Markdown table.'
-    case 'custom': {
-      const instruction = input.instruction?.trim()
-      if (!instruction) {
-        throw new Error('Custom AI edit instruction is required.')
-      }
-
-      return instruction
-    }
-  }
-}
-
-function normalizeDocumentBlockAiEditResponse(
-  mode: PreviewDocumentBlockAiEditInput['mode'],
-  responseText: string
-): string {
-  if (mode !== 'table') {
-    return responseText
-  }
-
-  const fencedMatch = responseText.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i)
-  return fencedMatch?.[1]?.trim() || responseText
-}
-
-function buildAiChatCompletionsEndpoint(baseUrl: string): string {
-  const trimmedBaseUrl = baseUrl.trim()
-  if (!trimmedBaseUrl) {
-    throw new Error('Missing AI Base URL. Save a Base URL in AI settings.')
-  }
-
-  let endpointUrl: URL
-  try {
-    endpointUrl = new URL(trimmedBaseUrl)
-  } catch {
-    throw new Error(`Invalid AI Base URL "${trimmedBaseUrl}". Include http:// or https://.`)
-  }
-
-  endpointUrl.search = ''
-  endpointUrl.hash = ''
-  const normalizedPath = endpointUrl.pathname.replace(/\/$/, '')
-  endpointUrl.pathname = `${normalizedPath}/chat/completions`.replace(/\/{2,}/g, '/')
-  return endpointUrl.toString()
-}
-
-async function requestAiChatCompletion(input: {
-  apiKey: string
-  baseUrl: string
-  emptyResponseMessage: string
-  failureLabel: string
-  model: string
-  systemPrompt: string
-  temperature: number
-  userPrompt: string
-  signal?: AbortSignal
-}): Promise<string> {
-  const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
-
-  let response: Response
-  try {
-    response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${input.apiKey}`
-      },
-      body: JSON.stringify({
-        model: input.model,
-        messages: [
-          {
-            role: 'system',
-            content: input.systemPrompt
-          },
-          {
-            role: 'user',
-            content: input.userPrompt
-          }
-        ],
-        temperature: input.temperature
-      }),
-      signal: input.signal
-        ? AbortSignal.any([input.signal, AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)])
-        : AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS)
-    })
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    throw new Error(`${input.failureLabel} failed before the AI service responded. Check the AI Base URL, network connectivity, proxy, and TLS certificate. Endpoint: ${endpoint}. Reason: ${reason}`)
-  }
-
-  if (!response.ok) {
-    const errorBody = (await response.text()).slice(0, 4_000)
-    throw new Error(`${input.failureLabel} failed (${response.status}): ${errorBody}`)
-  }
-
-  const payload = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>
-  }
-  const content = payload.choices?.[0]?.message?.content?.trim()
-
-  if (!content) {
-    throw new Error(input.emptyResponseMessage)
-  }
-
-  return content
 }
 
 async function buildSemanticContextNotes(
