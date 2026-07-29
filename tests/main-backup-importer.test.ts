@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
@@ -499,6 +500,82 @@ test('MarkdownRestoreService rolls back all changes when a restore step fails', 
     )
     assert.equal(updateCount, 2)
     assert.deepEqual(targetStore.getHomeData(backupRoot).documentCatalog, before)
+  } finally {
+    sourceStore.destroy()
+    targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService restores portable assets into the active managed asset root', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-assets-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const sourceAssetRoot = join(tempRoot, 'source-assets')
+  const targetAssetRoot = join(tempRoot, 'target-assets')
+  const sourceAssetPath = join(sourceAssetRoot, 'web-clips', 'ab', 'asset.png')
+  const targetAssetPath = join(targetAssetRoot, 'web-clips', 'ab', 'asset.png')
+  const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
+  const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
+
+  try {
+    mkdirSync(join(sourceAssetRoot, 'web-clips', 'ab'), { recursive: true })
+    writeFileSync(sourceAssetPath, Buffer.from('restored-image'))
+    const sourceAssetUrl = pathToFileURL(sourceAssetPath).toString()
+    const roadmap = byPath(sourceStore.getHomeData(backupRoot).documentCatalog, 'Home/Product/Roadmap')
+    sourceStore.updateDocument(roadmap.id, {
+      title: 'Roadmap',
+      summary: 'Contains a portable asset',
+      blocks: [{
+        id: 'asset-image',
+        type: 'paragraph',
+        content: `![Clipped image](${sourceAssetUrl})`,
+        checked: false,
+        depth: 0
+      }]
+    })
+    const assetDatabase = sourceStore.createDatabase({
+      name: 'Asset references',
+      description: 'Portable standalone asset fields'
+    })
+    const assetColumn = sourceStore.createDocumentDatabaseColumn({
+      databaseId: assetDatabase.id,
+      name: 'Asset',
+      type: 'text'
+    })
+    sourceStore.createDatabaseEntity({
+      databaseId: assetDatabase.id,
+      fieldValues: {
+        [assetColumn.id]: sourceAssetUrl
+      }
+    })
+
+    new MarkdownBackupService(sourceStore, backupRoot, sourceAssetRoot).exportAll()
+    rmSync(sourceAssetRoot, { recursive: true, force: true })
+
+    const restoreService = new MarkdownRestoreService(targetStore, targetAssetRoot)
+    restoreService.previewFromDirectory(backupRoot)
+    assert.equal(existsSync(targetAssetPath), false)
+
+    restoreService.restoreFromDirectory(backupRoot)
+    const restoredRoadmap = byPath(targetStore.getHomeData(backupRoot).documentCatalog, 'Home/Product/Roadmap')
+    const restoredDetail = targetStore.getDocumentDetail(restoredRoadmap.id)
+    assert.ok(restoredDetail)
+    assert.equal(existsSync(targetAssetPath), true)
+    assert.equal(readFileSync(targetAssetPath, 'utf8'), 'restored-image')
+    assert.equal(
+      restoredDetail.blocks.some((block) => block.content.includes(pathToFileURL(targetAssetPath).toString())),
+      true
+    )
+    assert.equal(restoredDetail.blocks.some((block) => block.content.includes(sourceAssetUrl)), false)
+    const restoredAssetDatabase = targetStore.getDatabases().find((database) => database.name === 'Asset references')
+    assert.ok(restoredAssetDatabase)
+    const restoredAssetColumn = targetStore.getDocumentDatabaseColumns(restoredAssetDatabase.id)
+      .find((column) => column.name === 'Asset')
+    assert.ok(restoredAssetColumn)
+    assert.equal(
+      targetStore.getDatabaseEntities(restoredAssetDatabase.id)[0]?.fieldValues[restoredAssetColumn.id],
+      pathToFileURL(targetAssetPath).toString()
+    )
   } finally {
     sourceStore.destroy()
     targetStore.destroy()

@@ -21,6 +21,7 @@ import type {
   DatabaseEntity,
   DatabaseSavedView,
   DeleteDatabaseEntityInput,
+  DeleteDatabaseEntitiesInput,
   DocumentDatabase,
   DocumentCatalogEntry,
   DocumentDatabaseColumn,
@@ -45,6 +46,7 @@ import type {
   UpdateDatabaseSavedViewInput,
   UpdateDatabaseMetadataInput,
   UpdateDatabaseEntityInput,
+  UpdateDatabaseEntitiesInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
@@ -136,31 +138,49 @@ if (userDataOverride) {
   app.setPath('userData', resolve(userDataOverride))
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
+
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const restoreSafetyBackupRoot = join(userDataRoot, 'backups', 'restore-safety')
 const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
-const store = new KnowbookStore(databasePath)
-const backupService = new MarkdownBackupService(store, backupRoot)
-const restoreService = new MarkdownRestoreService(store)
-const workspaceEventBus = new WorkspaceEventBus()
-const webClipper = new WebClipperService(store, webClipAssetRoot, {
-  allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1'
-})
-const webClipBridge = new WebClipBridgeService({
-  onImport: async (payload: ImportWebClipPayloadInput) => {
-    const result = await webClipper.importWebClipPayload(payload)
-    await emitClipMutationEvents(result)
-    notifyWorkspaceMutation()
-    return result
-  }
-})
-const pluginHost = new PluginHost(store, [
-  { path: join(process.cwd(), 'plugins'), source: 'workspace' },
-  { path: join(userDataRoot, 'plugins'), source: 'user-data' }
-], app.getVersion(), () => notifyWorkspaceMutation())
-const appUpdateManager = new AppUpdateManager()
+let store: KnowbookStore
+let backupService: MarkdownBackupService
+let restoreService: MarkdownRestoreService
+let workspaceEventBus: WorkspaceEventBus
+let webClipper: WebClipperService
+let webClipBridge: WebClipBridgeService
+let pluginHost: PluginHost
+let appUpdateManager: AppUpdateManager
+let servicesInitialized = false
+
+function initializeServices(): void {
+  store = new KnowbookStore(databasePath)
+  backupService = new MarkdownBackupService(store, backupRoot, webClipAssetRoot)
+  restoreService = new MarkdownRestoreService(store, webClipAssetRoot)
+  workspaceEventBus = new WorkspaceEventBus()
+  webClipper = new WebClipperService(store, webClipAssetRoot, {
+    allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1'
+  })
+  webClipBridge = new WebClipBridgeService({
+    onImport: async (payload: ImportWebClipPayloadInput) => {
+      const result = await webClipper.importWebClipPayload(payload)
+      await emitClipMutationEvents(result)
+      notifyWorkspaceMutation()
+      return result
+    }
+  })
+  pluginHost = new PluginHost(store, [
+    { path: join(process.cwd(), 'plugins'), source: 'workspace' },
+    { path: join(userDataRoot, 'plugins'), source: 'user-data' }
+  ], app.getVersion(), () => notifyWorkspaceMutation())
+  appUpdateManager = new AppUpdateManager()
+  servicesInitialized = true
+}
 
 function protectAiApiKey(apiKey: string): string {
   if (!safeStorage.isEncryptionAvailable()) {
@@ -482,8 +502,16 @@ function registerIpcHandlers(): void {
     store.updateDatabaseEntity(input)
   })
 
+  ipcMain.handle('knowbook:update-database-entities', (_event, input: UpdateDatabaseEntitiesInput) => {
+    store.updateDatabaseEntities(input)
+  })
+
   ipcMain.handle('knowbook:delete-database-entity', (_event, entityId: string) => {
     store.deleteDatabaseEntity(entityId)
+  })
+
+  ipcMain.handle('knowbook:delete-database-entities', (_event, input: DeleteDatabaseEntitiesInput) => {
+    store.deleteDatabaseEntities(input)
   })
 
   ipcMain.handle('knowbook:get-database-entities', (_event, databaseId: string) => {
@@ -1171,6 +1199,10 @@ function runScheduledBackup(): void {
 }
 
 async function shutdownServices(): Promise<void> {
+  if (!servicesInitialized) {
+    return
+  }
+
   if (backupTimer) {
     clearInterval(backupTimer)
     backupTimer = null
@@ -1251,44 +1283,58 @@ function getAssetContentType(filePath: string): string {
   }
 }
 
-app.whenReady().then(async () => {
-  registerAssetPreviewProtocol()
-  await pluginHost.loadAll()
-  appUpdateManager.initialize()
-  registerWorkspaceEventHandlers()
-  registerIpcHandlers()
-  await webClipBridge.applyConfig(getStoredWebClipBridgeConfig())
-  createWindow()
-  startBackupSchedule()
-  appUpdateManager.scheduleStartupCheck()
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => {
+    if (!mainWindow) {
+      return
+    }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
+    mainWindow.show()
+    mainWindow.focus()
+  })
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow()
+  app.whenReady().then(async () => {
+    initializeServices()
+    registerAssetPreviewProtocol()
+    await pluginHost.loadAll()
+    appUpdateManager.initialize()
+    registerWorkspaceEventHandlers()
+    registerIpcHandlers()
+    await webClipBridge.applyConfig(getStoredWebClipBridgeConfig())
+    createWindow()
+    startBackupSchedule()
+    appUpdateManager.scheduleStartupCheck()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow()
+      }
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit()
     }
   })
-})
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+  app.on('before-quit', (event) => {
+    if (shutdownComplete) {
+      return
+    }
 
-app.on('before-quit', (event) => {
-  if (shutdownComplete) {
-    return
-  }
-
-  event.preventDefault()
-  if (!shutdownPromise) {
-    shutdownPromise = shutdownServices()
-      .catch((error) => {
-        console.error('Unexpected shutdown failure.', error)
-      })
-      .finally(() => {
-        shutdownComplete = true
-        app.quit()
-      })
-  }
-})
+    event.preventDefault()
+    if (!shutdownPromise) {
+      shutdownPromise = shutdownServices()
+        .catch((error) => {
+          console.error('Unexpected shutdown failure.', error)
+        })
+        .finally(() => {
+          shutdownComplete = true
+          app.quit()
+        })
+    }
+  })
+}

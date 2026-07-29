@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
@@ -279,6 +280,91 @@ test('MarkdownBackupService keeps documents in the reserved metadata namespace',
     assert.equal(document.frontmatter.id, 'reserved-document')
     assert.equal(document.frontmatter.path, '__knowbook/databases/index')
     assert.equal(document.blocks[0]?.content, 'Reserved document body')
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownBackupService copies managed assets and writes portable references', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-assets-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const assetRoot = join(tempRoot, 'storage', 'assets')
+  const sourceAssetPath = join(assetRoot, 'web-clips', 'ab', 'asset.png')
+  mkdirSync(join(assetRoot, 'web-clips', 'ab'), { recursive: true })
+  writeFileSync(sourceAssetPath, Buffer.from('portable-image'))
+  const sourceAssetUrl = pathToFileURL(sourceAssetPath).toString()
+  const store = {
+    getExportDocuments: () => [{
+      id: 'clip-document',
+      title: 'Clip',
+      path: 'Home/Clip',
+      summary: '',
+      updatedAt: '2026-05-02T00:00:00.000Z',
+      documentDatabaseColumns: [],
+      documentDatabaseFieldValues: {
+        cover: sourceAssetUrl
+      },
+      blocks: [{
+        id: 'clip-image',
+        type: 'paragraph',
+        content: `![Clipped image](${sourceAssetUrl})`,
+        checked: false,
+        depth: 0,
+        parentBlockId: null,
+        sortOrder: 0
+      }]
+    }],
+    getExportStandaloneDatabases: () => [],
+    saveSetting: () => undefined
+  }
+
+  try {
+    new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll()
+
+    const snapshotAssetPath = join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab', 'asset.png')
+    const documentMarkdown = readFileSync(join(backupRoot, 'Home', 'Clip.md'), 'utf8')
+    assert.equal(readFileSync(snapshotAssetPath, 'utf8'), 'portable-image')
+    assert.equal(documentMarkdown.includes(sourceAssetUrl), false)
+    assert.equal(documentMarkdown.includes('../__knowbook/assets/web-clips/ab/asset.png'), true)
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownBackupService fails instead of publishing an incomplete managed asset snapshot', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-missing-asset-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const assetRoot = join(tempRoot, 'storage', 'assets')
+  const missingAssetUrl = pathToFileURL(join(assetRoot, 'web-clips', 'missing.png')).toString()
+  const store = {
+    getExportDocuments: () => [{
+      id: 'missing-asset-document',
+      title: 'Missing asset',
+      path: 'Missing asset',
+      summary: '',
+      updatedAt: '2026-05-02T00:00:00.000Z',
+      documentDatabaseColumns: [],
+      documentDatabaseFieldValues: {},
+      blocks: [{
+        id: 'missing-image',
+        type: 'paragraph',
+        content: `![Missing](${missingAssetUrl})`,
+        checked: false,
+        depth: 0,
+        parentBlockId: null,
+        sortOrder: 0
+      }]
+    }],
+    getExportStandaloneDatabases: () => [],
+    saveSetting: () => undefined
+  }
+
+  try {
+    assert.throws(
+      () => new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll(),
+      /Managed backup asset not found/
+    )
+    assert.equal(existsSync(backupRoot), false)
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }

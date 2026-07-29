@@ -6,6 +6,7 @@ import type { UiText } from '../i18n'
 type UseWorkspaceBackupActionsParams = {
   selectedDocumentId: string | null
   flushPendingDocumentChanges: () => Promise<boolean>
+  reloadDatabaseDomain: () => void
   setBackupMessage: (message: string | null) => void
   setHomeData: Dispatch<SetStateAction<HomeData>>
   setSelectedDocument: Dispatch<SetStateAction<DocumentDetail | null>>
@@ -16,6 +17,7 @@ type UseWorkspaceBackupActionsParams = {
 export function useWorkspaceBackupActions({
   selectedDocumentId,
   flushPendingDocumentChanges,
+  reloadDatabaseDomain,
   setBackupMessage,
   setHomeData,
   setSelectedDocument,
@@ -60,6 +62,7 @@ export function useWorkspaceBackupActions({
       }
 
       await refreshWorkspaceAfterStorageMutation()
+      reloadDatabaseDomain()
       const restoredMessage = ui.backupRestored(
         result.restored,
         result.created,
@@ -76,7 +79,7 @@ export function useWorkspaceBackupActions({
       const message = error instanceof Error ? error.message : ui.backupRestoreFailed
       setBackupMessage(message)
     }
-  }, [flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, setBackupMessage, ui])
+  }, [flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, reloadDatabaseDomain, setBackupMessage, ui])
 
   return {
     handleBackup,

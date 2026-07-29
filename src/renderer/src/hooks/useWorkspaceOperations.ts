@@ -6,11 +6,13 @@ import { useWorkspaceDocumentManagement } from './useWorkspaceDocumentManagement
 
 type UseWorkspaceOperationsParams = {
   documents: DocumentsWorkspaceState
+  reloadDatabaseDomain: () => void
   shell: AppShellState
 }
 
 export function useWorkspaceOperations({
   documents,
+  reloadDatabaseDomain,
   shell
 }: UseWorkspaceOperationsParams) {
   const {
@@ -18,6 +20,7 @@ export function useWorkspaceOperations({
     handleRestoreBackup
   } = useWorkspaceBackupActions({
     flushPendingDocumentChanges: documents.flushPendingChanges,
+    reloadDatabaseDomain,
     selectedDocumentId: documents.selectedDocumentId,
     setBackupMessage: shell.setBackupMessage,
     setHomeData: shell.setHomeData,

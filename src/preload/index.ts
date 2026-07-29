@@ -20,7 +20,9 @@ import type {
   CreateDatabaseInput,
   CreateDatabaseEntityInput,
   UpdateDatabaseEntityInput,
+  UpdateDatabaseEntitiesInput,
   DeleteDatabaseEntityInput,
+  DeleteDatabaseEntitiesInput,
   DatabaseEntity,
   ElectronApi,
   GlobalSearchResult,
@@ -110,7 +112,9 @@ const api: ElectronApi = {
   deleteDatabaseSavedView: (viewId: string) => ipcRenderer.invoke('knowbook:delete-database-saved-view', viewId) as Promise<void>,
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:create-database-entity', input) as Promise<DatabaseEntity>,
   updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => ipcRenderer.invoke('knowbook:update-database-entity', input) as Promise<void>,
+  updateDatabaseEntities: (input: UpdateDatabaseEntitiesInput) => ipcRenderer.invoke('knowbook:update-database-entities', input) as Promise<void>,
   deleteDatabaseEntity: (entityId: string) => ipcRenderer.invoke('knowbook:delete-database-entity', entityId) as Promise<void>,
+  deleteDatabaseEntities: (input: DeleteDatabaseEntitiesInput) => ipcRenderer.invoke('knowbook:delete-database-entities', input) as Promise<void>,
   getDatabaseEntities: (databaseId: string) => ipcRenderer.invoke('knowbook:get-database-entities', databaseId) as Promise<DatabaseEntity[]>
 }
 

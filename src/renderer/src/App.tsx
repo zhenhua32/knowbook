@@ -22,6 +22,7 @@ export function App() {
 
   const workspaceOperations = useWorkspaceOperations({
     documents: documentsDomain,
+    reloadDatabaseDomain: databaseDomain.reloadDatabaseDomain,
     shell
   })
   const featureDomains = useAppFeatureDomains({

@@ -79,7 +79,6 @@ CREATE TABLE IF NOT EXISTS document_database_columns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_document_database_columns_sort_order ON document_database_columns(sort_order);
-CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_id ON document_database_columns(database_id);
 
 CREATE TABLE IF NOT EXISTS database_entities (
   id TEXT PRIMARY KEY,

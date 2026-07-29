@@ -1,0 +1,97 @@
+import assert from 'node:assert/strict'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { KnowbookStore } from '../src/main/database/store.ts'
+
+const require = createRequire(import.meta.url)
+const Database = require('better-sqlite3') as typeof import('better-sqlite3')
+
+test('KnowbookStore migrates a legacy database once and records its schema version', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-migration-test-'))
+  const databasePath = join(tempRoot, 'legacy.sqlite')
+  const legacyDatabase = new Database(databasePath)
+
+  try {
+    legacyDatabase.exec(`
+      CREATE TABLE document_database_columns (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        options_json TEXT NOT NULL DEFAULT '[]',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE document_database_values (
+        document_id TEXT,
+        column_id TEXT NOT NULL,
+        value_text TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (document_id, column_id)
+      );
+    `)
+  } finally {
+    legacyDatabase.close()
+  }
+
+  const migratedStore = new KnowbookStore(databasePath)
+  migratedStore.destroy()
+  assert.equal(
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v1-')),
+    true
+  )
+
+  const migratedDatabase = new Database(databasePath)
+  try {
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 1)
+    const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
+      .map((column) => column.name)
+    const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
+      .map((column) => column.name)
+    const triggerNames = (migratedDatabase.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name
+    `).all() as Array<{ name: string }>).map((trigger) => trigger.name)
+
+    assert.equal(columnNames.includes('database_id'), true)
+    assert.equal(valueColumnNames.includes('entity_id'), true)
+    assert.equal(triggerNames.includes('trg_document_database_columns_database_id_insert'), true)
+    assert.equal(triggerNames.includes('trg_database_entities_document_unique_insert'), true)
+
+    const defaultDatabaseId = (migratedDatabase.prepare(`
+      SELECT id FROM databases ORDER BY created_at ASC LIMIT 1
+    `).get() as { id: string }).id
+    const documentId = (migratedDatabase.prepare(`
+      SELECT id FROM documents ORDER BY created_at ASC LIMIT 1
+    `).get() as { id: string }).id
+    const now = new Date().toISOString()
+
+    assert.throws(() => {
+      migratedDatabase.prepare(`
+        INSERT INTO document_database_columns (
+          id, database_id, name, type, options_json, sort_order, created_at, updated_at
+        ) VALUES (?, NULL, ?, ?, '[]', 0, ?, ?)
+      `).run('invalid-column', 'Invalid', 'text', now, now)
+    }, /Database id is required/)
+
+    migratedDatabase.prepare(`
+      INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('first-entity', defaultDatabaseId, documentId, now, now)
+    assert.throws(() => {
+      migratedDatabase.prepare(`
+        INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run('duplicate-entity', defaultDatabaseId, documentId, now, now)
+    }, /already exists for this document/)
+  } finally {
+    migratedDatabase.close()
+  }
+
+  const reopenedStore = new KnowbookStore(databasePath)
+  reopenedStore.destroy()
+  rmSync(tempRoot, { recursive: true, force: true })
+})

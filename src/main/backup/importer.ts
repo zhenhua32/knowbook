@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import type {
   BackupRestorePreview,
   BackupRestoreResult,
@@ -73,18 +74,23 @@ const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
 const STANDALONE_DATABASE_MANIFEST_RELATIVE_PATH = '__knowbook/databases/index.md'
+const ASSET_BACKUP_ROOT = '__knowbook/assets'
+const PORTABLE_ASSET_REFERENCE_PATTERN = /(?:\.\.\/|\.\/)+[A-Za-z0-9._~%/-]+/g
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 
 export class MarkdownRestoreService {
-  constructor(private readonly store: KnowbookStore) {}
+  constructor(
+    private readonly store: KnowbookStore,
+    private readonly assetRoot?: string
+  ) {}
 
   previewFromDirectory(root: string): BackupRestorePreview {
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
-    } = this.prepareRestoreSources(root)
+    } = this.prepareRestoreSources(root, false)
     const restoredDocumentIds = new Set<string>()
     let created = 0
     let updated = 0
@@ -127,7 +133,7 @@ export class MarkdownRestoreService {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
-    } = this.prepareRestoreSources(root)
+    } = this.prepareRestoreSources(root, true)
 
     return this.store.runInTransaction(() => {
       let created = 0
@@ -167,9 +173,9 @@ export class MarkdownRestoreService {
     })
   }
 
-  private prepareRestoreSources(root: string): PreparedRestoreSources {
+  private prepareRestoreSources(root: string, restoreAssets: boolean): PreparedRestoreSources {
     const markdownFiles = this.collectMarkdownFiles(root)
-    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath))
+    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath, restoreAssets))
     const sourceDocuments = sourceFiles
       .filter((source): source is RestoreSourceDocument => source.kind === 'document')
       .sort((left, right) => {
@@ -226,11 +232,14 @@ export class MarkdownRestoreService {
     return files
   }
 
-  private parseSourceFile(root: string, filePath: string): RestoreSourceFile {
+  private parseSourceFile(root: string, filePath: string, restoreAssets: boolean): RestoreSourceFile {
     const relativePath = relative(root, filePath)
       .replace(/\\/g, '/')
       .replace(/\.md$/i, '')
-    const markdown = readFileSync(filePath, 'utf8')
+    const sourceMarkdown = readFileSync(filePath, 'utf8')
+    const markdown = restoreAssets
+      ? this.restorePortableAssetReferences(root, filePath, sourceMarkdown)
+      : sourceMarkdown
     const parsed = parseMarkdownBackupDocument(markdown)
 
     if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
@@ -357,6 +366,49 @@ export class MarkdownRestoreService {
     }
 
     return documentSegments.slice(0, documentSegments.length - relativeSegments.length).join('/')
+  }
+
+  private restorePortableAssetReferences(root: string, markdownFilePath: string, markdown: string): string {
+    if (!this.assetRoot) {
+      return markdown
+    }
+
+    const snapshotAssetRoot = resolve(root, ...ASSET_BACKUP_ROOT.split('/'))
+    const normalizedAssetRoot = resolve(this.assetRoot)
+
+    return markdown.replace(PORTABLE_ASSET_REFERENCE_PATTERN, (portableReference) => {
+      const sourceAssetPath = resolve(dirname(markdownFilePath), portableReference)
+      if (!this.isPathInsideRoot(sourceAssetPath, snapshotAssetRoot)) {
+        return portableReference
+      }
+
+      const sourceStat = statSync(sourceAssetPath, { throwIfNoEntry: false })
+      if (!sourceStat?.isFile()) {
+        throw new Error(`Backup asset not found: ${portableReference}`)
+      }
+
+      const realSnapshotAssetRoot = realpathSync(snapshotAssetRoot)
+      const realSourceAssetPath = realpathSync(sourceAssetPath)
+      if (!this.isPathInsideRoot(realSourceAssetPath, realSnapshotAssetRoot)) {
+        throw new Error(`Backup asset resolves outside the backup asset root: ${portableReference}`)
+      }
+
+      const assetRelativePath = relative(snapshotAssetRoot, sourceAssetPath)
+      const destinationPath = resolve(normalizedAssetRoot, assetRelativePath)
+      if (!this.isPathInsideRoot(destinationPath, normalizedAssetRoot)) {
+        throw new Error(`Backup asset resolved outside the managed asset root: ${portableReference}`)
+      }
+
+      mkdirSync(dirname(destinationPath), { recursive: true })
+      copyFileSync(realSourceAssetPath, destinationPath)
+      return pathToFileURL(destinationPath).toString()
+    })
+  }
+
+  private isPathInsideRoot(filePath: string, root: string): boolean {
+    const normalizedRoot = resolve(root)
+    const normalizedFilePath = resolve(filePath)
+    return normalizedFilePath === normalizedRoot || normalizedFilePath.startsWith(`${normalizedRoot}${sep}`)
   }
 
   private isAuthoritativeBackupManifest(root: string, filePath: string): boolean {

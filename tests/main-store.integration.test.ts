@@ -284,6 +284,62 @@ test('database entity writes are atomic when a field is invalid', () => {
   })
 })
 
+test('bulk database entity updates and deletes roll back as a unit', () => {
+  withStore((store) => {
+    const database = store.createDatabase({ name: 'Atomic bulk entities' })
+    const column = store.createDocumentDatabaseColumn({
+      databaseId: database.id,
+      name: 'Owner',
+      type: 'text'
+    })
+    const first = store.createDatabaseEntity({
+      databaseId: database.id,
+      fieldValues: { [column.id]: 'Alice' }
+    })
+    const second = store.createDatabaseEntity({
+      databaseId: database.id,
+      fieldValues: { [column.id]: 'Bob' }
+    })
+
+    assert.throws(() => {
+      store.updateDatabaseEntities({
+        updates: [
+          { entityId: first.id, fieldValues: { [column.id]: 'Changed' } },
+          { entityId: 'missing-entity', fieldValues: { [column.id]: 'Invalid' } }
+        ]
+      })
+    }, /Database entity not found/)
+    assert.equal(
+      store.getDatabaseEntities(database.id).find((entity) => entity.id === first.id)?.fieldValues[column.id],
+      'Alice'
+    )
+
+    assert.throws(() => {
+      store.deleteDatabaseEntities({
+        entityIds: [first.id, 'missing-entity']
+      })
+    }, /Database entity not found/)
+    assert.deepEqual(
+      new Set(store.getDatabaseEntities(database.id).map((entity) => entity.id)),
+      new Set([first.id, second.id])
+    )
+
+    store.updateDatabaseEntities({
+      updates: [
+        { entityId: first.id, fieldValues: { [column.id]: 'Carol' } },
+        { entityId: second.id, fieldValues: { [column.id]: 'Dave' } }
+      ]
+    })
+    assert.deepEqual(
+      new Set(store.getDatabaseEntities(database.id).map((entity) => entity.fieldValues[column.id])),
+      new Set(['Carol', 'Dave'])
+    )
+
+    store.deleteDatabaseEntities({ entityIds: [first.id, second.id] })
+    assert.deepEqual(store.getDatabaseEntities(database.id), [])
+  })
+})
+
 test('standalone database saved views persist and update list controls', () => {
   withStore((store) => {
     const projectsDatabase = store.createDatabase({

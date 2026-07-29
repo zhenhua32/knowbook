@@ -39,13 +39,13 @@ export function useDatabaseEntityBulkActions({
     const count = entityIds.length
 
     try {
-      for (const entityId of entityIds) {
-        await window.knowbook.updateDatabaseEntity({
+      await window.knowbook.updateDatabaseEntities({
+        updates: entityIds.map((entityId) => ({
           entityId,
           fieldValues: input.fieldValues,
           documentId: input.documentId
-        })
-      }
+        }))
+      })
 
       await refreshDatabasePageData(databaseEntityDatabaseId)
       setBackupMessage(ui.databaseEntitiesUpdated(count))
@@ -65,9 +65,9 @@ export function useDatabaseEntityBulkActions({
     }
 
     try {
-      for (const entityId of selectedVisibleDatabaseEntityIds) {
-        await window.knowbook.deleteDatabaseEntity(entityId)
-      }
+      await window.knowbook.deleteDatabaseEntities({
+        entityIds: selectedVisibleDatabaseEntityIds
+      })
 
       await refreshDatabasePageData(databaseEntityDatabaseId)
       setSelectedDatabaseEntityIds([])

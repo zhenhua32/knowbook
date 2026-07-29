@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import type {
@@ -15,6 +15,7 @@ import type {
   DatabaseSavedViewLayoutMode,
   DatabaseSavedViewSortMode,
   DeleteDatabaseEntityInput,
+  DeleteDatabaseEntitiesInput,
   DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
@@ -35,6 +36,7 @@ import type {
   UpdateDatabaseSavedViewInput,
   UpdateDatabaseMetadataInput,
   UpdateDatabaseEntityInput,
+  UpdateDatabaseEntitiesInput,
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
@@ -51,6 +53,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
+const CURRENT_DATABASE_SCHEMA_VERSION = 1
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -106,6 +109,24 @@ interface DatabaseSavedViewRow {
   view_mode: string
   created_at: string
   updated_at: string
+}
+
+interface DatabaseEntityRow {
+  id: string
+  database_id: string
+  document_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface DatabaseEntityFieldValueRow {
+  entity_id: string
+  column_id: string
+  value_text: string | null
+  column_name: string
+  column_type: DocumentDatabaseColumnType
+  options_json: string
+  sort_order: number
 }
 
 interface DocumentTreeRow {
@@ -274,10 +295,45 @@ export class KnowbookStore {
 
   constructor(private readonly databasePath: string) {
     mkdirSync(dirname(databasePath), { recursive: true })
+    const databaseAlreadyExists = existsSync(databasePath)
     this.db = new Database(databasePath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
+    const schemaVersion = this.db.pragma('user_version', { simple: true }) as number
+    if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
+      this.db.close()
+      throw new Error(
+        `Database schema version ${schemaVersion} is newer than supported version ${CURRENT_DATABASE_SCHEMA_VERSION}.`
+      )
+    }
+    if (databaseAlreadyExists && schemaVersion < CURRENT_DATABASE_SCHEMA_VERSION) {
+      this.createMigrationSafetyCopy(schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION)
+    }
     this.db.exec(appSchema)
+    this.migrateDatabase(schemaVersion)
+  }
+
+  private migrateDatabase(schemaVersion: number): void {
+    if (schemaVersion === CURRENT_DATABASE_SCHEMA_VERSION) {
+      this.seed()
+      return
+    }
+
+    this.runInTransaction(() => {
+      if (schemaVersion < 1) {
+        this.migrateToSchemaVersion1()
+        this.db.pragma('user_version = 1')
+      }
+    })
+  }
+
+  private createMigrationSafetyCopy(fromVersion: number, toVersion: number): void {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const destinationPath = `${this.databasePath}.pre-migration-v${fromVersion}-to-v${toVersion}-${timestamp}-${randomUUID()}.db`
+    this.db.prepare('VACUUM INTO ?').run(destinationPath)
+  }
+
+  private migrateToSchemaVersion1(): void {
     this.ensureBlockCheckedColumn()
     this.ensureBlockDepthColumn()
     this.ensureBlockTagsColumn()
@@ -286,6 +342,7 @@ export class KnowbookStore {
     this.ensureBlockParentRelationships()
     this.ensureDocumentSortOrderColumn()
     this.ensureDatabaseEntities()
+    this.ensureDatabaseEntityConstraints()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
@@ -2435,6 +2492,52 @@ export class KnowbookStore {
     this.db.exec('DELETE FROM document_database_values WHERE entity_id IS NOT NULL')
   }
 
+  private ensureDatabaseEntityConstraints(): void {
+    this.db.exec(`
+      CREATE TRIGGER IF NOT EXISTS trg_document_database_columns_database_id_insert
+      BEFORE INSERT ON document_database_columns
+      FOR EACH ROW
+      WHEN NEW.database_id IS NULL OR trim(NEW.database_id) = ''
+      BEGIN
+        SELECT RAISE(ABORT, 'Database id is required.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_database_columns_database_id_update
+      BEFORE UPDATE OF database_id ON document_database_columns
+      FOR EACH ROW
+      WHEN NEW.database_id IS NULL OR trim(NEW.database_id) = ''
+      BEGIN
+        SELECT RAISE(ABORT, 'Database id is required.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_database_entities_document_unique_insert
+      BEFORE INSERT ON database_entities
+      FOR EACH ROW
+      WHEN NEW.document_id IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM database_entities
+        WHERE database_id = NEW.database_id AND document_id = NEW.document_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'A database entity already exists for this document in this database.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_database_entities_document_unique_update
+      BEFORE UPDATE OF database_id, document_id ON database_entities
+      FOR EACH ROW
+      WHEN NEW.document_id IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM database_entities
+        WHERE database_id = NEW.database_id
+          AND document_id = NEW.document_id
+          AND id != OLD.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'A database entity already exists for this document in this database.');
+      END;
+    `)
+  }
+
   private readSetting(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value: string } | undefined
     return row?.value ?? null
@@ -2712,50 +2815,27 @@ export class KnowbookStore {
       SELECT id, database_id, document_id, created_at, updated_at
       FROM database_entities
       WHERE id = ?
-    `).get(entityId) as {
-      id: string
-      database_id: string
-      document_id: string | null
-      created_at: string
-      updated_at: string
-    } | undefined
+    `).get(entityId) as DatabaseEntityRow | undefined
     
     if (!row) {
       throw new Error('Database entity not found.')
     }
     
-    // 获取字段值
-    const fieldRows = this.db.prepare(
-      'SELECT column_id, value_text FROM database_entity_values WHERE entity_id = ?'
-    ).all(entityId) as Array<{ column_id: string; value_text: string | null }>
-    
-    const fieldValues: Record<string, DocumentDatabaseFieldValue> = {}
-    for (const fvRow of fieldRows) {
-      const column = this.db.prepare('SELECT type, options_json FROM document_database_columns WHERE id = ?').get(fvRow.column_id) as
-        | { type: DocumentDatabaseColumnType; options_json: string }
-        | undefined
-      
-      if (!column) continue
-      
-      const columnForParsing: DocumentDatabaseColumn = {
-        id: fvRow.column_id,
-        name: '',
-        type: column.type,
-        options: JSON.parse(column.options_json || '[]'),
-        sortOrder: 0
-      }
-      
-      fieldValues[fvRow.column_id] = this.parseDocumentDatabaseFieldValue(columnForParsing, fvRow.value_text)
-    }
-    
-    return {
-      id: row.id,
-      databaseId: row.database_id,
-      documentId: row.document_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      fieldValues
-    }
+    const fieldRows = this.db.prepare(`
+      SELECT
+        values_table.entity_id,
+        values_table.column_id,
+        values_table.value_text,
+        columns.name AS column_name,
+        columns.type AS column_type,
+        columns.options_json,
+        columns.sort_order
+      FROM database_entity_values AS values_table
+      INNER JOIN document_database_columns AS columns ON columns.id = values_table.column_id
+      WHERE values_table.entity_id = ?
+    `).all(entityId) as DatabaseEntityFieldValueRow[]
+
+    return this.mapDatabaseEntityRows([row], fieldRows)[0]!
   }
   
   updateDatabaseEntity(input: UpdateDatabaseEntityInput): void {
@@ -2829,6 +2909,14 @@ export class KnowbookStore {
       }
     })()
   }
+
+  updateDatabaseEntities(input: UpdateDatabaseEntitiesInput): void {
+    this.runInTransaction(() => {
+      for (const update of input.updates) {
+        this.updateDatabaseEntity(update)
+      }
+    })
+  }
   
   deleteDatabaseEntity(entityId: string): void {
     this.db.transaction(() => {
@@ -2836,19 +2924,73 @@ export class KnowbookStore {
       this.db.prepare('DELETE FROM database_entities WHERE id = ?').run(entityId)
     })()
   }
+
+  deleteDatabaseEntities(input: DeleteDatabaseEntitiesInput): void {
+    const entityIds = [...new Set(input.entityIds)]
+
+    this.runInTransaction(() => {
+      for (const entityId of entityIds) {
+        const entity = this.db.prepare('SELECT id FROM database_entities WHERE id = ?').get(entityId)
+        if (!entity) {
+          throw new Error('Database entity not found.')
+        }
+      }
+
+      for (const entityId of entityIds) {
+        this.deleteDatabaseEntity(entityId)
+      }
+    })
+  }
   
   getDatabaseEntities(databaseId: string): DatabaseEntity[] {
     const rows = this.db.prepare(
       'SELECT id, database_id, document_id, created_at, updated_at FROM database_entities WHERE database_id = ? ORDER BY updated_at DESC'
-    ).all(databaseId) as Array<{
-      id: string
-      database_id: string
-      document_id: string | null
-      created_at: string
-      updated_at: string
-    }>
-    
-    return rows.map((row) => this.getDatabaseEntity(row.id))
+    ).all(databaseId) as DatabaseEntityRow[]
+    const fieldRows = this.db.prepare(`
+      SELECT
+        values_table.entity_id,
+        values_table.column_id,
+        values_table.value_text,
+        columns.name AS column_name,
+        columns.type AS column_type,
+        columns.options_json,
+        columns.sort_order
+      FROM database_entity_values AS values_table
+      INNER JOIN database_entities AS entities ON entities.id = values_table.entity_id
+      INNER JOIN document_database_columns AS columns ON columns.id = values_table.column_id
+      WHERE entities.database_id = ?
+    `).all(databaseId) as DatabaseEntityFieldValueRow[]
+
+    return this.mapDatabaseEntityRows(rows, fieldRows)
+  }
+
+  private mapDatabaseEntityRows(
+    rows: DatabaseEntityRow[],
+    fieldRows: DatabaseEntityFieldValueRow[]
+  ): DatabaseEntity[] {
+    const fieldValuesByEntityId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+
+    for (const fieldRow of fieldRows) {
+      const fieldValues = fieldValuesByEntityId.get(fieldRow.entity_id) ?? {}
+      const column: DocumentDatabaseColumn = {
+        id: fieldRow.column_id,
+        name: fieldRow.column_name,
+        type: fieldRow.column_type,
+        options: JSON.parse(fieldRow.options_json || '[]'),
+        sortOrder: fieldRow.sort_order
+      }
+      fieldValues[fieldRow.column_id] = this.parseDocumentDatabaseFieldValue(column, fieldRow.value_text)
+      fieldValuesByEntityId.set(fieldRow.entity_id, fieldValues)
+    }
+
+    return rows.map((row) => ({
+      id: row.id,
+      databaseId: row.database_id,
+      documentId: row.document_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      fieldValues: fieldValuesByEntityId.get(row.id) ?? {}
+    }))
   }
 
   private seed(): void {

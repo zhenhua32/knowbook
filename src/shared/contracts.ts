@@ -143,8 +143,16 @@ export interface UpdateDatabaseEntityInput {
   documentId?: string | null
 }
 
+export interface UpdateDatabaseEntitiesInput {
+  updates: UpdateDatabaseEntityInput[]
+}
+
 export interface DeleteDatabaseEntityInput {
   entityId: string
+}
+
+export interface DeleteDatabaseEntitiesInput {
+  entityIds: string[]
 }
 
 export interface GetDatabaseEntitiesInput {
@@ -597,7 +605,9 @@ export interface ElectronApi {
   deleteDatabaseSavedView: (viewId: string) => Promise<void>
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => Promise<DatabaseEntity>
   updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => Promise<void>
+  updateDatabaseEntities: (input: UpdateDatabaseEntitiesInput) => Promise<void>
   deleteDatabaseEntity: (entityId: string) => Promise<void>
+  deleteDatabaseEntities: (input: DeleteDatabaseEntitiesInput) => Promise<void>
   getDatabaseEntities: (databaseId: string) => Promise<DatabaseEntity[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   getBlockReference: (documentPath: string, blockId: string) => Promise<BlockReferenceResult | null>

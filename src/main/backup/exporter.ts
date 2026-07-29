@@ -1,6 +1,17 @@
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
 import type { ExportDocument, ExportStandaloneDatabase, KnowbookStore } from '../database/store'
@@ -11,11 +22,14 @@ const STANDALONE_DATABASE_BACKUP_ROOT = '__knowbook/databases'
 const STANDALONE_DATABASE_MANIFEST_FILE_NAME = 'index.md'
 const INTERNAL_BACKUP_ROOT_SEGMENT = '__knowbook'
 const ESCAPED_DOCUMENT_ROOT_PREFIX = '__knowbook-document-'
+const ASSET_BACKUP_ROOT = '__knowbook/assets'
+const FILE_URL_PATTERN = /file:\/\/\/[^\s<>"')\\\]}]+/g
 
 export class MarkdownBackupService {
   constructor(
     private readonly store: KnowbookStore,
-    private readonly backupRoot: string
+    private readonly backupRoot: string,
+    private readonly assetRoot?: string
   ) {}
 
   exportAll(): BackupResult {
@@ -56,14 +70,22 @@ export class MarkdownBackupService {
     const filePath = join(root, ...segments) + '.md'
     this.assertPathInsideRoot(filePath, root)
     mkdirSync(dirname(filePath), { recursive: true })
-    writeFileSync(filePath, this.renderMarkdown(document), 'utf8')
+    writeFileSync(
+      filePath,
+      this.rewriteManagedAssetReferences(root, filePath, this.renderMarkdown(document)),
+      'utf8'
+    )
   }
 
   private writeStandaloneDatabase(root: string, database: ExportStandaloneDatabase): void {
     const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${this.toSafePathSegment(database.id)}.md`)
     this.assertPathInsideRoot(filePath, root)
     mkdirSync(dirname(filePath), { recursive: true })
-    writeFileSync(filePath, this.renderStandaloneDatabase(database), 'utf8')
+    writeFileSync(
+      filePath,
+      this.rewriteManagedAssetReferences(root, filePath, this.renderStandaloneDatabase(database)),
+      'utf8'
+    )
   }
 
   private writeStandaloneDatabaseManifest(root: string, databases: ExportStandaloneDatabase[]): void {
@@ -100,6 +122,52 @@ export class MarkdownBackupService {
     if (normalizedFilePath !== normalizedRoot && !normalizedFilePath.startsWith(`${normalizedRoot}${sep}`)) {
       throw new Error('Backup path resolved outside the backup root.')
     }
+  }
+
+  private rewriteManagedAssetReferences(snapshotRoot: string, markdownFilePath: string, markdown: string): string {
+    if (!this.assetRoot) {
+      return markdown
+    }
+
+    const normalizedAssetRoot = resolve(this.assetRoot)
+    return markdown.replace(FILE_URL_PATTERN, (assetUrl) => {
+      let candidatePath: string
+      try {
+        candidatePath = resolve(fileURLToPath(assetUrl))
+      } catch {
+        return assetUrl
+      }
+
+      if (!this.isPathInsideRoot(candidatePath, normalizedAssetRoot)) {
+        return assetUrl
+      }
+
+      const sourceStat = statSync(candidatePath, { throwIfNoEntry: false })
+      if (!sourceStat?.isFile()) {
+        throw new Error(`Managed backup asset not found: ${assetUrl}`)
+      }
+
+      const realAssetRoot = realpathSync(normalizedAssetRoot)
+      const sourcePath = realpathSync(candidatePath)
+      if (!this.isPathInsideRoot(sourcePath, realAssetRoot)) {
+        throw new Error(`Managed backup asset resolves outside the asset root: ${assetUrl}`)
+      }
+
+      const assetRelativePath = relative(normalizedAssetRoot, candidatePath)
+      const snapshotAssetPath = join(snapshotRoot, ...ASSET_BACKUP_ROOT.split('/'), assetRelativePath)
+      this.assertPathInsideRoot(snapshotAssetPath, snapshotRoot)
+      mkdirSync(dirname(snapshotAssetPath), { recursive: true })
+      copyFileSync(sourcePath, snapshotAssetPath)
+
+      const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).replace(/\\/g, '/')
+      return portableReference.startsWith('.') ? portableReference : `./${portableReference}`
+    })
+  }
+
+  private isPathInsideRoot(filePath: string, root: string): boolean {
+    const normalizedRoot = resolve(root)
+    const normalizedFilePath = resolve(filePath)
+    return normalizedFilePath === normalizedRoot || normalizedFilePath.startsWith(`${normalizedRoot}${sep}`)
   }
 
   private toSafePathSegment(segment: string): string {

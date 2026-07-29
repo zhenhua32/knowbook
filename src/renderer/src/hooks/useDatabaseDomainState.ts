@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useState } from 'react'
 import type {
   DatabaseEntity,
   DatabaseSavedView,
@@ -47,6 +47,10 @@ export function useDatabaseDomainState() {
   const [databaseEntitySortMode, setDatabaseEntitySortMode] = useState<DatabaseEntitySortMode>('updated-desc')
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
+  const [databaseDomainRevision, setDatabaseDomainRevision] = useState(0)
+  const reloadDatabaseDomain = useCallback(() => {
+    setDatabaseDomainRevision((revision) => revision + 1)
+  }, [])
 
   useEffect(() => {
     let mounted = true
@@ -65,7 +69,7 @@ export function useDatabaseDomainState() {
     return () => {
       mounted = false
     }
-  }, [])
+  }, [databaseDomainRevision])
 
   useEffect(() => {
     let mounted = true
@@ -120,7 +124,7 @@ export function useDatabaseDomainState() {
     return () => {
       mounted = false
     }
-  }, [databaseEntityDatabaseId])
+  }, [databaseDomainRevision, databaseEntityDatabaseId])
 
   useEffect(() => {
     const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
@@ -173,6 +177,7 @@ export function useDatabaseDomainState() {
     isCreatingDatabaseColumn,
     isCreatingDatabaseEntity,
     isCreatingDatabaseSavedView,
+    reloadDatabaseDomain,
     selectedDatabaseColumns,
     selectedDatabaseEntityIds,
     setActiveDatabaseSavedViewId,
