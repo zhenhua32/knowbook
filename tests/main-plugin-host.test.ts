@@ -1193,3 +1193,66 @@ test('PluginHost keeps host objects out of the plugin VM and preserves safe time
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost rejects oversized entries and clears partial contributions when limits are exceeded', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-resource-limit-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const oversizedRoot = join(workspaceRoot, 'oversized-plugin')
+  const fanoutRoot = join(workspaceRoot, 'fanout-plugin')
+  mkdirSync(oversizedRoot, { recursive: true })
+  mkdirSync(fanoutRoot, { recursive: true })
+
+  writeFileSync(join(oversizedRoot, 'plugin.json'), JSON.stringify({
+    id: 'oversized-plugin',
+    name: 'Oversized plugin',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(join(oversizedRoot, 'index.js'), ' '.repeat(2_000_001), 'utf8')
+  writeFileSync(join(fanoutRoot, 'plugin.json'), JSON.stringify({
+    id: 'fanout-plugin',
+    name: 'Fanout plugin',
+    version: '1.0.0',
+    entry: 'index.js'
+  }), 'utf8')
+  writeFileSync(
+    join(fanoutRoot, 'index.js'),
+    `
+      module.exports.activate = function (api) {
+        for (let index = 0; index < 101; index += 1) {
+          api.contributeDashboardCard({
+            id: 'card-' + index,
+            title: 'Card ' + index,
+            body: 'Body'
+          })
+        }
+      }
+    `,
+    'utf8'
+  )
+
+  const store = {
+    getSettingPublic: () => null,
+    saveSetting: () => undefined,
+    getDocumentDetail: (documentId: string) => createMockDetail(documentId),
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(store as never, [{ path: workspaceRoot, source: 'workspace' }])
+
+  try {
+    await host.loadAll()
+    const snapshot = host.getHomeDataSnapshot()
+    const oversized = snapshot.plugins.find((plugin) => plugin.id === 'oversized-plugin')
+    const fanout = snapshot.plugins.find((plugin) => plugin.id === 'fanout-plugin')
+
+    assert.equal(oversized?.status, 'error')
+    assert.match(oversized?.error ?? '', /source limit/)
+    assert.equal(fanout?.status, 'error')
+    assert.match(fanout?.error ?? '', /dashboard card limit exceeded/)
+    assert.equal(snapshot.dashboardCards.some((card) => card.pluginId === 'fanout-plugin'), false)
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

@@ -68,6 +68,52 @@ test('updateDocument prevents path injection and resolves sibling title collisio
   })
 })
 
+test('getIncrementalDocumentUpdate matches the full home projection after a content-only save', () => {
+  withStore((store, backupRoot) => {
+    const initialHome = store.getHomeData(backupRoot)
+    const roadmap = byPath(initialHome.documentCatalog, 'Home/Product/Roadmap')
+    const status = store.createDocumentDatabaseColumn({
+      name: 'Status',
+      type: 'select',
+      options: ['Draft', 'Done']
+    })
+    store.updateDocumentDatabaseValue({
+      documentId: roadmap.id,
+      columnId: status.id,
+      value: 'Done'
+    })
+    store.updateDocument(roadmap.id, {
+      title: roadmap.title,
+      summary: 'Incrementally refreshed',
+      blocks: [{
+        type: 'paragraph',
+        content: 'One updated block',
+        checked: false,
+        depth: 0
+      }]
+    })
+    store.recordWorkspaceEvent({
+      type: 'document.updated',
+      title: 'Document saved',
+      description: 'Saved changes.',
+      documentId: roadmap.id
+    })
+
+    const incremental = store.getIncrementalDocumentUpdate(roadmap.id, backupRoot)
+    const fullHome = store.getHomeData(backupRoot)
+
+    assert.deepEqual(
+      incremental.catalogEntry,
+      fullHome.documentCatalog.find((entry) => entry.id === roadmap.id)
+    )
+    assert.deepEqual(incremental.summary, fullHome.summary)
+    assert.deepEqual(incremental.recentDocuments, fullHome.recentDocuments)
+    assert.deepEqual(incremental.recentEvents, fullHome.recentEvents)
+    assert.equal(incremental.document.summary, 'Incrementally refreshed')
+    assert.equal(incremental.catalogEntry.fieldValues[status.id], 'Done')
+  })
+})
+
 test('updateDocument rewrites descendant paths and normalizes parentBlockId relationships', () => {
   withStore((store, backupRoot) => {
     const initialCatalog = store.getHomeData(backupRoot).documentCatalog

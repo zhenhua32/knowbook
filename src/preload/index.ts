@@ -46,6 +46,7 @@ import type {
   UpdateAiConfigInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
+  UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
 
@@ -79,7 +80,7 @@ const api: ElectronApi = {
   updateDocumentDatabaseColumnOptions: (input: UpdateDocumentDatabaseColumnOptionsInput) => ipcRenderer.invoke('knowbook:update-document-database-column-options', input) as Promise<void>,
   deleteDocumentDatabaseColumn: (columnId: string) => ipcRenderer.invoke('knowbook:delete-document-database-column', columnId) as Promise<void>,
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => ipcRenderer.invoke('knowbook:update-document-database-value', input) as Promise<void>,
-  updateDocument: (documentId: string, input: UpdateDocumentInput) => ipcRenderer.invoke('knowbook:update-document', documentId, input) as Promise<void>,
+  updateDocument: (documentId: string, input: UpdateDocumentInput) => ipcRenderer.invoke('knowbook:update-document', documentId, input) as Promise<UpdateDocumentResult>,
   deleteDocument: (documentId: string) => ipcRenderer.invoke('knowbook:delete-document', documentId) as Promise<void>,
   moveDocument: (documentId: string, newParentId: string | null) => ipcRenderer.invoke('knowbook:move-document', documentId, newParentId) as Promise<void>,
   updateAiConfig: (input: UpdateAiConfigInput) => ipcRenderer.invoke('knowbook:update-ai-config', input) as Promise<void>,

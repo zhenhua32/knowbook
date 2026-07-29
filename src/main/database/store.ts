@@ -40,6 +40,7 @@ import type {
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
+  UpdateDocumentResult,
   WorkspaceEventRecord,
   WorkspaceEventType,
   WorkspaceSummary,
@@ -369,6 +370,82 @@ export class KnowbookStore {
   getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {
     const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
     return this.buildDocumentCatalog(databaseColumns, databaseId)
+  }
+
+  getIncrementalDocumentUpdate(
+    documentId: string,
+    backupRoot: string
+  ): Extract<UpdateDocumentResult, { requiresFullRefresh: false }> {
+    const document = this.getDocumentDetail(documentId)
+    if (!document) {
+      throw new Error('Document not found')
+    }
+
+    const row = this.db.prepare(`
+      SELECT
+        documents.id,
+        documents.title,
+        documents.path,
+        documents.summary,
+        documents.parent_id,
+        parents.title AS parent_title,
+        documents.updated_at,
+        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
+        (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
+        (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
+      FROM documents
+      LEFT JOIN documents AS parents ON parents.id = documents.parent_id
+      WHERE documents.id = ?
+    `).get(documentId) as DocumentCatalogRow | undefined
+
+    if (!row) {
+      throw new Error('Document not found')
+    }
+
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+    const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
+    const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
+    const fieldRows = this.db.prepare(`
+      SELECT values_table.column_id, values_table.value_text
+      FROM document_database_values AS values_table
+      INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+      WHERE values_table.document_id = ?
+        AND values_table.entity_id IS NULL
+        AND columns_table.database_id = ?
+      ORDER BY values_table.column_id ASC
+    `).all(documentId, defaultDatabaseId) as Array<{
+      column_id: string
+      value_text: string | null
+    }>
+    const fieldValues: Record<string, DocumentDatabaseFieldValue> = {}
+
+    for (const fieldRow of fieldRows) {
+      const column = columnById.get(fieldRow.column_id)
+      if (column) {
+        fieldValues[fieldRow.column_id] = this.parseDocumentDatabaseFieldValue(column, fieldRow.value_text)
+      }
+    }
+
+    return {
+      requiresFullRefresh: false,
+      document,
+      catalogEntry: {
+        id: row.id,
+        title: row.title,
+        path: row.path,
+        summary: row.summary,
+        parentId: row.parent_id,
+        parentTitle: row.parent_title,
+        updatedAt: row.updated_at,
+        blockCount: row.block_count,
+        linkCount: row.link_count,
+        childCount: row.child_count,
+        fieldValues
+      },
+      summary: this.getSummary(backupRoot),
+      recentDocuments: this.getRecentDocuments(),
+      recentEvents: this.getRecentWorkspaceEvents()
+    }
   }
 
   getDocumentDetail(documentId: string): DocumentDetail | null {

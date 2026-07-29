@@ -398,6 +398,20 @@ export interface HomeData {
   pluginHost?: PluginHostInfo
 }
 
+export type UpdateDocumentResult =
+  | {
+      requiresFullRefresh: true
+      document: DocumentDetail
+    }
+  | {
+      requiresFullRefresh: false
+      document: DocumentDetail
+      catalogEntry: DocumentCatalogEntry
+      summary: WorkspaceSummary
+      recentDocuments: RecentDocument[]
+      recentEvents: WorkspaceEventRecord[]
+    }
+
 export interface BackupResult {
   exported: number
   root: string
@@ -573,7 +587,7 @@ export interface ElectronApi {
   updateDocumentDatabaseColumnOptions: (input: UpdateDocumentDatabaseColumnOptionsInput) => Promise<void>
   deleteDocumentDatabaseColumn: (columnId: string) => Promise<void>
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => Promise<void>
-  updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<void>
+  updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<UpdateDocumentResult>
   deleteDocument: (documentId: string) => Promise<void>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>

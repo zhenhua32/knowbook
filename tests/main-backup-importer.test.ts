@@ -40,7 +40,7 @@ test('KnowbookStore creates a consistent pre-restore database safety copy', asyn
   }
 })
 
-test('MarkdownRestoreService restores exported markdown into a fresh store', () => {
+test('MarkdownRestoreService restores exported markdown into a fresh store', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
@@ -167,7 +167,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
     })
 
     const exportedCount = sourceStore.getExportDocuments().length
-    new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
 
     const restoreService = new MarkdownRestoreService(targetStore)
     const snapshotsBeforePreview = targetStore.getAllDocumentSnapshots()
@@ -271,7 +271,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', () 
   }
 })
 
-test('MarkdownRestoreService resolves path conflicts and deletes stale documents inside the restore scope', () => {
+test('MarkdownRestoreService resolves path conflicts and deletes stale documents inside the restore scope', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-conflict-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
@@ -300,7 +300,7 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
       ]
     })
 
-    new MarkdownBackupService(store, backupRoot).exportAll()
+    await new MarkdownBackupService(store, backupRoot).exportAll()
 
     const staleId = store.createDocument(product.id)
     store.updateDocument(staleId, {
@@ -383,7 +383,7 @@ test('MarkdownRestoreService imports ordinary markdown without deleting existing
   }
 })
 
-test('MarkdownRestoreService deletes stale standalone databases when backup manifest is present', () => {
+test('MarkdownRestoreService deletes stale standalone databases when backup manifest is present', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-standalone-db-sync-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
@@ -414,7 +414,7 @@ test('MarkdownRestoreService deletes stale standalone databases when backup mani
       }
     })
 
-    new MarkdownBackupService(store, backupRoot).exportAll()
+    await new MarkdownBackupService(store, backupRoot).exportAll()
 
     const staleDatabase = store.createDatabase({
       name: 'Archive',
@@ -449,14 +449,14 @@ test('MarkdownRestoreService deletes stale standalone databases when backup mani
   }
 })
 
-test('MarkdownRestoreService keeps standalone databases when restoring a legacy backup without manifest', () => {
+test('MarkdownRestoreService keeps standalone databases when restoring a legacy backup without manifest', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-legacy-backup-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
   const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
 
   try {
-    new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
     rmSync(join(backupRoot, '__knowbook'), { recursive: true, force: true })
 
     const staleDatabase = targetStore.createDatabase({
@@ -474,14 +474,14 @@ test('MarkdownRestoreService keeps standalone databases when restoring a legacy 
   }
 })
 
-test('MarkdownRestoreService rolls back all changes when a restore step fails', () => {
+test('MarkdownRestoreService rolls back all changes when a restore step fails', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-transaction-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
   const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
 
   try {
-    new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
     const before = targetStore.getHomeData(backupRoot).documentCatalog
     const originalUpdateDocument = targetStore.updateDocument.bind(targetStore)
     let updateCount = 0
@@ -507,7 +507,7 @@ test('MarkdownRestoreService rolls back all changes when a restore step fails', 
   }
 })
 
-test('MarkdownRestoreService restores portable assets into the active managed asset root', () => {
+test('MarkdownRestoreService restores portable assets into the active managed asset root', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-assets-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const sourceAssetRoot = join(tempRoot, 'source-assets')
@@ -549,7 +549,7 @@ test('MarkdownRestoreService restores portable assets into the active managed as
       }
     })
 
-    new MarkdownBackupService(sourceStore, backupRoot, sourceAssetRoot).exportAll()
+    await new MarkdownBackupService(sourceStore, backupRoot, sourceAssetRoot).exportAll()
     rmSync(sourceAssetRoot, { recursive: true, force: true })
 
     const restoreService = new MarkdownRestoreService(targetStore, targetAssetRoot)

@@ -24,6 +24,7 @@ test.describe('Document CRUD Operations @electron', () => {
     const uniqueSuffix = Date.now().toString(36)
     const nextTitle = `E2E Root ${uniqueSuffix}`
     const nextSummary = `Created from Electron E2E ${uniqueSuffix}`
+    const incrementallyUpdatedSummary = `${nextSummary} (updated)`
 
     await withElectronApp(async ({ page }) => {
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
@@ -39,12 +40,16 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.preview-panel .panel-head h3')).toHaveText(nextTitle)
       await expect(page.locator('.document-path')).toContainText(nextTitle)
 
+      await getSummaryInput(page).fill(incrementallyUpdatedSummary)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+      await expect(getSummaryInput(page)).toHaveValue(incrementallyUpdatedSummary)
+
       await page.locator('.tree-button:not(.tree-button-active)').first().click()
       await expect(getTitleInput(page)).not.toHaveValue(nextTitle)
 
       await getTreeButton(page, nextTitle).click()
       await expect(getTitleInput(page)).toHaveValue(nextTitle)
-      await expect(getSummaryInput(page)).toHaveValue(nextSummary)
+      await expect(getSummaryInput(page)).toHaveValue(incrementallyUpdatedSummary)
     })
   })
 

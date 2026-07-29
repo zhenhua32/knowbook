@@ -25,16 +25,86 @@ const ESCAPED_DOCUMENT_ROOT_PREFIX = '__knowbook-document-'
 const ASSET_BACKUP_ROOT = '__knowbook/assets'
 const FILE_URL_PATTERN = /file:\/\/\/[^\s<>"')\\\]}]+/g
 
+export interface BackupExportJob {
+  documents: ExportDocument[]
+  standaloneDatabases: ExportStandaloneDatabase[]
+  backupRoot: string
+  assetRoot?: string
+}
+
+export type BackupExportRunner = (job: BackupExportJob) => Promise<void>
+
+export function writeBackupSnapshot(job: BackupExportJob): void {
+  new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(job.documents, job.standaloneDatabases)
+}
+
+async function writeBackupSnapshotInline(job: BackupExportJob): Promise<void> {
+  writeBackupSnapshot(job)
+}
+
 export class MarkdownBackupService {
+  private inFlightExport: Promise<BackupResult> | null = null
+
   constructor(
     private readonly store: KnowbookStore,
+    private readonly backupRoot: string,
+    private readonly assetRoot?: string,
+    private readonly runExport: BackupExportRunner = writeBackupSnapshotInline
+  ) {}
+
+  exportAll(): Promise<BackupResult> {
+    if (this.inFlightExport) {
+      return this.inFlightExport
+    }
+
+    const documents = this.store.getExportDocuments()
+    const standaloneDatabases = this.store.getExportStandaloneDatabases()
+    const exportPromise = this.performExport({
+      documents,
+      standaloneDatabases,
+      backupRoot: this.backupRoot,
+      assetRoot: this.assetRoot
+    })
+    this.inFlightExport = exportPromise
+    exportPromise.then(
+      () => {
+        if (this.inFlightExport === exportPromise) {
+          this.inFlightExport = null
+        }
+      },
+      () => {
+        if (this.inFlightExport === exportPromise) {
+          this.inFlightExport = null
+        }
+      }
+    )
+    return exportPromise
+  }
+
+  async waitForIdle(): Promise<void> {
+    await this.inFlightExport
+  }
+
+  private async performExport(job: BackupExportJob): Promise<BackupResult> {
+    await this.runExport(job)
+    const at = new Date().toISOString()
+    this.store.saveSetting('backup.lastRunAt', at)
+
+    return {
+      exported: job.documents.length,
+      root: this.backupRoot,
+      at
+    }
+  }
+}
+
+class MarkdownBackupWriter {
+  constructor(
     private readonly backupRoot: string,
     private readonly assetRoot?: string
   ) {}
 
-  exportAll(): BackupResult {
-    const documents = this.store.getExportDocuments()
-    const standaloneDatabases = this.store.getExportStandaloneDatabases()
+  writeAll(documents: ExportDocument[], standaloneDatabases: ExportStandaloneDatabase[]): void {
     const backupParent = dirname(this.backupRoot)
     mkdirSync(backupParent, { recursive: true })
     const stagingRoot = mkdtempSync(join(backupParent, '.knowbook-markdown-'))
@@ -51,15 +121,6 @@ export class MarkdownBackupService {
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true })
       throw error
-    }
-
-    const at = new Date().toISOString()
-    this.store.saveSetting('backup.lastRunAt', at)
-
-    return {
-      exported: documents.length,
-      root: this.backupRoot,
-      at
     }
   }
 

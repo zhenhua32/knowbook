@@ -50,6 +50,7 @@ import type {
   UpdateDocumentDatabaseColumnOptionsInput,
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
+  UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
@@ -63,6 +64,7 @@ import {
   shouldGenerateDocumentSummary
 } from './ai-service'
 import { MarkdownBackupService } from './backup/exporter'
+import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
@@ -160,7 +162,7 @@ let servicesInitialized = false
 
 function initializeServices(): void {
   store = new KnowbookStore(databasePath)
-  backupService = new MarkdownBackupService(store, backupRoot, webClipAssetRoot)
+  backupService = new MarkdownBackupService(store, backupRoot, webClipAssetRoot, runBackupExportInWorker)
   restoreService = new MarkdownRestoreService(store, webClipAssetRoot)
   workspaceEventBus = new WorkspaceEventBus()
   webClipper = new WebClipperService(store, webClipAssetRoot, {
@@ -519,10 +521,15 @@ function registerIpcHandlers(): void {
     return entities
   })
 
-  ipcMain.handle('knowbook:update-document', async (_event, documentId: string, input: UpdateDocumentInput) => {
+  ipcMain.handle('knowbook:update-document', async (
+    _event,
+    documentId: string,
+    input: UpdateDocumentInput
+  ): Promise<UpdateDocumentResult> => {
     const beforeDocument = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.updateDocument(documentId, input)
     const afterDocument = store.getDocumentSnapshot(documentId)
+    const pathChanged = beforeDocument?.path !== afterDocument?.path
 
     if (beforeDocument && afterDocument) {
       await workspaceEventBus.emit({
@@ -532,9 +539,22 @@ function registerIpcHandlers(): void {
         documentTitle: afterDocument.title,
         path: afterDocument.path,
         affectedDocumentIds,
-        pathChanged: beforeDocument.path !== afterDocument.path
+        pathChanged
       })
     }
+
+    if (pathChanged) {
+      const document = store.getDocumentDetail(documentId)
+      if (!document) {
+        throw new Error('Document not found')
+      }
+      return {
+        requiresFullRefresh: true,
+        document
+      }
+    }
+
+    return store.getIncrementalDocumentUpdate(documentId, backupRoot)
   })
 
   ipcMain.handle('knowbook:delete-document', async (_event, documentId: string) => {
@@ -693,8 +713,8 @@ function registerIpcHandlers(): void {
     return result
   })
 
-  ipcMain.handle('knowbook:trigger-backup', () => {
-    const result: BackupResult = backupService.exportAll()
+  ipcMain.handle('knowbook:trigger-backup', async () => {
+    const result: BackupResult = await backupService.exportAll()
     return result
   })
 
@@ -1190,9 +1210,9 @@ function startBackupSchedule(): void {
   }, BACKUP_INTERVAL_MS)
 }
 
-function runScheduledBackup(): void {
+async function runScheduledBackup(): Promise<void> {
   try {
-    backupService.exportAll()
+    await backupService.exportAll()
   } catch (error) {
     console.warn('Scheduled workspace backup failed.', error)
   }
@@ -1210,7 +1230,13 @@ async function shutdownServices(): Promise<void> {
   cancelAllDocumentSummaryGeneration()
 
   try {
-    backupService.exportAll()
+    await backupService.waitForIdle()
+  } catch (error) {
+    console.warn('Pending workspace backup failed during shutdown.', error)
+  }
+
+  try {
+    await backupService.exportAll()
   } catch (error) {
     console.warn('Final workspace backup failed during shutdown.', error)
   }

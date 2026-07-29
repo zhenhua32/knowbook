@@ -7,7 +7,7 @@ import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
 
-test('MarkdownBackupService exports nested markdown files and persists backup timestamp', () => {
+test('MarkdownBackupService exports nested markdown files and persists backup timestamp', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-test-'))
   const backupRoot = join(tempRoot, 'backup')
 
@@ -91,7 +91,7 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
 
   try {
     const service = new MarkdownBackupService(store as never, backupRoot)
-    const result = service.exportAll()
+    const result = await service.exportAll()
 
     assert.equal(result.exported, 2)
     assert.equal(result.root, backupRoot)
@@ -206,7 +206,7 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
   }
 })
 
-test('MarkdownBackupService replaces stale files and keeps unsafe document paths inside the backup root', () => {
+test('MarkdownBackupService replaces stale files and keeps unsafe document paths inside the backup root', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-snapshot-test-'))
   const backupRoot = join(tempRoot, 'backup')
   let documents = [{
@@ -227,20 +227,20 @@ test('MarkdownBackupService replaces stale files and keeps unsafe document paths
 
   try {
     const service = new MarkdownBackupService(store as never, backupRoot)
-    service.exportAll()
+    await service.exportAll()
     assert.equal(existsSync(join(tempRoot, 'outside.md')), false)
 
     const staleFile = join(backupRoot, 'stale.md')
     writeFileSync(staleFile, 'stale', 'utf8')
     documents = []
-    service.exportAll()
+    await service.exportAll()
     assert.equal(existsSync(staleFile), false)
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
-test('MarkdownBackupService keeps documents in the reserved metadata namespace', () => {
+test('MarkdownBackupService keeps documents in the reserved metadata namespace', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-reserved-path-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const store = {
@@ -267,7 +267,7 @@ test('MarkdownBackupService keeps documents in the reserved metadata namespace',
   }
 
   try {
-    new MarkdownBackupService(store as never, backupRoot).exportAll()
+    await new MarkdownBackupService(store as never, backupRoot).exportAll()
 
     const manifestPath = join(backupRoot, '__knowbook', 'databases', 'index.md')
     const escapedRoot = readdirSync(backupRoot).find((entry) => entry.startsWith('__knowbook-document-'))
@@ -285,7 +285,7 @@ test('MarkdownBackupService keeps documents in the reserved metadata namespace',
   }
 })
 
-test('MarkdownBackupService copies managed assets and writes portable references', () => {
+test('MarkdownBackupService copies managed assets and writes portable references', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-assets-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const assetRoot = join(tempRoot, 'storage', 'assets')
@@ -319,7 +319,7 @@ test('MarkdownBackupService copies managed assets and writes portable references
   }
 
   try {
-    new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll()
+    await new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll()
 
     const snapshotAssetPath = join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab', 'asset.png')
     const documentMarkdown = readFileSync(join(backupRoot, 'Home', 'Clip.md'), 'utf8')
@@ -331,7 +331,7 @@ test('MarkdownBackupService copies managed assets and writes portable references
   }
 })
 
-test('MarkdownBackupService fails instead of publishing an incomplete managed asset snapshot', () => {
+test('MarkdownBackupService fails instead of publishing an incomplete managed asset snapshot', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-missing-asset-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const assetRoot = join(tempRoot, 'storage', 'assets')
@@ -360,12 +360,65 @@ test('MarkdownBackupService fails instead of publishing an incomplete managed as
   }
 
   try {
-    assert.throws(
-      () => new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll(),
+    await assert.rejects(
+      new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll(),
       /Managed backup asset not found/
     )
     assert.equal(existsSync(backupRoot), false)
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }
+})
+
+test('MarkdownBackupService coalesces overlapping exports and allows a fresh export after completion', async () => {
+  let documentReads = 0
+  let databaseReads = 0
+  let runnerCalls = 0
+  let settingWrites = 0
+  let releaseFirstExport: (() => void) | undefined
+  const firstExportGate = new Promise<void>((resolve) => {
+    releaseFirstExport = resolve
+  })
+  const store = {
+    getExportDocuments: () => {
+      documentReads += 1
+      return []
+    },
+    getExportStandaloneDatabases: () => {
+      databaseReads += 1
+      return []
+    },
+    saveSetting: () => {
+      settingWrites += 1
+    }
+  }
+  const service = new MarkdownBackupService(
+    store as never,
+    'virtual-backup-root',
+    undefined,
+    async () => {
+      runnerCalls += 1
+      if (runnerCalls === 1) {
+        await firstExportGate
+      }
+    }
+  )
+
+  const first = service.exportAll()
+  const overlapping = service.exportAll()
+  assert.strictEqual(overlapping, first)
+  assert.equal(documentReads, 1)
+  assert.equal(databaseReads, 1)
+  assert.equal(runnerCalls, 1)
+
+  releaseFirstExport?.()
+  await Promise.all([first, overlapping])
+  await service.waitForIdle()
+  assert.equal(settingWrites, 1)
+
+  await service.exportAll()
+  assert.equal(documentReads, 2)
+  assert.equal(databaseReads, 2)
+  assert.equal(runnerCalls, 2)
+  assert.equal(settingWrites, 2)
 })

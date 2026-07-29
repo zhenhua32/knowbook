@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
 import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { getErrorMessage } from '../utils/errorMessage'
+import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 
@@ -35,7 +37,7 @@ type UseDocumentEditorStateParams = {
   selectedDocumentId: string | null
   selectedDocument: DocumentDetail | null
   ui: UiText
-  onHomeDataChange: (homeData: HomeData) => void
+  onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onMessage: (message: string) => void
 }
@@ -305,19 +307,23 @@ export function useDocumentEditorState({
     setIsSaving(true)
 
     try {
-      await window.knowbook.updateDocument(persistedDocumentId, {
+      const updateResult = await window.knowbook.updateDocument(persistedDocumentId, {
         title: draftTitle,
         summary: draftSummary,
         blocks: normalizedDraftBlocks
       })
 
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(persistedDocumentId)
-      ])
+      const refreshedHome = updateResult.requiresFullRefresh
+        ? await window.knowbook.getHomeData()
+        : null
+      const refreshedDetail = updateResult.document
 
       if (saveSequence === saveSequenceRef.current) {
-        onHomeDataChange(refreshedHome)
+        if (refreshedHome) {
+          onHomeDataChange(refreshedHome)
+        } else if (!updateResult.requiresFullRefresh) {
+          onHomeDataChange((current) => applyIncrementalDocumentUpdate(current, updateResult))
+        }
         if (selectedDocumentIdRef.current === persistedDocumentId) {
           onSelectedDocumentChange(refreshedDetail)
           if (refreshedDetail) {

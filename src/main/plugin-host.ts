@@ -129,6 +129,10 @@ type PluginInvocationOptions = {
 
 const PLUGIN_SYNC_TIMEOUT_MS = 1_000
 const PLUGIN_RESULT_MAX_BYTES = 1_000_000
+const PLUGIN_MANIFEST_MAX_BYTES = 64_000
+const PLUGIN_SOURCE_MAX_BYTES = 2_000_000
+const PLUGIN_CONTRIBUTION_LIMIT = 100
+const PLUGIN_TIMER_LIMIT = 100
 
 export type PluginInstallPreview = {
   manifest: PluginManifest
@@ -581,6 +585,11 @@ export class PluginHost {
   }
 
   private parseManifest(manifestPath: string): PluginManifest {
+    const manifestStat = statSync(manifestPath)
+    if (!manifestStat.isFile() || manifestStat.size > PLUGIN_MANIFEST_MAX_BYTES) {
+      throw new Error(`Plugin manifest must be a regular file no larger than ${PLUGIN_MANIFEST_MAX_BYTES} bytes.`)
+    }
+
     const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as PluginManifest
     const id = raw.id?.trim()
     const name = raw.name?.trim()
@@ -733,8 +742,12 @@ export class PluginHost {
     }
 
     const resolvedEntryPath = realpathSync(entryPath)
-    if (!this.isPathInsideRoot(resolvedEntryPath, realpathSync(directory)) || !statSync(resolvedEntryPath).isFile()) {
+    const entryStat = statSync(resolvedEntryPath)
+    if (!this.isPathInsideRoot(resolvedEntryPath, realpathSync(directory)) || !entryStat.isFile()) {
       throw new Error('Plugin entry must be a file inside the plugin directory.')
+    }
+    if (entryStat.size > PLUGIN_SOURCE_MAX_BYTES) {
+      throw new Error(`Plugin entry exceeds the ${PLUGIN_SOURCE_MAX_BYTES}-byte source limit.`)
     }
   }
 
@@ -816,6 +829,18 @@ export class PluginHost {
         return
       }
 
+      const entryStat = statSync(entryPath)
+      if (!entryStat.isFile()) {
+        plugin.status = 'error'
+        plugin.error = 'Plugin entry must be a regular file.'
+        return
+      }
+      if (entryStat.size > PLUGIN_SOURCE_MAX_BYTES) {
+        plugin.status = 'error'
+        plugin.error = `Plugin entry exceeds the ${PLUGIN_SOURCE_MAX_BYTES}-byte source limit.`
+        return
+      }
+
       const source = readFileSync(entryPath, 'utf8')
       const context = vm.createContext(Object.create(null), {
         name: `knowbook-plugin-${plugin.manifest.id}`,
@@ -874,6 +899,10 @@ export class PluginHost {
       plugin.status = 'error'
       plugin.error = this.getPluginErrorMessage(plugin, error, 'Plugin activation failed.')
       this.releasePluginRuntime(plugin)
+      plugin.dashboardCards.clear()
+      plugin.documentActions.clear()
+      plugin.settings.clear()
+      plugin.eventHandlers = []
     }
   }
 
@@ -945,6 +974,9 @@ export class PluginHost {
             }
             if (Buffer.byteLength(serializedArgs, 'utf8') > PLUGIN_RESULT_MAX_BYTES) {
               throw new Error('Plugin timer arguments are too large.')
+            }
+            if (plugin.runtimeTimers.size >= PLUGIN_TIMER_LIMIT) {
+              throw new Error(`Plugin timer limit exceeded (${PLUGIN_TIMER_LIMIT}).`)
             }
 
             const timerId = ++this.invocationSequence
@@ -1228,6 +1260,9 @@ export class PluginHost {
         if (!cardId) {
           throw new Error('Dashboard card id is required.')
         }
+        if (!plugin.dashboardCards.has(cardId) && plugin.dashboardCards.size >= PLUGIN_CONTRIBUTION_LIMIT) {
+          throw new Error(`Plugin dashboard card limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
+        }
 
         const card: RegisteredDashboardCard = {
           pluginId: plugin.manifest.id,
@@ -1252,6 +1287,9 @@ export class PluginHost {
         if (!actionId) {
           throw new Error('Document action id is required.')
         }
+        if (!plugin.documentActions.has(actionId) && plugin.documentActions.size >= PLUGIN_CONTRIBUTION_LIMIT) {
+          throw new Error(`Plugin document action limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
+        }
         plugin.documentActions.set(actionId, {
           action: {
             pluginId: plugin.manifest.id,
@@ -1270,6 +1308,9 @@ export class PluginHost {
         }
         if (!label) {
           throw new Error('Plugin setting label is required.')
+        }
+        if (!plugin.settings.has(settingId) && plugin.settings.size >= PLUGIN_CONTRIBUTION_LIMIT) {
+          throw new Error(`Plugin setting limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
         }
 
         const options = settingInput.type === 'select'
@@ -1326,6 +1367,9 @@ export class PluginHost {
         }
       },
       onWorkspaceEvent: (eventTypes, handler) => {
+        if (plugin.eventHandlers.length >= PLUGIN_CONTRIBUTION_LIMIT) {
+          throw new Error(`Plugin workspace event subscription limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
+        }
         const normalizedEventTypes = new Set(Array.isArray(eventTypes) ? eventTypes : [eventTypes])
         plugin.eventHandlers.push({ eventTypes: normalizedEventTypes, handler })
       },
