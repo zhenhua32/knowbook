@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type {
@@ -68,6 +68,22 @@ type PreparedRestoreSources = {
   sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
 }
 
+export type MarkdownRestoreLimits = {
+  maxEntries: number
+  maxDepth: number
+  maxMarkdownFiles: number
+  maxMarkdownFileBytes: number
+  maxMarkdownTotalBytes: number
+  maxAssetFiles: number
+  maxAssetFileBytes: number
+  maxAssetTotalBytes: number
+}
+
+type RestoreReadBudget = {
+  assetPaths: Set<string>
+  assetBytes: number
+}
+
 const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
 const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc'])
 const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
@@ -78,19 +94,37 @@ const ASSET_BACKUP_ROOT = '__knowbook/assets'
 const PORTABLE_ASSET_REFERENCE_PATTERN = /(?:\.\.\/|\.\/)+[A-Za-z0-9._~%/-]+/g
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
+const DEFAULT_RESTORE_LIMITS: MarkdownRestoreLimits = {
+  maxEntries: 20_000,
+  maxDepth: 32,
+  maxMarkdownFiles: 5_000,
+  maxMarkdownFileBytes: 5 * 1024 * 1024,
+  maxMarkdownTotalBytes: 100 * 1024 * 1024,
+  maxAssetFiles: 5_000,
+  maxAssetFileBytes: 50 * 1024 * 1024,
+  maxAssetTotalBytes: 500 * 1024 * 1024
+}
 
 export class MarkdownRestoreService {
+  private readonly limits: MarkdownRestoreLimits
+
   constructor(
     private readonly store: KnowbookStore,
-    private readonly assetRoot?: string
-  ) {}
+    private readonly assetRoot?: string,
+    limits: Partial<MarkdownRestoreLimits> = {}
+  ) {
+    this.limits = {
+      ...DEFAULT_RESTORE_LIMITS,
+      ...limits
+    }
+  }
 
-  previewFromDirectory(root: string): BackupRestorePreview {
+  async previewFromDirectory(root: string): Promise<BackupRestorePreview> {
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
-    } = this.prepareRestoreSources(root, false)
+    } = await this.prepareRestoreSources(root, false)
     const restoredDocumentIds = new Set<string>()
     let created = 0
     let updated = 0
@@ -128,12 +162,12 @@ export class MarkdownRestoreService {
     }
   }
 
-  restoreFromDirectory(root: string): BackupRestoreResult {
+  async restoreFromDirectory(root: string): Promise<BackupRestoreResult> {
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
-    } = this.prepareRestoreSources(root, true)
+    } = await this.prepareRestoreSources(root, true)
 
     return this.store.runInTransaction(() => {
       let created = 0
@@ -173,9 +207,16 @@ export class MarkdownRestoreService {
     })
   }
 
-  private prepareRestoreSources(root: string, restoreAssets: boolean): PreparedRestoreSources {
-    const markdownFiles = this.collectMarkdownFiles(root)
-    const sourceFiles = markdownFiles.map((filePath) => this.parseSourceFile(root, filePath, restoreAssets))
+  private async prepareRestoreSources(root: string, restoreAssets: boolean): Promise<PreparedRestoreSources> {
+    const markdownFiles = await this.collectMarkdownFiles(root)
+    const budget: RestoreReadBudget = {
+      assetPaths: new Set(),
+      assetBytes: 0
+    }
+    const sourceFiles: RestoreSourceFile[] = []
+    for (const filePath of markdownFiles) {
+      sourceFiles.push(await this.parseSourceFile(root, filePath, restoreAssets, budget))
+    }
     const sourceDocuments = sourceFiles
       .filter((source): source is RestoreSourceDocument => source.kind === 'document')
       .sort((left, right) => {
@@ -207,39 +248,77 @@ export class MarkdownRestoreService {
     }
   }
 
-  private collectMarkdownFiles(root: string): string[] {
-    const stat = statSync(root, { throwIfNoEntry: false })
-    if (!stat || !stat.isDirectory()) {
+  private async collectMarkdownFiles(root: string): Promise<string[]> {
+    const rootStat = await lstat(root).catch(() => null)
+    if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
       throw new Error('Restore directory not found')
     }
 
+    const realRoot = await realpath(root)
     const files: string[] = []
-    const visit = (directory: string) => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    let entryCount = 0
+    let markdownBytes = 0
+    const visit = async (directory: string, depth: number): Promise<void> => {
+      if (depth > this.limits.maxDepth) {
+        throw new Error(`Restore directory exceeds the maximum depth of ${this.limits.maxDepth}.`)
+      }
+
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        entryCount += 1
+        if (entryCount > this.limits.maxEntries) {
+          throw new Error(`Restore directory exceeds the ${this.limits.maxEntries}-entry limit.`)
+        }
+
         const fullPath = join(directory, entry.name)
+        if (entry.isSymbolicLink()) {
+          throw new Error(`Restore directory cannot contain symbolic links: ${fullPath}`)
+        }
         if (entry.isDirectory()) {
-          visit(fullPath)
+          const realDirectory = await realpath(fullPath)
+          if (!this.isPathInsideRoot(realDirectory, realRoot)) {
+            throw new Error(`Restore directory resolves outside the selected root: ${fullPath}`)
+          }
+          await visit(fullPath, depth + 1)
           continue
         }
 
-        if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
-          files.push(fullPath)
+        if (!entry.isFile()) {
+          throw new Error(`Restore directory contains an unsupported file type: ${fullPath}`)
+        }
+        if (!entry.name.toLowerCase().endsWith('.md')) {
+          continue
+        }
+
+        const fileStat = await stat(fullPath)
+        if (fileStat.size > this.limits.maxMarkdownFileBytes) {
+          throw new Error(`Restore Markdown file exceeds the ${this.limits.maxMarkdownFileBytes}-byte limit: ${fullPath}`)
+        }
+        markdownBytes += fileStat.size
+        if (markdownBytes > this.limits.maxMarkdownTotalBytes) {
+          throw new Error(`Restore Markdown files exceed the ${this.limits.maxMarkdownTotalBytes}-byte total limit.`)
+        }
+        files.push(fullPath)
+        if (files.length > this.limits.maxMarkdownFiles) {
+          throw new Error(`Restore directory exceeds the ${this.limits.maxMarkdownFiles}-Markdown-file limit.`)
         }
       }
     }
 
-    visit(root)
+    await visit(root, 0)
     return files
   }
 
-  private parseSourceFile(root: string, filePath: string, restoreAssets: boolean): RestoreSourceFile {
+  private async parseSourceFile(
+    root: string,
+    filePath: string,
+    restoreAssets: boolean,
+    budget: RestoreReadBudget
+  ): Promise<RestoreSourceFile> {
     const relativePath = relative(root, filePath)
       .replace(/\\/g, '/')
       .replace(/\.md$/i, '')
-    const sourceMarkdown = readFileSync(filePath, 'utf8')
-    const markdown = restoreAssets
-      ? this.restorePortableAssetReferences(root, filePath, sourceMarkdown)
-      : sourceMarkdown
+    const sourceMarkdown = await readFile(filePath, 'utf8')
+    const markdown = await this.restorePortableAssetReferences(root, filePath, sourceMarkdown, restoreAssets, budget)
     const parsed = parseMarkdownBackupDocument(markdown)
 
     if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
@@ -368,29 +447,51 @@ export class MarkdownRestoreService {
     return documentSegments.slice(0, documentSegments.length - relativeSegments.length).join('/')
   }
 
-  private restorePortableAssetReferences(root: string, markdownFilePath: string, markdown: string): string {
+  private async restorePortableAssetReferences(
+    root: string,
+    markdownFilePath: string,
+    markdown: string,
+    copyAssets: boolean,
+    budget: RestoreReadBudget
+  ): Promise<string> {
     if (!this.assetRoot) {
       return markdown
     }
 
     const snapshotAssetRoot = resolve(root, ...ASSET_BACKUP_ROOT.split('/'))
     const normalizedAssetRoot = resolve(this.assetRoot)
+    const replacements = new Map<string, string>()
+    const portableReferences = [...new Set(markdown.match(PORTABLE_ASSET_REFERENCE_PATTERN) ?? [])]
 
-    return markdown.replace(PORTABLE_ASSET_REFERENCE_PATTERN, (portableReference) => {
+    for (const portableReference of portableReferences) {
       const sourceAssetPath = resolve(dirname(markdownFilePath), portableReference)
       if (!this.isPathInsideRoot(sourceAssetPath, snapshotAssetRoot)) {
-        return portableReference
+        continue
       }
 
-      const sourceStat = statSync(sourceAssetPath, { throwIfNoEntry: false })
-      if (!sourceStat?.isFile()) {
+      const sourceEntryStat = await lstat(sourceAssetPath).catch(() => null)
+      if (!sourceEntryStat?.isFile() || sourceEntryStat.isSymbolicLink()) {
         throw new Error(`Backup asset not found: ${portableReference}`)
       }
 
-      const realSnapshotAssetRoot = realpathSync(snapshotAssetRoot)
-      const realSourceAssetPath = realpathSync(sourceAssetPath)
+      const realSnapshotAssetRoot = await realpath(snapshotAssetRoot)
+      const realSourceAssetPath = await realpath(sourceAssetPath)
       if (!this.isPathInsideRoot(realSourceAssetPath, realSnapshotAssetRoot)) {
         throw new Error(`Backup asset resolves outside the backup asset root: ${portableReference}`)
+      }
+      const sourceStat = await stat(realSourceAssetPath)
+      if (sourceStat.size > this.limits.maxAssetFileBytes) {
+        throw new Error(`Backup asset exceeds the ${this.limits.maxAssetFileBytes}-byte limit: ${portableReference}`)
+      }
+      if (!budget.assetPaths.has(realSourceAssetPath)) {
+        budget.assetPaths.add(realSourceAssetPath)
+        budget.assetBytes += sourceStat.size
+        if (budget.assetPaths.size > this.limits.maxAssetFiles) {
+          throw new Error(`Backup assets exceed the ${this.limits.maxAssetFiles}-file limit.`)
+        }
+        if (budget.assetBytes > this.limits.maxAssetTotalBytes) {
+          throw new Error(`Backup assets exceed the ${this.limits.maxAssetTotalBytes}-byte total limit.`)
+        }
       }
 
       const assetRelativePath = relative(snapshotAssetRoot, sourceAssetPath)
@@ -399,10 +500,17 @@ export class MarkdownRestoreService {
         throw new Error(`Backup asset resolved outside the managed asset root: ${portableReference}`)
       }
 
-      mkdirSync(dirname(destinationPath), { recursive: true })
-      copyFileSync(realSourceAssetPath, destinationPath)
-      return pathToFileURL(destinationPath).toString()
-    })
+      if (copyAssets) {
+        await mkdir(dirname(destinationPath), { recursive: true })
+        await copyFile(realSourceAssetPath, destinationPath)
+      }
+      replacements.set(portableReference, pathToFileURL(destinationPath).toString())
+    }
+
+    return markdown.replace(
+      PORTABLE_ASSET_REFERENCE_PATTERN,
+      (portableReference) => replacements.get(portableReference) ?? portableReference
+    )
   }
 
   private isPathInsideRoot(filePath: string, root: string): boolean {

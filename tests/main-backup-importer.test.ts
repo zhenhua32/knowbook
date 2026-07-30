@@ -171,7 +171,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
 
     const restoreService = new MarkdownRestoreService(targetStore)
     const snapshotsBeforePreview = targetStore.getAllDocumentSnapshots()
-    const restorePreview = restoreService.previewFromDirectory(backupRoot)
+    const restorePreview = await restoreService.previewFromDirectory(backupRoot)
     assert.equal(restorePreview.restored, exportedCount)
     assert.equal(restorePreview.created + restorePreview.updated, exportedCount)
     assert.equal(restorePreview.deleted, 0)
@@ -179,7 +179,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
     assert.equal(restorePreview.standaloneDatabasesCreated, sourceStore.getExportStandaloneDatabases().length)
     assert.deepEqual(targetStore.getAllDocumentSnapshots(), snapshotsBeforePreview)
 
-    const restoreResult = restoreService.restoreFromDirectory(backupRoot)
+    const restoreResult = await restoreService.restoreFromDirectory(backupRoot)
     assert.equal(restoreResult.restored, exportedCount)
     assert.equal(restoreResult.created + restoreResult.updated, exportedCount)
     assert.equal(restoreResult.deleted, 0)
@@ -327,7 +327,7 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
       ]
     })
 
-    const restoreResult = new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
+    const restoreResult = await new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
 
     assert.equal(restoreResult.deleted, 1)
     assert.equal(restoreResult.conflictsResolved, 1)
@@ -357,7 +357,7 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
   }
 })
 
-test('MarkdownRestoreService imports ordinary markdown without deleting existing documents', () => {
+test('MarkdownRestoreService imports ordinary markdown without deleting existing documents', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-ordinary-markdown-test-'))
   const importRoot = join(tempRoot, 'markdown')
   const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
@@ -368,7 +368,7 @@ test('MarkdownRestoreService imports ordinary markdown without deleting existing
     )
     writeFileSync(join(tempRoot, 'README.md'), '# Imported README\n\nImported without backup metadata.\n', 'utf8')
 
-    const result = new MarkdownRestoreService(store).restoreFromDirectory(tempRoot)
+    const result = await new MarkdownRestoreService(store).restoreFromDirectory(tempRoot)
     const refreshedCatalog = store.getHomeData(importRoot).documentCatalog
 
     assert.equal(result.restored, 1)
@@ -436,7 +436,7 @@ test('MarkdownRestoreService deletes stale standalone databases when backup mani
       }
     })
 
-    new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
+    await new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
 
     const refreshedDatabases = store.getDatabases()
     assert.equal(refreshedDatabases.some((database) => database.id === sourceDatabase.id), true)
@@ -464,7 +464,7 @@ test('MarkdownRestoreService keeps standalone databases when restoring a legacy 
       description: 'Legacy backups should not wipe this database'
     })
 
-    new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot)
+    await new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot)
 
     assert.equal(targetStore.getDatabases().some((database) => database.id === staleDatabase.id), true)
   } finally {
@@ -494,8 +494,8 @@ test('MarkdownRestoreService rolls back all changes when a restore step fails', 
       return result
     }) as KnowbookStore['updateDocument']
 
-    assert.throws(
-      () => new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot),
+    await assert.rejects(
+      new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot),
       /Injected restore failure/
     )
     assert.equal(updateCount, 2)
@@ -553,10 +553,10 @@ test('MarkdownRestoreService restores portable assets into the active managed as
     rmSync(sourceAssetRoot, { recursive: true, force: true })
 
     const restoreService = new MarkdownRestoreService(targetStore, targetAssetRoot)
-    restoreService.previewFromDirectory(backupRoot)
+    await restoreService.previewFromDirectory(backupRoot)
     assert.equal(existsSync(targetAssetPath), false)
 
-    restoreService.restoreFromDirectory(backupRoot)
+    await restoreService.restoreFromDirectory(backupRoot)
     const restoredRoadmap = byPath(targetStore.getHomeData(backupRoot).documentCatalog, 'Home/Product/Roadmap')
     const restoredDetail = targetStore.getDocumentDetail(restoredRoadmap.id)
     assert.ok(restoredDetail)
@@ -579,6 +579,65 @@ test('MarkdownRestoreService restores portable assets into the active managed as
   } finally {
     sourceStore.destroy()
     targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService rejects oversized and excessively deep restore inputs', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-limits-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const oversizedRoot = join(tempRoot, 'oversized')
+    mkdirSync(oversizedRoot, { recursive: true })
+    writeFileSync(join(oversizedRoot, 'large.md'), '# Large\n' + 'x'.repeat(64), 'utf8')
+    await assert.rejects(
+      new MarkdownRestoreService(store, undefined, {
+        maxMarkdownFileBytes: 32
+      }).previewFromDirectory(oversizedRoot),
+      /Markdown file exceeds/
+    )
+
+    const deepRoot = join(tempRoot, 'deep')
+    mkdirSync(join(deepRoot, 'nested'), { recursive: true })
+    writeFileSync(join(deepRoot, 'nested', 'note.md'), '# Nested\n', 'utf8')
+    await assert.rejects(
+      new MarkdownRestoreService(store, undefined, {
+        maxDepth: 0
+      }).previewFromDirectory(deepRoot),
+      /maximum depth/
+    )
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService validates referenced asset limits during preview without copying files', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-asset-limits-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const backupAssetRoot = join(backupRoot, '__knowbook', 'assets')
+  const targetAssetRoot = join(tempRoot, 'target-assets')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    mkdirSync(backupAssetRoot, { recursive: true })
+    writeFileSync(join(backupAssetRoot, 'large.bin'), Buffer.alloc(32, 1))
+    writeFileSync(
+      join(backupRoot, 'note.md'),
+      '# Asset\n\n![Asset](./__knowbook/assets/large.bin)\n',
+      'utf8'
+    )
+
+    await assert.rejects(
+      new MarkdownRestoreService(store, targetAssetRoot, {
+        maxAssetFileBytes: 16
+      }).previewFromDirectory(backupRoot),
+      /Backup asset exceeds/
+    )
+    assert.equal(existsSync(targetAssetRoot), false)
+  } finally {
+    store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })

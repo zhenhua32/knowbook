@@ -668,7 +668,7 @@ function registerIpcHandlers(): void {
       return null
     }
 
-    const preview = pluginHost.previewInstallFromDirectory(result.filePaths[0])
+    const preview = await pluginHost.previewInstallFromDirectory(result.filePaths[0])
     if (preview.existingPlugin?.source === 'workspace') {
       throw new Error(`Plugin id "${preview.manifest.id}" is already provided by the workspace plugin "${preview.existingPlugin.name}".`)
     }
@@ -739,7 +739,7 @@ function registerIpcHandlers(): void {
     }
 
     const restoreRoot = result.filePaths[0]
-    const preview = restoreService.previewFromDirectory(restoreRoot)
+    const preview = await restoreService.previewFromDirectory(restoreRoot)
     const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
     const confirmationOptions = {
       type: 'warning' as const,
@@ -763,7 +763,7 @@ function registerIpcHandlers(): void {
 
     const safetyBackupPath = await createRestoreSafetyBackup()
     return {
-      ...restoreService.restoreFromDirectory(restoreRoot),
+      ...await restoreService.restoreFromDirectory(restoreRoot),
       safetyBackupPath
     }
   })

@@ -1,4 +1,14 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import {
+  copyFile,
+  lstat,
+  mkdir,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat
+} from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import vm from 'node:vm'
@@ -140,6 +150,14 @@ type PluginHostOptions = {
   pluginIdFilter?: string
   onStateChanged?: () => void
   activationConcurrency?: number
+  packageLimits?: Partial<PluginPackageLimits>
+}
+
+type PluginPackageLimits = {
+  maxEntries: number
+  maxDepth: number
+  maxFileBytes: number
+  maxTotalBytes: number
 }
 
 type PluginActivationSnapshot = {
@@ -157,6 +175,12 @@ const PLUGIN_CONTRIBUTION_LIMIT = 100
 const PLUGIN_TIMER_LIMIT = 100
 const PLUGIN_RUNTIME_EFFECT_LIMIT = 500
 const PLUGIN_RUNTIME_TEXT_MAX_BYTES = 1_000_000
+const DEFAULT_PLUGIN_PACKAGE_LIMITS: PluginPackageLimits = {
+  maxEntries: 1_000,
+  maxDepth: 12,
+  maxFileBytes: 5 * 1024 * 1024,
+  maxTotalBytes: 20 * 1024 * 1024
+}
 
 export type PluginInstallPreview = {
   manifest: PluginManifest
@@ -287,8 +311,9 @@ export class PluginHost {
     }
   }
 
-  previewInstallFromDirectory(sourceDirectory: string): PluginInstallPreview {
+  async previewInstallFromDirectory(sourceDirectory: string): Promise<PluginInstallPreview> {
     const candidate = this.resolveInstallCandidate(sourceDirectory)
+    await this.processPluginPackageDirectory(sourceDirectory)
     const existingPlugin = candidate.existingPlugin ? this.toPluginDescriptor(candidate.existingPlugin) : null
 
     return {
@@ -303,6 +328,7 @@ export class PluginHost {
     const candidate = this.resolveInstallCandidate(sourceDirectory)
 
     if (candidate.sourceIsTarget) {
+      await this.processPluginPackageDirectory(sourceDirectory)
       await this.reloadAll()
       const installedPlugin = this.plugins.get(candidate.manifest.id)
       if (!installedPlugin) {
@@ -329,7 +355,7 @@ export class PluginHost {
       throw new Error('No writable plugin root is configured.')
     }
     const operationRoot = resolve(writableRoot, '.knowbook-operations')
-    mkdirSync(operationRoot, { recursive: true })
+    await mkdir(operationRoot, { recursive: true })
     const stagingDirectory = resolve(operationRoot, `install-${candidate.manifest.id}-${randomUUID()}`)
     const previousDirectory = resolve(operationRoot, `previous-${candidate.manifest.id}-${randomUUID()}`)
     const operation = existingUserPlugin || candidate.targetExists ? 'updated' : 'installed'
@@ -338,11 +364,7 @@ export class PluginHost {
     let targetReplaced = false
 
     try {
-      cpSync(sourceDirectory, stagingDirectory, {
-        recursive: true,
-        errorOnExist: true,
-        force: false
-      })
+      await this.processPluginPackageDirectory(sourceDirectory, stagingDirectory)
       const stagedManifest = this.parseManifest(join(stagingDirectory, 'plugin.json'))
       if (stagedManifest.id !== candidate.manifest.id) {
         throw new Error('Staged plugin manifest id changed during installation.')
@@ -355,10 +377,10 @@ export class PluginHost {
       }
 
       if (candidate.targetExists) {
-        renameSync(candidate.targetDirectory, previousDirectory)
+        await rename(candidate.targetDirectory, previousDirectory)
         previousDirectoryCreated = true
       }
-      renameSync(stagingDirectory, candidate.targetDirectory)
+      await rename(stagingDirectory, candidate.targetDirectory)
       targetReplaced = true
 
       try {
@@ -382,7 +404,7 @@ export class PluginHost {
 
         if (previousDirectoryCreated) {
           try {
-            rmSync(previousDirectory, { recursive: true, force: true })
+            await rm(previousDirectory, { recursive: true, force: true })
           } catch (error) {
             console.warn(`Failed to remove previous plugin directory ${previousDirectory}.`, error)
           }
@@ -395,17 +417,17 @@ export class PluginHost {
         }
       } catch (error) {
         if (targetReplaced && existsSync(candidate.targetDirectory)) {
-          rmSync(candidate.targetDirectory, { recursive: true, force: true })
+          await rm(candidate.targetDirectory, { recursive: true, force: true })
         }
         if (previousDirectoryCreated && existsSync(previousDirectory)) {
-          renameSync(previousDirectory, candidate.targetDirectory)
+          await rename(previousDirectory, candidate.targetDirectory)
         }
         await this.reloadAll()
         throw error
       }
     } finally {
       if (existsSync(stagingDirectory)) {
-        rmSync(stagingDirectory, { recursive: true, force: true })
+        await rm(stagingDirectory, { recursive: true, force: true })
       }
     }
   }
@@ -423,7 +445,7 @@ export class PluginHost {
     await this.deactivatePlugin(plugin)
     this.plugins.delete(pluginId)
     try {
-      rmSync(plugin.directory, { recursive: true, force: true })
+      await rm(plugin.directory, { recursive: true, force: true })
     } catch (error) {
       await this.reloadAll()
       throw error
@@ -951,6 +973,108 @@ export class PluginHost {
 
   private getWritableRoot(): string | null {
     return this.roots.find((root) => root.source === 'user-data')?.path ?? null
+  }
+
+  private async processPluginPackageDirectory(
+    sourceDirectory: string,
+    destinationDirectory?: string
+  ): Promise<void> {
+    const sourceRootStat = await lstat(sourceDirectory).catch(() => null)
+    if (!sourceRootStat?.isDirectory() || sourceRootStat.isSymbolicLink()) {
+      throw new Error('Selected plugin folder must be a regular directory.')
+    }
+
+    const limits = this.getPluginPackageLimits()
+    const realSourceRoot = await realpath(sourceDirectory)
+    let entryCount = 0
+    let totalBytes = 0
+
+    if (destinationDirectory) {
+      if (this.isPathInsideRoot(destinationDirectory, sourceDirectory)) {
+        throw new Error('Plugin install staging directory cannot be created inside the selected plugin folder.')
+      }
+      await mkdir(destinationDirectory)
+    }
+
+    const visit = async (
+      source: string,
+      destination: string | undefined,
+      depth: number
+    ): Promise<void> => {
+      if (depth > limits.maxDepth) {
+        throw new Error(`Plugin package exceeds the maximum directory depth of ${limits.maxDepth}.`)
+      }
+
+      for (const entry of await readdir(source, { withFileTypes: true })) {
+        entryCount += 1
+        if (entryCount > limits.maxEntries) {
+          throw new Error(`Plugin package exceeds the ${limits.maxEntries}-entry limit.`)
+        }
+
+        const sourcePath = join(source, entry.name)
+        const destinationPath = destination ? join(destination, entry.name) : undefined
+        const entryStat = await lstat(sourcePath)
+        if (entryStat.isSymbolicLink()) {
+          throw new Error(`Plugin package cannot contain symbolic links: ${sourcePath}`)
+        }
+
+        if (entryStat.isDirectory()) {
+          const realDirectoryPath = await realpath(sourcePath)
+          if (!this.isPathInsideRoot(realDirectoryPath, realSourceRoot)) {
+            throw new Error(`Plugin package directory resolves outside the selected root: ${sourcePath}`)
+          }
+          if (destinationPath) {
+            await mkdir(destinationPath)
+          }
+          await visit(sourcePath, destinationPath, depth + 1)
+          continue
+        }
+
+        if (!entryStat.isFile()) {
+          throw new Error(`Plugin package contains an unsupported file type: ${sourcePath}`)
+        }
+
+        const realSourcePath = await realpath(sourcePath)
+        if (!this.isPathInsideRoot(realSourcePath, realSourceRoot)) {
+          throw new Error(`Plugin package file resolves outside the selected root: ${sourcePath}`)
+        }
+        const sourceFileStat = await stat(realSourcePath)
+        if (sourceFileStat.size > limits.maxFileBytes) {
+          throw new Error(`Plugin package file exceeds the ${limits.maxFileBytes}-byte limit: ${sourcePath}`)
+        }
+        totalBytes += sourceFileStat.size
+        if (totalBytes > limits.maxTotalBytes) {
+          throw new Error(`Plugin package exceeds the ${limits.maxTotalBytes}-byte total limit.`)
+        }
+
+        if (destinationPath) {
+          await copyFile(realSourcePath, destinationPath)
+          const copiedFileStat = await stat(destinationPath)
+          totalBytes += copiedFileStat.size - sourceFileStat.size
+          if (copiedFileStat.size > limits.maxFileBytes || totalBytes > limits.maxTotalBytes) {
+            throw new Error('Plugin package changed while it was being copied and now exceeds its size limits.')
+          }
+        }
+      }
+    }
+
+    await visit(sourceDirectory, destinationDirectory, 0)
+  }
+
+  private getPluginPackageLimits(): PluginPackageLimits {
+    const configured = this.options.packageLimits ?? {}
+    const normalize = (value: number | undefined, fallback: number, minimum: number): number => (
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.max(Math.floor(value), minimum)
+        : fallback
+    )
+
+    return {
+      maxEntries: normalize(configured.maxEntries, DEFAULT_PLUGIN_PACKAGE_LIMITS.maxEntries, 1),
+      maxDepth: normalize(configured.maxDepth, DEFAULT_PLUGIN_PACKAGE_LIMITS.maxDepth, 0),
+      maxFileBytes: normalize(configured.maxFileBytes, DEFAULT_PLUGIN_PACKAGE_LIMITS.maxFileBytes, 1),
+      maxTotalBytes: normalize(configured.maxTotalBytes, DEFAULT_PLUGIN_PACKAGE_LIMITS.maxTotalBytes, 1)
+    }
   }
 
   private validatePluginPackageDirectory(directory: string, manifest: PluginManifest): void {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
@@ -252,7 +252,7 @@ test('PluginHost installs and removes user-data plugins', async () => {
   try {
     await host.loadAll()
 
-    const preview = host.previewInstallFromDirectory(sourceRoot)
+    const preview = await host.previewInstallFromDirectory(sourceRoot)
     assert.equal(preview.manifest.id, 'quick-note')
     assert.equal(preview.existingPlugin, null)
 
@@ -628,7 +628,7 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
   try {
     await host.loadAll()
 
-    const preview = host.previewInstallFromDirectory(sourceRoot)
+    const preview = await host.previewInstallFromDirectory(sourceRoot)
     assert.equal(preview.sourceIsTarget, false)
     assert.equal(preview.canReplace, true)
     assert.equal(preview.existingPlugin?.version, '0.1.0')
@@ -648,6 +648,56 @@ test('PluginHost supports replacing existing user-data plugin when replaceExisti
     assert.ok(preservedPlugin)
     assert.equal(preservedPlugin.version, '0.2.0')
     assert.equal(preservedPlugin.status, 'running')
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost rejects plugin packages that exceed bounded directory limits', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-package-limits-test-'))
+  const workspaceRoot = join(tempRoot, 'workspace-plugins')
+  const userDataRoot = join(tempRoot, 'user-plugins')
+  const sourceRoot = join(tempRoot, 'source-plugin')
+  mkdirSync(workspaceRoot, { recursive: true })
+  mkdirSync(userDataRoot, { recursive: true })
+  mkdirSync(sourceRoot, { recursive: true })
+  writeFileSync(join(sourceRoot, 'plugin.json'), JSON.stringify({
+    id: 'bounded-plugin',
+    name: 'Bounded Plugin',
+    version: '1.0.0'
+  }))
+  writeFileSync(
+    join(sourceRoot, 'index.js'),
+    'module.exports.activate = function activate() { return undefined }\n',
+    'utf8'
+  )
+
+  const host = new PluginHost(
+    {} as never,
+    [
+      { path: workspaceRoot, source: 'workspace' },
+      { path: userDataRoot, source: 'user-data' }
+    ],
+    '1.0.0',
+    null,
+    {
+      packageLimits: {
+        maxEntries: 1
+      }
+    }
+  )
+
+  try {
+    await assert.rejects(
+      host.previewInstallFromDirectory(sourceRoot),
+      /entry limit/
+    )
+    await assert.rejects(
+      host.installPluginFromDirectory(sourceRoot),
+      /entry limit/
+    )
+    assert.equal(existsSync(join(userDataRoot, 'bounded-plugin')), false)
   } finally {
     await host.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
