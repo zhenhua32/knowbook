@@ -675,7 +675,7 @@ export class KnowbookStore {
       insertDocument.run(id, title, slug, parent?.id ?? null, path, DEFAULT_DOCUMENT_SUMMARY, sortOrder, now, now)
       insertBlock.run(randomUUID(), id, null, 0, 'heading-1', title, 0, 0, '[]', null, null, now, now)
       insertBlock.run(randomUUID(), id, null, 1, 'paragraph', 'Start writing here.', 0, 0, '[]', null, null, now, now)
-      this.resyncLinksForAllDocuments()
+      this.resyncLinksForReferenceChanges([title, path])
     })
 
     transaction()
@@ -685,7 +685,7 @@ export class KnowbookStore {
   updateDocument(documentId: string, input: UpdateDocumentInput): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
-      SELECT id, path, parent_id
+      SELECT id, title, path, parent_id
       FROM documents
       WHERE id = ?
     `).get(documentId) as DocumentPathRow | undefined
@@ -704,6 +704,17 @@ export class KnowbookStore {
     const normalizedBlocks = this.normalizeBlocks(input.blocks)
     const oldPath = document.path
     const newPath = parentPath ? `${parentPath}/${normalizedTitle}` : normalizedTitle
+    const pathChangedDocuments = newPath !== oldPath
+      ? this.getDocumentPathSubtree(oldPath)
+      : []
+    const changedReferenceTokens = new Set<string>()
+    if (newPath !== oldPath) {
+      for (const token of this.getPathRewriteReferenceTokens(pathChangedDocuments, oldPath, newPath)) {
+        changedReferenceTokens.add(token)
+      }
+      changedReferenceTokens.add(document.title)
+      changedReferenceTokens.add(normalizedTitle)
+    }
 
     const updateDocumentStatement = this.db.prepare(`
       UPDATE documents
@@ -748,11 +759,7 @@ export class KnowbookStore {
         )
       })
 
-      if (newPath !== oldPath) {
-        this.resyncLinksForAllDocuments()
-      } else {
-        this.resyncLinksForSourceDocument(documentId)
-      }
+      this.resyncLinksForReferenceChanges(changedReferenceTokens, [documentId])
     })
 
     transaction()
@@ -813,22 +820,27 @@ export class KnowbookStore {
       WHERE path LIKE ? ESCAPE '\\'
     `)
     const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
-    const affectedDescendantIds = this.db.prepare(`
-      SELECT id
+    const affectedDescendants = this.db.prepare(`
+      SELECT id, path
       FROM documents
       WHERE path LIKE ? ESCAPE '\\'
       ORDER BY path ASC
-    `).all(`${this.escapeLikePattern(oldPrefix)}%`) as Array<{ id: string }>
+    `).all(`${this.escapeLikePattern(oldPrefix)}%`) as Array<{ id: string; path: string }>
+    const changedReferenceTokens = new Set<string>([document.title, document.path])
+    for (const descendant of affectedDescendants) {
+      changedReferenceTokens.add(descendant.path)
+      changedReferenceTokens.add(`${newPrefix}${descendant.path.slice(oldPrefix.length)}`)
+    }
 
     const transaction = this.db.transaction(() => {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
-      this.resyncLinksForAllDocuments()
+      this.resyncLinksForReferenceChanges(changedReferenceTokens)
     })
 
     transaction()
-    return affectedDescendantIds.map((row) => row.id)
+    return affectedDescendants.map((row) => row.id)
   }
 
   moveDocument(documentId: string, newParentId: string | null): string[] {
@@ -870,6 +882,12 @@ export class KnowbookStore {
 
     const oldPrefix = `${document.path}/`
     const newPrefix = `${newPath}/`
+    const pathChangedDocuments = this.getDocumentPathSubtree(document.path)
+    const changedReferenceTokens = this.getPathRewriteReferenceTokens(
+      pathChangedDocuments,
+      document.path,
+      newPath
+    )
 
     const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(newParentId) as { max_sort_order: number }
     const newSortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
@@ -888,7 +906,7 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
-      this.resyncLinksForAllDocuments()
+      this.resyncLinksForReferenceChanges(changedReferenceTokens)
     })
 
     transaction()
@@ -2397,27 +2415,88 @@ export class KnowbookStore {
     this.resyncLinks()
   }
 
-  private resyncLinksForSourceDocument(documentId: string): void {
-    this.resyncLinks(documentId)
+  private resyncLinksForReferenceChanges(
+    referenceTokens: Iterable<string>,
+    additionalSourceDocumentIds: Iterable<string> = []
+  ): void {
+    const normalizedReferenceTokens = new Set(
+      [...referenceTokens]
+        .map((token) => token.trim())
+        .filter(Boolean)
+    )
+    const sourceDocumentIds = new Set(additionalSourceDocumentIds)
+
+    if (normalizedReferenceTokens.size > 0) {
+      const candidateBlocks = this.db.prepare(`
+        SELECT document_id, content
+        FROM blocks
+        WHERE instr(content, '[[') > 0
+      `).all() as BlockReferenceRow[]
+
+      for (const block of candidateBlocks) {
+        if (this.extractLinkTargets(block.content).some((token) => normalizedReferenceTokens.has(token))) {
+          sourceDocumentIds.add(block.document_id)
+        }
+      }
+    }
+
+    this.resyncLinks(sourceDocumentIds)
   }
 
-  private resyncLinks(sourceDocumentId?: string): void {
+  private getDocumentPathSubtree(rootPath: string): Array<{ id: string; path: string }> {
+    return this.db.prepare(`
+      SELECT id, path
+      FROM documents
+      WHERE path = ? OR path LIKE ? ESCAPE '\\'
+      ORDER BY path ASC
+    `).all(rootPath, `${this.escapeLikePattern(rootPath)}/%`) as Array<{ id: string; path: string }>
+  }
+
+  private getPathRewriteReferenceTokens(
+    documents: Array<{ id: string; path: string }>,
+    oldRootPath: string,
+    newRootPath: string
+  ): Set<string> {
+    const tokens = new Set<string>()
+    for (const document of documents) {
+      tokens.add(document.path)
+      tokens.add(document.path === oldRootPath
+        ? newRootPath
+        : `${newRootPath}${document.path.slice(oldRootPath.length)}`)
+    }
+    return tokens
+  }
+
+  private resyncLinks(sourceDocumentIds?: Iterable<string>): void {
+    const selectedSourceDocumentIds = sourceDocumentIds
+      ? [...new Set(sourceDocumentIds)]
+      : null
+    if (selectedSourceDocumentIds && selectedSourceDocumentIds.length === 0) {
+      return
+    }
+
     const documents = this.db.prepare(`
       SELECT id, title, path
       FROM documents
     `).all() as DocumentLookupRow[]
-    const blocks = sourceDocumentId
-      ? this.db.prepare(`
-          SELECT document_id, content
-          FROM blocks
-          WHERE document_id = ?
-          ORDER BY sort_order ASC
-        `).all(sourceDocumentId) as BlockReferenceRow[]
-      : this.db.prepare(`
-          SELECT document_id, content
-          FROM blocks
-          ORDER BY document_id ASC, sort_order ASC
-        `).all() as BlockReferenceRow[]
+    let blocks: BlockReferenceRow[]
+    if (selectedSourceDocumentIds) {
+      const selectBlocks = this.db.prepare(`
+        SELECT document_id, content
+        FROM blocks
+        WHERE document_id = ?
+        ORDER BY sort_order ASC
+      `)
+      blocks = selectedSourceDocumentIds.flatMap(
+        (documentId) => selectBlocks.all(documentId) as BlockReferenceRow[]
+      )
+    } else {
+      blocks = this.db.prepare(`
+        SELECT document_id, content
+        FROM blocks
+        ORDER BY document_id ASC, sort_order ASC
+      `).all() as BlockReferenceRow[]
+    }
 
     const pathMap = new Map<string, DocumentLookupRow>()
     const titleMap = new Map<string, DocumentLookupRow | null>()
@@ -2431,19 +2510,20 @@ export class KnowbookStore {
       }
     }
 
-    const deleteLinks = sourceDocumentId
-      ? this.db.prepare('DELETE FROM links WHERE source_document_id = ?')
-      : this.db.prepare('DELETE FROM links')
+    const deleteSourceLinks = this.db.prepare('DELETE FROM links WHERE source_document_id = ?')
+    const deleteAllLinks = this.db.prepare('DELETE FROM links')
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
       VALUES (?, ?, ?, ?, ?)
     `)
 
     const transaction = this.db.transaction(() => {
-      if (sourceDocumentId) {
-        deleteLinks.run(sourceDocumentId)
+      if (selectedSourceDocumentIds) {
+        for (const documentId of selectedSourceDocumentIds) {
+          deleteSourceLinks.run(documentId)
+        }
       } else {
-        deleteLinks.run()
+        deleteAllLinks.run()
       }
 
       const seen = new Set<string>()

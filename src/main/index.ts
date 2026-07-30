@@ -73,6 +73,7 @@ import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
+import { CoalescedNotifier } from './coalesced-notifier'
 
 const { app, BrowserWindow, clipboard, dialog, ipcMain: electronIpcMain, safeStorage, shell, protocol } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
@@ -84,6 +85,7 @@ const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
+const WORKSPACE_MUTATION_NOTIFY_DELAY_MS = 25
 const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
 const SAFE_STORAGE_KEY_PREFIX = 'safe-storage:v1:'
 
@@ -131,6 +133,14 @@ const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
     })
   }
 }
+
+const workspaceMutationNotifier = new CoalescedNotifier(() => {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send(WORKSPACE_MUTATED_CHANNEL)
+    }
+  })
+}, WORKSPACE_MUTATION_NOTIFY_DELAY_MS)
 
 if (process.env['KNOWBOOK_DISABLE_HARDWARE_ACCELERATION'] === '1') {
   app.disableHardwareAcceleration()
@@ -847,9 +857,7 @@ async function emitClipMutationEvents(result: ClipWebPageResult): Promise<void> 
 }
 
 function notifyWorkspaceMutation(): void {
-  BrowserWindow.getAllWindows().forEach((window) => {
-    window.webContents.send(WORKSPACE_MUTATED_CHANNEL)
-  })
+  workspaceMutationNotifier.notify()
 }
 
 function getStoredWebClipBridgeConfig(): { enabled: boolean; port: number; token: string } {
@@ -1232,6 +1240,7 @@ async function shutdownServices(): Promise<void> {
     clearInterval(backupTimer)
     backupTimer = null
   }
+  workspaceMutationNotifier.dispose()
   cancelAllDocumentSummaryGeneration()
 
   try {

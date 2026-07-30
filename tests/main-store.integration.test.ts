@@ -476,12 +476,35 @@ test('deleteDatabase removes standalone database data but refuses the default da
 test('links are re-synced after target title change', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
     const product = byPath(catalog, 'Home/Product')
     const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+    const unrelatedSourceId = store.createDocument(home.id)
+
+    store.updateDocument(unrelatedSourceId, {
+      title: 'Unrelated Source',
+      summary: '',
+      blocks: [
+        { type: 'paragraph', content: 'Keep this unrelated link: [[Home]]', checked: false, depth: 0 }
+      ]
+    })
 
     const productBefore = store.getDocumentDetail(product.id)
+    const unrelatedBefore = store.getDocumentDetail(unrelatedSourceId)
     assert.ok(productBefore)
+    assert.ok(unrelatedBefore)
     assert.equal(productBefore.outgoingLinks.some((item) => item.id === roadmap.id), true)
+    assert.equal(unrelatedBefore.outgoingLinks.some((item) => item.id === home.id), true)
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_unrelated_link_delete
+      BEFORE DELETE ON links
+      WHEN OLD.source_document_id = '${unrelatedSourceId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'unrelated link deleted');
+      END;
+    `)
 
     store.updateDocument(roadmap.id, {
       title: 'Execution Plan',
@@ -492,8 +515,91 @@ test('links are re-synced after target title change', () => {
     })
 
     const productAfter = store.getDocumentDetail(product.id)
+    const unrelatedAfter = store.getDocumentDetail(unrelatedSourceId)
     assert.ok(productAfter)
+    assert.ok(unrelatedAfter)
     assert.equal(productAfter.outgoingLinks.some((item) => item.id === roadmap.id), false)
+    assert.equal(unrelatedAfter.outgoingLinks.some((item) => item.id === home.id), true)
+  })
+})
+
+test('createDocument does not rebuild existing unrelated links', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+    const product = byPath(catalog, 'Home/Product')
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+    const productBefore = store.getDocumentDetail(product.id)
+    assert.ok(productBefore)
+    assert.equal(productBefore.outgoingLinks.some((item) => item.id === roadmap.id), true)
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_existing_link_delete
+      BEFORE DELETE ON links
+      BEGIN
+        SELECT RAISE(ABORT, 'existing link deleted');
+      END;
+    `)
+
+    const createdId = store.createDocument(home.id)
+    assert.ok(store.getDocumentSnapshot(createdId))
+
+    const productAfter = store.getDocumentDetail(product.id)
+    assert.ok(productAfter)
+    assert.equal(productAfter.outgoingLinks.some((item) => item.id === roadmap.id), true)
+  })
+})
+
+test('moveDocument rebuilds path references without touching unrelated sources', () => {
+  withStore((store, backupRoot) => {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const home = byPath(catalog, 'Home')
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+    const pathSourceId = store.createDocument(home.id)
+    const unrelatedSourceId = store.createDocument(home.id)
+
+    store.updateDocument(pathSourceId, {
+      title: 'Path Source',
+      summary: '',
+      blocks: [
+        {
+          type: 'paragraph',
+          content: 'Path link: [[Home/Product/Roadmap]]. Title link: [[Roadmap]].',
+          checked: false,
+          depth: 0
+        }
+      ]
+    })
+    store.updateDocument(unrelatedSourceId, {
+      title: 'Move Unrelated Source',
+      summary: '',
+      blocks: [
+        { type: 'paragraph', content: 'Keep this unrelated link: [[Home]]', checked: false, depth: 0 }
+      ]
+    })
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_move_unrelated_link_delete
+      BEFORE DELETE ON links
+      WHEN OLD.source_document_id = '${unrelatedSourceId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'unrelated link deleted');
+      END;
+    `)
+
+    store.moveDocument(roadmap.id, null)
+
+    const pathSource = store.getDocumentDetail(pathSourceId)
+    const unrelatedSource = store.getDocumentDetail(unrelatedSourceId)
+    assert.ok(pathSource)
+    assert.ok(unrelatedSource)
+    assert.deepEqual(
+      pathSource.outgoingLinks.filter((item) => item.id === roadmap.id).map((item) => item.label),
+      ['Roadmap']
+    )
+    assert.equal(unrelatedSource.outgoingLinks.some((item) => item.id === home.id), true)
   })
 })
 
@@ -696,9 +802,12 @@ test('deleteDocument reparents descendants and rewrites paths', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog
     const home = byPath(catalog, 'Home')
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
 
     const parentId = store.createDocument(home.id)
     const childId = store.createDocument(parentId)
+    const pathSourceId = store.createDocument(home.id)
+    const unrelatedSourceId = store.createDocument(home.id)
 
     store.updateDocument(parentId, {
       title: 'ToDelete',
@@ -710,6 +819,42 @@ test('deleteDocument reparents descendants and rewrites paths', () => {
       summary: '',
       blocks: [{ type: 'paragraph', content: 'c', checked: false, depth: 0 }]
     })
+    store.updateDocument(pathSourceId, {
+      title: 'Delete Path Source',
+      summary: '',
+      blocks: [
+        {
+          type: 'paragraph',
+          content: 'Old path: [[Home/ToDelete/Leaf]]. New path: [[Home/Leaf]].',
+          checked: false,
+          depth: 0
+        }
+      ]
+    })
+    store.updateDocument(unrelatedSourceId, {
+      title: 'Delete Unrelated Source',
+      summary: '',
+      blocks: [
+        { type: 'paragraph', content: 'Keep this unrelated link: [[Roadmap]]', checked: false, depth: 0 }
+      ]
+    })
+
+    const pathSourceBefore = store.getDocumentDetail(pathSourceId)
+    assert.ok(pathSourceBefore)
+    assert.deepEqual(
+      pathSourceBefore.outgoingLinks.filter((item) => item.id === childId).map((item) => item.label),
+      ['Home/ToDelete/Leaf']
+    )
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_delete_unrelated_link_delete
+      BEFORE DELETE ON links
+      WHEN OLD.source_document_id = '${unrelatedSourceId}'
+      BEGIN
+        SELECT RAISE(ABORT, 'unrelated link deleted');
+      END;
+    `)
 
     const affected = store.deleteDocument(parentId)
     assert.equal(affected.includes(childId), true)
@@ -718,6 +863,16 @@ test('deleteDocument reparents descendants and rewrites paths', () => {
     assert.ok(child)
     assert.equal(child.parentId, home.id)
     assert.equal(child.path, 'Home/Leaf')
+
+    const pathSourceAfter = store.getDocumentDetail(pathSourceId)
+    const unrelatedSourceAfter = store.getDocumentDetail(unrelatedSourceId)
+    assert.ok(pathSourceAfter)
+    assert.ok(unrelatedSourceAfter)
+    assert.deepEqual(
+      pathSourceAfter.outgoingLinks.filter((item) => item.id === childId).map((item) => item.label),
+      ['Home/Leaf']
+    )
+    assert.equal(unrelatedSourceAfter.outgoingLinks.some((item) => item.id === roadmap.id), true)
   })
 })
 

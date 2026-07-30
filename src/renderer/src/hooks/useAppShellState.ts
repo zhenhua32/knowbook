@@ -8,6 +8,7 @@ import {
   setActiveUiLanguage,
   type UiLanguage
 } from '../i18n'
+import { createTrailingSingleFlightRefresh } from '../utils/singleFlightRefresh'
 
 const emptyState: HomeData = {
   summary: {
@@ -78,8 +79,9 @@ export function useAppShellState() {
       setHomeData(data)
       setLoading(false)
     }
+    const requestHomeDataRefresh = createTrailingSingleFlightRefresh(refreshHomeData)
 
-    void refreshHomeData().catch((error) => {
+    void requestHomeDataRefresh().catch((error) => {
       console.warn('Failed to load home data.', error)
     })
 
@@ -100,7 +102,7 @@ export function useAppShellState() {
     })
 
     const unsubscribe = window.knowbook.onWorkspaceMutated(() => {
-      void refreshHomeData().catch((error) => {
+      void requestHomeDataRefresh().catch((error) => {
         console.warn('Failed to refresh workspace after external mutation.', error)
       })
     })
