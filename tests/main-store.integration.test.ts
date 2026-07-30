@@ -767,6 +767,48 @@ test('ai config persists defaults, api key, and auto-summary flag', () => {
   })
 })
 
+test('AI config updates roll back as a unit when API key persistence fails', () => {
+  withStore((store) => {
+    store.updateAiConfig({
+      enabled: false,
+      baseUrl: 'https://old.example.test/v1',
+      model: 'old-model',
+      autoSummaryOnSave: false,
+      relatedNotesEnabled: false
+    })
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void } }).db
+    database.exec(`
+      CREATE TRIGGER reject_ai_api_key_insert
+      BEFORE INSERT ON app_settings
+      WHEN NEW.key = 'ai.apiKey'
+      BEGIN
+        SELECT RAISE(ABORT, 'API key persistence failed');
+      END;
+    `)
+
+    assert.throws(() => {
+      store.updateAiConfig({
+        enabled: true,
+        baseUrl: 'https://new.example.test/v1',
+        model: 'new-model',
+        autoSummaryOnSave: true,
+        relatedNotesEnabled: true,
+        apiKey: 'protected-secret'
+      })
+    }, /API key persistence failed/)
+
+    assert.deepEqual(store.getAiConfigPublic(), {
+      enabled: false,
+      baseUrl: 'https://old.example.test/v1',
+      model: 'old-model',
+      autoSummaryOnSave: false,
+      relatedNotesEnabled: false,
+      hasApiKey: false
+    })
+  })
+})
+
 test('semantic search candidates support exclusion', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog

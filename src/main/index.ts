@@ -74,6 +74,12 @@ import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 import { CoalescedNotifier } from './coalesced-notifier'
+import {
+  isSecureStorageUsable,
+  protectCredential,
+  revealCredential,
+  type SecureStringStorage
+} from './credential-storage'
 
 const { app, BrowserWindow, clipboard, dialog, ipcMain: electronIpcMain, safeStorage, shell, protocol } = electron
 type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
@@ -87,7 +93,6 @@ const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const WORKSPACE_MUTATION_NOTIFY_DELAY_MS = 25
 const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
-const SAFE_STORAGE_KEY_PREFIX = 'safe-storage:v1:'
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -134,6 +139,16 @@ const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
   }
 }
 
+const aiCredentialStorage: SecureStringStorage = {
+  isEncryptionAvailable: () => isSecureStorageUsable(
+    safeStorage.isEncryptionAvailable(),
+    process.platform,
+    process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined
+  ),
+  encryptString: (value) => safeStorage.encryptString(value),
+  decryptString: (value) => safeStorage.decryptString(value)
+}
+
 const workspaceMutationNotifier = new CoalescedNotifier(() => {
   BrowserWindow.getAllWindows().forEach((window) => {
     if (!window.webContents.isDestroyed()) {
@@ -173,6 +188,14 @@ let servicesInitialized = false
 
 function initializeServices(): void {
   store = new KnowbookStore(databasePath)
+  try {
+    getDecryptedAiApiKey()
+  } catch (error) {
+    console.warn(
+      'The stored AI API key could not be verified or migrated.',
+      error instanceof Error ? error.message : 'Unknown credential storage error.'
+    )
+  }
   backupService = new MarkdownBackupService(store, backupRoot, webClipAssetRoot, runBackupExportInWorker)
   restoreService = new MarkdownRestoreService(store, webClipAssetRoot)
   workspaceEventBus = new WorkspaceEventBus()
@@ -199,11 +222,7 @@ function initializeServices(): void {
 }
 
 function protectAiApiKey(apiKey: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
-    return apiKey
-  }
-
-  return `${SAFE_STORAGE_KEY_PREFIX}${safeStorage.encryptString(apiKey).toString('base64')}`
+  return protectCredential(apiKey, aiCredentialStorage)
 }
 
 function getDecryptedAiApiKey(): string | null {
@@ -212,19 +231,11 @@ function getDecryptedAiApiKey(): string | null {
     return null
   }
 
-  if (!storedApiKey.startsWith(SAFE_STORAGE_KEY_PREFIX)) {
-    if (safeStorage.isEncryptionAvailable()) {
-      store.saveSetting('ai.apiKey', protectAiApiKey(storedApiKey))
-    }
-    return storedApiKey
+  const revealed = revealCredential(storedApiKey, aiCredentialStorage)
+  if (revealed.protectedValueToPersist) {
+    store.saveSetting('ai.apiKey', revealed.protectedValueToPersist)
   }
-
-  try {
-    return safeStorage.decryptString(Buffer.from(storedApiKey.slice(SAFE_STORAGE_KEY_PREFIX.length), 'base64'))
-  } catch (error) {
-    console.error('Failed to decrypt the stored AI API key.', error)
-    return null
-  }
+  return revealed.value
 }
 
 function formatRestorePreviewDetail(preview: BackupRestorePreview): string {
@@ -608,11 +619,12 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
+    const protectedApiKey = !input.clearApiKey && typeof input.apiKey === 'string' && input.apiKey.trim()
+      ? protectAiApiKey(input.apiKey.trim())
+      : undefined
     store.updateAiConfig({
       ...input,
-      apiKey: typeof input.apiKey === 'string' && input.apiKey.trim()
-        ? protectAiApiKey(input.apiKey.trim())
-        : input.apiKey
+      apiKey: protectedApiKey
     })
     if (!input.enabled || !input.autoSummaryOnSave) {
       cancelAllDocumentSummaryGeneration()

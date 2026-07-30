@@ -914,16 +914,20 @@ export class KnowbookStore {
   }
 
   updateAiConfig(input: UpdateAiConfigInput): void {
-    this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
-    this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
-    this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
-     this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
-     this.saveSetting('ai.relatedNotesEnabled', input.relatedNotesEnabled ? 'true' : 'false')
-    if (input.clearApiKey) {
-      this.deleteSetting('ai.apiKey')
-    } else if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
-      this.saveSetting('ai.apiKey', input.apiKey.trim())
-    }
+    const transaction = this.db.transaction(() => {
+      this.saveSetting('ai.enabled', input.enabled ? 'true' : 'false')
+      this.saveSetting('ai.baseUrl', input.baseUrl.trim() || 'https://api.openai.com/v1')
+      this.saveSetting('ai.model', input.model.trim() || 'gpt-4.1-mini')
+      this.saveSetting('ai.autoSummaryOnSave', input.autoSummaryOnSave ? 'true' : 'false')
+      this.saveSetting('ai.relatedNotesEnabled', input.relatedNotesEnabled ? 'true' : 'false')
+      if (input.clearApiKey) {
+        this.deleteSetting('ai.apiKey')
+      } else if (typeof input.apiKey === 'string' && input.apiKey.trim().length > 0) {
+        this.saveSetting('ai.apiKey', input.apiKey.trim())
+      }
+    })
+
+    transaction()
   }
 
   updateDocumentBlockTags(documentId: string, updates: Array<{ blockId: string, tags: string[] }>): void {
