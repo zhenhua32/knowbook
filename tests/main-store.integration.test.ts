@@ -286,6 +286,8 @@ test('document database columns and standalone entities stay isolated per databa
 
     const refreshedHome = store.getHomeData(backupRoot)
     const projectColumns = store.getDocumentDatabaseColumns(projectsDatabase.id)
+    const projectCatalog = store.getDocumentCatalog(projectsDatabase.id)
+    const projectCatalogEntity = projectCatalog.find((entry) => entry.id === projectEntity.id)
 
     assert.equal(refreshedHome.databaseColumns.some((column) => column.id === defaultColumn.id), true)
     assert.equal(refreshedHome.databaseColumns.some((column) => column.id === projectsColumn.id), false)
@@ -295,7 +297,40 @@ test('document database columns and standalone entities stay isolated per databa
     assert.equal(refreshedHome.databaseColumns.length, defaultDatabaseColumnsBefore.length + 1)
     assert.equal(projectEntity.documentId, null)
     assert.equal(projectEntity.fieldValues[projectsColumn.id], 'Alice')
+    assert.equal(projectCatalogEntity?.fieldValues[projectsColumn.id], 'Alice')
     assert.equal(store.getDatabaseEntities(projectsDatabase.id)[0]?.fieldValues[projectsColumn.id], 'Alice')
+  })
+})
+
+test('store installs indexes used by the home data projection', () => {
+  withStore((store) => {
+    const database = (store as unknown as {
+      db: {
+        prepare: (sql: string) => {
+          all: (...params: unknown[]) => Array<{ name: string }>
+        }
+      }
+    }).db
+    const indexes = new Set(
+      database.prepare(`
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name IN (
+            'idx_documents_updated_at',
+            'idx_database_entities_database_updated',
+            'idx_document_database_columns_database_sort',
+            'idx_document_database_values_column_id'
+          )
+      `).all().map((row) => row.name)
+    )
+
+    assert.deepEqual(indexes, new Set([
+      'idx_documents_updated_at',
+      'idx_database_entities_database_updated',
+      'idx_document_database_columns_database_sort',
+      'idx_document_database_values_column_id'
+    ]))
   })
 })
 

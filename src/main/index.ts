@@ -910,8 +910,8 @@ async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInp
 }
 
 async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
-  const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
+  const aiConfig = store.getAiConfigPublic()
+  if (!aiConfig.enabled) {
     throw new Error('AI is disabled. Enable AI in settings first.')
   }
 
@@ -921,7 +921,7 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
   }
 
    let relatedNotes: SemanticContextNote[] = []
-   if (home.aiConfig.relatedNotesEnabled) {
+   if (aiConfig.relatedNotesEnabled) {
      try {
        relatedNotes = await buildSemanticContextNotes({
          query: input.prompt,
@@ -936,10 +936,10 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
   const prompt = store.buildAiPrompt(input, relatedNotes)
   const answer = await requestAiChatCompletion({
     apiKey,
-    baseUrl: home.aiConfig.baseUrl,
+    baseUrl: aiConfig.baseUrl,
     emptyResponseMessage: 'AI returned an empty response.',
     failureLabel: 'AI request',
-    model: home.aiConfig.model,
+    model: aiConfig.model,
     systemPrompt: 'You are an assistant helping users organize and improve their notes.',
     temperature: 0.3,
     userPrompt: prompt
@@ -954,8 +954,8 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
 async function previewDocumentBlockAiEdit(
   input: PreviewDocumentBlockAiEditInput
 ): Promise<PreviewDocumentBlockAiEditResult> {
-  const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
+  const aiConfig = store.getAiConfigPublic()
+  if (!aiConfig.enabled) {
     throw new Error('AI is disabled. Enable AI in settings first.')
   }
 
@@ -968,10 +968,10 @@ async function previewDocumentBlockAiEdit(
   const prompt = store.buildDocumentBlockAiEditPrompt(input, resolvedInstruction)
   const replacementText = await requestAiChatCompletion({
     apiKey,
-    baseUrl: home.aiConfig.baseUrl,
+    baseUrl: aiConfig.baseUrl,
     emptyResponseMessage: 'AI returned an empty block edit response.',
     failureLabel: 'AI block edit request',
-    model: home.aiConfig.model,
+    model: aiConfig.model,
     systemPrompt: 'You transform selected note content. Return only the edited replacement content, with no meta commentary.',
     temperature: input.mode === 'table' ? 0.2 : 0.3,
     userPrompt: prompt
@@ -986,12 +986,12 @@ async function previewDocumentBlockAiEdit(
 }
 
 async function runDocumentAiAutomations(documentId: string): Promise<RunDocumentAiAutomationsResult> {
-  const home = store.getHomeData(backupRoot)
-  if (!home.aiConfig.enabled) {
+  const aiConfig = store.getAiConfigPublic()
+  if (!aiConfig.enabled) {
     throw new Error('AI is disabled. Enable AI in settings first.')
   }
 
-  if (!home.aiConfig.autoSummaryOnSave) {
+  if (!aiConfig.autoSummaryOnSave) {
     throw new Error('Auto summary is disabled. Enable summary automation in AI settings first.')
   }
 
@@ -1009,12 +1009,12 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
     summaryGenerated: false
   }
 
-  if (home.aiConfig.autoSummaryOnSave && shouldGenerateDocumentSummary(
+  if (aiConfig.autoSummaryOnSave && shouldGenerateDocumentSummary(
     detail.summary,
     detail.blocks.map((block) => block.content),
     DEFAULT_DOCUMENT_SUMMARY
   )) {
-    const generatedSummary = await generateDocumentSummaryDeduplicated(detail, home.aiConfig, apiKey)
+    const generatedSummary = await generateDocumentSummaryDeduplicated(detail, aiConfig, apiKey)
     if (generatedSummary && generatedSummary !== detail.summary.trim()) {
       const latestAiConfig = store.getAiConfigPublic()
       const updatedDetail = latestAiConfig.enabled && latestAiConfig.autoSummaryOnSave

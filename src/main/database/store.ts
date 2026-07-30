@@ -85,6 +85,10 @@ interface DocumentCatalogRow {
   child_count: number
 }
 
+interface HomeDocumentCatalogRow extends DocumentCatalogRow {
+  sort_order: number
+}
+
 interface DocumentDatabaseColumnRow {
   id: string
   database_id?: string | null
@@ -128,14 +132,6 @@ interface DatabaseEntityFieldValueRow {
   column_type: DocumentDatabaseColumnType
   options_json: string
   sort_order: number
-}
-
-interface DocumentTreeRow {
-  id: string
-  title: string
-  path: string
-  parent_id: string | null
-  updated_at: string
 }
 
 interface DocumentDetailRow {
@@ -356,22 +352,24 @@ export class KnowbookStore {
     this.ensureDocumentSortOrderColumn()
     this.ensureDatabaseEntities()
     this.ensureDatabaseEntityConstraints()
+    this.ensureHomeProjectionIndexes()
     this.seed()
     this.resyncLinksForAllDocuments()
   }
 
   getHomeData(backupRoot: string): HomeData {
     const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
-    const recentDocuments = this.getRecentDocuments()
-    const recentEvents = this.getRecentWorkspaceEvents()
-    const documentTree = this.getDocumentTree()
     const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
+    const documentRows = this.getHomeDocumentCatalogRows()
+    const recentDocuments = this.getRecentDocuments(documentRows)
+    const recentEvents = this.getRecentWorkspaceEvents()
+    const documentTree = this.buildDocumentTree(documentRows)
 
     return {
-      summary: this.getSummary(backupRoot),
+      summary: this.getSummary(backupRoot, documentRows),
       recentDocuments,
       recentEvents,
-      documentCatalog: this.getDocumentCatalog(defaultDatabaseId),
+      documentCatalog: this.buildDocumentCatalog(databaseColumns, defaultDatabaseId, documentRows),
       databaseColumns,
       aiConfig: this.getAiConfig(),
       documentTree,
@@ -381,7 +379,7 @@ export class KnowbookStore {
 
   getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {
     const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
-    return this.buildDocumentCatalog(databaseColumns, databaseId)
+    return this.buildDocumentCatalog(databaseColumns, databaseId, this.getHomeDocumentCatalogRows())
   }
 
   getIncrementalDocumentUpdate(
@@ -1746,30 +1744,63 @@ export class KnowbookStore {
     await this.db.backup(destinationPath)
   }
 
-  private getSummary(backupRoot: string): WorkspaceSummary {
-    const documents = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
-    const blocks = (this.db.prepare('SELECT COUNT(*) AS count FROM blocks').get() as CountRow).count
-    const links = (this.db.prepare('SELECT COUNT(*) AS count FROM links').get() as CountRow).count
+  private getSummary(
+    backupRoot: string,
+    documentRows?: DocumentCatalogRow[]
+  ): WorkspaceSummary {
+    const counts = documentRows
+      ? {
+          documents: documentRows.length,
+          blocks: documentRows.reduce((total, document) => total + document.block_count, 0),
+          links: documentRows.reduce((total, document) => total + document.link_count, 0)
+        }
+      : this.db.prepare(`
+          SELECT
+            (SELECT COUNT(*) FROM documents) AS documents,
+            (SELECT COUNT(*) FROM blocks) AS blocks,
+            (SELECT COUNT(*) FROM links) AS links
+        `).get() as Pick<WorkspaceSummary, 'documents' | 'blocks' | 'links'>
     const lastBackupAt = this.readSetting('backup.lastRunAt')
 
     return {
       databasePath: this.databasePath,
       backupRoot,
-      documents,
-      blocks,
-      links,
+      documents: counts.documents,
+      blocks: counts.blocks,
+      links: counts.links,
       lastBackupAt
     }
   }
 
-  private getRecentDocuments(): RecentDocument[] {
+  private getRecentDocuments(documentRows?: HomeDocumentCatalogRow[]): RecentDocument[] {
+    if (documentRows) {
+      return [...documentRows]
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+        .slice(0, 5)
+        .map((row) => ({
+          id: row.id,
+          title: row.title,
+          path: row.path,
+          updatedAt: row.updated_at,
+          blockCount: row.block_count
+        }))
+    }
+
     const rows = this.db.prepare(`
-      SELECT documents.id, documents.title, documents.path, documents.updated_at, COUNT(blocks.id) AS block_count
-      FROM documents
-      LEFT JOIN blocks ON blocks.document_id = documents.id
-      GROUP BY documents.id
-      ORDER BY documents.updated_at DESC
-      LIMIT 5
+      WITH recent_documents AS (
+        SELECT id, title, path, updated_at
+        FROM documents
+        ORDER BY updated_at DESC
+        LIMIT 5
+      )
+      SELECT
+        recent_documents.id,
+        recent_documents.title,
+        recent_documents.path,
+        recent_documents.updated_at,
+        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = recent_documents.id) AS block_count
+      FROM recent_documents
+      ORDER BY recent_documents.updated_at DESC
     `).all() as DocumentRow[]
 
     return rows.map((row) => ({
@@ -1799,9 +1830,25 @@ export class KnowbookStore {
     }))
   }
 
-  private buildDocumentCatalog(databaseColumns: DocumentDatabaseColumn[], defaultDatabaseId: string): DocumentCatalogEntry[] {
-    // 获取普通的文档条目
-    const documentRows = this.db.prepare(`
+  private getHomeDocumentCatalogRows(): HomeDocumentCatalogRow[] {
+    return this.db.prepare(`
+      WITH
+        block_counts AS (
+          SELECT document_id, COUNT(*) AS block_count
+          FROM blocks
+          GROUP BY document_id
+        ),
+        link_counts AS (
+          SELECT source_document_id, COUNT(*) AS link_count
+          FROM links
+          GROUP BY source_document_id
+        ),
+        child_counts AS (
+          SELECT parent_id, COUNT(*) AS child_count
+          FROM documents
+          WHERE parent_id IS NOT NULL
+          GROUP BY parent_id
+        )
       SELECT
         documents.id,
         documents.title,
@@ -1810,15 +1857,24 @@ export class KnowbookStore {
         documents.parent_id,
         parents.title AS parent_title,
         documents.updated_at,
-        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
-        (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
-        (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
+        documents.sort_order,
+        COALESCE(block_counts.block_count, 0) AS block_count,
+        COALESCE(link_counts.link_count, 0) AS link_count,
+        COALESCE(child_counts.child_count, 0) AS child_count
       FROM documents
       LEFT JOIN documents AS parents ON parents.id = documents.parent_id
+      LEFT JOIN block_counts ON block_counts.document_id = documents.id
+      LEFT JOIN link_counts ON link_counts.source_document_id = documents.id
+      LEFT JOIN child_counts ON child_counts.parent_id = documents.id
       ORDER BY documents.path ASC
-    `).all() as DocumentCatalogRow[]
-    
-    // 获取数据库条目（没有关联文档的实体）
+    `).all() as HomeDocumentCatalogRow[]
+  }
+
+  private buildDocumentCatalog(
+    databaseColumns: DocumentDatabaseColumn[],
+    defaultDatabaseId: string,
+    documentRows: DocumentCatalogRow[]
+  ): DocumentCatalogEntry[] {
     const entityRows = this.db.prepare(`
       SELECT
         de.id,
@@ -1849,33 +1905,53 @@ export class KnowbookStore {
     }>
     
     const allRows = [...documentRows, ...entityRows]
+    const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
+    const fieldRows = this.db.prepare(`
+      SELECT
+        NULL AS entity_id,
+        values_table.document_id,
+        values_table.column_id,
+        values_table.value_text
+      FROM document_database_values AS values_table
+      INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+      WHERE values_table.entity_id IS NULL
+        AND columns_table.database_id = ?
 
-     const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
-     const fieldRows = this.db.prepare(`
-       SELECT entity_id, document_id, column_id, value_text
-       FROM document_database_values
-       ORDER BY entity_id ASC, document_id ASC, column_id ASC
-     `).all() as Array<{
-       entity_id: string | null
-       document_id: string | null
-       column_id: string
-       value_text: string | null
-     }>
-     const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
-     const allRowIds = new Set(allRows.map((row) => row.id))
+      UNION ALL
 
-     for (const row of fieldRows) {
-       const targetId = row.entity_id ?? row.document_id
-       if (!targetId || !allRowIds.has(targetId)) continue
-       const column = columnById.get(row.column_id)
-       if (!column) {
-         continue
-       }
+      SELECT
+        values_table.entity_id,
+        NULL AS document_id,
+        values_table.column_id,
+        values_table.value_text
+      FROM database_entity_values AS values_table
+      INNER JOIN database_entities AS entities_table ON entities_table.id = values_table.entity_id
+      INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+      WHERE entities_table.database_id = ?
+        AND columns_table.database_id = ?
 
-       const fieldValues = fieldValuesByDocumentId.get(targetId) ?? {}
-       fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
-       fieldValuesByDocumentId.set(targetId, fieldValues)
-     }
+      ORDER BY entity_id ASC, document_id ASC, column_id ASC
+    `).all(defaultDatabaseId, defaultDatabaseId, defaultDatabaseId) as Array<{
+      entity_id: string | null
+      document_id: string | null
+      column_id: string
+      value_text: string | null
+    }>
+    const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
+    const allRowIds = new Set(allRows.map((row) => row.id))
+
+    for (const row of fieldRows) {
+      const targetId = row.entity_id ?? row.document_id
+      if (!targetId || !allRowIds.has(targetId)) continue
+      const column = columnById.get(row.column_id)
+      if (!column) {
+        continue
+      }
+
+      const fieldValues = fieldValuesByDocumentId.get(targetId) ?? {}
+      fieldValues[row.column_id] = this.parseDocumentDatabaseFieldValue(column, row.value_text)
+      fieldValuesByDocumentId.set(targetId, fieldValues)
+    }
 
     return allRows.map((row) => ({
       id: row.id,
@@ -1903,17 +1979,11 @@ export class KnowbookStore {
     return rows.map((row) => this.mapDocumentDatabaseColumnRow(row))
   }
 
-  private getDocumentTree(): DocumentTreeNode[] {
+  private buildDocumentTree(rows: HomeDocumentCatalogRow[]): DocumentTreeNode[] {
     interface TreeBuilderNode extends DocumentTreeNode {
       parentId: string | null
       sort_order: number
     }
-
-    const rows = this.db.prepare(`
-      SELECT id, title, path, parent_id, updated_at, sort_order
-      FROM documents
-      ORDER BY parent_id, sort_order ASC
-    `).all() as (DocumentTreeRow & { sort_order: number })[]
 
     const nodeMap = new Map<string, TreeBuilderNode>()
     const roots: TreeBuilderNode[] = []
@@ -2818,6 +2888,19 @@ export class KnowbookStore {
       BEGIN
         SELECT RAISE(ABORT, 'A database entity already exists for this document in this database.');
       END;
+    `)
+  }
+
+  private ensureHomeProjectionIndexes(): void {
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_documents_updated_at
+        ON documents(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_database_entities_database_updated
+        ON database_entities(database_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_document_database_columns_database_sort
+        ON document_database_columns(database_id, sort_order, name);
+      CREATE INDEX IF NOT EXISTS idx_document_database_values_column_id
+        ON document_database_values(column_id);
     `)
   }
 
