@@ -1528,6 +1528,25 @@ export class KnowbookStore {
     return this.readSetting(key)
   }
 
+  getSettingsByPrefix(prefix: string): Record<string, string> {
+    const rows = this.db.prepare(`
+      SELECT key, value
+      FROM app_settings
+      WHERE substr(key, 1, ?) = ?
+    `).all(prefix.length, prefix) as Array<{ key: string; value: string }>
+
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]))
+  }
+
+  getPluginWorkspaceDocuments(): DocumentDetail[] {
+    const rows = this.db.prepare('SELECT id FROM documents ORDER BY sort_order ASC, created_at ASC')
+      .all() as Array<{ id: string }>
+
+    return rows
+      .map((row) => this.getDocumentDetail(row.id))
+      .filter((document): document is DocumentDetail => document !== null)
+  }
+
   findDocumentIdsByDatabaseValue(columnId: string, value: DocumentDatabaseFieldValue): string[] {
     const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     const columnRow = this.db.prepare(`

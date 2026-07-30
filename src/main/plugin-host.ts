@@ -25,6 +25,13 @@ export type { PluginApi } from './plugin-sdk'
 import type { KnowbookStore } from './database/store'
 import type { WorkspaceEvent } from './event-bus'
 import { isPluginVersionCompatible, getVersionCompatibilityMessage } from './plugin-version'
+import type {
+  IsolatedPluginRuntime,
+  IsolatedPluginRuntimeFactory,
+  PluginRuntimeEffect,
+  PluginRuntimeOutput,
+  PluginRuntimeState
+} from './plugin-runtime-protocol'
 
 type PluginDashboardCardInput = {
   id: string
@@ -67,6 +74,7 @@ type RegisteredPlugin = {
   runtimeTimers: Map<number, ReturnType<typeof setTimeout>>
   dispose?: () => void
   context?: vm.Context
+  isolatedRuntime?: IsolatedPluginRuntime
 }
 
 type PluginCommonJsModule = {
@@ -127,12 +135,20 @@ type PluginInvocationOptions = {
   resultMode?: 'raw' | 'json'
 }
 
+type PluginHostOptions = {
+  runtimeFactory?: IsolatedPluginRuntimeFactory
+  pluginIdFilter?: string
+  onStateChanged?: () => void
+}
+
 const PLUGIN_SYNC_TIMEOUT_MS = 1_000
 const PLUGIN_RESULT_MAX_BYTES = 1_000_000
 const PLUGIN_MANIFEST_MAX_BYTES = 64_000
 const PLUGIN_SOURCE_MAX_BYTES = 2_000_000
 const PLUGIN_CONTRIBUTION_LIMIT = 100
 const PLUGIN_TIMER_LIMIT = 100
+const PLUGIN_RUNTIME_EFFECT_LIMIT = 500
+const PLUGIN_RUNTIME_TEXT_MAX_BYTES = 1_000_000
 
 export type PluginInstallPreview = {
   manifest: PluginManifest
@@ -149,7 +165,8 @@ export class PluginHost {
     private readonly store: KnowbookStore,
     private readonly roots: Array<{ path: string; source: PluginSource }>,
     private readonly currentVersion = '0.1.2',
-    private readonly onWorkspaceMutation: ((documentId: string) => void) | null = null
+    private readonly onWorkspaceMutation: ((documentId: string) => void) | null = null,
+    private readonly options: PluginHostOptions = {}
   ) {}
 
   async loadAll(): Promise<void> {
@@ -462,12 +479,43 @@ export class PluginHost {
       throw new Error('Plugin setting not found.')
     }
 
+    if (plugin.isolatedRuntime) {
+      const runtime = plugin.isolatedRuntime
+      try {
+        const output = await runtime.updateSetting(settingId, value)
+        if (plugin.isolatedRuntime === runtime) {
+          this.applyIsolatedOutput(plugin, output)
+        }
+      } catch (error) {
+        this.failIsolatedPlugin(plugin, runtime, `setting update ${settingId}`, error)
+        throw new Error(this.getPluginErrorMessage(plugin, error, 'Plugin setting update failed.'))
+      }
+      return
+    }
+
     setting.setValue(value)
   }
 
   async handleWorkspaceEvent(event: WorkspaceEvent): Promise<void> {
     for (const plugin of this.plugins.values()) {
       if (plugin.status !== 'running') {
+        continue
+      }
+
+      if (plugin.isolatedRuntime) {
+        const runtime = plugin.isolatedRuntime
+        try {
+          const output = await runtime.handleWorkspaceEvent(
+            event,
+            this.getWorkspaceEventDocuments(event),
+            event.type === 'document.deleted' ? [event.documentId] : []
+          )
+          if (plugin.isolatedRuntime === runtime) {
+            this.applyIsolatedOutput(plugin, output)
+          }
+        } catch (error) {
+          this.failIsolatedPlugin(plugin, runtime, `workspace event ${event.type}`, error)
+        }
         continue
       }
 
@@ -499,6 +547,31 @@ export class PluginHost {
     const document = this.store.getDocumentDetail(input.documentId)
     if (!document) {
       throw new Error('Document not found.')
+    }
+
+    if (plugin.isolatedRuntime) {
+      const runtime = plugin.isolatedRuntime
+      let output: PluginRuntimeOutput<RunPluginDocumentActionResult>
+      try {
+        output = await runtime.runDocumentAction(input.actionId, document)
+      } catch (error) {
+        throw new Error(this.getPluginErrorMessage(plugin, error, 'Unknown plugin action error.'))
+      }
+
+      if (plugin.isolatedRuntime !== runtime) {
+        throw new Error('Plugin runtime stopped before the action completed.')
+      }
+
+      try {
+        this.applyIsolatedOutput(plugin, output)
+        if (!output.result) {
+          throw new Error('Plugin action did not return a result.')
+        }
+        return output.result
+      } catch (error) {
+        this.failIsolatedPlugin(plugin, runtime, `document action ${action.action.id}`, error)
+        throw new Error(this.getPluginErrorMessage(plugin, error, 'Unknown plugin action error.'))
+      }
     }
 
     try {
@@ -557,6 +630,9 @@ export class PluginHost {
 
         try {
           const manifest = this.parseManifest(manifestPath)
+          if (this.options.pluginIdFilter && manifest.id !== this.options.pluginIdFilter) {
+            continue
+          }
           if (seenPluginIds.has(manifest.id)) {
             console.warn(`Skipping duplicate plugin id "${manifest.id}" from ${directoryPath}.`)
             continue
@@ -790,7 +866,7 @@ export class PluginHost {
   }
 
   private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {
-    if (plugin.context) {
+    if (plugin.context || plugin.isolatedRuntime) {
       await this.deactivatePlugin(plugin)
     }
     plugin.status = 'disabled'
@@ -801,6 +877,11 @@ export class PluginHost {
       const message = getVersionCompatibilityMessage(plugin.manifest, this.currentVersion)
       plugin.status = 'error'
       plugin.error = message ?? 'Version compatibility check failed'
+      return
+    }
+
+    if (this.options.runtimeFactory) {
+      await this.activateIsolatedPlugin(plugin, recordLoadEvent)
       return
     }
 
@@ -919,6 +1000,27 @@ export class PluginHost {
   }
 
   private async deactivatePlugin(plugin: RegisteredPlugin): Promise<void> {
+    if (plugin.isolatedRuntime) {
+      const runtime = plugin.isolatedRuntime
+      plugin.isolatedRuntime = undefined
+      try {
+        await runtime.dispose()
+      } catch (error) {
+        console.error(
+          `Plugin ${plugin.manifest.id} isolated runtime dispose failed.`,
+          this.getPluginErrorMessage(plugin, error, 'Unknown dispose error.')
+        )
+      }
+
+      plugin.dashboardCards.clear()
+      plugin.documentActions.clear()
+      plugin.eventHandlers = []
+      if (plugin.status === 'running') {
+        plugin.status = 'disabled'
+      }
+      return
+    }
+
     if (plugin.dispose) {
       try {
         await this.invokePluginFunction(plugin, plugin.dispose, [], 'dispose')
@@ -1559,6 +1661,273 @@ export class PluginHost {
     plugin.settings.clear()
     plugin.eventHandlers = []
     console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, errorMessage)
+  }
+
+  private async activateIsolatedPlugin(plugin: RegisteredPlugin, recordLoadEvent: boolean): Promise<void> {
+    const runtimeFactory = this.options.runtimeFactory
+    if (!runtimeFactory) {
+      throw new Error('Isolated plugin runtime factory is unavailable.')
+    }
+
+    plugin.dashboardCards.clear()
+    plugin.documentActions.clear()
+    plugin.settings.clear()
+    plugin.eventHandlers = []
+
+    let runtime: IsolatedPluginRuntime
+    try {
+      runtime = runtimeFactory(plugin.manifest.id)
+    } catch (error) {
+      plugin.status = 'error'
+      plugin.error = this.getPluginErrorMessage(plugin, error, 'Failed to create isolated plugin runtime.')
+      return
+    }
+
+    plugin.isolatedRuntime = runtime
+    runtime.onStateChanged((output) => {
+      if (plugin.isolatedRuntime !== runtime) {
+        return
+      }
+      try {
+        this.applyIsolatedOutput(plugin, output)
+      } catch (error) {
+        this.failIsolatedPlugin(plugin, runtime, 'runtime state synchronization', error)
+      }
+    })
+    runtime.onFailure((error) => {
+      this.failIsolatedPlugin(plugin, runtime, 'utility process', error)
+    })
+
+    try {
+      const output = await runtime.initialize({
+        pluginId: plugin.manifest.id,
+        directory: plugin.directory,
+        source: plugin.source,
+        currentVersion: this.currentVersion,
+        settings: this.store.getSettingsByPrefix('plugin.'),
+        documents: this.store.getPluginWorkspaceDocuments(),
+        recordLoadEvent
+      })
+      if (plugin.isolatedRuntime !== runtime) {
+        return
+      }
+      this.applyIsolatedOutput(plugin, output)
+      if (plugin.status !== 'running') {
+        plugin.isolatedRuntime = undefined
+        await runtime.dispose().catch(() => undefined)
+      }
+    } catch (error) {
+      this.failIsolatedPlugin(plugin, runtime, 'activation', error)
+    }
+  }
+
+  private applyIsolatedOutput(plugin: RegisteredPlugin, output: PluginRuntimeOutput): void {
+    this.applyIsolatedEffects(plugin, output.effects)
+    this.applyIsolatedState(plugin, output.state)
+    if (plugin.status === 'error' && plugin.isolatedRuntime) {
+      const runtime = plugin.isolatedRuntime
+      plugin.isolatedRuntime = undefined
+      void runtime.dispose().catch(() => undefined)
+    }
+  }
+
+  private applyIsolatedEffects(plugin: RegisteredPlugin, effects: PluginRuntimeEffect[]): void {
+    if (!Array.isArray(effects) || effects.length > PLUGIN_RUNTIME_EFFECT_LIMIT) {
+      throw new Error(`Plugin runtime effect limit exceeded (${PLUGIN_RUNTIME_EFFECT_LIMIT}).`)
+    }
+
+    for (const effect of effects) {
+      if (effect.type === 'setting.saved') {
+        if (!effect.key.startsWith(`plugin.setting.${plugin.manifest.id}.`)) {
+          throw new Error('Plugin runtime attempted to write an unauthorized setting key.')
+        }
+        this.requireIsolatedRuntimeText(effect.value, 'setting value')
+        this.store.saveSetting(effect.key, effect.value)
+        continue
+      }
+      if (effect.type === 'document.summary.updated') {
+        this.requireIsolatedRuntimeText(effect.documentId, 'document id', 1_000)
+        this.requireIsolatedRuntimeText(effect.summary, 'document summary')
+        this.store.updateDocumentSummary(effect.documentId, effect.summary)
+        this.onWorkspaceMutation?.(effect.documentId)
+        continue
+      }
+      if (
+        effect.type !== 'workspace-event.recorded'
+        || !['plugin.loaded', 'plugin.action.executed', 'plugin.action.failed'].includes(effect.event.type)
+      ) {
+        throw new Error('Plugin runtime attempted to record an unauthorized workspace event.')
+      }
+      this.requireIsolatedRuntimeText(effect.event.title, 'workspace event title', 10_000)
+      this.requireIsolatedRuntimeText(effect.event.description, 'workspace event description')
+      if (effect.event.documentId) {
+        this.requireIsolatedRuntimeText(effect.event.documentId, 'workspace event document id', 1_000)
+      }
+      if (effect.event.createdAt) {
+        this.requireIsolatedRuntimeText(effect.event.createdAt, 'workspace event timestamp', 100)
+      }
+      this.store.recordWorkspaceEvent(effect.event)
+    }
+  }
+
+  private applyIsolatedState(plugin: RegisteredPlugin, state: PluginRuntimeState): void {
+    if (!['running', 'disabled', 'error'].includes(state.status)) {
+      throw new Error('Plugin runtime returned an invalid status.')
+    }
+    if (
+      !Array.isArray(state.dashboardCards)
+      || !Array.isArray(state.documentActions)
+      || !Array.isArray(state.settings)
+      || state.dashboardCards.length > PLUGIN_CONTRIBUTION_LIMIT
+      || state.documentActions.length > PLUGIN_CONTRIBUTION_LIMIT
+      || state.settings.length > PLUGIN_CONTRIBUTION_LIMIT
+    ) {
+      throw new Error(`Plugin runtime contribution limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
+    }
+
+    plugin.status = state.status
+    plugin.error = state.error
+      ? this.requireIsolatedRuntimeText(state.error, 'plugin error', 10_000)
+      : undefined
+
+    plugin.dashboardCards.clear()
+    for (const descriptor of state.dashboardCards) {
+      this.requireMatchingIsolatedPluginId(plugin, descriptor.pluginId)
+      this.requireIsolatedRuntimeText(descriptor.id, 'dashboard card id', 1_000)
+      this.requireIsolatedRuntimeText(descriptor.title, 'dashboard card title', 10_000)
+      this.requireIsolatedRuntimeText(descriptor.body, 'dashboard card body')
+      const card: RegisteredDashboardCard = {
+        ...descriptor,
+        update: () => undefined
+      }
+      plugin.dashboardCards.set(card.id, card)
+    }
+
+    plugin.documentActions.clear()
+    for (const descriptor of state.documentActions) {
+      this.requireMatchingIsolatedPluginId(plugin, descriptor.pluginId)
+      this.requireIsolatedRuntimeText(descriptor.id, 'document action id', 1_000)
+      this.requireIsolatedRuntimeText(descriptor.label, 'document action label', 10_000)
+      if (descriptor.description) {
+        this.requireIsolatedRuntimeText(descriptor.description, 'document action description', 100_000)
+      }
+      plugin.documentActions.set(descriptor.id, {
+        action: { ...descriptor },
+        handler: () => {
+          throw new Error('Isolated plugin actions must be invoked through the runtime bridge.')
+        }
+      })
+    }
+
+    plugin.settings.clear()
+    for (const descriptor of state.settings) {
+      this.requireMatchingIsolatedPluginId(plugin, descriptor.pluginId)
+      this.requireIsolatedRuntimeText(descriptor.id, 'setting id', 1_000)
+      this.requireIsolatedRuntimeText(descriptor.label, 'setting label', 10_000)
+      if (descriptor.description) {
+        this.requireIsolatedRuntimeText(descriptor.description, 'setting description', 100_000)
+      }
+      if (!['text', 'checkbox', 'select'].includes(descriptor.type)) {
+        throw new Error('Plugin runtime returned an invalid setting type.')
+      }
+      if (
+        descriptor.options
+        && (!Array.isArray(descriptor.options) || descriptor.options.length > PLUGIN_CONTRIBUTION_LIMIT)
+      ) {
+        throw new Error(`Plugin setting option limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
+      }
+      if (descriptor.type === 'select' && (!descriptor.options || descriptor.options.length === 0)) {
+        throw new Error('Plugin select setting requires options.')
+      }
+      this.requireIsolatedSettingValue(descriptor.type, descriptor.value, 'setting value')
+      this.requireIsolatedSettingValue(descriptor.type, descriptor.defaultValue, 'setting default value')
+      for (const option of descriptor.options ?? []) {
+        this.requireIsolatedRuntimeText(option.value, 'setting option value', 10_000)
+        this.requireIsolatedRuntimeText(option.label, 'setting option label', 10_000)
+      }
+      const setting: RegisteredPluginSetting = {
+        ...descriptor,
+        options: descriptor.options ? descriptor.options.map((option) => ({ ...option })) : undefined,
+        getValue: () => setting.value,
+        setValue: (value) => {
+          setting.value = value
+        }
+      }
+      plugin.settings.set(setting.id, setting)
+    }
+
+    if (state.status !== 'running') {
+      plugin.dashboardCards.clear()
+      plugin.documentActions.clear()
+      plugin.eventHandlers = []
+    }
+    this.options.onStateChanged?.()
+  }
+
+  private requireMatchingIsolatedPluginId(plugin: RegisteredPlugin, pluginId: string): void {
+    if (pluginId !== plugin.manifest.id) {
+      throw new Error('Plugin runtime returned a contribution for another plugin.')
+    }
+  }
+
+  private requireIsolatedRuntimeText(value: string, label: string, maxBytes = PLUGIN_RUNTIME_TEXT_MAX_BYTES): string {
+    if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > maxBytes) {
+      throw new Error(`Plugin runtime ${label} is invalid or too large.`)
+    }
+    return value
+  }
+
+  private requireIsolatedSettingValue(
+    type: PluginSettingType,
+    value: PluginSettingValue,
+    label: string
+  ): void {
+    if (type === 'checkbox') {
+      if (typeof value !== 'boolean') {
+        throw new Error(`Plugin runtime ${label} must be a boolean.`)
+      }
+      return
+    }
+    this.requireIsolatedRuntimeText(value as string, label)
+  }
+
+  private getWorkspaceEventDocuments(event: WorkspaceEvent): DocumentDetail[] {
+    const documentIds = new Set<string>()
+    if (event.type !== 'ai.config.updated' && event.type !== 'document.deleted') {
+      documentIds.add(event.documentId)
+    }
+    if ('affectedDocumentIds' in event) {
+      for (const documentId of event.affectedDocumentIds) {
+        documentIds.add(documentId)
+      }
+    }
+
+    return [...documentIds]
+      .map((documentId) => this.store.getDocumentDetail(documentId))
+      .filter((document): document is DocumentDetail => document !== null)
+  }
+
+  private failIsolatedPlugin(
+    plugin: RegisteredPlugin,
+    runtime: IsolatedPluginRuntime,
+    phase: string,
+    error: unknown
+  ): void {
+    if (plugin.isolatedRuntime !== runtime) {
+      return
+    }
+
+    const errorMessage = this.getPluginErrorMessage(plugin, error, `Unknown error during ${phase}.`)
+    plugin.isolatedRuntime = undefined
+    plugin.status = 'error'
+    plugin.error = errorMessage
+    plugin.dashboardCards.clear()
+    plugin.documentActions.clear()
+    plugin.settings.clear()
+    plugin.eventHandlers = []
+    void runtime.dispose().catch(() => undefined)
+    this.options.onStateChanged?.()
+    console.error(`Plugin ${plugin.manifest.id} failed during isolated ${phase}.`, errorMessage)
   }
 
   private getPluginErrorMessage(plugin: RegisteredPlugin, error: unknown, fallback: string): string {

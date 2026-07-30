@@ -221,4 +221,50 @@ test.describe('Plugin System @electron', () => {
       await expect(getSummaryInput(page)).toHaveValue(initialSeedTitle)
     })
   })
+
+  test('runs plugins in a dedicated utility process and contains process failure', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ app, page }) => {
+      await enableActivityPulse(page)
+
+      await expect.poll(async () => app.evaluate(({ app: electronApp }) => {
+        const pluginProcess = electronApp.getAppMetrics().find(
+          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
+            || metric.name === 'KnowBook Plugin: activity-pulse'
+        )
+        return Boolean(pluginProcess)
+      })).toBe(true)
+
+      const isolatedProcess = await app.evaluate(({ app: electronApp }) => {
+        const browserProcess = electronApp.getAppMetrics().find((metric) => metric.type === 'Browser')
+        const pluginProcess = electronApp.getAppMetrics().find(
+          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
+            || metric.name === 'KnowBook Plugin: activity-pulse'
+        )
+        return pluginProcess && browserProcess
+          ? { pluginPid: pluginProcess.pid, browserPid: browserProcess.pid }
+          : null
+      })
+      expect(isolatedProcess).not.toBeNull()
+      expect(isolatedProcess?.pluginPid).not.toBe(isolatedProcess?.browserPid)
+
+      await app.evaluate(({ app: electronApp }) => {
+        const pluginProcess = electronApp.getAppMetrics().find(
+          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
+            || metric.name === 'KnowBook Plugin: activity-pulse'
+        )
+        if (!pluginProcess) {
+          throw new Error('Plugin utility process was not found.')
+        }
+        process.kill(pluginProcess.pid)
+      })
+
+      await expect(getPluginItem(page).locator('.plugin-status-error')).toBeVisible()
+      await openDashboardPage(page)
+      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })).toHaveCount(0)
+      await openDocumentsPage(page)
+      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
+    })
+  })
 })

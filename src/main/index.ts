@@ -69,6 +69,7 @@ import { MarkdownRestoreService } from './backup/importer'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
+import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
@@ -179,7 +180,10 @@ function initializeServices(): void {
   pluginHost = new PluginHost(store, [
     { path: join(process.cwd(), 'plugins'), source: 'workspace' },
     { path: join(userDataRoot, 'plugins'), source: 'user-data' }
-  ], app.getVersion(), () => notifyWorkspaceMutation())
+  ], app.getVersion(), () => notifyWorkspaceMutation(), {
+    runtimeFactory: (pluginId) => new ElectronPluginRuntime(pluginId),
+    onStateChanged: () => notifyWorkspaceMutation()
+  })
   appUpdateManager = new AppUpdateManager()
   servicesInitialized = true
 }
