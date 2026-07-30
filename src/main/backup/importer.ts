@@ -68,6 +68,14 @@ type PreparedRestoreSources = {
   sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
 }
 
+type DocumentSnapshot = ReturnType<KnowbookStore['getAllDocumentSnapshots']>[number]
+
+export type ParsedBackupDocument = ReturnType<typeof parseMarkdownBackupDocument>
+
+export type RestoreMarkdownParseRunner = (
+  markdownSources: string[]
+) => Promise<ParsedBackupDocument[]>
+
 export type MarkdownRestoreLimits = {
   maxEntries: number
   maxDepth: number
@@ -105,13 +113,19 @@ const DEFAULT_RESTORE_LIMITS: MarkdownRestoreLimits = {
   maxAssetTotalBytes: 500 * 1024 * 1024
 }
 
+const parseRestoreMarkdownInProcess: RestoreMarkdownParseRunner = async (markdownSources) => (
+  markdownSources.map((markdown) => parseMarkdownBackupDocument(markdown))
+)
+
 export class MarkdownRestoreService {
   private readonly limits: MarkdownRestoreLimits
+  private activeRestore: Promise<BackupRestoreResult> | null = null
 
   constructor(
     private readonly store: KnowbookStore,
     private readonly assetRoot?: string,
-    limits: Partial<MarkdownRestoreLimits> = {}
+    limits: Partial<MarkdownRestoreLimits> = {},
+    private readonly parseMarkdownSources: RestoreMarkdownParseRunner = parseRestoreMarkdownInProcess
   ) {
     this.limits = {
       ...DEFAULT_RESTORE_LIMITS,
@@ -125,13 +139,16 @@ export class MarkdownRestoreService {
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
     } = await this.prepareRestoreSources(root, false)
+    const snapshots = this.store.getAllDocumentSnapshots()
+    const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
+    const snapshotsByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]))
     const restoredDocumentIds = new Set<string>()
     let created = 0
     let updated = 0
 
     for (const source of sourceDocuments) {
-      const existingById = source.sourceDocumentId ? this.store.getDocumentSnapshot(source.sourceDocumentId) : null
-      const existing = existingById ?? this.store.getDocumentSnapshotByPath(source.documentPath)
+      const existingById = source.sourceDocumentId ? snapshotsById.get(source.sourceDocumentId) : null
+      const existing = existingById ?? snapshotsByPath.get(source.documentPath)
       if (existing) {
         updated += 1
         restoredDocumentIds.add(existing.id)
@@ -151,10 +168,10 @@ export class MarkdownRestoreService {
       created,
       updated,
       deleted: sourceStandaloneDatabaseManifest
-        ? this.findMissingDocuments(sourceDocuments, restoredDocumentIds).length
+        ? this.findMissingDocuments(sourceDocuments, restoredDocumentIds, snapshots).length
         : 0,
-      conflictsResolved: this.countResolvableConflicts(sourceDocuments),
-      placeholdersCreated: this.countMissingParentPlaceholders(sourceDocuments),
+      conflictsResolved: this.countResolvableConflicts(sourceDocuments, snapshots),
+      placeholdersCreated: this.countMissingParentPlaceholders(sourceDocuments, snapshots),
       standaloneDatabases: sourceStandaloneDatabases.length,
       standaloneDatabasesCreated: standaloneDatabaseChanges.created,
       standaloneDatabasesUpdated: standaloneDatabaseChanges.updated,
@@ -163,6 +180,22 @@ export class MarkdownRestoreService {
   }
 
   async restoreFromDirectory(root: string): Promise<BackupRestoreResult> {
+    if (this.activeRestore) {
+      throw new Error('A restore operation is already in progress.')
+    }
+
+    const operation = this.performRestoreFromDirectory(root)
+    this.activeRestore = operation
+    try {
+      return await operation
+    } finally {
+      if (this.activeRestore === operation) {
+        this.activeRestore = null
+      }
+    }
+  }
+
+  private async performRestoreFromDirectory(root: string): Promise<BackupRestoreResult> {
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
@@ -213,10 +246,37 @@ export class MarkdownRestoreService {
       assetPaths: new Set(),
       assetBytes: 0
     }
-    const sourceFiles: RestoreSourceFile[] = []
+    const sourceInputs: Array<{
+      filePath: string
+      relativePath: string
+      markdown: string
+    }> = []
     for (const filePath of markdownFiles) {
-      sourceFiles.push(await this.parseSourceFile(root, filePath, restoreAssets, budget))
+      const relativePath = relative(root, filePath)
+        .replace(/\\/g, '/')
+        .replace(/\.md$/i, '')
+      const sourceMarkdown = await readFile(filePath, 'utf8')
+      const markdown = await this.restorePortableAssetReferences(
+        root,
+        filePath,
+        sourceMarkdown,
+        restoreAssets,
+        budget
+      )
+      sourceInputs.push({ filePath, relativePath, markdown })
     }
+
+    const parsedDocuments = await this.parseMarkdownSources(
+      sourceInputs.map((source) => source.markdown)
+    )
+    if (parsedDocuments.length !== sourceInputs.length) {
+      throw new Error('Restore Markdown parser returned an incomplete result.')
+    }
+    const sourceFiles = sourceInputs.map((source, index) => this.buildRestoreSourceFile(
+      source.filePath,
+      source.relativePath,
+      parsedDocuments[index] as ParsedBackupDocument
+    ))
     const sourceDocuments = sourceFiles
       .filter((source): source is RestoreSourceDocument => source.kind === 'document')
       .sort((left, right) => {
@@ -308,19 +368,11 @@ export class MarkdownRestoreService {
     return files
   }
 
-  private async parseSourceFile(
-    root: string,
+  private buildRestoreSourceFile(
     filePath: string,
-    restoreAssets: boolean,
-    budget: RestoreReadBudget
-  ): Promise<RestoreSourceFile> {
-    const relativePath = relative(root, filePath)
-      .replace(/\\/g, '/')
-      .replace(/\.md$/i, '')
-    const sourceMarkdown = await readFile(filePath, 'utf8')
-    const markdown = await this.restorePortableAssetReferences(root, filePath, sourceMarkdown, restoreAssets, budget)
-    const parsed = parseMarkdownBackupDocument(markdown)
-
+    relativePath: string,
+    parsed: ParsedBackupDocument
+  ): RestoreSourceFile {
     if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
       return this.parseSourceStandaloneDatabase(filePath, parsed)
     }
@@ -1176,8 +1228,10 @@ export class MarkdownRestoreService {
     }
   }
 
-  private countResolvableConflicts(sourceDocuments: RestoreSourceDocument[]): number {
-    const snapshots = this.store.getAllDocumentSnapshots()
+  private countResolvableConflicts(
+    sourceDocuments: RestoreSourceDocument[],
+    snapshots: DocumentSnapshot[] = this.store.getAllDocumentSnapshots()
+  ): number {
     const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
     const snapshotsByPath = new Map<string, Array<{ id: string; title: string; path: string; parentId: string | null }>>()
 
@@ -1208,8 +1262,11 @@ export class MarkdownRestoreService {
     return conflicts
   }
 
-  private countMissingParentPlaceholders(sourceDocuments: RestoreSourceDocument[]): number {
-    const availablePaths = new Set(this.store.getAllDocumentSnapshots().map((snapshot) => snapshot.path))
+  private countMissingParentPlaceholders(
+    sourceDocuments: RestoreSourceDocument[],
+    snapshots: DocumentSnapshot[] = this.store.getAllDocumentSnapshots()
+  ): number {
+    const availablePaths = new Set(snapshots.map((snapshot) => snapshot.path))
     const sourcePaths = new Set(sourceDocuments.map((source) => source.documentPath))
     const placeholderPaths = new Set<string>()
 
@@ -1275,12 +1332,12 @@ export class MarkdownRestoreService {
 
   private findMissingDocuments(
     sourceDocuments: RestoreSourceDocument[],
-    restoredDocumentIds: Set<string>
-  ): Array<{ id: string; title: string; path: string; parentId: string | null }> {
+    restoredDocumentIds: Set<string>,
+    snapshots: DocumentSnapshot[] = this.store.getAllDocumentSnapshots()
+  ): DocumentSnapshot[] {
     const sourcePaths = new Set(sourceDocuments.map((source) => source.documentPath))
     const scopePaths = [...new Set(sourceDocuments.map((source) => source.restoreScopePath))]
-    return this.store
-      .getAllDocumentSnapshots()
+    return snapshots
       .filter((snapshot) => !restoredDocumentIds.has(snapshot.id))
       .filter((snapshot) => this.isWithinRestoreScope(snapshot.path, scopePaths, sourcePaths))
       .sort((left, right) => {

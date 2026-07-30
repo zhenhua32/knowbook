@@ -66,6 +66,7 @@ import {
 import { MarkdownBackupService } from './backup/exporter'
 import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
+import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
@@ -185,6 +186,7 @@ let webClipBridge: WebClipBridgeService
 let pluginHost: PluginHost
 let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
+let restoreWorkflowInProgress = false
 
 function initializeServices(): void {
   store = new KnowbookStore(databasePath)
@@ -197,7 +199,12 @@ function initializeServices(): void {
     )
   }
   backupService = new MarkdownBackupService(store, backupRoot, webClipAssetRoot, runBackupExportInWorker)
-  restoreService = new MarkdownRestoreService(store, webClipAssetRoot)
+  restoreService = new MarkdownRestoreService(
+    store,
+    webClipAssetRoot,
+    {},
+    parseRestoreMarkdownInWorker
+  )
   workspaceEventBus = new WorkspaceEventBus()
   webClipper = new WebClipperService(store, webClipAssetRoot, {
     allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1'
@@ -746,47 +753,56 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:restore-backup-from-folder', async (event): Promise<BackupRestoreResult | null> => {
-    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
-    const openDialogOptions: OpenDialogOptions = {
-      title: '选择备份目录',
-      buttonLabel: '恢复备份',
-      properties: ['openDirectory']
-    }
-    const result = targetWindow
-      ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
-      : await dialog.showOpenDialog(openDialogOptions)
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null
+    if (restoreWorkflowInProgress) {
+      throw new Error('A restore workflow is already in progress.')
     }
 
-    const restoreRoot = result.filePaths[0]
-    const preview = await restoreService.previewFromDirectory(restoreRoot)
-    const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
-    const confirmationOptions = {
-      type: 'warning' as const,
-      title: '确认恢复备份',
-      message: deletionCount > 0
-        ? `此恢复将删除 ${deletionCount} 项当前数据，是否继续？`
-        : '已完成恢复预检，是否继续？',
-      detail: formatRestorePreviewDetail(preview),
-      buttons: ['继续恢复', '取消'],
-      defaultId: 1,
-      cancelId: 1,
-      noLink: true
-    }
-    const confirmation = targetWindow
-      ? await dialog.showMessageBox(targetWindow, confirmationOptions)
-      : await dialog.showMessageBox(confirmationOptions)
+    restoreWorkflowInProgress = true
+    try {
+      const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+      const openDialogOptions: OpenDialogOptions = {
+        title: '选择备份目录',
+        buttonLabel: '恢复备份',
+        properties: ['openDirectory']
+      }
+      const result = targetWindow
+        ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
+        : await dialog.showOpenDialog(openDialogOptions)
 
-    if (confirmation.response !== 0) {
-      return null
-    }
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
 
-    const safetyBackupPath = await createRestoreSafetyBackup()
-    return {
-      ...await restoreService.restoreFromDirectory(restoreRoot),
-      safetyBackupPath
+      const restoreRoot = result.filePaths[0]
+      const preview = await restoreService.previewFromDirectory(restoreRoot)
+      const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
+      const confirmationOptions = {
+        type: 'warning' as const,
+        title: '确认恢复备份',
+        message: deletionCount > 0
+          ? `此恢复将删除 ${deletionCount} 项当前数据，是否继续？`
+          : '已完成恢复预检，是否继续？',
+        detail: formatRestorePreviewDetail(preview),
+        buttons: ['继续恢复', '取消'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true
+      }
+      const confirmation = targetWindow
+        ? await dialog.showMessageBox(targetWindow, confirmationOptions)
+        : await dialog.showMessageBox(confirmationOptions)
+
+      if (confirmation.response !== 0) {
+        return null
+      }
+
+      const safetyBackupPath = await createRestoreSafetyBackup()
+      return {
+        ...await restoreService.restoreFromDirectory(restoreRoot),
+        safetyBackupPath
+      }
+    } finally {
+      restoreWorkflowInProgress = false
     }
   })
 

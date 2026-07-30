@@ -8,6 +8,7 @@ import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import type { DocumentCatalogEntry, DocumentDetail } from '../src/shared/contracts.ts'
+import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
 
 function byPath(entries: DocumentCatalogEntry[], path: string): DocumentCatalogEntry {
   const found = entries.find((entry) => entry.path === path)
@@ -636,6 +637,137 @@ test('MarkdownRestoreService validates referenced asset limits during preview wi
       /Backup asset exceeds/
     )
     assert.equal(existsSync(targetAssetRoot), false)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService sends all Markdown sources through one parser batch', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-parser-batch-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+  const batchSizes: number[] = []
+
+  try {
+    mkdirSync(backupRoot, { recursive: true })
+    writeFileSync(join(backupRoot, 'Alpha.md'), '# Alpha\n\nFirst note.\n', 'utf8')
+    writeFileSync(join(backupRoot, 'Beta.md'), '# Beta\n\nSecond note.\n', 'utf8')
+
+    const restoreService = new MarkdownRestoreService(
+      store,
+      undefined,
+      {},
+      async (markdownSources) => {
+        batchSizes.push(markdownSources.length)
+        return markdownSources.map((markdown) => parseMarkdownBackupDocument(markdown))
+      }
+    )
+
+    const preview = await restoreService.previewFromDirectory(backupRoot)
+    assert.equal(preview.restored, 2)
+    assert.deepEqual(batchSizes, [2])
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService reads document snapshots once while building a preview', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-preview-snapshot-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+  const originalGetAllDocumentSnapshots = store.getAllDocumentSnapshots.bind(store)
+  let snapshotReads = 0
+
+  try {
+    mkdirSync(backupRoot, { recursive: true })
+    writeFileSync(join(backupRoot, 'Preview.md'), '# Preview\n\nRead once.\n', 'utf8')
+    store.getAllDocumentSnapshots = () => {
+      snapshotReads += 1
+      return originalGetAllDocumentSnapshots()
+    }
+
+    const preview = await new MarkdownRestoreService(store).previewFromDirectory(backupRoot)
+
+    assert.equal(preview.restored, 1)
+    assert.equal(snapshotReads, 1)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService rejects incomplete parser batches without mutating documents', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-parser-result-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const initialSnapshots = store.getAllDocumentSnapshots()
+    mkdirSync(backupRoot, { recursive: true })
+    writeFileSync(join(backupRoot, 'Incomplete.md'), '# Incomplete\n\nDo not restore.\n', 'utf8')
+    const restoreService = new MarkdownRestoreService(
+      store,
+      undefined,
+      {},
+      async () => []
+    )
+
+    await assert.rejects(
+      restoreService.restoreFromDirectory(backupRoot),
+      /parser returned an incomplete result/
+    )
+    assert.deepEqual(store.getAllDocumentSnapshots(), initialSnapshots)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService rejects concurrent restores and unlocks after completion', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-concurrency-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+  let parserCalls = 0
+  let notifyParserStarted!: () => void
+  let releaseFirstParser!: () => void
+  const parserStarted = new Promise<void>((resolve) => {
+    notifyParserStarted = resolve
+  })
+  const firstParserGate = new Promise<void>((resolve) => {
+    releaseFirstParser = resolve
+  })
+
+  try {
+    mkdirSync(backupRoot, { recursive: true })
+    writeFileSync(join(backupRoot, 'Concurrent.md'), '# Concurrent\n\nRestore once.\n', 'utf8')
+
+    const restoreService = new MarkdownRestoreService(
+      store,
+      undefined,
+      {},
+      async (markdownSources) => {
+        parserCalls += 1
+        if (parserCalls === 1) {
+          notifyParserStarted()
+          await firstParserGate
+        }
+        return markdownSources.map((markdown) => parseMarkdownBackupDocument(markdown))
+      }
+    )
+
+    const firstRestore = restoreService.restoreFromDirectory(backupRoot)
+    await parserStarted
+    await assert.rejects(
+      restoreService.restoreFromDirectory(backupRoot),
+      /restore operation is already in progress/
+    )
+
+    releaseFirstParser()
+    await firstRestore
+    await restoreService.restoreFromDirectory(backupRoot)
+    assert.equal(parserCalls, 2)
   } finally {
     store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
