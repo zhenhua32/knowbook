@@ -67,6 +67,7 @@ test('i18n dynamic labels produce expected localized output', () => {
 
   assert.equal(zh.currentKey(true), '当前密钥：已配置')
   assert.equal(en.currentKey(false), 'Current key: missing')
+  assert.equal(zh.pluginStatusLabel('loading'), '加载中')
   assert.equal(zh.pluginStatusLabel('running'), '运行中')
   assert.equal(en.pluginStatusLabel('disabled'), 'Disabled')
   assert.equal(zh.boardGroupedBy(null), '按父级桶分组')

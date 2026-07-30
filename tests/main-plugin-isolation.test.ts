@@ -149,6 +149,75 @@ class FakeIsolatedRuntime implements IsolatedPluginRuntime {
   }
 }
 
+class DeferredIsolatedRuntime implements IsolatedPluginRuntime {
+  disposed = false
+  initializeInput: PluginRuntimeInitializeInput | null = null
+  private releaseInitialization: (() => void) | null = null
+  private readonly initializationGate = new Promise<void>((resolve) => {
+    this.releaseInitialization = resolve
+  })
+
+  constructor(
+    readonly pluginId: string,
+    private readonly onInitializeStarted: (runtime: DeferredIsolatedRuntime) => void,
+    private readonly onInitializeFinished: () => void
+  ) {}
+
+  async initialize(input: PluginRuntimeInitializeInput): Promise<PluginRuntimeOutput> {
+    this.initializeInput = structuredClone(input)
+    this.onInitializeStarted(this)
+    try {
+      await this.initializationGate
+    } finally {
+      this.onInitializeFinished()
+    }
+    return { state: this.getRunningState(), effects: [] }
+  }
+
+  async handleWorkspaceEvent(): Promise<PluginRuntimeOutput> {
+    return { state: this.getRunningState(), effects: [] }
+  }
+
+  async runDocumentAction(): Promise<PluginRuntimeOutput<RunPluginDocumentActionResult>> {
+    return {
+      state: this.getRunningState(),
+      effects: [],
+      result: { message: 'done', refreshDocument: false }
+    }
+  }
+
+  async updateSetting(): Promise<PluginRuntimeOutput> {
+    return { state: this.getRunningState(), effects: [] }
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.release()
+  }
+
+  onStateChanged(): () => void {
+    return () => undefined
+  }
+
+  onFailure(): () => void {
+    return () => undefined
+  }
+
+  release(): void {
+    this.releaseInitialization?.()
+    this.releaseInitialization = null
+  }
+
+  private getRunningState(): PluginRuntimeState {
+    return {
+      status: 'running',
+      dashboardCards: [],
+      documentActions: [],
+      settings: []
+    }
+  }
+}
+
 function createDocument(): DocumentDetail {
   return {
     id: 'doc-1',
@@ -162,6 +231,188 @@ function createDocument(): DocumentDetail {
     backlinks: []
   }
 }
+
+async function waitForRuntimeCount(runtimes: DeferredIsolatedRuntime[], expectedCount: number): Promise<void> {
+  for (let attempt = 0; attempt < 20 && runtimes.length < expectedCount; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  assert.equal(runtimes.length, expectedCount)
+}
+
+test('PluginHost exposes loading inventory immediately and caps background activation concurrency', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-concurrency-test-'))
+  const workspaceRoot = join(tempRoot, 'plugins')
+  mkdirSync(workspaceRoot, { recursive: true })
+  for (const pluginId of ['concurrency-a', 'concurrency-b', 'concurrency-c']) {
+    const pluginRoot = join(workspaceRoot, pluginId)
+    mkdirSync(pluginRoot, { recursive: true })
+    writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+      id: pluginId,
+      name: pluginId,
+      version: '1.0.0'
+    }))
+    writeFileSync(join(pluginRoot, 'index.js'), '')
+  }
+
+  let activeInitializations = 0
+  let maximumActiveInitializations = 0
+  let settingsSnapshotReads = 0
+  let documentSnapshotReads = 0
+  const startedRuntimes: DeferredIsolatedRuntime[] = []
+  const store = {
+    getSettingPublic: () => null,
+    getSettingsByPrefix: () => {
+      settingsSnapshotReads += 1
+      return {
+        'plugin.setting.concurrency-a.token': 'a-secret',
+        'plugin.setting.concurrency-b.token': 'b-secret',
+        'plugin.setting.concurrency-c.token': 'c-secret'
+      }
+    },
+    getPluginWorkspaceDocuments: () => {
+      documentSnapshotReads += 1
+      return []
+    },
+    saveSetting: () => undefined,
+    getDocumentDetail: () => null,
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(
+    store as never,
+    [{ path: workspaceRoot, source: 'workspace' }],
+    '1.0.0',
+    null,
+    {
+      activationConcurrency: 2,
+      runtimeFactory: (pluginId) => new DeferredIsolatedRuntime(
+        pluginId,
+        (runtime) => {
+          activeInitializations += 1
+          maximumActiveInitializations = Math.max(maximumActiveInitializations, activeInitializations)
+          startedRuntimes.push(runtime)
+        },
+        () => {
+          activeInitializations -= 1
+        }
+      )
+    }
+  )
+
+  try {
+    host.discoverAll()
+    const loadingSnapshot = host.getHomeDataSnapshot()
+    assert.equal(loadingSnapshot.plugins.length, 3)
+    assert.deepEqual(loadingSnapshot.plugins.map((plugin) => plugin.status), ['loading', 'loading', 'loading'])
+    assert.equal(startedRuntimes.length, 0)
+    assert.equal(settingsSnapshotReads, 0)
+    assert.equal(documentSnapshotReads, 0)
+
+    const loadingPromise = host.activateAll()
+    assert.equal(startedRuntimes.length, 2)
+    assert.equal(settingsSnapshotReads, 1)
+    assert.equal(documentSnapshotReads, 1)
+
+    startedRuntimes[0]?.release()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(startedRuntimes.length, 3)
+    assert.equal(maximumActiveInitializations, 2)
+
+    for (const runtime of startedRuntimes) {
+      runtime.release()
+    }
+    await loadingPromise
+    assert.deepEqual(
+      host.getHomeDataSnapshot().plugins.map((plugin) => plugin.status),
+      ['running', 'running', 'running']
+    )
+    for (const runtime of startedRuntimes) {
+      assert.deepEqual(runtime.initializeInput?.settings, {
+        [`plugin.setting.${runtime.pluginId}.token`]: `${runtime.pluginId.at(-1)}-secret`
+      })
+    }
+  } finally {
+    for (const runtime of startedRuntimes) {
+      runtime.release()
+    }
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('PluginHost reload cancels queued activations from the previous lifecycle generation', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-plugin-generation-test-'))
+  const workspaceRoot = join(tempRoot, 'plugins')
+  mkdirSync(workspaceRoot, { recursive: true })
+  for (const pluginId of ['generation-a', 'generation-b', 'generation-c']) {
+    const pluginRoot = join(workspaceRoot, pluginId)
+    mkdirSync(pluginRoot, { recursive: true })
+    writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+      id: pluginId,
+      name: pluginId,
+      version: '1.0.0'
+    }))
+    writeFileSync(join(pluginRoot, 'index.js'), '')
+  }
+
+  const runtimes: DeferredIsolatedRuntime[] = []
+  const store = {
+    getSettingPublic: () => null,
+    getSettingsByPrefix: () => ({}),
+    getPluginWorkspaceDocuments: () => [],
+    saveSetting: () => undefined,
+    getDocumentDetail: () => null,
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: () => undefined
+  }
+  const host = new PluginHost(
+    store as never,
+    [{ path: workspaceRoot, source: 'workspace' }],
+    '1.0.0',
+    null,
+    {
+      activationConcurrency: 1,
+      runtimeFactory: (pluginId) => {
+        const runtime = new DeferredIsolatedRuntime(pluginId, () => {
+          runtimes.push(runtime)
+        }, () => undefined)
+        return runtime
+      }
+    }
+  )
+
+  try {
+    const initialLoad = host.loadAll()
+    await waitForRuntimeCount(runtimes, 1)
+    assert.equal(runtimes[0]?.pluginId, 'generation-a')
+
+    const reload = host.reloadAll()
+    await waitForRuntimeCount(runtimes, 2)
+    assert.deepEqual(runtimes.map((runtime) => runtime.pluginId), ['generation-a', 'generation-a'])
+    assert.equal(runtimes[0]?.disposed, true)
+
+    runtimes[1]?.release()
+    await waitForRuntimeCount(runtimes, 3)
+    assert.equal(runtimes[2]?.pluginId, 'generation-b')
+    runtimes[2]?.release()
+    await waitForRuntimeCount(runtimes, 4)
+    assert.equal(runtimes[3]?.pluginId, 'generation-c')
+    runtimes[3]?.release()
+
+    await Promise.all([initialLoad, reload])
+    assert.equal(runtimes.length, 4)
+    assert.deepEqual(
+      host.getHomeDataSnapshot().plugins.map((plugin) => plugin.status),
+      ['running', 'running', 'running']
+    )
+  } finally {
+    for (const runtime of runtimes) {
+      runtime.release()
+    }
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
 
 test('PluginHost applies isolated runtime state and host-owned effects', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-isolated-plugin-test-'))

@@ -215,7 +215,8 @@ function createUiText(language: UiLanguage) {
       : 'Each plugin row also supports Reload, and error-state plugins expose the same action as Recover.',
     writableInstallRoot: (root: string) => zh ? `可写安装目录：${root}` : `Writable install root: ${root}`,
     noPluginsDiscovered: zh ? '暂未发现任何插件。' : 'No plugins discovered yet.',
-    pluginStatusLabel: (status: 'running' | 'error' | 'disabled') => {
+    pluginStatusLabel: (status: 'loading' | 'running' | 'error' | 'disabled') => {
+      if (status === 'loading') return zh ? '加载中' : 'Loading'
       if (status === 'running') return zh ? '运行中' : 'Running'
       if (status === 'error') return zh ? '错误' : 'Error'
       return zh ? '已禁用' : 'Disabled'

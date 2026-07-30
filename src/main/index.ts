@@ -239,7 +239,7 @@ type SemanticContextNote = SemanticSearchResult & {
   contentHash: string
 }
 
-function createWindow(): void {
+function createWindow(): ElectronBrowserWindow {
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 880,
@@ -278,6 +278,7 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+  return mainWindow
 }
 
 function registerWorkspaceEventHandlers(): void {
@@ -1325,17 +1326,41 @@ if (hasSingleInstanceLock) {
     mainWindow.focus()
   })
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     initializeServices()
     registerAssetPreviewProtocol()
-    await pluginHost.loadAll()
     appUpdateManager.initialize()
     registerWorkspaceEventHandlers()
     registerIpcHandlers()
-    await webClipBridge.applyConfig(getStoredWebClipBridgeConfig())
-    createWindow()
+    pluginHost.discoverAll()
+    const startupWindow = createWindow()
+    let pluginStartupStarted = false
+    let pluginStartupFallback: NodeJS.Timeout | null = null
+    const startPluginStartup = () => {
+      if (pluginStartupStarted) {
+        return
+      }
+      pluginStartupStarted = true
+      if (pluginStartupFallback) {
+        clearTimeout(pluginStartupFallback)
+        pluginStartupFallback = null
+      }
+      setImmediate(() => {
+        void pluginHost.activateAll().catch((error) => {
+          console.error('Background plugin startup failed.', error)
+        })
+      })
+    }
+    startupWindow.webContents.once('did-finish-load', startPluginStartup)
+    startupWindow.webContents.once('did-fail-load', startPluginStartup)
+    startupWindow.once('closed', startPluginStartup)
+    pluginStartupFallback = setTimeout(startPluginStartup, 5_000)
+    pluginStartupFallback.unref()
     startBackupSchedule()
     appUpdateManager.scheduleStartupCheck()
+    void webClipBridge.applyConfig(getStoredWebClipBridgeConfig()).catch((error) => {
+      console.error('Web clip bridge startup failed.', error)
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

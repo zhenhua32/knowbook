@@ -285,7 +285,7 @@ export interface WorkspaceEventRecord {
 
 export type PluginSource = 'workspace' | 'user-data'
 
-export type PluginStatus = 'running' | 'disabled' | 'error'
+export type PluginStatus = 'loading' | 'running' | 'disabled' | 'error'
 
 export interface PluginManifest {
   id: string

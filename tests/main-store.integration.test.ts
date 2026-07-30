@@ -497,6 +497,17 @@ test('links are re-synced after target title change', () => {
   })
 })
 
+test('plugin workspace snapshot matches individual document detail reads', () => {
+  withStore((store) => {
+    const snapshot = store.getPluginWorkspaceDocuments()
+    assert.ok(snapshot.length > 1)
+
+    for (const document of snapshot) {
+      assert.deepEqual(document, store.getDocumentDetail(document.id))
+    }
+  })
+})
+
 test('content-only document updates rebuild links only for the edited source document', () => {
   withStore((store, backupRoot) => {
     const catalog = store.getHomeData(backupRoot).documentCatalog

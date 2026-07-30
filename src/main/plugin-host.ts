@@ -139,8 +139,16 @@ type PluginHostOptions = {
   runtimeFactory?: IsolatedPluginRuntimeFactory
   pluginIdFilter?: string
   onStateChanged?: () => void
+  activationConcurrency?: number
 }
 
+type PluginActivationSnapshot = {
+  settings: Record<string, string>
+  documents: DocumentDetail[]
+}
+
+const DEFAULT_PLUGIN_ACTIVATION_CONCURRENCY = 4
+const MAX_PLUGIN_ACTIVATION_CONCURRENCY = 8
 const PLUGIN_SYNC_TIMEOUT_MS = 1_000
 const PLUGIN_RESULT_MAX_BYTES = 1_000_000
 const PLUGIN_MANIFEST_MAX_BYTES = 64_000
@@ -160,6 +168,13 @@ export type PluginInstallPreview = {
 export class PluginHost {
   private readonly plugins = new Map<string, RegisteredPlugin>()
   private invocationSequence = 0
+  private lifecycleGeneration = 0
+  private initialDiscovery: {
+    generation: number
+    plugins: RegisteredPlugin[]
+  } | null = null
+  private initialLoadPromise: Promise<void> | null = null
+  private reloadPromise: Promise<void> | null = null
 
   constructor(
     private readonly store: KnowbookStore,
@@ -169,20 +184,63 @@ export class PluginHost {
     private readonly options: PluginHostOptions = {}
   ) {}
 
-  async loadAll(): Promise<void> {
+  discoverAll(): void {
+    if (this.initialDiscovery || this.initialLoadPromise) {
+      return
+    }
+    const generation = ++this.lifecycleGeneration
     const discovered = this.discoverPlugins()
     for (const plugin of discovered) {
       this.plugins.set(plugin.manifest.id, plugin)
-      if (plugin.enabled) {
-        await this.activatePlugin(plugin)
-      }
     }
+    this.initialDiscovery = { generation, plugins: discovered }
   }
 
-  async reloadAll(): Promise<void> {
+  activateAll(): Promise<void> {
+    if (this.initialLoadPromise) {
+      return this.initialLoadPromise
+    }
+
+    this.discoverAll()
+    const discovery = this.initialDiscovery
+    if (!discovery) {
+      return Promise.resolve()
+    }
+
+    this.initialLoadPromise = this.activatePlugins(discovery.plugins, discovery.generation, true)
+    return this.initialLoadPromise
+  }
+
+  loadAll(): Promise<void> {
+    this.discoverAll()
+    return this.activateAll()
+  }
+
+  reloadAll(): Promise<void> {
+    if (this.reloadPromise) {
+      return this.reloadPromise
+    }
+
+    const generation = ++this.lifecycleGeneration
+    const operation = this.performReloadAll(generation)
+    this.reloadPromise = operation
+    const clearReloadPromise = () => {
+      if (this.reloadPromise === operation) {
+        this.reloadPromise = null
+      }
+    }
+    void operation.then(clearReloadPromise, clearReloadPromise)
+    return operation
+  }
+
+  private async performReloadAll(generation: number): Promise<void> {
     const currentPlugins = [...this.plugins.values()]
-    for (const plugin of currentPlugins) {
+    await this.runWithConcurrency(currentPlugins, async (plugin) => {
       await this.deactivatePlugin(plugin)
+    })
+
+    if (generation !== this.lifecycleGeneration) {
+      return
     }
 
     this.plugins.clear()
@@ -190,10 +248,8 @@ export class PluginHost {
     const discovered = this.discoverPlugins()
     for (const plugin of discovered) {
       this.plugins.set(plugin.manifest.id, plugin)
-      if (plugin.enabled) {
-        await this.activatePlugin(plugin, false)
-      }
     }
+    await this.activatePlugins(discovered, generation, false)
   }
 
   getHomeDataSnapshot(): {
@@ -603,9 +659,94 @@ export class PluginHost {
   }
 
   async destroy(): Promise<void> {
-    for (const plugin of this.plugins.values()) {
+    this.lifecycleGeneration += 1
+    await this.runWithConcurrency([...this.plugins.values()], async (plugin) => {
       await this.deactivatePlugin(plugin)
+    })
+  }
+
+  private async activatePlugins(
+    plugins: RegisteredPlugin[],
+    generation: number,
+    recordLoadEvent: boolean
+  ): Promise<void> {
+    if (generation !== this.lifecycleGeneration) {
+      return
     }
+
+    const enabledPlugins = plugins.filter((plugin) => plugin.enabled)
+    let activationSnapshot: PluginActivationSnapshot | undefined
+    if (this.options.runtimeFactory && enabledPlugins.length > 0) {
+      try {
+        activationSnapshot = this.createPluginActivationSnapshot()
+      } catch (error) {
+        for (const plugin of enabledPlugins) {
+          if (
+            generation === this.lifecycleGeneration
+            && this.plugins.get(plugin.manifest.id) === plugin
+            && plugin.enabled
+          ) {
+            plugin.status = 'error'
+            plugin.error = this.getPluginErrorMessage(
+              plugin,
+              error,
+              'Failed to prepare the isolated plugin workspace snapshot.'
+            )
+          }
+        }
+        this.options.onStateChanged?.()
+        return
+      }
+    }
+
+    await this.runWithConcurrency(enabledPlugins, async (plugin) => {
+      if (
+        generation !== this.lifecycleGeneration
+        || this.plugins.get(plugin.manifest.id) !== plugin
+        || !plugin.enabled
+      ) {
+        return
+      }
+      await this.activatePlugin(plugin, recordLoadEvent, activationSnapshot)
+    })
+  }
+
+  private createPluginActivationSnapshot(): PluginActivationSnapshot {
+    return {
+      settings: this.store.getSettingsByPrefix('plugin.setting.'),
+      documents: this.store.getPluginWorkspaceDocuments()
+    }
+  }
+
+  private async runWithConcurrency<T>(
+    items: T[],
+    operation: (item: T) => Promise<void>
+  ): Promise<void> {
+    if (items.length === 0) {
+      return
+    }
+
+    const requestedConcurrency = this.options.activationConcurrency ?? DEFAULT_PLUGIN_ACTIVATION_CONCURRENCY
+    const normalizedConcurrency = Number.isFinite(requestedConcurrency)
+      ? Math.floor(requestedConcurrency)
+      : DEFAULT_PLUGIN_ACTIVATION_CONCURRENCY
+    const concurrency = Math.min(
+      Math.max(normalizedConcurrency, 1),
+      MAX_PLUGIN_ACTIVATION_CONCURRENCY,
+      items.length
+    )
+    let nextIndex = 0
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex]
+        nextIndex += 1
+        if (item !== undefined) {
+          await operation(item)
+        }
+      }
+    })
+    await Promise.all(workers)
   }
 
   private discoverPlugins(): RegisteredPlugin[] {
@@ -639,12 +780,13 @@ export class PluginHost {
           }
 
           seenPluginIds.add(manifest.id)
+          const enabled = this.readPluginEnabled(manifest)
           discovered.push({
             manifest,
             directory: directoryPath,
             source: root.source,
-            enabled: this.readPluginEnabled(manifest),
-            status: 'disabled',
+            enabled,
+            status: enabled ? 'loading' : 'disabled',
             dashboardCards: new Map(),
             documentActions: new Map(),
             settings: new Map(),
@@ -865,23 +1007,29 @@ export class PluginHost {
     }
   }
 
-  private async activatePlugin(plugin: RegisteredPlugin, recordLoadEvent = true): Promise<void> {
+  private async activatePlugin(
+    plugin: RegisteredPlugin,
+    recordLoadEvent = true,
+    activationSnapshot?: PluginActivationSnapshot
+  ): Promise<void> {
     if (plugin.context || plugin.isolatedRuntime) {
       await this.deactivatePlugin(plugin)
     }
-    plugin.status = 'disabled'
+    plugin.status = 'loading'
     plugin.error = undefined
+    this.options.onStateChanged?.()
 
     // Check version compatibility
     if (!isPluginVersionCompatible(plugin.manifest, this.currentVersion)) {
       const message = getVersionCompatibilityMessage(plugin.manifest, this.currentVersion)
       plugin.status = 'error'
       plugin.error = message ?? 'Version compatibility check failed'
+      this.options.onStateChanged?.()
       return
     }
 
     if (this.options.runtimeFactory) {
-      await this.activateIsolatedPlugin(plugin, recordLoadEvent)
+      await this.activateIsolatedPlugin(plugin, recordLoadEvent, activationSnapshot)
       return
     }
 
@@ -1015,7 +1163,7 @@ export class PluginHost {
       plugin.dashboardCards.clear()
       plugin.documentActions.clear()
       plugin.eventHandlers = []
-      if (plugin.status === 'running') {
+      if (plugin.status === 'running' || plugin.status === 'loading') {
         plugin.status = 'disabled'
       }
       return
@@ -1036,7 +1184,7 @@ export class PluginHost {
     plugin.dashboardCards.clear()
     plugin.documentActions.clear()
     plugin.eventHandlers = []
-    if (plugin.status === 'running') {
+    if (plugin.status === 'running' || plugin.status === 'loading') {
       plugin.status = 'disabled'
     }
   }
@@ -1663,7 +1811,11 @@ export class PluginHost {
     console.error(`Plugin ${plugin.manifest.id} failed during ${phase}.`, errorMessage)
   }
 
-  private async activateIsolatedPlugin(plugin: RegisteredPlugin, recordLoadEvent: boolean): Promise<void> {
+  private async activateIsolatedPlugin(
+    plugin: RegisteredPlugin,
+    recordLoadEvent: boolean,
+    activationSnapshot?: PluginActivationSnapshot
+  ): Promise<void> {
     const runtimeFactory = this.options.runtimeFactory
     if (!runtimeFactory) {
       throw new Error('Isolated plugin runtime factory is unavailable.')
@@ -1674,12 +1826,27 @@ export class PluginHost {
     plugin.settings.clear()
     plugin.eventHandlers = []
 
+    let snapshot: PluginActivationSnapshot
+    try {
+      snapshot = activationSnapshot ?? this.createPluginActivationSnapshot()
+    } catch (error) {
+      plugin.status = 'error'
+      plugin.error = this.getPluginErrorMessage(
+        plugin,
+        error,
+        'Failed to prepare the isolated plugin workspace snapshot.'
+      )
+      this.options.onStateChanged?.()
+      return
+    }
+
     let runtime: IsolatedPluginRuntime
     try {
       runtime = runtimeFactory(plugin.manifest.id)
     } catch (error) {
       plugin.status = 'error'
       plugin.error = this.getPluginErrorMessage(plugin, error, 'Failed to create isolated plugin runtime.')
+      this.options.onStateChanged?.()
       return
     }
 
@@ -1704,8 +1871,8 @@ export class PluginHost {
         directory: plugin.directory,
         source: plugin.source,
         currentVersion: this.currentVersion,
-        settings: this.store.getSettingsByPrefix('plugin.'),
-        documents: this.store.getPluginWorkspaceDocuments(),
+        settings: this.getPluginActivationSettings(plugin.manifest.id, snapshot.settings),
+        documents: snapshot.documents,
         recordLoadEvent
       })
       if (plugin.isolatedRuntime !== runtime) {
@@ -1719,6 +1886,16 @@ export class PluginHost {
     } catch (error) {
       this.failIsolatedPlugin(plugin, runtime, 'activation', error)
     }
+  }
+
+  private getPluginActivationSettings(
+    pluginId: string,
+    settings: Record<string, string>
+  ): Record<string, string> {
+    const settingPrefix = `plugin.setting.${pluginId}.`
+    return Object.fromEntries(
+      Object.entries(settings).filter(([key]) => key.startsWith(settingPrefix))
+    )
   }
 
   private applyIsolatedOutput(plugin: RegisteredPlugin, output: PluginRuntimeOutput): void {

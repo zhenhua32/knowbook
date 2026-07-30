@@ -278,6 +278,11 @@ dt,
   color: #1b6a47;
 }
 
+.plugin-status-loading {
+  background: rgba(43, 91, 161, 0.12);
+  color: #295c9b;
+}
+
 .plugin-status-disabled {
   background: rgba(99, 73, 34, 0.1);
   color: #6c5d47;
