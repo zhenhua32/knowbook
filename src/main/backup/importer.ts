@@ -1,5 +1,5 @@
-import { copyFile, lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type {
   BackupRestorePreview,
@@ -66,9 +66,31 @@ type PreparedRestoreSources = {
   sourceDocuments: RestoreSourceDocument[]
   sourceStandaloneDatabases: RestoreSourceStandaloneDatabase[]
   sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
+  assets: RestoreAssetCopy[]
 }
 
 type DocumentSnapshot = ReturnType<KnowbookStore['getAllDocumentSnapshots']>[number]
+
+type RestoreAssetCopy = {
+  sourcePath: string
+  destinationPath: string
+}
+
+type StagedRestoreAsset = RestoreAssetCopy & {
+  stagedPath: string
+  backupPath: string
+}
+
+type StagedRestoreAssets = {
+  root: string
+  assets: StagedRestoreAsset[]
+}
+
+type PublishedRestoreAsset = {
+  destinationPath: string
+  backupPath: string | null
+  published: boolean
+}
 
 export type ParsedBackupDocument = ReturnType<typeof parseMarkdownBackupDocument>
 
@@ -199,53 +221,81 @@ export class MarkdownRestoreService {
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
-      sourceStandaloneDatabaseManifest
+      sourceStandaloneDatabaseManifest,
+      assets
     } = await this.prepareRestoreSources(root, true)
 
-    return this.store.runInTransaction(() => {
-      let created = 0
-      let updated = 0
-      let deleted = 0
-      const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
-      let placeholdersCreated = 0
-      const restoredDocumentIds = new Set<string>()
-      const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+    const stagedAssets = await this.stageRestoreAssets(assets)
+    const publishedAssets: PublishedRestoreAsset[] = []
+    let preserveStagingForRecovery = false
 
-      for (const source of sourceDocuments) {
-        const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
-        placeholdersCreated += result.placeholdersCreated
-        restoredDocumentIds.add(result.documentId)
-        if (result.mode === 'created') {
-          created += 1
-        } else {
-          updated += 1
+    try {
+      if (stagedAssets) {
+        await this.publishRestoreAssets(stagedAssets, publishedAssets)
+      }
+
+      return this.store.runInTransaction(() => {
+        let created = 0
+        let updated = 0
+        let deleted = 0
+        const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
+        let placeholdersCreated = 0
+        const restoredDocumentIds = new Set<string>()
+        const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+
+        for (const source of sourceDocuments) {
+          const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
+          placeholdersCreated += result.placeholdersCreated
+          restoredDocumentIds.add(result.documentId)
+          if (result.mode === 'created') {
+            created += 1
+          } else {
+            updated += 1
+          }
         }
+
+        if (sourceStandaloneDatabaseManifest) {
+          deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+        }
+        this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
+
+        return {
+          restored: sourceDocuments.length,
+          created,
+          updated,
+          deleted,
+          conflictsResolved,
+          placeholdersCreated,
+          root,
+          at: new Date().toISOString()
+        }
+      })
+    } catch (error) {
+      try {
+        await this.rollbackPublishedRestoreAssets(publishedAssets)
+      } catch (rollbackError) {
+        preserveStagingForRecovery = true
+        throw new Error(
+          `Restore failed and managed assets could not be rolled back. Recovery files remain at ${stagedAssets?.root ?? 'the restore staging directory'}.`,
+          { cause: new AggregateError([error, rollbackError]) }
+        )
       }
 
-      if (sourceStandaloneDatabaseManifest) {
-        deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
+      throw error
+    } finally {
+      if (stagedAssets && !preserveStagingForRecovery) {
+        await this.cleanupRestoreAssetStage(stagedAssets.root)
       }
-      this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
-
-      return {
-        restored: sourceDocuments.length,
-        created,
-        updated,
-        deleted,
-        conflictsResolved,
-        placeholdersCreated,
-        root,
-        at: new Date().toISOString()
-      }
-    })
+    }
   }
 
-  private async prepareRestoreSources(root: string, restoreAssets: boolean): Promise<PreparedRestoreSources> {
+  private async prepareRestoreSources(root: string, collectAssets: boolean): Promise<PreparedRestoreSources> {
     const markdownFiles = await this.collectMarkdownFiles(root)
     const budget: RestoreReadBudget = {
       assetPaths: new Set(),
       assetBytes: 0
     }
+    const assetsByDestination = new Map<string, RestoreAssetCopy>()
     const sourceInputs: Array<{
       filePath: string
       relativePath: string
@@ -260,8 +310,9 @@ export class MarkdownRestoreService {
         root,
         filePath,
         sourceMarkdown,
-        restoreAssets,
-        budget
+        collectAssets,
+        budget,
+        assetsByDestination
       )
       sourceInputs.push({ filePath, relativePath, markdown })
     }
@@ -304,7 +355,8 @@ export class MarkdownRestoreService {
     return {
       sourceDocuments,
       sourceStandaloneDatabases,
-      sourceStandaloneDatabaseManifest
+      sourceStandaloneDatabaseManifest,
+      assets: [...assetsByDestination.values()]
     }
   }
 
@@ -503,8 +555,9 @@ export class MarkdownRestoreService {
     root: string,
     markdownFilePath: string,
     markdown: string,
-    copyAssets: boolean,
-    budget: RestoreReadBudget
+    collectAssets: boolean,
+    budget: RestoreReadBudget,
+    assetsByDestination: Map<string, RestoreAssetCopy>
   ): Promise<string> {
     if (!this.assetRoot) {
       return markdown
@@ -552,9 +605,11 @@ export class MarkdownRestoreService {
         throw new Error(`Backup asset resolved outside the managed asset root: ${portableReference}`)
       }
 
-      if (copyAssets) {
-        await mkdir(dirname(destinationPath), { recursive: true })
-        await copyFile(realSourceAssetPath, destinationPath)
+      if (collectAssets) {
+        assetsByDestination.set(destinationPath, {
+          sourcePath: realSourceAssetPath,
+          destinationPath
+        })
       }
       replacements.set(portableReference, pathToFileURL(destinationPath).toString())
     }
@@ -563,6 +618,149 @@ export class MarkdownRestoreService {
       PORTABLE_ASSET_REFERENCE_PATTERN,
       (portableReference) => replacements.get(portableReference) ?? portableReference
     )
+  }
+
+  private async stageRestoreAssets(assets: RestoreAssetCopy[]): Promise<StagedRestoreAssets | null> {
+    if (assets.length === 0 || !this.assetRoot) {
+      return null
+    }
+
+    const normalizedAssetRoot = resolve(this.assetRoot)
+    const assetRootParent = dirname(normalizedAssetRoot)
+    await mkdir(assetRootParent, { recursive: true })
+    const stageRoot = await mkdtemp(join(assetRootParent, `.${basename(normalizedAssetRoot)}-restore-`))
+
+    try {
+      const stagedAssets: StagedRestoreAsset[] = []
+      for (const [index, asset] of assets.entries()) {
+        const stagedPath = join(stageRoot, 'new', String(index))
+        const backupPath = join(stageRoot, 'previous', String(index))
+        await mkdir(dirname(stagedPath), { recursive: true })
+        await copyFile(asset.sourcePath, stagedPath)
+        stagedAssets.push({
+          ...asset,
+          stagedPath,
+          backupPath
+        })
+      }
+
+      return {
+        root: stageRoot,
+        assets: stagedAssets
+      }
+    } catch (error) {
+      await this.cleanupRestoreAssetStage(stageRoot)
+      throw error
+    }
+  }
+
+  private async publishRestoreAssets(
+    stagedAssets: StagedRestoreAssets,
+    publishedAssets: PublishedRestoreAsset[]
+  ): Promise<void> {
+    if (!this.assetRoot) {
+      throw new Error('Managed asset root is unavailable while publishing restored assets.')
+    }
+
+    const normalizedAssetRoot = resolve(this.assetRoot)
+    await mkdir(normalizedAssetRoot, { recursive: true })
+    const assetRootStat = await lstat(normalizedAssetRoot)
+    if (!assetRootStat.isDirectory() || assetRootStat.isSymbolicLink()) {
+      throw new Error(`Managed asset root must be a directory without symbolic links: ${normalizedAssetRoot}`)
+    }
+
+    for (const asset of stagedAssets.assets) {
+      await this.assertSafeAssetDestination(asset.destinationPath, normalizedAssetRoot)
+      await mkdir(dirname(asset.destinationPath), { recursive: true })
+      const destinationStat = await this.lstatIfExists(asset.destinationPath)
+      if (destinationStat && (!destinationStat.isFile() || destinationStat.isSymbolicLink())) {
+        throw new Error(`Managed asset destination must be a regular file: ${asset.destinationPath}`)
+      }
+
+      const publishedAsset: PublishedRestoreAsset = {
+        destinationPath: asset.destinationPath,
+        backupPath: null,
+        published: false
+      }
+      publishedAssets.push(publishedAsset)
+
+      if (destinationStat) {
+        await mkdir(dirname(asset.backupPath), { recursive: true })
+        await rename(asset.destinationPath, asset.backupPath)
+        publishedAsset.backupPath = asset.backupPath
+      }
+      await rename(asset.stagedPath, asset.destinationPath)
+      publishedAsset.published = true
+    }
+  }
+
+  private async rollbackPublishedRestoreAssets(publishedAssets: PublishedRestoreAsset[]): Promise<void> {
+    const rollbackErrors: unknown[] = []
+
+    for (const asset of [...publishedAssets].reverse()) {
+      try {
+        if (asset.published) {
+          await rm(asset.destinationPath, { force: true })
+        }
+        if (asset.backupPath) {
+          await mkdir(dirname(asset.destinationPath), { recursive: true })
+          await rename(asset.backupPath, asset.destinationPath)
+        }
+      } catch (error) {
+        rollbackErrors.push(error)
+      }
+    }
+    publishedAssets.length = 0
+
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(rollbackErrors, 'One or more managed assets could not be rolled back.')
+    }
+  }
+
+  private async assertSafeAssetDestination(destinationPath: string, normalizedAssetRoot: string): Promise<void> {
+    if (!this.isPathInsideRoot(destinationPath, normalizedAssetRoot)) {
+      throw new Error(`Managed asset destination resolved outside the asset root: ${destinationPath}`)
+    }
+
+    let currentPath = dirname(destinationPath)
+    while (currentPath !== normalizedAssetRoot) {
+      const currentStat = await this.lstatIfExists(currentPath)
+      if (currentStat) {
+        if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) {
+          throw new Error(`Managed asset destination contains an unsafe path component: ${currentPath}`)
+        }
+      }
+
+      const parentPath = dirname(currentPath)
+      if (parentPath === currentPath || !this.isPathInsideRoot(parentPath, normalizedAssetRoot)) {
+        throw new Error(`Managed asset destination resolved outside the asset root: ${destinationPath}`)
+      }
+      currentPath = parentPath
+    }
+  }
+
+  private async lstatIfExists(filePath: string): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+    try {
+      return await lstat(filePath)
+    } catch (error) {
+      if (
+        error
+        && typeof error === 'object'
+        && 'code' in error
+        && (error as { code?: unknown }).code === 'ENOENT'
+      ) {
+        return null
+      }
+      throw error
+    }
+  }
+
+  private async cleanupRestoreAssetStage(stageRoot: string): Promise<void> {
+    try {
+      await rm(stageRoot, { recursive: true, force: true })
+    } catch (error) {
+      console.warn(`Failed to remove restore asset staging directory at ${stageRoot}.`, error)
+    }
   }
 
   private isPathInsideRoot(filePath: string, root: string): boolean {

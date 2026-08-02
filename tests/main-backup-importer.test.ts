@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -580,6 +580,106 @@ test('MarkdownRestoreService restores portable assets into the active managed as
   } finally {
     sourceStore.destroy()
     targetStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService restores overwritten assets when the database transaction fails', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-asset-rollback-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const backupAssetPath = join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab', 'asset.png')
+  const backupNewAssetPath = join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab', 'new.png')
+  const targetAssetRoot = join(tempRoot, 'target-assets')
+  const targetAssetPath = join(targetAssetRoot, 'web-clips', 'ab', 'asset.png')
+  const targetNewAssetPath = join(targetAssetRoot, 'web-clips', 'ab', 'new.png')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    mkdirSync(join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab'), { recursive: true })
+    mkdirSync(join(targetAssetRoot, 'web-clips', 'ab'), { recursive: true })
+    writeFileSync(backupAssetPath, 'replacement-image', 'utf8')
+    writeFileSync(backupNewAssetPath, 'new-image', 'utf8')
+    writeFileSync(targetAssetPath, 'original-image', 'utf8')
+    writeFileSync(
+      join(backupRoot, 'Asset.md'),
+      [
+        '# Asset',
+        '',
+        '![Asset](./__knowbook/assets/web-clips/ab/asset.png)',
+        '![New](./__knowbook/assets/web-clips/ab/new.png)',
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    const initialSnapshots = store.getAllDocumentSnapshots()
+    const originalUpdateDocument = store.updateDocument.bind(store)
+    store.updateDocument = ((...args: Parameters<KnowbookStore['updateDocument']>) => {
+      originalUpdateDocument(...args)
+      throw new Error('Injected database failure after asset publication')
+    }) as KnowbookStore['updateDocument']
+
+    await assert.rejects(
+      new MarkdownRestoreService(store, targetAssetRoot).restoreFromDirectory(backupRoot),
+      /Injected database failure after asset publication/
+    )
+
+    assert.equal(readFileSync(targetAssetPath, 'utf8'), 'original-image')
+    assert.equal(existsSync(targetNewAssetPath), false)
+    assert.deepEqual(store.getAllDocumentSnapshots(), initialSnapshots)
+    assert.equal(
+      readdirSync(tempRoot).some((entry) => entry.startsWith('.target-assets-restore-')),
+      false
+    )
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService rolls back partially published assets before database mutation', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-asset-publish-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const backupAssetRoot = join(backupRoot, '__knowbook', 'assets', 'web-clips', 'ab')
+  const targetAssetRoot = join(tempRoot, 'target-assets')
+  const targetAssetDirectory = join(targetAssetRoot, 'web-clips', 'ab')
+  const firstTargetAssetPath = join(targetAssetDirectory, 'first.png')
+  const blockedTargetAssetPath = join(targetAssetDirectory, 'blocked.png')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    mkdirSync(backupAssetRoot, { recursive: true })
+    mkdirSync(blockedTargetAssetPath, { recursive: true })
+    writeFileSync(join(backupAssetRoot, 'first.png'), 'replacement-first', 'utf8')
+    writeFileSync(join(backupAssetRoot, 'blocked.png'), 'replacement-blocked', 'utf8')
+    writeFileSync(firstTargetAssetPath, 'original-first', 'utf8')
+    writeFileSync(join(blockedTargetAssetPath, 'keep.txt'), 'keep-directory', 'utf8')
+    writeFileSync(
+      join(backupRoot, 'Assets.md'),
+      [
+        '# Assets',
+        '',
+        '![First](./__knowbook/assets/web-clips/ab/first.png)',
+        '![Blocked](./__knowbook/assets/web-clips/ab/blocked.png)',
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    const initialSnapshots = store.getAllDocumentSnapshots()
+
+    await assert.rejects(
+      new MarkdownRestoreService(store, targetAssetRoot).restoreFromDirectory(backupRoot),
+      /Managed asset destination must be a regular file/
+    )
+
+    assert.equal(readFileSync(firstTargetAssetPath, 'utf8'), 'original-first')
+    assert.equal(readFileSync(join(blockedTargetAssetPath, 'keep.txt'), 'utf8'), 'keep-directory')
+    assert.deepEqual(store.getAllDocumentSnapshots(), initialSnapshots)
+    assert.equal(
+      readdirSync(tempRoot).some((entry) => entry.startsWith('.target-assets-restore-')),
+      false
+    )
+  } finally {
+    store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
