@@ -80,6 +80,15 @@ export function useAppShellState() {
       setLoading(false)
     }
     const requestHomeDataRefresh = createTrailingSingleFlightRefresh(refreshHomeData)
+    const refreshPluginHomeData = async () => {
+      const pluginData = await window.knowbook.getPluginHomeData()
+      if (!mounted) {
+        return
+      }
+
+      setHomeData((current) => ({ ...current, ...pluginData }))
+    }
+    const requestPluginHomeDataRefresh = createTrailingSingleFlightRefresh(refreshPluginHomeData)
 
     void requestHomeDataRefresh().catch((error) => {
       console.warn('Failed to load home data.', error)
@@ -101,15 +110,21 @@ export function useAppShellState() {
       }
     })
 
-    const unsubscribe = window.knowbook.onWorkspaceMutated(() => {
+    const unsubscribeWorkspace = window.knowbook.onWorkspaceMutated(() => {
       void requestHomeDataRefresh().catch((error) => {
         console.warn('Failed to refresh workspace after external mutation.', error)
+      })
+    })
+    const unsubscribePlugins = window.knowbook.onPluginsMutated(() => {
+      void requestPluginHomeDataRefresh().catch((error) => {
+        console.warn('Failed to refresh plugin state.', error)
       })
     })
 
     return () => {
       mounted = false
-      unsubscribe()
+      unsubscribeWorkspace()
+      unsubscribePlugins()
     }
   }, [])
 

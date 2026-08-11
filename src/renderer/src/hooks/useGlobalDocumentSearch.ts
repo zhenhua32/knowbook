@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentCatalogEntry, GlobalSearchResult } from '@shared/contracts'
 
 type UseGlobalDocumentSearchParams = {
@@ -11,6 +11,18 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchRequestSequenceRef = useRef(0)
+
+  const cancelPendingSearch = useCallback(() => {
+    searchRequestSequenceRef.current += 1
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current)
+      searchTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => cancelPendingSearch, [cancelPendingSearch])
 
   const openGlobalSearch = useCallback(() => {
     setIsGlobalSearchOpen(true)
@@ -19,12 +31,15 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   }, [])
 
   const closeGlobalSearch = useCallback(() => {
+    cancelPendingSearch()
     setIsGlobalSearchOpen(false)
     setGlobalSearchQuery('')
     setGlobalSearchResults([])
-  }, [])
+    setGlobalSearchLoading(false)
+  }, [cancelPendingSearch])
 
-  const updateGlobalSearchQuery = useCallback(async (query: string) => {
+  const updateGlobalSearchQuery = useCallback((query: string) => {
+    cancelPendingSearch()
     setGlobalSearchQuery(query)
 
     if (!query.trim()) {
@@ -34,13 +49,25 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
     }
 
     setGlobalSearchLoading(true)
-    try {
-      const results = await window.knowbook.searchDocuments(query)
-      setGlobalSearchResults(results)
-    } finally {
-      setGlobalSearchLoading(false)
-    }
-  }, [])
+    const requestSequence = searchRequestSequenceRef.current
+    searchTimerRef.current = setTimeout(() => {
+      searchTimerRef.current = null
+      void window.knowbook.searchDocuments(query).then((results) => {
+        if (searchRequestSequenceRef.current === requestSequence) {
+          setGlobalSearchResults(results)
+        }
+      }).catch((error) => {
+        if (searchRequestSequenceRef.current === requestSequence) {
+          setGlobalSearchResults([])
+          console.warn('Failed to search documents.', error)
+        }
+      }).finally(() => {
+        if (searchRequestSequenceRef.current === requestSequence) {
+          setGlobalSearchLoading(false)
+        }
+      })
+    }, 160)
+  }, [cancelPendingSearch])
 
   const handleGlobalSearchNavigate = useCallback((result: GlobalSearchResult) => {
     const document = documentCatalog.find((entry) => entry.id === result.documentId)

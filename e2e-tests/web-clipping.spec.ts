@@ -307,6 +307,7 @@ test.describe('Web Clipping @electron', () => {
         await getWebClipUrlInput(page).fill(sourceServer.articleUrl)
         await page.getByRole('button', { name: uiText('Clip webpage', '剪藏网页') }).click()
 
+        await expect(getTreeButton(page, articleTitle)).toHaveClass(/tree-button-active/, { timeout: 20_000 })
         await expect(await getTitleInput(page)).toHaveValue(articleTitle)
         await expect(page.locator('.block-rich-media-image-card').first()).toBeVisible()
 

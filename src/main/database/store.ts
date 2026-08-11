@@ -54,7 +54,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 1
+const CURRENT_DATABASE_SCHEMA_VERSION = 2
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -173,6 +173,10 @@ interface ExportBlockRow {
   sort_order: number
   language: string | null
   highlight: string | null
+}
+
+interface ExportDocumentBlockRow extends ExportBlockRow {
+  document_id: string
 }
 
 interface BlockTreeRow {
@@ -301,6 +305,8 @@ export interface ExportStandaloneDatabase {
 
 export class KnowbookStore {
   private readonly db: SqliteDatabase
+  private deferredLinkResyncDepth = 0
+  private deferredFullLinkResyncRequested = false
 
   constructor(private readonly databasePath: string) {
     mkdirSync(dirname(databasePath), { recursive: true })
@@ -333,6 +339,10 @@ export class KnowbookStore {
         this.migrateToSchemaVersion1()
         this.db.pragma('user_version = 1')
       }
+      if (schemaVersion < 2) {
+        this.migrateToSchemaVersion2()
+        this.db.pragma('user_version = 2')
+      }
     })
   }
 
@@ -355,6 +365,23 @@ export class KnowbookStore {
     this.ensureHomeProjectionIndexes()
     this.seed()
     this.resyncLinksForAllDocuments()
+  }
+
+  private migrateToSchemaVersion2(): void {
+    this.db.exec(`
+      DELETE FROM document_search;
+      INSERT INTO document_search(document_id, title, path, summary)
+      SELECT id, title, path, summary FROM documents;
+
+      DELETE FROM block_search;
+      INSERT INTO block_search(block_id, document_id, content)
+      SELECT id, document_id, content FROM blocks;
+
+      CREATE INDEX IF NOT EXISTS idx_documents_updated_at
+        ON documents(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_blocks_document_sort
+        ON blocks(document_id, sort_order);
+    `)
   }
 
   getHomeData(backupRoot: string): HomeData {
@@ -700,6 +727,18 @@ export class KnowbookStore {
     const normalizedTitle = this.generateSiblingTitle(document.parent_id, requestedTitle, document.id)
     const normalizedSummary = input.summary.trim()
     const normalizedBlocks = this.normalizeBlocks(input.blocks)
+    const persistedBlocks = this.buildPersistedBlocks(normalizedBlocks).map((block, index) => ({
+      ...block,
+      sortOrder: index,
+      tagsJson: JSON.stringify(this.normalizeBlockTags(block.tags))
+    }))
+    const existingBlocks = this.db.prepare(`
+      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
+      FROM blocks
+      WHERE document_id = ?
+    `).all(documentId) as ExportBlockRow[]
+    const existingBlockById = new Map(existingBlocks.map((block) => [block.id, block]))
+    const persistedBlockIds = new Set(persistedBlocks.map((block) => block.id))
     const oldPath = document.path
     const newPath = parentPath ? `${parentPath}/${normalizedTitle}` : normalizedTitle
     const pathChangedDocuments = newPath !== oldPath
@@ -724,10 +763,16 @@ export class KnowbookStore {
       SET path = ? || substr(path, ?)
       WHERE path LIKE ? ESCAPE '\\'
     `)
-    const deleteBlocksStatement = this.db.prepare('DELETE FROM blocks WHERE document_id = ?')
+    const deleteBlockStatement = this.db.prepare('DELETE FROM blocks WHERE id = ? AND document_id = ?')
     const insertBlockStatement = this.db.prepare(`
       INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, highlight, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const updateBlockStatement = this.db.prepare(`
+      UPDATE blocks
+      SET parent_block_id = ?, sort_order = ?, type = ?, content = ?, checked = ?, depth = ?,
+        tags_json = ?, language = ?, highlight = ?, updated_at = ?
+      WHERE id = ? AND document_id = ?
     `)
 
     const transaction = this.db.transaction(() => {
@@ -738,24 +783,65 @@ export class KnowbookStore {
         updateDescendantsStatement.run(`${newPath}/`, oldPrefix.length + 1, `${this.escapeLikePattern(oldPath)}/%`)
       }
 
-      deleteBlocksStatement.run(documentId)
-      this.buildPersistedBlocks(normalizedBlocks).forEach((block, index) => {
-        insertBlockStatement.run(
-          block.id,
-          documentId,
-          block.parentBlockId,
-          index,
-          block.type,
-          block.content,
-          block.checked ? 1 : 0,
-          block.depth,
-          JSON.stringify(this.normalizeBlockTags(block.tags)),
-          block.language ?? null,
-          block.highlight ?? null,
-          now,
-          now
-        )
-      })
+      for (const block of persistedBlocks) {
+        const existing = existingBlockById.get(block.id)
+        const checked = block.checked ? 1 : 0
+        const language = block.language ?? null
+        const highlight = block.highlight ?? null
+        const changed = !existing
+          || existing.parent_block_id !== block.parentBlockId
+          || existing.sort_order !== block.sortOrder
+          || existing.type !== block.type
+          || existing.content !== block.content
+          || existing.checked !== checked
+          || existing.depth !== block.depth
+          || (existing.tags_json ?? '[]') !== block.tagsJson
+          || existing.language !== language
+          || existing.highlight !== highlight
+
+        if (!changed) {
+          continue
+        }
+
+        if (existing) {
+          updateBlockStatement.run(
+            block.parentBlockId,
+            block.sortOrder,
+            block.type,
+            block.content,
+            checked,
+            block.depth,
+            block.tagsJson,
+            language,
+            highlight,
+            now,
+            block.id,
+            documentId
+          )
+        } else {
+          insertBlockStatement.run(
+            block.id,
+            documentId,
+            block.parentBlockId,
+            block.sortOrder,
+            block.type,
+            block.content,
+            checked,
+            block.depth,
+            block.tagsJson,
+            language,
+            highlight,
+            now,
+            now
+          )
+        }
+      }
+
+      for (const existing of existingBlocks) {
+        if (!persistedBlockIds.has(existing.id)) {
+          deleteBlockStatement.run(existing.id, documentId)
+        }
+      }
 
       this.resyncLinksForReferenceChanges(changedReferenceTokens, [documentId])
     })
@@ -1257,15 +1343,50 @@ export class KnowbookStore {
     return this.readSetting('ai.apiKey')
   }
 
-  getSemanticSearchCandidates(input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> = {}): SemanticSearchCandidate[] {
-    const documents = input.excludeDocumentId
+  getSemanticSearchCandidates(
+    input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> & Partial<Pick<SearchSemanticNotesInput, 'query'>> = {}
+  ): SemanticSearchCandidate[] {
+    const normalizedQuery = input.query?.trim() ?? ''
+    const likeQuery = `%${normalizedQuery}%`
+    const documents = normalizedQuery
       ? this.db.prepare(`
+        WITH matched_documents AS (
+          SELECT document_id
+          FROM document_search
+          WHERE title LIKE ? OR path LIKE ? OR summary LIKE ?
+          LIMIT 500
+        ), matched_blocks AS (
+          SELECT document_id
+          FROM block_search
+          WHERE content LIKE ?
+          LIMIT 500
+        ), matched AS (
+          SELECT document_id FROM matched_documents
+          UNION
+          SELECT document_id FROM matched_blocks
+        )
+        SELECT d.id, d.title, d.path, d.summary
+        FROM documents AS d
+        INNER JOIN matched AS m ON m.document_id = d.id
+        WHERE (? IS NULL OR d.id != ?)
+        ORDER BY d.path ASC
+        LIMIT 500
+      `).all(
+        likeQuery,
+        likeQuery,
+        likeQuery,
+        likeQuery,
+        input.excludeDocumentId ?? null,
+        input.excludeDocumentId ?? null
+      ) as SemanticSearchDocumentRow[]
+      : input.excludeDocumentId
+        ? this.db.prepare(`
         SELECT id, title, path, summary
         FROM documents
         WHERE id != ?
         ORDER BY path ASC
       `).all(input.excludeDocumentId) as SemanticSearchDocumentRow[]
-      : this.db.prepare(`
+        : this.db.prepare(`
         SELECT id, title, path, summary
         FROM documents
         ORDER BY path ASC
@@ -1339,51 +1460,37 @@ export class KnowbookStore {
     const normalizedQuery = query.trim()
     const likeQuery = `%${normalizedQuery}%`
 
-    if (excludeDocumentId) {
+    if (!normalizedQuery) {
       return this.db.prepare(`
         SELECT id, title, path
         FROM documents
-        WHERE id != ?
-          AND (? = '' OR title LIKE ? OR path LIKE ?)
-        ORDER BY
-          CASE
-            WHEN title = ? THEN 0
-            WHEN path = ? THEN 1
-            WHEN title LIKE ? THEN 2
-            ELSE 3
-          END,
-          LENGTH(path) ASC,
-          path ASC
+        WHERE (? IS NULL OR id != ?)
+        ORDER BY LENGTH(path) ASC, path ASC
         LIMIT 8
-      `).all(
-        excludeDocumentId,
-        normalizedQuery,
-        likeQuery,
-        likeQuery,
-        normalizedQuery,
-        normalizedQuery,
-        `${normalizedQuery}%`
-      ) as DocumentSuggestion[]
+      `).all(excludeDocumentId, excludeDocumentId) as DocumentSuggestion[]
     }
 
     return this.db.prepare(`
-      SELECT id, title, path
-      FROM documents
-      WHERE (? = '' OR title LIKE ? OR path LIKE ?)
+      SELECT d.id, d.title, d.path
+      FROM document_search AS ds
+      INNER JOIN documents AS d ON d.id = ds.document_id
+      WHERE (ds.title LIKE ? OR ds.path LIKE ?)
+        AND (? IS NULL OR d.id != ?)
       ORDER BY
         CASE
-          WHEN title = ? THEN 0
-          WHEN path = ? THEN 1
-          WHEN title LIKE ? THEN 2
+          WHEN d.title = ? THEN 0
+          WHEN d.path = ? THEN 1
+          WHEN d.title LIKE ? THEN 2
           ELSE 3
         END,
-        LENGTH(path) ASC,
-        path ASC
+        LENGTH(d.path) ASC,
+        d.path ASC
       LIMIT 8
     `).all(
-      normalizedQuery,
       likeQuery,
       likeQuery,
+      excludeDocumentId,
+      excludeDocumentId,
       normalizedQuery,
       normalizedQuery,
       `${normalizedQuery}%`
@@ -1398,12 +1505,13 @@ export class KnowbookStore {
     const likeQuery = `%${normalizedQuery}%`
 
     const docMatches = this.db.prepare(`
-      SELECT id, title, path, summary
-      FROM documents
-      WHERE title LIKE ? OR summary LIKE ?
+      SELECT d.id, d.title, d.path, d.summary
+      FROM document_search AS ds
+      INNER JOIN documents AS d ON d.id = ds.document_id
+      WHERE ds.title LIKE ? OR ds.summary LIKE ?
       ORDER BY
-        CASE WHEN title LIKE ? THEN 0 ELSE 1 END,
-        LENGTH(path) ASC
+        CASE WHEN ds.title LIKE ? THEN 0 ELSE 1 END,
+        LENGTH(d.path) ASC
       LIMIT 5
     `).all(likeQuery, likeQuery, `%${normalizedQuery}%`) as Array<{
       id: string; title: string; path: string; summary: string
@@ -1412,9 +1520,10 @@ export class KnowbookStore {
     const blockMatches = this.db.prepare(`
       SELECT b.id AS block_id, b.type AS block_type, b.content AS block_content,
              d.id AS document_id, d.title AS document_title, d.path AS document_path
-      FROM blocks AS b
+      FROM block_search AS bs
+      INNER JOIN blocks AS b ON b.id = bs.block_id
       INNER JOIN documents AS d ON d.id = b.document_id
-      WHERE b.content LIKE ?
+      WHERE bs.content LIKE ?
       ORDER BY LENGTH(b.content) ASC
       LIMIT 20
     `).all(likeQuery) as Array<{
@@ -1488,12 +1597,17 @@ export class KnowbookStore {
       fieldValuesByDocumentId.set(row.document_id, fieldValues)
     }
 
-    const blocksStatement = this.db.prepare(`
-      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
+    const blockRows = this.db.prepare(`
+      SELECT id, document_id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, highlight
       FROM blocks
-      WHERE document_id = ?
-      ORDER BY sort_order ASC
-    `)
+      ORDER BY document_id ASC, sort_order ASC
+    `).all() as ExportDocumentBlockRow[]
+    const blocksByDocumentId = new Map<string, ExportDocumentBlockRow[]>()
+    for (const block of blockRows) {
+      const blocks = blocksByDocumentId.get(block.document_id) ?? []
+      blocks.push(block)
+      blocksByDocumentId.set(block.document_id, blocks)
+    }
 
     return documents.map((document) => ({
       id: document.id,
@@ -1503,7 +1617,7 @@ export class KnowbookStore {
       updatedAt: document.updated_at,
       documentDatabaseColumns: documentDatabaseColumns.map((column) => ({ ...column, options: [...column.options] })),
       documentDatabaseFieldValues: { ...(fieldValuesByDocumentId.get(document.id) ?? {}) },
-      blocks: (blocksStatement.all(document.id) as ExportBlockRow[]).map((block) => ({
+      blocks: (blocksByDocumentId.get(document.id) ?? []).map((block) => ({
         id: block.id,
         type: block.type,
         content: block.content,
@@ -1520,6 +1634,9 @@ export class KnowbookStore {
 
   getExportStandaloneDatabases(): ExportStandaloneDatabase[] {
     const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
+    const documentPathById = new Map(
+      this.getAllDocumentSnapshots().map((document) => [document.id, document.path])
+    )
 
     return this.getDatabases()
       .filter((database) => database.id !== defaultDatabaseId)
@@ -1533,7 +1650,7 @@ export class KnowbookStore {
         entities: this.getDatabaseEntities(database.id).map((entity) => ({
           id: entity.id,
           documentId: entity.documentId,
-          documentPath: entity.documentId ? this.getDocumentSnapshot(entity.documentId)?.path ?? null : null,
+          documentPath: entity.documentId ? documentPathById.get(entity.documentId) ?? null : null,
           createdAt: entity.createdAt,
           updatedAt: entity.updatedAt,
           fieldValues: Object.fromEntries(
@@ -1541,6 +1658,29 @@ export class KnowbookStore {
           ) as Record<string, DocumentDatabaseFieldValue>
         }))
       }))
+  }
+
+  getBackupRevision(): string {
+    const revision = this.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM documents) AS document_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM documents) AS document_updated_at,
+        (SELECT COUNT(*) FROM blocks) AS block_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM blocks) AS block_updated_at,
+        (SELECT COUNT(*) FROM databases) AS database_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM databases) AS database_updated_at,
+        (SELECT COUNT(*) FROM document_database_columns) AS column_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM document_database_columns) AS column_updated_at,
+        (SELECT COUNT(*) FROM database_saved_views) AS view_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM database_saved_views) AS view_updated_at,
+        (SELECT COUNT(*) FROM database_entities) AS entity_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM database_entities) AS entity_updated_at,
+        (SELECT COUNT(*) FROM database_entity_values) AS entity_value_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM database_entity_values) AS entity_value_updated_at,
+        (SELECT COUNT(*) FROM document_database_values) AS document_value_count,
+        (SELECT COALESCE(MAX(updated_at), '') FROM document_database_values) AS document_value_updated_at
+    `).get() as Record<string, string | number>
+    return JSON.stringify(revision)
   }
 
   saveSetting(key: string, value: string): void {
@@ -2041,6 +2181,27 @@ export class KnowbookStore {
     return this.db.transaction(operation)()
   }
 
+  runInBulkDocumentMutation<T>(operation: () => T): T {
+    return this.runInTransaction(() => {
+      this.deferredLinkResyncDepth += 1
+      try {
+        const result = operation()
+        this.deferredLinkResyncDepth -= 1
+        if (this.deferredLinkResyncDepth === 0 && this.deferredFullLinkResyncRequested) {
+          this.deferredFullLinkResyncRequested = false
+          this.resyncLinksForAllDocuments()
+        }
+        return result
+      } catch (error) {
+        this.deferredLinkResyncDepth -= 1
+        if (this.deferredLinkResyncDepth === 0) {
+          this.deferredFullLinkResyncRequested = false
+        }
+        throw error
+      }
+    })
+  }
+
   private escapeLikePattern(value: string): string {
     return value.replace(/[\\%_]/g, (character) => `\\${character}`)
   }
@@ -2493,6 +2654,11 @@ export class KnowbookStore {
     referenceTokens: Iterable<string>,
     additionalSourceDocumentIds: Iterable<string> = []
   ): void {
+    if (this.deferredLinkResyncDepth > 0) {
+      this.deferredFullLinkResyncRequested = true
+      return
+    }
+
     const normalizedReferenceTokens = new Set(
       [...referenceTokens]
         .map((token) => token.trim())

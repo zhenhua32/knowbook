@@ -398,6 +398,13 @@ export interface HomeData {
   pluginHost?: PluginHostInfo
 }
 
+export interface PluginHomeData {
+  plugins: PluginDescriptor[]
+  pluginDashboardCards: PluginDashboardCard[]
+  pluginDocumentActions: PluginDocumentAction[]
+  pluginHost: PluginHostInfo
+}
+
 export type UpdateDocumentResult =
   | {
       requiresFullRefresh: true
@@ -570,7 +577,9 @@ export interface UpdatePluginSettingInput {
 
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
+  getPluginHomeData: () => Promise<PluginHomeData>
   onWorkspaceMutated: (listener: () => void) => () => void
+  onPluginsMutated: (listener: () => void) => () => void
   getAppUpdateState: () => Promise<AppUpdateState>
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>

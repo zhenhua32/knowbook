@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
@@ -10,9 +10,9 @@ import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
 import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
-type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
-type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
-type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex'> & {
+type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
+type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
+type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'draftBlockCount' | 'getDraftBlocks' | 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex'> & {
   setSelectedSlashCommandIndex: Dispatch<SetStateAction<number>>
 }
 type OutlinePanelProps = ComponentProps<typeof DocumentOutlinePanel>
@@ -35,7 +35,9 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   dragOverBlockDepth: number | null
   dragOverBlockIndex: number | null
   draggingBlockIndex: number | null
-  getVisibleBlocks: (blocks: DocumentBlockDraft[]) => DocumentBlockDraft[]
+  draftBlocks: DocumentBlockDraft[]
+  getDraftBlocks: () => DocumentBlockDraft[]
+  getVisibleBlockEntries: (blocks: DocumentBlockDraft[]) => Array<{ block: DocumentBlockDraft; index: number }>
   insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
   isBlockSelected: (index: number) => boolean
@@ -63,7 +65,6 @@ export function useDocumentsBlockEditorPresentation({
   beginBlockDrag,
   blockSearchQuery,
   blockSuggestions,
-  blockHasChildren,
   blockTextareaRefs,
   BLOCK_INDENT_SIZE,
   canMoveSelectedRange,
@@ -81,6 +82,7 @@ export function useDocumentsBlockEditorPresentation({
   deleteSelectedBlocks,
   dismissSlashCommand,
   draftBlocks,
+  getDraftBlocks,
   dragOverBlockDepth,
   dragOverBlockIndex,
   draggingBlockIndex,
@@ -94,7 +96,7 @@ export function useDocumentsBlockEditorPresentation({
   getDraggedBlockDepthPreview,
   getMultiBlockOperationRange,
   getVisibleBlockCountInRange,
-  getVisibleBlocks,
+  getVisibleBlockEntries,
   handleBlockContentChange,
   handleBlockMouseEnter,
   handleBlockPaste,
@@ -140,8 +142,14 @@ export function useDocumentsBlockEditorPresentation({
       return []
     }
 
-    return getVisibleBlocks(draftBlocks).map((block) => {
-      const index = draftBlocks.indexOf(block)
+    const childParentIds = new Set(
+      draftBlocks
+        .map((block) => block.parentBlockId?.trim())
+        .filter((parentBlockId): parentBlockId is string => Boolean(parentBlockId))
+    )
+    const numberedCountsByDepth = new Map<number, number>()
+
+    return getVisibleBlockEntries(draftBlocks).map(({ block, index }) => {
       const dropPreview =
         draggingBlockIndex !== null && dragOverBlockIndex === index
           ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
@@ -151,22 +159,22 @@ export function useDocumentsBlockEditorPresentation({
 
       let numberLabel = ''
       if (block.type === 'numbered-list') {
-        let count = 0
-        for (let currentIndex = index; currentIndex >= 0; currentIndex -= 1) {
-          const candidateBlock = draftBlocks[currentIndex]
-          if (candidateBlock.type !== 'numbered-list' || candidateBlock.depth < block.depth) {
-            break
-          }
-          if (candidateBlock.depth === block.depth) {
-            count += 1
+        for (const depth of numberedCountsByDepth.keys()) {
+          if (depth > block.depth) {
+            numberedCountsByDepth.delete(depth)
           }
         }
+        const count = (numberedCountsByDepth.get(block.depth) ?? 0) + 1
+        numberedCountsByDepth.set(block.depth, count)
         numberLabel = `${count}.`
+      } else {
+        numberedCountsByDepth.clear()
       }
 
       return {
         block,
         dropPreview,
+        hasChildren: Boolean(block.id && childParentIds.has(block.id)),
         indentPx,
         index,
         isSelected,
@@ -184,7 +192,7 @@ export function useDocumentsBlockEditorPresentation({
     draggingBlockIndex,
     draftBlocks,
     getBlockDropPreview,
-    getVisibleBlocks,
+    getVisibleBlockEntries,
     blockSearchQuery,
     isBlockSelected,
     isNestableBlock,
@@ -312,63 +320,67 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
+  const rowActions = useStableCallbackProps({
+    adjustBlockDepth,
+    adjustSelectedBlocksDepth,
+    applySlashCommand,
+    beginBlockDrag,
+    canMoveSelectedRange,
+    captureBlockCursor,
+    continueBlockAt,
+    deleteSelectedBlocks,
+    dismissSlashCommand,
+    downgradeBlockAt,
+    dropBlockAt,
+    duplicateDraftBlock,
+    duplicateSelectedBlocks,
+    endBlockDrag,
+    endBlockRangeSelection,
+    getDraggedBlockDepthPreview,
+    getMultiBlockOperationRange,
+    getVisibleBlockCountInRange,
+    handleBlockContentChange,
+    handleBlockMouseEnter,
+    handleBlockPaste,
+    insertDraftBlockAt,
+    isSelectionCoherent,
+    mergeWithPreviousBlock,
+    moveDraftBlockBySibling,
+    moveSelectedBlocks,
+    navigateInlineReferenceAtCursor,
+    notifyBlockMouseDown,
+    onOpenSelectionAiEditor,
+    removeSelectedBlockRange,
+    selectAllBlocks,
+    selectBlockRange,
+    setDragOverBlockDepth,
+    setDragOverBlockIndex,
+    setSelectedSlashCommandIndex,
+    splitDraftBlock,
+    toggleBlockCollapse,
+    updateBlockHighlight,
+    updateDraftBlock
+  })
+
   const blockEditorRowSharedProps: SharedBlockEditorRowProps | null = selectedDocument
     ? {
+        ...rowActions,
         activeBlockIndex,
         activeSlashCommand,
         activeSlashContext,
-        adjustBlockDepth,
-        adjustSelectedBlocksDepth,
-        applySlashCommand,
-        beginBlockDrag,
-        blockHasChildren,
         blockTextareaRefs,
         BLOCK_INDENT_SIZE,
-        canMoveSelectedRange,
-        captureBlockCursor,
         collapsedBlockIds,
-        continueBlockAt,
-        deleteSelectedBlocks,
-        dismissSlashCommand,
-        draftBlocks,
-        downgradeBlockAt,
-        dropBlockAt,
-        duplicateDraftBlock,
-        duplicateSelectedBlocks,
-        endBlockDrag,
-        endBlockRangeSelection,
+        draftBlockCount: draftBlocks.length,
         filteredSlashCommands,
-        getDraggedBlockDepthPreview,
-        getMultiBlockOperationRange,
-        getVisibleBlockCountInRange,
-        handleBlockContentChange,
-        handleBlockMouseEnter,
-        handleBlockPaste,
-        insertDraftBlockAt,
+        getDraftBlocks,
         isBlockRangeSelecting,
         isHighlighted: false,
-        isSelectionCoherent,
         isZh,
-        mergeWithPreviousBlock,
-        moveDraftBlockBySibling,
-        moveSelectedBlocks,
-        navigateInlineReferenceAtCursor,
-         notifyBlockMouseDown,
-         onOpenSelectionAiEditor,
-         removeSelectedBlockRange,
-        selectAllBlocks,
-        selectBlockRange,
         selectedBlockCount,
         selectedBlockRange,
         selectedDocument,
-        setDragOverBlockDepth,
-        setDragOverBlockIndex,
-        setSelectedSlashCommandIndex,
-        splitDraftBlock,
-        toggleBlockCollapse,
-        ui,
-        updateBlockHighlight,
-        updateDraftBlock
+        ui
       }
     : null
 
@@ -380,6 +392,18 @@ export function useDocumentsBlockEditorPresentation({
     selectionToolbarProps,
     visibleEditorRows
   }
+}
+
+function useStableCallbackProps<T extends Record<string, (...args: any[]) => any>>(callbacks: T): T {
+  const callbacksRef = useRef(callbacks)
+  callbacksRef.current = callbacks
+
+  return useMemo(() => Object.fromEntries(
+    Object.keys(callbacks).map((key) => [
+      key,
+      (...args: any[]) => callbacksRef.current[key](...args)
+    ])
+  ) as T, [])
 }
 
 function getBlockConversionLabel(type: DocumentBlock['type']): string {

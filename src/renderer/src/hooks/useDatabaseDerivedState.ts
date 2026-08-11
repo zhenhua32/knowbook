@@ -102,11 +102,15 @@ export function useDatabaseDerivedState({
   const databasePageHint = databaseWorkspaceView === 'standalone' ? uiStandaloneDatabasesHint : uiDocumentCatalogHint
   const isDocumentCatalogViewActive = isDatabasePageActive && databaseWorkspaceView === 'catalog'
   const trimmedDatabaseEntityFilterQuery = databaseEntityFilterQuery.trim().toLowerCase()
+  const documentCatalogById = useMemo(
+    () => new Map(documentCatalog.map((document) => [document.id, document])),
+    [documentCatalog]
+  )
 
   const filteredStandaloneDatabaseEntityRows = useMemo(() => {
     const standaloneDatabaseEntityRows = databaseEntities.map((entity) => {
       const linkedDocument = entity.documentId
-        ? documentCatalog.find((document) => document.id === entity.documentId) ?? null
+        ? documentCatalogById.get(entity.documentId) ?? null
         : null
 
       return {
@@ -142,24 +146,24 @@ export function useDatabaseDerivedState({
       })
       .sort((left, right) => {
         if (databaseEntitySortMode === 'updated-asc') {
-          return new Date(left.entity.updatedAt).getTime() - new Date(right.entity.updatedAt).getTime()
+          return left.entity.updatedAt.localeCompare(right.entity.updatedAt)
         }
 
         if (databaseEntitySortMode === 'created-desc') {
-          return new Date(right.entity.createdAt).getTime() - new Date(left.entity.createdAt).getTime()
+          return right.entity.createdAt.localeCompare(left.entity.createdAt)
         }
 
         if (databaseEntitySortMode === 'created-asc') {
-          return new Date(left.entity.createdAt).getTime() - new Date(right.entity.createdAt).getTime()
+          return left.entity.createdAt.localeCompare(right.entity.createdAt)
         }
 
-        return new Date(right.entity.updatedAt).getTime() - new Date(left.entity.updatedAt).getTime()
+        return right.entity.updatedAt.localeCompare(left.entity.updatedAt)
       })
   }, [
     databaseEntities,
     databaseEntityFilterScope,
     databaseEntitySortMode,
-    documentCatalog,
+    documentCatalogById,
     selectedDatabaseColumns,
     trimmedDatabaseEntityFilterQuery
   ])

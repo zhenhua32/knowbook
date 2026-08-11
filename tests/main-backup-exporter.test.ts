@@ -422,3 +422,37 @@ test('MarkdownBackupService coalesces overlapping exports and allows a fresh exp
   assert.equal(runnerCalls, 2)
   assert.equal(settingWrites, 2)
 })
+
+test('MarkdownBackupService skips unchanged scheduled snapshots and allows a forced export', async () => {
+  let documentReads = 0
+  let runnerCalls = 0
+  let revision = 'revision-1'
+  const store = {
+    getBackupRevision: () => revision,
+    getExportDocuments: () => {
+      documentReads += 1
+      return []
+    },
+    getExportStandaloneDatabases: () => [],
+    saveSetting: () => undefined
+  }
+  const service = new MarkdownBackupService(
+    store as never,
+    'virtual-backup-root',
+    undefined,
+    async () => {
+      runnerCalls += 1
+    }
+  )
+
+  await service.exportAll()
+  await service.exportAll()
+  assert.equal(documentReads, 1)
+  assert.equal(runnerCalls, 1)
+
+  revision = 'revision-2'
+  await service.exportAll()
+  await service.exportAll(true)
+  assert.equal(documentReads, 3)
+  assert.equal(runnerCalls, 3)
+})

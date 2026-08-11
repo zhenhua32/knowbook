@@ -44,6 +44,8 @@ async function writeBackupSnapshotInline(job: BackupExportJob): Promise<void> {
 
 export class MarkdownBackupService {
   private inFlightExport: Promise<BackupResult> | null = null
+  private lastCompletedResult: BackupResult | null = null
+  private lastCompletedRevision: string | null = null
 
   constructor(
     private readonly store: KnowbookStore,
@@ -52,9 +54,15 @@ export class MarkdownBackupService {
     private readonly runExport: BackupExportRunner = writeBackupSnapshotInline
   ) {}
 
-  exportAll(): Promise<BackupResult> {
+  exportAll(force = false): Promise<BackupResult> {
     if (this.inFlightExport) {
       return this.inFlightExport
+    }
+
+    const getBackupRevision = (this.store as KnowbookStore & { getBackupRevision?: () => string }).getBackupRevision
+    const revision = getBackupRevision?.call(this.store) ?? null
+    if (!force && revision && revision === this.lastCompletedRevision && this.lastCompletedResult) {
+      return Promise.resolve(this.lastCompletedResult)
     }
 
     const documents = this.store.getExportDocuments()
@@ -64,6 +72,10 @@ export class MarkdownBackupService {
       standaloneDatabases,
       backupRoot: this.backupRoot,
       assetRoot: this.assetRoot
+    }).then((result) => {
+      this.lastCompletedRevision = revision
+      this.lastCompletedResult = result
+      return result
     })
     this.inFlightExport = exportPromise
     exportPromise.then(

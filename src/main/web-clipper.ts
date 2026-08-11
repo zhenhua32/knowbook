@@ -32,6 +32,7 @@ const MAX_WEB_CLIP_METADATA_BYTES = 32 * 1024
 
 type WebClipperOptions = {
   allowPrivateNetwork?: boolean
+  extractWebClip?: WebClipExtractionRunner
 }
 
 type WebClipFieldKey =
@@ -51,7 +52,7 @@ type WebClipFieldDefinition = {
   options?: string[]
 }
 
-type ExtractedWebClip = {
+export type ExtractedWebClip = {
   title: string
   sourceUrl: string
   sourceSite: string
@@ -64,7 +65,7 @@ type ExtractedWebClip = {
   warnings: string[]
 }
 
-type ExtractedWebClipOverrides = Pick<ImportWebClipPayloadInput,
+export type ExtractedWebClipOverrides = Pick<ImportWebClipPayloadInput,
   'author'
   | 'coverImage'
   | 'excerpt'
@@ -72,6 +73,14 @@ type ExtractedWebClipOverrides = Pick<ImportWebClipPayloadInput,
   | 'sourceSite'
   | 'title'
 >
+
+export type WebClipExtractionInput = {
+  html: string
+  sourceUrl: string
+  overrides?: ExtractedWebClipOverrides
+}
+
+export type WebClipExtractionRunner = (input: WebClipExtractionInput) => Promise<ExtractedWebClip>
 
 type StructuredArticleData = {
   title: string | null
@@ -104,7 +113,7 @@ export class WebClipperService {
     const normalizedInput = normalizeClipWebPageInput(input)
     const sourceUrl = normalizeWebUrl(normalizedInput.url)
     const fetched = await fetchHtmlDocument(sourceUrl, Boolean(this.options.allowPrivateNetwork))
-    const extracted = extractWebClip(fetched.html, fetched.documentUrl)
+    const extracted = await this.extractWebClip({ html: fetched.html, sourceUrl: fetched.documentUrl })
     const canonicalized = fetched.canonicalUrl === extracted.sourceUrl
       ? extracted
       : {
@@ -122,13 +131,17 @@ export class WebClipperService {
 
     let clip: ExtractedWebClip
     if (normalizedInput.html?.trim()) {
-      clip = extractWebClip(normalizedInput.html, sourceUrl, {
-        author: normalizedInput.author,
-        coverImage: normalizedInput.coverImage,
-        excerpt: normalizedInput.excerpt,
-        publishedAt: normalizedInput.publishedAt,
-        sourceSite: normalizedInput.sourceSite,
-        title: normalizedInput.title
+      clip = await this.extractWebClip({
+        html: normalizedInput.html,
+        sourceUrl,
+        overrides: {
+          author: normalizedInput.author,
+          coverImage: normalizedInput.coverImage,
+          excerpt: normalizedInput.excerpt,
+          publishedAt: normalizedInput.publishedAt,
+          sourceSite: normalizedInput.sourceSite,
+          title: normalizedInput.title
+        }
       })
     } else {
       clip = buildExtractedClipFromPayload(normalizedInput, sourceUrl, normalizeImportedBody(normalizedInput))
@@ -136,6 +149,13 @@ export class WebClipperService {
 
     const finalized = await finalizeExtractedWebClip(clip, this.assetRoot, Boolean(this.options.allowPrivateNetwork))
     return this.persistClip(normalizedInput.parentId, finalized)
+  }
+
+  private extractWebClip(input: WebClipExtractionInput): Promise<ExtractedWebClip> {
+    if (this.options.extractWebClip) {
+      return this.options.extractWebClip(input)
+    }
+    return Promise.resolve(extractWebClip(input.html, input.sourceUrl, input.overrides))
   }
 
   private async persistClip(parentId: string | null, clip: ExtractedWebClip): Promise<ClipWebPageResult> {
@@ -348,7 +368,7 @@ function looksLikeScriptChallenge(html: string): boolean {
   return normalized.length < 2_048 && withoutScripts.length < 80
 }
 
-function extractWebClip(html: string, sourceUrl: string, overrides: ExtractedWebClipOverrides = {}): ExtractedWebClip {
+export function extractWebClip(html: string, sourceUrl: string, overrides: ExtractedWebClipOverrides = {}): ExtractedWebClip {
   const dom = new JSDOM(html, { url: sourceUrl })
   const { document } = dom.window
   const structuredData = extractStructuredArticleData(document)

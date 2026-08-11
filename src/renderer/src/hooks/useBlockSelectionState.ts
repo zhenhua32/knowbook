@@ -57,15 +57,14 @@ export function useBlockSelectionState({
 
       const blockId = getNormalizedBlockId(block)
       if (blockId && collapsedBlockIds.has(blockId)) {
-        const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, index)
-        if (subtreeEndIndex > index) {
-          index = subtreeEndIndex
+        while (index + 1 < blocks.length && blocks[index + 1].depth > block.depth) {
+          index += 1
         }
       }
     }
 
     return entries
-  }, [collapsedBlockIds, getBlockSubtreeEndIndex, getNormalizedBlockId])
+  }, [collapsedBlockIds, getNormalizedBlockId])
 
   const getVisibleBlocks = useCallback((blocks: DocumentBlockDraft[]) => {
     return getVisibleBlockEntries(blocks).map(({ block }) => block)

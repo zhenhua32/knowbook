@@ -148,17 +148,18 @@ export function useEditorAssistState({
     }
 
     let mounted = true
-
-    window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
-      if (mounted) {
-        setLinkSuggestions(suggestions)
-      }
-    }).catch((error) => {
-      if (mounted) {
-        setLinkSuggestions([])
-        console.warn('Failed to load document link suggestions.', error)
-      }
-    })
+    const suggestionTimer = setTimeout(() => {
+      window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
+        if (mounted) {
+          setLinkSuggestions(suggestions)
+        }
+      }).catch((error) => {
+        if (mounted) {
+          setLinkSuggestions([])
+          console.warn('Failed to load document link suggestions.', error)
+        }
+      })
+    }, 120)
 
     if (selectedDocumentPresent) {
       const query = activeLinkContext.query.trim().toLowerCase()
@@ -177,6 +178,7 @@ export function useEditorAssistState({
 
     return () => {
       mounted = false
+      clearTimeout(suggestionTimer)
     }
   }, [activeLinkContext, draftBlocks, isEditing, selectedDocumentId, selectedDocumentPresent])
 

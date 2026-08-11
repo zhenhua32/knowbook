@@ -151,17 +151,26 @@ export function useDocumentEditorState({
   }, [normalizeDraftBlocks])
 
   const updateDraftBlock = useCallback((index: number, patch: Partial<DocumentBlockDraft>) => {
-    setDraftBlocks((previous) =>
-      previous.map((block, currentIndex) =>
-        currentIndex === index
-          ? {
-              ...block,
-              ...patch
-            }
-          : block
+    setDraftBlocksState((previous) => {
+      const currentBlock = previous[index]
+      if (!currentBlock) {
+        return previous
+      }
+
+      const nextBlock = { ...currentBlock, ...patch }
+      const nextBlocks = previous.map((block, currentIndex) => currentIndex === index ? nextBlock : block)
+      const changesTreeShape = (
+        ('id' in patch && patch.id !== currentBlock.id)
+        || ('type' in patch && patch.type !== currentBlock.type)
+        || ('depth' in patch && patch.depth !== currentBlock.depth)
+        || ('parentBlockId' in patch && patch.parentBlockId !== currentBlock.parentBlockId)
       )
-    )
-  }, [setDraftBlocks])
+
+      return changesTreeShape ? normalizeDraftBlocks(nextBlocks) : nextBlocks
+    })
+  }, [normalizeDraftBlocks])
+
+  const getDraftBlocks = useCallback(() => draftBlocksRef.current, [])
 
   const updateBlockHighlight = useCallback((index: number, highlight: string | undefined) => {
     updateDraftBlock(index, {
@@ -434,6 +443,7 @@ export function useDocumentEditorState({
     draftSummary,
     draftTitle,
     flushPendingChanges,
+    getDraftBlocks,
     hasPendingDraftChanges,
     isEditing,
     isSaving,

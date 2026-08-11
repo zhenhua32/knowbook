@@ -85,6 +85,7 @@ type RegisteredPlugin = {
   dispose?: () => void
   context?: vm.Context
   isolatedRuntime?: IsolatedPluginRuntime
+  isolatedStateFingerprint?: string
 }
 
 type PluginCommonJsModule = {
@@ -575,6 +576,7 @@ export class PluginHost {
   }
 
   async handleWorkspaceEvent(event: WorkspaceEvent): Promise<void> {
+    let isolatedEventDocuments: DocumentDetail[] | undefined
     for (const plugin of this.plugins.values()) {
       if (plugin.status !== 'running') {
         continue
@@ -585,7 +587,7 @@ export class PluginHost {
         try {
           const output = await runtime.handleWorkspaceEvent(
             event,
-            this.getWorkspaceEventDocuments(event),
+            isolatedEventDocuments ??= this.getWorkspaceEventDocuments(event),
             event.type === 'document.deleted' ? [event.documentId] : []
           )
           if (plugin.isolatedRuntime === runtime) {
@@ -1949,6 +1951,7 @@ export class PluginHost {
     plugin.documentActions.clear()
     plugin.settings.clear()
     plugin.eventHandlers = []
+    plugin.isolatedStateFingerprint = undefined
 
     let snapshot: PluginActivationSnapshot
     try {
@@ -2085,6 +2088,9 @@ export class PluginHost {
     ) {
       throw new Error(`Plugin runtime contribution limit exceeded (${PLUGIN_CONTRIBUTION_LIMIT}).`)
     }
+    const nextFingerprint = JSON.stringify(state)
+    const stateChanged = plugin.isolatedStateFingerprint !== nextFingerprint
+    plugin.isolatedStateFingerprint = nextFingerprint
 
     plugin.status = state.status
     plugin.error = state.error
@@ -2162,7 +2168,9 @@ export class PluginHost {
       plugin.documentActions.clear()
       plugin.eventHandlers = []
     }
-    this.options.onStateChanged?.()
+    if (stateChanged) {
+      this.options.onStateChanged?.()
+    }
   }
 
   private requireMatchingIsolatedPluginId(plugin: RegisteredPlugin, pluginId: string): void {

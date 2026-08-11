@@ -29,6 +29,7 @@ import type {
   DocumentSuggestion,
   GlobalSearchResult,
   HomeData,
+  PluginHomeData,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
   PreviewDocumentBlockAiEditInput,
@@ -74,6 +75,7 @@ import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
+import { WebClipExtractionWorkerRunner } from './web-clip-extract-worker-client'
 import { CoalescedNotifier } from './coalesced-notifier'
 import {
   isSecureStorageUsable,
@@ -87,6 +89,7 @@ type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
+const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
@@ -158,6 +161,14 @@ const workspaceMutationNotifier = new CoalescedNotifier(() => {
   })
 }, WORKSPACE_MUTATION_NOTIFY_DELAY_MS)
 
+const pluginMutationNotifier = new CoalescedNotifier(() => {
+  BrowserWindow.getAllWindows().forEach((window) => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send(PLUGINS_MUTATED_CHANNEL)
+    }
+  })
+}, WORKSPACE_MUTATION_NOTIFY_DELAY_MS)
+
 if (process.env['KNOWBOOK_DISABLE_HARDWARE_ACCELERATION'] === '1') {
   app.disableHardwareAcceleration()
 }
@@ -171,6 +182,9 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   app.quit()
 }
+const earlyWebClipExtractionWorker = hasSingleInstanceLock
+  ? new WebClipExtractionWorkerRunner()
+  : null
 
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
@@ -182,6 +196,7 @@ let backupService: MarkdownBackupService
 let restoreService: MarkdownRestoreService
 let workspaceEventBus: WorkspaceEventBus
 let webClipper: WebClipperService
+let webClipExtractionWorker: WebClipExtractionWorkerRunner
 let webClipBridge: WebClipBridgeService
 let pluginHost: PluginHost
 let appUpdateManager: AppUpdateManager
@@ -206,8 +221,10 @@ function initializeServices(): void {
     parseRestoreMarkdownInWorker
   )
   workspaceEventBus = new WorkspaceEventBus()
+  webClipExtractionWorker = earlyWebClipExtractionWorker ?? new WebClipExtractionWorkerRunner()
   webClipper = new WebClipperService(store, webClipAssetRoot, {
-    allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1'
+    allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1',
+    extractWebClip: webClipExtractionWorker.run
   })
   webClipBridge = new WebClipBridgeService({
     onImport: async (payload: ImportWebClipPayloadInput) => {
@@ -222,7 +239,7 @@ function initializeServices(): void {
     { path: join(userDataRoot, 'plugins'), source: 'user-data' }
   ], app.getVersion(), () => notifyWorkspaceMutation(), {
     runtimeFactory: (pluginId) => new ElectronPluginRuntime(pluginId),
-    onStateChanged: () => notifyWorkspaceMutation()
+    onStateChanged: () => pluginMutationNotifier.notify()
   })
   appUpdateManager = new AppUpdateManager()
   servicesInitialized = true
@@ -381,18 +398,26 @@ function registerWorkspaceEventHandlers(): void {
   })
 }
 
+function getPluginHomeData(): PluginHomeData {
+  const pluginData = pluginHost.getHomeDataSnapshot()
+  return {
+    plugins: pluginData.plugins,
+    pluginDashboardCards: pluginData.dashboardCards,
+    pluginDocumentActions: pluginData.documentActions,
+    pluginHost: pluginData.host
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-home-data', () => {
-    const pluginData = pluginHost.getHomeDataSnapshot()
     const data: HomeData = {
       ...store.getHomeData(backupRoot),
-      plugins: pluginData.plugins,
-      pluginDashboardCards: pluginData.dashboardCards,
-      pluginDocumentActions: pluginData.documentActions,
-      pluginHost: pluginData.host
+      ...getPluginHomeData()
     }
     return data
   })
+
+  ipcMain.handle('knowbook:get-plugin-home-data', () => getPluginHomeData())
 
   ipcMain.handle('knowbook:get-app-update-state', () => {
     return appUpdateManager.getState()
@@ -748,7 +773,7 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:trigger-backup', async () => {
-    const result: BackupResult = await backupService.exportAll()
+    const result: BackupResult = await backupService.exportAll(true)
     return result
   })
 
@@ -1170,6 +1195,7 @@ async function buildSemanticContextNotes(
   }
 
   const candidates = store.getSemanticSearchCandidates({
+    query,
     excludeDocumentId: input.excludeDocumentId ?? null
   })
   if (candidates.length === 0) {
@@ -1261,6 +1287,7 @@ async function runScheduledBackup(): Promise<void> {
 
 async function shutdownServices(): Promise<void> {
   if (!servicesInitialized) {
+    await earlyWebClipExtractionWorker?.destroy()
     return
   }
 
@@ -1269,6 +1296,7 @@ async function shutdownServices(): Promise<void> {
     backupTimer = null
   }
   workspaceMutationNotifier.dispose()
+  pluginMutationNotifier.dispose()
   cancelAllDocumentSummaryGeneration()
 
   try {
@@ -1285,6 +1313,7 @@ async function shutdownServices(): Promise<void> {
 
   const results = await Promise.allSettled([
     webClipBridge.destroy(),
+    webClipExtractionWorker.destroy(),
     pluginHost.destroy()
   ])
   for (const result of results) {

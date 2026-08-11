@@ -27,6 +27,7 @@ import type {
   ElectronApi,
   GlobalSearchResult,
   HomeData,
+  PluginHomeData,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
   PreviewDocumentBlockAiEditInput,
@@ -52,14 +53,23 @@ import type {
 
 const { contextBridge, ipcRenderer } = electron
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
+const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
 
 const api: ElectronApi = {
   getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
+  getPluginHomeData: () => ipcRenderer.invoke('knowbook:get-plugin-home-data') as Promise<PluginHomeData>,
   onWorkspaceMutated: (listener) => {
     const wrapped = () => listener()
     ipcRenderer.on(WORKSPACE_MUTATED_CHANNEL, wrapped)
     return () => {
       ipcRenderer.removeListener(WORKSPACE_MUTATED_CHANNEL, wrapped)
+    }
+  },
+  onPluginsMutated: (listener) => {
+    const wrapped = () => listener()
+    ipcRenderer.on(PLUGINS_MUTATED_CHANNEL, wrapped)
+    return () => {
+      ipcRenderer.removeListener(PLUGINS_MUTATED_CHANNEL, wrapped)
     }
   },
   getAppUpdateState: () => ipcRenderer.invoke('knowbook:get-app-update-state') as Promise<AppUpdateState>,

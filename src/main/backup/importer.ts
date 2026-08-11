@@ -234,7 +234,7 @@ export class MarkdownRestoreService {
         await this.publishRestoreAssets(stagedAssets, publishedAssets)
       }
 
-      return this.store.runInTransaction(() => {
+      return this.store.runInBulkDocumentMutation(() => {
         let created = 0
         let updated = 0
         let deleted = 0

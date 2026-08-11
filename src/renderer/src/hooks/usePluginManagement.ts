@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react'
 import type {
   DocumentDetail,
   HomeData,
@@ -14,7 +14,7 @@ type UsePluginManagementParams = {
   selectedDocumentId: string | null
   selectedDocument: DocumentDetail | null
   ui: UiText
-  onHomeDataChange: (homeData: HomeData) => void
+  onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onDraftSummaryChange: (summary: string) => void
   onMessage: (message: string) => void
@@ -54,6 +54,12 @@ export function usePluginManagement({
     setPluginSettingDrafts(buildPluginSettingDrafts(plugins))
   }, [plugins])
 
+  const refreshPluginHomeData = useCallback(async () => {
+    const refreshed = await window.knowbook.getPluginHomeData()
+    onHomeDataChange((current) => ({ ...current, ...refreshed }))
+    return refreshed
+  }, [onHomeDataChange])
+
   const updatePluginSettingDraft = useCallback((pluginId: string, settingId: string, value: PluginSettingValue) => {
     const draftKey = getPluginSettingDraftKey(pluginId, settingId)
     setPluginSettingDrafts((previous) => ({
@@ -67,8 +73,7 @@ export function usePluginManagement({
 
     try {
       await window.knowbook.setPluginEnabled({ pluginId: plugin.id, enabled })
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
+      await refreshPluginHomeData()
       onMessage(ui.pluginStatusUpdated(plugin.name, enabled))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.pluginStatusUpdateFailed
@@ -76,15 +81,14 @@ export function usePluginManagement({
     } finally {
       setPluginBusyId(null)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const reloadPlugins = useCallback(async () => {
     setPluginInventoryBusy(true)
 
     try {
       await window.knowbook.reloadPlugins()
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
+      await refreshPluginHomeData()
       onMessage(ui.pluginsReloaded)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.pluginsReloadFailed
@@ -92,7 +96,7 @@ export function usePluginManagement({
     } finally {
       setPluginInventoryBusy(false)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const installPluginFromFolder = useCallback(async () => {
     setPluginInventoryBusy(true)
@@ -103,8 +107,7 @@ export function usePluginManagement({
         return
       }
 
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
+      await refreshPluginHomeData()
 
       if (result.operation === 'updated') {
         onMessage(ui.pluginUpdated(result.plugin.name, result.previousVersion ?? (ui.language === 'zh-CN' ? '未知' : 'unknown'), result.plugin.version))
@@ -119,7 +122,7 @@ export function usePluginManagement({
     } finally {
       setPluginInventoryBusy(false)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const removePlugin = useCallback(async (plugin: PluginDescriptor) => {
     const accepted = window.confirm(ui.confirmRemovePlugin(plugin.name))
@@ -131,8 +134,7 @@ export function usePluginManagement({
 
     try {
       await window.knowbook.removePlugin(plugin.id)
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
+      await refreshPluginHomeData()
       onMessage(ui.pluginRemoved(plugin.name))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.pluginRemoveFailed
@@ -140,7 +142,7 @@ export function usePluginManagement({
     } finally {
       setPluginBusyId(null)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const updatePluginSetting = useCallback(async (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => {
     const busyKey = getPluginSettingDraftKey(plugin.id, setting.id)
@@ -152,8 +154,7 @@ export function usePluginManagement({
         settingId: setting.id,
         value
       })
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
+      await refreshPluginHomeData()
       onMessage(ui.pluginSettingSaved(plugin.name, setting.label))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.pluginSettingUpdateFailed
@@ -161,16 +162,15 @@ export function usePluginManagement({
     } finally {
       setPluginSettingBusyKey(null)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const reloadPlugin = useCallback(async (plugin: PluginDescriptor) => {
     setPluginBusyId(plugin.id)
 
     try {
       await window.knowbook.reloadPlugin(plugin.id)
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
-      const refreshedPlugin = (refreshed.plugins ?? []).find((candidate) => candidate.id === plugin.id)
+      const refreshed = await refreshPluginHomeData()
+      const refreshedPlugin = refreshed.plugins.find((candidate) => candidate.id === plugin.id)
 
       if (!refreshedPlugin) {
         onMessage(ui.pluginMissingAfterReload(plugin.name))
@@ -187,7 +187,7 @@ export function usePluginManagement({
     } finally {
       setPluginBusyId(null)
     }
-  }, [onHomeDataChange, onMessage, ui])
+  }, [onMessage, refreshPluginHomeData, ui])
 
   const runPluginDocumentAction = useCallback(async (action: PluginDocumentAction) => {
     if (!selectedDocumentId) {
@@ -205,11 +205,11 @@ export function usePluginManagement({
       })
 
       const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
+        result.refreshDocument ? window.knowbook.getHomeData() : window.knowbook.getPluginHomeData(),
         result.refreshDocument ? window.knowbook.getDocumentDetail(selectedDocumentId) : Promise.resolve(selectedDocument)
       ])
 
-      onHomeDataChange(refreshedHome)
+      onHomeDataChange((current) => ({ ...current, ...refreshedHome }))
       if (result.refreshDocument) {
         onSelectedDocumentChange(refreshedDetail)
         onDraftSummaryChange(refreshedDetail?.summary ?? '')

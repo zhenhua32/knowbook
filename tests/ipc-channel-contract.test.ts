@@ -25,3 +25,11 @@ test('workspace mutation subscription uses the same channel in preload and main'
   assert.equal(preloadChannel, 'knowbook:workspace-mutated')
   assert.equal(mainChannel, preloadChannel)
 })
+
+test('plugin mutation subscription uses the same channel in preload and main', () => {
+  const preloadChannel = preloadSource.match(/PLUGINS_MUTATED_CHANNEL\s*=\s*'([^']+)'/)?.[1]
+  const mainChannel = mainSource.match(/PLUGINS_MUTATED_CHANNEL\s*=\s*'([^']+)'/)?.[1]
+
+  assert.equal(preloadChannel, 'knowbook:plugins-mutated')
+  assert.equal(mainChannel, preloadChannel)
+})

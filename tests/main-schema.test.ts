@@ -27,4 +27,7 @@ test('appSchema includes indices for high-frequency queries', () => {
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id);'), true)
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_blocks_document_id ON blocks(document_id);'), true)
   assert.equal(has('CREATE INDEX IF NOT EXISTS idx_workspace_events_created_at ON workspace_events(created_at);'), true)
+  assert.equal(has('CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5'), true)
+  assert.equal(has('CREATE VIRTUAL TABLE IF NOT EXISTS block_search USING fts5'), true)
+  assert.equal(has("tokenize='trigram'"), true)
 })

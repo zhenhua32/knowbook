@@ -41,13 +41,13 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v1-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v2-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 1)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 2)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
@@ -60,6 +60,8 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
     assert.equal(valueColumnNames.includes('entity_id'), true)
     assert.equal(triggerNames.includes('trg_document_database_columns_database_id_insert'), true)
     assert.equal(triggerNames.includes('trg_database_entities_document_unique_insert'), true)
+    assert.equal(triggerNames.includes('trg_document_search_insert'), true)
+    assert.equal(triggerNames.includes('trg_block_search_update'), true)
 
     const defaultDatabaseId = (migratedDatabase.prepare(`
       SELECT id FROM databases ORDER BY created_at ASC LIMIT 1

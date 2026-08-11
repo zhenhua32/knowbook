@@ -29,13 +29,15 @@ export type BlockEditorRowProps = {
   // Block data
   block: DocumentBlockDraft
   index: number
-  draftBlocks: DocumentBlockDraft[]
+  draftBlockCount: number
+  getDraftBlocks: () => DocumentBlockDraft[]
   selectedDocument: { id: string; title: string }
 
   // Row state
   isSelected: boolean
   isHighlighted: boolean
   isSearchMatch?: boolean
+  hasChildren: boolean
   dropPreview: BlockDropPreview | null
   indentPx: number
   numberLabel: string
@@ -96,7 +98,6 @@ export type BlockEditorRowProps = {
   splitDraftBlock: (index: number, start: number, end: number) => void
 
   // Callbacks: helpers
-  blockHasChildren: (index: number) => boolean
   toggleBlockCollapse: (blockId: string) => void
   isSelectionCoherent: (range: { start: number; end: number }) => boolean
   getVisibleBlockCountInRange: (range: { start: number; end: number }) => number
@@ -143,11 +144,13 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const {
     block,
     index,
-    draftBlocks,
+    draftBlockCount,
+    getDraftBlocks,
     selectedDocument,
     isSelected,
     isHighlighted,
     isSearchMatch,
+    hasChildren,
     dropPreview,
     indentPx,
     numberLabel,
@@ -192,7 +195,6 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     downgradeBlockAt,
     mergeWithPreviousBlock,
     splitDraftBlock,
-    blockHasChildren,
     toggleBlockCollapse,
     isSelectionCoherent,
     getVisibleBlockCountInRange,
@@ -333,7 +335,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         >
           ⋮⋮
         </button>
-        {block.id && blockHasChildren(index) ? (
+        {block.id && hasChildren ? (
           <button
             aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
             className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
@@ -554,7 +556,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 )
                   return
                 const range = getMultiBlockOperationRange(selectedBlockRange)
-                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
+                event.clipboardData.setData('text/plain', serializeDraftBlockRange(getDraftBlocks(), range))
                 event.preventDefault()
               }}
               onCut={(event) => {
@@ -565,7 +567,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 )
                   return
                 const range = getMultiBlockOperationRange(selectedBlockRange)
-                event.clipboardData.setData('text/plain', serializeDraftBlockRange(draftBlocks, range))
+                event.clipboardData.setData('text/plain', serializeDraftBlockRange(getDraftBlocks(), range))
                 event.preventDefault()
                 removeSelectedBlockRange(range)
               }}
@@ -629,7 +631,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                       prev.setSelectionRange(prev.value.length, prev.value.length)
                     }
                     return
-                  } else if (event.key === 'ArrowDown' && atBottom && index < draftBlocks.length - 1) {
+                  } else if (event.key === 'ArrowDown' && atBottom && index < draftBlockCount - 1) {
                     event.preventDefault()
                     const next = blockTextareaRefs.current[index + 1]
                     if (next) {
@@ -650,7 +652,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   if (wouldLeaveBounds || (selectedBlockRange && selectedBlockRange.start !== selectedBlockRange.end)) {
                     event.preventDefault()
                     const targetIndex = event.key === 'ArrowUp' ? index - 1 : index + 1
-                    if (targetIndex >= 0 && targetIndex < draftBlocks.length) {
+                    if (targetIndex >= 0 && targetIndex < draftBlockCount) {
                       selectBlockRange(targetIndex, true)
                     }
                     return

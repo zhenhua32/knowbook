@@ -33,6 +33,57 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE INDEX IF NOT EXISTS idx_blocks_document_id ON blocks(document_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_parent_block_id ON blocks(parent_block_id);
 
+CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
+  document_id UNINDEXED,
+  title,
+  path,
+  summary,
+  tokenize='trigram'
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS block_search USING fts5(
+  block_id UNINDEXED,
+  document_id UNINDEXED,
+  content,
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_insert
+AFTER INSERT ON documents BEGIN
+  INSERT INTO document_search(document_id, title, path, summary)
+  VALUES (new.id, new.title, new.path, new.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_update
+AFTER UPDATE OF title, path, summary ON documents BEGIN
+  DELETE FROM document_search WHERE document_id = old.id;
+  INSERT INTO document_search(document_id, title, path, summary)
+  VALUES (new.id, new.title, new.path, new.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_delete
+AFTER DELETE ON documents BEGIN
+  DELETE FROM document_search WHERE document_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_insert
+AFTER INSERT ON blocks BEGIN
+  INSERT INTO block_search(block_id, document_id, content)
+  VALUES (new.id, new.document_id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_update
+AFTER UPDATE OF document_id, content ON blocks BEGIN
+  DELETE FROM block_search WHERE block_id = old.id;
+  INSERT INTO block_search(block_id, document_id, content)
+  VALUES (new.id, new.document_id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_delete
+AFTER DELETE ON blocks BEGIN
+  DELETE FROM block_search WHERE block_id = old.id;
+END;
+
 CREATE TABLE IF NOT EXISTS links (
   id TEXT PRIMARY KEY,
   source_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,

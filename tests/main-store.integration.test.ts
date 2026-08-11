@@ -717,6 +717,52 @@ test('document suggestions and global search return expected ranked matches', ()
     assert.equal(searchResults.length > 0, true)
     assert.equal(searchResults.some((item) => item.documentId === draftId && item.matchType === 'title'), true)
     assert.equal(searchResults.some((item) => item.documentId === draftId && item.matchType === 'block'), true)
+
+    const detail = store.getDocumentDetail(draftId)
+    assert.ok(detail)
+    store.updateDocument(draftId, {
+      title: detail.title,
+      summary: 'Contains keyword omega',
+      blocks: detail.blocks.map((block) => ({
+        ...block,
+        content: block.content.replaceAll('zeta', 'omega')
+      }))
+    })
+    assert.equal(store.searchDocuments('zeta').some((item) => item.documentId === draftId), false)
+    assert.equal(store.searchDocuments('omega').some((item) => item.documentId === draftId), true)
+    assert.equal(
+      store.getSemanticSearchCandidates({ query: 'omega' }).some((item) => item.documentId === draftId),
+      true
+    )
+  })
+})
+
+test('updateDocument only writes blocks whose persisted fields changed', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+    const detail = store.getDocumentDetail(home.id)
+    assert.ok(detail)
+    assert.equal(detail.blocks.length > 1, true)
+
+    const database = (store as unknown as { db: { exec: (sql: string) => void; prepare: (sql: string) => { get: () => unknown } } }).db
+    database.exec(`
+      CREATE TABLE block_update_audit (block_id TEXT NOT NULL);
+      CREATE TRIGGER audit_block_update AFTER UPDATE ON blocks BEGIN
+        INSERT INTO block_update_audit(block_id) VALUES (new.id);
+      END;
+    `)
+
+    store.updateDocument(home.id, {
+      title: detail.title,
+      summary: detail.summary,
+      blocks: detail.blocks.map((block, index) => ({
+        ...block,
+        content: index === 0 ? `${block.content} changed` : block.content
+      }))
+    })
+
+    const updateCount = database.prepare('SELECT COUNT(*) AS count FROM block_update_audit').get() as { count: number }
+    assert.equal(updateCount.count, 1)
   })
 })
 
