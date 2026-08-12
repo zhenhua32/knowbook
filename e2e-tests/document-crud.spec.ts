@@ -90,6 +90,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(renamedParentTitle)
 
       await getTreeButton(page, childTitle).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(childTitle)
       await expect(page.locator('.document-path')).toContainText(`${renamedParentTitle}/${childTitle}`)
     })
@@ -155,6 +156,50 @@ test.describe('Document CRUD Operations @electron', () => {
     })
   })
 
+  test('moves a document into a parent and back to root by dragging the tree', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const suffix = Date.now().toString(36)
+    const sourceTitle = `E2E Drag Source ${suffix}`
+    const targetTitle = `E2E Drag Target ${suffix}`
+
+    await withElectronApp(async ({ page }) => {
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(sourceTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(targetTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      const targetId = await page.evaluate(async (title) => {
+        const catalog = await window.knowbook.getDocumentCatalog()
+        return catalog.find((document) => document.title === title)?.id ?? null
+      }, targetTitle)
+      expect(targetId).not.toBeNull()
+
+      await getTreeButton(page, sourceTitle).dragTo(getTreeButton(page, targetTitle))
+      await expect.poll(() => page.evaluate(async (source) => {
+        const catalog = await window.knowbook.getDocumentCatalog()
+        const sourceDocument = catalog.find((document) => document.title === source)
+        return sourceDocument ? { parentId: sourceDocument.parentId, path: sourceDocument.path } : null
+      }, sourceTitle)).toEqual({
+        parentId: targetId,
+        path: `${targetTitle}/${sourceTitle}`
+      })
+
+      const nestedSource = getTreeButton(page, sourceTitle)
+      await nestedSource.dragTo(page.locator('.root-drop-zone-compact'))
+      await expect.poll(() => page.evaluate(async (title) => {
+        const catalog = await window.knowbook.getDocumentCatalog()
+        const document = catalog.find((entry) => entry.title === title)
+        return document ? { parentId: document.parentId, path: document.path } : null
+      }, sourceTitle)).toEqual({ parentId: null, path: sourceTitle })
+    })
+  })
+
   test('reconciles a sibling title normalized by the main process', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
@@ -190,6 +235,66 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.flash-message')).toContainText('Document title cannot contain path separators')
       await expect(getTitleInput(page)).toHaveValue('Invalid/Title')
       await expect(page.getByRole('button', { name: uiText('Save', '保存') })).toBeEnabled()
+    })
+  })
+
+  test('deletes a leaf document and removes it from persistent catalog state', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const title = `E2E Delete Leaf ${Date.now().toString(36)}`
+
+    await withElectronApp(async ({ page }) => {
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(title)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+      await expect(getTreeButton(page, title)).toBeVisible()
+
+      page.once('dialog', (dialog) => dialog.accept())
+      await page.getByRole('button', { name: uiText('More actions', '更多操作') }).click()
+      await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Delete', '删除') }).click()
+
+      await expect(getTreeButton(page, title)).toHaveCount(0)
+      await expect.poll(() => page.evaluate(async (documentTitle) => {
+        const catalog = await window.knowbook.getDocumentCatalog()
+        return catalog.some((document) => document.title === documentTitle)
+      }, title)).toBe(false)
+    })
+  })
+
+  test('deleting a parent promotes its child and rewrites the child path', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const suffix = Date.now().toString(36)
+    const parentTitle = `E2E Delete Parent ${suffix}`
+    const childTitle = `E2E Promoted Child ${suffix}`
+
+    await withElectronApp(async ({ page }) => {
+      await page.getByTitle(uiText('New root', '新建根文档')).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(parentTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+
+      await page.getByRole('button', { name: uiText('Add child', '新增子文档') }).click()
+      await ensureDocumentMetadataEditor(page)
+      await getTitleInput(page).fill(childTitle)
+      await page.getByRole('button', { name: uiText('Save', '保存') }).click()
+      await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${childTitle}`)
+
+      await getTreeButton(page, parentTitle).click()
+      page.once('dialog', (dialog) => dialog.accept())
+      await page.getByRole('button', { name: uiText('More actions', '更多操作') }).click()
+      await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Delete', '删除') }).click()
+
+      await expect(getTreeButton(page, parentTitle)).toHaveCount(0)
+      await getTreeButton(page, childTitle).click()
+      await expect(page.locator('.document-path')).toContainText(childTitle)
+      await expect(page.locator('.document-path')).not.toContainText(`${parentTitle}/${childTitle}`)
+      await expect.poll(() => page.evaluate(async (title) => {
+        const catalog = await window.knowbook.getDocumentCatalog()
+        const document = catalog.find((entry) => entry.title === title)
+        return document ? { parentId: document.parentId, path: document.path } : null
+      }, childTitle)).toEqual({ parentId: null, path: childTitle })
     })
   })
 })

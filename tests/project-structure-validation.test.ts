@@ -64,7 +64,8 @@ test('stable Electron E2E specs exist', () => {
     'e2e-tests/plugins.spec.ts',
     'e2e-tests/editor-shortcuts.spec.ts',
     'e2e-tests/editor-multiblock.spec.ts',
-    'e2e-tests/editor-common-operations.spec.ts'
+    'e2e-tests/editor-common-operations.spec.ts',
+    'e2e-tests/editor-workflows.spec.ts'
   ]
 
   for (const file of e2eSpecs) {
