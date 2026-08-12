@@ -14,7 +14,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
-import type { ExportDocument, ExportStandaloneDatabase, KnowbookStore } from '../database/store'
+import { KnowbookStore } from '../database/store'
+import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
@@ -25,21 +26,47 @@ const ESCAPED_DOCUMENT_ROOT_PREFIX = '__knowbook-document-'
 const ASSET_BACKUP_ROOT = '__knowbook/assets'
 const FILE_URL_PATTERN = /file:\/\/\/[^\s<>"')\\\]}]+/g
 
-export interface BackupExportJob {
-  documents: ExportDocument[]
-  standaloneDatabases: ExportStandaloneDatabase[]
+interface BackupExportJobBase {
   backupRoot: string
   assetRoot?: string
 }
 
-export type BackupExportRunner = (job: BackupExportJob) => Promise<void>
-
-export function writeBackupSnapshot(job: BackupExportJob): void {
-  new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(job.documents, job.standaloneDatabases)
+export interface BackupDataExportJob extends BackupExportJobBase {
+  documents: ExportDocument[]
+  standaloneDatabases: ExportStandaloneDatabase[]
 }
 
-async function writeBackupSnapshotInline(job: BackupExportJob): Promise<void> {
-  writeBackupSnapshot(job)
+export interface BackupDatabaseExportJob extends BackupExportJobBase {
+  databasePath: string
+}
+
+export type BackupExportJob = BackupDataExportJob | BackupDatabaseExportJob
+export type BackupExportRunner = (job: BackupExportJob) => Promise<number | void>
+
+export function writeBackupSnapshot(job: BackupExportJob): number {
+  if ('databasePath' in job) {
+    const store = new KnowbookStore(job.databasePath)
+    try {
+      const snapshot = store.runInTransaction(() => ({
+        documents: store.getExportDocuments(),
+        standaloneDatabases: store.getExportStandaloneDatabases()
+      }))
+      new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(
+        snapshot.documents,
+        snapshot.standaloneDatabases
+      )
+      return snapshot.documents.length
+    } finally {
+      store.destroy()
+    }
+  }
+
+  new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(job.documents, job.standaloneDatabases)
+  return job.documents.length
+}
+
+async function writeBackupSnapshotInline(job: BackupExportJob): Promise<number> {
+  return writeBackupSnapshot(job)
 }
 
 export class MarkdownBackupService {
@@ -65,14 +92,28 @@ export class MarkdownBackupService {
       return Promise.resolve(this.lastCompletedResult)
     }
 
-    const documents = this.store.getExportDocuments()
-    const standaloneDatabases = this.store.getExportStandaloneDatabases()
-    const exportPromise = this.performExport({
-      documents,
-      standaloneDatabases,
-      backupRoot: this.backupRoot,
-      assetRoot: this.assetRoot
-    }).then((result) => {
+    const getDatabasePath = (this.store as KnowbookStore & { getDatabasePath?: () => string }).getDatabasePath
+    const databasePath = getDatabasePath?.call(this.store)
+    let job: BackupExportJob
+    let fallbackExported: number
+    if (databasePath) {
+      job = {
+        databasePath,
+        backupRoot: this.backupRoot,
+        assetRoot: this.assetRoot
+      }
+      fallbackExported = this.store.getDocumentCount()
+    } else {
+      const documents = this.store.getExportDocuments()
+      job = {
+        documents,
+        standaloneDatabases: this.store.getExportStandaloneDatabases(),
+        backupRoot: this.backupRoot,
+        assetRoot: this.assetRoot
+      }
+      fallbackExported = documents.length
+    }
+    const exportPromise = this.performExport(job, fallbackExported).then((result) => {
       this.lastCompletedRevision = revision
       this.lastCompletedResult = result
       return result
@@ -97,13 +138,13 @@ export class MarkdownBackupService {
     await this.inFlightExport
   }
 
-  private async performExport(job: BackupExportJob): Promise<BackupResult> {
-    await this.runExport(job)
+  private async performExport(job: BackupExportJob, fallbackExported: number): Promise<BackupResult> {
+    const exported = await this.runExport(job)
     const at = new Date().toISOString()
     this.store.saveSetting('backup.lastRunAt', at)
 
     return {
-      exported: job.documents.length,
+      exported: exported ?? fallbackExported,
       root: this.backupRoot,
       at
     }

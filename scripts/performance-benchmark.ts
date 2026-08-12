@@ -2,8 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
+import { serialize } from 'node:v8'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import { writeBackupSnapshot } from '../src/main/backup/exporter.ts'
+import { encodeDocumentCatalogEntry } from '../src/shared/document-catalog-payload.ts'
 
 interface BenchmarkOptions {
   documentCount: number
@@ -28,6 +30,13 @@ interface BenchmarkStatement {
 interface BenchmarkDatabase {
   prepare(sql: string): BenchmarkStatement
   transaction<T extends (...args: never[]) => unknown>(callback: T): T
+}
+
+interface HomeProjectionInternals {
+  getDefaultDocumentDatabaseId(): string
+  getHomeDocumentCatalogRows(): unknown[]
+  buildDocumentCatalog(columns: unknown[], databaseId: string, rows: unknown[]): unknown[]
+  buildDocumentTree(rows: unknown[]): unknown[]
 }
 
 const LARGE_DOCUMENT_ID = 'performance-large-document'
@@ -187,6 +196,64 @@ async function main(): Promise<void> {
     }
 
     let retainedResultCount = 0
+    const homeProjectionInternals = store as unknown as HomeProjectionInternals
+    const benchmarkDatabase = (store as unknown as { db: BenchmarkDatabase }).db
+    const defaultDatabaseId = homeProjectionInternals.getDefaultDocumentDatabaseId()
+    const databaseColumns = store.getDocumentDatabaseColumns(defaultDatabaseId)
+    const projectionRows = homeProjectionInternals.getHomeDocumentCatalogRows()
+    const homeDataForSerialization = store.getHomeData(join(benchmarkRoot, 'backup'))
+    const { documentTree: _documentTree, ...homeDataPayloadForSerialization } = homeDataForSerialization
+    const tupleHomeDataPayloadForSerialization = {
+      ...homeDataPayloadForSerialization,
+      documentCatalog: homeDataPayloadForSerialization.documentCatalog.map(encodeDocumentCatalogEntry)
+    }
+    const correlatedCatalogQuery = benchmarkDatabase.prepare(`
+      SELECT
+        documents.id,
+        documents.title,
+        documents.path,
+        documents.summary,
+        documents.parent_id,
+        parents.title AS parent_title,
+        documents.updated_at,
+        documents.sort_order,
+        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
+        (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
+        (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
+      FROM documents
+      LEFT JOIN documents AS parents ON parents.id = documents.parent_id
+      ORDER BY documents.path ASC
+    `)
+    const baseCatalogQuery = benchmarkDatabase.prepare(`
+      SELECT
+        documents.id,
+        documents.title,
+        documents.path,
+        documents.summary,
+        documents.parent_id,
+        parents.title AS parent_title,
+        documents.updated_at,
+        documents.sort_order
+      FROM documents
+      LEFT JOIN documents AS parents ON parents.id = documents.parent_id
+      ORDER BY documents.path ASC
+    `)
+    const blockCountsQuery = benchmarkDatabase.prepare(`
+      SELECT document_id, COUNT(*) AS block_count
+      FROM blocks
+      GROUP BY document_id
+    `)
+    const linkCountsQuery = benchmarkDatabase.prepare(`
+      SELECT source_document_id, COUNT(*) AS link_count
+      FROM links
+      GROUP BY source_document_id
+    `)
+    const childCountsQuery = benchmarkDatabase.prepare(`
+      SELECT parent_id, COUNT(*) AS child_count
+      FROM documents
+      WHERE parent_id IS NOT NULL
+      GROUP BY parent_id
+    `)
     metrics.push(
       await measure('global search', 25, () => {
         retainedResultCount += store.searchDocuments('needle-performance-token').length
@@ -204,6 +271,55 @@ async function main(): Promise<void> {
         const homeData = store.getHomeData(join(benchmarkRoot, 'backup'))
         retainedResultCount += homeData.documentCatalog.length
       }, 1)
+    )
+    metrics.push(
+      await measure('home IPC projection', 7, () => {
+        retainedResultCount += store.getHomeDataPayload(join(benchmarkRoot, 'backup')).documentCatalog.length
+      }, 1)
+    )
+    metrics.push(
+      await measure('home catalog SQL aggregation', 15, () => {
+        retainedResultCount += homeProjectionInternals.getHomeDocumentCatalogRows().length
+      }, 2)
+    )
+    metrics.push(
+      await measure('home correlated SQL candidate', 15, () => {
+        retainedResultCount += correlatedCatalogQuery.all().length
+      }, 2)
+    )
+    metrics.push(
+      await measure('home split SQL candidate', 15, () => {
+        retainedResultCount += baseCatalogQuery.all().length
+        retainedResultCount += blockCountsQuery.all().length
+        retainedResultCount += linkCountsQuery.all().length
+        retainedResultCount += childCountsQuery.all().length
+      }, 2)
+    )
+    metrics.push(
+      await measure('home catalog field assembly', 15, () => {
+        retainedResultCount += homeProjectionInternals
+          .buildDocumentCatalog(databaseColumns, defaultDatabaseId, projectionRows).length
+      }, 2)
+    )
+    metrics.push(
+      await measure('home tree assembly', 25, () => {
+        retainedResultCount += homeProjectionInternals.buildDocumentTree(projectionRows).length
+      }, 3)
+    )
+    metrics.push(
+      await measure('home IPC payload serialization', 15, () => {
+        retainedResultCount += serialize(homeDataForSerialization).byteLength
+      }, 2)
+    )
+    metrics.push(
+      await measure('compact home IPC serialization', 15, () => {
+        retainedResultCount += serialize(homeDataPayloadForSerialization).byteLength
+      }, 2)
+    )
+    metrics.push(
+      await measure('tuple home IPC serialization', 15, () => {
+        retainedResultCount += serialize(tupleHomeDataPayloadForSerialization).byteLength
+      }, 2)
     )
     metrics.push(
       await measure('load 1,000-block document', 20, () => {
@@ -246,6 +362,15 @@ async function main(): Promise<void> {
         retainedResultCount += store.getBackupRevision().length
       }, 2)
     )
+    metrics.push(
+      await measure('backup main-thread dispatch', 30, () => {
+        const job = {
+          databasePath: store.getDatabasePath(),
+          backupRoot: join(benchmarkRoot, 'backup')
+        }
+        retainedResultCount += serialize(job).byteLength
+      }, 2)
+    )
 
     if (options.includeBackupIo) {
       metrics.push(
@@ -259,8 +384,7 @@ async function main(): Promise<void> {
       )
     }
 
-    const database = (store as unknown as { db: BenchmarkDatabase }).db
-    const searchPlan = database
+    const searchPlan = benchmarkDatabase
       .prepare(`
         EXPLAIN QUERY PLAN
         SELECT document_id

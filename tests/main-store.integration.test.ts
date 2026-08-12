@@ -379,6 +379,47 @@ test('store installs indexes used by the home data projection', () => {
   })
 })
 
+test('document statistics stay synchronized through document, block, and link mutations', () => {
+  withStore((store, backupRoot) => {
+    const initialHome = store.getHomeData(backupRoot)
+    const product = byPath(initialHome.documentCatalog, 'Home/Product')
+    const roadmap = byPath(initialHome.documentCatalog, 'Home/Product/Roadmap')
+    const initialProductChildren = product.childCount
+
+    const childId = store.createDocument(product.id)
+    let catalog = store.getHomeData(backupRoot).documentCatalog
+    assert.equal(catalog.find((entry) => entry.id === product.id)?.childCount, initialProductChildren + 1)
+    assert.equal(catalog.find((entry) => entry.id === childId)?.blockCount, 2)
+
+    store.updateDocument(childId, {
+      title: 'Statistics child',
+      summary: '',
+      blocks: [
+        { id: 'statistics-link', type: 'paragraph', content: `[[${roadmap.path}]]`, checked: false, depth: 0 },
+        { id: 'statistics-extra', type: 'paragraph', content: 'extra', checked: false, depth: 0 },
+        { id: 'statistics-third', type: 'paragraph', content: 'third', checked: false, depth: 0 }
+      ]
+    })
+    catalog = store.getHomeData(backupRoot).documentCatalog
+    assert.equal(catalog.find((entry) => entry.id === childId)?.blockCount, 3)
+    assert.equal(catalog.find((entry) => entry.id === childId)?.linkCount, 1)
+
+    store.updateDocument(childId, {
+      title: 'Statistics child',
+      summary: '',
+      blocks: [{ id: 'statistics-link', type: 'paragraph', content: 'link removed', checked: false, depth: 0 }]
+    })
+    store.moveDocument(childId, null)
+    catalog = store.getHomeData(backupRoot).documentCatalog
+    assert.equal(catalog.find((entry) => entry.id === childId)?.blockCount, 1)
+    assert.equal(catalog.find((entry) => entry.id === childId)?.linkCount, 0)
+    assert.equal(catalog.find((entry) => entry.id === product.id)?.childCount, initialProductChildren)
+
+    store.deleteDocument(childId)
+    assert.equal(store.getHomeData(backupRoot).documentCatalog.some((entry) => entry.id === childId), false)
+  })
+})
+
 test('database entity writes are atomic when a field is invalid', () => {
   withStore((store) => {
     const database = store.createDatabase({ name: 'Atomic entities' })

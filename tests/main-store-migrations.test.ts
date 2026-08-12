@@ -41,16 +41,18 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v2-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v3-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 2)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 3)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
+      .map((column) => column.name)
+    const documentColumnNames = (migratedDatabase.pragma('table_info(documents)') as Array<{ name: string }>)
       .map((column) => column.name)
     const triggerNames = (migratedDatabase.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name
@@ -58,10 +60,16 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
 
     assert.equal(columnNames.includes('database_id'), true)
     assert.equal(valueColumnNames.includes('entity_id'), true)
+    assert.equal(documentColumnNames.includes('block_count'), true)
+    assert.equal(documentColumnNames.includes('link_count'), true)
+    assert.equal(documentColumnNames.includes('child_count'), true)
     assert.equal(triggerNames.includes('trg_document_database_columns_database_id_insert'), true)
     assert.equal(triggerNames.includes('trg_database_entities_document_unique_insert'), true)
     assert.equal(triggerNames.includes('trg_document_search_insert'), true)
     assert.equal(triggerNames.includes('trg_block_search_update'), true)
+    assert.equal(triggerNames.includes('trg_document_stats_block_insert'), true)
+    assert.equal(triggerNames.includes('trg_document_stats_link_delete'), true)
+    assert.equal(triggerNames.includes('trg_document_stats_child_move'), true)
 
     const defaultDatabaseId = (migratedDatabase.prepare(`
       SELECT id FROM databases ORDER BY created_at ASC LIMIT 1

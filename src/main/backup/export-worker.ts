@@ -3,12 +3,12 @@ import type { BackupExportJob } from './exporter'
 import { writeBackupSnapshot } from './exporter'
 
 type BackupWorkerResponse =
-  | { ok: true }
+  | { ok: true; exported: number }
   | { ok: false; message: string; stack?: string }
 
 try {
-  writeBackupSnapshot(workerData as BackupExportJob)
-  parentPort?.postMessage({ ok: true } satisfies BackupWorkerResponse)
+  const exported = writeBackupSnapshot(workerData as BackupExportJob)
+  parentPort?.postMessage({ ok: true, exported } satisfies BackupWorkerResponse)
 } catch (error) {
   const normalizedError = error instanceof Error ? error : new Error(String(error))
   parentPort?.postMessage({

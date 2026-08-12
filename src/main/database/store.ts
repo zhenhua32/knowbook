@@ -27,6 +27,7 @@ import type {
   DocumentSuggestion,
   DocumentTreeNode,
   HomeData,
+  HomeDataPayload,
   LinkedDocument,
   MoveDocumentDatabaseColumnInput,
   PreviewDocumentBlockAiEditInput,
@@ -54,7 +55,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 2
+const CURRENT_DATABASE_SCHEMA_VERSION = 3
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -347,6 +348,10 @@ export class KnowbookStore {
         this.migrateToSchemaVersion2()
         this.db.pragma('user_version = 2')
       }
+      if (schemaVersion < 3) {
+        this.migrateToSchemaVersion3()
+        this.db.pragma('user_version = 3')
+      }
     })
   }
 
@@ -388,23 +393,114 @@ export class KnowbookStore {
     `)
   }
 
+  private migrateToSchemaVersion3(): void {
+    const columns = this.db.prepare('PRAGMA table_info(documents)').all() as BlockTableInfoRow[]
+    const columnNames = new Set(columns.map((column) => column.name))
+    if (!columnNames.has('block_count')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN block_count INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!columnNames.has('link_count')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN link_count INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!columnNames.has('child_count')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN child_count INTEGER NOT NULL DEFAULT 0')
+    }
+
+    this.db.exec(`
+      UPDATE documents
+      SET
+        block_count = (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id),
+        link_count = (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id),
+        child_count = (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id);
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_insert
+      AFTER INSERT ON blocks BEGIN
+        UPDATE documents SET block_count = block_count + 1 WHERE id = new.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_delete
+      AFTER DELETE ON blocks BEGIN
+        UPDATE documents SET block_count = MAX(0, block_count - 1) WHERE id = old.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_move
+      AFTER UPDATE OF document_id ON blocks
+      WHEN old.document_id != new.document_id BEGIN
+        UPDATE documents SET block_count = MAX(0, block_count - 1) WHERE id = old.document_id;
+        UPDATE documents SET block_count = block_count + 1 WHERE id = new.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_insert
+      AFTER INSERT ON links BEGIN
+        UPDATE documents SET link_count = link_count + 1 WHERE id = new.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_delete
+      AFTER DELETE ON links BEGIN
+        UPDATE documents SET link_count = MAX(0, link_count - 1) WHERE id = old.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_move
+      AFTER UPDATE OF source_document_id ON links
+      WHEN old.source_document_id != new.source_document_id BEGIN
+        UPDATE documents SET link_count = MAX(0, link_count - 1) WHERE id = old.source_document_id;
+        UPDATE documents SET link_count = link_count + 1 WHERE id = new.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_insert
+      AFTER INSERT ON documents
+      WHEN new.parent_id IS NOT NULL BEGIN
+        UPDATE documents SET child_count = child_count + 1 WHERE id = new.parent_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_delete
+      AFTER DELETE ON documents
+      WHEN old.parent_id IS NOT NULL BEGIN
+        UPDATE documents SET child_count = MAX(0, child_count - 1) WHERE id = old.parent_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_move
+      AFTER UPDATE OF parent_id ON documents
+      WHEN old.parent_id IS NOT new.parent_id BEGIN
+        UPDATE documents SET child_count = MAX(0, child_count - 1) WHERE id = old.parent_id;
+        UPDATE documents SET child_count = child_count + 1 WHERE id = new.parent_id;
+      END;
+    `)
+  }
+
   getHomeData(backupRoot: string): HomeData {
+    const projection = this.getHomeDataProjection(backupRoot)
+    return {
+      ...projection.payload,
+      documentTree: this.buildDocumentTree(projection.documentRows)
+    }
+  }
+
+  getHomeDataPayload(backupRoot: string): HomeDataPayload {
+    return this.getHomeDataProjection(backupRoot).payload
+  }
+
+  private getHomeDataProjection(backupRoot: string): {
+    payload: HomeDataPayload
+    documentRows: HomeDocumentCatalogRow[]
+  } {
     const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
     const documentRows = this.getHomeDocumentCatalogRows()
     const recentDocuments = this.getRecentDocuments(documentRows)
     const recentEvents = this.getRecentWorkspaceEvents()
-    const documentTree = this.buildDocumentTree(documentRows)
 
     return {
-      summary: this.getSummary(backupRoot, documentRows),
-      recentDocuments,
-      recentEvents,
-      documentCatalog: this.buildDocumentCatalog(databaseColumns, defaultDatabaseId, documentRows),
-      databaseColumns,
-      aiConfig: this.getAiConfig(),
-      documentTree,
-      initialDocumentId: recentDocuments[0]?.id ?? documentTree[0]?.id ?? null
+      payload: {
+        summary: this.getSummary(backupRoot, documentRows),
+        recentDocuments,
+        recentEvents,
+        documentCatalog: this.buildDocumentCatalog(databaseColumns, defaultDatabaseId, documentRows),
+        databaseColumns,
+        aiConfig: this.getAiConfig(),
+        initialDocumentId: recentDocuments[0]?.id ?? documentRows[0]?.id ?? null
+      },
+      documentRows
     }
   }
 
@@ -431,9 +527,9 @@ export class KnowbookStore {
         documents.parent_id,
         parents.title AS parent_title,
         documents.updated_at,
-        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id) AS block_count,
-        (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id) AS link_count,
-        (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id) AS child_count
+        documents.block_count,
+        documents.link_count,
+        documents.child_count
       FROM documents
       LEFT JOIN documents AS parents ON parents.id = documents.parent_id
       WHERE documents.id = ?
@@ -1906,6 +2002,14 @@ export class KnowbookStore {
     this.db.close()
   }
 
+  getDatabasePath(): string {
+    return this.databasePath
+  }
+
+  getDocumentCount(): number {
+    return (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
+  }
+
   async backupDatabase(destinationPath: string): Promise<void> {
     mkdirSync(dirname(destinationPath), { recursive: true })
     await this.db.backup(destinationPath)
@@ -1955,7 +2059,7 @@ export class KnowbookStore {
 
     const rows = this.db.prepare(`
       WITH recent_documents AS (
-        SELECT id, title, path, updated_at
+        SELECT id, title, path, updated_at, block_count
         FROM documents
         ORDER BY updated_at DESC
         LIMIT 5
@@ -1965,7 +2069,7 @@ export class KnowbookStore {
         recent_documents.title,
         recent_documents.path,
         recent_documents.updated_at,
-        (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = recent_documents.id) AS block_count
+        recent_documents.block_count
       FROM recent_documents
       ORDER BY recent_documents.updated_at DESC
     `).all() as DocumentRow[]
@@ -1999,23 +2103,6 @@ export class KnowbookStore {
 
   private getHomeDocumentCatalogRows(): HomeDocumentCatalogRow[] {
     return this.db.prepare(`
-      WITH
-        block_counts AS (
-          SELECT document_id, COUNT(*) AS block_count
-          FROM blocks
-          GROUP BY document_id
-        ),
-        link_counts AS (
-          SELECT source_document_id, COUNT(*) AS link_count
-          FROM links
-          GROUP BY source_document_id
-        ),
-        child_counts AS (
-          SELECT parent_id, COUNT(*) AS child_count
-          FROM documents
-          WHERE parent_id IS NOT NULL
-          GROUP BY parent_id
-        )
       SELECT
         documents.id,
         documents.title,
@@ -2025,14 +2112,11 @@ export class KnowbookStore {
         parents.title AS parent_title,
         documents.updated_at,
         documents.sort_order,
-        COALESCE(block_counts.block_count, 0) AS block_count,
-        COALESCE(link_counts.link_count, 0) AS link_count,
-        COALESCE(child_counts.child_count, 0) AS child_count
+        documents.block_count,
+        documents.link_count,
+        documents.child_count
       FROM documents
       LEFT JOIN documents AS parents ON parents.id = documents.parent_id
-      LEFT JOIN block_counts ON block_counts.document_id = documents.id
-      LEFT JOIN link_counts ON link_counts.source_document_id = documents.id
-      LEFT JOIN child_counts ON child_counts.parent_id = documents.id
       ORDER BY documents.path ASC
     `).all() as HomeDocumentCatalogRow[]
   }

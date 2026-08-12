@@ -398,6 +398,26 @@ export interface HomeData {
   pluginHost?: PluginHostInfo
 }
 
+export type HomeDataPayload = Omit<HomeData, 'documentTree'>
+
+export type DocumentCatalogTuple = [
+  id: string,
+  title: string,
+  path: string,
+  summary: string,
+  parentId: string | null,
+  parentTitle: string | null,
+  updatedAt: string,
+  blockCount: number,
+  linkCount: number,
+  childCount: number,
+  fieldValues: Record<string, DocumentDatabaseFieldValue> | null
+]
+
+export type HomeDataIpcPayload = Omit<HomeDataPayload, 'documentCatalog'> & {
+  documentCatalog: DocumentCatalogTuple[]
+}
+
 export interface PluginHomeData {
   plugins: PluginDescriptor[]
   pluginDashboardCards: PluginDashboardCard[]

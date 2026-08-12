@@ -27,6 +27,7 @@ import type {
   ElectronApi,
   GlobalSearchResult,
   HomeData,
+  HomeDataIpcPayload,
   PluginHomeData,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
@@ -50,13 +51,23 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
+import { decodeDocumentCatalogEntry } from '@shared/document-catalog-payload'
+import { buildDocumentTreeFromCatalog } from '@shared/document-tree'
 
 const { contextBridge, ipcRenderer } = electron
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
 
 const api: ElectronApi = {
-  getHomeData: () => ipcRenderer.invoke('knowbook:get-home-data') as Promise<HomeData>,
+  getHomeData: async () => {
+    const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
+    const documentCatalog = data.documentCatalog.map(decodeDocumentCatalogEntry)
+    return {
+      ...data,
+      documentCatalog,
+      documentTree: buildDocumentTreeFromCatalog(documentCatalog)
+    } satisfies HomeData
+  },
   getPluginHomeData: () => ipcRenderer.invoke('knowbook:get-plugin-home-data') as Promise<PluginHomeData>,
   onWorkspaceMutated: (listener) => {
     const wrapped = () => listener()

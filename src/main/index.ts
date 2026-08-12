@@ -29,6 +29,7 @@ import type {
   DocumentSuggestion,
   GlobalSearchResult,
   HomeData,
+  HomeDataIpcPayload,
   PluginHomeData,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
@@ -54,6 +55,7 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
+import { encodeDocumentCatalogEntry } from '@shared/document-catalog-payload'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { buildDocumentSummarySource } from '@shared/ai-summary'
 import {
@@ -410,8 +412,10 @@ function getPluginHomeData(): PluginHomeData {
 
 function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-home-data', () => {
-    const data: HomeData = {
-      ...store.getHomeData(backupRoot),
+    const homeData = store.getHomeDataPayload(backupRoot)
+    const data: HomeDataIpcPayload = {
+      ...homeData,
+      documentCatalog: homeData.documentCatalog.map(encodeDocumentCatalogEntry),
       ...getPluginHomeData()
     }
     return data

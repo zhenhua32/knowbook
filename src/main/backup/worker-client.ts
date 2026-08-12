@@ -2,13 +2,13 @@ import createBackupWorker from './export-worker?nodeWorker'
 import type { BackupExportJob, BackupExportRunner } from './exporter'
 
 type BackupWorkerResponse =
-  | { ok: true }
+  | { ok: true; exported: number }
   | { ok: false; message: string; stack?: string }
 
 const BACKUP_WORKER_TIMEOUT_MS = 2 * 60 * 1000
 
 export const runBackupExportInWorker: BackupExportRunner = (job: BackupExportJob) => (
-  new Promise<void>((resolve, reject) => {
+  new Promise<number>((resolve, reject) => {
     const worker = createBackupWorker({ workerData: job })
     let settled = false
     const timeout = setTimeout(() => {
@@ -36,7 +36,7 @@ export const runBackupExportInWorker: BackupExportRunner = (job: BackupExportJob
       settled = true
       clearTimeout(timeout)
       if (response.ok) {
-        resolve()
+        resolve(response.exported)
         return
       }
 

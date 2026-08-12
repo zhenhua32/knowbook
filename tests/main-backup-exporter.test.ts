@@ -456,3 +456,43 @@ test('MarkdownBackupService skips unchanged scheduled snapshots and allows a for
   assert.equal(documentReads, 3)
   assert.equal(runnerCalls, 3)
 })
+
+test('MarkdownBackupService delegates database-backed snapshot reads to the export runner', async () => {
+  let documentReads = 0
+  let databaseReads = 0
+  const receivedJobs: unknown[] = []
+  const store = {
+    getBackupRevision: () => 'revision-1',
+    getDatabasePath: () => 'workspace.sqlite',
+    getDocumentCount: () => 12,
+    getExportDocuments: () => {
+      documentReads += 1
+      return []
+    },
+    getExportStandaloneDatabases: () => {
+      databaseReads += 1
+      return []
+    },
+    saveSetting: () => undefined
+  }
+  const service = new MarkdownBackupService(
+    store as never,
+    'virtual-backup-root',
+    undefined,
+    async (job) => {
+      receivedJobs.push(job)
+      return 12
+    }
+  )
+
+  const result = await service.exportAll()
+
+  assert.equal(result.exported, 12)
+  assert.equal(documentReads, 0)
+  assert.equal(databaseReads, 0)
+  assert.deepEqual(receivedJobs, [{
+    databasePath: 'workspace.sqlite',
+    backupRoot: 'virtual-backup-root',
+    assetRoot: undefined
+  }])
+})
