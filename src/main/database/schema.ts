@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id);
 CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path);
+CREATE INDEX IF NOT EXISTS idx_documents_title ON documents(title);
 
 CREATE TABLE IF NOT EXISTS blocks (
   id TEXT PRIMARY KEY,

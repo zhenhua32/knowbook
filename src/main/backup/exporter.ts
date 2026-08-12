@@ -111,6 +111,9 @@ export class MarkdownBackupService {
 }
 
 class MarkdownBackupWriter {
+  private readonly ensuredDirectories = new Set<string>()
+  private readonly copiedAssets = new Set<string>()
+
   constructor(
     private readonly backupRoot: string,
     private readonly assetRoot?: string
@@ -120,6 +123,7 @@ class MarkdownBackupWriter {
     const backupParent = dirname(this.backupRoot)
     mkdirSync(backupParent, { recursive: true })
     const stagingRoot = mkdtempSync(join(backupParent, '.knowbook-markdown-'))
+    this.ensuredDirectories.add(stagingRoot)
 
     try {
       for (const document of documents) {
@@ -142,7 +146,7 @@ class MarkdownBackupWriter {
       .map((segment, index) => this.toSafeDocumentPathSegment(segment, index))
     const filePath = join(root, ...segments) + '.md'
     this.assertPathInsideRoot(filePath, root)
-    mkdirSync(dirname(filePath), { recursive: true })
+    this.ensureDirectory(dirname(filePath))
     writeFileSync(
       filePath,
       this.rewriteManagedAssetReferences(root, filePath, this.renderMarkdown(document)),
@@ -153,7 +157,7 @@ class MarkdownBackupWriter {
   private writeStandaloneDatabase(root: string, database: ExportStandaloneDatabase): void {
     const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${this.toSafePathSegment(database.id)}.md`)
     this.assertPathInsideRoot(filePath, root)
-    mkdirSync(dirname(filePath), { recursive: true })
+    this.ensureDirectory(dirname(filePath))
     writeFileSync(
       filePath,
       this.rewriteManagedAssetReferences(root, filePath, this.renderStandaloneDatabase(database)),
@@ -163,8 +167,16 @@ class MarkdownBackupWriter {
 
   private writeStandaloneDatabaseManifest(root: string, databases: ExportStandaloneDatabase[]): void {
     const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), STANDALONE_DATABASE_MANIFEST_FILE_NAME)
-    mkdirSync(dirname(filePath), { recursive: true })
+    this.ensureDirectory(dirname(filePath))
     writeFileSync(filePath, this.renderStandaloneDatabaseManifest(databases), 'utf8')
+  }
+
+  private ensureDirectory(directoryPath: string): void {
+    if (this.ensuredDirectories.has(directoryPath)) {
+      return
+    }
+    mkdirSync(directoryPath, { recursive: true })
+    this.ensuredDirectories.add(directoryPath)
   }
 
   private replaceBackupSnapshot(stagingRoot: string): void {
@@ -229,8 +241,11 @@ class MarkdownBackupWriter {
       const assetRelativePath = relative(normalizedAssetRoot, candidatePath)
       const snapshotAssetPath = join(snapshotRoot, ...ASSET_BACKUP_ROOT.split('/'), assetRelativePath)
       this.assertPathInsideRoot(snapshotAssetPath, snapshotRoot)
-      mkdirSync(dirname(snapshotAssetPath), { recursive: true })
-      copyFileSync(sourcePath, snapshotAssetPath)
+      if (!this.copiedAssets.has(snapshotAssetPath)) {
+        this.ensureDirectory(dirname(snapshotAssetPath))
+        copyFileSync(sourcePath, snapshotAssetPath)
+        this.copiedAssets.add(snapshotAssetPath)
+      }
 
       const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).replace(/\\/g, '/')
       return portableReference.startsWith('.') ? portableReference : `./${portableReference}`

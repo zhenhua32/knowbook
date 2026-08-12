@@ -154,6 +154,10 @@ interface DocumentPathRow {
   parent_id: string | null
 }
 
+interface EditableDocumentRow extends DocumentPathRow {
+  summary: string
+}
+
 interface ExportDocumentRow {
   id: string
   title: string
@@ -710,10 +714,10 @@ export class KnowbookStore {
   updateDocument(documentId: string, input: UpdateDocumentInput): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
-      SELECT id, title, path, parent_id
+      SELECT id, title, path, parent_id, summary
       FROM documents
       WHERE id = ?
-    `).get(documentId) as DocumentPathRow | undefined
+    `).get(documentId) as EditableDocumentRow | undefined
 
     if (!document) {
       throw new Error('Document not found')
@@ -753,9 +757,41 @@ export class KnowbookStore {
       changedReferenceTokens.add(normalizedTitle)
     }
 
-    const updateDocumentStatement = this.db.prepare(`
+    const changedPersistedBlocks = persistedBlocks.filter((block) => {
+      const existing = existingBlockById.get(block.id)
+      return !existing
+        || existing.parent_block_id !== block.parentBlockId
+        || existing.sort_order !== block.sortOrder
+        || existing.type !== block.type
+        || existing.content !== block.content
+        || existing.checked !== (block.checked ? 1 : 0)
+        || existing.depth !== block.depth
+        || (existing.tags_json ?? '[]') !== block.tagsJson
+        || existing.language !== (block.language ?? null)
+        || existing.highlight !== (block.highlight ?? null)
+    })
+    const deletedExistingBlocks = existingBlocks.filter((block) => !persistedBlockIds.has(block.id))
+    const metadataChanged = normalizedTitle !== document.title
+      || newPath !== oldPath
+      || normalizedSummary !== document.summary
+    const blocksChanged = changedPersistedBlocks.length > 0 || deletedExistingBlocks.length > 0
+    const blockReferencesChanged = deletedExistingBlocks.length > 0 || changedPersistedBlocks.some((block) => {
+      const existing = existingBlockById.get(block.id)
+      return !existing || existing.content !== block.content
+    })
+
+    if (!metadataChanged && !blocksChanged) {
+      return [documentId]
+    }
+
+    const updateDocumentMetadataStatement = this.db.prepare(`
       UPDATE documents
       SET title = ?, path = ?, summary = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    const touchDocumentStatement = this.db.prepare(`
+      UPDATE documents
+      SET updated_at = ?
       WHERE id = ?
     `)
     const updateDescendantsStatement = this.db.prepare(`
@@ -776,32 +812,22 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      updateDocumentStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
+      if (metadataChanged) {
+        updateDocumentMetadataStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
+      } else {
+        touchDocumentStatement.run(now, documentId)
+      }
 
       if (newPath !== oldPath) {
         const oldPrefix = `${oldPath}/`
         updateDescendantsStatement.run(`${newPath}/`, oldPrefix.length + 1, `${this.escapeLikePattern(oldPath)}/%`)
       }
 
-      for (const block of persistedBlocks) {
+      for (const block of changedPersistedBlocks) {
         const existing = existingBlockById.get(block.id)
         const checked = block.checked ? 1 : 0
         const language = block.language ?? null
         const highlight = block.highlight ?? null
-        const changed = !existing
-          || existing.parent_block_id !== block.parentBlockId
-          || existing.sort_order !== block.sortOrder
-          || existing.type !== block.type
-          || existing.content !== block.content
-          || existing.checked !== checked
-          || existing.depth !== block.depth
-          || (existing.tags_json ?? '[]') !== block.tagsJson
-          || existing.language !== language
-          || existing.highlight !== highlight
-
-        if (!changed) {
-          continue
-        }
 
         if (existing) {
           updateBlockStatement.run(
@@ -837,13 +863,14 @@ export class KnowbookStore {
         }
       }
 
-      for (const existing of existingBlocks) {
-        if (!persistedBlockIds.has(existing.id)) {
-          deleteBlockStatement.run(existing.id, documentId)
-        }
+      for (const existing of deletedExistingBlocks) {
+        deleteBlockStatement.run(existing.id, documentId)
       }
 
-      this.resyncLinksForReferenceChanges(changedReferenceTokens, [documentId])
+      this.resyncLinksForReferenceChanges(
+        changedReferenceTokens,
+        blockReferencesChanged ? [documentId] : []
+      )
     })
 
     transaction()
@@ -2120,52 +2147,58 @@ export class KnowbookStore {
   }
 
   private buildDocumentTree(rows: HomeDocumentCatalogRow[]): DocumentTreeNode[] {
-    interface TreeBuilderNode extends DocumentTreeNode {
+    interface TreeBuilderEntry {
+      node: DocumentTreeNode
       parentId: string | null
-      sort_order: number
+      sortOrder: number
     }
 
-    const nodeMap = new Map<string, TreeBuilderNode>()
-    const roots: TreeBuilderNode[] = []
+    const nodeMap = new Map<string, TreeBuilderEntry>()
+    const roots: DocumentTreeNode[] = []
 
     for (const row of rows) {
       nodeMap.set(row.id, {
-        id: row.id,
-        title: row.title,
-        path: row.path,
-        updatedAt: row.updated_at,
+        node: {
+          id: row.id,
+          title: row.title,
+          path: row.path,
+          updatedAt: row.updated_at,
+          children: []
+        },
         parentId: row.parent_id,
-        sort_order: row.sort_order,
-        children: []
+        sortOrder: row.sort_order
       })
     }
 
-    for (const node of nodeMap.values()) {
-      if (!node.parentId) {
-        roots.push(node)
+    for (const entry of nodeMap.values()) {
+      if (!entry.parentId) {
+        roots.push(entry.node)
         continue
       }
 
-      const parent = nodeMap.get(node.parentId)
+      const parent = nodeMap.get(entry.parentId)
       if (parent) {
-        parent.children.push(node)
+        parent.node.children.push(entry.node)
       } else {
-        roots.push(node)
+        roots.push(entry.node)
       }
     }
 
-    const normalize = (nodes: TreeBuilderNode[]): DocumentTreeNode[] => {
-      nodes.sort((left, right) => left.sort_order - right.sort_order)
-      return nodes.map((node) => ({
-        id: node.id,
-        title: node.title,
-        path: node.path,
-        updatedAt: node.updatedAt,
-        children: normalize(node.children as TreeBuilderNode[])
-      }))
+    const pendingSiblingGroups: DocumentTreeNode[][] = [roots]
+    while (pendingSiblingGroups.length > 0) {
+      const siblings = pendingSiblingGroups.pop()
+      if (!siblings) continue
+      siblings.sort((left, right) => (
+        (nodeMap.get(left.id)?.sortOrder ?? 0) - (nodeMap.get(right.id)?.sortOrder ?? 0)
+      ))
+      for (const node of siblings) {
+        if (node.children.length > 0) {
+          pendingSiblingGroups.push(node.children)
+        }
+      }
     }
 
-    return normalize(roots)
+    return roots
   }
 
   private normalizeDocumentTitle(title: string): string {
@@ -2713,10 +2746,6 @@ export class KnowbookStore {
       return
     }
 
-    const documents = this.db.prepare(`
-      SELECT id, title, path
-      FROM documents
-    `).all() as DocumentLookupRow[]
     let blocks: BlockReferenceRow[]
     if (selectedSourceDocumentIds) {
       const selectBlocks = this.db.prepare(`
@@ -2736,15 +2765,51 @@ export class KnowbookStore {
       `).all() as BlockReferenceRow[]
     }
 
-    const pathMap = new Map<string, DocumentLookupRow>()
-    const titleMap = new Map<string, DocumentLookupRow | null>()
-    for (const document of documents) {
-      pathMap.set(document.path, document)
-      const existing = titleMap.get(document.title)
-      if (existing === undefined) {
-        titleMap.set(document.title, document)
-      } else {
-        titleMap.set(document.title, null)
+    const referenceTokens = new Set<string>()
+    for (const block of blocks) {
+      for (const token of this.extractLinkTargets(block.content)) {
+        referenceTokens.add(token)
+      }
+    }
+
+    const targetByToken = new Map<string, DocumentLookupRow | null>()
+    if (selectedSourceDocumentIds) {
+      const findDocumentByPath = this.db.prepare(`
+        SELECT id, title, path
+        FROM documents
+        WHERE path = ?
+        LIMIT 1
+      `)
+      const findDocumentsByTitle = this.db.prepare(`
+        SELECT id, title, path
+        FROM documents
+        WHERE title = ?
+        ORDER BY path ASC
+        LIMIT 2
+      `)
+      for (const token of referenceTokens) {
+        const pathMatch = findDocumentByPath.get(token) as DocumentLookupRow | undefined
+        if (pathMatch) {
+          targetByToken.set(token, pathMatch)
+          continue
+        }
+        const titleMatches = findDocumentsByTitle.all(token) as DocumentLookupRow[]
+        targetByToken.set(token, titleMatches.length === 1 ? titleMatches[0] : null)
+      }
+    } else {
+      const documents = this.db.prepare(`
+        SELECT id, title, path
+        FROM documents
+      `).all() as DocumentLookupRow[]
+      const pathMap = new Map<string, DocumentLookupRow>()
+      const titleMap = new Map<string, DocumentLookupRow | null>()
+      for (const document of documents) {
+        pathMap.set(document.path, document)
+        const existing = titleMap.get(document.title)
+        titleMap.set(document.title, existing === undefined ? document : null)
+      }
+      for (const token of referenceTokens) {
+        targetByToken.set(token, pathMap.get(token) ?? titleMap.get(token) ?? null)
       }
     }
 
@@ -2768,7 +2833,7 @@ export class KnowbookStore {
       const createdAt = new Date().toISOString()
       for (const block of blocks) {
         for (const token of this.extractLinkTargets(block.content)) {
-          const target = this.resolveDocumentReference(token, pathMap, titleMap)
+          const target = targetByToken.get(token)
           if (!target) {
             continue
           }
@@ -2797,20 +2862,6 @@ export class KnowbookStore {
       }
     }
     return [...targets]
-  }
-
-  private resolveDocumentReference(
-    token: string,
-    pathMap: Map<string, DocumentLookupRow>,
-    titleMap: Map<string, DocumentLookupRow | null>
-  ): DocumentLookupRow | null {
-    const byPath = pathMap.get(token)
-    if (byPath) {
-      return byPath
-    }
-
-    const byTitle = titleMap.get(token)
-    return byTitle ?? null
   }
 
   private documentTitleExists(parentId: string | null, title: string, excludeDocumentId?: string): boolean {

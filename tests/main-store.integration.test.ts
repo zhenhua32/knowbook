@@ -140,6 +140,25 @@ test('getIncrementalDocumentUpdate matches the full home projection after a cont
   })
 })
 
+test('updateDocument leaves persisted timestamps unchanged for an unchanged save', () => {
+  withStore((store, backupRoot) => {
+    const document = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product/Roadmap')
+    const before = store.getDocumentDetail(document.id)
+    assert.ok(before)
+
+    store.updateDocument(document.id, {
+      title: before.title,
+      summary: before.summary,
+      blocks: before.blocks
+    })
+
+    const after = store.getDocumentDetail(document.id)
+    assert.ok(after)
+    assert.equal(after.updatedAt, before.updatedAt)
+    assert.deepEqual(after.blocks, before.blocks)
+  })
+})
+
 test('updateDocument rewrites descendant paths and normalizes parentBlockId relationships', () => {
   withStore((store, backupRoot) => {
     const initialCatalog = store.getHomeData(backupRoot).documentCatalog

@@ -4,5 +4,10 @@
     "allowImportingTsExtensions": true,
     "types": ["node", "electron"]
   },
-  "include": ["tests/**/*.test.ts", "tests/**/*.test.tsx", "e2e-tests/**/*.ts"]
+  "include": [
+    "tests/**/*.test.ts",
+    "tests/**/*.test.tsx",
+    "e2e-tests/**/*.ts",
+    "scripts/performance-benchmark.ts"
+  ]
 }
