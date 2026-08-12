@@ -68,6 +68,32 @@ test('updateDocument prevents path injection and resolves sibling title collisio
   })
 })
 
+test('updateDocument preserves explicitly added empty blocks', () => {
+  withStore((store, backupRoot) => {
+    const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')
+    const documentId = store.createDocument(product.id)
+
+    store.updateDocument(documentId, {
+      title: 'Draft with empty row',
+      summary: '',
+      blocks: [
+        { id: 'content-block', type: 'paragraph', content: 'First row', checked: false, depth: 0 },
+        { id: 'empty-block', type: 'paragraph', content: '', checked: false, depth: 0 }
+      ]
+    })
+
+    const detail = store.getDocumentDetail(documentId)
+    assert.ok(detail)
+    assert.deepEqual(
+      detail.blocks.map(({ id, type, content }) => ({ id, type, content })),
+      [
+        { id: 'content-block', type: 'paragraph', content: 'First row' },
+        { id: 'empty-block', type: 'paragraph', content: '' }
+      ]
+    )
+  })
+})
+
 test('getIncrementalDocumentUpdate matches the full home projection after a content-only save', () => {
   withStore((store, backupRoot) => {
     const initialHome = store.getHomeData(backupRoot)

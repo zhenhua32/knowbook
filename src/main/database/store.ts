@@ -2494,25 +2494,23 @@ export class KnowbookStore {
   }
 
   private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
-    const normalized = blocks
-      .map((block) => {
-        const type = block.type.trim() || 'paragraph'
-        const normalizedLanguage = type === 'code' && typeof block.language === 'string' && block.language.trim()
-          ? block.language.trim()
-          : undefined
-        return {
-          id: block.id,
-          type,
-          content: block.content,
-          checked: type === 'todo' ? Boolean(block.checked) : false,
-          depth: this.normalizeNestableDepth(type, block.depth ?? 0),
-          parentBlockId: block.parentBlockId ?? null,
-          tags: this.normalizeBlockTags(block.tags),
-          language: normalizedLanguage,
-          highlight: this.normalizeBlockHighlight(block.highlight)
-        }
-      })
-      .filter((block) => block.type === 'divider' || block.content.trim().length > 0)
+    const normalized = blocks.map((block) => {
+      const type = block.type.trim() || 'paragraph'
+      const normalizedLanguage = type === 'code' && typeof block.language === 'string' && block.language.trim()
+        ? block.language.trim()
+        : undefined
+      return {
+        id: block.id,
+        type,
+        content: block.content,
+        checked: type === 'todo' ? Boolean(block.checked) : false,
+        depth: this.normalizeNestableDepth(type, block.depth ?? 0),
+        parentBlockId: block.parentBlockId ?? null,
+        tags: this.normalizeBlockTags(block.tags),
+        language: normalizedLanguage,
+        highlight: this.normalizeBlockHighlight(block.highlight)
+      }
+    })
 
     if (normalized.length > 0) {
       return normalized
