@@ -49,6 +49,18 @@ test('KnowbookStore seeds baseline data and creates sibling documents with uniqu
   })
 })
 
+test('startup document index excludes database-only catalog fields', () => {
+  withStore((store) => {
+    const index = store.getDocumentIndex()
+    const home = index.find((entry) => entry.path === 'Home')
+
+    assert.ok(home)
+    assert.deepEqual(Object.keys(home).sort(), ['id', 'parentId', 'path', 'title', 'updatedAt'])
+    assert.equal('summary' in home, false)
+    assert.equal('fieldValues' in home, false)
+  })
+})
+
 test('updateDocument prevents path injection and resolves sibling title collisions', () => {
   withStore((store, backupRoot) => {
     const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')

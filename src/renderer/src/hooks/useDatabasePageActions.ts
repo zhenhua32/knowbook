@@ -80,8 +80,7 @@ export function useDatabasePageActions({
     setCatalogDocuments(refreshedCatalog)
     setHomeData((previous) => ({
       ...previous,
-      databaseColumns: refreshedColumns,
-      documentCatalog: refreshedCatalog
+      databaseColumns: refreshedColumns
     }))
   }, [setCatalogColumns, setCatalogDocuments, setHomeData])
 
@@ -89,13 +88,15 @@ export function useDatabasePageActions({
     targetDatabaseId: string | null = databaseEntityDatabaseId,
     preferredSavedViewId?: string
   ) => {
-    const [refreshedHome, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
+    const [refreshedHome, refreshedCatalog, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
       window.knowbook.getHomeData(),
+      window.knowbook.getDocumentCatalog(),
       targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve<DatabaseEntity[]>([]),
       window.knowbook.getDocumentDatabaseColumns(targetDatabaseId),
       targetDatabaseId ? window.knowbook.getDatabaseSavedViews(targetDatabaseId) : Promise.resolve<DatabaseSavedView[]>([])
     ])
     setHomeData(refreshedHome)
+    setCatalogDocuments(refreshedCatalog)
     setDatabaseEntities(refreshedEntities)
     setSelectedDatabaseColumns(refreshedColumns)
     setDatabaseSavedViews(refreshedViews)
@@ -108,6 +109,7 @@ export function useDatabasePageActions({
     setActiveDatabaseSavedViewId,
     setDatabaseEntities,
     setDatabaseSavedViews,
+    setCatalogDocuments,
     setHomeData,
     setSelectedDatabaseColumns
   ])

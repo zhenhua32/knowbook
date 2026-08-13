@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DocumentCatalogEntry, GlobalSearchResult } from '@shared/contracts'
+import type { DocumentIndexEntry, GlobalSearchResult } from '@shared/contracts'
 
 type UseGlobalDocumentSearchParams = {
-  documentCatalog: DocumentCatalogEntry[]
+  documentCatalog: DocumentIndexEntry[]
   onOpenDocument: (documentId: string) => void
 }
 

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { HomeData, UpdateDocumentResult } from '../src/shared/contracts.ts'
 import { applyIncrementalDocumentUpdate } from '../src/renderer/src/utils/homeDataDocumentUpdate.ts'
-import { decodeDocumentCatalogEntry, encodeDocumentCatalogEntry } from '../src/shared/document-catalog-payload.ts'
+import {
+  decodeDocumentCatalogEntry,
+  decodeDocumentIndexEntry,
+  encodeDocumentCatalogEntry,
+  encodeDocumentIndexEntry
+} from '../src/shared/document-catalog-payload.ts'
 import { buildDocumentTreeFromCatalog } from '../src/shared/document-tree.ts'
 
 test('document catalog IPC tuples round-trip entries and compact empty fields', () => {
@@ -16,6 +21,20 @@ test('document catalog IPC tuples round-trip entries and compact empty fields', 
   assert.equal(encoded.length, 11)
   assert.equal(encoded[10], null)
   assert.deepEqual(decodeDocumentCatalogEntry(encoded), entry)
+})
+
+test('document index IPC tuples keep only fields required for startup navigation', () => {
+  const entry = {
+    id: 'document',
+    title: 'Document',
+    path: 'Root/Document',
+    parentId: 'root',
+    updatedAt: 'now'
+  }
+  const encoded = encodeDocumentIndexEntry(entry)
+
+  assert.equal(encoded.length, 5)
+  assert.deepEqual(decodeDocumentIndexEntry(encoded), entry)
 })
 
 test('buildDocumentTreeFromCatalog derives the hierarchy without a duplicate IPC tree payload', () => {
@@ -54,27 +73,15 @@ test('applyIncrementalDocumentUpdate replaces only the saved document projection
         id: 'parent',
         title: 'Parent',
         path: 'Parent',
-        summary: '',
         parentId: null,
-        parentTitle: null,
-        updatedAt: 'before',
-        blockCount: 1,
-        linkCount: 0,
-        childCount: 1,
-        fieldValues: {}
+        updatedAt: 'before'
       },
       {
         id: 'child',
         title: 'Child',
         path: 'Parent/Child',
-        summary: '',
         parentId: 'parent',
-        parentTitle: 'Parent',
-        updatedAt: 'before',
-        blockCount: 1,
-        linkCount: 0,
-        childCount: 0,
-        fieldValues: {}
+        updatedAt: 'before'
       }
     ],
     databaseColumns: [],
@@ -116,10 +123,17 @@ test('applyIncrementalDocumentUpdate replaces only the saved document projection
       backlinks: []
     },
     catalogEntry: {
-      ...homeData.documentCatalog[1],
+      id: 'child',
+      title: 'Child',
+      path: 'Parent/Child',
       summary: 'Updated',
+      parentId: 'parent',
+      parentTitle: 'Parent',
       updatedAt: 'after',
-      blockCount: 3
+      blockCount: 3,
+      linkCount: 0,
+      childCount: 0,
+      fieldValues: {}
     },
     summary: {
       ...homeData.summary,
@@ -144,8 +158,6 @@ test('applyIncrementalDocumentUpdate replaces only the saved document projection
 
   const result = applyIncrementalDocumentUpdate(homeData, update)
 
-  assert.equal(result.documentCatalog[1]?.summary, 'Updated')
-  assert.equal(result.documentCatalog[1]?.blockCount, 3)
   assert.equal(result.documentTree[0]?.children[0]?.updatedAt, 'after')
   assert.equal(result.summary.blocks, 4)
   assert.deepEqual(result.recentDocuments, update.recentDocuments)

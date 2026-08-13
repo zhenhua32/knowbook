@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { serialize } from 'node:v8'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import { writeBackupSnapshot } from '../src/main/backup/exporter.ts'
-import { encodeDocumentCatalogEntry } from '../src/shared/document-catalog-payload.ts'
+import { encodeDocumentCatalogEntry, encodeDocumentIndexEntry } from '../src/shared/document-catalog-payload.ts'
 
 interface BenchmarkOptions {
   documentCount: number
@@ -203,9 +203,14 @@ async function main(): Promise<void> {
     const projectionRows = homeProjectionInternals.getHomeDocumentCatalogRows()
     const homeDataForSerialization = store.getHomeData(join(benchmarkRoot, 'backup'))
     const { documentTree: _documentTree, ...homeDataPayloadForSerialization } = homeDataForSerialization
+    const startupHomeDataPayloadForSerialization = store.getHomeDataPayload(join(benchmarkRoot, 'backup'))
     const tupleHomeDataPayloadForSerialization = {
       ...homeDataPayloadForSerialization,
       documentCatalog: homeDataPayloadForSerialization.documentCatalog.map(encodeDocumentCatalogEntry)
+    }
+    const startupTupleHomeDataPayloadForSerialization = {
+      ...startupHomeDataPayloadForSerialization,
+      documentCatalog: startupHomeDataPayloadForSerialization.documentCatalog.map(encodeDocumentIndexEntry)
     }
     const correlatedCatalogQuery = benchmarkDatabase.prepare(`
       SELECT
@@ -278,6 +283,11 @@ async function main(): Promise<void> {
       }, 1)
     )
     metrics.push(
+      await measure('startup document index SQL', 15, () => {
+        retainedResultCount += store.getDocumentIndex().length
+      }, 2)
+    )
+    metrics.push(
       await measure('home catalog SQL aggregation', 15, () => {
         retainedResultCount += homeProjectionInternals.getHomeDocumentCatalogRows().length
       }, 2)
@@ -319,6 +329,11 @@ async function main(): Promise<void> {
     metrics.push(
       await measure('tuple home IPC serialization', 15, () => {
         retainedResultCount += serialize(tupleHomeDataPayloadForSerialization).byteLength
+      }, 2)
+    )
+    metrics.push(
+      await measure('startup home IPC serialization', 15, () => {
+        retainedResultCount += serialize(startupTupleHomeDataPayloadForSerialization).byteLength
       }, 2)
     )
     metrics.push(

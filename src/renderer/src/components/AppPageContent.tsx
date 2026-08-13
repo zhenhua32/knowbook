@@ -50,8 +50,9 @@ export function AppPageContent({
         <DatabasePage
           catalogColumns={shell.catalogColumns}
           catalogDocuments={shell.catalogDocuments}
+          catalogLoading={shell.catalogLoading}
           database={database}
-          documentCatalog={shell.homeData.documentCatalog}
+          documentCatalog={shell.catalogDocuments}
           onCatalogColumnsChange={shell.setCatalogColumns}
           onCatalogDocumentsChange={shell.setCatalogDocuments}
           onHomeDataChange={shell.setHomeData}

@@ -19,8 +19,9 @@ import { DatabaseSection } from '../sections/DatabaseSection'
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
   catalogDocuments: DocumentCatalogEntry[]
+  catalogLoading: boolean
   database: DatabaseDomainState
-  documentCatalog: HomeData['documentCatalog']
+  documentCatalog: DocumentCatalogEntry[]
   onCatalogColumnsChange: Dispatch<SetStateAction<DocumentDatabaseColumn[]>>
   onCatalogDocumentsChange: Dispatch<SetStateAction<DocumentCatalogEntry[]>>
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
@@ -34,6 +35,7 @@ type DatabasePageProps = {
 export function DatabasePage({
   catalogColumns,
   catalogDocuments,
+  catalogLoading,
   database,
   documentCatalog,
   onCatalogColumnsChange,
@@ -115,8 +117,7 @@ export function DatabasePage({
     updateDocumentDatabaseValue
   } = useDocumentCatalogDatabaseActions({
     setBackupMessage: onMessage,
-    setCatalogDocuments: onCatalogDocumentsChange,
-    setHomeData: onHomeDataChange
+    setCatalogDocuments: onCatalogDocumentsChange
   })
 
   const {
@@ -346,7 +347,9 @@ export function DatabasePage({
     }
   }, [boardGroupableColumns, database])
 
-  return (
+  return catalogLoading && catalogDocuments.length === 0 ? (
+    <p className="empty-state">{ui.common.loading}</p>
+  ) : (
     <DatabaseSection
       board={board}
       catalog={catalog}

@@ -3,6 +3,7 @@ import { getBoardDropFieldValue, type BoardDropTarget } from '@shared/board'
 import type {
   ClipWebPageInput,
   DocumentCatalogEntry,
+  DocumentIndexEntry,
   DocumentDatabaseColumn,
   DocumentDatabaseFieldValue,
   DocumentDetail,
@@ -14,6 +15,7 @@ import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/doc
 type UseWorkspaceDocumentManagementParams = {
   catalogColumns: DocumentDatabaseColumn[]
   catalogDocuments: DocumentCatalogEntry[]
+  documentIndex: DocumentIndexEntry[]
   moveTargetId: string
   selectedDocument: DocumentDetail | null
   selectedDocumentId: string | null
@@ -33,6 +35,7 @@ type UseWorkspaceDocumentManagementParams = {
 export function useWorkspaceDocumentManagement({
   catalogColumns,
   catalogDocuments,
+  documentIndex,
   moveTargetId,
   selectedDocument,
   selectedDocumentId,
@@ -243,14 +246,14 @@ export function useWorkspaceDocumentManagement({
       return
     }
 
-    const draggingDocument = catalogDocuments.find((document) => document.id === draggingDocumentId)
+    const draggingDocument = documentIndex.find((document) => document.id === draggingDocumentId)
     if (draggingDocument && (draggingDocument.parentId ?? null) === parentId) {
       endDrag()
       return
     }
 
     await handleMoveDocument(draggingDocumentId, parentId)
-  }, [catalogDocuments, draggingDocumentId, endDrag, handleMoveDocument])
+  }, [documentIndex, draggingDocumentId, endDrag, handleMoveDocument])
 
   const dropOnBoardTarget = useCallback(async (target: BoardDropTarget) => {
     if (!draggingDocumentId) {

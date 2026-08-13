@@ -14,6 +14,7 @@ import type {
   DatabaseSavedView,
   DocumentDatabase,
   DocumentCatalogEntry,
+  DocumentCatalogTuple,
   DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
@@ -51,7 +52,7 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
-import { decodeDocumentCatalogEntry } from '@shared/document-catalog-payload'
+import { decodeDocumentCatalogEntry, decodeDocumentIndexEntry } from '@shared/document-catalog-payload'
 import { buildDocumentTreeFromCatalog } from '@shared/document-tree'
 
 const { contextBridge, ipcRenderer } = electron
@@ -61,7 +62,7 @@ const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
 const api: ElectronApi = {
   getHomeData: async () => {
     const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
-    const documentCatalog = data.documentCatalog.map(decodeDocumentCatalogEntry)
+    const documentCatalog = data.documentCatalog.map(decodeDocumentIndexEntry)
     return {
       ...data,
       documentCatalog,
@@ -93,7 +94,10 @@ const api: ElectronApi = {
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
-  getDocumentCatalog: (databaseId?: string | null) => ipcRenderer.invoke('knowbook:get-document-catalog', databaseId ?? null) as Promise<DocumentCatalogEntry[]>,
+  getDocumentCatalog: async (databaseId?: string | null) => {
+    const tuples = await ipcRenderer.invoke('knowbook:get-document-catalog', databaseId ?? null) as DocumentCatalogTuple[]
+    return tuples.map(decodeDocumentCatalogEntry)
+  },
   getDocumentDatabaseColumns: (databaseId?: string | null) => ipcRenderer.invoke('knowbook:get-document-database-columns', databaseId ?? null) as Promise<DocumentDatabaseColumn[]>,
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:create-document-database-column', input) as Promise<DocumentDatabaseColumn>,
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:rename-document-database-column', input) as Promise<void>,

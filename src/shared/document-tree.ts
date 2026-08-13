@@ -1,11 +1,11 @@
-import type { DocumentCatalogEntry, DocumentTreeNode } from './contracts'
+import type { DocumentIndexEntry, DocumentTreeNode } from './contracts'
 
 interface TreeBuilderEntry {
   node: DocumentTreeNode
   parentId: string | null
 }
 
-export function buildDocumentTreeFromCatalog(catalog: DocumentCatalogEntry[]): DocumentTreeNode[] {
+export function buildDocumentTreeFromCatalog(catalog: DocumentIndexEntry[]): DocumentTreeNode[] {
   const entries = new Map<string, TreeBuilderEntry>()
   const roots: DocumentTreeNode[] = []
 

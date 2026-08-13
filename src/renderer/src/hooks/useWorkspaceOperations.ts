@@ -33,13 +33,13 @@ export function useWorkspaceOperations({
     updateDocumentDatabaseValue
   } = useDocumentCatalogDatabaseActions({
     setBackupMessage: shell.setBackupMessage,
-    setCatalogDocuments: shell.setCatalogDocuments,
-    setHomeData: shell.setHomeData
+    setCatalogDocuments: shell.setCatalogDocuments
   })
 
   const workspaceDocumentManagement = useWorkspaceDocumentManagement({
     catalogColumns: shell.catalogColumns,
     catalogDocuments: shell.catalogDocuments,
+    documentIndex: shell.homeData.documentCatalog,
     moveTargetId: documents.moveTargetId,
     onCancelPendingAutoSave: documents.cancelPendingAutoSave,
     onFlushPendingDocumentChanges: documents.flushPendingChanges,

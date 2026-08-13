@@ -15,14 +15,17 @@ export interface RecentDocument {
   blockCount: number
 }
 
-export interface DocumentCatalogEntry {
+export interface DocumentIndexEntry {
   id: string
   title: string
   path: string
-  summary: string
   parentId: string | null
-  parentTitle: string | null
   updatedAt: string
+}
+
+export interface DocumentCatalogEntry extends DocumentIndexEntry {
+  summary: string
+  parentTitle: string | null
   blockCount: number
   linkCount: number
   childCount: number
@@ -387,7 +390,7 @@ export interface HomeData {
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
   recentEvents: WorkspaceEventRecord[]
-  documentCatalog: DocumentCatalogEntry[]
+  documentCatalog: DocumentIndexEntry[]
   databaseColumns: DocumentDatabaseColumn[]
   aiConfig: AiConfig
   documentTree: DocumentTreeNode[]
@@ -398,7 +401,19 @@ export interface HomeData {
   pluginHost?: PluginHostInfo
 }
 
+export type DetailedHomeData = Omit<HomeData, 'documentCatalog'> & {
+  documentCatalog: DocumentCatalogEntry[]
+}
+
 export type HomeDataPayload = Omit<HomeData, 'documentTree'>
+
+export type DocumentIndexTuple = [
+  id: string,
+  title: string,
+  path: string,
+  parentId: string | null,
+  updatedAt: string
+]
 
 export type DocumentCatalogTuple = [
   id: string,
@@ -415,7 +430,7 @@ export type DocumentCatalogTuple = [
 ]
 
 export type HomeDataIpcPayload = Omit<HomeDataPayload, 'documentCatalog'> & {
-  documentCatalog: DocumentCatalogTuple[]
+  documentCatalog: DocumentIndexTuple[]
 }
 
 export interface PluginHomeData {

@@ -16,6 +16,7 @@ import type {
   DatabaseSavedViewSortMode,
   DeleteDatabaseEntityInput,
   DeleteDatabaseEntitiesInput,
+  DetailedHomeData,
   DocumentDatabase,
   DocumentDatabaseColumn,
   DocumentDatabaseColumnType,
@@ -24,6 +25,7 @@ import type {
   DocumentCatalogEntry,
   DocumentChild,
   DocumentDetail,
+  DocumentIndexEntry,
   DocumentSuggestion,
   DocumentTreeNode,
   HomeData,
@@ -468,40 +470,51 @@ export class KnowbookStore {
     `)
   }
 
-  getHomeData(backupRoot: string): HomeData {
-    const projection = this.getHomeDataProjection(backupRoot)
-    return {
-      ...projection.payload,
-      documentTree: this.buildDocumentTree(projection.documentRows)
-    }
-  }
-
-  getHomeDataPayload(backupRoot: string): HomeDataPayload {
-    return this.getHomeDataProjection(backupRoot).payload
-  }
-
-  private getHomeDataProjection(backupRoot: string): {
-    payload: HomeDataPayload
-    documentRows: HomeDocumentCatalogRow[]
-  } {
+  getHomeData(backupRoot: string): DetailedHomeData {
     const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     const databaseColumns = this.getDocumentDatabaseColumns(defaultDatabaseId)
     const documentRows = this.getHomeDocumentCatalogRows()
     const recentDocuments = this.getRecentDocuments(documentRows)
-    const recentEvents = this.getRecentWorkspaceEvents()
-
     return {
-      payload: {
-        summary: this.getSummary(backupRoot, documentRows),
-        recentDocuments,
-        recentEvents,
-        documentCatalog: this.buildDocumentCatalog(databaseColumns, defaultDatabaseId, documentRows),
-        databaseColumns,
-        aiConfig: this.getAiConfig(),
-        initialDocumentId: recentDocuments[0]?.id ?? documentRows[0]?.id ?? null
-      },
-      documentRows
+      summary: this.getSummary(backupRoot, documentRows),
+      recentDocuments,
+      recentEvents: this.getRecentWorkspaceEvents(),
+      documentCatalog: this.buildDocumentCatalog(databaseColumns, defaultDatabaseId, documentRows),
+      databaseColumns,
+      aiConfig: this.getAiConfig(),
+      documentTree: this.buildDocumentTree(documentRows),
+      initialDocumentId: recentDocuments[0]?.id ?? documentRows[0]?.id ?? null
     }
+  }
+
+  getHomeDataPayload(backupRoot: string): HomeDataPayload {
+    const recentDocuments = this.getRecentDocuments()
+    return {
+      summary: this.getSummary(backupRoot),
+      recentDocuments,
+      recentEvents: this.getRecentWorkspaceEvents(),
+      documentCatalog: this.getDocumentIndex(),
+      databaseColumns: this.getDocumentDatabaseColumns(),
+      aiConfig: this.getAiConfig(),
+      initialDocumentId: recentDocuments[0]?.id ?? null
+    }
+  }
+
+  getDocumentIndex(): DocumentIndexEntry[] {
+    return this.db.prepare(`
+      SELECT id, title, path, parent_id, updated_at
+      FROM documents
+      ORDER BY path ASC
+    `).all().map((row) => {
+      const document = row as Pick<HomeDocumentCatalogRow, 'id' | 'title' | 'path' | 'parent_id' | 'updated_at'>
+      return {
+        id: document.id,
+        title: document.title,
+        path: document.path,
+        parentId: document.parent_id,
+        updatedAt: document.updated_at
+      }
+    })
   }
 
   getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {

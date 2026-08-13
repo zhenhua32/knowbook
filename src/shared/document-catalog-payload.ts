@@ -1,4 +1,29 @@
-import type { DocumentCatalogEntry, DocumentCatalogTuple } from './contracts'
+import type {
+  DocumentCatalogEntry,
+  DocumentCatalogTuple,
+  DocumentIndexEntry,
+  DocumentIndexTuple
+} from './contracts'
+
+export function encodeDocumentIndexEntry(document: DocumentIndexEntry): DocumentIndexTuple {
+  return [
+    document.id,
+    document.title,
+    document.path,
+    document.parentId,
+    document.updatedAt
+  ]
+}
+
+export function decodeDocumentIndexEntry(tuple: DocumentIndexTuple): DocumentIndexEntry {
+  return {
+    id: tuple[0],
+    title: tuple[1],
+    path: tuple[2],
+    parentId: tuple[3],
+    updatedAt: tuple[4]
+  }
+}
 
 export function encodeDocumentCatalogEntry(document: DocumentCatalogEntry): DocumentCatalogTuple {
   return [

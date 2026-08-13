@@ -1,17 +1,15 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentCatalogEntry, DocumentDatabaseFieldValue, HomeData } from '@shared/contracts'
+import type { DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 
 type UseDocumentCatalogDatabaseActionsParams = {
   setBackupMessage: (message: string | null) => void
   setCatalogDocuments: Dispatch<SetStateAction<DocumentCatalogEntry[]>>
-  setHomeData: Dispatch<SetStateAction<HomeData>>
 }
 
 export function useDocumentCatalogDatabaseActions({
   setBackupMessage,
-  setCatalogDocuments,
-  setHomeData
+  setCatalogDocuments
 }: UseDocumentCatalogDatabaseActionsParams) {
   const updateDocumentDatabaseValue = useCallback(async (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => {
     let previousFieldValue: DocumentDatabaseFieldValue | undefined
@@ -21,26 +19,14 @@ export function useDocumentCatalogDatabaseActions({
       previousFieldValue = nextState.previousValue
       return nextState.entries
     })
-    setHomeData((previous) => {
-      const nextState = setDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, value)
-      return {
-        ...previous,
-        documentCatalog: nextState.entries
-      }
-    })
-
     try {
       await window.knowbook.updateDocumentDatabaseValue({ documentId, columnId, value })
     } catch (error) {
       setCatalogDocuments((previous) => restoreDocumentCatalogFieldValue(previous, documentId, columnId, previousFieldValue))
-      setHomeData((previous) => ({
-        ...previous,
-        documentCatalog: restoreDocumentCatalogFieldValue(previous.documentCatalog, documentId, columnId, previousFieldValue)
-      }))
       const message = error instanceof Error ? error.message : 'Failed to update database value.'
       setBackupMessage(message)
     }
-  }, [setBackupMessage, setCatalogDocuments, setHomeData])
+  }, [setBackupMessage, setCatalogDocuments])
 
   return {
     updateDocumentDatabaseValue

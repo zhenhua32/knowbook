@@ -24,6 +24,7 @@ import type {
   DeleteDatabaseEntitiesInput,
   DocumentDatabase,
   DocumentCatalogEntry,
+  DocumentCatalogTuple,
   DocumentDatabaseColumn,
   DocumentDetail,
   DocumentSuggestion,
@@ -55,7 +56,7 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
-import { encodeDocumentCatalogEntry } from '@shared/document-catalog-payload'
+import { encodeDocumentCatalogEntry, encodeDocumentIndexEntry } from '@shared/document-catalog-payload'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { buildDocumentSummarySource } from '@shared/ai-summary'
 import {
@@ -415,7 +416,7 @@ function registerIpcHandlers(): void {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {
       ...homeData,
-      documentCatalog: homeData.documentCatalog.map(encodeDocumentCatalogEntry),
+      documentCatalog: homeData.documentCatalog.map(encodeDocumentIndexEntry),
       ...getPluginHomeData()
     }
     return data
@@ -487,7 +488,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:get-document-catalog', (_event, databaseId: string | null = null) => {
     const entries: DocumentCatalogEntry[] = store.getDocumentCatalog(databaseId ?? undefined)
-    return entries
+    return entries.map(encodeDocumentCatalogEntry) satisfies DocumentCatalogTuple[]
   })
 
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {

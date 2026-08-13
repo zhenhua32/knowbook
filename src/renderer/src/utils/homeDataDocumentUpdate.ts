@@ -38,11 +38,18 @@ export function applyIncrementalDocumentUpdate(
   homeData: HomeData,
   update: IncrementalDocumentUpdate
 ): HomeData {
+  const updatedIndexEntry = {
+    id: update.catalogEntry.id,
+    title: update.catalogEntry.title,
+    path: update.catalogEntry.path,
+    parentId: update.catalogEntry.parentId,
+    updatedAt: update.catalogEntry.updatedAt
+  }
   const existingIndex = homeData.documentCatalog.findIndex((entry) => entry.id === update.catalogEntry.id)
   const documentCatalog = existingIndex === -1
-    ? [...homeData.documentCatalog, update.catalogEntry].sort((left, right) => left.path.localeCompare(right.path))
+    ? [...homeData.documentCatalog, updatedIndexEntry].sort((left, right) => left.path.localeCompare(right.path))
     : homeData.documentCatalog.map((entry) => (
-        entry.id === update.catalogEntry.id ? update.catalogEntry : entry
+        entry.id === update.catalogEntry.id ? updatedIndexEntry : entry
       ))
 
   return {
