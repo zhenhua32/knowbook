@@ -18,7 +18,7 @@ export type StandaloneDatabaseEntityViewMode = DatabaseSavedViewLayoutMode
 export type DatabaseEntityFilterScope = '' | '__document__' | string
 export type DatabaseEntitySortMode = DatabaseSavedViewSortMode
 
-export function useDatabaseDomainState() {
+export function useDatabaseDomainState(isActive = true) {
   const [catalogQuery, setCatalogQuery] = useState('')
   const deferredCatalogQuery = useDeferredValue(catalogQuery)
   const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
@@ -53,6 +53,10 @@ export function useDatabaseDomainState() {
   }, [])
 
   useEffect(() => {
+    if (!isActive) {
+      return
+    }
+
     let mounted = true
 
     window.knowbook.getDatabases().then((items) => {
@@ -69,9 +73,13 @@ export function useDatabaseDomainState() {
     return () => {
       mounted = false
     }
-  }, [databaseDomainRevision])
+  }, [databaseDomainRevision, isActive])
 
   useEffect(() => {
+    if (!isActive) {
+      return
+    }
+
     let mounted = true
 
     if (!databaseEntityDatabaseId) {
@@ -124,7 +132,7 @@ export function useDatabaseDomainState() {
     return () => {
       mounted = false
     }
-  }, [databaseDomainRevision, databaseEntityDatabaseId])
+  }, [databaseDomainRevision, databaseEntityDatabaseId, isActive])
 
   useEffect(() => {
     const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))

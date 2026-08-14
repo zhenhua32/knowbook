@@ -10,12 +10,18 @@ import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 
 const CodeBlockPreview = lazy(async () => {
-  const module = await import('./CodeBlockPreview')
+  const [module] = await Promise.all([
+    import('./CodeBlockPreview'),
+    import('highlight.js/styles/github-dark.css')
+  ])
   return { default: module.CodeBlockPreview }
 })
 
 const MathBlockPreview = lazy(async () => {
-  const module = await import('./MathBlockPreview')
+  const [module] = await Promise.all([
+    import('./MathBlockPreview'),
+    import('katex/dist/katex.min.css')
+  ])
   return { default: module.MathBlockPreview }
 })
 

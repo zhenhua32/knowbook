@@ -14,7 +14,7 @@ export function App() {
     resetAiSessionRef.current()
   }, [])
   const shell = useAppShellState()
-  const databaseDomain = useDatabaseDomainState()
+  const databaseDomain = useDatabaseDomainState(shell.activePage === 'database')
   const documentsDomain = useDocumentsDomainState({
     resetAiSession,
     shell

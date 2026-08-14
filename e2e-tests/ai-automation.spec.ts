@@ -208,7 +208,7 @@ test.describe('AI Settings @electron', () => {
       await saveAiSettings(page, baseUrl, model)
 
       await openDashboardPage(page)
-      await expect(page.locator('.meta-grid')).toContainText(baseUrl)
+      await expect(page.locator('.meta-grid').first()).toContainText(baseUrl)
 
       await openSettingsPage(page)
       await expect(page.getByLabel(uiText('Enable AI features', '启用 AI 功能'))).toBeChecked()
