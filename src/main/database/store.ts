@@ -23,6 +23,8 @@ import type {
   DocumentDatabaseFieldValue,
   DocumentBlockDraft,
   DocumentCatalogEntry,
+  DocumentCatalogPage,
+  DocumentCatalogPageInput,
   DocumentChild,
   DocumentDetail,
   DocumentIndexEntry,
@@ -90,6 +92,13 @@ interface DocumentCatalogRow {
 
 interface HomeDocumentCatalogRow extends DocumentCatalogRow {
   sort_order: number
+}
+
+interface DocumentCatalogFieldRow {
+  entity_id: string | null
+  document_id: string | null
+  column_id: string
+  value_text: string | null
 }
 
 interface DocumentDatabaseColumnRow {
@@ -520,6 +529,62 @@ export class KnowbookStore {
   getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {
     const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
     return this.buildDocumentCatalog(databaseColumns, databaseId, this.getHomeDocumentCatalogRows())
+  }
+
+  getDocumentCatalogPage(input: DocumentCatalogPageInput): DocumentCatalogPage {
+    const databaseId = input.databaseId ?? this.getDefaultDocumentDatabaseId()
+    const offset = Number.isFinite(input.offset) ? Math.max(0, Math.trunc(input.offset)) : 0
+    const limit = Number.isFinite(input.limit)
+      ? Math.min(1_000, Math.max(1, Math.trunc(input.limit)))
+      : 1_000
+    const documentCount = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
+    const entityCount = (this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM database_entities
+      WHERE document_id IS NULL AND database_id = ?
+    `).get(databaseId) as CountRow).count
+    const total = documentCount + entityCount
+    const documentOffset = Math.min(offset, documentCount)
+    const documentLimit = Math.min(limit, Math.max(0, documentCount - documentOffset))
+    const documentRows = documentLimit > 0
+      ? this.db.prepare(`
+          SELECT
+            documents.id,
+            documents.title,
+            documents.path,
+            documents.summary,
+            documents.parent_id,
+            parents.title AS parent_title,
+            documents.updated_at,
+            documents.block_count,
+            documents.link_count,
+            documents.child_count
+          FROM documents
+          LEFT JOIN documents AS parents ON parents.id = documents.parent_id
+          ORDER BY documents.path ASC
+          LIMIT ? OFFSET ?
+        `).all(documentLimit, documentOffset) as DocumentCatalogRow[]
+      : []
+    const remainingLimit = limit - documentRows.length
+    const entityOffset = Math.max(0, offset - documentCount)
+    const entityRows = remainingLimit > 0
+      ? this.getDocumentCatalogEntityRows(databaseId, remainingLimit, entityOffset)
+      : []
+    const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
+    const entries = this.buildDocumentCatalogEntries(
+      databaseColumns,
+      databaseId,
+      documentRows,
+      entityRows,
+      true
+    )
+    const loadedThrough = Math.min(total, offset + entries.length)
+
+    return {
+      entries,
+      total,
+      nextOffset: loadedThrough < total ? loadedThrough : null
+    }
   }
 
   getIncrementalDocumentUpdate(
@@ -2139,7 +2204,21 @@ export class KnowbookStore {
     defaultDatabaseId: string,
     documentRows: DocumentCatalogRow[]
   ): DocumentCatalogEntry[] {
-    const entityRows = this.db.prepare(`
+    return this.buildDocumentCatalogEntries(
+      databaseColumns,
+      defaultDatabaseId,
+      documentRows,
+      this.getDocumentCatalogEntityRows(defaultDatabaseId),
+      false
+    )
+  }
+
+  private getDocumentCatalogEntityRows(
+    databaseId: string,
+    limit?: number,
+    offset = 0
+  ): DocumentCatalogRow[] {
+    const statement = this.db.prepare(`
       SELECT
         de.id,
         d.name AS title,
@@ -2155,52 +2234,52 @@ export class KnowbookStore {
       JOIN databases d ON d.id = de.database_id
       WHERE de.document_id IS NULL AND de.database_id = ?
       ORDER BY de.updated_at DESC
-    `).all(defaultDatabaseId) as Array<{
-      id: string
-      title: string
-      path: string
-      summary: string
-      parent_id: string | null
-      parent_title: string | null
-      updated_at: string
-      block_count: number
-      link_count: number
-      child_count: number
-    }>
-    
+      ${limit === undefined ? '' : 'LIMIT ? OFFSET ?'}
+    `)
+    return (limit === undefined ? statement.all(databaseId) : statement.all(databaseId, limit, offset)) as DocumentCatalogRow[]
+  }
+
+  private buildDocumentCatalogEntries(
+    databaseColumns: DocumentDatabaseColumn[],
+    databaseId: string,
+    documentRows: DocumentCatalogRow[],
+    entityRows: DocumentCatalogRow[],
+    limitFieldValuesToRows: boolean
+  ): DocumentCatalogEntry[] {
     const allRows = [...documentRows, ...entityRows]
     const columnById = new Map(databaseColumns.map((column) => [column.id, column]))
-    const fieldRows = this.db.prepare(`
-      SELECT
-        NULL AS entity_id,
-        values_table.document_id,
-        values_table.column_id,
-        values_table.value_text
-      FROM document_database_values AS values_table
-      INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
-      WHERE values_table.entity_id IS NULL
-        AND columns_table.database_id = ?
+    const fieldRows = limitFieldValuesToRows
+      ? this.getDocumentCatalogFieldRowsForTargets(
+          databaseId,
+          documentRows.map((row) => row.id),
+          entityRows.map((row) => row.id)
+        )
+      : this.db.prepare(`
+          SELECT
+            NULL AS entity_id,
+            values_table.document_id,
+            values_table.column_id,
+            values_table.value_text
+          FROM document_database_values AS values_table
+          INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+          WHERE values_table.entity_id IS NULL
+            AND columns_table.database_id = ?
 
-      UNION ALL
+          UNION ALL
 
-      SELECT
-        values_table.entity_id,
-        NULL AS document_id,
-        values_table.column_id,
-        values_table.value_text
-      FROM database_entity_values AS values_table
-      INNER JOIN database_entities AS entities_table ON entities_table.id = values_table.entity_id
-      INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
-      WHERE entities_table.database_id = ?
-        AND columns_table.database_id = ?
+          SELECT
+            values_table.entity_id,
+            NULL AS document_id,
+            values_table.column_id,
+            values_table.value_text
+          FROM database_entity_values AS values_table
+          INNER JOIN database_entities AS entities_table ON entities_table.id = values_table.entity_id
+          INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+          WHERE entities_table.database_id = ?
+            AND columns_table.database_id = ?
 
-      ORDER BY entity_id ASC, document_id ASC, column_id ASC
-    `).all(defaultDatabaseId, defaultDatabaseId, defaultDatabaseId) as Array<{
-      entity_id: string | null
-      document_id: string | null
-      column_id: string
-      value_text: string | null
-    }>
+          ORDER BY entity_id ASC, document_id ASC, column_id ASC
+        `).all(databaseId, databaseId, databaseId) as DocumentCatalogFieldRow[]
     const fieldValuesByDocumentId = new Map<string, Record<string, DocumentDatabaseFieldValue>>()
     const allRowIds = new Set(allRows.map((row) => row.id))
 
@@ -2230,6 +2309,46 @@ export class KnowbookStore {
       childCount: row.child_count,
       fieldValues: fieldValuesByDocumentId.get(row.id) ?? {}
     }))
+  }
+
+  private getDocumentCatalogFieldRowsForTargets(
+    databaseId: string,
+    documentIds: string[],
+    entityIds: string[]
+  ): DocumentCatalogFieldRow[] {
+    const documentRows = documentIds.length > 0
+      ? this.db.prepare(`
+          SELECT
+            NULL AS entity_id,
+            values_table.document_id,
+            values_table.column_id,
+            values_table.value_text
+          FROM document_database_values AS values_table
+          INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+          WHERE values_table.entity_id IS NULL
+            AND columns_table.database_id = ?
+            AND values_table.document_id IN (${documentIds.map(() => '?').join(', ')})
+          ORDER BY values_table.document_id ASC, values_table.column_id ASC
+        `).all(databaseId, ...documentIds) as DocumentCatalogFieldRow[]
+      : []
+    const entityRows = entityIds.length > 0
+      ? this.db.prepare(`
+          SELECT
+            values_table.entity_id,
+            NULL AS document_id,
+            values_table.column_id,
+            values_table.value_text
+          FROM database_entity_values AS values_table
+          INNER JOIN database_entities AS entities_table ON entities_table.id = values_table.entity_id
+          INNER JOIN document_database_columns AS columns_table ON columns_table.id = values_table.column_id
+          WHERE entities_table.database_id = ?
+            AND columns_table.database_id = ?
+            AND values_table.entity_id IN (${entityIds.map(() => '?').join(', ')})
+          ORDER BY values_table.entity_id ASC, values_table.column_id ASC
+        `).all(databaseId, databaseId, ...entityIds) as DocumentCatalogFieldRow[]
+      : []
+
+    return [...documentRows, ...entityRows]
   }
 
   getDocumentDatabaseColumns(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentDatabaseColumn[] {

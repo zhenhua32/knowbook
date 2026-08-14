@@ -9,6 +9,7 @@ import {
   type UiLanguage
 } from '../i18n'
 import { createTrailingSingleFlightRefresh } from '../utils/singleFlightRefresh'
+import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 
 const emptyState: HomeData = {
   summary: {
@@ -143,7 +144,7 @@ export function useAppShellState() {
     setCatalogLoading(true)
     Promise.all([
       window.knowbook.getDocumentDatabaseColumns(),
-      window.knowbook.getDocumentCatalog()
+      collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage)
     ]).then(([columns, documents]) => {
       if (!mounted) {
         return
@@ -170,7 +171,7 @@ export function useAppShellState() {
     }
 
     let mounted = true
-    void window.knowbook.getDocumentCatalog().then((documents) => {
+    void collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage).then((documents) => {
       if (mounted) {
         setCatalogDocuments(documents)
       }

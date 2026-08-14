@@ -10,6 +10,7 @@ import type {
   HomeData
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 
 type DatabaseEntityFilterScope = '' | '__document__' | string
 
@@ -74,7 +75,7 @@ export function useDatabasePageActions({
   const refreshDocumentCatalogData = useCallback(async () => {
     const [refreshedColumns, refreshedCatalog] = await Promise.all([
       window.knowbook.getDocumentDatabaseColumns(),
-      window.knowbook.getDocumentCatalog()
+      collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage)
     ])
     setCatalogColumns(refreshedColumns)
     setCatalogDocuments(refreshedCatalog)
@@ -90,7 +91,7 @@ export function useDatabasePageActions({
   ) => {
     const [refreshedHome, refreshedCatalog, refreshedEntities, refreshedColumns, refreshedViews] = await Promise.all([
       window.knowbook.getHomeData(),
-      window.knowbook.getDocumentCatalog(),
+      collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage),
       targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve<DatabaseEntity[]>([]),
       window.knowbook.getDocumentDatabaseColumns(targetDatabaseId),
       targetDatabaseId ? window.knowbook.getDatabaseSavedViews(targetDatabaseId) : Promise.resolve<DatabaseSavedView[]>([])

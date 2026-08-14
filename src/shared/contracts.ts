@@ -429,6 +429,22 @@ export type DocumentCatalogTuple = [
   fieldValues: Record<string, DocumentDatabaseFieldValue> | null
 ]
 
+export interface DocumentCatalogPageInput {
+  databaseId?: string | null
+  offset: number
+  limit: number
+}
+
+export interface DocumentCatalogPage {
+  entries: DocumentCatalogEntry[]
+  total: number
+  nextOffset: number | null
+}
+
+export type DocumentCatalogPageIpcPayload = Omit<DocumentCatalogPage, 'entries'> & {
+  entries: DocumentCatalogTuple[]
+}
+
 export type HomeDataIpcPayload = Omit<HomeDataPayload, 'documentCatalog'> & {
   documentCatalog: DocumentIndexTuple[]
 }
@@ -624,6 +640,7 @@ export interface ElectronApi {
   updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => Promise<WebClipBridgeStatus>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   getDocumentCatalog: (databaseId?: string | null) => Promise<DocumentCatalogEntry[]>
+  getDocumentCatalogPage: (input: DocumentCatalogPageInput) => Promise<DocumentCatalogPage>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => Promise<DocumentDatabaseColumn>
   renameDocumentDatabaseColumn: (input: RenameDocumentDatabaseColumnInput) => Promise<void>

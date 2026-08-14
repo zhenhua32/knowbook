@@ -14,6 +14,9 @@ import type {
   DatabaseSavedView,
   DocumentDatabase,
   DocumentCatalogEntry,
+  DocumentCatalogPage,
+  DocumentCatalogPageInput,
+  DocumentCatalogPageIpcPayload,
   DocumentCatalogTuple,
   DocumentDatabaseColumn,
   DocumentDetail,
@@ -97,6 +100,13 @@ const api: ElectronApi = {
   getDocumentCatalog: async (databaseId?: string | null) => {
     const tuples = await ipcRenderer.invoke('knowbook:get-document-catalog', databaseId ?? null) as DocumentCatalogTuple[]
     return tuples.map(decodeDocumentCatalogEntry)
+  },
+  getDocumentCatalogPage: async (input: DocumentCatalogPageInput) => {
+    const page = await ipcRenderer.invoke('knowbook:get-document-catalog-page', input) as DocumentCatalogPageIpcPayload
+    return {
+      ...page,
+      entries: page.entries.map(decodeDocumentCatalogEntry)
+    } satisfies DocumentCatalogPage
   },
   getDocumentDatabaseColumns: (databaseId?: string | null) => ipcRenderer.invoke('knowbook:get-document-database-columns', databaseId ?? null) as Promise<DocumentDatabaseColumn[]>,
   createDocumentDatabaseColumn: (input: CreateDocumentDatabaseColumnInput) => ipcRenderer.invoke('knowbook:create-document-database-column', input) as Promise<DocumentDatabaseColumn>,

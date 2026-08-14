@@ -61,6 +61,50 @@ test('startup document index excludes database-only catalog fields', () => {
   })
 })
 
+test('document catalog pages preserve full catalog ordering and field values', () => {
+  withStore((store, backupRoot) => {
+    const defaultDatabase = store.getDatabases()[0]
+    assert.ok(defaultDatabase)
+    const statusColumn = store.createDocumentDatabaseColumn({
+      databaseId: defaultDatabase.id,
+      name: 'Paged status',
+      type: 'text'
+    })
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+    store.updateDocumentDatabaseValue({
+      documentId: home.id,
+      columnId: statusColumn.id,
+      value: 'document value'
+    })
+    store.createDatabaseEntity({
+      databaseId: defaultDatabase.id,
+      fieldValues: {
+        [statusColumn.id]: 'entity value'
+      }
+    })
+
+    const expected = store.getDocumentCatalog(defaultDatabase.id)
+    const actual: DocumentCatalogEntry[] = []
+    let offset = 0
+
+    while (true) {
+      const page = store.getDocumentCatalogPage({
+        databaseId: defaultDatabase.id,
+        limit: 2,
+        offset
+      })
+      actual.push(...page.entries)
+      if (page.nextOffset === null) {
+        assert.equal(page.total, expected.length)
+        break
+      }
+      offset = page.nextOffset
+    }
+
+    assert.deepEqual(actual, expected)
+  })
+})
+
 test('updateDocument prevents path injection and resolves sibling title collisions', () => {
   withStore((store, backupRoot) => {
     const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')

@@ -24,6 +24,8 @@ import type {
   DeleteDatabaseEntitiesInput,
   DocumentDatabase,
   DocumentCatalogEntry,
+  DocumentCatalogPageInput,
+  DocumentCatalogPageIpcPayload,
   DocumentCatalogTuple,
   DocumentDatabaseColumn,
   DocumentDetail,
@@ -489,6 +491,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:get-document-catalog', (_event, databaseId: string | null = null) => {
     const entries: DocumentCatalogEntry[] = store.getDocumentCatalog(databaseId ?? undefined)
     return entries.map(encodeDocumentCatalogEntry) satisfies DocumentCatalogTuple[]
+  })
+
+  ipcMain.handle('knowbook:get-document-catalog-page', (_event, input: DocumentCatalogPageInput) => {
+    const page = store.getDocumentCatalogPage(input)
+    return {
+      ...page,
+      entries: page.entries.map(encodeDocumentCatalogEntry)
+    } satisfies DocumentCatalogPageIpcPayload
   })
 
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {

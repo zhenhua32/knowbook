@@ -212,6 +212,15 @@ async function main(): Promise<void> {
       ...startupHomeDataPayloadForSerialization,
       documentCatalog: startupHomeDataPayloadForSerialization.documentCatalog.map(encodeDocumentIndexEntry)
     }
+    const firstCatalogPageForSerialization = store.getDocumentCatalogPage({
+      databaseId: defaultDatabaseId,
+      offset: 0,
+      limit: 1_000
+    })
+    const firstCatalogPagePayloadForSerialization = {
+      ...firstCatalogPageForSerialization,
+      entries: firstCatalogPageForSerialization.entries.map(encodeDocumentCatalogEntry)
+    }
     const correlatedCatalogQuery = benchmarkDatabase.prepare(`
       SELECT
         documents.id,
@@ -283,6 +292,34 @@ async function main(): Promise<void> {
       }, 1)
     )
     metrics.push(
+      await measure('full document catalog projection', 7, () => {
+        retainedResultCount += store.getDocumentCatalog(defaultDatabaseId).length
+      }, 1)
+    )
+    metrics.push(
+      await measure('1,000-row document catalog page', 15, () => {
+        retainedResultCount += store.getDocumentCatalogPage({
+          databaseId: defaultDatabaseId,
+          offset: 0,
+          limit: 1_000
+        }).entries.length
+      }, 2)
+    )
+    metrics.push(
+      await measure('paged document catalog scan', 7, () => {
+        let nextOffset: number | null = 0
+        while (nextOffset !== null) {
+          const page = store.getDocumentCatalogPage({
+            databaseId: defaultDatabaseId,
+            offset: nextOffset,
+            limit: 1_000
+          })
+          retainedResultCount += page.entries.length
+          nextOffset = page.nextOffset
+        }
+      }, 1)
+    )
+    metrics.push(
       await measure('startup document index SQL', 15, () => {
         retainedResultCount += store.getDocumentIndex().length
       }, 2)
@@ -334,6 +371,11 @@ async function main(): Promise<void> {
     metrics.push(
       await measure('startup home IPC serialization', 15, () => {
         retainedResultCount += serialize(startupTupleHomeDataPayloadForSerialization).byteLength
+      }, 2)
+    )
+    metrics.push(
+      await measure('1,000-row catalog IPC serialization', 15, () => {
+        retainedResultCount += serialize(firstCatalogPagePayloadForSerialization).byteLength
       }, 2)
     )
     metrics.push(
