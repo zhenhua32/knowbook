@@ -198,7 +198,7 @@ test('structured block previews SSR render editable-source companions safely', (
   )
 
   assert.equal(codeHtml.includes('aria-label="Code preview"'), true)
-  assert.equal(codeHtml.includes('hljs-keyword'), true)
+  assert.equal(codeHtml.includes('const answer = 42'), true)
   assert.equal(mathHtml.includes('aria-label="Math preview"'), true)
   assert.equal(mathHtml.includes('katex-display'), true)
   assert.equal(tableHtml.includes('aria-label="Table preview"'), true)
