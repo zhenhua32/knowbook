@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && electron-vite build && npm run verify:renderer-bundle",
     "pack": "npm run build && electron-builder --dir --publish never",
     "dist": "npm run build && electron-builder --publish never",
     "dist:win": "npm run build && electron-builder --win nsis --publish never",
@@ -23,6 +23,7 @@
     "release:verify-local": "npm run dist && node scripts/release-preflight.mjs --require-artifacts",
     "preview": "electron-vite preview",
     "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
+    "verify:renderer-bundle": "node scripts/verify-renderer-bundle.mjs",
     "benchmark:performance": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/performance-benchmark.ts",
     "benchmark:performance:backup": "cross-env KNOWBOOK_BENCHMARK_BACKUP_IO=1 npm run benchmark:performance",
     "test:e2e": "npm run build && playwright test --grep @electron",

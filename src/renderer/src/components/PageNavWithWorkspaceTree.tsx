@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import { PageRail } from './PageRail'
 import { DocumentTree } from './DocumentTree'
@@ -123,10 +123,10 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
   const collapseSidebarLabel = isZh ? '收起左侧栏' : 'Collapse sidebar'
   const expandSidebarLabel = isZh ? '展开左侧栏' : 'Expand sidebar'
 
-  const handleTreeContextMenu = (node: DocumentTreeNode, x: number, y: number) => {
+  const handleTreeContextMenu = useCallback((node: DocumentTreeNode, x: number, y: number) => {
     onSelectDocument(node.id)
     setTreeContextMenu({ node, x, y })
-  }
+  }, [onSelectDocument])
 
   const canSaveContextDocument = Boolean(
     treeContextMenu

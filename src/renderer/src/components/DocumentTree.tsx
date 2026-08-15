@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 
@@ -40,7 +40,7 @@ function flattenDocumentTree(nodes: DocumentTreeNode[]): FlattenedTreeNode[] {
   return flattened
 }
 
-export function DocumentTree({
+export const DocumentTree = memo(function DocumentTree({
   nodes,
   selectedDocumentId,
   onSelect,
@@ -158,7 +158,7 @@ export function DocumentTree({
       </ul>
     </div>
   )
-}
+})
 
 function DocumentIcon() {
   return (

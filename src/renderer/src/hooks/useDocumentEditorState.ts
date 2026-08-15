@@ -7,20 +7,12 @@ import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/doc
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
+import {
+  areDocumentDraftBlocksEqual,
+  normalizeComparableDocumentTitle
+} from '../utils/documentDraftComparison'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-
-type DraftBlockSnapshot = {
-  id: string | undefined
-  type: string
-  content: string
-  checked: boolean
-  depth: number
-  parentBlockId: string | null
-  language: string | null
-  highlight: string | null
-  tags: string[]
-}
 
 function cloneDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   return blocks.map((block) => ({
@@ -107,41 +99,27 @@ export function useDocumentEditorState({
     setTimeout(() => setter(false), 2000)
   }, [])
 
-  const createComparableBlockSnapshot = useCallback((blocks: DocumentBlockDraft[]): DraftBlockSnapshot[] => (
-    normalizeDraftBlocks(blocks).map((block) => ({
-      id: block.id,
-      type: block.type,
-      content: block.content,
-      checked: Boolean(block.checked),
-      depth: block.depth,
-      parentBlockId: block.parentBlockId ?? null,
-      language: block.language ?? null,
-      highlight: block.highlight ?? null,
-      tags: [...(block.tags ?? [])].sort()
-    }))
-  ), [normalizeDraftBlocks])
-
-  const normalizeComparableTitle = useCallback((title: string) => title.trim() || 'Untitled', [])
-
-  const draftSnapshot = useMemo(() => JSON.stringify({
-    title: normalizeComparableTitle(draftTitle),
-    summary: draftSummary.trim(),
-    blocks: createComparableBlockSnapshot(draftBlocksState)
-  }), [createComparableBlockSnapshot, draftBlocksState, draftSummary, draftTitle, normalizeComparableTitle])
-
-  const selectedDocumentSnapshot = useMemo(() => {
+  const selectedDocumentDraft = useMemo(() => {
     if (!selectedDocument) {
       return null
     }
 
-    return JSON.stringify({
-      title: normalizeComparableTitle(selectedDocument.title),
+    return {
+      title: normalizeComparableDocumentTitle(selectedDocument.title),
       summary: selectedDocument.summary.trim(),
-      blocks: createComparableBlockSnapshot(selectedDocument.blocks.map(toDraftBlock))
-    })
-  }, [createComparableBlockSnapshot, normalizeComparableTitle, selectedDocument, toDraftBlock])
+      blocks: normalizeDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
+    }
+  }, [normalizeDraftBlocks, selectedDocument, toDraftBlock])
 
-  const hasPendingDraftChanges = Boolean(selectedDocumentId && selectedDocument && draftSnapshot !== selectedDocumentSnapshot)
+  const hasPendingDraftChanges = useMemo(() => Boolean(
+    selectedDocumentId
+      && selectedDocumentDraft
+      && (
+        normalizeComparableDocumentTitle(draftTitle) !== selectedDocumentDraft.title
+        || draftSummary.trim() !== selectedDocumentDraft.summary
+        || !areDocumentDraftBlocksEqual(draftBlocksState, selectedDocumentDraft.blocks)
+      )
+  ), [draftBlocksState, draftSummary, draftTitle, selectedDocumentDraft, selectedDocumentId])
 
   const setDraftBlocks = useCallback((next: DraftBlockUpdater) => {
     setDraftBlocksState((previous) => {
@@ -302,7 +280,6 @@ export function useDocumentEditorState({
     const saveSequence = ++saveSequenceRef.current
 
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocksState)
-    const submittedBlocksSnapshot = JSON.stringify(createComparableBlockSnapshot(normalizedDraftBlocks))
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
       if (!silentValidationFailure) {
@@ -342,7 +319,8 @@ export function useDocumentEditorState({
             if (draftSummaryRef.current === draftSummary) {
               setDraftSummary(refreshedDetail.summary)
             }
-            if (JSON.stringify(createComparableBlockSnapshot(draftBlocksRef.current)) === submittedBlocksSnapshot) {
+            const currentNormalizedBlocks = normalizeDraftBlocks(draftBlocksRef.current)
+            if (areDocumentDraftBlocksEqual(currentNormalizedBlocks, normalizedDraftBlocks)) {
               setDraftBlocksState(normalizeDraftBlocks(refreshedDetail.blocks.map(toDraftBlock)))
             }
           }
@@ -361,7 +339,7 @@ export function useDocumentEditorState({
         setIsSaving(false)
       }
     }
-  }, [createComparableBlockSnapshot, draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, toDraftBlock, ui, validateBlockTreeStructure])
+  }, [draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, toDraftBlock, ui, validateBlockTreeStructure])
 
   const saveDocument = useCallback(async () => {
     clearAutoSaveTimer()

@@ -91,6 +91,10 @@ export function useDocumentsDomainState({
     flashHighlightedBlock,
     setHighlightedBlockId
   } = useHighlightedBlockState()
+  const handleBeforeOpenDocument = useCallback(async () => {
+    setHighlightedBlockId(null)
+    return flushPendingDocumentChangesRef.current()
+  }, [setHighlightedBlockId])
   const {
     detailLoading,
     navBack,
@@ -110,10 +114,7 @@ export function useDocumentsDomainState({
     togglePinDocument
   } = useDocumentNavigationState({
     onActivePageChange,
-    onBeforeOpenDocument: async () => {
-      setHighlightedBlockId(null)
-      return flushPendingDocumentChangesRef.current()
-    }
+    onBeforeOpenDocument: handleBeforeOpenDocument
   })
 
   useEffect(() => {
