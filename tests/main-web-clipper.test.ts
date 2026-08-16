@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { AddressInfo } from 'node:net'
 import { KnowbookStore } from '../src/main/database/store.ts'
-import { WebClipperService } from '../src/main/web-clipper.ts'
+import { createPinnedLookup, WebClipperService } from '../src/main/web-clipper.ts'
 
 async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const server = createServer((request, response) => {
@@ -375,6 +375,194 @@ test('WebClipperService rejects malformed runtime payloads before touching the s
       /field "text" must be a string/
     )
     assert.equal(store.getHomeData(join(tempRoot, 'backup')).summary.documents, documentCountBefore)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('createPinnedLookup returns the pinned address in scalar and all-address modes', async () => {
+  const pinned = { address: '203.0.113.9', family: 4 }
+  const pinnedLookup = createPinnedLookup(pinned)
+  const allAddresses = await new Promise<unknown>((resolve, reject) => {
+    pinnedLookup('example.com', { all: true }, (error, address) => {
+      if (error) reject(error)
+      else resolve(address)
+    })
+  })
+  const scalarAddress = await new Promise<{ address: unknown; family: number | undefined }>((resolve, reject) => {
+    pinnedLookup('example.com', { all: false }, (error, address, family) => {
+      if (error) reject(error)
+      else resolve({ address, family })
+    })
+  })
+
+  assert.deepEqual(allAddresses, [pinned])
+  assert.deepEqual(scalarAddress, { address: pinned.address, family: pinned.family })
+})
+
+test('WebClipperService prefers captured article HTML, sanitizes repository titles, and persists notes', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-browser-payload-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://github.com/microsoft/TypeScript',
+      parentId: null,
+      title: 'GitHub - microsoft/TypeScript: TypeScript is JavaScript with syntax for types - GitHub',
+      sourceSite: 'GitHub',
+      author: 'https://github.com/microsoft',
+      publishedAt: 'not-a-valid-date',
+      html: '<!doctype html><html><head><title>GitHub</title></head><body><main>Global navigation and repository shell</main></body></html>',
+      articleHtml: '<article><h1>microsoft/TypeScript</h1><p>TypeScript extends JavaScript by adding types to the language.</p><p>This repository contains the compiler, language services, and project documentation.</p><p><a href="javascript:alert(1)">Unsafe action</a></p><p>&lt;script&gt;window.__NUXT__={huge:true}&lt;/script&gt;</p><p>&lt;/article&gt;&lt;div class="comment-skeleton"&gt;Hydration page tail&lt;/div&gt;</p></article>',
+      text: 'TypeScript extends JavaScript by adding types to the language.\n\nThis repository contains the compiler, language services, and project documentation.',
+      notes: 'Keep this repository handy.'
+    })
+
+    assert.equal(result.created, true)
+    assert.equal(result.title, 'microsoft／TypeScript: TypeScript is JavaScript with syntax for types')
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+    assert.equal(markdown.includes('compiler, language services'), true)
+    assert.equal(markdown.includes('Global navigation'), false)
+    assert.equal(markdown.includes('Extension notes: Keep this repository handy.'), true)
+    assert.equal(markdown.includes('<script'), false)
+    assert.equal(markdown.includes('comment-skeleton'), false)
+    assert.equal(markdown.includes('javascript:'), false)
+    assert.equal(markdown.includes('Unsafe action'), true)
+
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    const authorColumn = home.databaseColumns.find((column) => column.name === 'Author')
+    const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+    assert.ok(entry)
+    assert.ok(authorColumn)
+    assert.ok(publishedAtColumn)
+    assert.equal(entry.fieldValues[authorColumn.id], undefined)
+    assert.equal(entry.fieldValues[publishedAtColumn.id], undefined)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService cleans site and author suffixes, prefers visible article dates, and decodes embedded rich text', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-metadata-cleanup-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://nodejs.org/en/learn/getting-started/introduction-to-nodejs',
+      parentId: null,
+      title: 'Introduction to Node.js | Node.js Learn',
+      sourceSite: 'Node.js',
+      author: 'Node Team 粉丝 - 4336 关注 - 106',
+      publishedAt: '2026-08-16T10:00:00+08:00',
+      articleHtml: [
+        '<article><h1>Introduction to Node.js</h1>',
+        '<p>Node.js is a cross-platform JavaScript runtime with an asynchronous event-driven architecture.</p>',
+        '<p>发布于 2025年07月16日</p>',
+        '<p>The rendered introduction remains readable before embedded content.&lt;/span&gt;&lt;/p&gt;',
+        '&lt;p data-type="paragraph"&gt;&lt;span&gt;Decoded continuation paragraph one.&lt;/span&gt;&lt;/p&gt;',
+        '&lt;p data-type="paragraph"&gt;&lt;strong&gt;Decoded heading&lt;/strong&gt;&lt;/p&gt;',
+        '&lt;p data-type="paragraph"&gt;&lt;span&gt;Decoded continuation paragraph two.&lt;/span&gt;&lt;/p&gt;',
+        '&lt;p&gt;Meaningful tail\u2028点赞\u2028收藏\u2028关注作者&lt;/p&gt;',
+        '&lt;img alt="博客详情页底部广告位.jpg" src="https://cdn.example.com/ad-banner.jpg"&gt;',
+        '&lt;p&gt;&lt;img alt="logo" src="https://cdn.example.com/logo.png"&gt;&lt;/p&gt;',
+        '&lt;p&gt;促进软件开发及相关领域知识与创新的传播&lt;/p&gt;',
+        '&lt;script&gt;window.__NUXT__={huge:true}&lt;/script&gt;',
+        '</article>'
+      ].join('')
+    })
+
+    assert.equal(result.title, 'Introduction to Node.js')
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+    assert.equal(markdown.includes('Decoded continuation paragraph two.'), true)
+    assert.equal(markdown.includes('data-type='), false)
+    assert.equal(markdown.includes('__NUXT__'), false)
+    assert.equal(markdown.includes('促进软件开发'), false)
+    assert.equal(markdown.includes('点赞'), false)
+    assert.equal(markdown.includes('底部广告位'), false)
+    assert.equal(markdown.includes('Meaningful tail'), true)
+
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    const authorColumn = home.databaseColumns.find((column) => column.name === 'Author')
+    const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+    assert.ok(entry)
+    assert.ok(authorColumn)
+    assert.ok(publishedAtColumn)
+    assert.equal(entry.fieldValues[authorColumn.id], 'Node Team')
+    assert.equal(entry.fieldValues[publishedAtColumn.id], '2025-07-16')
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService falls back to sufficiently rich browser-visible text when HTML extraction is empty', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-visible-text-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const visibleText = Array.from({ length: 35 }, (_, index) => (
+    `第 ${index + 1} 段介绍动态渲染文章的实际内容，包含足够的技术细节、示例说明与实现背景。`
+  )).join('\n\n')
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://www.infoq.cn/article/dynamic-example',
+      parentId: null,
+      title: '动态渲染文章',
+      sourceSite: 'InfoQ',
+      html: '<!doctype html><html><head><title>InfoQ</title></head><body><div id="app"></div></body></html>',
+      text: visibleText
+    })
+
+    assert.equal(result.created, true)
+    assert.equal(result.warnings.some((warning) => warning.includes('browser-visible text')), true)
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    assert.equal(detail.blocks.some((block) => block.content.includes('动态渲染文章的实际内容')), true)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService rejects short application shells instead of reporting a successful clip', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-shell-quality-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const shellText = '首页 产品 文档 社区 登录 注册 搜索 热门推荐 联系我们 '.repeat(12)
+
+  try {
+    await assert.rejects(
+      () => service.importWebClipPayload({
+        url: 'https://developer.cloud.tencent.com/article/2640038',
+        parentId: null,
+        title: '腾讯云开发者社区',
+        sourceSite: '腾讯云开发者社区',
+        html: `<!doctype html><html><head><title>腾讯云开发者社区</title></head><body><main>${shellText}</main></body></html>`,
+        text: shellText
+      }),
+      /application shell|structured article body|site shell/
+    )
+    await assert.rejects(
+      () => service.importWebClipPayload({
+        url: 'https://www.ithome.com/block/dajia.html',
+        parentId: null,
+        title: 'IT之家',
+        html: '<!doctype html><html><body><main><h2>大家在看</h2><ul><li>热门文章一</li><li>热门文章二</li></ul><p>换一换推荐内容，不是用户请求的文章正文。</p></main></body></html>',
+        text: '大家在看 热门文章一 热门文章二 换一换推荐内容，不是用户请求的文章正文。'
+      }),
+      /block or challenge page/
+    )
+    assert.equal(store.getHomeData(join(tempRoot, 'backup')).documentCatalog.some((entry) => entry.title === '腾讯云开发者社区'), false)
   } finally {
     store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

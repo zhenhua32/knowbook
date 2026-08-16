@@ -13,3 +13,5 @@ playwright-report/
 *.zip
 *.exe
 *.tar.gz
+
+test-results/

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { isIP } from 'node:net'
+import { isIP, type LookupFunction } from 'node:net'
 import { dirname, extname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Readability } from '@mozilla/readability'
@@ -25,10 +25,11 @@ const WEB_CLIP_MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) App
 const MAX_HTML_BYTES = 5 * 1024 * 1024
 const MAX_ASSET_BYTES = 20 * 1024 * 1024
 const MAX_REDIRECTS = 5
-const MAX_LOCALIZED_IMAGES = 50
+const MAX_LOCALIZED_IMAGES = 100
 const ASSET_DOWNLOAD_CONCURRENCY = 4
 const MAX_WEB_URL_BYTES = 8 * 1024
 const MAX_WEB_CLIP_METADATA_BYTES = 32 * 1024
+const MIN_STRUCTURED_CLIP_TEXT_LENGTH = 120
 
 type WebClipperOptions = {
   allowPrivateNetwork?: boolean
@@ -63,6 +64,21 @@ export type ExtractedWebClip = {
   bodyMarkdown: string
   contentHash: string
   warnings: string[]
+  quality: WebClipContentQuality
+}
+
+type WebClipContentQuality = {
+  textLength: number
+  paragraphCount: number
+  headingCount: number
+  codeBlockCount: number
+  imageCount: number
+  usedPlainTextFallback: boolean
+}
+
+type ImportedClipCandidate = {
+  kind: 'page-html' | 'article-html' | 'visible-text'
+  clip: ExtractedWebClip
 }
 
 export type ExtractedWebClipOverrides = Pick<ImportWebClipPayloadInput,
@@ -129,23 +145,68 @@ export class WebClipperService {
     const normalizedInput = normalizeImportWebClipPayload(input)
     const sourceUrl = normalizeWebUrl(normalizedInput.url)
 
-    let clip: ExtractedWebClip
-    if (normalizedInput.html?.trim()) {
-      clip = await this.extractWebClip({
-        html: normalizedInput.html,
-        sourceUrl,
-        overrides: {
-          author: normalizedInput.author,
-          coverImage: normalizedInput.coverImage,
-          excerpt: normalizedInput.excerpt,
-          publishedAt: normalizedInput.publishedAt,
-          sourceSite: normalizedInput.sourceSite,
-          title: normalizedInput.title
-        }
-      })
-    } else {
-      clip = buildExtractedClipFromPayload(normalizedInput, sourceUrl, normalizeImportedBody(normalizedInput))
+    const overrides: ExtractedWebClipOverrides = {
+      author: normalizedInput.author,
+      coverImage: normalizedInput.coverImage,
+      excerpt: normalizedInput.excerpt,
+      publishedAt: normalizedInput.publishedAt,
+      sourceSite: normalizedInput.sourceSite,
+      title: normalizedInput.title
     }
+    const candidates: ImportedClipCandidate[] = []
+    let extractionFailure: Error | null = null
+    if (normalizedInput.html?.trim()) {
+      try {
+        candidates.push({
+          kind: 'page-html',
+          clip: await this.extractWebClip({ html: normalizedInput.html, sourceUrl, overrides })
+        })
+      } catch (error) {
+        extractionFailure = error instanceof Error ? error : new Error(String(error))
+      }
+    }
+    if (normalizedInput.articleHtml?.trim()) {
+      try {
+        candidates.push({
+          kind: 'article-html',
+          clip: await this.extractWebClip({
+            html: buildArticleExtractionDocument(normalizedInput),
+            sourceUrl,
+            overrides
+          })
+        })
+      } catch (error) {
+        extractionFailure ??= error instanceof Error ? error : new Error(String(error))
+      }
+    }
+    if (normalizedInput.markdown?.trim() || normalizedInput.text?.trim()) {
+      candidates.push({
+        kind: 'visible-text',
+        clip: buildExtractedClipFromPayload(normalizedInput, sourceUrl, normalizeImportedBody(normalizedInput))
+      })
+    }
+    if (candidates.length === 0) {
+      throw extractionFailure ?? new Error('Imported web clip payload is missing html, markdown, or text content.')
+    }
+
+    let clip = chooseBestImportedClip(candidates)
+    if (
+      (normalizedInput.html?.trim() || normalizedInput.articleHtml?.trim())
+      && clip.quality.usedPlainTextFallback
+      && !clip.warnings.some((warning) => warning.includes('browser-visible text'))
+    ) {
+      clip = {
+        ...clip,
+        warnings: [
+          ...clip.warnings,
+          'Used browser-visible text because structured article extraction was incomplete.'
+        ]
+      }
+    }
+    if (normalizedInput.html?.trim() || normalizedInput.articleHtml?.trim()) {
+      assertImportedClipQuality(clip)
+    }
+    clip = appendClipNotes(clip, normalizedInput.notes)
 
     const finalized = await finalizeExtractedWebClip(clip, this.assetRoot, Boolean(this.options.allowPrivateNetwork))
     return this.persistClip(normalizedInput.parentId, finalized)
@@ -392,16 +453,26 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
   const articleText = normalizeWhitespace(article?.textContent ?? fallbackArticle?.textContent ?? '')
   const inferredSiteName = inferSiteName(rawDocumentTitle, primaryHeading)
   const overrideSourceSite = normalizeNullableText(overrides.sourceSite)
+  const structuredSourceSite = normalizeNullableText(structuredData.sourceSite)
+  const metadataSourceSite = normalizeNullableText(
+    getMetaContent(document, 'meta[property="og:site_name"]', 'meta[name="application-name"]')
+  )
+  const author = normalizeAuthorName(firstNonEmpty(
+    structuredData.author,
+    normalizeWhitespace(article?.byline ?? ''),
+    normalizeWhitespace(overrides.author ?? ''),
+    getMetaContent(document, 'meta[name="author"]', 'meta[property="article:author"]')
+  ))
   const sourceSite = firstNonEmpty(
-    isHostnameLike(overrideSourceSite) ? null : overrideSourceSite,
-    structuredData.sourceSite,
-    getMetaContent(document, 'meta[property="og:site_name"]', 'meta[name="application-name"]'),
-    inferredSiteName,
     inferKnownSiteName(sourceUrl),
+    isHostnameLike(structuredSourceSite) ? null : structuredSourceSite,
+    isHostnameLike(metadataSourceSite) ? null : metadataSourceSite,
+    isHostnameLike(overrideSourceSite) ? null : overrideSourceSite,
+    inferredSiteName,
     overrideSourceSite,
     safeHostname(sourceUrl)
   ) ?? safeHostname(sourceUrl)
-  const title = cleanClipTitle(firstNonEmpty(
+  const title = stripAuthorSuffix(sanitizeClipTitle(cleanClipTitle(firstNonEmpty(
     overrides.title,
     structuredData.title,
     normalizeTitle(getMetaContent(document, 'meta[property="og:title"]', 'meta[name="twitter:title"]')),
@@ -410,13 +481,15 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     normalizeTitle(document.title),
     sourceSite,
     safeHostname(sourceUrl)
-  ) ?? safeHostname(sourceUrl), sourceSite, safeHostname(sourceUrl))
+  ) ?? safeHostname(sourceUrl), sourceSite, safeHostname(sourceUrl))), author)
 
   let bodyMarkdown = ''
   let articleImageUrl: string | null = null
+  let quality = createEmptyClipQuality()
   if (articleContent) {
     const articleDom = new JSDOM(`<body>${articleContent}</body>`, { url: sourceUrl })
     prepareArticleDocument(articleDom.window.document, sourceUrl)
+    quality = measureArticleQuality(articleDom.window.document, false)
     articleImageUrl = findBestArticleImage(articleDom.window.document, sourceUrl)
     const preservedBlocks = preserveStructuredBlocks(articleDom.window.document)
     bodyMarkdown = createTurndownService().turndown(articleDom.window.document.body.innerHTML).trim()
@@ -437,6 +510,7 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     }
 
     bodyMarkdown = fallbackText
+    quality = measurePlainTextQuality(fallbackText)
     warnings.push('Readable article extraction fell back to plain page text.')
   }
 
@@ -459,13 +533,10 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     sourceUrl,
     sourceSite,
     excerpt,
-    author: firstNonEmpty(
-      structuredData.author,
-      normalizeWhitespace(article?.byline ?? ''),
-      normalizeWhitespace(overrides.author ?? ''),
-      getMetaContent(document, 'meta[name="author"]', 'meta[property="article:author"]')
-    ),
+    author,
     publishedAt: normalizeDateValue(firstNonEmpty(
+      fallbackArticle?.querySelector('time[datetime]')?.getAttribute('datetime')?.trim() ?? null,
+      extractVisibleArticleDate(fallbackArticle),
       structuredData.publishedAt,
       overrides.publishedAt,
       getMetaContent(document, 'meta[property="article:published_time"]', 'meta[name="date"]', 'meta[name="publish-date"]'),
@@ -474,7 +545,8 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     coverImage,
     bodyMarkdown,
     contentHash: hashClipContent(sourceUrl, title, bodyMarkdown),
-    warnings
+    warnings,
+    quality
   }
 }
 
@@ -482,12 +554,13 @@ function buildExtractedClipFromPayload(input: ImportWebClipPayloadInput, sourceU
   const hostname = safeHostname(sourceUrl)
   const inferredSite = inferSiteName(normalizeWhitespace(input.title ?? ''), '')
   const sourceSite = firstNonEmpty(
+    inferKnownSiteName(sourceUrl),
     isHostnameLike(normalizeNullableText(input.sourceSite)) ? null : input.sourceSite,
     inferredSite,
     input.sourceSite,
     hostname
   ) ?? hostname
-  const title = cleanClipTitle(firstNonEmpty(input.title, hostname, sourceUrl) ?? sourceUrl, sourceSite, hostname)
+  const title = sanitizeClipTitle(cleanClipTitle(firstNonEmpty(input.title, hostname, sourceUrl) ?? sourceUrl, sourceSite, hostname))
   const cleanedBody = cleanExtractedMarkdown(bodyMarkdown)
 
   return {
@@ -495,18 +568,180 @@ function buildExtractedClipFromPayload(input: ImportWebClipPayloadInput, sourceU
     sourceUrl,
     sourceSite,
     excerpt: normalizeExcerpt(input.excerpt),
-    author: normalizeNullableText(input.author),
+    author: normalizeAuthorName(input.author),
     publishedAt: normalizeDateValue(input.publishedAt ?? null),
     coverImage: pickBestCoverImage([input.coverImage], sourceUrl),
     bodyMarkdown: cleanedBody,
     contentHash: hashClipContent(sourceUrl, title, cleanedBody),
-    warnings: []
+    warnings: [],
+    quality: measurePlainTextQuality(cleanedBody)
   }
+}
+
+function buildArticleExtractionDocument(input: ImportWebClipPayloadInput): string {
+  const title = escapeHtmlText(input.title?.trim() || safeHostname(input.url))
+  const metadata = [
+    input.sourceSite ? `<meta property="og:site_name" content="${escapeHtmlAttribute(input.sourceSite)}">` : '',
+    input.excerpt ? `<meta name="description" content="${escapeHtmlAttribute(input.excerpt)}">` : '',
+    input.author ? `<meta name="author" content="${escapeHtmlAttribute(input.author)}">` : '',
+    input.publishedAt ? `<meta property="article:published_time" content="${escapeHtmlAttribute(input.publishedAt)}">` : '',
+    input.coverImage ? `<meta property="og:image" content="${escapeHtmlAttribute(input.coverImage)}">` : ''
+  ].filter(Boolean).join('')
+
+  return `<!doctype html><html><head><title>${title}</title>${metadata}</head><body>${input.articleHtml ?? ''}</body></html>`
+}
+
+function chooseBestImportedClip(candidates: ImportedClipCandidate[]): ExtractedWebClip {
+  const pageCandidate = candidates.find((candidate) => candidate.kind === 'page-html')
+  const articleCandidate = candidates.find((candidate) => candidate.kind === 'article-html')
+  const visibleTextCandidate = candidates.find((candidate) => candidate.kind === 'visible-text')
+  let selected = pageCandidate ?? articleCandidate ?? visibleTextCandidate
+  if (!selected) {
+    throw new Error('Could not extract readable text from this webpage.')
+  }
+
+  if (articleCandidate && articleCandidate !== selected) {
+    const articleQuality = articleCandidate.clip.quality
+    const selectedQuality = selected.clip.quality
+    if (
+      hasArticleStructure(articleQuality)
+      && (
+        !hasArticleStructure(selectedQuality)
+        || articleQuality.textLength >= selectedQuality.textLength * 0.35
+      )
+    ) {
+      selected = articleCandidate
+    }
+  }
+
+  if (visibleTextCandidate && visibleTextCandidate !== selected) {
+    const visibleLength = visibleTextCandidate.clip.quality.textLength
+    const selectedLength = selected.clip.quality.textLength
+    if (
+      (!hasArticleStructure(selected.clip.quality) && visibleLength >= selectedLength * 1.25)
+      || (selectedLength < 500 && visibleLength >= selectedLength * 1.9)
+    ) {
+      selected = {
+        ...visibleTextCandidate,
+        clip: {
+          ...visibleTextCandidate.clip,
+          warnings: [
+            ...visibleTextCandidate.clip.warnings,
+            'Used browser-visible text because structured article extraction was incomplete.'
+          ]
+        }
+      }
+    }
+  }
+
+  return selected.clip
+}
+
+function assertImportedClipQuality(clip: ExtractedWebClip): void {
+  const { quality } = clip
+  if (isKnownBlockedPageUrl(clip.sourceUrl)) {
+    throw new Error('The webpage redirected to a block or challenge page instead of the requested article.')
+  }
+  if (quality.textLength < MIN_STRUCTURED_CLIP_TEXT_LENGTH) {
+    throw new Error('The webpage did not expose enough readable article content to clip.')
+  }
+  if (quality.usedPlainTextFallback && quality.textLength < 900) {
+    throw new Error('The webpage only exposed a short application shell; its article content was not available.')
+  }
+  if (!hasArticleStructure(quality) && quality.textLength < 900) {
+    throw new Error('The webpage did not expose a structured article body to clip.')
+  }
+
+  const comparableTitle = normalizeComparableText(clip.title)
+  const comparableSite = normalizeComparableText(clip.sourceSite)
+  if (
+    comparableTitle
+    && comparableTitle === comparableSite
+    && quality.paragraphCount < 2
+    && quality.textLength < 1_200
+  ) {
+    throw new Error('The webpage only exposed its site shell; its article title and body were not available.')
+  }
+}
+
+function isKnownBlockedPageUrl(value: string): boolean {
+  try {
+    return /\/(?:block|captcha|challenge)(?:\/|\.|$)/i.test(new URL(value).pathname)
+  } catch {
+    return false
+  }
+}
+
+function appendClipNotes(clip: ExtractedWebClip, rawNotes: string | null | undefined): ExtractedWebClip {
+  const notes = rawNotes?.trim() ?? ''
+  if (!notes) {
+    return clip
+  }
+
+  const bodyMarkdown = [clip.bodyMarkdown.trim(), `Extension notes: ${notes}`].filter(Boolean).join('\n\n')
+  return {
+    ...clip,
+    bodyMarkdown,
+    contentHash: hashClipContent(clip.sourceUrl, clip.title, bodyMarkdown),
+    quality: {
+      ...clip.quality,
+      textLength: clip.quality.textLength + normalizeWhitespace(notes).length
+    }
+  }
+}
+
+function createEmptyClipQuality(): WebClipContentQuality {
+  return {
+    textLength: 0,
+    paragraphCount: 0,
+    headingCount: 0,
+    codeBlockCount: 0,
+    imageCount: 0,
+    usedPlainTextFallback: false
+  }
+}
+
+function measureArticleQuality(document: Document, usedPlainTextFallback: boolean): WebClipContentQuality {
+  return {
+    textLength: normalizeWhitespace(document.body?.textContent ?? '').length,
+    paragraphCount: document.querySelectorAll('p,li,blockquote').length,
+    headingCount: document.querySelectorAll('h1,h2,h3,h4,h5,h6').length,
+    codeBlockCount: document.querySelectorAll('pre,code').length,
+    imageCount: document.querySelectorAll('img').length,
+    usedPlainTextFallback
+  }
+}
+
+function measurePlainTextQuality(value: string): WebClipContentQuality {
+  const blocks = value.split(/\n\s*\n|\r?\n/).map((block) => block.trim()).filter(Boolean)
+  return {
+    textLength: normalizeWhitespace(value).length,
+    paragraphCount: blocks.length,
+    headingCount: 0,
+    codeBlockCount: (value.match(/```/g)?.length ?? 0) >= 2 ? 1 : 0,
+    imageCount: extractMarkdownImageUrls(value).length,
+    usedPlainTextFallback: true
+  }
+}
+
+function hasArticleStructure(quality: WebClipContentQuality): boolean {
+  return quality.paragraphCount >= 2
+    || quality.codeBlockCount > 0
+    || (quality.headingCount > 0 && quality.textLength >= 500)
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/[&<>]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[character] ?? character)
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replace(/"/g, '&quot;')
 }
 
 async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: string, allowPrivateNetwork: boolean): Promise<ExtractedWebClip> {
   const warnings = [...clip.warnings]
-  const imageUrls = [...new Set(extractMarkdownImageUrls(clip.bodyMarkdown))]
+  const cleanedBodyMarkdown = cleanExtractedMarkdown(clip.bodyMarkdown)
+  const imageUrls = [...new Set(extractMarkdownImageUrls(cleanedBodyMarkdown))]
     .filter((url) => !isEphemeralUrl(url))
   const resolvedImageUrls = new Map<string, string>()
 
@@ -549,9 +784,10 @@ async function finalizeExtractedWebClip(clip: ExtractedWebClip, assetRoot: strin
     ...clip,
     coverImage,
     bodyMarkdown: removeMarkdownImagesByUrls(
-      replaceMarkdownImageUrls(clip.bodyMarkdown, resolvedImageUrls),
+      replaceMarkdownImageUrls(cleanedBodyMarkdown, resolvedImageUrls),
       new Set(failedImageUrls)
     ),
+    contentHash: hashClipContent(clip.sourceUrl, clip.title, cleanedBodyMarkdown),
     warnings
   }
 }
@@ -571,7 +807,7 @@ function buildClipMarkdownDocument(clip: ExtractedWebClip): string {
   }
 
   sections.push('---')
-  sections.push(clip.bodyMarkdown)
+  sections.push(stripStandaloneUiArtifacts(clip.bodyMarkdown))
 
   return sections
     .map((section) => section.trim())
@@ -664,6 +900,17 @@ function createTurndownService(): TurndownService {
   return service
 }
 
+function stripStandaloneUiArtifacts(markdown: string): string {
+  const artifacts = new Set(['-', '预览', '展开全文', '收起', '举报', '点赞', '收藏', '关注作者', 'advertisement', '广告'])
+  return markdown
+    .replace(/[\u2028\u2029]/g, '\n')
+    .split(/\r?\n/)
+    .filter((line) => !artifacts.has(line.replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toLowerCase()))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function removeNoisyNodes(document: Document): void {
   document.querySelectorAll([
     'script',
@@ -673,6 +920,9 @@ function removeNoisyNodes(document: Document): void {
     'iframe',
     'form',
     'dialog',
+    '#adSide',
+    '.operate-block',
+    '[data-mod-name^="pep-ad"]',
     '[aria-hidden="true"]',
     '[hidden]'
   ].join(',')).forEach((node) => node.remove())
@@ -799,8 +1049,10 @@ function absolutizeDocumentUrls(document: Document, baseUrl: string): void {
   document.querySelectorAll('[href]').forEach((element) => {
     const href = element.getAttribute('href')?.trim()
     const nextHref = absolutizeUrl(href ?? null, baseUrl)
-    if (nextHref) {
+    if (nextHref && isSafeClipLink(nextHref)) {
       element.setAttribute('href', nextHref)
+    } else {
+      element.removeAttribute('href')
     }
   })
 
@@ -811,6 +1063,10 @@ function absolutizeDocumentUrls(document: Document, baseUrl: string): void {
       element.setAttribute('src', nextSrc)
     }
   })
+}
+
+function isSafeClipLink(value: string): boolean {
+  return /^(?:https?:|mailto:|tel:)/i.test(value)
 }
 
 function normalizeDocumentImages(document: Document, baseUrl: string): void {
@@ -935,6 +1191,7 @@ function cleanArticleImages(document: Document): void {
       || isEphemeralUrl(source)
       || isLikelyPlaceholderImage(source)
       || isTinyTrackingImage(image)
+      || isLikelyDecorativeImage(source, image)
       || seenSources.has(source)
     ) {
       removeImageAndEmptyWrapper(image)
@@ -1130,18 +1387,27 @@ function readStructuredImage(value: unknown): string | null {
 
 function findBestArticleCandidate(document: Document): Element | null {
   const selectors = [
+    '[itemprop="articleBody"]',
     'article',
     'main',
     '[role="main"]',
     '#post_body',
     '#article',
+    '#article-content',
+    '#articleContent',
     '#content',
     '.article-content',
     '.article-body',
+    '.article-detail',
+    '.detail-content',
     '.entry-content',
     '.post-content',
     '.news-content',
-    '.newsCo'
+    '.newsCo',
+    '.markdown-body',
+    '.rich_media_content',
+    '.blog-content-body',
+    '.editor.heti'
   ]
   const candidates = [...new Set(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))))]
   let best: { element: Element; score: number } | null = null
@@ -1152,13 +1418,22 @@ function findBestArticleCandidate(document: Document): Element | null {
       continue
     }
 
+    const identity = `${element.id} ${typeof element.className === 'string' ? element.className : ''}`
+    if (/(?:comment|recommend|related|sidebar|footer|header|menu|nav|catalog|toc)(?:\b|[-_])/i.test(identity)) {
+      continue
+    }
     const paragraphCount = element.querySelectorAll('p').length
     const headingCount = element.querySelectorAll('h1,h2,h3').length
     const imageCount = element.querySelectorAll('img').length
     const linkTextLength = Array.from(element.querySelectorAll('a'))
       .reduce((total, link) => total + normalizeWhitespace(link.textContent ?? '').length, 0)
     const linkDensity = linkTextLength / Math.max(1, textLength)
-    const score = textLength + paragraphCount * 100 + headingCount * 60 + imageCount * 40 - linkDensity * textLength * 1.5
+    const semanticBonus = element.tagName === 'ARTICLE' ? 5_000 : 0
+    const contentBonus = /(?:^|\s)(?:editor|markdown-body|article-content|article-body|post-content|entry-content|rich_media_content|blog-content-body|newsCo)(?:\s|$)/i.test(identity)
+      ? 5_000
+      : /(?:article|post|entry|markdown|editor|news)[-_ ]?(?:body|content|detail)?/i.test(identity) ? 1_000 : 0
+    const score = textLength + paragraphCount * 110 + headingCount * 70 + imageCount * 40
+      + semanticBonus + contentBonus - linkDensity * textLength * 1.5
 
     if (!best || score > best.score) {
       best = { element, score }
@@ -1227,29 +1502,93 @@ function inferSiteName(documentTitle: string, primaryHeading: string): string | 
 function cleanClipTitle(value: string, sourceSite: string, hostname: string): string {
   const normalized = normalizeWhitespace(value)
   const segments = normalized
-    .split(/\s+(?:[-–—|·])\s+/)
+    .split(/(?:\s+[-–—]\s+|\s*[|·]\s*|_)/)
     .map((segment) => segment.trim())
     .filter(Boolean)
-  if (segments.length < 2) {
-    return normalized
-  }
-
-  const suffix = segments.at(-1) ?? ''
-  const prefix = segments.slice(0, -1).join(' ')
-  const suffixComparable = normalizeComparableText(suffix)
   const siteComparable = normalizeComparableText(sourceSite)
   const hostnameComparable = normalizeComparableText(hostname.replace(/^www\./i, '').split('.')[0] ?? hostname)
-  const isKnownSiteSuffix = Boolean(suffixComparable) && (
-    siteComparable.includes(suffixComparable)
-    || suffixComparable.includes(siteComparable)
-    || hostnameComparable === suffixComparable
-  )
+  const isSiteSegment = (segment: string) => {
+    const comparable = normalizeComparableText(segment)
+    const commonSiteSuffix = /^(?:博客|社区|开发者社区|官方文档|文档|learn|docs)$/i
+    return Boolean(comparable) && (
+      siteComparable === comparable
+      || (comparable.startsWith(siteComparable) && commonSiteSuffix.test(comparable.slice(siteComparable.length)))
+      || (siteComparable.startsWith(comparable) && commonSiteSuffix.test(siteComparable.slice(comparable.length)))
+      || hostnameComparable === comparable
+    )
+  }
+  if (segments.length < 2) {
+    const compactSuffix = normalized.match(/^(.*)[-–—|·_]([^-–—|·_]+)$/)
+    const prefix = compactSuffix?.[1]?.trim() ?? ''
+    const suffix = compactSuffix?.[2]?.trim() ?? ''
+    if (prefix.length >= 6 && isSiteSegment(suffix)) {
+      return prefix
+    }
+    return normalized
+  }
+  while (segments.length > 1 && isSiteSegment(segments[0] ?? '')) {
+    segments.shift()
+  }
+  while (segments.length > 1 && isSiteSegment(segments.at(-1) ?? '')) {
+    segments.pop()
+  }
 
-  return isKnownSiteSuffix && prefix.length >= 6 ? prefix : normalized
+  const deduplicated = segments.filter((segment, index) => (
+    index === 0 || normalizeComparableText(segment) !== normalizeComparableText(segments[index - 1] ?? '')
+  ))
+  return deduplicated.join(' - ') || normalized
+}
+
+function stripAuthorSuffix(title: string, author: string | null): string {
+  if (!author) {
+    return title
+  }
+
+  const match = title.match(/^(.*)\s+[-–—|·]\s+(.+)$/)
+  if (!match) {
+    return title
+  }
+
+  return normalizeComparableText(match[2] ?? '') === normalizeComparableText(author)
+    ? (match[1]?.trim() || title)
+    : title
+}
+
+function sanitizeClipTitle(value: string): string {
+  const sanitized = normalizeWhitespace(value)
+    .replace(/[/\\]+/g, '／')
+    .replace(/[\x00-\x1F]/g, ' ')
+    .trim()
+  return sanitized && sanitized !== '.' && sanitized !== '..' ? sanitized : 'Untitled'
 }
 
 function normalizeComparableText(value: string): string {
   return value.toLowerCase().replace(/^www\./, '').replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function normalizeAuthorName(value: string | null | undefined): string | null {
+  const normalized = normalizeNullableText(value)
+  if (!normalized || /^(?:https?:)?\/\//i.test(normalized)) {
+    return null
+  }
+
+  let cleaned = normalized.replace(/^(?:作者|撰文|文|by)\s*[:：]?\s*/i, '')
+  cleaned = cleaned.split(/\s+(?:粉丝|关注|发表于|发布于)(?:\s|$)/i, 1)[0]?.trim() ?? cleaned
+  const repeatedIdentity = cleaned.match(/^(.{2,30}?)\s+\1(?:官方账号.*)?$/)
+  if (repeatedIdentity?.[1]) {
+    cleaned = repeatedIdentity[1]
+  }
+  return normalizeNullableText(cleaned)
+}
+
+function extractVisibleArticleDate(element: Element | null): string | null {
+  const leadingText = normalizeWhitespace(element?.textContent ?? '').slice(0, 1500)
+  const match = leadingText.match(/(20\d{2})[年\/-](\d{1,2})[月\/-](\d{1,2})日?/)
+  if (!match) {
+    return null
+  }
+
+  return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`
 }
 
 function isHostnameLike(value: string | null): boolean {
@@ -1331,9 +1670,10 @@ function isLikelyDecorativeImage(source: string, image?: HTMLImageElement): bool
   const normalizedSource = source.toLowerCase()
   const className = image?.className.toLowerCase() ?? ''
   const alt = image?.getAttribute('alt')?.toLowerCase() ?? ''
-  return /(?:^|[/_.-])(avatar|favicon|icon|logo|qr|sprite|loading|placeholder)(?:[/_.-]|$)/i.test(normalizedSource)
+  return /(?:^|[/_.-])(avatar|favicon|icon|logo|qr|sprite|loading|placeholder|advertisement|advert|ad-banner)(?:[/_.-]|$)/i.test(normalizedSource)
     || /\b(?:avatar|icon|logo|emoji)\b/.test(className)
     || /^(?:logo|头像|图标)$/.test(alt)
+    || /(?:广告|advertisement|ad banner)/i.test(alt)
 }
 
 function isTinyTrackingImage(image: HTMLImageElement): boolean {
@@ -1377,17 +1717,62 @@ function deriveImageLabel(source: string): string {
 }
 
 function cleanExtractedMarkdown(markdown: string): string {
-  const artifactLines = new Set(['预览', '展开全文', '收起', 'advertisement', '广告'])
-  const lines = markdown
+  const artifactLines = new Set(['-', '预览', '展开全文', '收起', '举报', '点赞', '收藏', '关注作者', 'advertisement', '广告'])
+  const withoutExecutableMarkup = decodeEmbeddedRichTextMarkup(markdown)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+  const embeddedPageBoundary = withoutExecutableMarkup.search(
+    /<\/article>[\s\S]{0,300}class=["'][^"']*(?:comment|skeleton|footer|page-footer|layout-footer)/i
+  )
+  const articleOnlyMarkdown = embeddedPageBoundary >= 0
+    ? withoutExecutableMarkup.slice(0, embeddedPageBoundary)
+    : withoutExecutableMarkup
+  const embeddedFooterLead = articleOnlyMarkdown.indexOf('促进软件开发及相关领域知识与创新的传播')
+  const precedingFooterImage = embeddedFooterLead >= 0
+    ? articleOnlyMarkdown.lastIndexOf('\n![', embeddedFooterLead)
+    : -1
+  const embeddedFooterBoundary = precedingFooterImage >= 0
+    && embeddedFooterLead - precedingFooterImage <= 500
+    ? precedingFooterImage
+    : embeddedFooterLead
+  const contentOnlyMarkdown = embeddedFooterBoundary >= 0
+    ? articleOnlyMarkdown.slice(0, embeddedFooterBoundary)
+    : articleOnlyMarkdown
+  const lines = contentOnlyMarkdown
     .replace(/\u00a0/g, ' ')
-    .split('\n')
-    .filter((line) => !artifactLines.has(line.trim().toLowerCase()))
+    .replace(/[\u2028\u2029]/g, '\n')
+    .split(/\r?\n/)
+    .filter((line) => !artifactLines.has(line.replace(/[\u200B-\u200D\uFEFF]/g, '').trim().toLowerCase()))
 
   return lines
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/\[\s*\]\([^)]*\)/g, '')
     .trim()
+}
+
+function decodeEmbeddedRichTextMarkup(markdown: string): string {
+  const boundary = /<\/span>\s*<\/p>\s*(?=<(?:p|div|ul|ol)\b[^>]*\bdata-type=)/i.exec(markdown)
+  if (boundary?.index === undefined) {
+    return markdown
+  }
+
+  const suffixStart = boundary.index + boundary[0].length
+  const embeddedHtml = markdown.slice(suffixStart)
+  if ((embeddedHtml.match(/\bdata-type=/gi) ?? []).length < 3) {
+    return markdown
+  }
+
+  const dom = new JSDOM(`<body>${embeddedHtml}</body>`)
+  try {
+    dom.window.document.querySelectorAll('script,style,noscript,template,iframe').forEach((node) => node.remove())
+    cleanArticleImages(dom.window.document)
+    unwrapImageLinks(dom.window.document)
+    const converted = createTurndownService().turndown(dom.window.document.body.innerHTML).trim()
+    return [markdown.slice(0, boundary.index).trim(), converted].filter(Boolean).join('\n\n')
+  } finally {
+    dom.window.close()
+  }
 }
 
 function convertHtmlTableToMarkdown(table: HTMLTableElement): string {
@@ -1490,7 +1875,7 @@ function normalizeDateValue(value: string | null): string | null {
 
   const parsed = Date.parse(value)
   if (Number.isNaN(parsed)) {
-    return value.trim() || null
+    return null
   }
 
   return new Date(parsed).toISOString().slice(0, 10)
@@ -1533,8 +1918,33 @@ function safeHostname(value: string): string {
 function inferKnownSiteName(value: string): string | null {
   try {
     const hostname = new URL(value).hostname.replace(/^www\./i, '').toLowerCase()
-    if (hostname === 'expreview.com' || hostname.endsWith('.expreview.com')) {
-      return '超能网'
+    const knownSites: Array<[string, string]> = [
+      ['ruanyifeng.com', '阮一峰的网络日志'],
+      ['juejin.cn', '掘金'],
+      ['cnblogs.com', '博客园'],
+      ['oschina.net', 'OSCHINA'],
+      ['sspai.com', '少数派'],
+      ['csdn.net', 'CSDN'],
+      ['infoq.cn', 'InfoQ'],
+      ['segmentfault.com', 'SegmentFault'],
+      ['36kr.com', '36氪'],
+      ['ifanr.com', '爱范儿'],
+      ['ithome.com', 'IT之家'],
+      ['geekpark.net', '极客公园'],
+      ['cloud.tencent.com', '腾讯云开发者社区'],
+      ['aliyun.com', '阿里云开发者社区'],
+      ['huaweicloud.com', '华为云社区'],
+      ['github.com', 'GitHub'],
+      ['gitee.com', 'Gitee'],
+      ['mozilla.org', 'MDN'],
+      ['react.dev', 'React'],
+      ['nodejs.org', 'Node.js'],
+      ['expreview.com', '超能网']
+    ]
+    for (const [domain, name] of knownSites) {
+      if (hostname === domain || hostname.endsWith(`.${domain}`)) {
+        return name
+      }
     }
   } catch {
     // Fall back to the raw hostname when URL parsing fails.
@@ -1696,8 +2106,10 @@ function normalizeImportWebClipPayload(input: ImportWebClipPayloadInput): Import
   const optionalTextFields = [
     'title',
     'html',
+    'articleHtml',
     'markdown',
     'text',
+    'notes',
     'sourceSite',
     'excerpt',
     'author',
@@ -1711,7 +2123,7 @@ function normalizeImportWebClipPayload(input: ImportWebClipPayloadInput): Import
       throw new Error(`Web clip field "${field}" must be a string or null.`)
     }
     if (typeof value === 'string') {
-      const maxBytes = field === 'html' || field === 'markdown' || field === 'text'
+      const maxBytes = field === 'html' || field === 'articleHtml' || field === 'markdown' || field === 'text'
         ? MAX_HTML_BYTES
         : field === 'coverImage'
           ? MAX_WEB_URL_BYTES
@@ -1724,8 +2136,10 @@ function normalizeImportWebClipPayload(input: ImportWebClipPayloadInput): Import
     ...normalizedBase,
     title: typeof candidate.title === 'string' ? candidate.title : undefined,
     html: typeof candidate.html === 'string' ? candidate.html : undefined,
+    articleHtml: typeof candidate.articleHtml === 'string' ? candidate.articleHtml : undefined,
     markdown: typeof candidate.markdown === 'string' ? candidate.markdown : undefined,
     text: typeof candidate.text === 'string' ? candidate.text : undefined,
+    notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
     sourceSite: typeof candidate.sourceSite === 'string' ? candidate.sourceSite : undefined,
     excerpt: typeof candidate.excerpt === 'string' ? candidate.excerpt : undefined,
     author: typeof candidate.author === 'string' ? candidate.author : null,
@@ -1752,9 +2166,7 @@ async function fetchWithValidatedRedirects(
     const dispatcher = resolvedAddress
       ? new Agent({
           connect: {
-            lookup: (_hostname, _options, callback) => {
-              callback(null, resolvedAddress.address, resolvedAddress.family)
-            }
+            lookup: createPinnedLookup(resolvedAddress)
           }
         })
       : null
@@ -1794,6 +2206,17 @@ async function fetchWithValidatedRedirects(
   }
 
   throw new Error('Too many redirects while fetching web clip content.')
+}
+
+export function createPinnedLookup(resolvedAddress: { address: string; family: number }): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, [resolvedAddress])
+      return
+    }
+
+    callback(null, resolvedAddress.address, resolvedAddress.family)
+  }
 }
 
 async function resolveSafeRemoteUrl(

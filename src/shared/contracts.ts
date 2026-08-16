@@ -516,8 +516,10 @@ export interface ImportWebClipPayloadInput {
   parentId: string | null
   title?: string
   html?: string
+  articleHtml?: string
   markdown?: string
   text?: string
+  notes?: string
   sourceSite?: string
   excerpt?: string
   author?: string | null
