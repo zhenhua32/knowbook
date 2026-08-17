@@ -432,6 +432,7 @@ function looksLikeScriptChallenge(html: string): boolean {
 export function extractWebClip(html: string, sourceUrl: string, overrides: ExtractedWebClipOverrides = {}): ExtractedWebClip {
   const dom = new JSDOM(html, { url: sourceUrl })
   const { document } = dom.window
+  const embeddedArticle = materializeEmbeddedArticleContent(document)
   const structuredData = extractStructuredArticleData(document)
   const rawDocumentTitle = normalizeWhitespace(document.title)
   const primaryHeading = normalizeWhitespace(document.querySelector('h1')?.textContent ?? '')
@@ -460,6 +461,7 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
   const author = normalizeAuthorName(firstNonEmpty(
     structuredData.author,
     normalizeWhitespace(article?.byline ?? ''),
+    extractVisibleArticleAuthor(fallbackArticle),
     normalizeWhitespace(overrides.author ?? ''),
     getMetaContent(document, 'meta[name="author"]', 'meta[property="article:author"]')
   ))
@@ -473,9 +475,10 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     safeHostname(sourceUrl)
   ) ?? safeHostname(sourceUrl)
   const title = stripAuthorSuffix(sanitizeClipTitle(cleanClipTitle(firstNonEmpty(
-    overrides.title,
+    normalizeUsefulPageTitle(overrides.title),
+    embeddedArticle.title,
     structuredData.title,
-    normalizeTitle(getMetaContent(document, 'meta[property="og:title"]', 'meta[name="twitter:title"]')),
+    normalizeUsefulPageTitle(getMetaContent(document, 'meta[property="og:title"]', 'meta[name="twitter:title"]')),
     primaryHeading,
     normalizeTitle(article?.title),
     normalizeTitle(document.title),
@@ -537,6 +540,8 @@ export function extractWebClip(html: string, sourceUrl: string, overrides: Extra
     publishedAt: normalizeDateValue(firstNonEmpty(
       fallbackArticle?.querySelector('time[datetime]')?.getAttribute('datetime')?.trim() ?? null,
       extractVisibleArticleDate(fallbackArticle),
+      extractVisibleArticleDate(document.body),
+      embeddedArticle.publishedAt,
       structuredData.publishedAt,
       overrides.publishedAt,
       getMetaContent(document, 'meta[property="article:published_time"]', 'meta[name="date"]', 'meta[name="publish-date"]'),
@@ -631,6 +636,14 @@ function chooseBestImportedClip(candidates: ImportedClipCandidate[]): ExtractedW
           ]
         }
       }
+    }
+  }
+
+  if (pageCandidate && pageCandidate !== selected) {
+    return {
+      ...selected.clip,
+      author: selected.clip.author ?? pageCandidate.clip.author,
+      publishedAt: pageCandidate.clip.publishedAt ?? selected.clip.publishedAt
     }
   }
 
@@ -802,7 +815,7 @@ function buildClipMarkdownDocument(clip: ExtractedWebClip): string {
     sections.push(`![${escapeMarkdownLabel(clip.title)}](${formatMarkdownTarget(clip.coverImage)})`)
   }
 
-  if (clip.excerpt) {
+  if (clip.excerpt && !excerptDuplicatesBody(clip.excerpt, clip.bodyMarkdown)) {
     sections.push(`> ${clip.excerpt}`)
   }
 
@@ -920,12 +933,70 @@ function removeNoisyNodes(document: Document): void {
     'iframe',
     'form',
     'dialog',
+    'nav',
+    'aside',
+    'footer',
     '#adSide',
+    '#comments',
+    '#reviews-wrapper',
     '.operate-block',
+    '.comments',
+    '.review-list',
+    '.Post-Sub',
+    '.ContentItem-actions',
+    '.RichContent-actions',
     '[data-mod-name^="pep-ad"]',
+    '[class^="recommend-"]',
+    '[class*=" recommend-"]',
+    '[id^="recommend-"]',
+    '[class^="comment-"]',
+    '[class*=" comment-"]',
+    '[id^="comment-"]',
+    '[class*="Recommendations"]',
+    '[class*="advert"]',
+    '[id*="advert"]',
+    '[class*="ad-container"]',
+    '[class*="ad_placeholder"]',
     '[aria-hidden="true"]',
     '[hidden]'
   ].join(',')).forEach((node) => node.remove())
+}
+
+function materializeEmbeddedArticleContent(document: Document): { title: string | null; publishedAt: string | null } {
+  const title = normalizeUsefulPageTitle(readTextAreaValue(document, 'textarea.article-title'))
+  const publishedAt = normalizeNumericTimestamp(readTextAreaValue(document, 'textarea.article-time'))
+  const field = document.querySelector('textarea.article-content') as HTMLTextAreaElement | null
+  const embeddedHtml = (field?.value || field?.textContent || '').trim()
+  if (!field || !embeddedHtml || !/<(?:article|section|p)\b/i.test(embeddedHtml)) {
+    return { title, publishedAt }
+  }
+
+  const root = document.createElement('article')
+  root.className = 'knowbook-embedded-article'
+  root.innerHTML = embeddedHtml
+  const shell = field.closest('article')
+  if (shell) {
+    shell.replaceWith(root)
+  } else {
+    field.replaceWith(root)
+  }
+
+  return { title, publishedAt }
+}
+
+function readTextAreaValue(document: Document, selector: string): string | null {
+  const element = document.querySelector(selector) as HTMLTextAreaElement | null
+  return normalizeNullableText(element?.value || element?.textContent)
+}
+
+function normalizeNumericTimestamp(value: string | null): string | null {
+  if (!value || !/^\d{10,13}$/.test(value)) {
+    return null
+  }
+
+  const timestamp = Number(value) * (value.length === 10 ? 1_000 : 1)
+  const date = new Date(timestamp)
+  return Number.isNaN(date.valueOf()) ? null : date.toISOString().slice(0, 10)
 }
 
 function materializeScriptDataTables(document: Document): void {
@@ -1038,11 +1109,27 @@ function readScriptStringVariable(source: string, variableName: string): string 
 
 function prepareArticleDocument(document: Document, sourceUrl: string): void {
   removeNoisyNodes(document)
+  removeTrailingArticleSections(document)
   normalizeDocumentImages(document, sourceUrl)
   absolutizeDocumentUrls(document, sourceUrl)
   normalizeArticleHeadings(document)
   cleanArticleImages(document)
   unwrapImageLinks(document)
+}
+
+function removeTrailingArticleSections(document: Document): void {
+  const boundary = Array.from(document.querySelectorAll('h2,h3,h4,strong,div,p'))
+    .find((element) => /^(?:猜您喜欢|相关推荐|推荐阅读|延伸阅读)$/u.test(normalizeWhitespace(element.textContent ?? '')))
+  if (!boundary) {
+    return
+  }
+
+  let section: Element | null = boundary.closest('section,aside,.sons') ?? boundary
+  while (section) {
+    const next: Element | null = section.nextElementSibling
+    section.remove()
+    section = next
+  }
 }
 
 function absolutizeDocumentUrls(document: Document, baseUrl: string): void {
@@ -1388,6 +1475,7 @@ function readStructuredImage(value: unknown): string | null {
 function findBestArticleCandidate(document: Document): Element | null {
   const selectors = [
     '[itemprop="articleBody"]',
+    '.knowbook-embedded-article',
     'article',
     'main',
     '[role="main"]',
@@ -1395,7 +1483,22 @@ function findBestArticleCandidate(document: Document): Element | null {
     '#article',
     '#article-content',
     '#articleContent',
+    '#content_area',
+    '.content_area',
+    '.rm_txt_con',
+    '#J-lemma-main-wrapper',
+    '.mw-parser-output',
+    '#blog_article',
+    '#bodyContent',
+    '.main_content',
+    '.wang-editor-content',
+    '#sonsyuanwen',
+    '.main3',
+    '.left',
+    '[class^="cententWrap__"]',
+    '[class*=" cententWrap__"]',
     '#content',
+    '.article',
     '.article-content',
     '.article-body',
     '.article-detail',
@@ -1411,29 +1514,36 @@ function findBestArticleCandidate(document: Document): Element | null {
   ]
   const candidates = [...new Set(selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector))))]
   let best: { element: Element; score: number } | null = null
+  const hostname = document.location.hostname.toLowerCase()
 
   for (const element of candidates) {
     const textLength = normalizeWhitespace(element.textContent ?? '').length
-    if (textLength < 120) {
-      continue
-    }
-
     const identity = `${element.id} ${typeof element.className === 'string' ? element.className : ''}`
     if (/(?:comment|recommend|related|sidebar|footer|header|menu|nav|catalog|toc)(?:\b|[-_])/i.test(identity)) {
       continue
     }
     const paragraphCount = element.querySelectorAll('p').length
     const headingCount = element.querySelectorAll('h1,h2,h3').length
+    if (textLength < 20 || (textLength < 120 && paragraphCount === 0 && headingCount === 0)) {
+      continue
+    }
     const imageCount = element.querySelectorAll('img').length
     const linkTextLength = Array.from(element.querySelectorAll('a'))
       .reduce((total, link) => total + normalizeWhitespace(link.textContent ?? '').length, 0)
     const linkDensity = linkTextLength / Math.max(1, textLength)
     const semanticBonus = element.tagName === 'ARTICLE' ? 5_000 : 0
+    const siteSpecificBonus = /(?:^|\s)(?:knowbook-embedded-article|mw-parser-output|main_content|wang-editor-content)(?:\s|$)/i.test(identity)
+      || /^(?:J-lemma-main-wrapper|blog_article|bodyContent|content_area|sonsyuanwen)$/i.test(element.id)
+      || (element.classList.contains('article') && /(?:^|\.)douban\.com$/i.test(hostname))
+      || (/cententWrap__/i.test(identity) && /(?:^|\.)thepaper\.cn$/i.test(hostname))
+      || (/(?:^|\s)(?:main3|left)(?:\s|$)/i.test(identity) && /(?:gushiwen\.cn|guwendao\.net)$/i.test(hostname))
+      ? 15_000
+      : 0
     const contentBonus = /(?:^|\s)(?:editor|markdown-body|article-content|article-body|post-content|entry-content|rich_media_content|blog-content-body|newsCo)(?:\s|$)/i.test(identity)
       ? 5_000
       : /(?:article|post|entry|markdown|editor|news)[-_ ]?(?:body|content|detail)?/i.test(identity) ? 1_000 : 0
     const score = textLength + paragraphCount * 110 + headingCount * 70 + imageCount * 40
-      + semanticBonus + contentBonus - linkDensity * textLength * 1.5
+      + semanticBonus + siteSpecificBonus + contentBonus - linkDensity * textLength * 1.5
 
     if (!best || score > best.score) {
       best = { element, score }
@@ -1501,15 +1611,21 @@ function inferSiteName(documentTitle: string, primaryHeading: string): string | 
 
 function cleanClipTitle(value: string, sourceSite: string, hostname: string): string {
   const normalized = normalizeWhitespace(value)
+  const compactSiteSuffix = `--${sourceSite.trim()}`
+  if (compactSiteSuffix.length > 2 && normalized.endsWith(compactSiteSuffix)) {
+    const withoutSite = normalized.slice(0, -compactSiteSuffix.length).trim()
+    const channelSeparator = withoutSite.lastIndexOf('--')
+    return channelSeparator >= 6 ? withoutSite.slice(0, channelSeparator).trim() : withoutSite
+  }
   const segments = normalized
-    .split(/(?:\s+[-–—]\s+|\s*[|·]\s*|_)/)
+    .split(/(?:\s+[-–—]\s+|\s*\|\s*|\s+·\s+|_)/)
     .map((segment) => segment.trim())
     .filter(Boolean)
   const siteComparable = normalizeComparableText(sourceSite)
   const hostnameComparable = normalizeComparableText(hostname.replace(/^www\./i, '').split('.')[0] ?? hostname)
   const isSiteSegment = (segment: string) => {
     const comparable = normalizeComparableText(segment)
-    const commonSiteSuffix = /^(?:博客|社区|开发者社区|官方文档|文档|learn|docs)$/i
+    const commonSiteSuffix = /^(?:博客|社区|开发者社区|官方文档|文档|官网|科技有意思|thepaper|learn|docs)$/i
     return Boolean(comparable) && (
       siteComparable === comparable
       || (comparable.startsWith(siteComparable) && commonSiteSuffix.test(comparable.slice(siteComparable.length)))
@@ -1530,6 +1646,9 @@ function cleanClipTitle(value: string, sourceSite: string, hostname: string): st
     segments.shift()
   }
   while (segments.length > 1 && isSiteSegment(segments.at(-1) ?? '')) {
+    segments.pop()
+  }
+  if (sourceSite === '澎湃新闻' && segments.length > 1 && segments.at(-1) === '澎湃研究所') {
     segments.pop()
   }
 
@@ -1568,12 +1687,19 @@ function normalizeComparableText(value: string): string {
 
 function normalizeAuthorName(value: string | null | undefined): string | null {
   const normalized = normalizeNullableText(value)
-  if (!normalized || /^(?:https?:)?\/\//i.test(normalized)) {
+  if (
+    !normalized
+    || /^(?:https?:)?\/\//i.test(normalized)
+    || /^\d+$/u.test(normalized)
+    || /^(?:chinanews|discuz! team and comsenz ui team)$/i.test(normalized)
+    || /^本词条由.+审核/u.test(normalized)
+  ) {
     return null
   }
 
   let cleaned = normalized.replace(/^(?:作者|撰文|文|by)\s*[:：]?\s*/i, '')
   cleaned = cleaned.split(/\s+(?:粉丝|关注|发表于|发布于)(?:\s|$)/i, 1)[0]?.trim() ?? cleaned
+  cleaned = cleaned.replace(/(?:台湾)?自由撰稿人$/u, '').trim()
   const repeatedIdentity = cleaned.match(/^(.{2,30}?)\s+\1(?:官方账号.*)?$/)
   if (repeatedIdentity?.[1]) {
     cleaned = repeatedIdentity[1]
@@ -1581,9 +1707,27 @@ function normalizeAuthorName(value: string | null | undefined): string | null {
   return normalizeNullableText(cleaned)
 }
 
+function normalizeUsefulPageTitle(value: string | null | undefined): string | null {
+  const normalized = normalizeNullableText(value)
+  return normalized && !/^(?:博文|文章|首页|详情|正文)$/u.test(normalized) ? normalized : null
+}
+
+function extractVisibleArticleAuthor(element: Element | null): string | null {
+  for (const candidate of Array.from(element?.querySelectorAll('p,span,div') ?? []).slice(0, 200)) {
+    const text = normalizeWhitespace(candidate.textContent ?? '')
+    const match = text.match(/^作者\s*[:：]\s*([\p{L}·•]{2,24})(?=\s*(?:$|编辑\s*[:：]))/u)
+    if (match?.[1]) {
+      return normalizeAuthorName(match[1])
+    }
+  }
+
+  return null
+}
+
 function extractVisibleArticleDate(element: Element | null): string | null {
-  const leadingText = normalizeWhitespace(element?.textContent ?? '').slice(0, 1500)
-  const match = leadingText.match(/(20\d{2})[年\/-](\d{1,2})[月\/-](\d{1,2})日?/)
+  const fullText = normalizeWhitespace(element?.textContent ?? '')
+  const explicitMatch = fullText.match(/(?:发布于|发布时间|上传时间|编辑于)\s*[:：]?\s*(20\d{2})[年\/-](\d{1,2})[月\/-](\d{1,2})日?/)
+  const match = explicitMatch ?? fullText.slice(0, 2500).match(/(20\d{2})[年\/-](\d{1,2})[月\/-](\d{1,2})日?/)
   if (!match) {
     return null
   }
@@ -1626,6 +1770,17 @@ function isUsefulExcerpt(excerpt: string, title: string, articleText: string): b
   const comparableArticle = normalizeComparableText(articleText)
   const excerptLead = comparableExcerpt.slice(0, Math.min(24, comparableExcerpt.length))
   return excerptLead.length >= 12 && comparableArticle.includes(excerptLead)
+}
+
+function excerptDuplicatesBody(excerpt: string, bodyMarkdown: string): boolean {
+  const comparableExcerpt = normalizeComparableText(excerpt)
+  const comparableBody = normalizeComparableText(bodyMarkdown)
+  if (comparableExcerpt.length < 12 || comparableBody.length < 12) {
+    return false
+  }
+
+  const excerptLead = comparableExcerpt.slice(0, Math.min(48, comparableExcerpt.length))
+  return comparableBody.slice(0, Math.max(400, excerptLead.length * 3)).includes(excerptLead)
 }
 
 function findBestArticleImage(document: Document, sourceUrl: string): string | null {
@@ -1738,7 +1893,13 @@ function cleanExtractedMarkdown(markdown: string): string {
   const contentOnlyMarkdown = embeddedFooterBoundary >= 0
     ? articleOnlyMarkdown.slice(0, embeddedFooterBoundary)
     : articleOnlyMarkdown
-  const lines = contentOnlyMarkdown
+  const trailingUiBoundary = contentOnlyMarkdown.search(
+    /(?:^|\n)(?:#{1,6}\s*)?(?:猜您喜欢|相关推荐|推荐阅读|延伸阅读|上一篇\s*[:：]|下一篇\s*[:：])/mu
+  )
+  const trimmedContent = trailingUiBoundary >= 0
+    ? contentOnlyMarkdown.slice(0, trailingUiBoundary)
+    : contentOnlyMarkdown
+  const lines = trimmedContent
     .replace(/\u00a0/g, ' ')
     .replace(/[\u2028\u2029]/g, '\n')
     .split(/\r?\n/)
@@ -1919,6 +2080,28 @@ function inferKnownSiteName(value: string): string | null {
   try {
     const hostname = new URL(value).hostname.replace(/^www\./i, '').toLowerCase()
     const knownSites: Array<[string, string]> = [
+      ['zhuanlan.zhihu.com', '知乎专栏'],
+      ['news.cn', '新华网'],
+      ['people.com.cn', '人民网'],
+      ['cctv.com', '央视网'],
+      ['chinanews.com.cn', '中国新闻网'],
+      ['thepaper.cn', '澎湃新闻'],
+      ['jiemian.com', '界面新闻'],
+      ['ifeng.com', '凤凰网'],
+      ['huanqiu.com', '环球网'],
+      ['guancha.cn', '观察者网'],
+      ['infzm.com', '南方周末'],
+      ['baike.baidu.com', '百度百科'],
+      ['wikipedia.org', '维基百科'],
+      ['guokr.com', '果壳'],
+      ['sciencenet.cn', '科学网'],
+      ['gushiwen.cn', '古诗文网'],
+      ['guwendao.net', '古文岛'],
+      ['mbalib.com', 'MBA智库百科'],
+      ['douban.com', '豆瓣'],
+      ['dili360.com', '中国国家地理'],
+      ['kepuchina.cn', '科普中国'],
+      ['jianshu.com', '简书'],
       ['ruanyifeng.com', '阮一峰的网络日志'],
       ['juejin.cn', '掘金'],
       ['cnblogs.com', '博客园'],

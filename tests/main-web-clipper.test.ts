@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import type { AddressInfo } from 'node:net'
 import { KnowbookStore } from '../src/main/database/store.ts'
-import { createPinnedLookup, WebClipperService } from '../src/main/web-clipper.ts'
+import { createPinnedLookup, extractWebClip, WebClipperService } from '../src/main/web-clipper.ts'
 
 async function withHtmlServer(run: (baseUrl: string) => Promise<void>): Promise<void> {
   const server = createServer((request, response) => {
@@ -499,6 +499,193 @@ test('WebClipperService cleans site and author suffixes, prefers visible article
     assert.ok(publishedAtColumn)
     assert.equal(entry.fieldValues[authorColumn.id], 'Node Team')
     assert.equal(entry.fieldValues[publishedAtColumn.id], '2025-07-16')
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService imports 环球网 article content embedded in textarea fields', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-huanqiu-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://tech.huanqiu.com/article/example',
+      parentId: null,
+      html: [
+        '<!doctype html><html><head><title>环球网应用</title></head><body><article>',
+        '<textarea class="article-title">智慧城市数据利用顶层框架国际标准发布</textarea>',
+        '<textarea class="article-content">&lt;article&gt;',
+        '&lt;p&gt;国际标准正文第一段，详细介绍智慧城市数据利用的顶层框架、适用范围、基本原则和实施背景，确保采集器拿到的是完整正文。&lt;/p&gt;',
+        '&lt;p&gt;正文第二段继续说明数据治理、跨部门协作、安全保障、技术接口和评估机制，并提供足够的内容用于文章质量判断。&lt;/p&gt;',
+        '&lt;p&gt;正文第三段记录标准发布后的应用价值、国际合作意义以及后续推广计划。&lt;/p&gt;',
+        '&lt;/article&gt;</textarea>',
+        '<textarea class="article-time">1786929066305</textarea>',
+        '</article></body></html>'
+      ].join('')
+    })
+
+    assert.equal(result.created, true)
+    assert.equal(result.title, '智慧城市数据利用顶层框架国际标准发布')
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+    assert.equal(markdown.includes('国际标准正文第一段'), true)
+    assert.equal(markdown.includes('textarea'), false)
+
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    const sourceColumn = home.databaseColumns.find((column) => column.name === 'Source Site')
+    const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+    assert.ok(entry)
+    assert.ok(sourceColumn)
+    assert.ok(publishedAtColumn)
+    assert.equal(entry.fieldValues[sourceColumn.id], '环球网')
+    assert.equal(entry.fieldValues[publishedAtColumn.id], '2026-08-17')
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService cleans 人民网 metadata and avoids duplicating the leading excerpt', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-people-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const leadingParagraph = '人工智能产业正在加速形成新的技术体系、产品形态和应用模式，为经济社会发展持续注入新的增长动力。'
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'http://finance.people.com.cn/n1/2026/0817/c1004-40780581.html',
+      parentId: null,
+      title: '人工智能加速赋能千行百业--经济·科技--人民网',
+      sourceSite: 'finance.people.com.cn',
+      author: '1478',
+      excerpt: leadingParagraph,
+      articleHtml: [
+        '<article><h1>人工智能加速赋能千行百业</h1>',
+        '<p>发布时间：2026年08月17日</p>',
+        `<p>${leadingParagraph}</p>`,
+        '<p>文章进一步介绍制造、医疗、交通和科研场景中的落地进展，以及公共数据和算力基础设施建设情况。</p>',
+        '<p>各方将继续完善标准规范、人才培养和安全治理机制，推动技术创新成果更好服务实体经济。</p>',
+        '</article>'
+      ].join('')
+    })
+
+    assert.equal(result.title, '人工智能加速赋能千行百业')
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+    assert.equal(markdown.split(leadingParagraph).length - 1, 1)
+
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    const sourceColumn = home.databaseColumns.find((column) => column.name === 'Source Site')
+    const authorColumn = home.databaseColumns.find((column) => column.name === 'Author')
+    const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+    assert.ok(entry)
+    assert.ok(sourceColumn)
+    assert.ok(authorColumn)
+    assert.ok(publishedAtColumn)
+    assert.equal(entry.fieldValues[sourceColumn.id], '人民网')
+    assert.equal(entry.fieldValues[authorColumn.id], undefined)
+    assert.equal(entry.fieldValues[publishedAtColumn.id], '2026-08-17')
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('WebClipperService prefers an MBA智库正文 root and removes comments and recommendations', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-mbalib-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://wiki.mbalib.com/wiki/AI',
+      parentId: null,
+      html: [
+        '<!doctype html><html><head><title>人工智能 - MBA智库百科</title></head><body>',
+        '<main id="content"><nav>百科分类与站点导航</nav><div id="bodyContent" class="main_content">',
+        '<h1>人工智能</h1><p>人工智能是研究和开发用于模拟、延伸与扩展人类智能的理论、方法、技术及应用系统的一门综合性学科。</p>',
+        '<h2>发展历史</h2><p>相关研究经历了符号主义、连接主义和统计学习等阶段，并在算力、数据与算法共同推动下快速发展。</p>',
+        '<h2>主要应用</h2><p>典型应用覆盖自然语言处理、计算机视觉、智能决策、机器人和知识管理等多个方向。</p>',
+        '<p>在部署过程中还需要持续关注可靠性、可解释性、隐私保护、安全治理和社会影响。</p>',
+        '</div><section id="comments"><p>这是一条用户评论，不属于百科正文。</p></section>',
+        '<section><h2>相关推荐</h2><p>另一篇百科词条推荐。</p></section></main>',
+        '</body></html>'
+      ].join('')
+    })
+
+    assert.equal(result.title, '人工智能')
+    const detail = store.getDocumentDetail(result.documentId)
+    assert.ok(detail)
+    const markdown = detail.blocks.map((block) => block.content).join('\n\n')
+    assert.equal(markdown.includes('主要应用'), true)
+    assert.equal(markdown.includes('用户评论'), false)
+    assert.equal(markdown.includes('另一篇百科词条推荐'), false)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('extractWebClip preserves Chinese title interpuncts', () => {
+  const clip = extractWebClip([
+    '<!doctype html><html><head><title>水调歌头·明月几时有_古诗文网</title></head><body>',
+    '<article><h1>水调歌头·明月几时有</h1>',
+    '<p>明月几时有？把酒问青天。不知天上宫阙，今夕是何年。</p>',
+    '<p>转朱阁，低绮户，照无眠。不应有恨，何事长向别时圆？</p>',
+    '<p>人有悲欢离合，月有阴晴圆缺，此事古难全。</p>',
+    '</article></body></html>'
+  ].join(''), 'https://www.gushiwen.cn/shiwenv_example.aspx', {
+    title: '水调歌头·明月几时有',
+    sourceSite: '古诗文网'
+  })
+
+  assert.equal(clip.title, '水调歌头·明月几时有')
+})
+
+test('WebClipperService enriches captured article HTML with the visible page date', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-webclip-page-metadata-test-'))
+  const store = new KnowbookStore(join(tempRoot, 'store.sqlite'))
+  const service = new WebClipperService(store, join(tempRoot, 'assets'))
+  const articleHtml = [
+    '<article class="rich_media_content"><h1>年度科技回顾</h1>',
+    '<p>这篇文章梳理了全年重要科技进展，介绍基础研究、工程创新与产业应用之间的联系，并回顾多项成果从实验室走向现实场景的完整过程。</p>',
+    '<p>文章还讨论了人工智能、生命科学、航天工程和清洁能源领域的代表性成果，分析数据、算力、材料和制造能力如何共同推动技术突破。</p>',
+    '<p>最后一部分总结未来值得持续关注的研究方向，以及科学传播面临的新问题，包括可信信息、公众参与、风险沟通和跨学科合作。</p>',
+    '<p>这些案例展示了长期基础投入的重要性，也说明开放协作、规范治理和人才培养是科技创新持续发展的必要条件。</p>',
+    '</article>'
+  ].join('')
+
+  try {
+    const result = await service.importWebClipPayload({
+      url: 'https://www.guokr.com/article/example/',
+      parentId: null,
+      title: '年度科技回顾| 果壳 科技有意思',
+      sourceSite: '果壳',
+      publishedAt: '2022-10-10',
+      html: [
+        '<!doctype html><html><head><title>年度科技回顾| 果壳 科技有意思</title>',
+        '<meta property="article:published_time" content="2022-10-10"></head><body>',
+        '<p>上传时间：2025年01月01日</p>',
+        articleHtml,
+        '</body></html>'
+      ].join(''),
+      articleHtml
+    })
+
+    assert.equal(result.title, '年度科技回顾')
+    const home = store.getHomeData(join(tempRoot, 'backup'))
+    const entry = home.documentCatalog.find((item) => item.id === result.documentId)
+    const publishedAtColumn = home.databaseColumns.find((column) => column.name === 'Published At')
+    assert.ok(entry)
+    assert.ok(publishedAtColumn)
+    assert.equal(entry.fieldValues[publishedAtColumn.id], '2025-01-01')
   } finally {
     store.destroy()
     rmSync(tempRoot, { recursive: true, force: true })

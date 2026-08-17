@@ -129,6 +129,102 @@ test('collectPagePayload captures metadata, resolves lazy images, and removes un
   assert.equal(payload.text.includes('Article body'), true)
 })
 
+test('collectPagePayload materializes article HTML embedded in 环球网 textareas', () => {
+  const { context } = loadPopupScript()
+  const pageDom = new JSDOM([
+    '<!doctype html><html><head><title>环球网应用</title></head><body>',
+    '<article>',
+    '<textarea class="article-title">智慧城市数据利用顶层框架国际标准发布</textarea>',
+    '<textarea class="article-content">&lt;article&gt;&lt;p&gt;国际标准正文第一段，包含足够的信息用于可靠剪藏。&lt;/p&gt;&lt;p&gt;正文第二段继续介绍标准的实施范围与技术意义。&lt;/p&gt;&lt;/article&gt;</textarea>',
+    '<textarea class="article-time">1786929066305</textarea>',
+    '</article>',
+    '</body></html>'
+  ].join(''), { url: 'https://tech.huanqiu.com/article/example' })
+
+  context.document = pageDom.window.document
+  context.location = pageDom.window.location
+  const payload = context.collectPagePayload()
+
+  assert.equal(payload.title, '智慧城市数据利用顶层框架国际标准发布')
+  assert.equal(payload.sourceSite, '环球网')
+  assert.equal(payload.publishedAt, '2026-08-17')
+  assert.equal(payload.text.includes('国际标准正文第一段'), true)
+  assert.equal(payload.articleHtml?.includes('knowbook-embedded-article'), true)
+  assert.equal(payload.articleHtml?.includes('<textarea'), false)
+  assert.equal(pageDom.window.document.querySelector('textarea.article-content') !== null, true)
+})
+
+test('collectPagePayload prefers a ScienceNet article root and rejects generic metadata', () => {
+  const { context } = loadPopupScript()
+  const pageDom = new JSDOM([
+    '<!doctype html><html><head>',
+    '<title>真正的科学文章标题 - 科学网博客</title>',
+    '<meta property="og:title" content="博文">',
+    '<meta name="author" content="Discuz! Team and Comsenz UI Team">',
+    '</head><body>',
+    '<main><h2>站点导航</h2><p>热门博文和全站推荐内容。</p>',
+    '<article id="blog_article"><h1>真正的科学文章标题</h1>',
+    '<p>研究正文第一段，解释实验背景、研究目标与关键问题。</p>',
+    '<p>研究正文第二段，记录观察结果、数据分析与结论。</p></article>',
+    '<section id="comments"><p>站点评论不属于文章正文。</p></section></main>',
+    '</body></html>'
+  ].join(''), { url: 'https://blog.sciencenet.cn/blog-45-1525064.html' })
+
+  context.document = pageDom.window.document
+  context.location = pageDom.window.location
+  const payload = context.collectPagePayload()
+
+  assert.equal(payload.title, '真正的科学文章标题')
+  assert.equal(payload.sourceSite, '科学网')
+  assert.equal(payload.author, null)
+  assert.equal(payload.articleHtml?.includes('研究正文第二段'), true)
+  assert.equal(payload.articleHtml?.includes('站点评论'), false)
+})
+
+test('collectPagePayload trims recommendations after a 古诗文网 article', () => {
+  const { context } = loadPopupScript()
+  const pageDom = new JSDOM([
+    '<!doctype html><html><head><title>水调歌头·明月几时有_古诗文网</title></head><body>',
+    '<div class="main3"><div class="left">',
+    '<div class="sons"><h1>水调歌头·明月几时有</h1><p>明月几时有？把酒问青天。</p><p>不知天上宫阙，今夕是何年。</p></div>',
+    '<div class="sons"><strong>译文及注释</strong><p>正文解释内容。</p></div>',
+    '<div class="sons"><strong>猜您喜欢</strong><p>其他诗词推荐，不应进入剪藏。</p></div>',
+    '</div></div>',
+    '</body></html>'
+  ].join(''), { url: 'https://www.gushiwen.cn/shiwenv_632c5beb84eb.aspx' })
+
+  context.document = pageDom.window.document
+  context.location = pageDom.window.location
+  const payload = context.collectPagePayload()
+
+  assert.equal(payload.title, '水调歌头·明月几时有')
+  assert.equal(payload.sourceSite, '古诗文网')
+  assert.equal(payload.articleHtml?.includes('正文解释内容'), true)
+  assert.equal(payload.articleHtml?.includes('其他诗词推荐'), false)
+})
+
+test('collectPagePayload cleans 澎湃新闻 channel suffixes and selects its content wrapper', () => {
+  const { context } = loadPopupScript()
+  const pageDom = new JSDOM([
+    '<!doctype html><html><head>',
+    '<title>顶级赛事IP化的上海经验_澎湃研究所_澎湃新闻-The Paper</title>',
+    '<meta property="og:title" content="顶级赛事IP化的上海经验_澎湃研究所_澎湃新闻-The Paper">',
+    '</head><body><main><div class="cententWrap__UojXm">',
+    '<p>正文第一段介绍城市赛事品牌的长期运营、公共空间利用和国际传播实践。</p>',
+    '<p>正文第二段分析赛事组织、商业合作、观众服务与城市治理之间的关系。</p>',
+    '</div><div class="feedback">反馈与相关推荐</div></main></body></html>'
+  ].join(''), { url: 'https://www.thepaper.cn/newsDetail_forward_33057200' })
+
+  context.document = pageDom.window.document
+  context.location = pageDom.window.location
+  const payload = context.collectPagePayload()
+
+  assert.equal(payload.title, '顶级赛事IP化的上海经验')
+  assert.equal(payload.sourceSite, '澎湃新闻')
+  assert.equal(payload.articleHtml?.includes('正文第二段'), true)
+  assert.equal(payload.articleHtml?.includes('反馈与相关推荐'), false)
+})
+
 test('clipCurrentPage keeps the collected title unless the user edits it and sends notes independently', async () => {
   let submittedPayload: Record<string, unknown> | null = null
   const collected = {
