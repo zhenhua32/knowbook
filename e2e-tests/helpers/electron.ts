@@ -59,7 +59,12 @@ export async function launchElectronApp(): Promise<ElectronAppContext> {
 export async function closeElectronApp(context: Pick<ElectronAppContext, 'app' | 'tempRoot'> | null): Promise<void> {
   await context?.app.close()
   if (context?.tempRoot) {
-    rmSync(context.tempRoot, { recursive: true, force: true })
+    rmSync(context.tempRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100
+    })
   }
 }
 

@@ -142,7 +142,12 @@ export async function requestAiChatCompletion(
   const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
   const fetchImplementation = options.fetchImplementation ?? fetch
   const timeoutMilliseconds = options.timeoutMilliseconds ?? DEFAULT_AI_REQUEST_TIMEOUT_MS
-  const timeoutSignal = AbortSignal.timeout(timeoutMilliseconds)
+  const timeoutController = new AbortController()
+  // Node's AbortSignal.timeout() uses an unref'ed timer, so an otherwise idle
+  // process can exit while an injected or mocked fetch is still pending.
+  const timeout = setTimeout(() => {
+    timeoutController.abort()
+  }, timeoutMilliseconds)
 
   let response: Response
   try {
@@ -167,20 +172,22 @@ export async function requestAiChatCompletion(
         temperature: input.temperature
       }),
       signal: input.signal
-        ? AbortSignal.any([input.signal, timeoutSignal])
-        : timeoutSignal
+        ? AbortSignal.any([input.signal, timeoutController.signal])
+        : timeoutController.signal
     })
   } catch (error) {
     if (input.signal?.aborted) {
       throw error
     }
 
-    if (timeoutSignal.aborted) {
+    if (timeoutController.signal.aborted) {
       throw new Error(`${input.failureLabel} timed out after ${timeoutMilliseconds} ms. Endpoint: ${endpoint}.`)
     }
 
     const reason = error instanceof Error ? error.message : String(error)
     throw new Error(`${input.failureLabel} failed before the AI service responded. Check the AI Base URL, network connectivity, proxy, and TLS certificate. Endpoint: ${endpoint}. Reason: ${reason}`)
+  } finally {
+    clearTimeout(timeout)
   }
 
   if (!response.ok) {
