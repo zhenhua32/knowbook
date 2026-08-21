@@ -11,6 +11,29 @@ export interface RevealedCredential {
   protectedValueToPersist?: string
 }
 
+export function createEphemeralCredentialStorage(
+  createToken: () => string
+): SecureStringStorage {
+  const credentials = new Map<string, string>()
+
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => {
+      const token = createToken()
+      credentials.set(token, value)
+      return Buffer.from(token, 'utf8')
+    },
+    decryptString: (value) => {
+      const token = value.toString('utf8')
+      const credential = credentials.get(token)
+      if (credential === undefined) {
+        throw new Error('Ephemeral credential is unavailable.')
+      }
+      return credential
+    }
+  }
+}
+
 const SECURE_STORAGE_UNAVAILABLE_MESSAGE =
   'Secure credential storage is unavailable. Configure the operating system credential store, then save the API key again.'
 const CREDENTIAL_ENCRYPTION_FAILED_MESSAGE =

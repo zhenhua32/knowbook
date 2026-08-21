@@ -1,12 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  createEphemeralCredentialStorage,
   isSecureStorageUsable,
   protectCredential,
   revealCredential,
   SAFE_STORAGE_VALUE_PREFIX,
   type SecureStringStorage
 } from '../src/main/credential-storage.ts'
+
+test('ephemeral credential storage keeps secrets in memory behind opaque tokens', () => {
+  let tokenSequence = 0
+  const storage = createEphemeralCredentialStorage(() => `token-${++tokenSequence}`)
+  const protectedValue = protectCredential('secret-key', storage)
+
+  assert.equal(protectedValue.includes('secret-key'), false)
+  assert.deepEqual(revealCredential(protectedValue, storage), { value: 'secret-key' })
+  assert.throws(
+    () => revealCredential(protectedValue, createEphemeralCredentialStorage(() => 'unused')),
+    /could not be decrypted/
+  )
+})
 
 function createStorage(available = true): SecureStringStorage {
   return {

@@ -83,6 +83,7 @@ import { WebClipperService } from './web-clipper'
 import { WebClipExtractionWorkerRunner } from './web-clip-extract-worker-client'
 import { CoalescedNotifier } from './coalesced-notifier'
 import {
+  createEphemeralCredentialStorage,
   isSecureStorageUsable,
   protectCredential,
   revealCredential,
@@ -148,15 +149,19 @@ const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
   }
 }
 
-const aiCredentialStorage: SecureStringStorage = {
-  isEncryptionAvailable: () => isSecureStorageUsable(
-    safeStorage.isEncryptionAvailable(),
-    process.platform,
-    process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined
-  ),
-  encryptString: (value) => safeStorage.encryptString(value),
-  decryptString: (value) => safeStorage.decryptString(value)
-}
+const useEphemeralE2eCredentialStorage = !app.isPackaged
+  && process.env['KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE'] === '1'
+const aiCredentialStorage: SecureStringStorage = useEphemeralE2eCredentialStorage
+  ? createEphemeralCredentialStorage(randomUUID)
+  : {
+      isEncryptionAvailable: () => isSecureStorageUsable(
+        safeStorage.isEncryptionAvailable(),
+        process.platform,
+        process.platform === 'linux' ? safeStorage.getSelectedStorageBackend() : undefined
+      ),
+      encryptString: (value) => safeStorage.encryptString(value),
+      decryptString: (value) => safeStorage.decryptString(value)
+    }
 
 const workspaceMutationNotifier = new CoalescedNotifier(() => {
   BrowserWindow.getAllWindows().forEach((window) => {

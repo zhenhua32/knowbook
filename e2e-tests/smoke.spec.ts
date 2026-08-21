@@ -17,7 +17,7 @@ test.describe('Application Shell Smoke @electron', () => {
       await openRailPage(page, 'Dashboard', '总览')
       await expect(page.locator('.meta-grid')).toBeVisible()
       await page.getByRole('button', { name: uiText('Run backup now', '立即执行备份') }).click()
-      await expect(page.locator('.flash-message')).toContainText(/Exported \d+ Markdown files|已导出 \d+ 个 Markdown 文件/)
+      await expect(page.locator('.flash-message')).toContainText(/Exported \d+ markdown files|已导出 \d+ 个 Markdown 文件/i)
 
       await openRailPage(page, 'Database', '数据库')
       await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()

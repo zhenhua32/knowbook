@@ -43,6 +43,7 @@ export async function launchElectronApp(): Promise<ElectronAppContext> {
       LOCALAPPDATA: tempRoot,
       KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
       KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
+      KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE: '1',
       KNOWBOOK_USER_DATA_DIR: tempRoot
     }
   })
@@ -57,8 +58,40 @@ export async function launchElectronApp(): Promise<ElectronAppContext> {
 }
 
 export async function closeElectronApp(context: Pick<ElectronAppContext, 'app' | 'tempRoot'> | null): Promise<void> {
-  await context?.app.close()
-  if (context?.tempRoot) {
+  if (!context) {
+    return
+  }
+
+  const childProcess = context.app.process()
+  let closeTimer: NodeJS.Timeout | undefined
+  const closedGracefully = await Promise.race([
+    context.app.close().then(() => true, () => false),
+    new Promise<boolean>((resolve) => {
+      closeTimer = setTimeout(() => resolve(false), 5_000)
+    })
+  ])
+  if (closeTimer) {
+    clearTimeout(closeTimer)
+  }
+
+  if (!closedGracefully && childProcess.exitCode === null && childProcess.signalCode === null) {
+    const processExited = new Promise<void>((resolve) => {
+      childProcess.once('exit', () => resolve())
+    })
+    childProcess.kill('SIGKILL')
+    let killTimer: NodeJS.Timeout | undefined
+    await Promise.race([
+      processExited,
+      new Promise<void>((resolve) => {
+        killTimer = setTimeout(resolve, 5_000)
+      })
+    ])
+    if (killTimer) {
+      clearTimeout(killTimer)
+    }
+  }
+
+  if (context.tempRoot) {
     rmSync(context.tempRoot, {
       recursive: true,
       force: true,
