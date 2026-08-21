@@ -45,9 +45,11 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(getSummaryInput(page)).toHaveValue(incrementallyUpdatedSummary)
 
       await page.locator('.tree-button:not(.tree-button-active)').first().click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).not.toHaveValue(nextTitle)
 
       await getTreeButton(page, nextTitle).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(nextTitle)
       await expect(getSummaryInput(page)).toHaveValue(incrementallyUpdatedSummary)
     })
@@ -83,6 +85,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${childTitle}`)
 
       await getTreeButton(page, parentTitle).click()
+      await ensureDocumentMetadataEditor(page)
       await expect(getTitleInput(page)).toHaveValue(parentTitle)
       await getTitleInput(page).fill(renamedParentTitle)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
