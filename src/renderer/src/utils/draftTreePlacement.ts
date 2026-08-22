@@ -85,6 +85,60 @@ export function resolveDraftInsertionPlacement(
   }
 }
 
+export function reparentOrphanedBlocksAfterRangeDeletion(
+  blocks: DocumentBlockDraft[],
+  rangeStart: number,
+  rangeEnd: number
+): DocumentBlockDraft[] {
+  let minRemovedDepth = Number.POSITIVE_INFINITY
+  for (let index = rangeStart; index <= rangeEnd; index += 1) {
+    const removedBlock = blocks[index]
+    if (removedBlock && removedBlock.depth < minRemovedDepth) {
+      minRemovedDepth = removedBlock.depth
+    }
+  }
+  if (!Number.isFinite(minRemovedDepth)) {
+    return [...blocks]
+  }
+
+  const modifiedBlocks: DocumentBlockDraft[] = []
+  let orphanDepthShift: number | null = null
+  let reparentingFinished = false
+
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]
+    if (!block) {
+      continue
+    }
+
+    if (index >= rangeStart && index <= rangeEnd) {
+      continue
+    }
+
+    if (index > rangeEnd && !reparentingFinished) {
+      if (block.depth <= minRemovedDepth) {
+        reparentingFinished = true
+      } else {
+        if (orphanDepthShift === null) {
+          orphanDepthShift = block.depth - minRemovedDepth
+        }
+        const requestedDepth = normalizeBlockDepth(block.type, block.depth - orphanDepthShift)
+        const placement = resolveDraftInsertionPlacement(modifiedBlocks, modifiedBlocks.length, block.type, requestedDepth)
+        modifiedBlocks.push({
+          ...block,
+          depth: placement.depth,
+          parentBlockId: placement.parentBlockId
+        })
+        continue
+      }
+    }
+
+    modifiedBlocks.push(block)
+  }
+
+  return modifiedBlocks
+}
+
 export function getBlockDropPreview(
   blocks: DocumentBlockDraft[],
   sourceIndex: number,

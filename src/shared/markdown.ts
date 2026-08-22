@@ -167,7 +167,7 @@ function decodeMarkdownFrontmatterValue(rawValue: string): string {
 }
 
 function parseMarkdownFrontmatter(markdown: string): { frontmatter: MarkdownDocumentFrontmatter; body: string } {
-  const normalizedMarkdown = markdown.replace(/\r\n/g, '\n')
+  const normalizedMarkdown = markdown.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   if (!normalizedMarkdown.startsWith('---\n')) {
     return {
       frontmatter: {},

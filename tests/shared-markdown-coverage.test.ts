@@ -152,3 +152,28 @@ test('parseMarkdownBackupDocument round-trips frontmatter and block metadata', (
     }
   ])
 })
+
+test('parseMarkdownBackupDocument strips a UTF-8 BOM before reading frontmatter', () => {
+  const parsed = parseMarkdownBackupDocument(
+    '\uFEFF---\nkind: document\nid: doc-bom\npath: Home/Bom\nsummary: "Bombed"\n---\n\nHello world'
+  )
+
+  assert.equal(parsed.frontmatter.kind, 'document')
+  assert.equal(parsed.frontmatter.id, 'doc-bom')
+  assert.equal(parsed.frontmatter.path, 'Home/Bom')
+  assert.equal(parsed.frontmatter.summary, 'Bombed')
+  assert.equal(parsed.blocks.length, 1)
+  assert.equal(parsed.blocks[0]?.content, 'Hello world')
+})
+
+test('renderMarkdownFrontmatter output round-trips through parseMarkdownBackupDocument', () => {
+  const rendered = renderMarkdownFrontmatter({
+    kind: 'document',
+    id: 'doc-round',
+    path: 'Home/Round'
+  })
+  const parsed = parseMarkdownBackupDocument(`${rendered}\nBody text`)
+
+  assert.equal(parsed.frontmatter.id, 'doc-round')
+  assert.equal(parsed.frontmatter.path, 'Home/Round')
+})

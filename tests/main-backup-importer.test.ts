@@ -873,3 +873,83 @@ test('MarkdownRestoreService rejects concurrent restores and unlocks after compl
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('MarkdownRestoreService aborts instead of wiping local views when a backup database entry is corrupt', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-corrupt-db-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const sourceDatabase = store.createDatabase({ name: 'Projects', description: 'Canonical' })
+    const stageColumn = store.createDocumentDatabaseColumn({
+      databaseId: sourceDatabase.id,
+      name: 'Stage',
+      type: 'select',
+      options: ['Idea', 'Doing']
+    })
+    const savedView = store.createDatabaseSavedView({
+      databaseId: sourceDatabase.id,
+      name: 'Open projects',
+      filterQuery: 'Doing',
+      filterScope: '',
+      sortMode: 'updated-desc',
+      viewMode: 'cards'
+    })
+    const entity = store.createDatabaseEntity({
+      databaseId: sourceDatabase.id,
+      fieldValues: { [stageColumn.id]: 'Idea' }
+    })
+
+    await new MarkdownBackupService(store, backupRoot).exportAll()
+
+    const standaloneDatabaseFile = join(backupRoot, '__knowbook', 'databases', `${sourceDatabase.id}.md`)
+    const corruptContent = readFileSync(standaloneDatabaseFile, 'utf8').replace(
+      /^databaseSavedViews: .*$/m,
+      'databaseSavedViews: [{broken json'
+    )
+    writeFileSync(standaloneDatabaseFile, corruptContent, 'utf8')
+
+    await assert.rejects(
+      new MarkdownRestoreService(store).restoreFromDirectory(backupRoot),
+      /corrupted.*databaseSavedViews/s
+    )
+
+    assert.equal(store.getDatabaseSavedViews(sourceDatabase.id).length, 1)
+    assert.equal(store.getDatabaseSavedViews(sourceDatabase.id)[0]?.id, savedView.id)
+    assert.equal(store.getDatabaseEntities(sourceDatabase.id).length, 1)
+    assert.equal(store.getDatabaseEntities(sourceDatabase.id)[0]?.id, entity.id)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService aborts instead of deleting databases when the backup manifest is corrupt', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-corrupt-manifest-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    store.createDatabase({ name: 'Projects', description: 'Canonical' })
+    await new MarkdownBackupService(store, backupRoot).exportAll()
+
+    const staleDatabase = store.createDatabase({ name: 'Archive', description: 'Must survive a failed restore' })
+
+    const manifestFile = join(backupRoot, '__knowbook', 'databases', 'index.md')
+    const corruptManifest = readFileSync(manifestFile, 'utf8').replace(
+      /^databaseIds: .*$/m,
+      'databaseIds: [not-valid-json'
+    )
+    writeFileSync(manifestFile, corruptManifest, 'utf8')
+
+    await assert.rejects(
+      new MarkdownRestoreService(store).restoreFromDirectory(backupRoot),
+      /corrupted.*databaseIds/s
+    )
+
+    assert.equal(store.getDatabases().some((database) => database.id === staleDatabase.id), true)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

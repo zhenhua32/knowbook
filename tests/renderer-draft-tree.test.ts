@@ -7,6 +7,7 @@ import { materializeDraftFragment, shiftDraftFragmentDepth } from '../src/render
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization.ts'
 import {
   getBlockDropPreview,
+  reparentOrphanedBlocksAfterRangeDeletion,
   resolveDraftBlockRelationship,
   resolveDraftInsertionPlacement
 } from '../src/renderer/src/utils/draftTreePlacement.ts'
@@ -224,4 +225,66 @@ test('serializeDraftBlockRange covers structured clipboard formats and requested
     'x^2',
     '$$'
   ].join('\n'))
+})
+
+test('range deletion reparents trailing orphans while preserving their relative nesting', () => {
+  const blocks = [
+    block('a'),
+    block('b', 'bulleted-list', 1, 'a'),
+    block('c', 'bulleted-list', 1, 'b'),
+    block('d', 'bulleted-list', 2, 'c')
+  ]
+
+  const result = reparentOrphanedBlocksAfterRangeDeletion(blocks, 0, 1)
+
+  assert.deepEqual(result.map((item) => [item.id, item.depth]), [['c', 0], ['d', 1]])
+  assert.equal(result.find((item) => item.id === 'c')?.parentBlockId, null)
+  assert.equal(result.find((item) => item.id === 'd')?.parentBlockId, 'c')
+})
+
+test('range deletion stops reparenting at the first surviving shallower block', () => {
+  const blocks = [
+    block('a'),
+    block('b', 'bulleted-list', 1, 'a'),
+    block('c', 'bulleted-list', 1, 'b'),
+    block('d', 'bulleted-list', 2, 'c'),
+    block('e'),
+    block('f', 'bulleted-list', 1, 'e')
+  ]
+
+  const result = reparentOrphanedBlocksAfterRangeDeletion(blocks, 0, 1)
+
+  assert.deepEqual(result.map((item) => [item.id, item.depth]), [['c', 0], ['d', 1], ['e', 0], ['f', 1]])
+  assert.equal(result.find((item) => item.id === 'e')?.parentBlockId, null)
+  assert.equal(result.find((item) => item.id === 'f')?.parentBlockId, 'e')
+})
+
+test('range deletion grafts deep orphans onto the closest surviving ancestor', () => {
+  const blocks = [
+    block('x'),
+    block('y', 'bulleted-list', 1, 'x'),
+    block('z', 'bulleted-list', 2, 'y'),
+    block('w', 'bulleted-list', 3, 'z')
+  ]
+
+  const result = reparentOrphanedBlocksAfterRangeDeletion(blocks, 1, 2)
+
+  assert.equal(result.length, 2)
+  assert.equal(result[0]?.id, 'x')
+  const orphan = result[1]
+  assert.equal(orphan?.id, 'w')
+  assert.equal(orphan?.depth, 1)
+  assert.equal(orphan?.parentBlockId, 'x')
+})
+
+test('range deletion without trailing deeper blocks leaves survivors untouched', () => {
+  const blocks = [
+    block('a'),
+    block('b')
+  ]
+
+  assert.deepEqual(
+    reparentOrphanedBlocksAfterRangeDeletion(blocks, 0, 0).map((item) => item.id),
+    ['b']
+  )
 })

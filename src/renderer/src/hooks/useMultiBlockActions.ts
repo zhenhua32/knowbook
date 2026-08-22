@@ -5,7 +5,7 @@ import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
 import { materializeDraftFragment, shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
-import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
+import { reparentOrphanedBlocksAfterRangeDeletion, resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
   getFragmentLocalRootIds,
@@ -355,31 +355,7 @@ export function useMultiBlockActions({
       return
     }
 
-    const modifiedBlocks: DocumentBlockDraft[] = []
-
-    for (let index = 0; index < draftBlocks.length; index += 1) {
-      const block = draftBlocks[index]
-      if (!block) {
-        continue
-      }
-
-      if (index >= range.start && index <= range.end) {
-        continue
-      }
-
-      if (index > range.end && block.depth > lastRemovedBlock.depth) {
-        const requestedDepth = normalizeBlockDepth(block.type, block.depth + (lastRemovedBlock.depth - block.depth))
-        const placement = resolveDraftInsertionPlacement(modifiedBlocks, modifiedBlocks.length, block.type, requestedDepth)
-        modifiedBlocks.push({
-          ...block,
-          depth: placement.depth,
-          parentBlockId: placement.parentBlockId
-        })
-        continue
-      }
-
-      modifiedBlocks.push(block)
-    }
+    const modifiedBlocks = reparentOrphanedBlocksAfterRangeDeletion(draftBlocks, range.start, range.end)
 
     const remainingCount = modifiedBlocks.length
     const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null

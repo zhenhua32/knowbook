@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -36,6 +36,11 @@ export function useAiState({
   const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
   const [aiContextSearching, setAiContextSearching] = useState(false)
   const [aiContextError, setAiContextError] = useState('')
+  const selectedDocumentIdRef = useRef(selectedDocumentId)
+
+  useEffect(() => {
+    selectedDocumentIdRef.current = selectedDocumentId
+  }, [selectedDocumentId])
 
   useEffect(() => {
     setAiEnabledDraft(aiConfig.enabled)
@@ -176,22 +181,26 @@ export function useAiState({
   }, [aiPromptDraft, selectedDocumentId, ui])
 
   const runEnabledAiAutomationsOnSelectedDocument = useCallback(async () => {
-    if (!selectedDocumentId) {
+    const requestedDocumentId = selectedDocumentId
+    if (!requestedDocumentId) {
       return
     }
 
     setAiAutomationsRunning(true)
 
     try {
-      const result = await window.knowbook.runDocumentAiAutomations(selectedDocumentId)
+      const result = await window.knowbook.runDocumentAiAutomations(requestedDocumentId)
       const [refreshedHome, refreshedDetail] = await Promise.all([
         window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(selectedDocumentId)
+        window.knowbook.getDocumentDetail(requestedDocumentId)
       ])
 
       onHomeDataChange(refreshedHome)
-      onSelectedDocumentChange(refreshedDetail)
-      onDraftSummaryChange(refreshedDetail?.summary ?? '')
+
+      if (selectedDocumentIdRef.current === requestedDocumentId) {
+        onSelectedDocumentChange(refreshedDetail)
+        onDraftSummaryChange(refreshedDetail?.summary ?? '')
+      }
       onMessage(ui.aiAutomationResult(result))
     } catch (error) {
       const message = getErrorMessage(error, ui.aiAutomationFailed)

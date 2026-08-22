@@ -443,7 +443,7 @@ export class MarkdownRestoreService {
   ): RestoreSourceDocument {
     const normalizedRelativePath = this.normalizeDocumentPath(relativePath)
     const normalizedDocumentPath = this.normalizeDocumentPath(parsed.frontmatter.path || normalizedRelativePath)
-    const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.documentDatabaseColumns)
+    const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.documentDatabaseColumns, filePath)
 
     if (!normalizedDocumentPath) {
       throw new Error(`Cannot restore document without a valid path: ${filePath}`)
@@ -463,7 +463,8 @@ export class MarkdownRestoreService {
       documentDatabaseColumns,
       documentDatabaseFieldValues: this.parseSourceDocumentDatabaseFieldValues(
         parsed.frontmatter.documentDatabaseFieldValues,
-        documentDatabaseColumns
+        documentDatabaseColumns,
+        filePath
       ),
       blocks: parsed.blocks.map((block) => ({
         id: block.id,
@@ -494,7 +495,7 @@ export class MarkdownRestoreService {
       throw new Error(`Cannot restore standalone database without a name: ${filePath}`)
     }
 
-    const columns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.databaseColumns)
+    const columns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.databaseColumns, filePath)
 
     return {
       kind: 'standalone-database',
@@ -503,8 +504,8 @@ export class MarkdownRestoreService {
       name,
       description: parsed.frontmatter.databaseDescription ?? '',
       columns,
-      savedViews: this.parseSourceStandaloneDatabaseSavedViews(parsed.frontmatter.databaseSavedViews),
-      entities: this.parseSourceStandaloneDatabaseEntities(parsed.frontmatter.databaseEntities, columns)
+      savedViews: this.parseSourceStandaloneDatabaseSavedViews(parsed.frontmatter.databaseSavedViews, filePath),
+      entities: this.parseSourceStandaloneDatabaseEntities(parsed.frontmatter.databaseEntities, columns, filePath)
     }
   }
 
@@ -515,7 +516,7 @@ export class MarkdownRestoreService {
     return {
       kind: 'standalone-database-manifest',
       sourceFilePath: filePath,
-      sourceDatabaseIds: this.parseSourceStandaloneDatabaseIds(parsed.frontmatter.databaseIds)
+      sourceDatabaseIds: this.parseSourceStandaloneDatabaseIds(parsed.frontmatter.databaseIds, filePath)
     }
   }
 
@@ -817,68 +818,85 @@ export class MarkdownRestoreService {
     }
   }
 
-  private parseSourceDocumentDatabaseColumns(rawColumns: string | undefined): DocumentDatabaseColumn[] {
-    if (!rawColumns) {
+  private corruptedRestoreSourceError(filePath: string, fieldName: string): Error {
+    return new Error(`Cannot restore backup: ${filePath} contains corrupted ${fieldName} JSON.`)
+  }
+
+  private parseJsonArrayOrThrow(raw: string | undefined, filePath: string, fieldName: string): unknown[] {
+    if (!raw) {
       return []
     }
 
+    let parsed: unknown
     try {
-      const parsed = JSON.parse(rawColumns) as unknown
-      if (!Array.isArray(parsed)) {
+      parsed = JSON.parse(raw) as unknown
+    } catch {
+      throw this.corruptedRestoreSourceError(filePath, fieldName)
+    }
+
+    if (!Array.isArray(parsed)) {
+      throw this.corruptedRestoreSourceError(filePath, fieldName)
+    }
+
+    return parsed
+  }
+
+  private parseSourceDocumentDatabaseColumns(
+    rawColumns: string | undefined,
+    filePath: string
+  ): DocumentDatabaseColumn[] {
+    const parsed = this.parseJsonArrayOrThrow(rawColumns, filePath, 'databaseColumns')
+
+    return parsed.flatMap((value): DocumentDatabaseColumn[] => {
+      if (!value || typeof value !== 'object') {
         return []
       }
 
-      return parsed.flatMap((value): DocumentDatabaseColumn[] => {
-        if (!value || typeof value !== 'object') {
-          return []
-        }
+      const candidate = value as Record<string, unknown>
+      const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
+      const type = typeof candidate.type === 'string' && DOCUMENT_DATABASE_COLUMN_TYPES.has(candidate.type)
+        ? candidate.type as CreateDocumentDatabaseColumnInput['type']
+        : null
 
-        const candidate = value as Record<string, unknown>
-        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
-        const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
-        const type = typeof candidate.type === 'string' && DOCUMENT_DATABASE_COLUMN_TYPES.has(candidate.type)
-          ? candidate.type as CreateDocumentDatabaseColumnInput['type']
-          : null
+      if (!id || !name || !type) {
+        return []
+      }
 
-        if (!id || !name || !type) {
-          return []
-        }
+      const options = Array.isArray(candidate.options)
+        ? [...new Set(candidate.options.filter((option): option is string => typeof option === 'string').map((option) => option.trim()).filter(Boolean))]
+        : []
+      const sortOrder = typeof candidate.sortOrder === 'number' && Number.isFinite(candidate.sortOrder)
+        ? candidate.sortOrder
+        : 0
 
-        const options = Array.isArray(candidate.options)
-          ? [...new Set(candidate.options.filter((option): option is string => typeof option === 'string').map((option) => option.trim()).filter(Boolean))]
-          : []
-        const sortOrder = typeof candidate.sortOrder === 'number' && Number.isFinite(candidate.sortOrder)
-          ? candidate.sortOrder
-          : 0
-
-        return [{
-          id,
-          name,
-          type,
-          options,
-          sortOrder
-        }]
-      })
-    } catch {
-      return []
-    }
+      return [{
+        id,
+        name,
+        type,
+        options,
+        sortOrder
+      }]
+    })
   }
 
   private parseSourceDocumentDatabaseFieldValues(
     rawFieldValues: string | undefined,
-    columns: DocumentDatabaseColumn[]
+    columns: DocumentDatabaseColumn[],
+    filePath: string
   ): Record<string, DocumentDatabaseFieldValue> {
     if (!rawFieldValues) {
       return {}
     }
 
-    const columnById = new Map(columns.map((column) => [column.id, column]))
-
+    let parsed: unknown
     try {
-      return this.parseSourceDatabaseFieldValues(JSON.parse(rawFieldValues) as unknown, columns)
+      parsed = JSON.parse(rawFieldValues) as unknown
     } catch {
-      return {}
+      throw this.corruptedRestoreSourceError(filePath, 'documentDatabaseFieldValues')
     }
+
+    return this.parseSourceDatabaseFieldValues(parsed, columns)
   }
 
   private parseSourceDatabaseFieldValues(
@@ -1326,104 +1344,73 @@ export class MarkdownRestoreService {
   }
 
   private parseSourceStandaloneDatabaseSavedViews(
-    rawViews: string | undefined
+    rawViews: string | undefined,
+    filePath: string
   ): RestoreSourceStandaloneDatabaseSavedView[] {
-    if (!rawViews) {
-      return []
-    }
+    const parsed = this.parseJsonArrayOrThrow(rawViews, filePath, 'databaseSavedViews')
 
-    try {
-      const parsed = JSON.parse(rawViews) as unknown
-      if (!Array.isArray(parsed)) {
+    return parsed.flatMap((value): RestoreSourceStandaloneDatabaseSavedView[] => {
+      if (!value || typeof value !== 'object') {
         return []
       }
 
-      return parsed.flatMap((value): RestoreSourceStandaloneDatabaseSavedView[] => {
-        if (!value || typeof value !== 'object') {
-          return []
-        }
+      const candidate = value as Record<string, unknown>
+      const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
 
-        const candidate = value as Record<string, unknown>
-        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
-        const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name.trim() : null
+      if (!id || !name) {
+        return []
+      }
 
-        if (!id || !name) {
-          return []
-        }
-
-        return [{
-          id,
-          name,
-          filterQuery: typeof candidate.filterQuery === 'string' ? candidate.filterQuery : '',
-          filterScope: typeof candidate.filterScope === 'string' ? candidate.filterScope.trim() : '',
-          sortMode: typeof candidate.sortMode === 'string' && DATABASE_SAVED_VIEW_SORT_MODES.has(candidate.sortMode)
-            ? candidate.sortMode as DatabaseSavedViewSortMode
-            : 'updated-desc',
-          viewMode: typeof candidate.viewMode === 'string' && DATABASE_SAVED_VIEW_LAYOUT_MODES.has(candidate.viewMode)
-            ? candidate.viewMode as DatabaseSavedViewLayoutMode
-            : 'cards'
-        }]
-      })
-    } catch {
-      return []
-    }
+      return [{
+        id,
+        name,
+        filterQuery: typeof candidate.filterQuery === 'string' ? candidate.filterQuery : '',
+        filterScope: typeof candidate.filterScope === 'string' ? candidate.filterScope.trim() : '',
+        sortMode: typeof candidate.sortMode === 'string' && DATABASE_SAVED_VIEW_SORT_MODES.has(candidate.sortMode)
+          ? candidate.sortMode as DatabaseSavedViewSortMode
+          : 'updated-desc',
+        viewMode: typeof candidate.viewMode === 'string' && DATABASE_SAVED_VIEW_LAYOUT_MODES.has(candidate.viewMode)
+          ? candidate.viewMode as DatabaseSavedViewLayoutMode
+          : 'cards'
+      }]
+    })
   }
 
   private parseSourceStandaloneDatabaseEntities(
     rawEntities: string | undefined,
-    columns: DocumentDatabaseColumn[]
+    columns: DocumentDatabaseColumn[],
+    filePath: string
   ): RestoreSourceStandaloneDatabaseEntity[] {
-    if (!rawEntities) {
-      return []
-    }
+    const parsed = this.parseJsonArrayOrThrow(rawEntities, filePath, 'databaseEntities')
 
-    try {
-      const parsed = JSON.parse(rawEntities) as unknown
-      if (!Array.isArray(parsed)) {
+    return parsed.flatMap((value): RestoreSourceStandaloneDatabaseEntity[] => {
+      if (!value || typeof value !== 'object') {
         return []
       }
 
-      return parsed.flatMap((value): RestoreSourceStandaloneDatabaseEntity[] => {
-        if (!value || typeof value !== 'object') {
-          return []
-        }
+      const candidate = value as Record<string, unknown>
+      const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
+      if (!id) {
+        return []
+      }
 
-        const candidate = value as Record<string, unknown>
-        const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : null
-        if (!id) {
-          return []
-        }
+      const normalizedDocumentPath = typeof candidate.documentPath === 'string'
+        ? this.normalizeDocumentPath(candidate.documentPath)
+        : ''
 
-        const normalizedDocumentPath = typeof candidate.documentPath === 'string'
-          ? this.normalizeDocumentPath(candidate.documentPath)
-          : ''
-
-        return [{
-          id,
-          documentPath: normalizedDocumentPath || null,
-          fieldValues: this.parseSourceDatabaseFieldValues(candidate.fieldValues, columns)
-        }]
-      })
-    } catch {
-      return []
-    }
+      return [{
+        id,
+        documentPath: normalizedDocumentPath || null,
+        fieldValues: this.parseSourceDatabaseFieldValues(candidate.fieldValues, columns)
+      }]
+    })
   }
 
-  private parseSourceStandaloneDatabaseIds(rawDatabaseIds: string | undefined): string[] {
-    if (!rawDatabaseIds) {
-      return []
-    }
+  private parseSourceStandaloneDatabaseIds(rawDatabaseIds: string | undefined, filePath: string): string[] {
+    const parsed = this.parseJsonArrayOrThrow(rawDatabaseIds, filePath, 'databaseIds')
 
-    try {
-      const parsed = JSON.parse(rawDatabaseIds) as unknown
-      if (!Array.isArray(parsed)) {
-        return []
-      }
-
-      return [...new Set(parsed.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
-    } catch {
-      return []
-    }
+    return [...new Set(parsed.filter((value): value is string => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
   }
 
   private countResolvableConflicts(
