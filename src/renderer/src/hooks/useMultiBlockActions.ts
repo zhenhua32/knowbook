@@ -196,7 +196,6 @@ export function useMultiBlockActions({
     }
 
     const operationRange = getMultiBlockOperationRange(selectedBlockRange)
-    pushToHistory(draftBlocks)
 
     const selectedNestableBlocks = draftBlocks
       .slice(operationRange.start, operationRange.end + 1)
@@ -248,6 +247,8 @@ export function useMultiBlockActions({
         }
       }
     }
+
+    pushToHistory(draftBlocks)
 
     setDraftBlocks((previous) => {
       const next = [...previous]

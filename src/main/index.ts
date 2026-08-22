@@ -82,6 +82,7 @@ import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
 import { WebClipExtractionWorkerRunner } from './web-clip-extract-worker-client'
 import { CoalescedNotifier } from './coalesced-notifier'
+import { isSameOriginNavigation } from './window-navigation'
 import {
   createEphemeralCredentialStorage,
   isSecureStorageUsable,
@@ -318,6 +319,10 @@ function createWindow(): ElectronBrowserWindow {
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (isSameOriginNavigation(mainWindow?.webContents.getURL(), url)) {
+      return
+    }
+
     event.preventDefault()
     void openManagedExternalUrl(url).catch((error) => {
       console.warn('Blocked or failed to navigate renderer to an external URL.', error)
@@ -933,22 +938,59 @@ function notifyWorkspaceMutation(): void {
   workspaceMutationNotifier.notify()
 }
 
+function protectWebClipBridgeToken(token: string): string {
+  return protectCredential(token, aiCredentialStorage)
+}
+
+function persistWebClipBridgeToken(storedValue: string): void {
+  store.saveSetting(WEB_CLIP_BRIDGE_TOKEN_KEY, storedValue)
+}
+
+function createWebClipBridgeToken(): string {
+  const token = randomUUID().replace(/-/g, '')
+  try {
+    persistWebClipBridgeToken(protectWebClipBridgeToken(token))
+  } catch (error) {
+    console.warn(
+      'The web clip bridge token could not be encrypted; storing it in plain text instead.',
+      error instanceof Error ? error.message : 'Unknown credential storage error.'
+    )
+    persistWebClipBridgeToken(token)
+  }
+  return token
+}
+
+function getStoredWebClipBridgeToken(): string {
+  const storedToken = store.getSettingPublic(WEB_CLIP_BRIDGE_TOKEN_KEY)
+  if (!storedToken) {
+    return createWebClipBridgeToken()
+  }
+
+  try {
+    const revealed = revealCredential(storedToken, aiCredentialStorage)
+    if (revealed.protectedValueToPersist) {
+      persistWebClipBridgeToken(revealed.protectedValueToPersist)
+    }
+    return revealed.value
+  } catch (error) {
+    console.warn(
+      'The stored web clip bridge token could not be decrypted; regenerating it.',
+      error instanceof Error ? error.message : 'Unknown credential storage error.'
+    )
+    return createWebClipBridgeToken()
+  }
+}
+
 function getStoredWebClipBridgeConfig(): { enabled: boolean; port: number; token: string } {
   const enabled = store.getSettingPublic(WEB_CLIP_BRIDGE_ENABLED_KEY) === 'true'
   const storedPort = Number.parseInt(store.getSettingPublic(WEB_CLIP_BRIDGE_PORT_KEY) ?? `${DEFAULT_WEB_CLIP_BRIDGE_PORT}`, 10)
-  const existingToken = store.getSettingPublic(WEB_CLIP_BRIDGE_TOKEN_KEY)
-  const token = existingToken ?? randomUUID().replace(/-/g, '')
-
-  if (!existingToken) {
-    store.saveSetting(WEB_CLIP_BRIDGE_TOKEN_KEY, token)
-  }
 
   return {
     enabled,
     port: Number.isInteger(storedPort) && storedPort > 0 && storedPort <= 65_535
       ? storedPort
       : DEFAULT_WEB_CLIP_BRIDGE_PORT,
-    token
+    token: getStoredWebClipBridgeToken()
   }
 }
 
@@ -961,7 +1003,15 @@ async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInp
 
   store.saveSetting(WEB_CLIP_BRIDGE_ENABLED_KEY, input.enabled ? 'true' : 'false')
   store.saveSetting(WEB_CLIP_BRIDGE_PORT_KEY, `${nextPort}`)
-  store.saveSetting(WEB_CLIP_BRIDGE_TOKEN_KEY, nextToken)
+  try {
+    persistWebClipBridgeToken(protectWebClipBridgeToken(nextToken))
+  } catch (error) {
+    console.warn(
+      'The web clip bridge token could not be encrypted; storing it in plain text instead.',
+      error instanceof Error ? error.message : 'Unknown credential storage error.'
+    )
+    persistWebClipBridgeToken(nextToken)
+  }
 
   return webClipBridge.applyConfig({
     enabled: input.enabled,
@@ -1370,7 +1420,8 @@ function registerAssetPreviewProtocol(): void {
         status: 200,
         headers: {
           'cache-control': 'public, max-age=31536000, immutable',
-          'content-type': getAssetContentType(assetPath)
+          'content-type': getAssetContentType(assetPath),
+          'x-content-type-options': 'nosniff'
         }
       })
     } catch (error) {

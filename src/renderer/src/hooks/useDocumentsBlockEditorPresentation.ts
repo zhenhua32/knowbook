@@ -10,8 +10,8 @@ import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
 import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
-type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
-type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
+type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
+type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
 type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'draftBlockCount' | 'getDraftBlocks' | 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex'> & {
   setSelectedSlashCommandIndex: Dispatch<SetStateAction<number>>
 }
@@ -38,6 +38,7 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   draftBlocks: DocumentBlockDraft[]
   getDraftBlocks: () => DocumentBlockDraft[]
   getVisibleBlockEntries: (blocks: DocumentBlockDraft[]) => Array<{ block: DocumentBlockDraft; index: number }>
+  highlightedBlockId: string | null
   insertBlockSuggestion: LinkSuggestionPanelProps['onSelectBlockSuggestion']
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
   isBlockSelected: (index: number) => boolean
@@ -98,6 +99,7 @@ export function useDocumentsBlockEditorPresentation({
   getVisibleBlockCountInRange,
   getVisibleBlockEntries,
   handleBlockContentChange,
+  highlightedBlockId,
   handleBlockMouseEnter,
   handleBlockPaste,
   insertDraftBlockAt,
@@ -155,6 +157,7 @@ export function useDocumentsBlockEditorPresentation({
           ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
           : null
       const isSelected = isBlockSelected(index)
+      const isHighlighted = Boolean(block.id) && block.id === highlightedBlockId
       const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
 
       let numberLabel = ''
@@ -178,6 +181,7 @@ export function useDocumentsBlockEditorPresentation({
         indentPx,
         index,
         isSelected,
+        isHighlighted,
         isSearchMatch: blockSearchQuery.trim().length > 0 && (
           block.content.toLowerCase().includes(blockSearchQuery.toLowerCase()) ||
           block.type.toLowerCase().includes(blockSearchQuery.toLowerCase())
@@ -375,7 +379,6 @@ export function useDocumentsBlockEditorPresentation({
         filteredSlashCommands,
         getDraftBlocks,
         isBlockRangeSelecting,
-        isHighlighted: false,
         isZh,
         selectedBlockCount,
         selectedBlockRange,

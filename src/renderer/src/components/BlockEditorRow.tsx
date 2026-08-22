@@ -492,9 +492,15 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               className={`block-inline-textarea type-${block.type}${hasRichMedia ? ' block-rich-media-source-input' : ''}${isMediaSourceExpanded ? ' expanded' : ''}`}
               spellCheck={false}
               ref={(element) => {
+                const previousElement = textareaRef.current
                 textareaRef.current = element
-                blockTextareaRefs.current[index] = element
-                resizeBlockTextarea(element)
+                const slots = blockTextareaRefs.current
+                if (element) {
+                  slots[index] = element
+                  resizeBlockTextarea(element)
+                } else if (slots[index] === previousElement) {
+                  slots[index] = null
+                }
               }}
               placeholder={
                 block.type === 'heading-1'

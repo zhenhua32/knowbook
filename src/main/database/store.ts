@@ -1548,18 +1548,18 @@ export class KnowbookStore {
     input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> & Partial<Pick<SearchSemanticNotesInput, 'query'>> = {}
   ): SemanticSearchCandidate[] {
     const normalizedQuery = input.query?.trim() ?? ''
-    const likeQuery = `%${normalizedQuery}%`
+    const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
     const documents = normalizedQuery
       ? this.db.prepare(`
         WITH matched_documents AS (
           SELECT document_id
           FROM document_search
-          WHERE title LIKE ? OR path LIKE ? OR summary LIKE ?
+          WHERE title LIKE ? ESCAPE '\\' OR path LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\'
           LIMIT 500
         ), matched_blocks AS (
           SELECT document_id
           FROM block_search
-          WHERE content LIKE ?
+          WHERE content LIKE ? ESCAPE '\\'
           LIMIT 500
         ), matched AS (
           SELECT document_id FROM matched_documents
@@ -1659,7 +1659,8 @@ export class KnowbookStore {
 
   getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
     const normalizedQuery = query.trim()
-    const likeQuery = `%${normalizedQuery}%`
+    const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
+    const prefixQuery = `${this.escapeLikePattern(normalizedQuery)}%`
 
     if (!normalizedQuery) {
       return this.db.prepare(`
@@ -1675,13 +1676,13 @@ export class KnowbookStore {
       SELECT d.id, d.title, d.path
       FROM document_search AS ds
       INNER JOIN documents AS d ON d.id = ds.document_id
-      WHERE (ds.title LIKE ? OR ds.path LIKE ?)
+      WHERE (ds.title LIKE ? ESCAPE '\\' OR ds.path LIKE ? ESCAPE '\\')
         AND (? IS NULL OR d.id != ?)
       ORDER BY
         CASE
           WHEN d.title = ? THEN 0
           WHEN d.path = ? THEN 1
-          WHEN d.title LIKE ? THEN 2
+          WHEN d.title LIKE ? ESCAPE '\\' THEN 2
           ELSE 3
         END,
         LENGTH(d.path) ASC,
@@ -1694,7 +1695,7 @@ export class KnowbookStore {
       excludeDocumentId,
       normalizedQuery,
       normalizedQuery,
-      `${normalizedQuery}%`
+      prefixQuery
     ) as DocumentSuggestion[]
   }
 
@@ -1703,18 +1704,18 @@ export class KnowbookStore {
     if (!normalizedQuery) {
       return []
     }
-    const likeQuery = `%${normalizedQuery}%`
+    const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
 
     const docMatches = this.db.prepare(`
       SELECT d.id, d.title, d.path, d.summary
       FROM document_search AS ds
       INNER JOIN documents AS d ON d.id = ds.document_id
-      WHERE ds.title LIKE ? OR ds.summary LIKE ?
+      WHERE ds.title LIKE ? ESCAPE '\\' OR ds.summary LIKE ? ESCAPE '\\'
       ORDER BY
-        CASE WHEN ds.title LIKE ? THEN 0 ELSE 1 END,
+        CASE WHEN ds.title LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
         LENGTH(d.path) ASC
       LIMIT 5
-    `).all(likeQuery, likeQuery, `%${normalizedQuery}%`) as Array<{
+    `).all(likeQuery, likeQuery, likeQuery) as Array<{
       id: string; title: string; path: string; summary: string
     }>
 
@@ -1724,7 +1725,7 @@ export class KnowbookStore {
       FROM block_search AS bs
       INNER JOIN blocks AS b ON b.id = bs.block_id
       INNER JOIN documents AS d ON d.id = b.document_id
-      WHERE bs.content LIKE ?
+      WHERE bs.content LIKE ? ESCAPE '\\'
       ORDER BY LENGTH(b.content) ASC
       LIMIT 20
     `).all(likeQuery) as Array<{
@@ -2677,10 +2678,14 @@ export class KnowbookStore {
   }
 
   private serializeDocumentDatabaseFieldValue(column: DocumentDatabaseColumn, value: DocumentDatabaseFieldValue): string | null {
+    if (value === null || value === undefined) {
+      return null
+    }
+
     switch (column.type) {
       case 'text': {
         if (typeof value !== 'string') {
-          return null
+          throw new Error(`Value for ${column.name} must be a string.`)
         }
 
         const nextValue = value.trim()
@@ -2688,7 +2693,7 @@ export class KnowbookStore {
       }
       case 'select': {
         if (typeof value !== 'string') {
-          return null
+          throw new Error(`Value for ${column.name} must be a string.`)
         }
 
         const nextValue = value.trim()
@@ -2704,7 +2709,7 @@ export class KnowbookStore {
       }
       case 'multi-select': {
         if (!Array.isArray(value)) {
-          return null
+          throw new Error(`Value for ${column.name} must be a list of options.`)
         }
 
         const normalizedValues = [...new Set(value.map((item) => item.trim()).filter(Boolean))]
@@ -2721,7 +2726,7 @@ export class KnowbookStore {
       }
       case 'date': {
         if (typeof value !== 'string') {
-          return null
+          throw new Error(`Value for ${column.name} must be a date string (YYYY-MM-DD).`)
         }
 
         const nextValue = value.trim()
@@ -2735,8 +2740,12 @@ export class KnowbookStore {
 
         return nextValue
       }
-      case 'checkbox':
-        return value === true ? 'true' : 'false'
+      case 'checkbox': {
+        if (typeof value !== 'boolean') {
+          throw new Error(`Value for ${column.name} must be a boolean.`)
+        }
+        return value ? 'true' : 'false'
+      }
       default:
         return null
     }

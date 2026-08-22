@@ -149,71 +149,112 @@ export async function requestAiChatCompletion(
     timeoutController.abort()
   }, timeoutMilliseconds)
 
-  let response: Response
   try {
-    response = await fetchImplementation(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${input.apiKey}`
-      },
-      body: JSON.stringify({
-        model: input.model,
-        messages: [
-          {
-            role: 'system',
-            content: input.systemPrompt
-          },
-          {
-            role: 'user',
-            content: input.userPrompt
-          }
-        ],
-        temperature: input.temperature
-      }),
-      signal: input.signal
-        ? AbortSignal.any([input.signal, timeoutController.signal])
-        : timeoutController.signal
-    })
-  } catch (error) {
-    if (input.signal?.aborted) {
-      throw error
+    let response: Response
+    try {
+      response = await fetchImplementation(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${input.apiKey}`
+        },
+        body: JSON.stringify({
+          model: input.model,
+          messages: [
+            {
+              role: 'system',
+              content: input.systemPrompt
+            },
+            {
+              role: 'user',
+              content: input.userPrompt
+            }
+          ],
+          temperature: input.temperature
+        }),
+        signal: input.signal
+          ? AbortSignal.any([input.signal, timeoutController.signal])
+          : timeoutController.signal
+      })
+    } catch (error) {
+      if (input.signal?.aborted) {
+        throw error
+      }
+
+      if (timeoutController.signal.aborted) {
+        throw new Error(`${input.failureLabel} timed out after ${timeoutMilliseconds} ms. Endpoint: ${endpoint}.`)
+      }
+
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`${input.failureLabel} failed before the AI service responded. Check the AI Base URL, network connectivity, proxy, and TLS certificate. Endpoint: ${endpoint}. Reason: ${reason}`)
     }
 
-    if (timeoutController.signal.aborted) {
-      throw new Error(`${input.failureLabel} timed out after ${timeoutMilliseconds} ms. Endpoint: ${endpoint}.`)
+    if (!response.ok) {
+      let errorBody = ''
+      try {
+        errorBody = (await raceRequestBodyAgainstTimeout(
+          response.text(),
+          timeoutController,
+          input,
+          timeoutMilliseconds
+        )).slice(0, MAX_AI_ERROR_BODY_LENGTH)
+      } catch (error) {
+        if (isRequestAbortError(error, timeoutController)) {
+          throw error
+        }
+        errorBody = response.statusText
+      }
+      throw new Error(`${input.failureLabel} failed (${response.status}): ${errorBody}`)
     }
 
-    const reason = error instanceof Error ? error.message : String(error)
-    throw new Error(`${input.failureLabel} failed before the AI service responded. Check the AI Base URL, network connectivity, proxy, and TLS certificate. Endpoint: ${endpoint}. Reason: ${reason}`)
+    let payload: unknown
+    try {
+      payload = await raceRequestBodyAgainstTimeout(
+        response.json(),
+        timeoutController,
+        input,
+        timeoutMilliseconds
+      )
+    } catch (error) {
+      if (isRequestAbortError(error, timeoutController)) {
+        throw error
+      }
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`${input.failureLabel} returned invalid JSON. Endpoint: ${endpoint}. Reason: ${reason}`)
+    }
+
+    const content = getAiMessageContent(payload)
+    if (!content) {
+      throw new Error(input.emptyResponseMessage)
+    }
+
+    return content
   } finally {
     clearTimeout(timeout)
   }
+}
 
-  if (!response.ok) {
-    let errorBody = ''
-    try {
-      errorBody = (await response.text()).slice(0, MAX_AI_ERROR_BODY_LENGTH)
-    } catch {
-      errorBody = response.statusText
+function isRequestAbortError(error: unknown, timeoutController: AbortController): boolean {
+  return timeoutController.signal.aborted && error instanceof Error && error.message.includes('timed out')
+}
+
+async function raceRequestBodyAgainstTimeout<T>(
+  bodyTask: Promise<T>,
+  timeoutController: AbortController,
+  input: AiChatCompletionInput,
+  timeoutMilliseconds: number
+): Promise<T> {
+  const abortOutcome = new Promise<never>((_resolve, reject) => {
+    if (timeoutController.signal.aborted) {
+      reject(new Error(`${input.failureLabel} timed out after ${timeoutMilliseconds} ms.`))
+      return
     }
-    throw new Error(`${input.failureLabel} failed (${response.status}): ${errorBody}`)
-  }
+    timeoutController.signal.addEventListener('abort', () => {
+      reject(new Error(`${input.failureLabel} timed out after ${timeoutMilliseconds} ms.`))
+    }, { once: true })
+  })
 
-  let payload: unknown
-  try {
-    payload = await response.json()
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error)
-    throw new Error(`${input.failureLabel} returned invalid JSON. Endpoint: ${endpoint}. Reason: ${reason}`)
-  }
-
-  const content = getAiMessageContent(payload)
-  if (!content) {
-    throw new Error(input.emptyResponseMessage)
-  }
-
-  return content
+  return Promise.race([bodyTask, abortOutcome])
 }
 
 function getAiMessageContent(payload: unknown): string | null {

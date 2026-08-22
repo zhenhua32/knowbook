@@ -1,7 +1,7 @@
-import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+﻿import assert from 'node:assert/strict'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
@@ -331,7 +331,7 @@ test('MarkdownBackupService copies managed assets and writes portable references
   }
 })
 
-test('MarkdownBackupService fails instead of publishing an incomplete managed asset snapshot', async () => {
+test('MarkdownBackupService keeps dangling managed asset references but still rejects symlink escapes', async () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-missing-asset-test-'))
   const backupRoot = join(tempRoot, 'backup')
   const assetRoot = join(tempRoot, 'storage', 'assets')
@@ -360,11 +360,55 @@ test('MarkdownBackupService fails instead of publishing an incomplete managed as
   }
 
   try {
-    await assert.rejects(
-      new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll(),
-      /Managed backup asset not found/
+    await new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll()
+    const exported = readFileSync(join(backupRoot, 'Missing asset.md'), 'utf8')
+    assert.equal(
+      exported.includes(missingAssetUrl),
+      true,
+      'a dangling reference must not fail the export; the original URL stays in place'
     )
-    assert.equal(existsSync(backupRoot), false)
+
+    // A link that resolves outside the managed asset root is still a hard failure.
+    mkdirSync(join(assetRoot, 'web-clips'), { recursive: true })
+    const escapeTarget = join(tempRoot, 'outside')
+    mkdirSync(escapeTarget, { recursive: true })
+    writeFileSync(join(escapeTarget, 'secret.png'), 'escaped', 'utf8')
+    const escapedFileThroughLink = join(assetRoot, 'web-clips', 'escape-dir', 'secret.png')
+    let linkCreated = true
+    try {
+      symlinkSync(escapeTarget, join(assetRoot, 'web-clips', 'escape-dir'), process.platform === 'win32' ? 'junction' : 'dir')
+    } catch {
+      linkCreated = false
+    }
+
+    if (linkCreated) {
+      const escapedStore = {
+        getExportDocuments: () => [{
+          id: 'escape-document',
+          title: 'Escape',
+          path: 'Escape',
+          summary: '',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          documentDatabaseColumns: [],
+          documentDatabaseFieldValues: {},
+          blocks: [{
+            id: 'escape-image',
+            type: 'paragraph',
+            content: `![Escape](${pathToFileURL(escapedFileThroughLink).toString()})`,
+            checked: false,
+            depth: 0,
+            parentBlockId: null,
+            sortOrder: 0
+          }]
+        }],
+        getExportStandaloneDatabases: () => [],
+        saveSetting: () => undefined
+      }
+      await assert.rejects(
+        new MarkdownBackupService(escapedStore as never, join(tempRoot, 'backup2'), assetRoot).exportAll(),
+        /resolves outside the asset root/
+      )
+    }
   } finally {
     rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -495,4 +539,116 @@ test('MarkdownBackupService delegates database-backed snapshot reads to the expo
     backupRoot: 'virtual-backup-root',
     assetRoot: undefined
   }])
+})
+
+test('export survives dangling managed asset references by keeping the original URL', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-dangling-asset-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const assetRoot = join(tempRoot, 'assets')
+
+  try {
+    mkdirSync(assetRoot, { recursive: true })
+    const missingAssetUrl = pathToFileURL(join(assetRoot, 'web-clips', 'gone.png')).toString()
+    const store = {
+      getExportDocuments: () => [
+        {
+          id: 'doc-1',
+          title: 'Root',
+          path: 'Root',
+          summary: '',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          documentDatabaseColumns: [],
+          documentDatabaseFieldValues: {},
+          blocks: [
+            {
+              id: 'b1',
+              type: 'paragraph',
+              content: `![missing](${missingAssetUrl})`,
+              checked: false,
+              depth: 0,
+              parentBlockId: null,
+              sortOrder: 0
+            }
+          ]
+        }
+      ],
+      getExportStandaloneDatabases: () => [],
+      saveSetting: () => undefined
+    }
+
+    await new MarkdownBackupService(store as never, backupRoot, assetRoot).exportAll()
+
+    const exported = readFileSync(join(backupRoot, 'Root.md'), 'utf8')
+    assert.equal(
+      exported.includes(missingAssetUrl),
+      true,
+      'the unresolvable reference must be left untouched instead of failing the export'
+    )
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('export sanitizes long titles into short segments and cleans abandoned staging roots', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-backup-path-hygiene-test-'))
+  const backupParent = join(tempRoot, 'backups')
+  const backupRoot = join(backupParent, 'markdown')
+  const abandonedStaging = join(backupParent, '.knowbook-markdown-abandoned')
+  const freshStaging = join(backupParent, '.knowbook-markdown-fresh')
+  const longTitle = 'X'.repeat(200) + '-' + 'Y'.repeat(200)
+
+  try {
+    mkdirSync(abandonedStaging, { recursive: true })
+    mkdirSync(freshStaging, { recursive: true })
+    utimesSync(abandonedStaging, new Date(Date.now() - 48 * 3600_000), new Date(Date.now() - 48 * 3600_000))
+
+    const store = {
+      getExportDocuments: () => [
+        {
+          id: 'doc-long',
+          title: longTitle,
+          path: `Root/${longTitle}`,
+          summary: '',
+          updatedAt: '2026-05-02T00:00:00.000Z',
+          documentDatabaseColumns: [],
+          documentDatabaseFieldValues: {},
+          blocks: []
+        }
+      ],
+      getExportStandaloneDatabases: () => [],
+      saveSetting: () => undefined
+    }
+
+    await new MarkdownBackupService(store as never, backupRoot).exportAll()
+
+    const exportedFiles: string[] = []
+    const visit = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          visit(full)
+        } else {
+          exportedFiles.push(full)
+        }
+      }
+    }
+    visit(backupRoot)
+
+    assert.equal(exportedFiles.length > 0, true)
+    for (const file of exportedFiles) {
+      const relativeSegments = relative(backupRoot, file).split(/[\\/]/)
+      for (const segment of relativeSegments) {
+        assert.equal(
+          segment.length <= 60,
+          true,
+          `segments must stay short for Windows MAX_PATH safety, got ${segment.length}: ${segment}`
+        )
+      }
+    }
+
+    assert.equal(existsSync(abandonedStaging), false, 'stale staging directories must be swept on the next export')
+    assert.equal(existsSync(freshStaging), true, 'recent staging directories must be preserved')
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
 })

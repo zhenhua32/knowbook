@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict'
+﻿import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1292,5 +1292,137 @@ test('block AI edit prompts validate selection and enforce table-only output rul
     assert.equal(prompt.includes('Selected block count: 2'), true)
     assert.equal(prompt.includes('Return exactly one Markdown table as plain text.'), true)
     assert.equal(prompt.includes('Do not wrap the table in code fences.'), true)
+  })
+})
+
+test('global search and suggestions treat LIKE wildcards as literal characters', () => {
+  withStore((store, backupRoot) => {
+    const home = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home')
+
+    const percentId = store.createDocument(home.id)
+    store.updateDocument(percentId, {
+      title: '100% Done',
+      summary: '',
+      blocks: [{ type: 'paragraph', content: 'percent doc', checked: false, depth: 0 }]
+    })
+
+    const underscoreId = store.createDocument(home.id)
+    store.updateDocument(underscoreId, {
+      title: 'snake_case_title',
+      summary: '',
+      blocks: [{ type: 'paragraph', content: 'underscore doc', checked: false, depth: 0 }]
+    })
+
+    const plainId = store.createDocument(home.id)
+    store.updateDocument(plainId, {
+      title: 'Totally Different',
+      summary: '',
+      blocks: [{ type: 'paragraph', content: 'plain doc', checked: false, depth: 0 }]
+    })
+
+    const percentMatches = store.searchDocuments('100%')
+    assert.equal(percentMatches.length > 0, true)
+    for (const match of percentMatches) {
+      assert.equal(
+        match.documentTitle.includes('100%') || match.snippet.includes('100%'),
+        true,
+        `search for "100%" must only match literal percent content, got: ${match.documentTitle}`
+      )
+    }
+
+    assert.equal(
+      store.searchDocuments('snake_case').some((match) => match.documentId === underscoreId),
+      true,
+      'literal underscore query must match the literal title'
+    )
+    assert.equal(
+      store.searchDocuments('snakeXcase').length,
+      0,
+      'underscore must not act as a single-character wildcard'
+    )
+
+    const suggestions = store.getDocumentSuggestions('snake_case')
+    assert.equal(suggestions.some((suggestion) => suggestion.id === underscoreId), true)
+    assert.equal(
+      store.getDocumentSuggestions('snakeXcase').some((suggestion) => suggestion.id === underscoreId),
+      false
+    )
+
+    const semanticMatches = store.getSemanticSearchCandidates({ query: '100%' })
+    assert.equal(
+      semanticMatches.some((candidate) => candidate.documentId === percentId),
+      true,
+      'semantic candidate lookup must match literal percent'
+    )
+  })
+})
+
+test('document database value writes reject type mismatches instead of silently clearing', () => {
+  withStore((store, backupRoot) => {
+    const roadmap = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product/Roadmap')
+
+    const getRoadmapFieldValues = () => store
+      .getHomeData(backupRoot)
+      .documentCatalog
+      .find((entry) => entry.id === roadmap.id)
+      ?.fieldValues ?? {}
+
+    const textColumn = store.createDocumentDatabaseColumn({ name: 'Owner', type: 'text' })
+    const checkboxColumn = store.createDocumentDatabaseColumn({ name: 'Done', type: 'checkbox' })
+    const selectColumn = store.createDocumentDatabaseColumn({
+      name: 'Status',
+      type: 'select',
+      options: ['Todo', 'Doing']
+    })
+    const dateColumn = store.createDocumentDatabaseColumn({ name: 'Due', type: 'date' })
+    const multiColumn = store.createDocumentDatabaseColumn({
+      name: 'Tags',
+      type: 'multi-select',
+      options: ['AI', 'Infra']
+    })
+
+    store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: textColumn.id, value: 'Alice' })
+    assert.equal(
+      getRoadmapFieldValues()[textColumn.id],
+      'Alice',
+      'sanity: text value persists'
+    )
+
+    assert.throws(
+      () => store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: textColumn.id, value: 42 as unknown as string }),
+      /must be a string/
+    )
+    assert.equal(
+      getRoadmapFieldValues()[textColumn.id],
+      'Alice',
+      'a rejected write must not destroy the stored value'
+    )
+
+    assert.throws(
+      () => store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: checkboxColumn.id, value: 'yes' as unknown as boolean }),
+      /must be a boolean/
+    )
+    assert.throws(
+      () => store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: selectColumn.id, value: 7 as unknown as string }),
+      /must be a string/
+    )
+    assert.throws(
+      () => store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: dateColumn.id, value: 20260101 as unknown as string }),
+      /must be a date string/
+    )
+    assert.throws(
+      () => store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: multiColumn.id, value: 'AI' as unknown as string[] }),
+      /must be a list/
+    )
+
+    store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: textColumn.id, value: null })
+    assert.equal(
+      getRoadmapFieldValues()[textColumn.id] ?? null,
+      null,
+      'explicit null still clears the value'
+    )
+
+    store.updateDocumentDatabaseValue({ documentId: roadmap.id, columnId: checkboxColumn.id, value: true })
+    assert.equal(getRoadmapFieldValues()[checkboxColumn.id], true)
   })
 })

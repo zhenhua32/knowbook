@@ -12,7 +12,7 @@ import {
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import vm from 'node:vm'
-import semver from 'semver'
+import { findPluginManifestIssue, normalizePluginManifest } from './plugin-manifest-rules'
 import type {
   DocumentDetail,
   InstallPluginResult,
@@ -832,46 +832,13 @@ export class PluginHost {
       throw new Error(`Plugin manifest must be a regular file no larger than ${PLUGIN_MANIFEST_MAX_BYTES} bytes.`)
     }
 
-    const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as PluginManifest
-    const id = raw.id?.trim()
-    const name = raw.name?.trim()
-    const version = raw.version?.trim()
-
-    if (!id || !name || !version) {
-      throw new Error('Plugin manifest requires id, name, and version.')
+    const raw = JSON.parse(readFileSync(manifestPath, 'utf8')) as unknown
+    const issue = findPluginManifestIssue(raw)
+    if (issue !== null) {
+      throw new Error(issue)
     }
 
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(id) || id === '.' || id === '..') {
-      throw new Error('Plugin id may only contain letters, numbers, dots, underscores, and hyphens.')
-    }
-
-    if (!semver.valid(version)) {
-      throw new Error('Plugin version must be a valid semantic version.')
-    }
-
-    const knowbookVersionRange = raw.engines?.knowbook?.trim()
-    if (knowbookVersionRange && !semver.validRange(knowbookVersionRange)) {
-      throw new Error('Plugin engines.knowbook must be a valid semantic version range.')
-    }
-
-    const entry = raw.entry?.trim() || 'index.js'
-    const entrySegments = entry.replace(/\\/g, '/').split('/')
-    if (isAbsolute(entry) || entrySegments.some((segment) => segment === '..') || entrySegments.every((segment) => !segment || segment === '.')) {
-      throw new Error('Plugin entry must be a relative path inside the plugin directory.')
-    }
-
-    return {
-      id,
-      name,
-      version,
-      description: raw.description?.trim() || undefined,
-      author: raw.author?.trim() || undefined,
-      entry,
-      enabledByDefault: raw.enabledByDefault ?? true,
-      engines: knowbookVersionRange
-        ? { knowbook: knowbookVersionRange }
-        : undefined
-    }
+    return normalizePluginManifest(raw) as PluginManifest
   }
 
   private readPluginEnabled(manifest: PluginManifest): boolean {
@@ -2070,7 +2037,10 @@ export class PluginHost {
       if (effect.event.createdAt) {
         this.requireIsolatedRuntimeText(effect.event.createdAt, 'workspace event timestamp', 100)
       }
-      this.store.recordWorkspaceEvent(effect.event)
+      this.store.recordWorkspaceEvent({
+        ...effect.event,
+        title: `${plugin.manifest.name}: ${effect.event.title.trim()}`
+      })
     }
   }
 

@@ -558,3 +558,73 @@ test('PluginHost contains an isolated runtime failure to the owning plugin', asy
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })
+
+test('PluginHost attributes isolated runtime workspace events to the owning plugin', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-isolated-attribution-test-'))
+  const workspaceRoot = join(tempRoot, 'plugins')
+  const pluginRoot = join(workspaceRoot, 'isolated-probe')
+  mkdirSync(pluginRoot, { recursive: true })
+  writeFileSync(join(pluginRoot, 'plugin.json'), JSON.stringify({
+    id: 'isolated-probe',
+    name: 'Isolated Probe',
+    version: '1.0.0'
+  }))
+  writeFileSync(join(pluginRoot, 'index.js'), '')
+
+  const runtime = new FakeIsolatedRuntime()
+  runtime.actionEffects = [{
+    type: 'workspace-event.recorded',
+    event: {
+      type: 'plugin.action.executed',
+      title: 'Backup completed',
+      description: 'Spoofed system-looking entry.'
+    }
+  }]
+  const recordedEvents: Array<{ type: string; title: string }> = []
+  const document = createDocument()
+  const store = {
+    getSettingPublic: () => null,
+    getSettingsByPrefix: () => ({}),
+    getPluginWorkspaceDocuments: () => [document],
+    saveSetting: () => undefined,
+    getDocumentDetail: () => document,
+    updateDocumentSummary: () => undefined,
+    recordWorkspaceEvent: (event: { type: string; title: string }) => recordedEvents.push(event)
+  }
+  const host = new PluginHost(
+    store as never,
+    [{ path: workspaceRoot, source: 'workspace' }],
+    '1.0.0',
+    null,
+    { runtimeFactory: () => runtime }
+  )
+
+  try {
+    await host.loadAll()
+
+    const loadedEvent = recordedEvents.find((event) => event.type === 'plugin.loaded')
+    assert.ok(loadedEvent, 'expected the plugin.loaded event to be recorded')
+    assert.equal(
+      loadedEvent.title,
+      'Isolated Probe: Plugin loaded',
+      'isolated plugin events must be prefixed with the plugin name'
+    )
+
+    await host.runDocumentAction({
+      pluginId: 'isolated-probe',
+      actionId: 'refresh-summary',
+      documentId: document.id
+    })
+
+    const executedEvent = recordedEvents.find((event) => event.title.includes('Backup completed'))
+    assert.ok(executedEvent, 'expected the action event to be recorded')
+    assert.equal(
+      executedEvent.title,
+      'Isolated Probe: Backup completed',
+      'system-looking titles must stay attributed to the plugin'
+    )
+  } finally {
+    await host.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})

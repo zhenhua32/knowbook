@@ -121,6 +121,7 @@ export function DocumentsPage({
     getMultiBlockOperationRange: documents.getMultiBlockOperationRange,
     getDraftBlocks: documents.getDraftBlocks,
     getVisibleBlockEntries: documents.getVisibleBlockEntries,
+    highlightedBlockId: documents.highlightedBlockId,
     getVisibleBlockCountInRange: documents.getVisibleBlockCountInRange,
     handleBlockContentChange: documents.handleBlockContentChange,
     handleBlockMouseEnter: documents.handleBlockMouseEnter,

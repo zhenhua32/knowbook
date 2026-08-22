@@ -11,8 +11,8 @@ import { DocumentSummaryCard } from '../components/DocumentSummaryCard'
 import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
-type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
-type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isSelected' | 'numberLabel'>
+type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
+type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
 type RelationGroup = {
   title: string
   emptyText: string
@@ -239,8 +239,9 @@ export function DocumentsSection({
                        dropPreview={row.dropPreview}
                        hasChildren={row.hasChildren}
                        indentPx={row.indentPx}
-                       index={row.index}
-                       isSelected={row.isSelected}
+                        index={row.index}
+                        isHighlighted={row.isHighlighted}
+                        isSelected={row.isSelected}
                        isSearchMatch={row.isSearchMatch}
                        numberLabel={row.numberLabel}
                      />

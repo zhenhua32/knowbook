@@ -89,6 +89,7 @@ export function useDocumentsDomainState({
   } = useBlockDragState()
   const {
     flashHighlightedBlock,
+    highlightedBlockId,
     setHighlightedBlockId
   } = useHighlightedBlockState()
   const handleBeforeOpenDocument = useCallback(async () => {
@@ -590,6 +591,7 @@ export function useDocumentsDomainState({
     handleBlockPaste,
     handleBlockSearchSelect,
     handleGlobalSearchNavigate,
+    highlightedBlockId,
     insertBlockSuggestion,
     insertDraftBlockAt,
     insertLinkSuggestion,

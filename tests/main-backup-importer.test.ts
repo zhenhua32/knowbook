@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
@@ -950,6 +950,65 @@ test('MarkdownRestoreService aborts instead of deleting databases when the backu
     assert.equal(store.getDatabases().some((database) => database.id === staleDatabase.id), true)
   } finally {
     store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService removes in-scope stale occupants before restoring so id-matched moves succeed', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-conflict-order-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const store = new KnowbookStore(join(tempRoot, 'workspace.sqlite'))
+
+  try {
+    const catalog = store.getHomeData(backupRoot).documentCatalog
+    const roadmap = byPath(catalog, 'Home/Product/Roadmap')
+    await new MarkdownBackupService(store, backupRoot).exportAll()
+
+    // Local reorganization: move the id-matched document away and put a stray at its backed-up path.
+    const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')
+    store.moveDocument(roadmap.id, null)
+    const stray = store.createDocument(product.id)
+    store.updateDocument(stray, {
+      title: 'Roadmap',
+      summary: 'stale occupant',
+      blocks: [{ type: 'paragraph', content: 'stray', checked: false, depth: 0 }]
+    })
+
+    await new MarkdownRestoreService(store).restoreFromDirectory(backupRoot)
+
+    const restoredCatalog = store.getHomeData(backupRoot).documentCatalog
+    assert.equal(byPath(restoredCatalog, 'Home/Product/Roadmap').id, roadmap.id)
+    assert.equal(restoredCatalog.some((entry) => entry.id === stray), false)
+  } finally {
+    store.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('MarkdownRestoreService rejects archives containing duplicate document ids or paths', async () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-restore-duplicate-test-'))
+  const backupRoot = join(tempRoot, 'backup')
+  const sourceStore = new KnowbookStore(join(tempRoot, 'source.sqlite'))
+  const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
+
+  try {
+    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    const roadmapFile = join(backupRoot, 'Home', 'Product', 'Roadmap.md')
+    const duplicatePath = join(backupRoot, '__knowbook-document-duplicate', 'Roadmap.md')
+    mkdirSync(dirname(duplicatePath), { recursive: true })
+    copyFileSync(roadmapFile, duplicatePath)
+
+    await assert.rejects(
+      new MarkdownRestoreService(targetStore).previewFromDirectory(backupRoot),
+      /[Dd]uplicate/
+    )
+    await assert.rejects(
+      new MarkdownRestoreService(targetStore).restoreFromDirectory(backupRoot),
+      /[Dd]uplicate/
+    )
+  } finally {
+    sourceStore.destroy()
+    targetStore.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 })

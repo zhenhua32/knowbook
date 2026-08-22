@@ -237,11 +237,20 @@ export class MarkdownRestoreService {
       return this.store.runInBulkDocumentMutation(() => {
         let created = 0
         let updated = 0
-        let deleted = 0
         const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
         let placeholdersCreated = 0
         const restoredDocumentIds = new Set<string>()
         const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+
+        // Manifest-gated deletions run before restores so stale occupants of
+        // backed-up paths cannot block id-matched documents from moving home.
+        let deleted = 0
+        if (sourceStandaloneDatabaseManifest) {
+          deleted = this.deleteMissingDocuments(
+            sourceDocuments,
+            this.computePreRestorableDocumentIds(sourceDocuments)
+          )
+        }
 
         for (const source of sourceDocuments) {
           const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
@@ -252,10 +261,6 @@ export class MarkdownRestoreService {
           } else {
             updated += 1
           }
-        }
-
-        if (sourceStandaloneDatabaseManifest) {
-          deleted = this.deleteMissingDocuments(sourceDocuments, restoredDocumentIds)
         }
         this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
 
@@ -344,6 +349,7 @@ export class MarkdownRestoreService {
         && this.isAuthoritativeBackupManifest(root, source.sourceFilePath)
       )
     )
+    this.assertNoDuplicateRestoreSources(sourceDocuments, discoveredStandaloneDatabases)
 
     const manifestDatabaseIds = sourceStandaloneDatabaseManifest
       ? new Set(sourceStandaloneDatabaseManifest.sourceDatabaseIds)
@@ -816,6 +822,74 @@ export class MarkdownRestoreService {
       documentId,
       placeholdersCreated: ensuredParent.placeholdersCreated
     }
+  }
+
+  private assertNoDuplicateRestoreSources(
+    sourceDocuments: RestoreSourceDocument[],
+    sourceStandaloneDatabases: RestoreSourceStandaloneDatabase[]
+  ): void {
+    const pathsBySource = new Map<string, string>()
+    const idsBySource = new Map<string, string>()
+    const databaseIdsBySource = new Map<string, string>()
+
+    for (const source of sourceDocuments) {
+      const previousPath = pathsBySource.get(source.documentPath)
+      if (previousPath) {
+        throw new Error(
+          `Cannot restore backup: duplicate document path "${source.documentPath}" exists in both ${previousPath} and ${source.sourceFilePath}.`
+        )
+      }
+      pathsBySource.set(source.documentPath, source.sourceFilePath)
+
+      if (source.sourceDocumentId) {
+        const previousId = idsBySource.get(source.sourceDocumentId)
+        if (previousId) {
+          throw new Error(
+            `Cannot restore backup: duplicate document id "${source.sourceDocumentId}" exists in both ${previousId} and ${source.sourceFilePath}.`
+          )
+        }
+        idsBySource.set(source.sourceDocumentId, source.sourceFilePath)
+      }
+    }
+
+    for (const source of sourceStandaloneDatabases) {
+      const previousDatabase = databaseIdsBySource.get(source.sourceDatabaseId)
+      if (previousDatabase) {
+        throw new Error(
+          `Cannot restore backup: duplicate standalone database id "${source.sourceDatabaseId}" exists in both ${previousDatabase} and ${source.sourceFilePath}.`
+        )
+      }
+      databaseIdsBySource.set(source.sourceDatabaseId, source.sourceFilePath)
+    }
+  }
+
+  private computePreRestorableDocumentIds(sourceDocuments: RestoreSourceDocument[]): Set<string> {
+    const snapshots = this.store.getAllDocumentSnapshots()
+    const snapshotsByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]))
+    const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
+
+    const preRestorable = new Set<string>()
+    for (const source of sourceDocuments) {
+      if (source.sourceDocumentId) {
+        preRestorable.add(source.sourceDocumentId)
+      }
+    }
+
+    for (const source of sourceDocuments) {
+      // An id-matched document that must move to its backed-up path cannot
+      // have that path protected by its stale occupant.
+      const idMatched = source.sourceDocumentId ? snapshotsById.get(source.sourceDocumentId) : null
+      if (idMatched && idMatched.path !== source.documentPath) {
+        continue
+      }
+
+      const occupant = snapshotsByPath.get(source.documentPath)
+      if (occupant && !preRestorable.has(occupant.id)) {
+        preRestorable.add(occupant.id)
+      }
+    }
+
+    return preRestorable
   }
 
   private corruptedRestoreSourceError(filePath: string, fieldName: string): Error {

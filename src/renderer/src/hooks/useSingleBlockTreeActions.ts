@@ -166,8 +166,6 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    pushToHistory(draftBlocks)
-
     const currentSubtreeStart = index
     const currentSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, index)
 
@@ -179,6 +177,8 @@ export function useSingleBlockTreeActions({
     if (!isMergeable) {
       return
     }
+
+    pushToHistory(draftBlocks)
 
     const mergedContent = previousBlock.content + currentBlock.content
     const focusPosition = previousBlock.content.length

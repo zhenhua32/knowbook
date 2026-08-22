@@ -327,7 +327,6 @@ export function useBlockInputActions({
     if (!currentBlock) {
       return false
     }
-    pushToHistory(draftBlocks)
 
     const normalizedText = pastedText.replace(/\r\n?/g, '\n')
     const activeRange =
@@ -353,6 +352,7 @@ export function useBlockInputActions({
         getNormalizedParentBlockId(templateBlock)
       )
 
+      pushToHistory(draftBlocks)
       clearBlockSelection()
       setDraftBlocks((previous) => {
         const next = [...previous]
@@ -373,6 +373,7 @@ export function useBlockInputActions({
       return false
     }
 
+    pushToHistory(draftBlocks)
     clearBlockSelection()
 
     const before = currentBlock.content.slice(0, selectionStart)

@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -25,6 +26,8 @@ const INTERNAL_BACKUP_ROOT_SEGMENT = '__knowbook'
 const ESCAPED_DOCUMENT_ROOT_PREFIX = '__knowbook-document-'
 const ASSET_BACKUP_ROOT = '__knowbook/assets'
 const FILE_URL_PATTERN = /file:\/\/\/[^\s<>"')\\\]}]+/g
+const ABANDONED_STAGING_PREFIX = '.knowbook-markdown-'
+const ABANDONED_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 interface BackupExportJobBase {
   backupRoot: string
@@ -163,7 +166,8 @@ class MarkdownBackupWriter {
   writeAll(documents: ExportDocument[], standaloneDatabases: ExportStandaloneDatabase[]): void {
     const backupParent = dirname(this.backupRoot)
     mkdirSync(backupParent, { recursive: true })
-    const stagingRoot = mkdtempSync(join(backupParent, '.knowbook-markdown-'))
+    this.cleanupAbandonedStagingRoots(backupParent)
+    const stagingRoot = mkdtempSync(join(backupParent, ABANDONED_STAGING_PREFIX))
     this.ensuredDirectories.add(stagingRoot)
 
     try {
@@ -178,6 +182,32 @@ class MarkdownBackupWriter {
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true })
       throw error
+    }
+  }
+
+  private cleanupAbandonedStagingRoots(backupParent: string): void {
+    let entries: Array<{ isDirectory: () => boolean; name: string }>
+    try {
+      entries = readdirSync(backupParent, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    const now = Date.now()
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(ABANDONED_STAGING_PREFIX)) {
+        continue
+      }
+
+      const candidatePath = join(backupParent, entry.name)
+      try {
+        if (now - statSync(candidatePath).mtimeMs < ABANDONED_STAGING_MAX_AGE_MS) {
+          continue
+        }
+        rmSync(candidatePath, { recursive: true, force: true })
+      } catch (error) {
+        console.warn(`Failed to clean up abandoned backup staging directory at ${candidatePath}.`, error)
+      }
     }
   }
 
@@ -238,7 +268,11 @@ class MarkdownBackupWriter {
     }
 
     if (hadPreviousSnapshot) {
-      rmSync(previousRoot, { recursive: true, force: true })
+      try {
+        rmSync(previousRoot, { recursive: true, force: true })
+      } catch (error) {
+        console.warn(`Failed to remove the previous backup snapshot at ${previousRoot}. The new snapshot was published successfully.`, error)
+      }
     }
   }
 
@@ -270,7 +304,8 @@ class MarkdownBackupWriter {
 
       const sourceStat = statSync(candidatePath, { throwIfNoEntry: false })
       if (!sourceStat?.isFile()) {
-        throw new Error(`Managed backup asset not found: ${assetUrl}`)
+        console.warn(`Skipping managed backup asset that no longer exists: ${assetUrl}`)
+        return assetUrl
       }
 
       const realAssetRoot = realpathSync(normalizedAssetRoot)
@@ -302,7 +337,7 @@ class MarkdownBackupWriter {
   private toSafePathSegment(segment: string): string {
     const isReservedWindowsName = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(segment)
     const needsEncoding = segment.length === 0
-      || segment.length > 100
+      || segment.length > 60
       || segment === '.'
       || segment === '..'
       || /[<>:"/\\|?*\x00-\x1F]/.test(segment)
@@ -317,7 +352,7 @@ class MarkdownBackupWriter {
       .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
       .replace(/[. ]+$/g, '')
       .trim()
-      .slice(0, 80) || 'Untitled'
+      .slice(0, 40) || 'Untitled'
     const digest = createHash('sha256').update(segment).digest('hex').slice(0, 10)
     return `${readable}--${digest}`
   }
@@ -327,7 +362,7 @@ class MarkdownBackupWriter {
       index === 0
       && (segment === INTERNAL_BACKUP_ROOT_SEGMENT || segment.startsWith(ESCAPED_DOCUMENT_ROOT_PREFIX))
     ) {
-      const digest = createHash('sha256').update(segment).digest('hex')
+      const digest = createHash('sha256').update(segment).digest('hex').slice(0, 16)
       return `${ESCAPED_DOCUMENT_ROOT_PREFIX}${digest}`
     }
 

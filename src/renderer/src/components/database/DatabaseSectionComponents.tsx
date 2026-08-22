@@ -413,9 +413,12 @@ const DocumentCatalogFieldCell = memo(function DocumentCatalogFieldCell({
   const [draftMultiValue, setDraftMultiValue] = useState<string[]>([])
 
   useEffect(() => {
+    if (isEditing) {
+      return
+    }
     setDraftValue(formatDocumentDatabaseFieldValueForDraft(value))
     setDraftMultiValue(Array.isArray(value) ? value : [])
-  }, [value])
+  }, [isEditing, value])
 
   const stopEventPropagation = (event: { stopPropagation: () => void }) => {
     event.stopPropagation()
