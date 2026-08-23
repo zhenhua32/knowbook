@@ -274,11 +274,21 @@ async function main(): Promise<void> {
       }, 3)
     )
     metrics.push(
+      await measure('document suggestions', 25, () => {
+        retainedResultCount += store.getDocumentSuggestions('Needle bench').length
+      }, 3)
+    )
+    metrics.push(
       await measure('related-note candidates', 15, () => {
         retainedResultCount += store.getSemanticSearchCandidates({
           query: 'needle-performance-token'
         }).length
       }, 2)
+    )
+    metrics.push(
+      await measure('plugin workspace snapshot', 5, () => {
+        retainedResultCount += store.getPluginWorkspaceDocuments().length
+      }, 1)
     )
     metrics.push(
       await measure('home data projection', 7, () => {

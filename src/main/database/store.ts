@@ -1548,9 +1548,51 @@ export class KnowbookStore {
     input: Pick<SearchSemanticNotesInput, 'excludeDocumentId'> & Partial<Pick<SearchSemanticNotesInput, 'query'>> = {}
   ): SemanticSearchCandidate[] {
     const normalizedQuery = input.query?.trim() ?? ''
+    const ftsMatchQuery = this.buildFtsPhraseQuery(normalizedQuery)
     const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
-    const documents = normalizedQuery
-      ? this.db.prepare(`
+    const documents = !normalizedQuery
+      ? input.excludeDocumentId
+        ? this.db.prepare(`
+        SELECT id, title, path, summary
+        FROM documents
+        WHERE id != ?
+        ORDER BY path ASC
+      `).all(input.excludeDocumentId) as SemanticSearchDocumentRow[]
+        : this.db.prepare(`
+        SELECT id, title, path, summary
+        FROM documents
+        ORDER BY path ASC
+      `).all() as SemanticSearchDocumentRow[]
+      : ftsMatchQuery
+        ? this.db.prepare(`
+        WITH matched_documents AS (
+          SELECT document_id
+          FROM document_search
+          WHERE document_search MATCH ?
+          LIMIT 500
+        ), matched_blocks AS (
+          SELECT document_id
+          FROM block_search
+          WHERE block_search MATCH ?
+          LIMIT 500
+        ), matched AS (
+          SELECT document_id FROM matched_documents
+          UNION
+          SELECT document_id FROM matched_blocks
+        )
+        SELECT d.id, d.title, d.path, d.summary
+        FROM documents AS d
+        INNER JOIN matched AS m ON m.document_id = d.id
+        WHERE (? IS NULL OR d.id != ?)
+        ORDER BY d.path ASC
+        LIMIT 500
+      `).all(
+          ftsMatchQuery,
+          ftsMatchQuery,
+          input.excludeDocumentId ?? null,
+          input.excludeDocumentId ?? null
+        ) as SemanticSearchDocumentRow[]
+        : this.db.prepare(`
         WITH matched_documents AS (
           SELECT document_id
           FROM document_search
@@ -1573,25 +1615,13 @@ export class KnowbookStore {
         ORDER BY d.path ASC
         LIMIT 500
       `).all(
-        likeQuery,
-        likeQuery,
-        likeQuery,
-        likeQuery,
-        input.excludeDocumentId ?? null,
-        input.excludeDocumentId ?? null
-      ) as SemanticSearchDocumentRow[]
-      : input.excludeDocumentId
-        ? this.db.prepare(`
-        SELECT id, title, path, summary
-        FROM documents
-        WHERE id != ?
-        ORDER BY path ASC
-      `).all(input.excludeDocumentId) as SemanticSearchDocumentRow[]
-        : this.db.prepare(`
-        SELECT id, title, path, summary
-        FROM documents
-        ORDER BY path ASC
-      `).all() as SemanticSearchDocumentRow[]
+          likeQuery,
+          likeQuery,
+          likeQuery,
+          likeQuery,
+          input.excludeDocumentId ?? null,
+          input.excludeDocumentId ?? null
+        ) as SemanticSearchDocumentRow[]
 
     if (documents.length === 0) {
       return []
@@ -1659,6 +1689,7 @@ export class KnowbookStore {
 
   getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
     const normalizedQuery = query.trim()
+    const ftsMatchQuery = this.buildFtsPhraseQuery(normalizedQuery)
     const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
     const prefixQuery = `${this.escapeLikePattern(normalizedQuery)}%`
 
@@ -1670,6 +1701,33 @@ export class KnowbookStore {
         ORDER BY LENGTH(path) ASC, path ASC
         LIMIT 8
       `).all(excludeDocumentId, excludeDocumentId) as DocumentSuggestion[]
+    }
+
+    if (ftsMatchQuery) {
+      return this.db.prepare(`
+        SELECT d.id, d.title, d.path
+        FROM document_search AS ds
+        INNER JOIN documents AS d ON d.id = ds.document_id
+        WHERE document_search MATCH ?
+          AND (? IS NULL OR d.id != ?)
+        ORDER BY
+          CASE
+            WHEN d.title = ? THEN 0
+            WHEN d.path = ? THEN 1
+            WHEN d.title LIKE ? ESCAPE '\\' THEN 2
+            ELSE 3
+          END,
+          LENGTH(d.path) ASC,
+          d.path ASC
+        LIMIT 8
+      `).all(
+        ftsMatchQuery,
+        excludeDocumentId,
+        excludeDocumentId,
+        normalizedQuery,
+        normalizedQuery,
+        prefixQuery
+      ) as DocumentSuggestion[]
     }
 
     return this.db.prepare(`
@@ -1704,31 +1762,60 @@ export class KnowbookStore {
     if (!normalizedQuery) {
       return []
     }
+    const ftsMatchQuery = this.buildFtsPhraseQuery(normalizedQuery)
     const likeQuery = `%${this.escapeLikePattern(normalizedQuery)}%`
+    const prefixQuery = `${this.escapeLikePattern(normalizedQuery)}%`
 
-    const docMatches = this.db.prepare(`
-      SELECT d.id, d.title, d.path, d.summary
-      FROM document_search AS ds
-      INNER JOIN documents AS d ON d.id = ds.document_id
-      WHERE ds.title LIKE ? ESCAPE '\\' OR ds.summary LIKE ? ESCAPE '\\'
-      ORDER BY
-        CASE WHEN ds.title LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
-        LENGTH(d.path) ASC
-      LIMIT 5
-    `).all(likeQuery, likeQuery, likeQuery) as Array<{
-      id: string; title: string; path: string; summary: string
-    }>
+    const docMatches = ftsMatchQuery
+      ? this.db.prepare(`
+        SELECT d.id, d.title, d.path, d.summary
+        FROM document_search AS ds
+        INNER JOIN documents AS d ON d.id = ds.document_id
+        WHERE document_search MATCH ?
+        ORDER BY
+          CASE WHEN d.title LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+          LENGTH(d.path) ASC
+        LIMIT 5
+      `).all(ftsMatchQuery, prefixQuery) as Array<{
+        id: string; title: string; path: string; summary: string
+      }>
+      : this.db.prepare(`
+        SELECT d.id, d.title, d.path, d.summary
+        FROM document_search AS ds
+        INNER JOIN documents AS d ON d.id = ds.document_id
+        WHERE ds.title LIKE ? ESCAPE '\\' OR ds.summary LIKE ? ESCAPE '\\'
+        ORDER BY
+          CASE WHEN ds.title LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+          LENGTH(d.path) ASC
+        LIMIT 5
+      `).all(likeQuery, likeQuery, likeQuery) as Array<{
+        id: string; title: string; path: string; summary: string
+      }>
 
-    const blockMatches = this.db.prepare(`
-      SELECT b.id AS block_id, b.type AS block_type, b.content AS block_content,
-             d.id AS document_id, d.title AS document_title, d.path AS document_path
-      FROM block_search AS bs
-      INNER JOIN blocks AS b ON b.id = bs.block_id
-      INNER JOIN documents AS d ON d.id = b.document_id
-      WHERE bs.content LIKE ? ESCAPE '\\'
-      ORDER BY LENGTH(b.content) ASC
-      LIMIT 20
-    `).all(likeQuery) as Array<{
+    const blockMatches = ftsMatchQuery
+      ? this.db.prepare(`
+        SELECT b.id AS block_id, b.type AS block_type, b.content AS block_content,
+               d.id AS document_id, d.title AS document_title, d.path AS document_path
+        FROM block_search AS bs
+        INNER JOIN blocks AS b ON b.id = bs.block_id
+        INNER JOIN documents AS d ON d.id = b.document_id
+        WHERE block_search MATCH ?
+        ORDER BY LENGTH(b.content) ASC
+        LIMIT 20
+      `).all(ftsMatchQuery) as Array<{
+        block_id: string; block_type: string; block_content: string;
+        document_id: string; document_title: string; document_path: string
+      }>
+      : this.db.prepare(`
+        SELECT b.id AS block_id, b.type AS block_type, b.content AS block_content,
+               d.id AS document_id, d.title AS document_title, d.path AS document_path
+        FROM block_search AS bs
+        INNER JOIN blocks AS b ON b.id = bs.block_id
+        INNER JOIN documents AS d ON d.id = b.document_id
+        WHERE bs.content LIKE ? ESCAPE '\\'
+        ORDER BY LENGTH(b.content) ASC
+        LIMIT 20
+      `).all(likeQuery) as Array<{
       block_id: string; block_type: string; block_content: string;
       document_id: string; document_title: string; document_path: string
     }>
@@ -1937,6 +2024,7 @@ export class KnowbookStore {
       })
     }
 
+    const blockContentsByDocumentId = new Map<string, string[]>()
     const blocks = this.db.prepare(`
       SELECT document_id, id, type, content, checked, depth, tags_json,
         parent_block_id, sort_order, language, highlight
@@ -1956,6 +2044,13 @@ export class KnowbookStore {
         language: block.language ?? undefined,
         highlight: block.highlight ?? undefined
       })
+
+      const contents = blockContentsByDocumentId.get(block.document_id)
+      if (contents) {
+        contents.push(block.content)
+      } else {
+        blockContentsByDocumentId.set(block.document_id, [block.content])
+      }
     }
 
     const outgoingLinks = this.db.prepare(`
@@ -1977,21 +2072,20 @@ export class KnowbookStore {
     const backlinks = this.db.prepare(`
       SELECT links.target_document_id AS owner_document_id,
         source.id, source.title, source.path, links.label,
-        SUBSTR(b.content, 1, 200) AS context_snippet
+        links.source_document_id AS context_source_document_id
       FROM links
       INNER JOIN documents AS source ON source.id = links.source_document_id
-      LEFT JOIN blocks AS b ON b.document_id = links.source_document_id
-        AND b.content LIKE '%' || links.label || '%'
-      GROUP BY links.target_document_id, source.id
       ORDER BY links.target_document_id ASC, source.path ASC
-    `).all() as PluginWorkspaceLinkedDocumentRow[]
+    `).all() as Array<PluginWorkspaceLinkedDocumentRow & { context_source_document_id: string }>
     for (const link of backlinks) {
+      const sourceContents = blockContentsByDocumentId.get(link.context_source_document_id)
+      const contextContent = sourceContents?.find((content) => content.includes(link.label))
       detailsById.get(link.owner_document_id)?.backlinks.push({
         id: link.id,
         title: link.title,
         path: link.path,
         label: link.label,
-        contextSnippet: link.context_snippet ?? undefined
+        contextSnippet: contextContent !== undefined ? contextContent.slice(0, 200) : undefined
       })
     }
 
@@ -2454,6 +2548,14 @@ export class KnowbookStore {
 
   private escapeLikePattern(value: string): string {
     return value.replace(/[\\%_]/g, (character) => `\\${character}`)
+  }
+
+  private buildFtsPhraseQuery(query: string): string | null {
+    const trimmed = query.trim()
+    if (trimmed.length < 3) {
+      return null
+    }
+    return `"${trimmed.replace(/"/g, '""')}"`
   }
 
   private generateSiblingTitle(parentId: string | null, baseTitle: string, excludeDocumentId?: string): string {
@@ -2923,11 +3025,35 @@ export class KnowbookStore {
     const sourceDocumentIds = new Set(additionalSourceDocumentIds)
 
     if (normalizedReferenceTokens.size > 0) {
-      const candidateBlocks = this.db.prepare(`
-        SELECT document_id, content
-        FROM blocks
-        WHERE instr(content, '[[') > 0
-      `).all() as BlockReferenceRow[]
+      // Trigram FTS only matches needles of 3+ characters; shorter tokens
+      // fall back to the full scan below so no reference is missed.
+      const indexedTokens = [...normalizedReferenceTokens].filter((token) => token.length >= 3)
+      const fallbackTokens = [...normalizedReferenceTokens].filter((token) => token.length < 3)
+
+      let candidateBlocks: BlockReferenceRow[]
+      if (indexedTokens.length > 0) {
+        const matchExpression = indexedTokens
+          .map((token) => `"${token.replace(/"/g, '""')}"`)
+          .join(' OR ')
+        candidateBlocks = this.db.prepare(`
+          SELECT document_id, content
+          FROM block_search
+          WHERE block_search MATCH ?
+        `).all(matchExpression) as BlockReferenceRow[]
+        if (fallbackTokens.length > 0) {
+          candidateBlocks = candidateBlocks.concat(this.db.prepare(`
+            SELECT document_id, content
+            FROM blocks
+            WHERE instr(content, '[[') > 0
+          `).all() as BlockReferenceRow[])
+        }
+      } else {
+        candidateBlocks = this.db.prepare(`
+          SELECT document_id, content
+          FROM blocks
+          WHERE instr(content, '[[') > 0
+        `).all() as BlockReferenceRow[]
+      }
 
       for (const block of candidateBlocks) {
         if (this.extractLinkTargets(block.content).some((token) => normalizedReferenceTokens.has(token))) {
