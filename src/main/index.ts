@@ -126,6 +126,14 @@ app.on('child-process-gone', (_event, details) => {
   console.error('Electron child process exited unexpectedly.', details)
 })
 
+process.on('unhandledRejection', (reason) => {
+  console.warn('Unhandled promise rejection in the main process.', reason)
+})
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception in the main process.', error)
+})
+
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
 let shutdownComplete = false
@@ -334,9 +342,13 @@ function createWindow(): ElectronBrowserWindow {
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
-    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']).catch((error) => {
+      console.warn('Failed to load the renderer dev server URL.', error)
+    })
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html')).catch((error) => {
+      console.error('Failed to load the packaged renderer entry.', error)
+    })
   }
   return mainWindow
 }
@@ -1368,6 +1380,18 @@ async function shutdownServices(): Promise<void> {
   workspaceMutationNotifier.dispose()
   pluginMutationNotifier.dispose()
   cancelAllDocumentSummaryGeneration()
+
+  try {
+    const restoreCompleted = await Promise.race([
+      restoreService.waitForIdle(),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 10_000))
+    ])
+    if (!restoreCompleted) {
+      console.warn('Pending markdown restore did not finish before shutdown timeout.')
+    }
+  } catch (error) {
+    console.warn('Failed to await pending markdown restore during shutdown.', error)
+  }
 
   try {
     await backupService.waitForIdle()

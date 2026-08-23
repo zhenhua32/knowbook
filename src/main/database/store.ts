@@ -330,6 +330,7 @@ export class KnowbookStore {
     this.db = new Database(databasePath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
+    this.db.pragma('busy_timeout = 5000')
     const schemaVersion = this.db.pragma('user_version', { simple: true }) as number
     if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
       this.db.close()
@@ -663,6 +664,43 @@ export class KnowbookStore {
     }
   }
 
+  private healOrphanedBlockTree(blocks: ExportBlockRow[]): ExportBlockRow[] {
+    const latestIdByDepth: Array<string | null> = []
+    let changed = false
+
+    const healed = blocks.map((block) => {
+      const isNestable = block.type === 'todo' || block.type === 'bulleted-list' || block.type === 'numbered-list'
+      let depth = isNestable ? Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0))) : 0
+      if (depth !== (block.depth ?? 0)) {
+        changed = true
+      }
+
+      let parentBlockId: string | null = null
+      if (depth > 0) {
+        while (depth > 0 && !latestIdByDepth[depth - 1]) {
+          depth -= 1
+          changed = true
+        }
+        const declaredParent = block.parent_block_id
+        if (declaredParent && latestIdByDepth[depth - 1] === declaredParent) {
+          parentBlockId = declaredParent
+        } else {
+          changed = true
+        }
+      }
+
+      latestIdByDepth.length = depth + 1
+      latestIdByDepth[depth] = block.id
+
+      if (parentBlockId !== (block.parent_block_id ?? null)) {
+        changed = true
+      }
+      return { ...block, depth, parent_block_id: parentBlockId }
+    })
+
+    return changed ? healed : blocks
+  }
+
   getDocumentDetail(documentId: string): DocumentDetail | null {
     const document = this.db.prepare(`
       SELECT id, title, path, summary, updated_at
@@ -714,7 +752,7 @@ export class KnowbookStore {
       path: document.path,
       summary: document.summary,
       updatedAt: document.updated_at,
-      blocks: blocks.map((block) => ({
+      blocks: this.healOrphanedBlockTree(blocks).map((block) => ({
         id: block.id,
         type: block.type,
         content: block.content,
@@ -3128,13 +3166,13 @@ export class KnowbookStore {
       const findDocumentByPath = this.db.prepare(`
         SELECT id, title, path
         FROM documents
-        WHERE path = ?
+        WHERE path = ? COLLATE NOCASE
         LIMIT 1
       `)
       const findDocumentsByTitle = this.db.prepare(`
         SELECT id, title, path
         FROM documents
-        WHERE title = ?
+        WHERE title = ? COLLATE NOCASE
         ORDER BY path ASC
         LIMIT 2
       `)
@@ -3155,12 +3193,13 @@ export class KnowbookStore {
       const pathMap = new Map<string, DocumentLookupRow>()
       const titleMap = new Map<string, DocumentLookupRow | null>()
       for (const document of documents) {
-        pathMap.set(document.path, document)
-        const existing = titleMap.get(document.title)
-        titleMap.set(document.title, existing === undefined ? document : null)
+        pathMap.set(document.path.toLowerCase(), document)
+        const existing = titleMap.get(document.title.toLowerCase())
+        titleMap.set(document.title.toLowerCase(), existing === undefined ? document : null)
       }
       for (const token of referenceTokens) {
-        targetByToken.set(token, pathMap.get(token) ?? titleMap.get(token) ?? null)
+        const normalizedToken = token.toLowerCase()
+        targetByToken.set(token, pathMap.get(normalizedToken) ?? titleMap.get(normalizedToken) ?? null)
       }
     }
 

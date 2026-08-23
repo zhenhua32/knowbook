@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { useAppShellState } from './hooks/useAppShellState'
 import { useAppFeatureDomains } from './hooks/useAppFeatureDomains'
 import { useAppKeyboardShortcuts } from './hooks/useAppKeyboardShortcuts'
@@ -31,7 +31,9 @@ export function App() {
     documents: documentsDomain,
     shell
   })
-  resetAiSessionRef.current = featureDomains.ai.resetAiSession
+  useEffect(() => {
+    resetAiSessionRef.current = featureDomains.ai.resetAiSession
+  })
   useAppKeyboardShortcuts({
     documents: documentsDomain,
     onClearBlockRangeSelection: () => {

@@ -327,14 +327,8 @@ export function DatabasePage({
       return next.length === current.length ? current : next
     })
   }, [
-    database,
-    database.databaseEntities,
-    database.databaseEntityFilterQuery,
-    database.databaseEntityFilterScope,
-    database.databaseEntitySortMode,
-    documentCatalog,
-    filteredStandaloneDatabaseEntityIds,
-    database.selectedDatabaseColumns
+    database.setSelectedDatabaseEntityIds,
+    filteredStandaloneDatabaseEntityIds
   ])
 
   useEffect(() => {
@@ -345,7 +339,7 @@ export function DatabasePage({
     if (!boardGroupableColumns.some((column) => column.id === database.boardGroupBy)) {
       database.setBoardGroupBy(BOARD_GROUP_BY_PARENT)
     }
-  }, [boardGroupableColumns, database])
+  }, [boardGroupableColumns, database.boardGroupBy, database.setBoardGroupBy])
 
   return catalogLoading && catalogDocuments.length === 0 ? (
     <p className="empty-state">{ui.common.loading}</p>

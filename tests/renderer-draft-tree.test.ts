@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { DocumentBlockDraft } from '../src/shared/contracts.ts'
+import { getActiveUiText } from '../src/renderer/src/i18n.ts'
 import { isNestableBlock, normalizeBlockDepth, toDraftBlock } from '../src/renderer/src/utils/draftBlockShape.ts'
 import { serializeDraftBlockRange } from '../src/renderer/src/utils/draftClipboard.ts'
 import { materializeDraftFragment, shiftDraftFragmentDepth } from '../src/renderer/src/utils/draftTreeFragment.ts'
@@ -200,7 +201,7 @@ test('drop preview rejects drops into the source subtree and resolves an externa
 
   assert.equal(getBlockDropPreview(blocks, 0, 1, 1), null)
   assert.deepEqual(getBlockDropPreview(blocks, 0, 3, 0), {
-    positionLabel: 'Drop after',
+    positionLabel: getActiveUiText().dropAfterLabel,
     effectiveDepth: 0,
     parentText: null
   })

@@ -288,7 +288,8 @@ export function useDocumentsDomainState({
     collapsedBlockIds,
     draftBlocks,
     onActiveBlockChange: setActiveBlockIndex,
-    visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard
+    visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard,
+    selectionStaleGuard: ui.selectionStaleGuard
   })
 
   useDocumentsLoadingOrchestration({

@@ -713,7 +713,7 @@ export function DatabaseSection({
                           ) : (
                             <div className="document-list database-document-list-spaced">
                               {standalone.filteredEntityRows.map(({ entity, linkedDocument }) => {
-                                const entityLabel = linkedDocument?.title ?? `Entity ${entity.id.slice(0, 8)}`
+                                const entityLabel = linkedDocument?.title ?? ui.entityFallbackLabel(entity.id)
 
                                 return (
                                   <div className="document-row" key={entity.id}>

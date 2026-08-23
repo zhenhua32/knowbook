@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 import { getUiText, type UiLanguage } from '../i18n'
 import { getOpenLinkContext, getSlashCommandContext } from '../utils/editorAssist'
+import { computeSlashPanelPosition } from '../utils/menuPosition'
 
 type BlockSlashCommand = {
   id: string
@@ -193,15 +194,11 @@ export function useEditorAssistState({
     }
 
     const rect = textarea.getBoundingClientRect()
-    const lineHeight = parseInt(window.getComputedStyle(textarea).lineHeight)
+    const computedStyle = window.getComputedStyle(textarea)
     const lines = textarea.value.substring(0, activeCursorPosition).split('\n')
     const currentLine = lines.length - 1
-    const offsetX = lines[currentLine].length * 8
 
-    return {
-      x: rect.left + offsetX,
-      y: rect.top + currentLine * lineHeight + lineHeight + 10
-    }
+    return computeSlashPanelPosition(rect, computedStyle.lineHeight, computedStyle.fontSize, lines[currentLine])
   }, [activeBlockIndex, activeCursorPosition, activeSlashContext, blockTextareaRefs])
 
   return {

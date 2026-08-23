@@ -1,4 +1,5 @@
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type {
@@ -142,6 +143,32 @@ const parseRestoreMarkdownInProcess: RestoreMarkdownParseRunner = async (markdow
 export class MarkdownRestoreService {
   private readonly limits: MarkdownRestoreLimits
   private activeRestore: Promise<BackupRestoreResult> | null = null
+
+  private static readonly strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true })
+
+  waitForIdle(): Promise<boolean> {
+    if (!this.activeRestore) {
+      return Promise.resolve(true)
+    }
+    return this.activeRestore.then(
+      () => true,
+      () => false
+    )
+  }
+
+  private readMarkdownFileStrictUtf8(filePath: string): string {
+    let bytes: Buffer
+    try {
+      bytes = readFileSync(filePath)
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(`Failed to read restore file: ${filePath}`)
+    }
+    try {
+      return MarkdownRestoreService.strictUtf8Decoder.decode(bytes)
+    } catch {
+      throw new Error(`Restore file is not valid UTF-8 and was skipped from the restore plan: ${filePath}`)
+    }
+  }
 
   constructor(
     private readonly store: KnowbookStore,
@@ -310,7 +337,7 @@ export class MarkdownRestoreService {
       const relativePath = relative(root, filePath)
         .replace(/\\/g, '/')
         .replace(/\.md$/i, '')
-      const sourceMarkdown = await readFile(filePath, 'utf8')
+      const sourceMarkdown = this.readMarkdownFileStrictUtf8(filePath)
       const markdown = await this.restorePortableAssetReferences(
         root,
         filePath,
@@ -377,6 +404,8 @@ export class MarkdownRestoreService {
     let entryCount = 0
     let markdownBytes = 0
     const visit = async (directory: string, depth: number): Promise<void> => {
+      // Depth semantics: the restore root itself is depth 0, so maxDepth counts the levels of
+      // nested directories below the root. A root containing only .md files is depth 1.
       if (depth > this.limits.maxDepth) {
         throw new Error(`Restore directory exceeds the maximum depth of ${this.limits.maxDepth}.`)
       }

@@ -2431,8 +2431,8 @@ async function resolveSafeRemoteUrl(
   return addresses[0]
 }
 
-function isPublicIpAddress(address: string): boolean {
-  const normalized = address.toLowerCase()
+export function isPublicIpAddress(address: string): boolean {
+  const normalized = address.toLowerCase().split('%')[0]
   if (normalized.startsWith('::ffff:')) {
     const mappedAddress = normalized.slice('::ffff:'.length)
     if (isIP(mappedAddress) === 4) {
@@ -2452,20 +2452,34 @@ function isPublicIpAddress(address: string): boolean {
   }
 
   if (isIP(normalized) === 4) {
-    const octets = normalized.split('.').map(Number)
-    const [first, second] = octets
-    return !(first === 0
-      || first === 10
-      || first === 127
-      || (first === 100 && second >= 64 && second <= 127)
-      || (first === 169 && second === 254)
-      || (first === 172 && second >= 16 && second <= 31)
-      || (first === 192 && second === 168)
-      || (first === 198 && (second === 18 || second === 19))
-      || first >= 224)
+    return isPublicIpv4Address(normalized)
   }
 
   if (isIP(normalized) === 6) {
+    const hextets = expandIpv6Hextets(normalized)
+    if (!hextets || hextets.length !== 8) {
+      return false
+    }
+
+    // IPv4-compatible (::/96 with a nonzero tail, e.g. ::7f00:1).
+    if (hextets.slice(0, 6).every((group) => group === 0) && (hextets[6] !== 0 || hextets[7] !== 0)) {
+      return isPublicIpv4Address(hextetsToIpv4(hextets[6], hextets[7]))
+    }
+
+    // NAT64 64:ff9b::/96.
+    if (
+      hextets[0] === 0x64
+      && hextets[1] === 0xff9b
+      && hextets.slice(2, 6).every((group) => group === 0)
+    ) {
+      return isPublicIpv4Address(hextetsToIpv4(hextets[6], hextets[7]))
+    }
+
+    // 6to4 2002::/16 embeds the IPv4 address in the second and third groups.
+    if (hextets[0] === 0x2002) {
+      return isPublicIpv4Address(hextetsToIpv4(hextets[1], hextets[2]))
+    }
+
     return normalized !== '::'
       && normalized !== '::1'
       && !normalized.startsWith('fc')
@@ -2475,6 +2489,82 @@ function isPublicIpAddress(address: string): boolean {
   }
 
   return false
+}
+
+function isPublicIpv4Address(address: string): boolean {
+  const octets = address.split('.').map(Number)
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) {
+    return false
+  }
+  const [first, second] = octets
+  return !(first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 198 && (second === 18 || second === 19))
+    || first >= 224)
+}
+
+function hextetsToIpv4(high16: number, low16: number): string {
+  return `${high16 >> 8}.${high16 & 0xff}.${low16 >> 8}.${low16 & 0xff}`
+}
+
+function expandIpv6Hextets(address: string): Array<number> | null {
+  let tail: string = address
+  let embeddedIpv4: number[] | null = null
+
+  if (address.includes('.')) {
+    const separatorIndex = address.lastIndexOf(':')
+    tail = address.slice(0, separatorIndex + 1)
+    const ipv4Part = address.slice(separatorIndex + 1)
+    embeddedIpv4 = ipv4Part.split('.').map((octet) => Number.parseInt(octet, 10))
+    if (embeddedIpv4.length !== 4 || embeddedIpv4.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return null
+    }
+  }
+
+  const doubleColonIndex = tail.indexOf('::')
+  const headPart = doubleColonIndex === -1 ? tail : tail.slice(0, doubleColonIndex)
+  const tailPart = doubleColonIndex === -1 ? '' : tail.slice(doubleColonIndex + 2)
+
+  const parseGroups = (part: string): Array<number> | null => {
+    if (!part) {
+      return []
+    }
+    const groups = part.split(':').filter(Boolean).map((group) => Number.parseInt(group, 16))
+    if (groups.some((group) => !Number.isInteger(group) || group < 0 || group > 0xffff)) {
+      return null
+    }
+    return groups
+  }
+
+  const headGroups = parseGroups(headPart)
+  const tailGroups = parseGroups(tailPart)
+  if (!headGroups || !tailGroups) {
+    return null
+  }
+
+  const embeddedGroups = embeddedIpv4
+    ? [(embeddedIpv4[0] << 8) | embeddedIpv4[1], (embeddedIpv4[2] << 8) | embeddedIpv4[3]]
+    : []
+  const targetLength = 8 - embeddedGroups.length
+  if (headGroups.length + tailGroups.length > targetLength) {
+    return null
+  }
+  if (doubleColonIndex === -1 && headGroups.length !== targetLength) {
+    return null
+  }
+
+  const missing = targetLength - headGroups.length - tailGroups.length
+  return [
+    ...headGroups,
+    ...Array.from({ length: Math.max(0, missing) }, () => 0),
+    ...tailGroups,
+    ...embeddedGroups
+  ]
 }
 
 async function readResponseBody(response: Response, maxBytes: number): Promise<Buffer> {

@@ -687,7 +687,13 @@ function createUiText(language: UiLanguage) {
     blockToolbarDelete: zh ? '删除' : 'Delete',
     blockToolbarAiEdit: zh ? 'AI 编辑' : 'AI edit',
     codeBlockLanguageLabel: zh ? '语言' : 'Language',
-    codeBlockLanguageHint: zh ? '点击修改代码块的编程语言' : 'Click to edit the programming language'
+    codeBlockLanguageHint: zh ? '点击修改代码块的编程语言' : 'Click to edit the programming language',
+    dropAfterLabel: zh ? '拖放到其后' : 'Drop after',
+    dropBeforeLabel: zh ? '拖放到其前' : 'Drop before',
+    selectionStaleGuard: zh ? '当前选区已无法映射到可见行，请清除选区后重新选择要移动的块。' : 'The current selection no longer maps to visible rows. Clear the selection and pick the blocks to move again.',
+    documentCreateFailed: zh ? '创建文档失败。' : 'Failed to create document.',
+    documentNotFoundMessage: zh ? '未找到文档' : 'Document not found',
+    entityFallbackLabel: (id: string) => (zh ? `实体 ${id.slice(0, 8)}` : `Entity ${id.slice(0, 8)}`)
   }
 }
 

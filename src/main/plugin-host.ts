@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import {
   copyFile,
   lstat,
@@ -210,6 +210,7 @@ export class PluginHost {
   ) {}
 
   discoverAll(): void {
+    this.sweepAbandonedPluginOperations()
     if (this.initialDiscovery || this.initialLoadPromise) {
       return
     }
@@ -440,7 +441,17 @@ export class PluginHost {
     }
 
     if (plugin.source !== 'user-data') {
-      throw new Error('Only plugins installed into the user-data root can be removed here.')
+      const removedShadowCopy = await this.removeShadowedUserDataCopy(plugin)
+      if (!removedShadowCopy) {
+        throw new Error('Only plugins installed into the user-data root can be removed here.')
+      }
+      await this.reloadAll()
+      this.store.recordWorkspaceEvent({
+        type: 'plugin.removed',
+        title: `Plugin removed: ${plugin.manifest.name}`,
+        description: `Removed dormant user-data copy of ${plugin.manifest.name} that was shadowed by the workspace plugin.`
+      })
+      return
     }
 
     await this.deactivatePlugin(plugin)
@@ -457,6 +468,34 @@ export class PluginHost {
       title: `Plugin removed: ${plugin.manifest.name}`,
       description: `Removed plugin ${plugin.manifest.name} from ${plugin.directory}.`
     })
+  }
+
+  private async removeShadowedUserDataCopy(plugin: RegisteredPlugin): Promise<boolean> {
+    const writableRoot = this.getWritableRoot()
+    if (!writableRoot) {
+      return false
+    }
+    const candidateDirectory = resolve(writableRoot, plugin.manifest.id)
+    if (candidateDirectory === plugin.directory || !existsSync(candidateDirectory)) {
+      return false
+    }
+
+    try {
+      const manifest = JSON.parse(readFileSync(join(candidateDirectory, 'plugin.json'), 'utf8')) as { id?: unknown }
+      if (manifest.id !== plugin.manifest.id) {
+        return false
+      }
+    } catch {
+      return false
+    }
+
+    try {
+      await rm(candidateDirectory, { recursive: true, force: true })
+    } catch (error) {
+      console.warn(`Failed to remove shadowed user-data copy at ${candidateDirectory}.`, error)
+      return false
+    }
+    return true
   }
 
   async reloadPlugin(pluginId: string): Promise<void> {
@@ -647,7 +686,14 @@ export class PluginHost {
         if (!output.result) {
           throw new Error('Plugin action did not return a result.')
         }
-        return output.result
+        const normalizedResult = normalizePluginActionResult(output.result, action.action.label)
+        this.store.recordWorkspaceEvent({
+          type: 'plugin.action.executed',
+          title: `${plugin.manifest.name}: ${action.action.label}`,
+          description: normalizedResult.message,
+          documentId: document.id
+        })
+        return normalizedResult
       } catch (error) {
         this.failIsolatedPlugin(plugin, runtime, `document action ${action.action.id}`, error)
         throw new Error(this.getPluginErrorMessage(plugin, error, 'Unknown plugin action error.'))
@@ -942,6 +988,44 @@ export class PluginHost {
 
   private getWritableRoot(): string | null {
     return this.roots.find((root) => root.source === 'user-data')?.path ?? null
+  }
+
+  private sweepAbandonedPluginOperations(): void {
+    const writableRoot = this.getWritableRoot()
+    if (!writableRoot || !existsSync(writableRoot)) {
+      return
+    }
+    const operationRoot = join(writableRoot, '.knowbook-operations')
+    if (!existsSync(operationRoot)) {
+      return
+    }
+
+    const staleAfterMs = 24 * 60 * 60 * 1000
+    const now = Date.now()
+    let names: string[]
+    try {
+      names = readdirSync(operationRoot)
+    } catch (error) {
+      console.warn('Failed to list plugin operations directory for cleanup.', error)
+      return
+    }
+
+    for (const name of names) {
+      if (!name.startsWith('previous-') && !name.startsWith('install-')) {
+        continue
+      }
+      const fullPath = join(operationRoot, name)
+      try {
+        if (!statSync(fullPath).isDirectory()) {
+          continue
+        }
+        if (now - statSync(fullPath).mtimeMs >= staleAfterMs) {
+          rmSync(fullPath, { recursive: true, force: true })
+        }
+      } catch (error) {
+        console.warn(`Failed to clean up abandoned plugin operation directory: ${fullPath}`, error)
+      }
+    }
   }
 
   private async processPluginPackageDirectory(

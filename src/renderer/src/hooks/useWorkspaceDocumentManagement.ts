@@ -58,7 +58,7 @@ export function useWorkspaceDocumentManagement({
   const getDocumentDetailForAction = useCallback(async (documentId: string) => {
     const detail = await window.knowbook.getDocumentDetail(documentId)
     if (!detail) {
-      throw new Error('Document not found')
+      throw new Error(ui.documentNotFoundMessage)
     }
 
     return detail
@@ -128,7 +128,7 @@ export function useWorkspaceDocumentManagement({
       onSelectedDocumentIdChange(created.id)
     } catch (error) {
       onDetailLoadingChange(false)
-      onMessage(error instanceof Error ? error.message : 'Failed to create document.')
+      onMessage(error instanceof Error ? error.message : ui.documentCreateFailed)
     }
   }, [onClearEditorSession, onDetailLoadingChange, onFlushPendingDocumentChanges, onHomeDataChange, onMessage, onSelectedDocumentChange, onSelectedDocumentIdChange])
 
@@ -187,7 +187,7 @@ export function useWorkspaceDocumentManagement({
       await window.knowbook.writeClipboardText(buildDocumentMarkdown(detail))
       onMessage(ui.markdownCopied)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Document not found'
+      const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
       onMessage(message)
     }
   }, [getDocumentDetailForAction, onMessage, ui.markdownCopied])
@@ -204,7 +204,7 @@ export function useWorkspaceDocumentManagement({
         onMessage(ui.markdownExportedPath(savedPath))
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Document not found'
+      const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
       onMessage(message)
     }
   }, [getDocumentDetailForAction, onMessage, ui])

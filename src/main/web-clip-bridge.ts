@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { timingSafeEqual } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { ClipWebPageResult, ImportWebClipPayloadInput, WebClipBridgeStatus } from '@shared/contracts'
 
@@ -162,8 +163,9 @@ export class WebClipBridgeService {
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const corsHeaders = buildCorsHeaders(request)
     if (request.method === 'OPTIONS') {
-      writeEmpty(response, 204)
+      writeEmpty(response, 204, corsHeaders)
       return
     }
 
@@ -171,24 +173,33 @@ export class WebClipBridgeService {
       writeJson(response, 200, {
         ok: true,
         running: this.status.running
-      })
+      }, corsHeaders)
       return
     }
 
     if (request.method !== 'POST' || request.url !== '/clip') {
-      writeJson(response, 404, { error: 'Not found.' })
+      writeJson(response, 404, { error: 'Not found.' }, corsHeaders)
       return
     }
 
     const authHeader = request.headers.authorization?.trim() ?? ''
-    if (!authHeader || authHeader !== `Bearer ${this.config.token}`) {
-      writeJson(response, 401, { error: 'Unauthorized.' })
+    if (!this.isAuthorizedBearerToken(authHeader)) {
+      writeJson(response, 401, { error: 'Unauthorized.' }, corsHeaders)
       return
     }
 
     const payload = await readJsonBody<ImportWebClipPayloadInput>(request)
     const result = await this.options.onImport(payload)
-    writeJson(response, 200, result)
+    writeJson(response, 200, result, corsHeaders)
+  }
+
+  private isAuthorizedBearerToken(authHeader: string): boolean {
+    const expected = Buffer.from(`Bearer ${this.config.token}`, 'utf8')
+    const provided = Buffer.from(authHeader, 'utf8')
+    if (expected.length !== provided.length) {
+      return false
+    }
+    return timingSafeEqual(expected, provided)
   }
 
   private updateStatus(nextStatus: WebClipBridgeStatus): void {
@@ -226,23 +237,44 @@ async function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   }
 }
 
-function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+function writeJson(
+  response: ServerResponse,
+  statusCode: number,
+  payload: unknown,
+  corsHeaders: Record<string, string> = {}
+): void {
   const body = JSON.stringify(payload)
   response.writeHead(statusCode, {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    ...corsHeaders,
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body)
   })
   response.end(body)
 }
 
-function writeEmpty(response: ServerResponse, statusCode: number): void {
-  response.writeHead(statusCode, {
-    'Access-Control-Allow-Origin': '*',
+function writeEmpty(response: ServerResponse, statusCode: number, corsHeaders: Record<string, string> = {}): void {
+  response.writeHead(statusCode, corsHeaders)
+  response.end()
+}
+
+const BRIDGE_ALLOWED_ORIGIN_PREFIXES = [
+  'chrome-extension://',
+  'moz-extension://',
+  'safari-web-extension://'
+]
+
+function buildCorsHeaders(request: IncomingMessage): Record<string, string> {
+  const headers: Record<string, string> = {
+    Vary: 'Origin',
     'Access-Control-Allow-Headers': 'Authorization, Content-Type',
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS'
-  })
-  response.end()
+  }
+
+  // The bridge only serves local browser extensions. Web origins (and requests without an
+  // Origin header, e.g. curl) must not receive any CORS grant.
+  const origin = request.headers.origin?.trim() ?? ''
+  if (origin && BRIDGE_ALLOWED_ORIGIN_PREFIXES.some((prefix) => origin.startsWith(prefix))) {
+    headers['Access-Control-Allow-Origin'] = origin
+  }
+  return headers
 }

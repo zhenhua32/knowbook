@@ -168,7 +168,7 @@ export function getBlockDropPreview(
   )
 
   return {
-    positionLabel: sourceIndex < targetIndex ? 'Drop after' : 'Drop before',
+    positionLabel: sourceIndex < targetIndex ? getActiveUiText().dropAfterLabel : getActiveUiText().dropBeforeLabel,
     effectiveDepth: placement.depth,
     parentText: placement.parentText
   }

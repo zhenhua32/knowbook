@@ -22,6 +22,7 @@ type PendingRequest = {
 }
 
 const PLUGIN_RUNTIME_COMMAND_TIMEOUT_MS = 5_000
+const PLUGIN_RUNTIME_INITIALIZE_TIMEOUT_MS = 30_000
 const PLUGIN_RUNTIME_MAX_HEAP_MB = 128
 const PLUGIN_RUNTIME_ERROR_MAX_CHARS = 10_000
 
@@ -53,7 +54,7 @@ export class ElectronPluginRuntime implements IsolatedPluginRuntime {
   }
 
   initialize(input: PluginRuntimeInitializeInput): Promise<PluginRuntimeOutput> {
-    return this.request({ type: 'initialize', input })
+    return this.request({ type: 'initialize', input }, PLUGIN_RUNTIME_INITIALIZE_TIMEOUT_MS)
   }
 
   handleWorkspaceEvent(
@@ -122,7 +123,8 @@ export class ElectronPluginRuntime implements IsolatedPluginRuntime {
   }
 
   private request<TResult = undefined>(
-    command: PluginRuntimeCommand
+    command: PluginRuntimeCommand,
+    timeoutMs: number = PLUGIN_RUNTIME_COMMAND_TIMEOUT_MS
   ): Promise<PluginRuntimeOutput<TResult>> {
     if (this.failure) {
       return Promise.reject(this.failure)
@@ -136,12 +138,12 @@ export class ElectronPluginRuntime implements IsolatedPluginRuntime {
       const timeout = setTimeout(() => {
         this.pending.delete(requestId)
         const error = new Error(
-          `Plugin runtime command "${command.type}" timed out after ${PLUGIN_RUNTIME_COMMAND_TIMEOUT_MS}ms.`
+          `Plugin runtime command "${command.type}" timed out after ${timeoutMs}ms.`
         )
         reject(error)
         this.fail(error)
         this.process.kill()
-      }, PLUGIN_RUNTIME_COMMAND_TIMEOUT_MS)
+      }, timeoutMs)
 
       this.pending.set(requestId, {
         resolve: resolve as PendingRequest['resolve'],

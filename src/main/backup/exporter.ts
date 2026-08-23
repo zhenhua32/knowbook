@@ -319,13 +319,34 @@ class MarkdownBackupWriter {
       this.assertPathInsideRoot(snapshotAssetPath, snapshotRoot)
       if (!this.copiedAssets.has(snapshotAssetPath)) {
         this.ensureDirectory(dirname(snapshotAssetPath))
-        copyFileSync(sourcePath, snapshotAssetPath)
+        if (!this.copySourceAssetWithRetry(sourcePath, snapshotAssetPath, assetUrl)) {
+          return assetUrl
+        }
         this.copiedAssets.add(snapshotAssetPath)
       }
 
       const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).replace(/\\/g, '/')
       return portableReference.startsWith('.') ? portableReference : `./${portableReference}`
     })
+  }
+
+  private copySourceAssetWithRetry(sourcePath: string, destinationPath: string, assetUrl: string): boolean {
+    // Asset writers may still be flushing the file on another thread; retry briefly before giving up.
+    const attempts = 3
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        copyFileSync(sourcePath, destinationPath)
+        return true
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | null)?.code
+        if (code !== 'ENOENT' || attempt === attempts) {
+          console.warn(`Skipping managed backup asset that could not be copied: ${assetUrl}`, error)
+          return false
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+      }
+    }
+    return false
   }
 
   private isPathInsideRoot(filePath: string, root: string): boolean {

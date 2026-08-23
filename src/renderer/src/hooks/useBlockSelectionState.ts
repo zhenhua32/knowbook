@@ -29,6 +29,7 @@ type UseBlockSelectionStateParams = {
   draftBlocks: DocumentBlockDraft[]
   onActiveBlockChange: (index: number) => void
   visibleSliceCrossParentGuard: string
+  selectionStaleGuard: string
 }
 
 export function useBlockSelectionState({
@@ -36,7 +37,8 @@ export function useBlockSelectionState({
   collapsedBlockIds,
   draftBlocks,
   onActiveBlockChange,
-  visibleSliceCrossParentGuard
+  visibleSliceCrossParentGuard,
+  selectionStaleGuard
 }: UseBlockSelectionStateParams) {
   const [selectionAnchorBlockId, setSelectionAnchorBlockId] = useState<string | null>(null)
   const [selectedBlockRange, setSelectedBlockRange] = useState<BlockSelectionRange | null>(null)
@@ -127,7 +129,7 @@ export function useBlockSelectionState({
 
     const visibleSelectionSlice = getVisibleSelectionSlice(range)
     if (!visibleSelectionSlice) {
-      return 'The current selection no longer maps to visible rows. Clear the selection and reselect the blocks you want to move.'
+      return selectionStaleGuard
     }
 
     if (visibleSelectionSlice.visibleEntries.length === 1) {
@@ -139,7 +141,7 @@ export function useBlockSelectionState({
     }
 
     return null
-  }, [getVisibleSelectionSlice, getVisibleSiblingSelectionSlice, visibleSliceCrossParentGuard])
+  }, [getVisibleSelectionSlice, getVisibleSiblingSelectionSlice, selectionStaleGuard, visibleSliceCrossParentGuard])
 
   const canMoveSelectedRange = useCallback((range: BlockSelectionRange, delta: -1 | 1) => {
     const visibleSiblingSlice = getVisibleSiblingSelectionSlice(range)

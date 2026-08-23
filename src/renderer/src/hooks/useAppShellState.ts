@@ -66,7 +66,9 @@ export function useAppShellState() {
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [isNavCollapsed, setIsNavCollapsed] = useState(false)
 
-  setActiveUiLanguage(uiLanguage)
+  useEffect(() => {
+    setActiveUiLanguage(uiLanguage)
+  }, [uiLanguage])
   const ui = getUiText(uiLanguage)
   const isZh = uiLanguage === 'zh-CN'
 
