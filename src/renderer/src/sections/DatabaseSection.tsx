@@ -188,46 +188,67 @@ export function DatabaseSection({
   return (
     <section className="database-grid" data-testid="database-grid">
       <article className="panel database-panel">
-        <div className="panel-head compact-head">
-          <div>
-            <p className="panel-label">{ui.databaseViewLabel}</p>
-            <h3>{databasePageTitle}</h3>
+        <header className="database-page-header">
+          <div className="database-page-heading">
+            <span className="database-page-icon" aria-hidden="true">
+              <DatabaseIcon />
+            </span>
+            <div>
+              <p className="panel-label">{ui.databaseViewLabel}</p>
+              <h3>{databasePageTitle}</h3>
+              <p className="mini-hint database-page-hint">{databasePageHint}</p>
+            </div>
           </div>
-          <div className="toolbar-inline">
+          <div aria-label={ui.databaseViewLabel} className="database-workspace-tabs" role="group">
             <button
-              className={databaseWorkspaceView === 'catalog' ? 'primary-button' : 'secondary-button'}
+              aria-pressed={databaseWorkspaceView === 'catalog'}
+              className={`${databaseWorkspaceView === 'catalog' ? 'primary-button' : 'secondary-button'} database-workspace-tab`}
               onClick={() => onSwitchDatabaseWorkspaceView('catalog')}
               type="button"
             >
+              <CatalogIcon />
               {ui.documentCatalogTitle}
             </button>
             <button
-              className={databaseWorkspaceView === 'standalone' ? 'primary-button' : 'secondary-button'}
+              aria-pressed={databaseWorkspaceView === 'standalone'}
+              className={`${databaseWorkspaceView === 'standalone' ? 'primary-button' : 'secondary-button'} database-workspace-tab`}
               onClick={() => onSwitchDatabaseWorkspaceView('standalone')}
               type="button"
             >
+              <StandaloneIcon />
               {ui.standaloneDatabasesTitle}
             </button>
           </div>
-        </div>
-
-        <p className="mini-hint">{databasePageHint}</p>
+        </header>
 
         {databaseWorkspaceView === 'catalog' ? (
           <>
-            <div className="toolbar-inline">
-              <button className="secondary-button" onClick={catalog.onToggleCreateColumn} type="button">
-                {catalog.isCreatingColumn ? ui.closeSchema : ui.addColumn}
-              </button>
-              <input
-                className="editor-input table-search"
-                onChange={(event) => catalog.onQueryChange(event.target.value)}
-                placeholder={ui.searchDocumentsPlaceholder}
-                type="text"
-                value={catalog.query}
-              />
-              <span className="pill">{ui.customColumnsCount(catalog.columns.length)}</span>
-              <span className="pill">{ui.rowsCount(catalog.filteredDocuments.length)}</span>
+            <div className="database-toolbar">
+              <div className="database-toolbar-main">
+                <button
+                  className={`${catalog.isCreatingColumn ? 'secondary-button' : 'primary-button'} database-add-button`}
+                  onClick={catalog.onToggleCreateColumn}
+                  type="button"
+                >
+                  <PlusIcon />
+                  {catalog.isCreatingColumn ? ui.closeSchema : ui.addColumn}
+                </button>
+                <label className="database-search-shell">
+                  <SearchIcon />
+                  <input
+                    aria-label={ui.searchDocumentsPlaceholder}
+                    className="editor-input table-search"
+                    onChange={(event) => catalog.onQueryChange(event.target.value)}
+                    placeholder={ui.searchDocumentsPlaceholder}
+                    type="text"
+                    value={catalog.query}
+                  />
+                </label>
+              </div>
+              <div className="database-toolbar-stats">
+                <span className="database-stat">{ui.rowsCount(catalog.filteredDocuments.length)}</span>
+                <span className="database-stat">{ui.customColumnsCount(catalog.columns.length)}</span>
+              </div>
             </div>
 
             {catalog.isCreatingColumn ? (
@@ -296,16 +317,19 @@ export function DatabaseSection({
           </>
         ) : (
           <>
-            <div className="toolbar-inline">
+            <div className="database-toolbar database-toolbar-standalone">
+              <div className="database-toolbar-main">
               <button
-                className="secondary-button"
+                className={`${standalone.isCreatingColumn ? 'secondary-button' : 'primary-button'} database-add-button`}
                 disabled={!standalone.selectedDatabase && !standalone.isCreatingColumn}
                 onClick={standalone.onToggleCreateColumn}
                 type="button"
               >
+                <PlusIcon />
                 {standalone.isCreatingColumn ? ui.closeSchema : ui.addColumn}
               </button>
               <button className="secondary-button" onClick={standalone.onToggleCreateDatabase} type="button">
+                <StandaloneIcon />
                 {standalone.isCreatingDatabase ? ui.common.cancel : ui.addDatabase}
               </button>
               <button
@@ -314,10 +338,14 @@ export function DatabaseSection({
                 onClick={standalone.onToggleCreateEntity}
                 type="button"
               >
+                <PlusIcon />
                 {standalone.isCreatingEntity ? ui.common.cancel : ui.addEntity}
               </button>
-              <span className="pill">{ui.customColumnsCount(standalone.selectedDatabaseColumns.length)}</span>
-              <span className="pill">{ui.rowsCount(standalone.databaseEntities.length)}</span>
+              </div>
+              <div className="database-toolbar-stats">
+                <span className="database-stat">{ui.rowsCount(standalone.databaseEntities.length)}</span>
+                <span className="database-stat">{ui.customColumnsCount(standalone.selectedDatabaseColumns.length)}</span>
+              </div>
             </div>
 
             {standalone.isCreatingDatabase ? (
@@ -432,7 +460,7 @@ export function DatabaseSection({
 
             {standalone.databases.length > 0 ? (
               <>
-                <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced">
+                <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced database-picker">
                   {standalone.databases.map((database) => (
                     <button
                       className={database.id === standalone.entityDatabaseId ? 'primary-button' : 'secondary-button'}
@@ -447,7 +475,7 @@ export function DatabaseSection({
 
                 {standalone.selectedDatabase ? (
                   <>
-                    <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
+                    <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start database-saved-view-toolbar">
                       <span className="pill">{ui.databaseSavedViewsLabel}</span>
                       <select
                         className="editor-input database-saved-view-select"
@@ -561,7 +589,7 @@ export function DatabaseSection({
 
                     {standalone.databaseEntities.length > 0 ? (
                       <>
-                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
+                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start database-entity-filter-toolbar">
                           <input
                             className="editor-input database-entity-filter-query"
                             onChange={(event) => standalone.onFilterQueryChange(event.target.value)}
@@ -608,7 +636,7 @@ export function DatabaseSection({
                           <span className="pill">{ui.filteredRowsCount(standalone.filteredEntityRows.length, standalone.databaseEntities.length)}</span>
                         </div>
 
-                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start">
+                        <div className="toolbar-inline toolbar-inline-wrap toolbar-inline-spaced toolbar-inline-start database-entity-selection-toolbar">
                           <button
                             className="secondary-button database-entity-select-visible-button"
                             disabled={standalone.filteredEntityRows.length === 0}
@@ -852,5 +880,50 @@ export function DatabaseSection({
         </article>
       ) : null}
     </section>
+  )
+}
+
+function DatabaseIcon() {
+  return (
+    <svg className="database-ui-icon" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="5.5" rx="7.5" ry="3" />
+      <path d="M4.5 5.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" />
+      <path d="M4.5 11.5v6c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3v-6" />
+    </svg>
+  )
+}
+
+function CatalogIcon() {
+  return (
+    <svg aria-hidden="true" className="database-ui-icon" viewBox="0 0 24 24">
+      <rect height="15" rx="2" width="17" x="3.5" y="4.5" />
+      <path d="M3.5 9.5h17M9 4.5v15" />
+    </svg>
+  )
+}
+
+function StandaloneIcon() {
+  return (
+    <svg aria-hidden="true" className="database-ui-icon" viewBox="0 0 24 24">
+      <ellipse cx="12" cy="6" rx="7" ry="2.75" />
+      <path d="M5 6v5c0 1.52 3.13 2.75 7 2.75s7-1.23 7-2.75V6M5 11v5c0 1.52 3.13 2.75 7 2.75s7-1.23 7-2.75v-5" />
+    </svg>
+  )
+}
+
+function PlusIcon() {
+  return (
+    <svg aria-hidden="true" className="database-ui-icon" viewBox="0 0 24 24">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" className="database-ui-icon" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="5.75" />
+      <path d="m15 15 4.25 4.25" />
+    </svg>
   )
 }

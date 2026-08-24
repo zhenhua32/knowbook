@@ -16,7 +16,7 @@ import {
   normalizeDocumentDatabaseFieldValue
 } from './databaseFieldUtils'
 
-const CATALOG_ROW_HEIGHT = 108
+const CATALOG_ROW_HEIGHT = 82
 const CATALOG_ROW_OVERSCAN = 6
 
 function getDatabaseColumnTypeLabel(type: DocumentDatabaseColumnType): string {
@@ -42,15 +42,15 @@ export const DocumentCatalogTable = memo(function DocumentCatalogTable({
   const [viewportHeight, setViewportHeight] = useState(CATALOG_ROW_HEIGHT * 5)
 
   const gridTemplateColumns = useMemo(() => {
-    const dynamicColumns = columns.map(() => 'minmax(180px, 1.15fr)')
+    const dynamicColumns = columns.map(() => 'minmax(156px, 1fr)')
     return [
-      'minmax(220px, 1.7fr)',
-      'minmax(220px, 1.45fr)',
+      'minmax(248px, 1.55fr)',
+      'minmax(180px, 1.1fr)',
       ...dynamicColumns,
-      'minmax(84px, 0.55fr)',
-      'minmax(84px, 0.55fr)',
-      'minmax(84px, 0.55fr)',
-      'minmax(120px, 0.7fr)'
+      'minmax(72px, 0.4fr)',
+      'minmax(72px, 0.4fr)',
+      'minmax(72px, 0.4fr)',
+      'minmax(112px, 0.65fr)'
     ].join(' ')
   }, [columns])
 
@@ -133,7 +133,7 @@ export const DocumentCatalogTable = memo(function DocumentCatalogTable({
                   }}
                   tabIndex={0}
                 >
-                  <div className="catalog-virtual-cell catalog-title-cell">
+                  <div className="catalog-virtual-cell catalog-title-cell" title={document.title}>
                     <strong className="catalog-title-text">{document.title}</strong>
                     <p className="catalog-summary">{document.summary}</p>
                   </div>
