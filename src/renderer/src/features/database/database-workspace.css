@@ -44,7 +44,8 @@
 .dbw-shell button:focus-visible,
 .dbw-shell input:focus-visible,
 .dbw-shell select:focus-visible,
-.dbw-shell textarea:focus-visible {
+.dbw-shell textarea:focus-visible,
+.dbw-shell summary:focus-visible {
   outline: 2px solid rgba(98, 104, 220, 0.55);
   outline-offset: 2px;
 }
@@ -216,10 +217,11 @@
   min-height: 48px;
   gap: 2px;
   padding: 7px 18px 0;
-  overflow-x: auto;
+  overflow: visible;
   border-bottom: 1px solid var(--dbw-line);
   background: #fff;
 }
+.dbw-view-tab-list { display: flex; align-self: stretch; align-items: center; min-width: 0; overflow-x: auto; }
 .dbw-view-tab-wrap { display: flex; align-self: stretch; align-items: center; border-bottom: 2px solid transparent; }
 .dbw-view-tab-wrap.is-active { border-bottom-color: var(--dbw-accent); }
 .dbw-view-tab-wrap.is-dragging { opacity: .45; }
@@ -246,7 +248,7 @@
 .dbw-layout-icon-table { background: linear-gradient(to bottom, transparent 30%, currentColor 31% 38%, transparent 39% 64%, currentColor 65% 72%, transparent 73%); }
 .dbw-layout-icon-board { background: linear-gradient(to right, transparent 29%, currentColor 30% 38%, transparent 39% 64%, currentColor 65% 73%, transparent 74%); }
 .dbw-layout-icon-cards { border: 0; background: radial-gradient(circle, currentColor 45%, transparent 47%) 0 0 / 7px 6px; }
-.dbw-new-view-menu { position: relative; align-self: stretch; }
+.dbw-new-view-menu { position: relative; flex: 0 0 auto; align-self: stretch; }
 .dbw-new-view-menu > summary { list-style: none; }
 .dbw-new-view-menu > summary::-webkit-details-marker,
 .dbw-toolbar-menu > summary::-webkit-details-marker { display: none; }

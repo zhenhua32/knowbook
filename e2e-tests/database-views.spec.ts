@@ -129,7 +129,9 @@ test.describe('Unified Database Workspace @electron', () => {
       await createRecord(page, 'Beta', 'Doing')
 
       await page.locator('.dbw-new-view-menu summary').click()
-      await page.locator('.dbw-layout-menu').getByRole('button', { name: uiText('Board', '看板') }).click()
+      const newViewMenu = page.locator('.dbw-layout-menu')
+      await expect(newViewMenu).toBeVisible()
+      await newViewMenu.getByRole('button', { name: uiText('Board', '看板') }).click()
       const dialog = page.getByRole('dialog')
       await dialog.getByLabel(uiText('Name', '名称')).fill('Status board')
       await dialog.getByRole('button', { name: uiText('Create', '创建') }).click()
