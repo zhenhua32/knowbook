@@ -278,6 +278,17 @@ dt,
   color: #1b6a47;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 .plugin-status-loading {
   background: rgba(43, 91, 161, 0.12);
   color: #295c9b;
@@ -6292,16 +6303,5 @@ select:focus-visible {
   .database-schema-options,
   .database-schema-actions {
     grid-column: span 1;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
   }
 }

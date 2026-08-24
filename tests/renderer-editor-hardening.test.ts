@@ -103,11 +103,11 @@ test('undo history is only pushed when an operation will actually mutate', () =>
 })
 
 test('background value refresh does not clobber an open catalog cell editor', () => {
-  const source = readSource('src/renderer/src/components/database/DatabaseSectionComponents.tsx')
+  const source = readSource('src/renderer/src/features/database/components/DatabaseValueEditor.tsx')
 
-  const cellIndex = source.indexOf('const DocumentCatalogFieldCell = memo')
-  assert.ok(cellIndex !== -1, 'the catalog field cell must exist')
-  const cellSource = source.slice(cellIndex, cellIndex + 4000)
+  const cellIndex = source.indexOf('export function DatabaseValueEditor')
+  assert.ok(cellIndex !== -1, 'the unified database value editor must exist')
+  const cellSource = source.slice(cellIndex, cellIndex + 2500)
 
   const effectIndex = cellSource.indexOf('useEffect(() => {')
   const effectEnd = cellSource.indexOf('})', cellSource.indexOf('}, [', effectIndex))
@@ -115,7 +115,7 @@ test('background value refresh does not clobber an open catalog cell editor', ()
   assert.match(
     effectBody,
     /if \(isEditing\)/,
-    'the value-sync effect must skip while the cell editor is open'
+    'the value-sync effect must skip while the unified cell editor is open'
   )
   assert.match(
     effectBody,

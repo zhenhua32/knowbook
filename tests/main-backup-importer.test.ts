@@ -150,10 +150,23 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
       filterQuery: 'Doing',
       filterScope: '',
       sortMode: 'updated-desc',
-      viewMode: 'table'
+      viewMode: 'board',
+      config: {
+        version: 1,
+        layout: 'board',
+        query: 'Doing',
+        filters: { operator: 'and', rules: [] },
+        sorts: [{ fieldId: priorityColumn.id, direction: 'asc' }],
+        groupBy: { fieldId: stageColumn.id },
+        visibleFieldIds: ['__title__', stageColumn.id, priorityColumn.id],
+        fieldOrder: ['__title__', priorityColumn.id, stageColumn.id],
+        columnWidths: { [priorityColumn.id]: 220 },
+        cardFieldIds: [stageColumn.id, priorityColumn.id]
+      }
     })
     sourceStore.createDatabaseEntity({
       databaseId: projectsDatabase.id,
+      title: 'Specs launch',
       documentId: specsId,
       fieldValues: {
         [stageColumn.id]: 'Doing',
@@ -162,6 +175,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
     })
     sourceStore.createDatabaseEntity({
       databaseId: projectsDatabase.id,
+      title: 'Unlinked idea',
       fieldValues: {
         [stageColumn.id]: 'Idea'
       }
@@ -253,7 +267,10 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
     assert.equal(restoredProjectsViews.length, 1)
     assert.equal(restoredProjectsViews[0]?.name, 'Open Work')
     assert.equal(restoredProjectsViews[0]?.filterQuery, 'Doing')
-    assert.equal(restoredProjectsViews[0]?.viewMode, 'table')
+    assert.equal(restoredProjectsViews[0]?.viewMode, 'board')
+    assert.equal(restoredProjectsViews[0]?.config.layout, 'board')
+    assert.equal(restoredProjectsViews[0]?.config.groupBy.fieldId, restoredStageColumn.id)
+    assert.deepEqual(restoredProjectsViews[0]?.config.cardFieldIds, [restoredStageColumn.id, restoredPriorityColumn.id])
 
     const restoredProjectsEntities = targetStore.getDatabaseEntities(restoredProjectsDatabase.id)
     assert.equal(restoredProjectsEntities.length, 2)
@@ -262,6 +279,8 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
     const unlinkedProjectEntity = restoredProjectsEntities.find((entity) => entity.documentId === null)
     assert.ok(linkedProjectEntity)
     assert.ok(unlinkedProjectEntity)
+    assert.equal(linkedProjectEntity.title, 'Specs launch')
+    assert.equal(unlinkedProjectEntity.title, 'Unlinked idea')
     assert.equal(linkedProjectEntity.fieldValues[restoredStageColumn.id], 'Doing')
     assert.deepEqual(linkedProjectEntity.fieldValues[restoredPriorityColumn.id], ['P0', 'P1'])
     assert.equal(unlinkedProjectEntity.fieldValues[restoredStageColumn.id], 'Idea')

@@ -115,6 +115,9 @@ CREATE TABLE IF NOT EXISTS database_saved_views (
   filter_scope TEXT NOT NULL DEFAULT '',
   sort_mode TEXT NOT NULL DEFAULT 'updated-desc',
   view_mode TEXT NOT NULL DEFAULT 'cards',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  config_version INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -138,6 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_document_database_columns_sort_order ON document_
 CREATE TABLE IF NOT EXISTS database_entities (
   id TEXT PRIMARY KEY,
   database_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT '',
   document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

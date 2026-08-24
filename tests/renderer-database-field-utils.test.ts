@@ -54,14 +54,16 @@ test('compacting database values drops normalized nulls while retaining false', 
   })
 })
 
-test('default database detection requires both reserved metadata fields', () => {
+test('default database detection uses the explicit source kind instead of mutable metadata', () => {
   const database: DocumentDatabase = {
     id: 'default',
+    kind: 'document-catalog',
     name: 'Default',
     description: 'Default database',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z'
   }
   assert.equal(isDefaultDocumentDatabase(database), true)
-  assert.equal(isDefaultDocumentDatabase({ ...database, description: 'User database' }), false)
+  assert.equal(isDefaultDocumentDatabase({ ...database, name: 'Renamed', description: 'User database' }), true)
+  assert.equal(isDefaultDocumentDatabase({ ...database, kind: 'custom' }), false)
 })

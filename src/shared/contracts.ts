@@ -46,6 +46,7 @@ export interface DocumentDatabaseColumn {
 
 export interface DocumentDatabase {
   id: string
+  kind: DatabaseSourceKind
   name: string
   description: string
   createdAt: string
@@ -54,7 +55,93 @@ export interface DocumentDatabase {
 
 export type DatabaseSavedViewSortMode = 'updated-desc' | 'updated-asc' | 'created-desc' | 'created-asc'
 
-export type DatabaseSavedViewLayoutMode = 'cards' | 'table'
+export type DatabaseSavedViewLayoutMode = 'cards' | 'table' | 'board'
+
+export type DatabaseSourceKind = 'document-catalog' | 'custom'
+
+export interface DatabaseSource {
+  id: string
+  kind: DatabaseSourceKind
+  name: string
+  description: string
+  canDelete: boolean
+  canCreateDetachedRecord: boolean
+}
+
+export type DatabaseFieldRole = 'title' | 'property' | 'system'
+
+export interface DatabaseField {
+  id: string
+  name: string
+  type: DocumentDatabaseColumnType
+  role: DatabaseFieldRole
+  options: string[]
+  editable: boolean
+  hideable: boolean
+  deletable: boolean
+  sortOrder: number
+}
+
+export type DatabaseRecordValue = DocumentDatabaseFieldValue | number
+
+export interface DatabaseRecord {
+  id: string
+  databaseId: string
+  title: string
+  documentId: string | null
+  fieldValues: Record<string, DatabaseRecordValue>
+  createdAt: string
+  updatedAt: string
+}
+
+export type DatabaseFilterOperator =
+  | 'contains'
+  | 'not-contains'
+  | 'equals'
+  | 'not-equals'
+  | 'is-empty'
+  | 'is-not-empty'
+  | 'contains-any'
+  | 'contains-all'
+  | 'before'
+  | 'after'
+  | 'between'
+  | 'is-checked'
+  | 'is-not-checked'
+  | 'greater-than'
+  | 'less-than'
+
+export interface DatabaseFilterRule {
+  id: string
+  fieldId: string
+  operator: DatabaseFilterOperator
+  value?: DocumentDatabaseFieldValue | [string, string] | number
+}
+
+export interface DatabaseFilterGroup {
+  operator: 'and' | 'or'
+  rules: Array<DatabaseFilterRule | DatabaseFilterGroup>
+}
+
+export interface DatabaseViewSort {
+  fieldId: string
+  direction: 'asc' | 'desc'
+}
+
+export interface DatabaseViewConfigV1 {
+  version: 1
+  layout: DatabaseSavedViewLayoutMode
+  query: string
+  filters: DatabaseFilterGroup
+  sorts: DatabaseViewSort[]
+  groupBy: {
+    fieldId: string | null
+  }
+  visibleFieldIds: string[]
+  fieldOrder: string[]
+  columnWidths: Record<string, number>
+  cardFieldIds: string[]
+}
 
 export interface DatabaseSavedView {
   id: string
@@ -64,6 +151,9 @@ export interface DatabaseSavedView {
   filterScope: string
   sortMode: DatabaseSavedViewSortMode
   viewMode: DatabaseSavedViewLayoutMode
+  config: DatabaseViewConfigV1
+  configVersion: 1
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }
@@ -71,6 +161,7 @@ export interface DatabaseSavedView {
 export interface DatabaseEntity {
   id: string
   databaseId: string
+  title: string
   documentId: string | null  // 可选关联到文档
   createdAt: string
   updatedAt: string
@@ -95,6 +186,8 @@ export interface CreateDatabaseSavedViewInput {
   filterScope?: string
   sortMode?: DatabaseSavedViewSortMode
   viewMode?: DatabaseSavedViewLayoutMode
+  config?: DatabaseViewConfigV1
+  sortOrder?: number
 }
 
 export interface UpdateDatabaseSavedViewInput {
@@ -104,6 +197,13 @@ export interface UpdateDatabaseSavedViewInput {
   filterScope?: string
   sortMode?: DatabaseSavedViewSortMode
   viewMode?: DatabaseSavedViewLayoutMode
+  config?: DatabaseViewConfigV1
+  sortOrder?: number
+}
+
+export interface ReorderDatabaseSavedViewsInput {
+  databaseId: string
+  viewIds: string[]
 }
 
 export interface CreateDocumentDatabaseColumnInput {
@@ -136,12 +236,14 @@ export interface UpdateDocumentDatabaseValueInput {
 
 export interface CreateDatabaseEntityInput {
   databaseId: string
+  title?: string
   documentId?: string
   fieldValues?: Record<string, DocumentDatabaseFieldValue>
 }
 
 export interface UpdateDatabaseEntityInput {
   entityId: string
+  title?: string
   fieldValues?: Record<string, DocumentDatabaseFieldValue>
   documentId?: string | null
 }
@@ -679,6 +781,7 @@ export interface ElectronApi {
   getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>
   createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
   updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
+  reorderDatabaseSavedViews: (input: ReorderDatabaseSavedViewsInput) => Promise<DatabaseSavedView[]>
   deleteDatabaseSavedView: (viewId: string) => Promise<void>
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => Promise<DatabaseEntity>
   updateDatabaseEntity: (input: UpdateDatabaseEntityInput) => Promise<void>

@@ -41,18 +41,22 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v3-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v4-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 3)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 4)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
       .map((column) => column.name)
     const documentColumnNames = (migratedDatabase.pragma('table_info(documents)') as Array<{ name: string }>)
+      .map((column) => column.name)
+    const savedViewColumnNames = (migratedDatabase.pragma('table_info(database_saved_views)') as Array<{ name: string }>)
+      .map((column) => column.name)
+    const entityColumnNames = (migratedDatabase.pragma('table_info(database_entities)') as Array<{ name: string }>)
       .map((column) => column.name)
     const triggerNames = (migratedDatabase.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name
@@ -63,6 +67,10 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
     assert.equal(documentColumnNames.includes('block_count'), true)
     assert.equal(documentColumnNames.includes('link_count'), true)
     assert.equal(documentColumnNames.includes('child_count'), true)
+    assert.equal(savedViewColumnNames.includes('config_json'), true)
+    assert.equal(savedViewColumnNames.includes('config_version'), true)
+    assert.equal(savedViewColumnNames.includes('sort_order'), true)
+    assert.equal(entityColumnNames.includes('title'), true)
     assert.equal(triggerNames.includes('trg_document_database_columns_database_id_insert'), true)
     assert.equal(triggerNames.includes('trg_database_entities_document_unique_insert'), true)
     assert.equal(triggerNames.includes('trg_document_search_insert'), true)
@@ -104,4 +112,58 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const reopenedStore = new KnowbookStore(databasePath)
   reopenedStore.destroy()
   rmSync(tempRoot, { recursive: true, force: true })
+})
+
+test('KnowbookStore v4 migration backfills full view config and readable record titles', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-v4-migration-test-'))
+  const databasePath = join(tempRoot, 'v3.sqlite')
+  const sourceStore = new KnowbookStore(databasePath)
+  const database = sourceStore.createDatabase({ name: 'Projects' })
+  const document = sourceStore.getAllDocumentSnapshots()[0]!
+  const view = sourceStore.createDatabaseSavedView({
+    databaseId: database.id,
+    name: 'Recently updated',
+    filterQuery: 'roadmap',
+    sortMode: 'created-asc',
+    viewMode: 'table'
+  })
+  const entity = sourceStore.createDatabaseEntity({
+    databaseId: database.id,
+    documentId: document.id
+  })
+  sourceStore.destroy()
+
+  const legacyDatabase = new Database(databasePath)
+  try {
+    legacyDatabase.exec(`
+      DROP INDEX IF EXISTS idx_database_saved_views_database_sort;
+      DROP INDEX IF EXISTS idx_database_entities_database_title;
+      ALTER TABLE database_saved_views DROP COLUMN config_json;
+      ALTER TABLE database_saved_views DROP COLUMN config_version;
+      ALTER TABLE database_saved_views DROP COLUMN sort_order;
+      ALTER TABLE database_entities DROP COLUMN title;
+      PRAGMA user_version = 3;
+    `)
+  } finally {
+    legacyDatabase.close()
+  }
+
+  const migratedStore = new KnowbookStore(databasePath)
+  try {
+    const migratedView = migratedStore.getDatabaseSavedViews(database.id).find((candidate) => candidate.id === view.id)
+    const migratedEntity = migratedStore.getDatabaseEntities(database.id).find((candidate) => candidate.id === entity.id)
+
+    assert.equal(migratedView?.config.version, 1)
+    assert.equal(migratedView?.config.layout, 'table')
+    assert.equal(migratedView?.config.query, 'roadmap')
+    assert.deepEqual(migratedView?.config.sorts, [{ fieldId: '__created_at__', direction: 'asc' }])
+    assert.equal(migratedEntity?.title, document.title)
+    assert.equal(
+      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v4-')),
+      true
+    )
+  } finally {
+    migratedStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
 })

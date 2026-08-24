@@ -330,7 +330,7 @@ function createUiText(language: UiLanguage) {
     applySelectedDatabaseEntityField: (name: string, count: number) => zh ? `应用字段“${name}”（${count}）` : `Apply ${name} (${count})`,
     clearSelectedDatabaseEntityField: (name: string, count: number) => zh ? `清空字段“${name}”（${count}）` : `Clear ${name} (${count})`,
     clearSelectedDatabaseEntityDocuments: (count: number) => zh ? `清空关联文档（${count}）` : `Clear linked documents (${count})`,
-    selectDatabaseEntity: (name: string) => zh ? `选择数据库实体：${name}` : `Select database entity: ${name}`,
+    selectDatabaseEntity: (name: string) => zh ? `选择数据库记录：${name}` : `Select database record: ${name}`,
     databaseEntityTableEntity: zh ? '实体' : 'Entity',
     databaseEntityTableActions: zh ? '操作' : 'Actions',
     noLinkedDocument: zh ? '未关联文档' : 'No linked document',
@@ -637,17 +637,17 @@ function createUiText(language: UiLanguage) {
     confirmDeleteDatabaseColumn: (name: string) => zh ? `确定删除数据库列“${name}”吗？该列已有值也会一并删除。` : `Delete database column "${name}"? Existing values in this column will be removed.`,
     databaseColumnDeleted: (name: string) => zh ? `已删除列“${name}”。` : `Deleted column "${name}".`,
     databaseColumnDeleteFailed: zh ? '删除数据库列失败。' : 'Failed to delete database column.',
-    databaseEntityCreated: zh ? '数据库实体已创建。' : 'Database entity created successfully.',
-    databaseEntityCreateFailed: zh ? '创建数据库实体失败。' : 'Failed to create database entity.',
-    databaseEntityUpdated: zh ? '数据库实体已更新。' : 'Database entity updated.',
-    databaseEntityUpdateFailed: zh ? '更新数据库实体失败。' : 'Failed to update database entity.',
+    databaseEntityCreated: zh ? '数据库记录已创建。' : 'Database record created successfully.',
+    databaseEntityCreateFailed: zh ? '创建数据库记录失败。' : 'Failed to create database record.',
+    databaseEntityUpdated: zh ? '数据库记录已更新。' : 'Database record updated.',
+    databaseEntityUpdateFailed: zh ? '更新数据库记录失败。' : 'Failed to update database record.',
     databaseEntitiesUpdated: (count: number) => zh ? `已更新 ${count} 条数据库实体。` : `Updated ${count} database entities.`,
     databaseEntitiesUpdateFailed: zh ? '批量更新数据库实体失败。' : 'Failed to update selected database entities.',
-    confirmDeleteDatabaseEntity: zh ? '确定删除这条数据库实体吗？' : 'Are you sure you want to delete this database entity?',
+    confirmDeleteDatabaseEntity: zh ? '确定删除这条数据库记录吗？' : 'Are you sure you want to delete this database record?',
     confirmDeleteDatabaseEntities: (count: number) => zh ? `确定删除这 ${count} 条数据库实体吗？` : `Delete these ${count} database entities?`,
-    databaseEntityDeleted: zh ? '数据库实体已删除。' : 'Database entity deleted.',
+    databaseEntityDeleted: zh ? '数据库记录已删除。' : 'Database record deleted.',
     databaseEntitiesDeleted: (count: number) => zh ? `已删除 ${count} 条数据库实体。` : `Deleted ${count} database entities.`,
-    databaseEntityDeleteFailed: zh ? '删除数据库实体失败。' : 'Failed to delete database entity.',
+    databaseEntityDeleteFailed: zh ? '删除数据库记录失败。' : 'Failed to delete database record.',
     databaseEntitiesDeleteFailed: zh ? '批量删除数据库实体失败。' : 'Failed to delete selected database entities.',
     pluginActionFailed: zh ? '执行插件动作失败。' : 'Plugin action failed.',
     aiAutomationResult: (input: { summaryGenerated: boolean }) => {
@@ -693,7 +693,7 @@ function createUiText(language: UiLanguage) {
     selectionStaleGuard: zh ? '当前选区已无法映射到可见行，请清除选区后重新选择要移动的块。' : 'The current selection no longer maps to visible rows. Clear the selection and pick the blocks to move again.',
     documentCreateFailed: zh ? '创建文档失败。' : 'Failed to create document.',
     documentNotFoundMessage: zh ? '未找到文档' : 'Document not found',
-    entityFallbackLabel: (id: string) => (zh ? `实体 ${id.slice(0, 8)}` : `Entity ${id.slice(0, 8)}`)
+    entityFallbackLabel: (id: string) => (zh ? `记录 ${id.slice(0, 8)}` : `Record ${id.slice(0, 8)}`)
   }
 }
 

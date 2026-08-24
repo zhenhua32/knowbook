@@ -531,7 +531,7 @@ test('bulk database entity updates and deletes roll back as a unit', () => {
           { entityId: 'missing-entity', fieldValues: { [column.id]: 'Invalid' } }
         ]
       })
-    }, /Database entity not found/)
+    }, /Database record not found/)
     assert.equal(
       store.getDatabaseEntities(database.id).find((entity) => entity.id === first.id)?.fieldValues[column.id],
       'Alice'
@@ -541,7 +541,7 @@ test('bulk database entity updates and deletes roll back as a unit', () => {
       store.deleteDatabaseEntities({
         entityIds: [first.id, 'missing-entity']
       })
-    }, /Database entity not found/)
+    }, /Database record not found/)
     assert.deepEqual(
       new Set(store.getDatabaseEntities(database.id).map((entity) => entity.id)),
       new Set([first.id, second.id])
@@ -584,6 +584,8 @@ test('standalone database saved views persist and update list controls', () => {
     assert.equal(createdView.filterScope, '__document__')
     assert.equal(createdView.sortMode, 'created-asc')
     assert.equal(createdView.viewMode, 'table')
+    assert.equal(createdView.config.layout, 'table')
+    assert.equal(createdView.sortOrder, 0)
 
     assert.throws(() => {
       store.createDatabaseSavedView({
@@ -606,7 +608,24 @@ test('standalone database saved views persist and update list controls', () => {
     assert.equal(updatedView.sortMode, 'updated-desc')
     assert.equal(updatedView.viewMode, 'cards')
 
+    const secondView = store.createDatabaseSavedView({
+      databaseId: projectsDatabase.id,
+      name: 'Second view',
+      viewMode: 'board'
+    })
+    assert.equal(secondView.sortOrder, 1)
+    const reorderedViews = store.reorderDatabaseSavedViews({
+      databaseId: projectsDatabase.id,
+      viewIds: [secondView.id, createdView.id]
+    })
+    assert.deepEqual(reorderedViews.map((view) => view.id), [secondView.id, createdView.id])
+    assert.deepEqual(reorderedViews.map((view) => view.sortOrder), [0, 1])
+    assert.throws(() => {
+      store.reorderDatabaseSavedViews({ databaseId: projectsDatabase.id, viewIds: [createdView.id] })
+    }, /every view/)
+
     store.deleteDatabaseSavedView(createdView.id)
+    store.deleteDatabaseSavedView(secondView.id)
     assert.deepEqual(store.getDatabaseSavedViews(projectsDatabase.id), [])
   })
 })

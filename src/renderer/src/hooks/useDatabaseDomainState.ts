@@ -9,7 +9,6 @@ import type {
   DocumentDatabaseColumnType,
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
-import { isDefaultDocumentDatabase } from '../components/database/databaseFieldUtils'
 
 export const BOARD_GROUP_BY_PARENT = '__parent__'
 
@@ -62,7 +61,14 @@ export function useDatabaseDomainState(isActive = true) {
     window.knowbook.getDatabases().then((items) => {
       if (mounted) {
         setDatabases(items)
-        setDatabaseEntityDatabaseId((current) => current || items[0]?.id || '')
+        setDatabaseEntityDatabaseId((current) => {
+          if (current && items.some((database) => database.id === current)) {
+            return current
+          }
+          const rememberedId = window.localStorage.getItem('knowbook.database.last-source')
+          const remembered = items.find((database) => database.id === rememberedId)
+          return remembered?.id ?? items.find((database) => database.kind === 'document-catalog')?.id ?? items[0]?.id ?? ''
+        })
       }
     }).catch((error) => {
       if (mounted) {
@@ -135,19 +141,11 @@ export function useDatabaseDomainState(isActive = true) {
   }, [databaseDomainRevision, databaseEntityDatabaseId, isActive])
 
   useEffect(() => {
-    const nextStandaloneDatabases = databases.filter((database) => !isDefaultDocumentDatabase(database))
-
-    if (nextStandaloneDatabases.length === 0) {
-      if (databaseEntityDatabaseId) {
-        setDatabaseEntityDatabaseId('')
-      }
+    if (!databaseEntityDatabaseId) {
       return
     }
-
-    if (!nextStandaloneDatabases.some((database) => database.id === databaseEntityDatabaseId)) {
-      setDatabaseEntityDatabaseId(nextStandaloneDatabases[0].id)
-    }
-  }, [databaseEntityDatabaseId, databases])
+    window.localStorage.setItem('knowbook.database.last-source', databaseEntityDatabaseId)
+  }, [databaseEntityDatabaseId])
 
   useEffect(() => {
     if (!databaseEntityFilterScope || databaseEntityFilterScope === '__document__') {

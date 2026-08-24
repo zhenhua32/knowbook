@@ -72,7 +72,7 @@ test('hardcoded english strings are replaced with localized lookups', () => {
     /'Failed to create document\.'|'Document not found'/
   )
   assert.doesNotMatch(
-    readSource('src/renderer/src/sections/DatabaseSection.tsx'),
+    readSource('src/renderer/src/features/database/DatabaseWorkspace.tsx'),
     /`Entity \$\{/
   )
 
@@ -101,20 +101,8 @@ test('render-phase side effects move into effects', () => {
   )
 })
 
-test('database page effects depend on stable fields instead of the whole domain object', () => {
+test('database page renders the unified workspace without legacy mode branching', () => {
   const source = readSource('src/renderer/src/pages/DatabasePage.tsx')
-
-  const entityEffectIndex = source.indexOf("database.setSelectedDatabaseEntityIds")
-  assert.ok(entityEffectIndex !== -1)
-  const firstDeps = source.slice(source.indexOf('}, [', entityEffectIndex))
-  const firstDepsArray = firstDeps.slice(firstDeps.indexOf('['), firstDeps.indexOf(']'))
-  assert.match(firstDepsArray, /filteredStandaloneDatabaseEntityIds/)
-  assert.doesNotMatch(firstDepsArray, /\n\s*database,\s*\n/, 'bare `database` dependency must be removed')
-
-  const boardEffectIndex = source.indexOf('database.setBoardGroupBy(BOARD_GROUP_BY_PARENT)')
-  assert.ok(boardEffectIndex !== -1)
-  const boardDepsStart = source.indexOf('}, [', boardEffectIndex)
-  const boardDeps = source.slice(boardDepsStart, source.indexOf(']', boardDepsStart))
-  assert.match(boardDeps, /boardGroupableColumns/)
-  assert.doesNotMatch(boardDeps, /,\s*database\s*,/)
+  assert.match(source, /<DatabaseWorkspace/)
+  assert.doesNotMatch(source, /DatabaseSection|databaseWorkspaceView|BOARD_GROUP_BY_PARENT/)
 })

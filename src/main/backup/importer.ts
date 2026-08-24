@@ -6,13 +6,16 @@ import type {
   BackupRestorePreview,
   BackupRestoreResult,
   DatabaseEntity,
+  DatabaseFilterGroup,
   DatabaseSavedViewLayoutMode,
   DatabaseSavedViewSortMode,
+  DatabaseViewConfigV1,
   CreateDocumentDatabaseColumnInput,
   DocumentBlockDraft,
   DocumentDatabaseColumn,
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
+import { createLegacyDatabaseViewConfig, normalizeDatabaseViewConfig } from '@shared/database-workspace'
 import { parseMarkdownBackupDocument } from '@shared/markdown'
 import { KnowbookStore } from '../database/store'
 
@@ -36,10 +39,13 @@ type RestoreSourceStandaloneDatabaseSavedView = {
   filterScope: string
   sortMode: DatabaseSavedViewSortMode
   viewMode: DatabaseSavedViewLayoutMode
+  config: DatabaseViewConfigV1
+  sortOrder: number
 }
 
 type RestoreSourceStandaloneDatabaseEntity = {
   id: string
+  title: string
   documentPath: string | null
   fieldValues: Record<string, DocumentDatabaseFieldValue>
 }
@@ -117,14 +123,12 @@ type RestoreReadBudget = {
 
 const DOCUMENT_DATABASE_COLUMN_TYPES = new Set(['text', 'select', 'multi-select', 'date', 'checkbox'])
 const DATABASE_SAVED_VIEW_SORT_MODES = new Set(['updated-desc', 'updated-asc', 'created-desc', 'created-asc'])
-const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table'])
+const DATABASE_SAVED_VIEW_LAYOUT_MODES = new Set(['cards', 'table', 'board'])
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
 const STANDALONE_DATABASE_MANIFEST_RELATIVE_PATH = '__knowbook/databases/index.md'
 const ASSET_BACKUP_ROOT = '__knowbook/assets'
 const PORTABLE_ASSET_REFERENCE_PATTERN = /(?:\.\.\/|\.\/)+[A-Za-z0-9._~%/-]+/g
-const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
-const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
 const DEFAULT_RESTORE_LIMITS: MarkdownRestoreLimits = {
   maxEntries: 20_000,
   maxDepth: 32,
@@ -1191,7 +1195,7 @@ export class MarkdownRestoreService {
     const existingById = new Map(existingDatabases.map((database) => [database.id, database]))
     const existingByName = new Map(
       existingDatabases
-        .filter((database) => !this.isDefaultDocumentDatabase(database.name, database.description))
+        .filter((database) => database.kind === 'custom')
         .map((database) => [this.getDatabaseLookupKey(database.name), database])
     )
     const restoredDatabaseIds = new Set<string>()
@@ -1225,7 +1229,7 @@ export class MarkdownRestoreService {
       restoredDatabaseIds.add(targetDatabase.id)
 
       const columnIdMap = this.ensureDatabaseColumns(source.columns, targetDatabase.id)
-      this.restoreStandaloneDatabaseSavedViews(targetDatabase.id, source.savedViews)
+      this.restoreStandaloneDatabaseSavedViews(targetDatabase.id, source.savedViews, columnIdMap)
       this.restoreStandaloneDatabaseEntities(targetDatabase.id, source.columns, source.entities, columnIdMap)
     }
 
@@ -1234,7 +1238,7 @@ export class MarkdownRestoreService {
     }
 
     for (const existingDatabase of existingDatabases) {
-      if (this.isDefaultDocumentDatabase(existingDatabase.name, existingDatabase.description)) {
+      if (existingDatabase.kind === 'document-catalog') {
         continue
       }
 
@@ -1246,7 +1250,8 @@ export class MarkdownRestoreService {
 
   private restoreStandaloneDatabaseSavedViews(
     databaseId: string,
-    sourceViews: RestoreSourceStandaloneDatabaseSavedView[]
+    sourceViews: RestoreSourceStandaloneDatabaseSavedView[],
+    columnIdMap: Map<string, string>
   ): void {
     const existingViews = this.store.getDatabaseSavedViews(databaseId)
     const existingById = new Map(existingViews.map((view) => [view.id, view]))
@@ -1254,6 +1259,7 @@ export class MarkdownRestoreService {
     const restoredViewIds = new Set<string>()
 
     for (const sourceView of sourceViews) {
+      const targetConfig = this.mapSourceDatabaseViewConfigToTarget(sourceView.config, columnIdMap)
       let targetView = existingById.get(sourceView.id)
       if (!targetView) {
         targetView = existingByName.get(this.getDatabaseSavedViewLookupKey(sourceView.name))
@@ -1266,7 +1272,9 @@ export class MarkdownRestoreService {
           filterQuery: sourceView.filterQuery,
           filterScope: sourceView.filterScope,
           sortMode: sourceView.sortMode,
-          viewMode: sourceView.viewMode
+          viewMode: sourceView.viewMode,
+          config: targetConfig,
+          sortOrder: sourceView.sortOrder
         })
       } else {
         targetView = this.store.updateDatabaseSavedView({
@@ -1275,7 +1283,9 @@ export class MarkdownRestoreService {
           filterQuery: sourceView.filterQuery,
           filterScope: sourceView.filterScope,
           sortMode: sourceView.sortMode,
-          viewMode: sourceView.viewMode
+          viewMode: sourceView.viewMode,
+          config: targetConfig,
+          sortOrder: sourceView.sortOrder
         })
       }
 
@@ -1286,6 +1296,32 @@ export class MarkdownRestoreService {
       if (!restoredViewIds.has(existingView.id)) {
         this.store.deleteDatabaseSavedView(existingView.id)
       }
+    }
+  }
+
+  private mapSourceDatabaseViewConfigToTarget(
+    config: DatabaseViewConfigV1,
+    columnIdMap: Map<string, string>
+  ): DatabaseViewConfigV1 {
+    const mapFieldId = (fieldId: string): string => columnIdMap.get(fieldId) ?? fieldId
+    const mapFilterGroup = (group: DatabaseFilterGroup): DatabaseFilterGroup => ({
+      operator: group.operator,
+      rules: group.rules.map((rule) => 'rules' in rule
+        ? mapFilterGroup(rule)
+        : { ...rule, fieldId: mapFieldId(rule.fieldId) })
+    })
+
+    return {
+      ...config,
+      filters: mapFilterGroup(config.filters),
+      sorts: config.sorts.map((sort) => ({ ...sort, fieldId: mapFieldId(sort.fieldId) })),
+      groupBy: { fieldId: config.groupBy.fieldId ? mapFieldId(config.groupBy.fieldId) : null },
+      visibleFieldIds: config.visibleFieldIds.map(mapFieldId),
+      fieldOrder: config.fieldOrder.map(mapFieldId),
+      columnWidths: Object.fromEntries(
+        Object.entries(config.columnWidths).map(([fieldId, width]) => [mapFieldId(fieldId), width])
+      ),
+      cardFieldIds: config.cardFieldIds.map(mapFieldId)
     }
   }
 
@@ -1346,6 +1382,7 @@ export class MarkdownRestoreService {
       if (!targetEntity) {
         const createdEntity = this.store.createDatabaseEntity({
           databaseId,
+          title: sourceEntity.title,
           documentId: resolvedDocumentId ?? undefined,
           fieldValues: targetFieldValues
         })
@@ -1355,6 +1392,7 @@ export class MarkdownRestoreService {
 
       this.store.updateDatabaseEntity({
         entityId: targetEntity.id,
+        title: sourceEntity.title,
         documentId: resolvedDocumentId,
         fieldValues: targetFieldValues
       })
@@ -1442,17 +1480,13 @@ export class MarkdownRestoreService {
     return name.trim().toLowerCase()
   }
 
-  private isDefaultDocumentDatabase(name: string, description: string): boolean {
-    return name === DEFAULT_DOCUMENT_DATABASE_NAME && description === DEFAULT_DOCUMENT_DATABASE_DESCRIPTION
-  }
-
   private parseSourceStandaloneDatabaseSavedViews(
     rawViews: string | undefined,
     filePath: string
   ): RestoreSourceStandaloneDatabaseSavedView[] {
     const parsed = this.parseJsonArrayOrThrow(rawViews, filePath, 'databaseSavedViews')
 
-    return parsed.flatMap((value): RestoreSourceStandaloneDatabaseSavedView[] => {
+    return parsed.flatMap((value, index): RestoreSourceStandaloneDatabaseSavedView[] => {
       if (!value || typeof value !== 'object') {
         return []
       }
@@ -1465,17 +1499,27 @@ export class MarkdownRestoreService {
         return []
       }
 
+      const filterQuery = typeof candidate.filterQuery === 'string' ? candidate.filterQuery : ''
+      const filterScope = typeof candidate.filterScope === 'string' ? candidate.filterScope.trim() : ''
+      const sortMode = typeof candidate.sortMode === 'string' && DATABASE_SAVED_VIEW_SORT_MODES.has(candidate.sortMode)
+        ? candidate.sortMode as DatabaseSavedViewSortMode
+        : 'updated-desc'
+      const viewMode = typeof candidate.viewMode === 'string' && DATABASE_SAVED_VIEW_LAYOUT_MODES.has(candidate.viewMode)
+        ? candidate.viewMode as DatabaseSavedViewLayoutMode
+        : 'cards'
+      const fallbackConfig = createLegacyDatabaseViewConfig({ filterQuery, filterScope, sortMode, viewMode })
+
       return [{
         id,
         name,
-        filterQuery: typeof candidate.filterQuery === 'string' ? candidate.filterQuery : '',
-        filterScope: typeof candidate.filterScope === 'string' ? candidate.filterScope.trim() : '',
-        sortMode: typeof candidate.sortMode === 'string' && DATABASE_SAVED_VIEW_SORT_MODES.has(candidate.sortMode)
-          ? candidate.sortMode as DatabaseSavedViewSortMode
-          : 'updated-desc',
-        viewMode: typeof candidate.viewMode === 'string' && DATABASE_SAVED_VIEW_LAYOUT_MODES.has(candidate.viewMode)
-          ? candidate.viewMode as DatabaseSavedViewLayoutMode
-          : 'cards'
+        filterQuery,
+        filterScope,
+        sortMode,
+        viewMode,
+        config: normalizeDatabaseViewConfig(candidate.config, fallbackConfig),
+        sortOrder: typeof candidate.sortOrder === 'number' && Number.isFinite(candidate.sortOrder)
+          ? Math.max(0, Math.round(candidate.sortOrder))
+          : index
       }]
     })
   }
@@ -1501,9 +1545,13 @@ export class MarkdownRestoreService {
       const normalizedDocumentPath = typeof candidate.documentPath === 'string'
         ? this.normalizeDocumentPath(candidate.documentPath)
         : ''
+      const title = typeof candidate.title === 'string' && candidate.title.trim()
+        ? candidate.title.trim()
+        : normalizedDocumentPath.split('/').filter(Boolean).at(-1) ?? `Record ${id.slice(0, 8)}`
 
       return [{
         id,
+        title,
         documentPath: normalizedDocumentPath || null,
         fieldValues: this.parseSourceDatabaseFieldValues(candidate.fieldValues, columns)
       }]
@@ -1580,7 +1628,7 @@ export class MarkdownRestoreService {
     const existingById = new Map(existingDatabases.map((database) => [database.id, database]))
     const existingByName = new Map(
       existingDatabases
-        .filter((database) => !this.isDefaultDocumentDatabase(database.name, database.description))
+        .filter((database) => database.kind === 'custom')
         .map((database) => [this.getDatabaseLookupKey(database.name), database])
     )
     const matchedDatabaseIds = new Set<string>()
@@ -1600,7 +1648,7 @@ export class MarkdownRestoreService {
 
     const deleted = shouldDeleteMissingDatabases
       ? existingDatabases.filter((database) => (
-          !this.isDefaultDocumentDatabase(database.name, database.description)
+          database.kind === 'custom'
           && !matchedDatabaseIds.has(database.id)
         )).length
       : 0

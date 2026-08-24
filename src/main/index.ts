@@ -39,6 +39,7 @@ import type {
   PreviewDocumentBlockAiEditInput,
   PreviewDocumentBlockAiEditResult,
   RenameDocumentDatabaseColumnInput,
+  ReorderDatabaseSavedViewsInput,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
   RunDocumentAiAutomationsResult,
@@ -584,6 +585,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:update-database-saved-view', (_event, input: UpdateDatabaseSavedViewInput) => {
     const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
     return view
+  })
+
+  ipcMain.handle('knowbook:reorder-database-saved-views', (_event, input: ReorderDatabaseSavedViewsInput) => {
+    return store.reorderDatabaseSavedViews(input)
   })
 
   ipcMain.handle('knowbook:delete-database-saved-view', (_event, viewId: string) => {

@@ -1,7 +1,7 @@
 import type { DocumentDatabase, DocumentDatabaseFieldValue } from '@shared/contracts'
 
 export function isDefaultDocumentDatabase(database: DocumentDatabase): boolean {
-  return database.name === 'Default' && database.description === 'Default database'
+  return database.kind === 'document-catalog'
 }
 
 export function normalizeDatabaseColumnOptionsInput(input: string): string[] {

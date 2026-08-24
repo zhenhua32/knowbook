@@ -66,6 +66,20 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
             filterScope: '',
             sortMode: 'updated-desc',
             viewMode: 'cards',
+            config: {
+              version: 1,
+              layout: 'cards',
+              query: '',
+              filters: { operator: 'and', rules: [] },
+              sorts: [{ fieldId: '__updated_at__', direction: 'desc' }],
+              groupBy: { fieldId: null },
+              visibleFieldIds: ['__title__'],
+              fieldOrder: ['__title__'],
+              columnWidths: {},
+              cardFieldIds: ['__title__']
+            },
+            configVersion: 1,
+            sortOrder: 0,
             createdAt: '2026-05-02T00:00:00.000Z',
             updatedAt: '2026-05-02T00:00:00.000Z'
           }
@@ -73,6 +87,7 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
         entities: [
           {
             id: 'entity-1',
+            title: 'Launch plan',
             documentId: null,
             documentPath: null,
             createdAt: '2026-05-02T00:00:00.000Z',
@@ -184,6 +199,20 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
         filterScope: '',
         sortMode: 'updated-desc',
         viewMode: 'cards',
+        config: {
+          version: 1,
+          layout: 'cards',
+          query: '',
+          filters: { operator: 'and', rules: [] },
+          sorts: [{ fieldId: '__updated_at__', direction: 'desc' }],
+          groupBy: { fieldId: null },
+          visibleFieldIds: ['__title__'],
+          fieldOrder: ['__title__'],
+          columnWidths: {},
+          cardFieldIds: ['__title__']
+        },
+        configVersion: 1,
+        sortOrder: 0,
         createdAt: '2026-05-02T00:00:00.000Z',
         updatedAt: '2026-05-02T00:00:00.000Z'
       }
@@ -191,6 +220,7 @@ test('MarkdownBackupService exports nested markdown files and persists backup ti
     assert.deepEqual(JSON.parse(parsedStandaloneDatabase.frontmatter.databaseEntities), [
       {
         id: 'entity-1',
+        title: 'Launch plan',
         documentId: null,
         documentPath: null,
         createdAt: '2026-05-02T00:00:00.000Z',

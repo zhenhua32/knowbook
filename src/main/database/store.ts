@@ -37,6 +37,7 @@ import type {
   PreviewDocumentBlockAiEditInput,
   RecentDocument,
   RenameDocumentDatabaseColumnInput,
+  ReorderDatabaseSavedViewsInput,
   UpdateAiConfigInput,
   UpdateDatabaseSavedViewInput,
   UpdateDatabaseMetadataInput,
@@ -54,12 +55,16 @@ import type {
   SemanticSearchResult
 } from '@shared/contracts'
 import { appSchema } from './schema'
+import {
+  createLegacyDatabaseViewConfig,
+  normalizeDatabaseViewConfig
+} from '@shared/database-workspace'
 
 export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 3
+const CURRENT_DATABASE_SCHEMA_VERSION = 4
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -124,6 +129,9 @@ interface DatabaseSavedViewRow {
   filter_scope: string
   sort_mode: string
   view_mode: string
+  config_json: string
+  config_version: number
+  sort_order: number
   created_at: string
   updated_at: string
 }
@@ -131,6 +139,7 @@ interface DatabaseSavedViewRow {
 interface DatabaseEntityRow {
   id: string
   database_id: string
+  title: string
   document_id: string | null
   created_at: string
   updated_at: string
@@ -301,6 +310,7 @@ export interface ExportDocument {
 
 export interface ExportStandaloneDatabaseEntity {
   id: string
+  title: string
   documentId: string | null
   documentPath: string | null
   createdAt: string
@@ -363,6 +373,10 @@ export class KnowbookStore {
       if (schemaVersion < 3) {
         this.migrateToSchemaVersion3()
         this.db.pragma('user_version = 3')
+      }
+      if (schemaVersion < 4) {
+        this.migrateToSchemaVersion4()
+        this.db.pragma('user_version = 4')
       }
     })
   }
@@ -477,6 +491,65 @@ export class KnowbookStore {
         UPDATE documents SET child_count = MAX(0, child_count - 1) WHERE id = old.parent_id;
         UPDATE documents SET child_count = child_count + 1 WHERE id = new.parent_id;
       END;
+    `)
+  }
+
+  private migrateToSchemaVersion4(): void {
+    const savedViewColumns = this.db.prepare('PRAGMA table_info(database_saved_views)').all() as BlockTableInfoRow[]
+    const savedViewColumnNames = new Set(savedViewColumns.map((column) => column.name))
+    if (!savedViewColumnNames.has('config_json')) {
+      this.db.exec(`ALTER TABLE database_saved_views ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`)
+    }
+    if (!savedViewColumnNames.has('config_version')) {
+      this.db.exec('ALTER TABLE database_saved_views ADD COLUMN config_version INTEGER NOT NULL DEFAULT 1')
+    }
+    if (!savedViewColumnNames.has('sort_order')) {
+      this.db.exec('ALTER TABLE database_saved_views ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0')
+    }
+
+    const legacyViews = this.db.prepare(`
+      SELECT id, filter_query, filter_scope, sort_mode, view_mode
+      FROM database_saved_views
+      WHERE config_json = '{}' OR trim(config_json) = ''
+      ORDER BY database_id ASC, created_at ASC
+    `).all() as Array<{
+      id: string
+      filter_query: string
+      filter_scope: string
+      sort_mode: DatabaseSavedViewSortMode
+      view_mode: DatabaseSavedViewLayoutMode
+    }>
+    const updateViewConfig = this.db.prepare(`
+      UPDATE database_saved_views
+      SET config_json = ?, config_version = 1
+      WHERE id = ?
+    `)
+    for (const view of legacyViews) {
+      const config = createLegacyDatabaseViewConfig({
+        filterQuery: view.filter_query,
+        filterScope: view.filter_scope,
+        sortMode: view.sort_mode,
+        viewMode: view.view_mode
+      })
+      updateViewConfig.run(JSON.stringify(config), view.id)
+    }
+
+    const entityColumns = this.db.prepare('PRAGMA table_info(database_entities)').all() as BlockTableInfoRow[]
+    if (!entityColumns.some((column) => column.name === 'title')) {
+      this.db.exec(`ALTER TABLE database_entities ADD COLUMN title TEXT NOT NULL DEFAULT ''`)
+    }
+    this.db.exec(`
+      UPDATE database_entities
+      SET title = COALESCE(
+        (SELECT documents.title FROM documents WHERE documents.id = database_entities.document_id),
+        'Record ' || substr(database_entities.id, 1, 8)
+      )
+      WHERE trim(title) = '';
+
+      CREATE INDEX IF NOT EXISTS idx_database_saved_views_database_sort
+        ON database_saved_views(database_id, sort_order, created_at);
+      CREATE INDEX IF NOT EXISTS idx_database_entities_database_title
+        ON database_entities(database_id, title COLLATE NOCASE);
     `)
   }
 
@@ -1976,6 +2049,7 @@ export class KnowbookStore {
         savedViews: this.getDatabaseSavedViews(database.id).map((view) => ({ ...view })),
         entities: this.getDatabaseEntities(database.id).map((entity) => ({
           id: entity.id,
+          title: entity.title,
           documentId: entity.documentId,
           documentPath: entity.documentId ? documentPathById.get(entity.documentId) ?? null : null,
           createdAt: entity.createdAt,
@@ -2621,7 +2695,8 @@ export class KnowbookStore {
 
   private getDatabaseSavedView(viewId: string): DatabaseSavedView {
     const row = this.db.prepare(`
-      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode,
+        config_json, config_version, sort_order, created_at, updated_at
       FROM database_saved_views
       WHERE id = ?
     `).get(viewId) as DatabaseSavedViewRow | undefined
@@ -2634,14 +2709,32 @@ export class KnowbookStore {
   }
 
   private mapDatabaseSavedViewRow(row: DatabaseSavedViewRow): DatabaseSavedView {
+    const sortMode = this.normalizeDatabaseSavedViewSortMode(row.sort_mode)
+    const viewMode = this.normalizeDatabaseSavedViewLayoutMode(row.view_mode)
+    const fallbackConfig = createLegacyDatabaseViewConfig({
+      filterQuery: row.filter_query,
+      filterScope: row.filter_scope,
+      sortMode,
+      viewMode
+    })
+    let parsedConfig: unknown = fallbackConfig
+    try {
+      parsedConfig = JSON.parse(row.config_json)
+    } catch {
+      parsedConfig = fallbackConfig
+    }
+
     return {
       id: row.id,
       databaseId: row.database_id,
       name: row.name,
       filterQuery: row.filter_query,
       filterScope: row.filter_scope,
-      sortMode: this.normalizeDatabaseSavedViewSortMode(row.sort_mode),
-      viewMode: this.normalizeDatabaseSavedViewLayoutMode(row.view_mode),
+      sortMode,
+      viewMode,
+      config: normalizeDatabaseViewConfig(parsedConfig, fallbackConfig),
+      configVersion: 1,
+      sortOrder: row.sort_order,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }
@@ -2704,6 +2797,7 @@ export class KnowbookStore {
     switch (viewMode) {
       case 'cards':
       case 'table':
+      case 'board':
         return viewMode
       default:
         throw new Error(`Unsupported saved view layout mode: ${viewMode}`)
@@ -3477,7 +3571,7 @@ export class KnowbookStore {
         WHERE database_id = NEW.database_id AND document_id = NEW.document_id
       )
       BEGIN
-        SELECT RAISE(ABORT, 'A database entity already exists for this document in this database.');
+        SELECT RAISE(ABORT, 'A database record already exists for this document in this database.');
       END;
 
       CREATE TRIGGER IF NOT EXISTS trg_database_entities_document_unique_update
@@ -3491,7 +3585,7 @@ export class KnowbookStore {
           AND id != OLD.id
       )
       BEGIN
-        SELECT RAISE(ABORT, 'A database entity already exists for this document in this database.');
+        SELECT RAISE(ABORT, 'A database record already exists for this document in this database.');
       END;
     `)
   }
@@ -3554,15 +3648,17 @@ export class KnowbookStore {
     return id
   }
 
-  getDatabases(): Array<{ id: string; name: string; description: string; createdAt: string; updatedAt: string }> {
+  getDatabases(): DocumentDatabase[] {
     const rows = this.db.prepare(`
       SELECT id, name, description, created_at, updated_at
       FROM databases
       ORDER BY name ASC
     `).all() as Array<{ id: string; name: string; description: string; created_at: string; updated_at: string }>
 
+    const defaultDatabaseId = this.getDefaultDocumentDatabaseId()
     return rows.map((row) => ({
       id: row.id,
+      kind: row.id === defaultDatabaseId ? 'document-catalog' : 'custom',
       name: row.name,
       description: row.description,
       createdAt: row.created_at,
@@ -3579,10 +3675,11 @@ export class KnowbookStore {
     this.assertDatabaseExists(normalizedDatabaseId)
 
     const rows = this.db.prepare(`
-      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode,
+        config_json, config_version, sort_order, created_at, updated_at
       FROM database_saved_views
       WHERE database_id = ?
-      ORDER BY updated_at DESC, name COLLATE NOCASE ASC
+      ORDER BY sort_order ASC, created_at ASC
     `).all(normalizedDatabaseId) as DatabaseSavedViewRow[]
 
     return rows.map((row) => this.mapDatabaseSavedViewRow(row))
@@ -3601,18 +3698,32 @@ export class KnowbookStore {
     const filterScope = input.filterScope?.trim() ?? ''
     const sortMode = this.normalizeDatabaseSavedViewSortMode(input.sortMode ?? 'updated-desc')
     const viewMode = this.normalizeDatabaseSavedViewLayoutMode(input.viewMode ?? 'cards')
+    const legacyConfig = createLegacyDatabaseViewConfig({ filterQuery, filterScope, sortMode, viewMode })
+    const config = normalizeDatabaseViewConfig(input.config, legacyConfig)
+    const nextSortOrder = (this.db.prepare(`
+      SELECT COALESCE(MAX(sort_order), -1) + 1 AS sort_order
+      FROM database_saved_views
+      WHERE database_id = ?
+    `).get(databaseId) as { sort_order: number }).sort_order
+    const sortOrder = input.sortOrder !== undefined && Number.isFinite(input.sortOrder)
+      ? Math.max(0, Math.round(input.sortOrder))
+      : nextSortOrder
 
     this.db.prepare(`
-      INSERT INTO database_saved_views (id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, databaseId, name, filterQuery, filterScope, sortMode, viewMode, now, now)
+      INSERT INTO database_saved_views (
+        id, database_id, name, filter_query, filter_scope, sort_mode, view_mode,
+        config_json, config_version, sort_order, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+    `).run(id, databaseId, name, filterQuery, filterScope, sortMode, viewMode, JSON.stringify(config), sortOrder, now, now)
 
     return this.getDatabaseSavedView(id)
   }
 
   updateDatabaseSavedView(input: UpdateDatabaseSavedViewInput): DatabaseSavedView {
     const currentRow = this.db.prepare(`
-      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode, created_at, updated_at
+      SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode,
+        config_json, config_version, sort_order, created_at, updated_at
       FROM database_saved_views
       WHERE id = ?
     `).get(input.viewId) as DatabaseSavedViewRow | undefined
@@ -3635,15 +3746,52 @@ export class KnowbookStore {
     const viewMode = input.viewMode !== undefined
       ? this.normalizeDatabaseSavedViewLayoutMode(input.viewMode)
       : this.normalizeDatabaseSavedViewLayoutMode(currentRow.view_mode)
+    const legacyConfig = createLegacyDatabaseViewConfig({ filterQuery, filterScope, sortMode, viewMode })
+    let currentConfigValue: unknown = legacyConfig
+    try {
+      currentConfigValue = JSON.parse(currentRow.config_json)
+    } catch {
+      currentConfigValue = legacyConfig
+    }
+    const config = normalizeDatabaseViewConfig(input.config ?? currentConfigValue, legacyConfig)
+    const sortOrder = input.sortOrder !== undefined && Number.isFinite(input.sortOrder)
+      ? Math.max(0, Math.round(input.sortOrder))
+      : currentRow.sort_order
     const now = new Date().toISOString()
 
     this.db.prepare(`
       UPDATE database_saved_views
-      SET name = ?, filter_query = ?, filter_scope = ?, sort_mode = ?, view_mode = ?, updated_at = ?
+      SET name = ?, filter_query = ?, filter_scope = ?, sort_mode = ?, view_mode = ?,
+        config_json = ?, config_version = 1, sort_order = ?, updated_at = ?
       WHERE id = ?
-    `).run(name, filterQuery, filterScope, sortMode, viewMode, now, currentRow.id)
+    `).run(name, filterQuery, filterScope, sortMode, viewMode, JSON.stringify(config), sortOrder, now, currentRow.id)
 
     return this.getDatabaseSavedView(currentRow.id)
+  }
+
+  reorderDatabaseSavedViews(input: ReorderDatabaseSavedViewsInput): DatabaseSavedView[] {
+    const databaseId = input.databaseId.trim()
+    this.assertDatabaseExists(databaseId)
+    const viewIds = [...new Set(input.viewIds.map((viewId) => viewId.trim()).filter(Boolean))]
+    const existingIds = (this.db.prepare(`
+      SELECT id
+      FROM database_saved_views
+      WHERE database_id = ?
+      ORDER BY sort_order ASC, created_at ASC
+    `).all(databaseId) as Array<{ id: string }>).map((row) => row.id)
+    if (viewIds.length !== existingIds.length || existingIds.some((viewId) => !viewIds.includes(viewId))) {
+      throw new Error('Saved view order must contain every view in the database exactly once.')
+    }
+
+    const updateOrder = this.db.prepare(`
+      UPDATE database_saved_views
+      SET sort_order = ?
+      WHERE id = ? AND database_id = ?
+    `)
+    this.db.transaction(() => {
+      viewIds.forEach((viewId, index) => updateOrder.run(index, viewId, databaseId))
+    })()
+    return this.getDatabaseSavedViews(databaseId)
   }
 
   deleteDatabaseSavedView(viewId: string): void {
@@ -3673,6 +3821,7 @@ export class KnowbookStore {
 
     return {
       id,
+      kind: 'custom',
       name: trimmedName,
       description: (input.description ?? '').trim(),
       createdAt: now,
@@ -3729,11 +3878,22 @@ export class KnowbookStore {
       throw new Error('Database not found.')
     }
 
+    let linkedDocumentTitle: string | null = null
     if (documentId) {
-      const docExists = this.db.prepare('SELECT id FROM documents WHERE id = ?').get(documentId)
-      if (!docExists) {
+      const document = this.db.prepare('SELECT id, title FROM documents WHERE id = ?').get(documentId) as
+        | { id: string; title: string }
+        | undefined
+      if (!document) {
         throw new Error('Document not found.')
       }
+      linkedDocumentTitle = document.title
+    }
+
+    const title = input.title !== undefined
+      ? input.title.trim()
+      : linkedDocumentTitle?.trim() || `Record ${entityId.slice(0, 8)}`
+    if (!title) {
+      throw new Error('Database record title is required.')
     }
 
     if (documentId) {
@@ -3741,7 +3901,7 @@ export class KnowbookStore {
         'SELECT id FROM database_entities WHERE database_id = ? AND document_id = ?'
       ).get(databaseId, documentId)
       if (existing) {
-        throw new Error('A database entity already exists for this document in this database.')
+        throw new Error('A database record already exists for this document in this database.')
       }
     }
 
@@ -3764,15 +3924,15 @@ export class KnowbookStore {
     }
 
     const insertEntity = this.db.prepare(`
-      INSERT INTO database_entities (id, database_id, document_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO database_entities (id, database_id, title, document_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
     `)
     const insertValue = this.db.prepare(
       'INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at) VALUES (?, ?, ?, ?)'
     )
 
     this.db.transaction(() => {
-      insertEntity.run(entityId, databaseId, documentId, now, now)
+      insertEntity.run(entityId, databaseId, title, documentId, now, now)
       for (const preparedValue of preparedValues) {
         insertValue.run(entityId, preparedValue.columnId, preparedValue.valueText, now)
       }
@@ -3783,13 +3943,13 @@ export class KnowbookStore {
   
   private getDatabaseEntity(entityId: string): DatabaseEntity {
     const row = this.db.prepare(`
-      SELECT id, database_id, document_id, created_at, updated_at
+      SELECT id, database_id, title, document_id, created_at, updated_at
       FROM database_entities
       WHERE id = ?
     `).get(entityId) as DatabaseEntityRow | undefined
     
     if (!row) {
-      throw new Error('Database entity not found.')
+      throw new Error('Database record not found.')
     }
     
     const fieldRows = this.db.prepare(`
@@ -3810,17 +3970,21 @@ export class KnowbookStore {
   }
   
   updateDatabaseEntity(input: UpdateDatabaseEntityInput): void {
-    const { entityId, fieldValues, documentId } = input
+    const { entityId, title: titleInput, fieldValues, documentId } = input
 
     const entity = this.db.prepare('SELECT * FROM database_entities WHERE id = ?').get(entityId) as
-      | { id: string; database_id: string; document_id: string | null }
+      | { id: string; database_id: string; title: string; document_id: string | null }
       | undefined
     
     if (!entity) {
-      throw new Error('Database entity not found.')
+      throw new Error('Database record not found.')
     }
     
     const now = new Date().toISOString()
+    const title = titleInput !== undefined ? titleInput.trim() : entity.title
+    if (!title) {
+      throw new Error('Database record title is required.')
+    }
     
     if (documentId !== undefined) {
       if (documentId) {
@@ -3834,7 +3998,7 @@ export class KnowbookStore {
           'SELECT id FROM database_entities WHERE database_id = ? AND document_id = ? AND id != ?'
         ).get(entity.database_id, documentId, entityId)
         if (existing) {
-          throw new Error('A database entity already exists for this document in this database.')
+          throw new Error('A database record already exists for this document in this database.')
         }
       }
     }
@@ -3857,8 +4021,10 @@ export class KnowbookStore {
       }
     }
 
-    const updateEntity = this.db.prepare('UPDATE database_entities SET document_id = ?, updated_at = ? WHERE id = ?')
-    const touchEntity = this.db.prepare('UPDATE database_entities SET updated_at = ? WHERE id = ?')
+    const updateEntity = this.db.prepare(
+      'UPDATE database_entities SET title = ?, document_id = ?, updated_at = ? WHERE id = ?'
+    )
+    const touchEntity = this.db.prepare('UPDATE database_entities SET title = ?, updated_at = ? WHERE id = ?')
     const deleteValue = this.db.prepare('DELETE FROM database_entity_values WHERE entity_id = ? AND column_id = ?')
     const insertValue = this.db.prepare(`
       INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
@@ -3867,9 +4033,9 @@ export class KnowbookStore {
 
     this.db.transaction(() => {
       if (documentId !== undefined) {
-        updateEntity.run(documentId, now, entityId)
-      } else if (fieldValues) {
-        touchEntity.run(now, entityId)
+        updateEntity.run(title, documentId, now, entityId)
+      } else if (fieldValues || titleInput !== undefined) {
+        touchEntity.run(title, now, entityId)
       }
 
       for (const preparedValue of preparedValues) {
@@ -3903,7 +4069,7 @@ export class KnowbookStore {
       for (const entityId of entityIds) {
         const entity = this.db.prepare('SELECT id FROM database_entities WHERE id = ?').get(entityId)
         if (!entity) {
-          throw new Error('Database entity not found.')
+          throw new Error('Database record not found.')
         }
       }
 
@@ -3915,7 +4081,7 @@ export class KnowbookStore {
   
   getDatabaseEntities(databaseId: string): DatabaseEntity[] {
     const rows = this.db.prepare(
-      'SELECT id, database_id, document_id, created_at, updated_at FROM database_entities WHERE database_id = ? ORDER BY updated_at DESC'
+      'SELECT id, database_id, title, document_id, created_at, updated_at FROM database_entities WHERE database_id = ? ORDER BY updated_at DESC'
     ).all(databaseId) as DatabaseEntityRow[]
     const fieldRows = this.db.prepare(`
       SELECT
@@ -3957,6 +4123,7 @@ export class KnowbookStore {
     return rows.map((row) => ({
       id: row.id,
       databaseId: row.database_id,
+      title: row.title,
       documentId: row.document_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
