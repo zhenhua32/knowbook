@@ -1,6 +1,12 @@
 import type { WorkspaceEventRecord, WorkspaceEventType } from '@shared/contracts'
 
-export type WorkspaceEvent =
+export interface WorkspaceEventMetadata {
+  originPluginId?: string
+  correlationId?: string
+  causationId?: string
+}
+
+export type WorkspaceEvent = (
   | {
       type: 'document.created'
       createdAt: string
@@ -49,6 +55,7 @@ export type WorkspaceEvent =
       model: string
       aiEnabled: boolean
     }
+) & WorkspaceEventMetadata
 
 type WorkspaceEventHandler = (event: WorkspaceEvent) => void | Promise<void>
 

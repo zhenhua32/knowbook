@@ -55,6 +55,8 @@ import type {
   SemanticSearchResult
 } from '@shared/contracts'
 import { appSchema } from './schema'
+import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
+import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
 import {
   createLegacyDatabaseViewConfig,
   normalizeDatabaseViewConfig
@@ -64,7 +66,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 4
+const CURRENT_DATABASE_SCHEMA_VERSION = 6
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -331,6 +333,8 @@ export interface ExportStandaloneDatabase {
 
 export class KnowbookStore {
   private readonly db: SqliteDatabase
+  readonly pluginPlatform: SqlitePluginPlatformRepository
+  readonly assistantSessions: SqliteAssistantSessionRepository
   private deferredLinkResyncDepth = 0
   private deferredFullLinkResyncRequested = false
 
@@ -353,6 +357,8 @@ export class KnowbookStore {
     }
     this.db.exec(appSchema)
     this.migrateDatabase(schemaVersion)
+    this.pluginPlatform = new SqlitePluginPlatformRepository(this.db)
+    this.assistantSessions = new SqliteAssistantSessionRepository(this.db)
   }
 
   private migrateDatabase(schemaVersion: number): void {
@@ -378,7 +384,24 @@ export class KnowbookStore {
         this.migrateToSchemaVersion4()
         this.db.pragma('user_version = 4')
       }
+      if (schemaVersion < 5) {
+        this.migrateToSchemaVersion5()
+        this.db.pragma('user_version = 5')
+      }
+      if (schemaVersion < 6) {
+        this.migrateToSchemaVersion6()
+        this.db.pragma('user_version = 6')
+      }
     })
+  }
+
+  private migrateToSchemaVersion5(): void {
+    // Plugin Platform v2 tables are created by appSchema before migrations run.
+    // This step records the durable schema boundary for future migrations.
+  }
+
+  private migrateToSchemaVersion6(): void {
+    // Assistant append-only session tables are created by appSchema.
   }
 
   private createMigrationSafetyCopy(fromVersion: number, toVersion: number): void {

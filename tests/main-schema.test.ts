@@ -14,6 +14,15 @@ test('appSchema includes all core tables', () => {
   assert.equal(has('CREATE TABLE IF NOT EXISTS document_database_values'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS workspace_events'), true)
   assert.equal(has('CREATE TABLE IF NOT EXISTS app_settings'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_definitions'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_revisions'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_installations'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_runs'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_grants'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_state'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS plugin_logs'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS assistant_sessions'), true)
+  assert.equal(has('CREATE TABLE IF NOT EXISTS assistant_events'), true)
 })
 
 test('appSchema preserves block tree and editor enhancement columns', () => {

@@ -180,4 +180,152 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS plugin_definitions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  persistence_scope TEXT NOT NULL,
+  created_session_id TEXT,
+  current_revision_id TEXT,
+  pending_revision_id TEXT,
+  active_run_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS plugin_revisions (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  content_hash TEXT NOT NULL,
+  previous_revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL,
+  manifest_json TEXT NOT NULL,
+  requested_permissions_json TEXT NOT NULL DEFAULT '[]',
+  api_version TEXT NOT NULL,
+  state_schema_version INTEGER,
+  size_bytes INTEGER NOT NULL,
+  static_check_status TEXT NOT NULL,
+  static_check_json TEXT NOT NULL DEFAULT '[]',
+  generated_by_session_id TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(plugin_id, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_revisions_plugin_created
+  ON plugin_revisions(plugin_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS plugin_installations (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  scope_kind TEXT NOT NULL,
+  workspace_id TEXT,
+  session_id TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_installations_scope
+  ON plugin_installations(
+    plugin_id,
+    scope_kind,
+    ifnull(workspace_id, ''),
+    ifnull(session_id, '')
+  );
+
+CREATE TABLE IF NOT EXISTS plugin_grants (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+  scope_kind TEXT NOT NULL,
+  workspace_id TEXT,
+  session_id TEXT,
+  grants_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_grants_revision_status
+  ON plugin_grants(revision_id, status);
+
+CREATE TABLE IF NOT EXISTS plugin_runs (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+  installation_id TEXT REFERENCES plugin_installations(id) ON DELETE SET NULL,
+  grant_set_id TEXT NOT NULL REFERENCES plugin_grants(id) ON DELETE CASCADE,
+  scope_kind TEXT NOT NULL,
+  workspace_id TEXT,
+  session_id TEXT,
+  epoch INTEGER,
+  status TEXT NOT NULL,
+  error_json TEXT,
+  started_at TEXT NOT NULL,
+  ready_at TEXT,
+  stopped_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_runs_plugin_started
+  ON plugin_runs(plugin_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plugin_runs_status
+  ON plugin_runs(status);
+
+CREATE TABLE IF NOT EXISTS plugin_state (
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  scope_key TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (plugin_id, scope_key)
+);
+
+CREATE TABLE IF NOT EXISTS plugin_logs (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
+  revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES plugin_runs(id) ON DELETE SET NULL,
+  level TEXT NOT NULL,
+  event TEXT NOT NULL,
+  message TEXT NOT NULL,
+  data_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_logs_plugin_created
+  ON plugin_logs(plugin_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS assistant_sessions (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  active_document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+  model_config_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  active_turn_id TEXT,
+  next_seq INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_sessions_updated
+  ON assistant_sessions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS assistant_events (
+  id TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
+  seq INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  surface TEXT NOT NULL,
+  turn_id TEXT,
+  step_id TEXT,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_events_session_type
+  ON assistant_events(session_id, type, seq);
 `

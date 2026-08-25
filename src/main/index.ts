@@ -78,6 +78,7 @@ import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { ElectronPluginRuntime } from './plugin-runtime-client'
+import { PluginPlatformV2Service } from './plugin-platform/platform-service'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
@@ -102,6 +103,7 @@ const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
+const LOCAL_WORKSPACE_ID = 'local-workspace'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const WORKSPACE_MUTATION_NOTIFY_DELAY_MS = 25
 const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
@@ -219,6 +221,7 @@ let webClipper: WebClipperService
 let webClipExtractionWorker: WebClipExtractionWorkerRunner
 let webClipBridge: WebClipBridgeService
 let pluginHost: PluginHost
+let pluginPlatformV2: PluginPlatformV2Service
 let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
 let restoreWorkflowInProgress = false
@@ -241,6 +244,45 @@ function initializeServices(): void {
     parseRestoreMarkdownInWorker
   )
   workspaceEventBus = new WorkspaceEventBus()
+  pluginPlatformV2 = new PluginPlatformV2Service(
+    store,
+    join(userDataRoot, 'storage', 'plugin-revisions-v2'),
+    {
+      workspaceId: LOCAL_WORKSPACE_ID,
+      onDocumentCreated: async (document, owner) => {
+        await workspaceEventBus.emit({
+          type: 'document.created',
+          createdAt: new Date().toISOString(),
+          documentId: document.id,
+          documentTitle: document.title,
+          path: document.path,
+          parentId: store.getDocumentSnapshot(document.id)?.parentId ?? null,
+          originPluginId: owner.pluginId,
+          correlationId: owner.runId
+        })
+        notifyWorkspaceMutation()
+      },
+      onDocumentUpdated: async (document, owner) => {
+        await workspaceEventBus.emit({
+          type: 'document.updated',
+          createdAt: new Date().toISOString(),
+          documentId: document.id,
+          documentTitle: document.title,
+          path: document.path,
+          affectedDocumentIds: [document.id],
+          pathChanged: false,
+          originPluginId: owner.pluginId,
+          correlationId: owner.runId
+        })
+        notifyWorkspaceMutation()
+      },
+      notify: (notification) => {
+        if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+          mainWindow.webContents.send('knowbook:plugin-notification', notification)
+        }
+      }
+    }
+  )
   webClipExtractionWorker = earlyWebClipExtractionWorker ?? new WebClipExtractionWorkerRunner()
   webClipper = new WebClipperService(store, webClipAssetRoot, {
     allowPrivateNetwork: process.env['KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP'] === '1',
@@ -586,6 +628,8 @@ function registerIpcHandlers(): void {
     const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
     return view
   })
+
+  workspaceEventBus.subscribe((event) => pluginPlatformV2.handleWorkspaceEvent(event))
 
   ipcMain.handle('knowbook:reorder-database-saved-views', (_event, input: ReorderDatabaseSavedViewsInput) => {
     return store.reorderDatabaseSavedViews(input)
@@ -1413,7 +1457,8 @@ async function shutdownServices(): Promise<void> {
   const results = await Promise.allSettled([
     webClipBridge.destroy(),
     webClipExtractionWorker.destroy(),
-    pluginHost.destroy()
+    pluginHost.destroy(),
+    pluginPlatformV2.destroy()
   ])
   for (const result of results) {
     if (result.status === 'rejected') {
