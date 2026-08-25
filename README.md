@@ -45,6 +45,14 @@ npm run release:preflight
 npm run release:verify-local
 ```
 
+## 文档
+
+- [文档索引](docs/README.md)
+- [使用文档](docs/使用文档.md)
+- [发版流程](docs/发版流程.md)
+- [发布与签名说明](docs/发布与签名说明.md)
+- [数据库工作台重构设计](docs/数据库工作台重构设计.md)
+
 ## 架构
 
 ```text
@@ -76,13 +84,13 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 3. 需要完整同步时，确认选择的是 KnowBook 生成的完整 Markdown 备份目录。
 4. 导入普通 Markdown 后检查生成的路径和块结构。
 
-详细操作见 [使用文档.md](使用文档.md)。
+详细操作见 [使用文档](docs/使用文档.md)。
 
 ## 插件边界
 
 插件来自工作区 `plugins/` 或 Electron userData 下的 `plugins/`。当前插件宿主适合可信的本地扩展；插件市场、远程安装和独立发布的 TypeScript SDK 尚未提供。
 
-仓库内的 `plugins/activity-pulse/` 是最小示例。插件开发说明见 [使用文档.md](使用文档.md#插件开发)。
+仓库内的 `plugins/activity-pulse/` 是最小示例。插件开发说明见 [使用文档](docs/使用文档.md#插件开发)。
 
 ## 网页剪藏
 
@@ -90,8 +98,8 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 
 ## 发布
 
-- 通用发版步骤：[发版流程.md](发版流程.md)
-- 证书和 GitHub Secrets：[发布与签名说明.md](发布与签名说明.md)
+- 通用发版步骤：[发版流程](docs/发版流程.md)
+- 证书和 GitHub Secrets：[发布与签名说明](docs/发布与签名说明.md)
 
 正式 tag 必须使用 `v<package.json version>` 格式。发布前至少运行类型检查、测试和发布预检；涉及 Electron 壳、IPC、Renderer 主流程、插件、更新或打包配置时，还应运行 E2E。
 
