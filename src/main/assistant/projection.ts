@@ -146,6 +146,12 @@ export function deriveAssistantModelMessages(
     'Assistant model item limit'
   )
   const messages: AssistantModelMessage[] = []
+  const finalizedToolCalls = new Set<AssistantToolCallId>()
+  for (const event of events) {
+    if (event.type === 'tool.result' && event.payload.status !== 'awaiting-approval') {
+      finalizedToolCalls.add(event.payload.toolCallId)
+    }
+  }
 
   for (const event of events) {
     switch (event.type) {
@@ -168,6 +174,11 @@ export function deriveAssistantModelMessages(
         })
         break
       case 'tool.result':
+        // Approval pauses are UI/trajectory facts. Once a final result exists,
+        // the provider must see exactly one response for the tool call id.
+        if (event.payload.status === 'awaiting-approval' && finalizedToolCalls.has(event.payload.toolCallId)) {
+          break
+        }
         messages.push({
           role: 'tool',
           toolCallId: event.payload.toolCallId,

@@ -212,7 +212,12 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
     this.commandFailure = null
     for (const deferred of this.pendingCapabilityPromises) {
       try {
-        deferred.reject(this.vm.newError('QuickJS plugin realm was disposed.'))
+        const error = this.vm.newError('QuickJS plugin realm was disposed.')
+        try {
+          deferred.reject(error)
+        } finally {
+          error.dispose()
+        }
       } catch {
         // The VM may already be unusable after a WASM trap.
       }

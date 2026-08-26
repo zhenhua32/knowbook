@@ -9,6 +9,48 @@ export type AssistantStepId = AssistantId<'step'>
 export type AssistantToolCallId = AssistantId<'tool-call'>
 export type AssistantApprovalId = AssistantId<'approval'>
 
+export type AssistantSessionStatus = 'active' | 'cancelled' | 'error'
+
+export interface AssistantSessionSummary {
+  id: AssistantSessionId
+  workspaceId: string
+  title: string
+  activeDocumentId: string | null
+  modelConfig: PluginJsonValue
+  status: AssistantSessionStatus
+  activeTurnId: AssistantTurnId | null
+  lastSeq: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateAssistantSessionRequest {
+  title?: string
+  activeDocumentId?: string | null
+}
+
+export interface SendAssistantMessageRequest {
+  sessionId: AssistantSessionId
+  text: string
+}
+
+export interface SendAssistantMessageResult {
+  sessionId: AssistantSessionId
+  turnId: AssistantTurnId
+  status: 'completed' | 'awaiting-approval' | 'cancelled' | 'failed'
+}
+
+export interface ResolveAssistantApprovalRequest {
+  sessionId: AssistantSessionId
+  approvalId: AssistantApprovalId
+  decision: 'allowed-once' | 'rejected' | 'cancelled'
+}
+
+export interface AssistantSessionChangedEvent {
+  sessionId: AssistantSessionId
+  lastSeq: number
+}
+
 export type AssistantEventSurface = 'conversation' | 'trajectory' | 'audit-only'
 
 export interface AssistantEventPayloadMap {

@@ -5,6 +5,7 @@
     "types": ["node", "electron"]
   },
   "include": [
+    "src/main/node-worker.d.ts",
     "tests/**/*.test.ts",
     "tests/**/*.test.tsx",
     "e2e-tests/**/*.ts",

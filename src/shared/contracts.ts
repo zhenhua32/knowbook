@@ -1,3 +1,14 @@
+import type {
+  AssistantEvent,
+  AssistantSessionChangedEvent,
+  AssistantSessionId,
+  AssistantSessionSummary,
+  CreateAssistantSessionRequest,
+  ResolveAssistantApprovalRequest,
+  SendAssistantMessageRequest,
+  SendAssistantMessageResult
+} from './assistant-session'
+
 export interface WorkspaceSummary {
   databasePath: string
   backupRoot: string
@@ -756,6 +767,17 @@ export interface ElectronApi {
   deleteDocument: (documentId: string) => Promise<void>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
+  listAssistantSessions: () => Promise<AssistantSessionSummary[]>
+  createAssistantSession: (input?: CreateAssistantSessionRequest) => Promise<AssistantSessionSummary>
+  getAssistantSessionEvents: (
+    sessionId: AssistantSessionId,
+    afterSeq?: number,
+    limit?: number
+  ) => Promise<AssistantEvent[]>
+  sendAssistantMessage: (input: SendAssistantMessageRequest) => Promise<SendAssistantMessageResult>
+  resolveAssistantApproval: (input: ResolveAssistantApprovalRequest) => Promise<SendAssistantMessageResult>
+  cancelAssistantTurn: (sessionId: AssistantSessionId) => Promise<void>
+  onAssistantSessionChanged: (listener: (event: AssistantSessionChangedEvent) => void) => () => void
   searchSemanticNotes: (input: SearchSemanticNotesInput) => Promise<SemanticSearchResult[]>
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   previewDocumentBlockAiEdit: (input: PreviewDocumentBlockAiEditInput) => Promise<PreviewDocumentBlockAiEditResult>

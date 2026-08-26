@@ -1,5 +1,6 @@
 import type { DocumentDetail, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { AssistantConversation } from '../components/AssistantConversation'
 
 type AISectionProps = {
   ui: UiText
@@ -42,6 +43,21 @@ export function AISection({
 }: AISectionProps) {
   return (
     <section className="detail-grid single-column">
+      <article className="panel large-panel">
+        <div className="panel-head">
+          <div>
+            <p className="panel-label">{isZh ? '插件优先' : 'Plugin first'}</p>
+            <h3>{isZh ? 'KnowBook AI 助手' : 'KnowBook AI assistant'}</h3>
+          </div>
+          <span className="pill">QuickJS / WASM</span>
+        </div>
+        <AssistantConversation
+          activeDocumentId={selectedDocument?.id ?? null}
+          aiEnabled={aiEnabled}
+          hasApiKey={hasApiKey}
+          isZh={isZh}
+        />
+      </article>
       <article className="panel large-panel">
         <div className="panel-head">
           <div>

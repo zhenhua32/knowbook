@@ -209,6 +209,97 @@ test('session-preview definitions require an owning assistant session', () => {
   })
 })
 
+test('plugin state is scoped and upserted without exposing raw SQLite keys', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    repository.createDefinition({
+      id: 'stateful-plugin',
+      name: 'Stateful Plugin',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+
+    assert.equal(repository.readPluginState('stateful-plugin', scope, 'settings/prefix'), null)
+    const first = repository.writePluginState(
+      'stateful-plugin',
+      scope,
+      'settings/prefix',
+      { value: 'First' },
+      1
+    )
+    const second = repository.writePluginState(
+      'stateful-plugin',
+      scope,
+      'settings/prefix',
+      { value: 'Second' },
+      2
+    )
+
+    assert.deepEqual(first.value, { value: 'First' })
+    assert.deepEqual(second.value, { value: 'Second' })
+    assert.deepEqual(repository.readPluginState('stateful-plugin', scope, 'settings/prefix'), second)
+    assert.equal(repository.readPluginState(
+      'stateful-plugin',
+      { kind: 'session', workspaceId: 'workspace-1', sessionId: 'session-1' },
+      'settings/prefix'
+    ), null)
+  })
+})
+
+test('startup recovery makes interrupted runs terminal and clears active pointers', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    repository.createDefinition({
+      id: 'recoverable-plugin',
+      name: 'Recoverable Plugin',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const first = revision('recoverable-plugin', '1.0.0', 'export const first = true')
+    repository.createRevision({ package: first, staticCheckStatus: 'passed' })
+    repository.createGrantSet(grant('recover-grant-1', first.revisionId, 'recoverable-plugin'))
+    repository.createRun({
+      id: 'recover-run-active',
+      pluginId: 'recoverable-plugin',
+      revisionId: first.revisionId,
+      grantSetId: 'recover-grant-1',
+      scope
+    })
+    repository.markRunActive('recover-run-active', 1)
+
+    const second = revision('recoverable-plugin', '1.1.0', 'export const second = true')
+    repository.createRevision({
+      package: second,
+      previousRevisionId: first.revisionId,
+      staticCheckStatus: 'passed'
+    })
+    repository.createGrantSet(grant('recover-grant-2', second.revisionId, 'recoverable-plugin'))
+    repository.createRun({
+      id: 'recover-run-staging',
+      pluginId: 'recoverable-plugin',
+      revisionId: second.revisionId,
+      grantSetId: 'recover-grant-2',
+      scope
+    })
+
+    assert.deepEqual(repository.recoverInterruptedRuns(), {
+      failedRunIds: ['recover-run-staging'],
+      stoppedRunIds: ['recover-run-active']
+    })
+    assert.equal(repository.getRun('recover-run-active')?.status, 'stopped')
+    assert.equal(repository.getRun('recover-run-staging')?.status, 'failed')
+    assert.deepEqual(repository.getRun('recover-run-staging')?.error, {
+      name: 'PluginHostRestarted',
+      message: 'Plugin activation was interrupted by a KnowBook restart.'
+    })
+    assert.equal(repository.getDefinition('recoverable-plugin')?.activeRunId, null)
+    assert.deepEqual(repository.recoverInterruptedRuns(), {
+      failedRunIds: [],
+      stoppedRunIds: []
+    })
+  })
+})
+
 function revision(
   pluginId: string,
   version: string,

@@ -88,9 +88,9 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 
 ## 插件边界
 
-插件来自工作区 `plugins/` 或 Electron userData 下的 `plugins/`。当前插件宿主适合可信的本地扩展；插件市场、远程安装和独立发布的 TypeScript SDK 尚未提供。
+Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话中检查 capability/标准模块目录、定义不可变 revision，并在用户批准精确 revision 后热激活 session preview。动态插件运行在独立 Electron utility process 内的 QuickJS/WASM realm；没有 Node.js、Electron、文件系统、网络、shell 或运行时 `npm install`，所有副作用必须走带权限、配额和审计的 host capability。
 
-仓库内的 `plugins/activity-pulse/` 是最小示例。插件开发说明见 [使用文档](docs/使用文档.md#插件开发)。
+`activity-pulse-v2` 是首个 v2 内置参考插件。工作区 `plugins/` 和 Electron userData `plugins/` 的旧插件宿主仍保留为兼容层，其中仓库内的 `plugins/activity-pulse/` 是旧格式示例。架构决策见 [ADR 目录](docs/adr/)，使用说明见 [使用文档](docs/使用文档.md#插件开发)。
 
 ## 网页剪藏
 
@@ -107,6 +107,6 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 
 - 相关笔记检索为关键词匹配，不是向量检索。
 - Database 的表格采用行虚拟化；看板和卡片采用分批渲染。极端数据规模下仍建议使用搜索与筛选缩小当前视图。
-- 插件仅支持本地安装，尚无远程市场。
+- v2 插件市场、workspace 持久化授权和独立发布 SDK 尚未开放；AI 生成插件当前以 session preview 激活。
 - 自动化目前主要覆盖文档摘要。
 - 带 manifest 的 Markdown 恢复采用快照语义，选择目录前必须先做数据库级备份。

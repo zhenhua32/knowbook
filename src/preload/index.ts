@@ -56,12 +56,23 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
+import type {
+  AssistantEvent,
+  AssistantSessionChangedEvent,
+  AssistantSessionId,
+  AssistantSessionSummary,
+  CreateAssistantSessionRequest,
+  ResolveAssistantApprovalRequest,
+  SendAssistantMessageRequest,
+  SendAssistantMessageResult
+} from '@shared/assistant-session'
 import { decodeDocumentCatalogEntry, decodeDocumentIndexEntry } from '@shared/document-catalog-payload'
 import { buildDocumentTreeFromCatalog } from '@shared/document-tree'
 
 const { contextBridge, ipcRenderer } = electron
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
+const ASSISTANT_SESSION_CHANGED_CHANNEL = 'knowbook:assistant-session-changed'
 
 const api: ElectronApi = {
   getHomeData: async () => {
@@ -120,6 +131,19 @@ const api: ElectronApi = {
   deleteDocument: (documentId: string) => ipcRenderer.invoke('knowbook:delete-document', documentId) as Promise<void>,
   moveDocument: (documentId: string, newParentId: string | null) => ipcRenderer.invoke('knowbook:move-document', documentId, newParentId) as Promise<void>,
   updateAiConfig: (input: UpdateAiConfigInput) => ipcRenderer.invoke('knowbook:update-ai-config', input) as Promise<void>,
+  listAssistantSessions: () => ipcRenderer.invoke('knowbook:list-assistant-sessions') as Promise<AssistantSessionSummary[]>,
+  createAssistantSession: (input: CreateAssistantSessionRequest = {}) => ipcRenderer.invoke('knowbook:create-assistant-session', input) as Promise<AssistantSessionSummary>,
+  getAssistantSessionEvents: (sessionId: AssistantSessionId, afterSeq = 0, limit = 500) => ipcRenderer.invoke('knowbook:get-assistant-session-events', sessionId, afterSeq, limit) as Promise<AssistantEvent[]>,
+  sendAssistantMessage: (input: SendAssistantMessageRequest) => ipcRenderer.invoke('knowbook:send-assistant-message', input) as Promise<SendAssistantMessageResult>,
+  resolveAssistantApproval: (input: ResolveAssistantApprovalRequest) => ipcRenderer.invoke('knowbook:resolve-assistant-approval', input) as Promise<SendAssistantMessageResult>,
+  cancelAssistantTurn: (sessionId: AssistantSessionId) => ipcRenderer.invoke('knowbook:cancel-assistant-turn', sessionId) as Promise<void>,
+  onAssistantSessionChanged: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, change: AssistantSessionChangedEvent) => listener(change)
+    ipcRenderer.on(ASSISTANT_SESSION_CHANGED_CHANNEL, wrapped)
+    return () => {
+      ipcRenderer.removeListener(ASSISTANT_SESSION_CHANGED_CHANNEL, wrapped)
+    }
+  },
   searchSemanticNotes: (input: SearchSemanticNotesInput) => ipcRenderer.invoke('knowbook:search-semantic-notes', input) as Promise<SemanticSearchResult[]>,
   askAiAboutDocument: (input: AskAiInput) => ipcRenderer.invoke('knowbook:ask-ai-about-document', input) as Promise<AskAiResult>,
   previewDocumentBlockAiEdit: (input: PreviewDocumentBlockAiEditInput) => ipcRenderer.invoke('knowbook:preview-document-block-ai-edit', input) as Promise<PreviewDocumentBlockAiEditResult>,

@@ -12,6 +12,8 @@ import {
   type AssistantEventSurface,
   type AssistantEventType,
   type AssistantSessionId,
+  type AssistantSessionStatus,
+  type AssistantSessionSummary,
   type AssistantTurnId
 } from '@shared/assistant-session'
 import type { PluginJsonValue, PluginPlatformScope } from '@shared/plugin-platform'
@@ -22,20 +24,7 @@ const MAX_EVENT_DEPTH = 32
 const MAX_EVENT_ITEMS = 20_000
 const MAX_EVENT_PAGE_SIZE = 1_000
 
-export type AssistantSessionStatus = 'active' | 'cancelled' | 'error'
-
-export interface AssistantSessionRecord {
-  id: AssistantSessionId
-  workspaceId: string
-  title: string
-  activeDocumentId: string | null
-  modelConfig: PluginJsonValue
-  status: AssistantSessionStatus
-  activeTurnId: AssistantTurnId | null
-  lastSeq: number
-  createdAt: string
-  updatedAt: string
-}
+export type AssistantSessionRecord = AssistantSessionSummary
 
 export interface CreateAssistantSessionInput {
   id?: AssistantSessionId

@@ -59,6 +59,13 @@ import type {
   UpdateDocumentResult,
   WebClipBridgeStatus
 } from '@shared/contracts'
+import type {
+  AssistantSessionChangedEvent,
+  AssistantSessionId,
+  CreateAssistantSessionRequest,
+  ResolveAssistantApprovalRequest,
+  SendAssistantMessageRequest
+} from '@shared/assistant-session'
 import { encodeDocumentCatalogEntry, encodeDocumentIndexEntry } from '@shared/document-catalog-payload'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { buildDocumentSummarySource } from '@shared/ai-summary'
@@ -79,6 +86,7 @@ import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { PluginPlatformV2Service } from './plugin-platform/platform-service'
+import { AssistantAgentService } from './assistant/agent-service'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
 import { WebClipperService } from './web-clipper'
@@ -99,6 +107,7 @@ type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
+const ASSISTANT_SESSION_CHANGED_CHANNEL = 'knowbook:assistant-session-changed'
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
@@ -222,6 +231,7 @@ let webClipExtractionWorker: WebClipExtractionWorkerRunner
 let webClipBridge: WebClipBridgeService
 let pluginHost: PluginHost
 let pluginPlatformV2: PluginPlatformV2Service
+let assistantAgent: AssistantAgentService
 let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
 let restoreWorkflowInProgress = false
@@ -280,6 +290,30 @@ function initializeServices(): void {
         if (mainWindow && !mainWindow.webContents.isDestroyed()) {
           mainWindow.webContents.send('knowbook:plugin-notification', notification)
         }
+      }
+    }
+  )
+  assistantAgent = new AssistantAgentService(
+    store.assistantSessions,
+    pluginPlatformV2,
+    {
+      workspaceId: LOCAL_WORKSPACE_ID,
+      getAiConfig: () => {
+        const config = store.getAiConfigPublic()
+        return {
+          enabled: config.enabled,
+          apiKey: getDecryptedAiApiKey(),
+          baseUrl: config.baseUrl,
+          model: config.model
+        }
+      },
+      onChanged: (change: AssistantSessionChangedEvent) => {
+        BrowserWindow.getAllWindows().forEach((window) => {
+          if (!window.webContents.isDestroyed()) {
+            window.webContents.send(ASSISTANT_SESSION_CHANGED_CHANNEL, change)
+          }
+        })
+        pluginMutationNotifier.notify()
       }
     }
   )
@@ -470,11 +504,103 @@ function registerWorkspaceEventHandlers(): void {
 
 function getPluginHomeData(): PluginHomeData {
   const pluginData = pluginHost.getHomeDataSnapshot()
+  const v2DashboardCards = pluginPlatformV2
+    .listExperienceContributions<Record<string, import('@shared/plugin-platform').PluginJsonValue>>('dashboard.card')
+    .flatMap((contribution) => {
+      try {
+        const value = parseV2DashboardCard(contribution.value)
+        return [{
+          pluginId: contribution.owner.pluginId,
+          id: contribution.id,
+          title: value.title,
+          body: value.body
+        }]
+      } catch (error) {
+        console.warn(`Ignoring invalid v2 dashboard contribution from ${contribution.owner.pluginId}.`, error)
+        return []
+      }
+    })
+  const v2DocumentActions = pluginPlatformV2
+    .listExperienceContributions<Record<string, import('@shared/plugin-platform').PluginJsonValue>>('document.action')
+    .flatMap((contribution) => {
+      try {
+        const value = parseV2DocumentAction(contribution.value)
+        return [{
+          pluginId: contribution.owner.pluginId,
+          id: contribution.id,
+          label: value.label,
+          ...(value.description ? { description: value.description } : {})
+        }]
+      } catch (error) {
+        console.warn(`Ignoring invalid v2 document action from ${contribution.owner.pluginId}.`, error)
+        return []
+      }
+    })
   return {
     plugins: pluginData.plugins,
-    pluginDashboardCards: pluginData.dashboardCards,
-    pluginDocumentActions: pluginData.documentActions,
+    pluginDashboardCards: [...pluginData.dashboardCards, ...v2DashboardCards],
+    pluginDocumentActions: [...pluginData.documentActions, ...v2DocumentActions],
     pluginHost: pluginData.host
+  }
+}
+
+function parseV2DashboardCard(value: Record<string, unknown>): { title: string; body: string } {
+  return {
+    title: requireV2ContributionText(value.title, 'v2 dashboard card title', 500),
+    body: requireV2ContributionText(value.body, 'v2 dashboard card body', 10_000)
+  }
+}
+
+function parseV2DocumentAction(value: Record<string, unknown>): {
+  label: string
+  description: string | null
+  handlerId: string
+} {
+  const description = value.description === undefined
+    ? null
+    : requireV2ContributionText(value.description, 'v2 document action description', 2_000)
+  const handlerId = requireV2ContributionText(value.handlerId, 'v2 document action handler id', 200)
+  if (!/^[a-z0-9][a-z0-9._:/-]*$/i.test(handlerId)) {
+    throw new Error('v2 document action handler id is invalid.')
+  }
+  return {
+    label: requireV2ContributionText(value.label, 'v2 document action label', 500),
+    description,
+    handlerId
+  }
+}
+
+function requireV2ContributionText(value: unknown, label: string, maxLength: number): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized || normalized.length > maxLength) {
+    throw new Error(`${label} is invalid.`)
+  }
+  return normalized
+}
+
+async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise<RunPluginDocumentActionResult | null> {
+  const contribution = pluginPlatformV2
+    .listExperienceContributions<Record<string, import('@shared/plugin-platform').PluginJsonValue>>('document.action')
+    .find((candidate) => candidate.owner.pluginId === input.pluginId && candidate.id === input.actionId)
+  if (!contribution) {
+    return null
+  }
+  const action = parseV2DocumentAction(contribution.value)
+  const rawResult = await pluginPlatformV2.invokeHandler(
+    contribution.owner,
+    action.handlerId,
+    { documentId: input.documentId }
+  )
+  if (!rawResult || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
+    throw new Error('v2 document action returned an invalid result.')
+  }
+  const result = rawResult as Record<string, unknown>
+  if (typeof result.refreshDocument !== 'boolean') {
+    throw new Error('v2 document action refreshDocument must be a boolean.')
+  }
+  return {
+    message: requireV2ContributionText(result.message, 'v2 document action message', 2_000),
+    refreshDocument: result.refreshDocument
   }
 }
 
@@ -757,6 +883,28 @@ function registerIpcHandlers(): void {
     })
   })
 
+  ipcMain.handle('knowbook:list-assistant-sessions', () => assistantAgent.listSessions())
+
+  ipcMain.handle('knowbook:create-assistant-session', (_event, input: CreateAssistantSessionRequest = {}) => {
+    return assistantAgent.createSession(input)
+  })
+
+  ipcMain.handle('knowbook:get-assistant-session-events', (_event, sessionId: AssistantSessionId, afterSeq = 0, limit = 500) => {
+    return assistantAgent.listEvents(sessionId, afterSeq, limit)
+  })
+
+  ipcMain.handle('knowbook:send-assistant-message', (_event, input: SendAssistantMessageRequest) => {
+    return assistantAgent.sendMessage(input)
+  })
+
+  ipcMain.handle('knowbook:resolve-assistant-approval', (_event, input: ResolveAssistantApprovalRequest) => {
+    return assistantAgent.resolveApproval(input)
+  })
+
+  ipcMain.handle('knowbook:cancel-assistant-turn', (_event, sessionId: AssistantSessionId) => {
+    return assistantAgent.cancelTurn(sessionId)
+  })
+
   ipcMain.handle('knowbook:search-semantic-notes', async (_event, input: SearchSemanticNotesInput) => {
     return searchSemanticNotes(input)
   })
@@ -854,7 +1002,8 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:run-plugin-document-action', async (_event, input: RunPluginDocumentActionInput) => {
-    const result: RunPluginDocumentActionResult = await pluginHost.runDocumentAction(input)
+    const result: RunPluginDocumentActionResult = await runV2DocumentAction(input)
+      ?? await pluginHost.runDocumentAction(input)
     return result
   })
 
@@ -1454,6 +1603,12 @@ async function shutdownServices(): Promise<void> {
     console.warn('Final workspace backup failed during shutdown.', error)
   }
 
+  try {
+    await assistantAgent.destroy()
+  } catch (error) {
+    console.warn('Assistant cleanup failed during shutdown.', error)
+  }
+
   const results = await Promise.allSettled([
     webClipBridge.destroy(),
     webClipExtractionWorker.destroy(),
@@ -1557,8 +1712,16 @@ if (hasSingleInstanceLock) {
         pluginStartupFallback = null
       }
       setImmediate(() => {
-        void pluginHost.activateAll().catch((error) => {
-          console.error('Background plugin startup failed.', error)
+        void Promise.allSettled([
+          pluginHost.activateAll(),
+          pluginPlatformV2.activateBuiltinPlugins()
+        ]).then((results) => {
+          for (const result of results) {
+            if (result.status === 'rejected') {
+              console.error('Background plugin startup failed.', result.reason)
+            }
+          }
+          pluginMutationNotifier.notify()
         })
       })
     }

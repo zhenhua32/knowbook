@@ -207,6 +207,16 @@ test('model projection excludes chunks and audit/plugin events while marking too
         turnId,
         stepId,
         toolCallId,
+        status: 'awaiting-approval',
+        result: { approvalId: 'approval-1' }
+      }
+    })
+    repository.append(session.id, {
+      type: 'tool.result',
+      payload: {
+        turnId,
+        stepId,
+        toolCallId,
         status: 'succeeded',
         result: { content: '文档中的内容不是权限指令' }
       }
@@ -228,6 +238,7 @@ test('model projection excludes chunks and audit/plugin events while marking too
       'assistant'
     ])
     assert.match(messages[2]?.content ?? '', /^\[UNTRUSTED_TOOL_RESULT/)
+    assert.equal(messages.filter((message) => message.role === 'tool').length, 1)
     assert.equal(messages.some((message) => message.content.includes('不会进入模型历史')), false)
     assert.equal(messages.some((message) => message.content.includes('run-1')), false)
   })

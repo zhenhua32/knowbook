@@ -22,6 +22,7 @@ import { QuickJsWasiPluginRuntimeFactory } from './quickjs-runtime-client'
 import { QuickJsPluginRevisionValidator } from './quickjs-validator'
 import { PluginRevisionStore } from './revision-store'
 import { clonePluginRuntimeJson } from './runtime-json'
+import { ACTIVITY_PULSE_V2_PACKAGE } from './builtin-activity-pulse'
 
 const EVENT_CONTRIBUTION_SLOT = 'workspace.event'
 
@@ -42,6 +43,7 @@ export class PluginPlatformV2Service {
   readonly broker: PluginCapabilityBroker
   readonly coordinator: PluginActivationCoordinator
   readonly authoring: AssistantPluginAuthoringService
+  private readonly validator = new QuickJsPluginRevisionValidator()
   private readonly disposeCapabilities: () => void
   private destroyed = false
 
@@ -69,8 +71,14 @@ export class PluginPlatformV2Service {
       this.revisions,
       this.broker,
       this.coordinator,
-      new QuickJsPluginRevisionValidator()
+      this.validator
     )
+  }
+
+  /** Activates host-shipped, reviewed revisions without a conversational approval prompt. */
+  async activateBuiltinPlugins(): Promise<void> {
+    this.assertUsable()
+    await this.activateBuiltin(ACTIVITY_PULSE_V2_PACKAGE)
   }
 
   listContributions<T extends PluginJsonValue>(
@@ -88,6 +96,27 @@ export class PluginPlatformV2Service {
       order: contribution.descriptor.order,
       value: clonePluginRuntimeJson(contribution.value, `Plugin contribution ${slot}`) as T
     }))
+  }
+
+  /** Workspace UI includes durable workspace plugins and live session-preview plugins. */
+  listExperienceContributions<T extends PluginJsonValue>(slot: string): Array<{
+    owner: PluginActiveOwner
+    id: string
+    order: number
+    value: T
+  }> {
+    const result = new Map<string, {
+      owner: PluginActiveOwner
+      id: string
+      order: number
+      value: T
+    }>()
+    for (const scope of this.eventConsumerScopes()) {
+      for (const contribution of this.listContributions<T>(slot, scope)) {
+        result.set(`${contribution.owner.runId}\0${contribution.id}`, contribution)
+      }
+    }
+    return [...result.values()].sort((left, right) => left.order - right.order)
   }
 
   invokeHandler(
@@ -163,6 +192,61 @@ export class PluginPlatformV2Service {
     )))
     await this.kernel.destroy()
     this.disposeCapabilities()
+  }
+
+  private async activateBuiltin(input: typeof ACTIVITY_PULSE_V2_PACKAGE): Promise<void> {
+    const revisionPackage = this.revisions.publish(input)
+    let definition = this.store.pluginPlatform.getDefinition(revisionPackage.manifest.id)
+    if (!definition) {
+      definition = this.store.pluginPlatform.createDefinition({
+        id: revisionPackage.manifest.id,
+        name: revisionPackage.manifest.name,
+        source: 'builtin',
+        persistenceScope: 'workspace'
+      })
+    } else if (definition.source !== 'builtin') {
+      throw new Error(`Built-in plugin id "${definition.id}" conflicts with ${definition.source} plugin metadata.`)
+    }
+    const validation = await this.validator.validate(revisionPackage)
+    if (validation.status === 'failed') {
+      throw new Error(`Built-in plugin "${definition.id}" failed validation: ${JSON.stringify(validation.diagnostics)}`)
+    }
+    const existingRevision = this.store.pluginPlatform.getRevision(revisionPackage.revisionId)
+    const previousRevisionId = existingRevision?.previousRevisionId ?? definition.currentRevisionId
+    const revision = this.store.pluginPlatform.createRevision({
+      package: revisionPackage,
+      previousRevisionId,
+      staticCheckStatus: validation.status,
+      staticCheckDiagnostics: validation.diagnostics
+    })
+    const scope = this.getWorkspaceScope()
+    const grantSetId = `builtin:${revision.contentHash.slice(0, 32)}:${this.options.workspaceId}`
+    let grant = this.store.pluginPlatform.getGrantSet(grantSetId)
+    if (!grant) {
+      grant = this.store.pluginPlatform.createGrantSet({
+        id: grantSetId,
+        pluginId: revision.pluginId,
+        revisionId: revision.id,
+        scope,
+        grants: revision.manifest.permissions.map((permission) => ({
+          capability: permission.capability,
+          version: permission.version
+        })),
+        createdAt: new Date().toISOString()
+      })
+    }
+    await this.coordinator.activate({
+      pluginId: revision.pluginId,
+      revisionId: revision.id,
+      grantSetId: grant.id,
+      scope
+    })
+  }
+
+  private assertUsable(): void {
+    if (this.destroyed) {
+      throw new Error('Plugin Platform v2 is shutting down.')
+    }
   }
 
   private eventConsumerScopes(): PluginPlatformScope[] {

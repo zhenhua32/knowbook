@@ -67,7 +67,8 @@ export class QuickJsPluginRevisionValidator implements PluginRevisionValidator {
 }
 
 function findObviouslyForbiddenImport(source: string): string | null {
-  const match = source.match(/(?:from\s*|import\s*\(\s*|import\s*)['"]((?:node:|electron(?:\/|['"]))[^'"]*)['"]/) 
+  const forbiddenImportPattern = /(?:from\s*|import\s*\(\s*|import\s*)['"](node:[^'"]+|electron(?:\/[^'"]*)?)['"]/
+  const match = source.match(forbiddenImportPattern)
   return match?.[1] ?? null
 }
 
