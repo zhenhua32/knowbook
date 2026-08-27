@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
+import semver from 'semver'
 import type {
   PluginGrantSet,
   PluginJsonValue,
@@ -7,6 +8,11 @@ import type {
   PluginRevisionPackage,
   PluginV2Manifest
 } from '@shared/plugin-platform'
+import type {
+  ResolveSystemPluginInstallRequestInput,
+  SystemPluginInstallRequest,
+  SystemPluginInstallRequestInput
+} from '@shared/plugin-trust'
 import { getPluginPlatformScopeKey, validatePluginPlatformScope } from './scope'
 
 export type PluginDefinitionSource =
@@ -261,6 +267,22 @@ type LogRow = {
   message: string
   data_json: string | null
   created_at: string
+}
+
+type SystemPluginInstallRequestRow = {
+  id: string
+  plugin_id: string
+  name: string
+  version: string
+  publisher: string
+  artifact_sha256: string
+  system_permissions_json: string
+  reason: string
+  requested_by: 'user' | 'assistant'
+  status: SystemPluginInstallRequest['status']
+  restart_required: number
+  created_at: string
+  resolved_at: string | null
 }
 
 export interface SqlitePluginPlatformRepositoryOptions {
@@ -1236,6 +1258,82 @@ export class SqlitePluginPlatformRepository {
     return definition
   }
 
+  createSystemPluginInstallRequest(
+    input: SystemPluginInstallRequestInput
+  ): SystemPluginInstallRequest {
+    const id = randomUUID()
+    const pluginId = normalizeId(input.pluginId, 'System plugin id')
+    const name = normalizeName(input.name)
+    const version = typeof input.version === 'string' ? input.version.trim() : ''
+    if (!semver.valid(version)) throw new Error('System plugin version must be an exact semantic version.')
+    const publisher = normalizeBoundedText(input.publisher, 'System plugin publisher', 500)
+    const artifactSha256 = typeof input.artifactSha256 === 'string'
+      ? input.artifactSha256.trim().toLowerCase()
+      : ''
+    if (!/^[a-f0-9]{64}$/.test(artifactSha256)) throw new Error('System plugin artifact SHA-256 is invalid.')
+    const systemPermissions = normalizeSystemPermissions(input.systemPermissions)
+    const reason = normalizeBoundedText(input.reason, 'System plugin install reason', 4_000)
+    if (input.requestedBy !== 'user' && input.requestedBy !== 'assistant') {
+      throw new Error('System plugin request origin is invalid.')
+    }
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      INSERT INTO system_plugin_install_requests (
+        id, plugin_id, name, version, publisher, artifact_sha256,
+        system_permissions_json, reason, requested_by, status,
+        restart_required, created_at, resolved_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting-confirmation', 1, ?, NULL)
+    `).run(
+      id,
+      pluginId,
+      name,
+      version,
+      publisher,
+      artifactSha256,
+      JSON.stringify(systemPermissions),
+      reason,
+      input.requestedBy,
+      now
+    )
+    return this.requireSystemPluginInstallRequest(id)
+  }
+
+  listSystemPluginInstallRequests(): SystemPluginInstallRequest[] {
+    return (this.db.prepare(`
+      SELECT * FROM system_plugin_install_requests ORDER BY created_at DESC, id ASC
+    `).all() as SystemPluginInstallRequestRow[]).map(mapSystemPluginInstallRequest)
+  }
+
+  resolveSystemPluginInstallRequest(
+    input: ResolveSystemPluginInstallRequestInput
+  ): SystemPluginInstallRequest {
+    const requestId = normalizeId(input.requestId, 'System plugin install request id', 500)
+    const request = this.requireSystemPluginInstallRequest(requestId)
+    if (request.status !== 'awaiting-confirmation') {
+      throw new Error('System plugin install request was already resolved.')
+    }
+    if (normalizeId(input.pluginId, 'System plugin confirmation id') !== request.pluginId) {
+      throw new Error('System plugin confirmation does not match the exact plugin id.')
+    }
+    if (input.decision !== 'confirm' && input.decision !== 'cancel') {
+      throw new Error('System plugin install decision is invalid.')
+    }
+    if (input.decision === 'confirm' && input.acknowledgeSystemAccess !== true) {
+      throw new Error('System plugin confirmation requires explicit acknowledgement of system access.')
+    }
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE system_plugin_install_requests
+      SET status = ?, resolved_at = ?
+      WHERE id = ? AND status = 'awaiting-confirmation'
+    `).run(
+      input.decision === 'confirm' ? 'confirmed-restart-required' : 'cancelled',
+      now,
+      request.id
+    )
+    return this.requireSystemPluginInstallRequest(request.id)
+  }
+
   private isRevisionReferenced(revisionId: string): boolean {
     const id = normalizeRevisionId(revisionId)
     const row = this.db.prepare(`
@@ -1346,6 +1444,14 @@ export class SqlitePluginPlatformRepository {
       throw new Error(`Plugin run "${runId}" does not exist.`)
     }
     return run
+  }
+
+  private requireSystemPluginInstallRequest(requestId: string): SystemPluginInstallRequest {
+    const row = this.db.prepare(`
+      SELECT * FROM system_plugin_install_requests WHERE id = ?
+    `).get(requestId) as SystemPluginInstallRequestRow | undefined
+    if (!row) throw new Error(`System plugin install request "${requestId}" does not exist.`)
+    return mapSystemPluginInstallRequest(row)
   }
 }
 
@@ -1458,6 +1564,34 @@ function mapPluginLog(row: LogRow): PluginLogRecord {
   }
 }
 
+function mapSystemPluginInstallRequest(row: SystemPluginInstallRequestRow): SystemPluginInstallRequest {
+  if (
+    row.restart_required !== 1
+    || !['awaiting-confirmation', 'confirmed-restart-required', 'cancelled'].includes(row.status)
+  ) {
+    throw new Error('Stored system plugin install request is corrupt.')
+  }
+  const permissions = parseJson(row.system_permissions_json, 'System plugin permissions')
+  if (!Array.isArray(permissions) || permissions.some((permission) => typeof permission !== 'string')) {
+    throw new Error('Stored system plugin permissions are corrupt.')
+  }
+  return {
+    id: row.id,
+    pluginId: row.plugin_id,
+    name: row.name,
+    version: row.version,
+    publisher: row.publisher,
+    artifactSha256: row.artifact_sha256,
+    systemPermissions: permissions as string[],
+    reason: row.reason,
+    requestedBy: row.requested_by,
+    status: row.status,
+    restartRequired: true,
+    createdAt: row.created_at,
+    resolvedAt: row.resolved_at
+  }
+}
+
 function validateRevisionPackageMetadata(revisionPackage: PluginRevisionPackage): void {
   if (!revisionPackage || typeof revisionPackage !== 'object') {
     throw new Error('Plugin revision package is required.')
@@ -1538,6 +1672,29 @@ function normalizeName(value: unknown): string {
     throw new Error('Plugin name is required and must not exceed 200 characters.')
   }
   return normalized
+}
+
+function normalizeBoundedText(value: unknown, label: string, maximum: number): string {
+  const normalized = typeof value === 'string' ? value.trim() : ''
+  if (!normalized || normalized.length > maximum) throw new Error(`${label} is invalid.`)
+  return normalized
+}
+
+function normalizeSystemPermissions(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 64) {
+    throw new Error('System plugin permissions must contain from 1 to 64 entries.')
+  }
+  const permissions = value.map((permission, index) => {
+    const normalized = typeof permission === 'string' ? permission.trim() : ''
+    if (!normalized || normalized.length > 200 || !/^[a-z][a-z0-9._:-]*$/i.test(normalized)) {
+      throw new Error(`System plugin permission ${index} is invalid.`)
+    }
+    return normalized
+  })
+  if (new Set(permissions).size !== permissions.length) {
+    throw new Error('System plugin permissions cannot contain duplicates.')
+  }
+  return permissions.sort((left, right) => left.localeCompare(right, 'en'))
 }
 
 function normalizeDefinitionSource(value: unknown): PluginDefinitionSource {

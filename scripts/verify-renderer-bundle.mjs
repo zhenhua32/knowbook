@@ -7,7 +7,9 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const RENDERER_OUTPUT_DIR = resolve(SCRIPT_DIR, '../out/renderer')
 const ENTRY_BUDGETS = {
   javascript: 450 * 1024,
-  stylesheet: 90 * 1024
+  // Plugin Platform v2 adds the shared ViewSpec, sandbox, lifecycle-card, and
+  // recovery-state styles. Keep a narrow ceiling while accounting for them.
+  stylesheet: 96 * 1024
 }
 
 function findEntryAsset(html, pattern, label) {

@@ -34,12 +34,15 @@ import type {
   HomeData,
   HomeDataIpcPayload,
   PluginHomeData,
+  MarketplacePluginInstallResult,
+  MarketplacePluginPackage,
   InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
   PreviewDocumentBlockAiEditInput,
   PreviewDocumentBlockAiEditResult,
   RenameDocumentDatabaseColumnInput,
   RecoverPluginV2InstallationInput,
+  ResolveSystemPluginInstallRequestInput,
   ReorderDatabaseSavedViewsInput,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
@@ -49,6 +52,8 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
+  SystemPluginInstallRequest,
+  SystemPluginInstallRequestInput,
   UpdatePluginSettingInput,
   UpdateAiConfigInput,
   UpdateWebClipBridgeSettingsInput,
@@ -113,6 +118,25 @@ const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
 const ASSISTANT_SESSION_CHANGED_CHANNEL = 'knowbook:assistant-session-changed'
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
+const PACKAGED_RUNTIME_SMOKE_RESULT_PATH = process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE_RESULT']?.trim()
+
+function recordPackagedRuntimeSmoke(status: 'started' | 'passed' | 'failed', error?: unknown): void {
+  if (!PACKAGED_RUNTIME_SMOKE_RESULT_PATH) return
+  try {
+    writeFileSync(PACKAGED_RUNTIME_SMOKE_RESULT_PATH, JSON.stringify({
+      status,
+      ...(error === undefined ? {} : {
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      })
+    }), 'utf8')
+  } catch {
+    // The result file is diagnostic-only; stdout/exit code remain authoritative.
+  }
+}
+
+if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1') {
+  recordPackagedRuntimeSmoke('started')
+}
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const LOCAL_WORKSPACE_ID = 'local-workspace'
@@ -563,6 +587,7 @@ function getPluginHomeData(): PluginHomeData {
           quarantinedAt: installation.quarantinedAt
         }
       }),
+    systemPluginInstallRequests: pluginPlatformV2.listSystemPluginInstallRequests(),
     pluginHost: pluginData.host
   }
 }
@@ -1039,6 +1064,29 @@ function registerIpcHandlers(): void {
     pluginPlatformV2.recoverWorkspaceInstallation(input.pluginId)
     pluginMutationNotifier.notify()
   })
+
+  ipcMain.handle('knowbook:install-marketplace-plugin-package', async (
+    _event,
+    input: MarketplacePluginPackage
+  ): Promise<MarketplacePluginInstallResult> => {
+    const result = await pluginPlatformV2.installMarketplacePackage(input)
+    pluginMutationNotifier.notify()
+    return result
+  })
+
+  ipcMain.handle('knowbook:request-system-plugin-install', (
+    _event,
+    input: SystemPluginInstallRequestInput
+  ): SystemPluginInstallRequest => pluginPlatformV2.requestSystemPluginInstall(input))
+
+  ipcMain.handle('knowbook:list-system-plugin-install-requests', (): SystemPluginInstallRequest[] => (
+    pluginPlatformV2.listSystemPluginInstallRequests()
+  ))
+
+  ipcMain.handle('knowbook:resolve-system-plugin-install-request', (
+    _event,
+    input: ResolveSystemPluginInstallRequestInput
+  ): SystemPluginInstallRequest => pluginPlatformV2.resolveSystemPluginInstallRequest(input))
 
   ipcMain.handle('knowbook:trigger-backup', async () => {
     const result: BackupResult = await backupService.exportAll(true)
@@ -1734,12 +1782,16 @@ if (hasSingleInstanceLock) {
     pluginHost.discoverAll()
     if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1') {
       void pluginPlatformV2.activateBuiltinPlugins().then(() => {
+        recordPackagedRuntimeSmoke('passed')
         console.log('KnowBook packaged Plugin Platform runtime smoke passed.')
       }).catch((error) => {
         process.exitCode = 1
+        recordPackagedRuntimeSmoke('failed', error)
         console.error('KnowBook packaged Plugin Platform runtime smoke failed.', error)
       }).finally(() => {
-        app.quit()
+        // This is a disposable, isolated-profile probe. Exiting directly keeps
+        // unrelated backup/update shutdown work from obscuring runtime results.
+        app.exit(typeof process.exitCode === 'number' ? process.exitCode : 0)
       })
       return
     }

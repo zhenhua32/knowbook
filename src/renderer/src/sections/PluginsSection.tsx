@@ -1,4 +1,11 @@
-import type { PluginDescriptor, PluginSettingDescriptor, PluginSettingValue, PluginV2InstallationSummary } from '@shared/contracts'
+import { useState } from 'react'
+import type {
+  PluginDescriptor,
+  PluginSettingDescriptor,
+  PluginSettingValue,
+  PluginV2InstallationSummary,
+  SystemPluginInstallRequest
+} from '@shared/contracts'
 import type { UiText } from '../i18n'
 
 type PluginsSectionProps = {
@@ -6,6 +13,7 @@ type PluginsSectionProps = {
   pluginRoots: string[]
   plugins: PluginDescriptor[]
   pluginV2Installations: PluginV2InstallationSummary[]
+  systemPluginInstallRequests: SystemPluginInstallRequest[]
   pluginBusyId: string | null
   pluginSettingBusyKey: string | null
   pluginSettingDrafts: Record<string, PluginSettingValue>
@@ -18,6 +26,12 @@ type PluginsSectionProps = {
   onUpdatePluginSettingDraft: (pluginId: string, settingId: string, value: PluginSettingValue) => void
   onUpdatePluginSetting: (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => void
   onRecoverPluginV2Installation: (pluginId: string) => void
+  onResolveSystemPluginInstallRequest: (
+    requestId: string,
+    pluginId: string,
+    decision: 'confirm' | 'cancel',
+    acknowledgeSystemAccess: boolean
+  ) => void
 }
 
 function getPluginSettingDraftKey(pluginId: string, settingId: string): string {
@@ -29,6 +43,7 @@ export function PluginsSection({
   pluginRoots,
   plugins,
   pluginV2Installations,
+  systemPluginInstallRequests,
   pluginBusyId,
   pluginSettingBusyKey,
   pluginSettingDrafts,
@@ -40,8 +55,10 @@ export function PluginsSection({
   onRemovePlugin,
   onUpdatePluginSettingDraft,
   onUpdatePluginSetting,
-  onRecoverPluginV2Installation
+  onRecoverPluginV2Installation,
+  onResolveSystemPluginInstallRequest
 }: PluginsSectionProps) {
+  const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
   return (
     <section className="detail-grid">
       <article className="panel large-panel">
@@ -229,6 +246,62 @@ export function PluginsSection({
                   >
                     Clear quarantine
                   </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {systemPluginInstallRequests.length > 0 ? (
+          <div className="plugin-list system-plugin-request-list">
+            {systemPluginInstallRequests.map((request) => (
+              <div className="plugin-item system-plugin-request" key={`system:${request.id}`}>
+                <div className="plugin-item-head">
+                  <div>
+                    <strong>{request.name}</strong>
+                    <p className="mini-hint">高级系统插件 · {request.publisher} · {request.version}</p>
+                  </div>
+                  <span className={`plugin-status ${request.status === 'awaiting-confirmation' ? 'plugin-status-error' : 'plugin-status-stopped'}`}>
+                    {request.status}
+                  </span>
+                </div>
+                <p>{request.reason}</p>
+                <div className="plugin-item-meta">
+                  <span>SHA-256 {request.artifactSha256.slice(0, 16)}…</span>
+                  <span>Requested by {request.requestedBy}</span>
+                  <span>Restart required</span>
+                </div>
+                <code>{request.systemPermissions.join(' · ')}</code>
+                {request.status === 'awaiting-confirmation' ? (
+                  <>
+                    <label className="toggle-row system-plugin-acknowledgement">
+                      <input
+                        checked={Boolean(systemAcknowledgements[request.id])}
+                        onChange={(event) => setSystemAcknowledgements((current) => ({
+                          ...current,
+                          [request.id]: event.target.checked
+                        }))}
+                        type="checkbox"
+                      />
+                      <span>我理解此插件将获得列出的系统权限，不能即时热加载，并需要重启。</span>
+                    </label>
+                    <div className="plugin-item-actions">
+                      <button
+                        className="danger-button"
+                        disabled={!systemAcknowledgements[request.id]}
+                        onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, 'confirm', true)}
+                        type="button"
+                      >
+                        确认系统安装
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, 'cancel', false)}
+                        type="button"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </>
                 ) : null}
               </div>
             ))}

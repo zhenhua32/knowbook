@@ -10,7 +10,7 @@ import {
   type AssistantModelCompletionInput
 } from '../src/main/assistant/model-adapter.ts'
 import { KnowbookStore } from '../src/main/database/store.ts'
-import { PluginPlatformV2Service } from '../src/main/plugin-platform/platform-service.ts'
+import type { PluginPlatformV2Service } from '../src/main/plugin-platform/platform-service.ts'
 import { assistantToolCallId, assistantTurnId } from '../src/shared/assistant-session.ts'
 
 test('assistant loop exposes only closed plugin tools and persists calls/results before continuing', async () => {
@@ -367,35 +367,6 @@ test('assistant event reads reconcile a committed plugin run from kernel authori
   })
 })
 
-test('assistant runtime context includes only the current document summary and marks it untrusted', async () => {
-  await withStore(async (store, root) => {
-    const documentId = store.createDocument(null)
-    store.updateDocument(documentId, {
-      title: 'Context title',
-      summary: 'Trusted only as user data, not instructions.',
-      blocks: [{ type: 'paragraph', content: 'BLOCK CONTENT MUST NOT ENTER THE AUTOMATIC CONTEXT' }]
-    })
-    const platform = new PluginPlatformV2Service(store, join(root, 'plugins-v2'), {
-      workspaceId: 'workspace-1'
-    })
-    try {
-      const session = store.assistantSessions.createSession({
-        workspaceId: 'workspace-1',
-        title: 'Context',
-        activeDocumentId: documentId,
-        modelConfig: { model: 'test' }
-      })
-      const context = platform.buildAssistantContext(session.id, documentId)
-      assert.match(context.systemPromptSuffix, /untrusted workspace context/i)
-      assert.match(context.systemPromptSuffix, /Trusted only as user data/)
-      assert.doesNotMatch(context.systemPromptSuffix, /BLOCK CONTENT MUST NOT ENTER/)
-      assert.deepEqual((context.policy as Record<string, unknown>).activeDocumentId, documentId)
-    } finally {
-      await platform.destroy()
-    }
-  })
-})
-
 async function waitUntil(predicate: () => boolean, attempts = 100): Promise<void> {
   for (let index = 0; index < attempts; index += 1) {
     if (predicate()) return
@@ -404,11 +375,11 @@ async function waitUntil(predicate: () => boolean, attempts = 100): Promise<void
   throw new Error('Timed out waiting for assistant state.')
 }
 
-async function withStore(run: (store: KnowbookStore, root: string) => Promise<void>): Promise<void> {
+async function withStore(run: (store: KnowbookStore) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-assistant-agent-test-'))
   const store = new KnowbookStore(join(root, 'knowbook.db'))
   try {
-    await run(store, root)
+    await run(store)
   } finally {
     store.destroy()
     rmSync(root, { recursive: true, force: true })

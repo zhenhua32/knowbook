@@ -209,6 +209,51 @@ test('session-preview definitions require an owning assistant session', () => {
   })
 })
 
+test('system plugins remain inert until exact strong confirmation and always require restart', () => {
+  withStore((store) => {
+    const request = store.pluginPlatform.createSystemPluginInstallRequest({
+      pluginId: 'native.capture',
+      name: 'Native Capture',
+      version: '1.0.0',
+      publisher: 'Example Publisher',
+      artifactSha256: 'a'.repeat(64),
+      systemPermissions: ['filesystem.workspace', 'process.helper'],
+      reason: 'Requires an audited native helper.',
+      requestedBy: 'assistant'
+    })
+    assert.equal(request.status, 'awaiting-confirmation')
+    assert.equal(request.restartRequired, true)
+    assert.equal(store.pluginPlatform.getDefinition('native.capture'), null)
+    assert.throws(() => store.pluginPlatform.resolveSystemPluginInstallRequest({
+      requestId: request.id,
+      pluginId: request.pluginId,
+      decision: 'confirm',
+      acknowledgeSystemAccess: false
+    }), /explicit acknowledgement/)
+    assert.throws(() => store.pluginPlatform.resolveSystemPluginInstallRequest({
+      requestId: request.id,
+      pluginId: 'another.plugin',
+      decision: 'confirm',
+      acknowledgeSystemAccess: true
+    }), /exact plugin id/)
+    const confirmed = store.pluginPlatform.resolveSystemPluginInstallRequest({
+      requestId: request.id,
+      pluginId: request.pluginId,
+      decision: 'confirm',
+      acknowledgeSystemAccess: true
+    })
+    assert.equal(confirmed.status, 'confirmed-restart-required')
+    assert.equal(confirmed.restartRequired, true)
+    assert.equal(store.pluginPlatform.getDefinition('native.capture'), null)
+    assert.throws(() => store.pluginPlatform.resolveSystemPluginInstallRequest({
+      requestId: request.id,
+      pluginId: request.pluginId,
+      decision: 'cancel',
+      acknowledgeSystemAccess: false
+    }), /already resolved/)
+  })
+})
+
 test('installation pointers isolate workspace and session activations for the same plugin', () => {
   withStore((store) => {
     const repository = store.pluginPlatform

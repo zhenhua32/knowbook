@@ -13,12 +13,26 @@ import type {
   RunPluginUiActionInput,
   RunPluginUiActionResult
 } from './plugin-ui'
+import type {
+  MarketplacePluginInstallResult,
+  MarketplacePluginPackage,
+  ResolveSystemPluginInstallRequestInput,
+  SystemPluginInstallRequest,
+  SystemPluginInstallRequestInput
+} from './plugin-trust'
 
 export type {
   PluginUiContribution,
   RunPluginUiActionInput,
   RunPluginUiActionResult
 } from './plugin-ui'
+export type {
+  MarketplacePluginInstallResult,
+  MarketplacePluginPackage,
+  ResolveSystemPluginInstallRequestInput,
+  SystemPluginInstallRequest,
+  SystemPluginInstallRequestInput
+} from './plugin-trust'
 
 export interface WorkspaceSummary {
   databasePath: string
@@ -524,6 +538,7 @@ export interface HomeData {
   pluginDocumentActions?: PluginDocumentAction[]
   pluginUiContributions?: PluginUiContribution[]
   pluginV2Installations?: PluginV2InstallationSummary[]
+  systemPluginInstallRequests?: SystemPluginInstallRequest[]
   pluginHost?: PluginHostInfo
 }
 
@@ -581,6 +596,7 @@ export interface PluginHomeData {
   pluginDocumentActions: PluginDocumentAction[]
   pluginUiContributions: PluginUiContribution[]
   pluginV2Installations: PluginV2InstallationSummary[]
+  systemPluginInstallRequests: SystemPluginInstallRequest[]
   pluginHost: PluginHostInfo
 }
 
@@ -824,6 +840,10 @@ export interface ElectronApi {
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   runPluginUiAction: (input: RunPluginUiActionInput) => Promise<RunPluginUiActionResult>
   recoverPluginV2Installation: (input: RecoverPluginV2InstallationInput) => Promise<void>
+  installMarketplacePluginPackage: (input: MarketplacePluginPackage) => Promise<MarketplacePluginInstallResult>
+  requestSystemPluginInstall: (input: SystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
+  listSystemPluginInstallRequests: () => Promise<SystemPluginInstallRequest[]>
+  resolveSystemPluginInstallRequest: (input: ResolveSystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
   triggerBackup: () => Promise<BackupResult>
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>

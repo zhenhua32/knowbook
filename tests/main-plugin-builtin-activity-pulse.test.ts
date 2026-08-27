@@ -35,6 +35,7 @@ test('activity-pulse v2 activates and performs document/event work through capab
     const snapshot = await realm.activate()
     assert.deepEqual(snapshot.contributions.map((item) => item.descriptor.slot), [
       'dashboard.card',
+      'workspace.dashboard',
       'document.action',
       'workspace.event'
     ])

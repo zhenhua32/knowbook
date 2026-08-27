@@ -809,9 +809,12 @@ export class AssistantAgentService {
   ): Promise<SendAssistantMessageResult> {
     if (this.runs.has(sessionId)) {
       const session = this.requireSession(sessionId)
+      if (!session.activeTurnId) {
+        throw new Error('Assistant run registry is inconsistent with the persisted active turn.')
+      }
       return {
         sessionId,
-        turnId: session.activeTurnId ?? assistantTurnId('queued'),
+        turnId: session.activeTurnId,
         status: 'queued'
       }
     }

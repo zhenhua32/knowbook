@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -18,16 +18,23 @@ if (!existsSync(executable)) {
 }
 
 const profile = mkdtempSync(join(tmpdir(), 'knowbook-packaged-runtime-smoke-'))
+const resultPath = join(profile, 'runtime-smoke-result.json')
 try {
   await new Promise((resolve_, reject) => {
     const child = spawn(executable, [
       '--no-sandbox',
       '--disable-gpu',
+      '--enable-logging=stderr',
       `--user-data-dir=${profile}`
     ], {
       env: {
         ...process.env,
-        KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE: '1'
+        KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
+        KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE: '1',
+        KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE_RESULT: resultPath,
+        // Electron's Chromium switch does not provide a strong contract for
+        // app.getPath('userData'), which is also the single-instance lock root.
+        KNOWBOOK_USER_DATA_DIR: profile
       },
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -36,7 +43,8 @@ try {
     child.stderr.on('data', (chunk) => { output += chunk.toString() })
     const timeout = setTimeout(() => {
       child.kill()
-      reject(new Error(`Packaged runtime smoke timed out.\n${output.slice(-8_000)}`))
+      const result = existsSync(resultPath) ? readFileSync(resultPath, 'utf8') : 'result file was not created'
+      reject(new Error(`Packaged runtime smoke timed out (${result}).\n${output.slice(-8_000)}`))
     }, 90_000)
     child.once('error', (error) => {
       clearTimeout(timeout)

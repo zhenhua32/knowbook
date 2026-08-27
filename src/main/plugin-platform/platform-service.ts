@@ -26,6 +26,11 @@ import { clonePluginRuntimeJson } from './runtime-json'
 import { ACTIVITY_PULSE_V2_PACKAGE } from './builtin-activity-pulse'
 import { restoreWorkspacePluginInstallations } from './installation-restorer'
 import { runPluginRevisionMaintenance } from './revision-maintenance'
+import type {
+  MarketplacePluginPackage,
+  TrustedMarketplacePublisher
+} from './marketplace-package'
+import { installMarketplacePluginPackage } from './marketplace-installer'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import {
   getDeclaredPluginUiActions,
@@ -40,6 +45,12 @@ import {
   type RunPluginUiActionInput,
   type RunPluginUiActionResult
 } from '@shared/plugin-ui'
+import type {
+  MarketplacePluginInstallResult,
+  ResolveSystemPluginInstallRequestInput,
+  SystemPluginInstallRequest,
+  SystemPluginInstallRequestInput
+} from '@shared/plugin-trust'
 
 const EVENT_CONTRIBUTION_SLOT = 'workspace.event'
 const MAX_EVENT_QUEUE_LENGTH = 128
@@ -59,6 +70,7 @@ type PluginEventQueue = {
 export interface PluginPlatformV2ServiceOptions extends CorePluginCapabilityHooks {
   workspaceId: string
   runtimeFactory?: NoNodePluginRuntimeFactory
+  marketplacePublishers?: readonly TrustedMarketplacePublisher[]
 }
 
 export interface PluginEventSubscriptionValue {
@@ -363,6 +375,34 @@ export class PluginPlatformV2Service {
       throw new Error('Workspace plugin installation is not quarantined.')
     }
     this.store.pluginPlatform.clearInstallationQuarantine(installation.id)
+  }
+
+  async installMarketplacePackage(input: MarketplacePluginPackage): Promise<MarketplacePluginInstallResult> {
+    this.assertUsable()
+    return installMarketplacePluginPackage({
+      repository: this.store.pluginPlatform,
+      revisions: this.revisions,
+      validator: this.validator,
+      workspaceScope: this.getWorkspaceScope(),
+      trustedPublishers: this.options.marketplacePublishers ?? []
+    }, input)
+  }
+
+  requestSystemPluginInstall(input: SystemPluginInstallRequestInput): SystemPluginInstallRequest {
+    this.assertUsable()
+    return this.store.pluginPlatform.createSystemPluginInstallRequest(input)
+  }
+
+  listSystemPluginInstallRequests(): SystemPluginInstallRequest[] {
+    this.assertUsable()
+    return this.store.pluginPlatform.listSystemPluginInstallRequests()
+  }
+
+  resolveSystemPluginInstallRequest(
+    input: ResolveSystemPluginInstallRequestInput
+  ): SystemPluginInstallRequest {
+    this.assertUsable()
+    return this.store.pluginPlatform.resolveSystemPluginInstallRequest(input)
   }
 
   searchWorkspace(query: string, limit: number): PluginJsonValue {

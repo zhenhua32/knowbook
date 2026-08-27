@@ -66,7 +66,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 8
+const CURRENT_DATABASE_SCHEMA_VERSION = 9
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -400,6 +400,10 @@ export class KnowbookStore {
         this.migrateToSchemaVersion8()
         this.db.pragma('user_version = 8')
       }
+      if (schemaVersion < 9) {
+        this.migrateToSchemaVersion9()
+        this.db.pragma('user_version = 9')
+      }
     })
   }
 
@@ -477,6 +481,10 @@ export class KnowbookStore {
       CREATE INDEX IF NOT EXISTS idx_plugin_installations_quarantine
         ON plugin_installations(quarantined, updated_at DESC);
     `)
+  }
+
+  private migrateToSchemaVersion9(): void {
+    // System-plugin request tables are created by appSchema before migrations run.
   }
 
   private createMigrationSafetyCopy(fromVersion: number, toVersion: number): void {

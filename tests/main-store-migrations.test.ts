@@ -41,13 +41,13 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v8-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v9-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 8)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 9)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
@@ -159,7 +159,7 @@ test('KnowbookStore v4 migration backfills full view config and readable record 
     assert.deepEqual(migratedView?.config.sorts, [{ fieldId: '__created_at__', direction: 'asc' }])
     assert.equal(migratedEntity?.title, document.title)
     assert.equal(
-      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v8-')),
+      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v9-')),
       true
     )
   } finally {

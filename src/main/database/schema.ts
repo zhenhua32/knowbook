@@ -326,6 +326,25 @@ CREATE TABLE IF NOT EXISTS plugin_logs (
 CREATE INDEX IF NOT EXISTS idx_plugin_logs_plugin_created
   ON plugin_logs(plugin_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS system_plugin_install_requests (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  publisher TEXT NOT NULL,
+  artifact_sha256 TEXT NOT NULL,
+  system_permissions_json TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  status TEXT NOT NULL,
+  restart_required INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_install_status
+  ON system_plugin_install_requests(status, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS assistant_sessions (
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL,
