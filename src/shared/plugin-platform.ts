@@ -119,6 +119,7 @@ export interface PluginGrantSet {
   id: string
   pluginId: string
   revisionId: string
+  installationId?: string
   scope: PluginPlatformScope
   grants: readonly PluginCapabilityGrant[]
   createdAt: string

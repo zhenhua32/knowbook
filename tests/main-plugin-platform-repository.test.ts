@@ -209,6 +209,93 @@ test('session-preview definitions require an owning assistant session', () => {
   })
 })
 
+test('installation pointers isolate workspace and session activations for the same plugin', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    repository.createDefinition({
+      id: 'scoped-plugin',
+      name: 'Scoped Plugin',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const packageValue = revision('scoped-plugin', '1.0.0', 'export const scoped = true')
+    repository.createRevision({ package: packageValue, staticCheckStatus: 'passed' })
+    const workspaceInstallation = repository.ensureInstallation({
+      id: 'install-workspace',
+      pluginId: 'scoped-plugin',
+      scope
+    })
+    const sessionScope: PluginPlatformScope = {
+      kind: 'session',
+      workspaceId: 'workspace-1',
+      sessionId: 'session-1'
+    }
+    const sessionInstallation = repository.ensureInstallation({
+      id: 'install-session',
+      pluginId: 'scoped-plugin',
+      scope: sessionScope
+    })
+    repository.createGrantSet({
+      ...grant('grant-workspace', packageValue.revisionId, 'scoped-plugin'),
+      installationId: workspaceInstallation.id
+    })
+    repository.createGrantSet({
+      ...grant('grant-session', packageValue.revisionId, 'scoped-plugin'),
+      installationId: sessionInstallation.id,
+      scope: sessionScope
+    })
+    repository.createRun({
+      id: 'run-workspace',
+      pluginId: 'scoped-plugin',
+      revisionId: packageValue.revisionId,
+      installationId: workspaceInstallation.id,
+      grantSetId: 'grant-workspace',
+      scope
+    })
+    assert.equal(repository.markRunActive('run-workspace', 1).previousRunId, null)
+    repository.createRun({
+      id: 'run-session',
+      pluginId: 'scoped-plugin',
+      revisionId: packageValue.revisionId,
+      installationId: sessionInstallation.id,
+      grantSetId: 'grant-session',
+      scope: sessionScope
+    })
+    assert.equal(repository.markRunActive('run-session', 1).previousRunId, null)
+
+    assert.equal(repository.getInstallation(workspaceInstallation.id)?.activeRunId, 'run-workspace')
+    assert.equal(repository.getInstallation(sessionInstallation.id)?.activeRunId, 'run-session')
+    repository.markRunStopped('run-workspace')
+    assert.equal(repository.getInstallation(workspaceInstallation.id)?.activeRunId, null)
+    assert.equal(repository.getInstallation(sessionInstallation.id)?.activeRunId, 'run-session')
+    assert.throws(() => repository.createRun({
+      id: 'run-crossed',
+      pluginId: 'scoped-plugin',
+      revisionId: packageValue.revisionId,
+      installationId: sessionInstallation.id,
+      grantSetId: 'grant-workspace',
+      scope: sessionScope
+    }), /grant/)
+  })
+})
+
+test('session-preview installations cannot be promoted to workspace scope', () => {
+  withStore((store) => {
+    store.pluginPlatform.createDefinition({
+      id: 'preview-installation',
+      name: 'Preview Installation',
+      source: 'dynamic',
+      persistenceScope: 'session-preview',
+      createdSessionId: 'session-owner'
+    })
+    assert.throws(() => store.pluginPlatform.ensureInstallation({
+      id: 'preview-workspace-installation',
+      pluginId: 'preview-installation',
+      scope
+    }), /owning session/)
+  })
+})
+
 test('plugin state is scoped and upserted without exposing raw SQLite keys', () => {
   withStore((store) => {
     const repository = store.pluginPlatform
@@ -297,6 +384,37 @@ test('startup recovery makes interrupted runs terminal and clears active pointer
       failedRunIds: [],
       stoppedRunIds: []
     })
+  })
+})
+
+test('repeated installation violations quarantine until explicit recovery', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    repository.createDefinition({
+      id: 'quarantine-plugin',
+      name: 'Quarantine Plugin',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const installation = repository.ensureInstallation({
+      id: 'quarantine-installation',
+      pluginId: 'quarantine-plugin',
+      scope
+    })
+    assert.equal(installation.quarantined, false)
+    assert.equal(repository.recordInstallationViolation(installation.id, { code: 'timeout' }).violationCount, 1)
+    assert.equal(repository.recordInstallationViolation(installation.id, { code: 'timeout' }).quarantined, false)
+    const quarantined = repository.recordInstallationViolation(installation.id, { code: 'timeout' })
+    assert.equal(quarantined.quarantined, true)
+    assert.equal(quarantined.enabled, false)
+    assert.equal(quarantined.activeRunId, null)
+    assert.deepEqual(quarantined.quarantineReason, { code: 'timeout' })
+    assert.throws(() => repository.setInstallationEnabled(installation.id, true), /explicitly recovered/)
+
+    const recovered = repository.clearInstallationQuarantine(installation.id)
+    assert.equal(recovered.quarantined, false)
+    assert.equal(recovered.violationCount, 0)
+    assert.equal(repository.setInstallationEnabled(installation.id, true).enabled, true)
   })
 })
 

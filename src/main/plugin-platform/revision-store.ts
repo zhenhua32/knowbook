@@ -119,6 +119,68 @@ export class PluginRevisionStore {
     }
   }
 
+  remove(revisionId: string): boolean {
+    const target = this.getObjectPath(revisionId)
+    if (!existsSync(target)) {
+      return false
+    }
+    const stat = lstatSync(target)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error('Plugin revision object path is not a regular directory.')
+    }
+    rmSync(target, { recursive: true, force: false })
+    return true
+  }
+
+  sweepStaging(options: { olderThanMs?: number; nowMs?: number } = {}): string[] {
+    const olderThanMs = options.olderThanMs ?? 24 * 60 * 60 * 1_000
+    const nowMs = options.nowMs ?? Date.now()
+    if (!Number.isSafeInteger(olderThanMs) || olderThanMs < 0 || !Number.isFinite(nowMs)) {
+      throw new Error('Plugin staging retention options are invalid.')
+    }
+    const removed: string[] = []
+    for (const name of readdirSync(this.stagingRoot).sort()) {
+      const target = join(this.stagingRoot, name)
+      assertInside(this.stagingRoot, target)
+      const stat = lstatSync(target)
+      if (nowMs - stat.mtimeMs < olderThanMs) {
+        continue
+      }
+      rmSync(target, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true })
+      removed.push(name)
+    }
+    return removed
+  }
+
+  sweepOrphanedObjects(
+    retainedRevisionIds: ReadonlySet<string>,
+    options: { olderThanMs?: number; nowMs?: number } = {}
+  ): string[] {
+    const olderThanMs = options.olderThanMs ?? 24 * 60 * 60 * 1_000
+    const nowMs = options.nowMs ?? Date.now()
+    if (!Number.isSafeInteger(olderThanMs) || olderThanMs < 0 || !Number.isFinite(nowMs)) {
+      throw new Error('Plugin object retention options are invalid.')
+    }
+    const removed: string[] = []
+    for (const name of readdirSync(this.objectsRoot).sort()) {
+      if (!/^[a-f0-9]{64}$/.test(name)) {
+        continue
+      }
+      const revisionId = `sha256:${name}`
+      if (retainedRevisionIds.has(revisionId)) {
+        continue
+      }
+      const target = this.getObjectPath(revisionId)
+      const stat = lstatSync(target)
+      if (nowMs - stat.mtimeMs < olderThanMs) {
+        continue
+      }
+      rmSync(target, { recursive: stat.isDirectory() && !stat.isSymbolicLink(), force: true })
+      removed.push(revisionId)
+    }
+    return removed
+  }
+
   getObjectPath(revisionId: string): string {
     const match = REVISION_ID_PATTERN.exec(revisionId)
     if (!match) {

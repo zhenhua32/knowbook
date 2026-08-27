@@ -21,11 +21,15 @@ import {
   PluginCapabilityBroker,
   PluginRevisionStore,
   type PluginCapabilityCatalogEntry,
+  type PluginDefinitionRecord,
+  type PluginLogRecord,
   type PluginRevisionRecord,
+  type PluginRunRecord,
   type PluginStaticCheckStatus,
   type SqlitePluginPlatformRepository
 } from '../plugin-platform'
 import { getPluginPlatformScopeKey } from '../plugin-platform/scope'
+import { clonePluginRuntimeJson } from '../plugin-platform/runtime-json'
 
 const DEFAULT_APPROVAL_LIFETIME_MS = 10 * 60 * 1000
 const MAX_APPROVAL_LIFETIME_MS = 60 * 60 * 1000
@@ -78,15 +82,59 @@ export interface RequestPluginActivationInput {
   summary: string
   approvalLifetimeMs?: number
   runId?: string
+  operation?: 'activate' | 'rollback' | 'install-workspace'
+  fromRevisionId?: string
 }
 
 export interface PluginActivationApprovalRequest {
   status: 'awaiting-approval'
+  operation: 'activate' | 'rollback' | 'install-workspace'
   approvalId: AssistantApprovalId
   runId: string
   revisionId: string
   expiresAt: string
   risk: 'low' | 'medium' | 'high'
+}
+
+export interface PluginListItem {
+  definition: PluginDefinitionRecord
+  revisionCount: number
+  activeRun: PluginRunRecord | null
+}
+
+export interface PluginInspection {
+  definition: PluginDefinitionRecord
+  revisions: PluginRevisionRecord[]
+  runs: PluginRunRecord[]
+}
+
+export interface PluginDiagnostics {
+  pluginId: string
+  runs: PluginRunRecord[]
+  logs: PluginLogRecord[]
+}
+
+export interface StopPluginInput {
+  pluginId: string
+  scope: PluginPlatformScope
+}
+
+export interface RollbackPluginInput {
+  pluginId: string
+  targetRevisionId: string
+  scope: PluginPlatformScope
+  summary: string
+  approvalLifetimeMs?: number
+  runId?: string
+}
+
+export interface InstallPluginWorkspaceInput {
+  pluginId: string
+  revisionId: string
+  scope: Extract<PluginPlatformScope, { kind: 'workspace' }>
+  summary: string
+  approvalLifetimeMs?: number
+  runId?: string
 }
 
 export type PluginApprovalDecision = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
@@ -128,6 +176,159 @@ export class AssistantPluginAuthoringService {
 
   inspectCapabilities(): PluginCapabilityCatalogEntry[] {
     return this.broker.listCapabilities()
+  }
+
+  listPlugins(context: PluginAuthoringContext): PluginListItem[] {
+    this.requireActiveTurn(context)
+    const session = this.sessions.getSession(context.sessionId)!
+    return this.plugins.listDefinitions()
+      .filter((definition) => isDefinitionVisible(definition, context.sessionId))
+      .map((definition) => {
+        const sessionInstallation = this.plugins.getInstallationForScope(definition.id, {
+          kind: 'session', workspaceId: session.workspaceId, sessionId: context.sessionId
+        })
+        const workspaceInstallation = this.plugins.getInstallationForScope(definition.id, {
+          kind: 'workspace', workspaceId: session.workspaceId
+        })
+        const activeRunId = sessionInstallation?.activeRunId ?? workspaceInstallation?.activeRunId ?? null
+        return {
+          definition,
+          revisionCount: this.plugins.listRevisions(definition.id).length,
+          activeRun: activeRunId ? this.plugins.getRun(activeRunId) : null
+        }
+      })
+  }
+
+  inspectPlugin(context: PluginAuthoringContext, pluginId: string): PluginInspection {
+    this.requireActiveTurn(context)
+    const definition = this.requireVisibleDefinition(context.sessionId, pluginId)
+    return {
+      definition,
+      revisions: this.plugins.listRevisions(definition.id),
+      runs: this.plugins.listPluginRuns(definition.id)
+    }
+  }
+
+  inspectRevision(
+    context: PluginAuthoringContext,
+    pluginId: string,
+    revisionId: string
+  ): PluginRevisionRecord {
+    const inspection = this.inspectPlugin(context, pluginId)
+    const revision = inspection.revisions.find((candidate) => candidate.id === revisionId)
+    if (!revision) {
+      throw new Error(`Plugin revision "${revisionId}" does not belong to "${inspection.definition.id}".`)
+    }
+    return revision
+  }
+
+  previewRevision(
+    context: PluginAuthoringContext,
+    pluginId: string,
+    revisionId: string
+  ): PluginJsonValue {
+    const revision = this.inspectRevision(context, pluginId, revisionId)
+    const currentPackage = this.revisions.load(revision.id)
+    const previousPackage = revision.previousRevisionId
+      ? this.revisions.load(revision.previousRevisionId)
+      : null
+    return buildRevisionPreview(previousPackage, currentPackage, revision)
+  }
+
+  readDiagnostics(
+    context: PluginAuthoringContext,
+    pluginId: string,
+    limit = 100
+  ): PluginDiagnostics {
+    this.requireActiveTurn(context)
+    const definition = this.requireVisibleDefinition(context.sessionId, pluginId)
+    return {
+      pluginId: definition.id,
+      runs: this.plugins.listPluginRuns(definition.id, limit),
+      logs: this.plugins.listPluginLogs(definition.id, limit)
+    }
+  }
+
+  async stopPlugin(
+    context: PluginAuthoringContext,
+    input: StopPluginInput
+  ): Promise<PluginRunRecord> {
+    this.requireActiveTurn(context)
+    const definition = this.requireVisibleDefinition(context.sessionId, input.pluginId)
+    this.assertScopeAccess(context.sessionId, definition, input.scope)
+    const installation = this.plugins.getInstallationForScope(definition.id, input.scope)
+    const activeRun = installation?.activeRunId ? this.plugins.getRun(installation.activeRunId) : null
+    if (!activeRun) {
+      throw new Error(`Plugin "${definition.id}" has no active run in the requested scope.`)
+    }
+    const stopped = await this.coordinator.stop(definition.id, input.scope)
+    if (!stopped) {
+      throw new Error(`Plugin "${definition.id}" stopped before the request could be committed.`)
+    }
+    this.plugins.revokeGrantSet(stopped.grantSetId)
+    this.broker.revokeGrantSet(stopped.grantSetId)
+    this.sessions.append(context.sessionId, {
+      type: 'plugin.run.stopped',
+      payload: {
+        pluginId: stopped.pluginId,
+        revisionId: stopped.revisionId,
+        runId: stopped.id
+      }
+    })
+    return stopped
+  }
+
+  requestRollback(
+    context: PluginApprovalContext,
+    input: RollbackPluginInput
+  ): PluginActivationApprovalRequest {
+    this.requireActiveTurn(context)
+    const definition = this.requireVisibleDefinition(context.sessionId, input.pluginId)
+    this.assertScopeAccess(context.sessionId, definition, input.scope)
+    const installation = this.plugins.getInstallationForScope(definition.id, input.scope)
+    const fromRevisionId = installation?.currentRevisionId ?? null
+    if (!fromRevisionId) {
+      throw new Error(`Plugin "${definition.id}" has no successful revision to roll back from.`)
+    }
+    if (fromRevisionId === input.targetRevisionId) {
+      throw new Error('Plugin rollback target is already the current revision.')
+    }
+    if (!this.plugins.wasRevisionActivated(definition.id, input.targetRevisionId)) {
+      throw new Error('Plugin rollback target must be a retained revision that activated successfully.')
+    }
+    return this.requestActivation(context, {
+      pluginId: definition.id,
+      revisionId: input.targetRevisionId,
+      scope: input.scope,
+      summary: input.summary,
+      approvalLifetimeMs: input.approvalLifetimeMs,
+      runId: input.runId,
+      operation: 'rollback',
+      fromRevisionId
+    })
+  }
+
+  requestWorkspaceInstallation(
+    context: PluginApprovalContext,
+    input: InstallPluginWorkspaceInput
+  ): PluginActivationApprovalRequest {
+    this.requireActiveTurn(context)
+    const definition = this.requireVisibleDefinition(context.sessionId, input.pluginId)
+    if (
+      definition.persistenceScope !== 'session-preview'
+      || definition.createdSessionId !== context.sessionId
+    ) {
+      throw new Error('Only an owning session-preview plugin can be saved to the workspace.')
+    }
+    return this.requestActivation(context, {
+      pluginId: definition.id,
+      revisionId: input.revisionId,
+      scope: input.scope,
+      summary: input.summary,
+      approvalLifetimeMs: input.approvalLifetimeMs,
+      runId: input.runId,
+      operation: 'install-workspace'
+    })
   }
 
   async defineRevision(
@@ -194,21 +395,36 @@ export class AssistantPluginAuthoringService {
     input: RequestPluginActivationInput
   ): PluginActivationApprovalRequest {
     this.requireActiveTurn(context)
+    const operation = input.operation ?? 'activate'
+    const expectedTool = operation === 'rollback'
+      ? 'plugins.rollback'
+      : operation === 'install-workspace'
+        ? 'plugins.install_workspace'
+        : 'plugins.activate_revision'
     const toolCall = listAllEvents(this.sessions, context.sessionId).find((event) => (
       event.type === 'tool.call'
       && event.payload.toolCallId === context.toolCallId
       && event.payload.turnId === context.turnId
     ))
-    if (!toolCall || toolCall.type !== 'tool.call' || toolCall.payload.tool !== 'plugins.activate_revision') {
-      throw new Error('Plugin approval requires the exact persisted activate_revision tool call.')
+    if (!toolCall || toolCall.type !== 'tool.call' || toolCall.payload.tool !== expectedTool) {
+      throw new Error(`Plugin approval requires the exact persisted ${expectedTool} tool call.`)
     }
     const toolArguments = toolCall.payload.arguments
+    const persistedRevisionId = operation === 'rollback'
+      && toolArguments
+      && typeof toolArguments === 'object'
+      && !Array.isArray(toolArguments)
+      ? toolArguments.targetRevisionId
+      : toolArguments && typeof toolArguments === 'object' && !Array.isArray(toolArguments)
+        ? toolArguments.revisionId
+        : undefined
     if (
       !toolArguments
       || typeof toolArguments !== 'object'
       || Array.isArray(toolArguments)
       || toolArguments.pluginId !== input.pluginId
-      || toolArguments.revisionId !== input.revisionId
+      || persistedRevisionId !== input.revisionId
+      || toolArguments.summary !== input.summary
       || !isSameScope(toolArguments.scope, input.scope)
     ) {
       throw new Error('Plugin activation request does not match its persisted tool arguments.')
@@ -217,6 +433,29 @@ export class AssistantPluginAuthoringService {
     const revision = this.plugins.getRevision(input.revisionId)
     if (!definition || !revision || revision.pluginId !== definition.id) {
       throw new Error('Plugin activation target does not exist.')
+    }
+    if (operation === 'install-workspace') {
+      if (
+        definition.persistenceScope !== 'session-preview'
+        || definition.createdSessionId !== context.sessionId
+        || input.scope.kind !== 'workspace'
+      ) {
+        throw new Error('Workspace installation requires the owning preview plugin and workspace scope.')
+      }
+    } else {
+      this.assertScopeAccess(context.sessionId, definition, input.scope)
+    }
+    if (operation === 'rollback') {
+      if (
+        !input.fromRevisionId
+        || this.plugins.getInstallationForScope(definition.id, input.scope)?.currentRevisionId !== input.fromRevisionId
+        || revision.id === input.fromRevisionId
+      ) {
+        throw new Error('Plugin rollback source no longer matches the current successful revision.')
+      }
+      if (!this.plugins.wasRevisionActivated(definition.id, revision.id)) {
+        throw new Error('Plugin rollback target must be a retained revision that activated successfully.')
+      }
     }
     if (revision.staticCheckStatus === 'failed') {
       throw new Error('Plugin revision failed validation and cannot request activation.')
@@ -233,7 +472,8 @@ export class AssistantPluginAuthoringService {
       )
     }
     if (
-      definition.persistenceScope === 'session-preview'
+      operation !== 'install-workspace'
+      && definition.persistenceScope === 'session-preview'
       && (
         input.scope.kind !== 'session'
         || input.scope.sessionId !== context.sessionId
@@ -248,6 +488,11 @@ export class AssistantPluginAuthoringService {
     const runId = input.runId ?? randomUUID()
     const risk = classifyPermissionRisk(revision.manifest.permissions.map((permission) => permission.capability))
     const permissions = JSON.parse(JSON.stringify(revision.manifest.permissions)) as PluginJsonValue
+    const revisionPreview = buildRevisionPreview(
+      revision.previousRevisionId ? this.revisions.load(revision.previousRevisionId) : null,
+      this.revisions.load(revision.id),
+      revision
+    )
     this.sessions.append(context.sessionId, {
       type: 'plugin.run.requested',
       payload: {
@@ -255,7 +500,9 @@ export class AssistantPluginAuthoringService {
         toolCallId: context.toolCallId,
         pluginId: definition.id,
         revisionId: revision.id,
-        runId
+        runId,
+        operation,
+        ...(operation === 'rollback' ? { fromRevisionId: input.fromRevisionId as string } : {})
       }
     })
     this.sessions.append(context.sessionId, {
@@ -270,11 +517,13 @@ export class AssistantPluginAuthoringService {
         permissions,
         summary: normalizeSummary(input.summary),
         risk,
-        expiresAt
+        expiresAt,
+        revisionPreview
       }
     })
     return {
       status: 'awaiting-approval',
+      operation,
       approvalId,
       runId,
       revisionId: revision.id,
@@ -328,18 +577,33 @@ export class AssistantPluginAuthoringService {
       throw new Error('Approved permission snapshot no longer matches the immutable revision.')
     }
 
+    const operation = runRequest.payload.operation ?? 'activate'
+    const installation = operation === 'install-workspace'
+      ? request.payload.scope.kind === 'workspace'
+        ? this.plugins.prepareWorkspacePromotionInstallation({
+            id: randomUUID(),
+            pluginId: revision.pluginId,
+            workspaceId: request.payload.scope.workspaceId,
+            sessionId
+          })
+        : (() => { throw new Error('Workspace installation approval scope is invalid.') })()
+      : this.plugins.ensureInstallation({
+          id: randomUUID(),
+          pluginId: revision.pluginId,
+          scope: request.payload.scope
+        })
     const grantSetId = randomUUID()
     this.plugins.createGrantSet({
       id: grantSetId,
       pluginId: revision.pluginId,
       revisionId: revision.id,
+      installationId: installation.id,
       scope: request.payload.scope,
       grants: revision.manifest.permissions.map((permission) => ({
         capability: permission.capability,
         version: permission.version
       })),
-      createdAt: this.now().toISOString(),
-      expiresAt: request.payload.expiresAt
+      createdAt: this.now().toISOString()
     })
     try {
       this.sessions.append(sessionId, {
@@ -359,32 +623,46 @@ export class AssistantPluginAuthoringService {
         runId: runRequest.payload.runId
       }
     })
+    const rollbackFromRevisionId = operation === 'rollback'
+      ? runRequest.payload.fromRevisionId
+      : undefined
+    if (operation === 'rollback' && !rollbackFromRevisionId) {
+      this.plugins.revokeGrantSet(grantSetId)
+      this.broker.revokeGrantSet(grantSetId)
+      throw new Error('Plugin rollback run is missing its source revision identity.')
+    }
+    let stoppedPreview: Awaited<ReturnType<PluginActivationCoordinator['stop']>> = null
+    let receipt: Awaited<ReturnType<PluginActivationCoordinator['activate']>>
     try {
-      const receipt = await this.coordinator.activate({
+      receipt = await this.coordinator.activate({
         pluginId: revision.pluginId,
         revisionId: revision.id,
         grantSetId,
+        installationId: installation.id,
         scope: request.payload.scope,
         runId: runRequest.payload.runId
       })
-      this.sessions.append(sessionId, {
-        type: 'plugin.run.succeeded',
-        payload: {
-          pluginId: revision.pluginId,
-          revisionId: revision.id,
-          runId: runRequest.payload.runId,
-          epoch: receipt.owner.epoch
+      if (operation === 'install-workspace') {
+        if (request.payload.scope.kind !== 'workspace') {
+          throw new Error('Workspace installation approval scope changed before commit.')
         }
-      })
-      return {
-        status: 'succeeded',
-        approvalId,
-        grantSetId,
-        runId: runRequest.payload.runId,
-        revisionId: revision.id,
-        epoch: receipt.owner.epoch
+        stoppedPreview = await this.coordinator.stop(revision.pluginId, {
+          kind: 'session',
+          workspaceId: request.payload.scope.workspaceId,
+          sessionId
+        })
+        if (stoppedPreview) {
+          this.plugins.revokeGrantSet(stoppedPreview.grantSetId)
+          this.broker.revokeGrantSet(stoppedPreview.grantSetId)
+        }
+        this.plugins.finalizeWorkspacePromotion(installation.id, sessionId)
       }
     } catch (error) {
+      if (operation === 'install-workspace') {
+        await this.coordinator.stop(revision.pluginId, request.payload.scope).catch(() => null)
+      }
+      this.plugins.revokeGrantSet(grantSetId)
+      this.broker.revokeGrantSet(grantSetId)
       const serialized = serializeError(error)
       this.sessions.append(sessionId, {
         type: 'plugin.run.failed',
@@ -404,12 +682,85 @@ export class AssistantPluginAuthoringService {
         error: serialized
       }
     }
+
+    // The kernel commit is authoritative. Audit projection failures after this point
+    // must never revoke a successfully activated run or its grant.
+    try {
+      if (stoppedPreview) {
+        this.sessions.append(sessionId, {
+          type: 'plugin.run.stopped',
+          payload: {
+            pluginId: stoppedPreview.pluginId,
+            revisionId: stoppedPreview.revisionId,
+            runId: stoppedPreview.id
+          }
+        })
+      }
+      this.sessions.append(sessionId, {
+        type: 'plugin.run.succeeded',
+        payload: {
+          pluginId: revision.pluginId,
+          revisionId: revision.id,
+          runId: runRequest.payload.runId,
+          epoch: receipt.owner.epoch
+        }
+      })
+      if (operation === 'rollback') {
+        this.sessions.append(sessionId, {
+          type: 'plugin.rollback.completed',
+          payload: {
+            pluginId: revision.pluginId,
+            fromRevisionId: rollbackFromRevisionId as string,
+            toRevisionId: revision.id,
+            runId: runRequest.payload.runId
+          }
+        })
+      }
+    } catch {
+      // A later session read can reconcile this committed kernel run.
+    }
+    return {
+      status: 'succeeded',
+      approvalId,
+      grantSetId,
+      runId: runRequest.payload.runId,
+      revisionId: revision.id,
+      epoch: receipt.owner.epoch
+    }
   }
 
   private requireActiveTurn(context: PluginAuthoringContext): void {
     const session = this.sessions.getSession(context.sessionId)
     if (!session || session.status !== 'active' || session.activeTurnId !== context.turnId) {
       throw new Error('Plugin authoring tool requires the matching active assistant turn.')
+    }
+  }
+
+  private requireVisibleDefinition(
+    sessionId: AssistantSessionId,
+    pluginId: string
+  ): PluginDefinitionRecord {
+    const definition = this.plugins.getDefinition(pluginId)
+    if (!definition || !isDefinitionVisible(definition, sessionId)) {
+      throw new Error(`Plugin definition "${pluginId}" is not visible in this assistant session.`)
+    }
+    return definition
+  }
+
+  private assertScopeAccess(
+    sessionId: AssistantSessionId,
+    definition: PluginDefinitionRecord,
+    scope: PluginPlatformScope
+  ): void {
+    if (
+      definition.persistenceScope === 'session-preview'
+      && (
+        definition.createdSessionId !== sessionId
+        || scope.kind !== 'session'
+        || scope.sessionId !== sessionId
+      )
+    ) {
+      throw new Error('Session-preview plugins can only activate inside their owning assistant session or be stopped there.')
     }
   }
 }
@@ -448,6 +799,40 @@ function diffRevisionPackages(
     assetsChanged: [...nextPaths]
       .filter((path) => previousPaths.has(path) && hashBytes(nextAssets[path]) !== hashBytes(previousAssets[path]))
       .sort()
+  }
+}
+
+function buildRevisionPreview(
+  previous: PluginRevisionPackage | null,
+  next: PluginRevisionPackage,
+  revision: PluginRevisionRecord
+): PluginJsonValue {
+  return clonePluginRuntimeJson({
+    pluginId: revision.pluginId,
+    revisionId: revision.id,
+    validation: {
+      status: revision.staticCheckStatus,
+      diagnostics: revision.staticCheckDiagnostics
+    },
+    manifest: next.manifest,
+    diff: diffRevisionPackages(previous, next),
+    code: {
+      previous: sourcePreview(previous?.workerSource ?? ''),
+      next: sourcePreview(next.workerSource)
+    },
+    views: {
+      previous: previous?.views ?? null,
+      next: next.views
+    }
+  }, 'Plugin revision preview')
+}
+
+function sourcePreview(source: string): PluginJsonValue {
+  const maximum = 20_000
+  return {
+    sha256: createHash('sha256').update(source).digest('hex'),
+    characters: source.length,
+    excerpt: source.length <= maximum ? source : `${source.slice(0, maximum)}\n/* [TRUNCATED] */`
   }
 }
 
@@ -540,4 +925,12 @@ function isSameScope(value: PluginJsonValue | undefined, scope: PluginPlatformSc
   } catch {
     return false
   }
+}
+
+function isDefinitionVisible(
+  definition: PluginDefinitionRecord,
+  sessionId: AssistantSessionId
+): boolean {
+  return definition.persistenceScope !== 'session-preview'
+    || definition.createdSessionId === sessionId
 }

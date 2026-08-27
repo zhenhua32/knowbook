@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import type { AppFeatureDomainsState, WorkspaceOperationsState } from '../types/appComposition'
 import type { DatabaseDomainState, DocumentsDomainState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
+import { PluginSlot } from './PluginSlot'
 
 const DocumentsPage = lazy(async () => {
   const module = await import('../pages/DocumentsPage')
@@ -48,6 +49,13 @@ export function AppPageContent({
   shell,
   workspace
 }: AppPageContentProps) {
+  const pluginUiContributions = shell.homeData.pluginUiContributions ?? []
+  const documentContext = documents.selectedDocumentId
+    ? { documentId: documents.selectedDocumentId }
+    : undefined
+  const databaseContext = database.databaseEntityDatabaseId
+    ? { databaseId: database.databaseEntityDatabaseId }
+    : undefined
   return (
     <main className={`content page-${shell.activePage}`}>
       {shell.backupMessage ? (
@@ -59,6 +67,7 @@ export function AppPageContent({
 
       <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
         {shell.activePage === 'dashboard' ? (
+          <>
           <WorkspaceDashboardSection
             isAiEnabled={shell.homeData.aiConfig.enabled}
             onBackupNow={workspace.handleBackup}
@@ -69,9 +78,13 @@ export function AppPageContent({
             summary={shell.homeData.summary}
             ui={shell.ui}
           />
+          <PluginSlot contributions={pluginUiContributions} slot="workspace.dashboard" />
+          </>
         ) : null}
 
         {shell.activePage === 'database' ? (
+          <>
+          <PluginSlot context={databaseContext} contributions={pluginUiContributions} slot="database.view.tabs" />
           <DatabasePage
             catalogColumns={shell.catalogColumns}
             catalogDocuments={shell.catalogDocuments}
@@ -94,9 +107,14 @@ export function AppPageContent({
               handleBoardColumnDragOver: workspace.handleBoardColumnDragOver
             }}
           />
+          <PluginSlot context={databaseContext} contributions={pluginUiContributions} slot="database.record.actions" />
+          </>
         ) : null}
 
         {shell.activePage === 'documents' ? (
+          <>
+          <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.header.actions" />
+          <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.editor.toolbar" />
           <DocumentsPage
             ai={features.ai}
             aiConfig={shell.homeData.aiConfig}
@@ -110,14 +128,17 @@ export function AppPageContent({
             plugins={features.plugins}
             ui={shell.ui}
           />
+          <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.block.context-menu" />
+          <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.aux-panel" />
+          </>
         ) : null}
 
-        {shell.activePage === 'ai' ? <AISection {...features.ai.sectionProps} /> : null}
+        {shell.activePage === 'ai' ? <><PluginSlot contributions={pluginUiContributions} slot="assistant.tools" /><AISection {...features.ai.sectionProps} /><PluginSlot contributions={pluginUiContributions} slot="assistant.message.cards" /></> : null}
 
         {shell.activePage === 'plugins' ? <PluginsSection {...features.plugins.sectionProps} /> : null}
 
         {shell.activePage === 'dashboard' || shell.activePage === 'settings' ? (
-          <DashboardSettingsSection {...features.settingsSectionProps} />
+          <><DashboardSettingsSection {...features.settingsSectionProps} />{shell.activePage === 'settings' ? <PluginSlot contributions={pluginUiContributions} slot="settings.sections" /> : null}</>
         ) : null}
       </Suspense>
     </main>

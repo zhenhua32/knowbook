@@ -42,6 +42,11 @@ test('QuickJS realm has no Node, Electron, network, or host WASM globals', async
   try {
     const owner = activeOwner(identity)
     realm.commit(owner)
+    assert.deepEqual(realm.health(), {
+      status: 'active',
+      handlerCount: 1,
+      pendingCapabilityCalls: 0
+    })
     const result = await realm.invokeHandler(owner, 'inspect', null, new AbortController().signal)
     assert.deepEqual({ ...result as Record<string, PluginJsonValue> }, {
       process: 'undefined',
@@ -146,6 +151,48 @@ test('QuickJS rejects capability use during staging before atomic commit', async
   try {
     await assert.rejects(() => realm.activate(), /unavailable before atomic commit/)
     assert.equal(calls, 0)
+  } finally {
+    await realm.dispose()
+  }
+})
+
+test('QuickJS runs state migration inside the isolated realm before commit', async () => {
+  const package_ = buildPluginRevisionPackage({
+    manifest: manifest({ stateSchemaVersion: 2 }),
+    workerSource: `
+      export function migrateState({ previousVersion, nextVersion, state }) {
+        return {
+          settings: {
+            label: state.settings.label + '-migrated',
+            versions: [previousVersion, nextVersion]
+          }
+        };
+      }
+    `
+  }).package
+  const identity = activationIdentity(package_.revisionId)
+  let capabilityCalls = 0
+  const realm = await QuickJsWasiPluginRealm.create({
+    identity,
+    package: package_,
+    callCapability: async () => {
+      capabilityCalls += 1
+      return null
+    }
+  })
+
+  try {
+    assert.deepEqual(await realm.migrateState({
+      previousVersion: 1,
+      nextVersion: 2,
+      state: { settings: { label: 'before' } }
+    }), {
+      settings: {
+        label: 'before-migrated',
+        versions: [1, 2]
+      }
+    })
+    assert.equal(capabilityCalls, 0)
   } finally {
     await realm.dispose()
   }

@@ -2,6 +2,7 @@ import type { PageId } from '../hooks/useAppShellState'
 import type { DocumentsSidebarState, WorkspaceSidebarActions } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
+import { PluginSlot } from './PluginSlot'
 
 type WorkspaceShellSidebarProps = {
   documents: DocumentsSidebarState
@@ -17,6 +18,7 @@ export function WorkspaceShellSidebar({
   const pinnedDocuments = shell.homeData.documentCatalog.filter((document) => documents.pinnedDocumentIds.has(document.id))
 
   return (
+    <>
     <PageNavWithWorkspaceTree
       activePage={shell.activePage}
       pageItems={shell.pageItems}
@@ -81,5 +83,7 @@ export function WorkspaceShellSidebar({
       onToggleNavCollapse={shell.toggleNavCollapse}
       totalDocumentsCount={shell.homeData.summary.documents}
     />
+    <PluginSlot contributions={shell.homeData.pluginUiContributions} slot="navigation.primary" />
+    </>
   )
 }

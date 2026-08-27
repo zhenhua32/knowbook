@@ -16,6 +16,8 @@ import {
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 60_000
 const DEFAULT_MAX_CONCURRENT_CALLS = 8
+const DEFAULT_MAX_CALLS_PER_MINUTE = 120
+const DEFAULT_MAX_AI_TOKENS_PER_MINUTE = 32_000
 const MAX_INPUT_BYTES = 256 * 1024
 const DEFAULT_MAX_RESULT_BYTES = 1024 * 1024
 const ABSOLUTE_MAX_JSON_BYTES = 4 * 1024 * 1024
@@ -63,6 +65,7 @@ export interface PluginCapabilityDefinition<I = PluginJsonValue, O = PluginJsonV
   execute: (context: PluginCapabilityContext, input: I) => O | Promise<O>
   timeoutMs?: number
   maxResultBytes?: number
+  quotaCost?: (input: I) => { aiTokens?: number }
 }
 
 export type PluginCapabilityAuditOutcome =
@@ -91,6 +94,8 @@ export interface PluginCapabilityAuditRecord {
 
 export interface PluginCapabilityBrokerOptions {
   maxConcurrentCallsPerRun?: number
+  maxCallsPerMinutePerRun?: number
+  maxAiTokensPerMinutePerRun?: number
   audit?: (record: PluginCapabilityAuditRecord) => void | Promise<void>
   now?: () => Date
 }
@@ -126,6 +131,10 @@ export class PluginCapabilityBroker {
   private readonly activeCallsByRun = new Map<string, number>()
   private readonly controllersByGrantSet = new Map<string, Set<AbortController>>()
   private readonly maxConcurrentCallsPerRun: number
+  private readonly maxCallsPerMinutePerRun: number
+  private readonly maxAiTokensPerMinutePerRun: number
+  private readonly callWindowsByRun = new Map<string, number[]>()
+  private readonly aiTokenWindowsByRun = new Map<string, Array<{ at: number; tokens: number }>>()
   private readonly audit: ((record: PluginCapabilityAuditRecord) => void | Promise<void>) | null
   private readonly now: () => Date
 
@@ -137,6 +146,16 @@ export class PluginCapabilityBroker {
       options.maxConcurrentCallsPerRun ?? DEFAULT_MAX_CONCURRENT_CALLS,
       'Capability concurrent call limit',
       1_000
+    )
+    this.maxCallsPerMinutePerRun = normalizePositiveInteger(
+      options.maxCallsPerMinutePerRun ?? DEFAULT_MAX_CALLS_PER_MINUTE,
+      'Capability per-minute call limit',
+      100_000
+    )
+    this.maxAiTokensPerMinutePerRun = normalizePositiveInteger(
+      options.maxAiTokensPerMinutePerRun ?? DEFAULT_MAX_AI_TOKENS_PER_MINUTE,
+      'Capability AI token limit',
+      10_000_000
     )
     this.audit = options.audit ?? null
     this.now = options.now ?? (() => new Date())
@@ -282,6 +301,8 @@ export class PluginCapabilityBroker {
         })
       }
 
+      this.consumeRateQuota(owner.runId, definition, parsedInput)
+
       if (this.getActiveCallCount(owner.runId) >= this.maxConcurrentCallsPerRun) {
         throw new PluginCapabilityError(
           'quota-exceeded',
@@ -420,6 +441,43 @@ export class PluginCapabilityBroker {
     return this.activeCallsByRun.get(runId) ?? 0
   }
 
+  private consumeRateQuota(
+    runId: string,
+    definition: NormalizedCapabilityDefinition,
+    input: unknown
+  ): void {
+    const now = this.now().getTime()
+    const cutoff = now - 60_000
+    const calls = (this.callWindowsByRun.get(runId) ?? []).filter((at) => at > cutoff)
+    if (calls.length >= this.maxCallsPerMinutePerRun) {
+      this.callWindowsByRun.set(runId, calls)
+      throw new PluginCapabilityError(
+        'quota-exceeded',
+        `Plugin run exceeds ${this.maxCallsPerMinutePerRun} capability calls per minute.`
+      )
+    }
+    calls.push(now)
+    this.callWindowsByRun.set(runId, calls)
+
+    const cost = definition.quotaCost?.(input)
+    const aiTokens = cost?.aiTokens ?? 0
+    if (!Number.isSafeInteger(aiTokens) || aiTokens < 0) {
+      throw new PluginCapabilityError('invalid-input', 'Capability quota cost is invalid.')
+    }
+    if (aiTokens === 0) return
+    const tokenWindow = (this.aiTokenWindowsByRun.get(runId) ?? []).filter((entry) => entry.at > cutoff)
+    const used = tokenWindow.reduce((total, entry) => total + entry.tokens, 0)
+    if (used + aiTokens > this.maxAiTokensPerMinutePerRun) {
+      this.aiTokenWindowsByRun.set(runId, tokenWindow)
+      throw new PluginCapabilityError(
+        'quota-exceeded',
+        `Plugin run exceeds ${this.maxAiTokensPerMinutePerRun} AI tokens per minute.`
+      )
+    }
+    tokenWindow.push({ at: now, tokens: aiTokens })
+    this.aiTokenWindowsByRun.set(runId, tokenWindow)
+  }
+
   private decrementActiveCall(runId: string): void {
     const next = this.getActiveCallCount(runId) - 1
     if (next > 0) {
@@ -452,6 +510,9 @@ function normalizeDefinition<I, O>(
   if (typeof definition.parseInput !== 'function' || typeof definition.execute !== 'function') {
     throw new Error(`Capability "${id}@${version}" requires parseInput and execute functions.`)
   }
+  if (definition.quotaCost !== undefined && typeof definition.quotaCost !== 'function') {
+    throw new Error(`Capability "${id}@${version}" quotaCost must be a function.`)
+  }
   if (!Array.isArray(definition.scopes) || definition.scopes.length === 0) {
     throw new Error(`Capability "${id}@${version}" requires at least one allowed scope.`)
   }
@@ -480,6 +541,7 @@ function normalizeDefinition<I, O>(
     ),
     parseInput: definition.parseInput as (input: PluginJsonValue) => unknown,
     authorize: definition.authorize as ((context: PluginCapabilityContext, input: unknown) => void) | undefined,
+    quotaCost: definition.quotaCost as ((input: unknown) => { aiTokens?: number }) | undefined,
     execute: definition.execute as (context: PluginCapabilityContext, input: unknown) => unknown
   }
 }

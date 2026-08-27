@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type {
   PluginGrantSet,
@@ -69,6 +70,32 @@ export interface CreatePluginRevisionInput {
   generatedBySessionId?: string | null
 }
 
+export interface PluginInstallationRecord {
+  id: string
+  pluginId: string
+  scope: PluginPlatformScope
+  enabled: boolean
+  currentRevisionId: string | null
+  pendingRevisionId: string | null
+  activeRunId: string | null
+  currentGrantSetId: string | null
+  pendingGrantSetId: string | null
+  lastError: PluginJsonValue | null
+  quarantined: boolean
+  violationCount: number
+  quarantineReason: PluginJsonValue | null
+  quarantinedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreatePluginInstallationInput {
+  id: string
+  pluginId: string
+  scope: PluginPlatformScope
+  enabled?: boolean
+}
+
 export interface PluginRunRecord {
   id: string
   pluginId: string
@@ -99,6 +126,21 @@ export interface PluginRunCommitResult {
   previousRunId: string | null
 }
 
+export interface PluginStateMigrationInput {
+  fromRevisionId: string
+  fromSchemaVersion: number
+  toSchemaVersion: number
+  values: Readonly<Record<string, PluginJsonValue>>
+}
+
+export interface PluginStateSnapshotRecord {
+  fromRevisionId: string
+  toRevisionId: string
+  schemaVersion: number
+  values: Record<string, PluginJsonValue>
+  createdAt: string
+}
+
 export interface PluginRunRecoveryResult {
   failedRunIds: string[]
   stoppedRunIds: string[]
@@ -113,6 +155,18 @@ export interface AppendPluginLogInput {
   event: string
   message: string
   data?: PluginJsonValue | null
+}
+
+export interface PluginLogRecord {
+  id: string
+  pluginId: string
+  revisionId: string | null
+  runId: string | null
+  level: 'debug' | 'info' | 'warning' | 'error'
+  event: string
+  message: string
+  data: PluginJsonValue | null
+  createdAt: string
 }
 
 type DefinitionRow = {
@@ -148,6 +202,7 @@ type GrantRow = {
   id: string
   plugin_id: string
   revision_id: string
+  installation_id: string | null
   scope_kind: PluginPlatformScope['kind']
   workspace_id: string | null
   session_id: string | null
@@ -155,6 +210,27 @@ type GrantRow = {
   status: 'active' | 'revoked'
   created_at: string
   expires_at: string | null
+}
+
+type InstallationRow = {
+  id: string
+  plugin_id: string
+  scope_kind: PluginPlatformScope['kind']
+  workspace_id: string | null
+  session_id: string | null
+  enabled: number
+  current_revision_id: string | null
+  pending_revision_id: string | null
+  active_run_id: string | null
+  current_grant_set_id: string | null
+  pending_grant_set_id: string | null
+  last_error_json: string | null
+  quarantined: number
+  violation_count: number
+  quarantine_reason_json: string | null
+  quarantined_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 type RunRow = {
@@ -173,6 +249,18 @@ type RunRow = {
   ready_at: string | null
   stopped_at: string | null
   updated_at: string
+}
+
+type LogRow = {
+  id: string
+  plugin_id: string
+  revision_id: string | null
+  run_id: string | null
+  level: PluginLogRecord['level']
+  event: string
+  message: string
+  data_json: string | null
+  created_at: string
 }
 
 export interface SqlitePluginPlatformRepositoryOptions {
@@ -305,15 +393,273 @@ export class SqlitePluginPlatformRepository {
     const rows = this.db.prepare(`
       SELECT * FROM plugin_revisions
       WHERE plugin_id = ?
-      ORDER BY created_at DESC, id ASC
+      ORDER BY created_at DESC, rowid DESC
     `).all(id) as RevisionRow[]
     return rows.map(mapRevision)
+  }
+
+  listRevisionIds(): string[] {
+    const rows = this.db.prepare(`
+      SELECT id FROM plugin_revisions ORDER BY id ASC
+    `).all() as Array<{ id: string }>
+    return rows.map((row) => row.id)
+  }
+
+  listRevisionGarbageCandidates(options: {
+    retainPerPlugin?: number
+    olderThanMs?: number
+  } = {}): string[] {
+    const retainPerPlugin = options.retainPerPlugin ?? 50
+    const olderThanMs = options.olderThanMs ?? 30 * 24 * 60 * 60 * 1_000
+    if (!Number.isSafeInteger(retainPerPlugin) || retainPerPlugin < 1 || retainPerPlugin > 10_000) {
+      throw new Error('Plugin revision retention count is invalid.')
+    }
+    if (!Number.isSafeInteger(olderThanMs) || olderThanMs < 0) {
+      throw new Error('Plugin revision retention age is invalid.')
+    }
+    const cutoff = this.now().getTime() - olderThanMs
+    const candidates: string[] = []
+    for (const definition of this.listDefinitions()) {
+      const revisions = this.listRevisions(definition.id)
+      for (const revision of revisions.slice(retainPerPlugin)) {
+        if (Date.parse(revision.createdAt) <= cutoff && !this.isRevisionReferenced(revision.id)) {
+          candidates.push(revision.id)
+        }
+      }
+    }
+    return candidates.sort()
+  }
+
+  deleteRevisionIfUnreferenced(revisionId: string): boolean {
+    const id = normalizeRevisionId(revisionId)
+    const transaction = this.db.transaction(() => {
+      if (this.isRevisionReferenced(id)) {
+        return false
+      }
+      const result = this.db.prepare('DELETE FROM plugin_revisions WHERE id = ?').run(id)
+      return result.changes > 0
+    })
+    return transaction()
+  }
+
+  ensureInstallation(input: CreatePluginInstallationInput): PluginInstallationRecord {
+    const id = normalizeId(input.id, 'Plugin installation id', 500)
+    const pluginId = normalizeId(input.pluginId, 'Plugin id')
+    validatePluginPlatformScope(input.scope)
+    const definition = this.requireDefinition(pluginId)
+    assertInstallationScope(definition, input.scope)
+    const existing = this.getInstallationForScope(pluginId, input.scope)
+    if (existing) {
+      return existing
+    }
+    const scope = scopeColumns(input.scope)
+    const enabled = input.enabled === undefined ? true : Boolean(input.enabled)
+    const now = this.now().toISOString()
+    try {
+      this.db.prepare(`
+        INSERT INTO plugin_installations (
+          id, plugin_id, scope_kind, workspace_id, session_id, enabled,
+          current_revision_id, pending_revision_id, active_run_id,
+          current_grant_set_id, pending_grant_set_id, last_error_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+      `).run(
+        id,
+        pluginId,
+        scope.kind,
+        scope.workspaceId,
+        scope.sessionId,
+        enabled ? 1 : 0,
+        now,
+        now
+      )
+    } catch (error) {
+      const concurrent = this.getInstallationForScope(pluginId, input.scope)
+      if (concurrent) {
+        return concurrent
+      }
+      throw error
+    }
+    return this.requireInstallation(id)
+  }
+
+  prepareWorkspacePromotionInstallation(input: {
+    id: string
+    pluginId: string
+    workspaceId: string
+    sessionId: string
+  }): PluginInstallationRecord {
+    const id = normalizeId(input.id, 'Plugin installation id', 500)
+    const pluginId = normalizeId(input.pluginId, 'Plugin id')
+    const workspaceId = normalizeId(input.workspaceId, 'Workspace id', 500)
+    const sessionId = normalizeId(input.sessionId, 'Assistant session id', 500)
+    const definition = this.requireDefinition(pluginId)
+    if (
+      definition.persistenceScope !== 'session-preview'
+      || definition.createdSessionId !== sessionId
+    ) {
+      throw new Error('Only the owning session can prepare a preview plugin for workspace installation.')
+    }
+    const scope: PluginPlatformScope = { kind: 'workspace', workspaceId }
+    const existing = this.getInstallationForScope(pluginId, scope)
+    if (existing) {
+      return existing
+    }
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      INSERT INTO plugin_installations (
+        id, plugin_id, scope_kind, workspace_id, session_id, enabled,
+        current_revision_id, pending_revision_id, active_run_id,
+        current_grant_set_id, pending_grant_set_id, last_error_json,
+        created_at, updated_at
+      ) VALUES (?, ?, 'workspace', ?, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+    `).run(id, pluginId, workspaceId, now, now)
+    return this.requireInstallation(id)
+  }
+
+  finalizeWorkspacePromotion(
+    installationId: string,
+    sessionId: string
+  ): PluginInstallationRecord {
+    const installation = this.requireInstallation(installationId)
+    const normalizedSessionId = normalizeId(sessionId, 'Assistant session id', 500)
+    const now = this.now().toISOString()
+    const transaction = this.db.transaction(() => {
+      const definition = this.requireDefinition(installation.pluginId)
+      const current = this.requireInstallation(installation.id)
+      if (
+        current.scope.kind !== 'workspace'
+        || !current.currentRevisionId
+        || !current.activeRunId
+        || definition.persistenceScope !== 'session-preview'
+        || definition.createdSessionId !== normalizedSessionId
+      ) {
+        throw new Error('Workspace plugin promotion is not ready to commit.')
+      }
+      this.db.prepare(`
+        UPDATE plugin_definitions
+        SET persistence_scope = 'workspace', updated_at = ?
+        WHERE id = ?
+      `).run(now, definition.id)
+      this.db.prepare(`
+        UPDATE plugin_installations SET enabled = 1, updated_at = ? WHERE id = ?
+      `).run(now, current.id)
+      return this.requireInstallation(current.id)
+    })
+    return transaction()
+  }
+
+  getInstallation(installationId: string): PluginInstallationRecord | null {
+    const id = normalizeId(installationId, 'Plugin installation id', 500)
+    const row = this.db.prepare('SELECT * FROM plugin_installations WHERE id = ?').get(id) as
+      | InstallationRow
+      | undefined
+    return row ? mapInstallation(row) : null
+  }
+
+  getInstallationForScope(
+    pluginId: string,
+    scope: PluginPlatformScope
+  ): PluginInstallationRecord | null {
+    const id = normalizeId(pluginId, 'Plugin id')
+    validatePluginPlatformScope(scope)
+    const columns = scopeColumns(scope)
+    const row = this.db.prepare(`
+      SELECT * FROM plugin_installations
+      WHERE plugin_id = ? AND scope_kind = ?
+        AND ifnull(workspace_id, '') = ifnull(?, '')
+        AND ifnull(session_id, '') = ifnull(?, '')
+      LIMIT 1
+    `).get(id, columns.kind, columns.workspaceId, columns.sessionId) as InstallationRow | undefined
+    return row ? mapInstallation(row) : null
+  }
+
+  listWorkspaceInstallations(
+    workspaceId: string,
+    options: { enabledOnly?: boolean } = {}
+  ): PluginInstallationRecord[] {
+    const normalizedWorkspaceId = normalizeId(workspaceId, 'Workspace id', 500)
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_installations
+      WHERE scope_kind = 'workspace' AND workspace_id = ?
+        ${options.enabledOnly ? 'AND enabled = 1' : ''}
+      ORDER BY created_at ASC, id ASC
+    `).all(normalizedWorkspaceId) as InstallationRow[]
+    return rows.map(mapInstallation)
+  }
+
+  setInstallationEnabled(installationId: string, enabled: boolean): PluginInstallationRecord {
+    const installation = this.requireInstallation(installationId)
+    if (enabled && installation.quarantined) {
+      throw new Error('Quarantined plugin installation must be explicitly recovered before enabling.')
+    }
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE plugin_installations
+      SET enabled = ?, active_run_id = CASE WHEN ? = 0 THEN NULL ELSE active_run_id END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(enabled ? 1 : 0, enabled ? 1 : 0, now, installation.id)
+    return this.requireInstallation(installation.id)
+  }
+
+  recordInstallationViolation(
+    installationId: string,
+    reason: PluginJsonValue,
+    threshold = 3
+  ): PluginInstallationRecord {
+    const installation = this.requireInstallation(installationId)
+    if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > 100) {
+      throw new Error('Plugin quarantine threshold is invalid.')
+    }
+    const reasonJson = stringifyJson(reason, 'Plugin quarantine reason')
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE plugin_installations
+      SET violation_count = violation_count + 1,
+          quarantined = CASE WHEN violation_count + 1 >= ? THEN 1 ELSE quarantined END,
+          enabled = CASE WHEN violation_count + 1 >= ? THEN 0 ELSE enabled END,
+          active_run_id = CASE WHEN violation_count + 1 >= ? THEN NULL ELSE active_run_id END,
+          quarantine_reason_json = CASE WHEN violation_count + 1 >= ? THEN ? ELSE quarantine_reason_json END,
+          quarantined_at = CASE WHEN violation_count + 1 >= ? THEN ? ELSE quarantined_at END,
+          last_error_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(threshold, threshold, threshold, threshold, reasonJson, threshold, now, reasonJson, now, installation.id)
+    return this.requireInstallation(installation.id)
+  }
+
+  clearInstallationQuarantine(installationId: string): PluginInstallationRecord {
+    const installation = this.requireInstallation(installationId)
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE plugin_installations
+      SET quarantined = 0, violation_count = 0, quarantine_reason_json = NULL,
+          quarantined_at = NULL, last_error_json = NULL, updated_at = ?
+      WHERE id = ?
+    `).run(now, installation.id)
+    return this.requireInstallation(installation.id)
+  }
+
+  recordInstallationError(
+    installationId: string,
+    error: PluginJsonValue
+  ): PluginInstallationRecord {
+    const installation = this.requireInstallation(installationId)
+    const errorJson = stringifyJson(error, 'Plugin installation error')
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE plugin_installations
+      SET active_run_id = NULL, last_error_json = ?, updated_at = ?
+      WHERE id = ?
+    `).run(errorJson, now, installation.id)
+    return this.requireInstallation(installation.id)
   }
 
   createGrantSet(input: PluginGrantSet): PluginGrantSet {
     const id = normalizeId(input.id, 'Plugin grant set id')
     const pluginId = normalizeId(input.pluginId, 'Plugin id')
     const revisionId = normalizeRevisionId(input.revisionId)
+    const installationId = normalizeNullableId(input.installationId, 'Plugin installation id')
     validatePluginPlatformScope(input.scope)
     const createdAt = normalizeDate(input.createdAt, 'Plugin grant creation time')
     const expiresAt = input.expiresAt
@@ -330,15 +676,26 @@ export class SqlitePluginPlatformRepository {
       if (revision.pluginId !== pluginId) {
         throw new Error('Plugin grant revision does not belong to the plugin.')
       }
+      if (installationId) {
+        const installation = this.requireInstallation(installationId)
+        if (
+          installation.pluginId !== pluginId
+          || getPluginPlatformScopeKey(installation.scope) !== getPluginPlatformScopeKey(input.scope)
+        ) {
+          throw new Error('Plugin grant installation does not match its plugin and scope.')
+        }
+      }
       this.db.prepare(`
         INSERT INTO plugin_grants (
-          id, plugin_id, revision_id, scope_kind, workspace_id, session_id,
+          id, plugin_id, revision_id, installation_id,
+          scope_kind, workspace_id, session_id,
           grants_json, status, created_at, expires_at, revoked_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL)
       `).run(
         id,
         pluginId,
         revisionId,
+        installationId,
         scope.kind,
         scope.workspaceId,
         scope.sessionId,
@@ -395,6 +752,23 @@ export class SqlitePluginPlatformRepository {
       ) {
         throw new Error('Plugin run grant does not match its plugin revision and scope.')
       }
+      const installation = installationId ? this.requireInstallation(installationId) : null
+      if (installation?.quarantined) {
+        throw new Error('Quarantined plugin installation must be explicitly recovered before activation.')
+      }
+      if (
+        installation
+        && (
+          installation.pluginId !== pluginId
+          || getPluginPlatformScopeKey(installation.scope) !== getPluginPlatformScopeKey(input.scope)
+          || (grant.installationId !== undefined && grant.installationId !== installation.id)
+        )
+      ) {
+        throw new Error('Plugin run installation does not match its plugin, grant, and scope.')
+      }
+      if (!installation && grant.installationId !== undefined) {
+        throw new Error('Plugin run must retain the installation bound to its grant.')
+      }
       if (grant.expiresAt && Date.parse(grant.expiresAt) <= this.now().getTime()) {
         throw new Error('Plugin run grant has expired.')
       }
@@ -420,6 +794,14 @@ export class SqlitePluginPlatformRepository {
       this.db.prepare(`
         UPDATE plugin_definitions SET pending_revision_id = ?, updated_at = ? WHERE id = ?
       `).run(revisionId, now, pluginId)
+      if (installation) {
+        this.db.prepare(`
+          UPDATE plugin_installations
+          SET pending_revision_id = ?, pending_grant_set_id = ?,
+              last_error_json = NULL, updated_at = ?
+          WHERE id = ?
+        `).run(revisionId, grantSetId, now, installation.id)
+      }
       return this.requireRun(id)
     })
     return transaction()
@@ -428,7 +810,8 @@ export class SqlitePluginPlatformRepository {
   markRunActive(
     runId: string,
     epoch: number,
-    expectedPreviousRunId?: string | null
+    expectedPreviousRunId?: string | null,
+    stateMigration?: PluginStateMigrationInput
   ): PluginRunCommitResult {
     const id = normalizeId(runId, 'Plugin run id', 500)
     if (!Number.isSafeInteger(epoch) || epoch < 1) {
@@ -442,9 +825,18 @@ export class SqlitePluginPlatformRepository {
         throw new Error(`Plugin run "${id}" cannot activate from ${run.status} status.`)
       }
       const definition = this.requireDefinition(run.pluginId)
-      const previousRunId = definition.activeRunId
+      const installation = run.installationId
+        ? this.requireInstallation(run.installationId)
+        : null
+      const previousRunId = installation ? installation.activeRunId : definition.activeRunId
       if (expectedPreviousRunId !== undefined && previousRunId !== expectedPreviousRunId) {
         throw new Error('Persisted active run pointer diverged from the kernel namespace.')
+      }
+      if (stateMigration) {
+        if (!installation) {
+          throw new Error('Plugin state migration requires an installation.')
+        }
+        this.applyStateMigration(installation, run, stateMigration, now)
       }
       if (previousRunId && previousRunId !== id) {
         this.db.prepare(`
@@ -463,6 +855,16 @@ export class SqlitePluginPlatformRepository {
             active_run_id = ?, updated_at = ?
         WHERE id = ?
       `).run(run.revisionId, id, now, run.pluginId)
+      if (installation) {
+        this.db.prepare(`
+          UPDATE plugin_installations
+          SET current_revision_id = ?, pending_revision_id = NULL,
+              active_run_id = ?, current_grant_set_id = ?,
+              pending_grant_set_id = NULL, last_error_json = NULL,
+              updated_at = ?
+          WHERE id = ?
+        `).run(run.revisionId, id, run.grantSetId, now, installation.id)
+      }
       return { run: this.requireRun(id), previousRunId }
     })
     return transaction()
@@ -488,6 +890,15 @@ export class SqlitePluginPlatformRepository {
             pending_revision_id = ?, updated_at = ?
         WHERE id = ?
       `).run(id, run.revisionId, now, run.pluginId)
+      if (run.installationId) {
+        this.db.prepare(`
+          UPDATE plugin_installations
+          SET active_run_id = CASE WHEN active_run_id = ? THEN NULL ELSE active_run_id END,
+              pending_revision_id = ?, pending_grant_set_id = ?,
+              last_error_json = ?, updated_at = ?
+          WHERE id = ?
+        `).run(id, run.revisionId, run.grantSetId, errorJson, now, run.installationId)
+      }
       return this.requireRun(id)
     })
     return transaction()
@@ -508,6 +919,14 @@ export class SqlitePluginPlatformRepository {
               updated_at = ?
           WHERE id = ?
         `).run(id, now, run.pluginId)
+        if (run.installationId) {
+          this.db.prepare(`
+            UPDATE plugin_installations
+            SET active_run_id = CASE WHEN active_run_id = ? THEN NULL ELSE active_run_id END,
+                updated_at = ?
+            WHERE id = ?
+          `).run(id, now, run.installationId)
+        }
       }
       return this.requireRun(id)
     })
@@ -532,6 +951,30 @@ export class SqlitePluginPlatformRepository {
       ORDER BY started_at ASC, id ASC
     `).all(...normalized) as RunRow[]
     return rows.map(mapRun)
+  }
+
+  listPluginRuns(pluginId: string, limit = 100): PluginRunRecord[] {
+    const id = normalizeId(pluginId, 'Plugin id')
+    const normalizedLimit = normalizeListLimit(limit, 'Plugin run list limit')
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_runs
+      WHERE plugin_id = ?
+      ORDER BY started_at DESC, id ASC
+      LIMIT ?
+    `).all(id, normalizedLimit) as RunRow[]
+    return rows.map(mapRun)
+  }
+
+  wasRevisionActivated(pluginId: string, revisionId: string): boolean {
+    const id = normalizeId(pluginId, 'Plugin id')
+    const revision = normalizeRevisionId(revisionId)
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM plugin_runs
+      WHERE plugin_id = ? AND revision_id = ? AND ready_at IS NOT NULL
+      LIMIT 1
+    `).get(id, revision) as { 1: number } | undefined
+    return Boolean(row)
   }
 
   /** Marks process-owned runs terminal before a new host instance starts. */
@@ -575,6 +1018,36 @@ export class SqlitePluginPlatformRepository {
         SET active_run_id = NULL, updated_at = ?
         WHERE active_run_id IS NOT NULL
       `).run(now)
+      const updateFailedInstallation = this.db.prepare(`
+        UPDATE plugin_installations
+        SET active_run_id = CASE WHEN active_run_id = ? THEN NULL ELSE active_run_id END,
+            pending_revision_id = ?, pending_grant_set_id = ?,
+            last_error_json = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      const clearStoppedInstallation = this.db.prepare(`
+        UPDATE plugin_installations
+        SET active_run_id = CASE WHEN active_run_id = ? THEN NULL ELSE active_run_id END,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      for (const run of interrupted) {
+        if (!run.installationId) {
+          continue
+        }
+        if (run.status === 'staging') {
+          updateFailedInstallation.run(
+            run.id,
+            run.revisionId,
+            run.grantSetId,
+            failure,
+            now,
+            run.installationId
+          )
+        } else {
+          clearStoppedInstallation.run(run.id, now, run.installationId)
+        }
+      }
     })
     transaction()
     return { failedRunIds, stoppedRunIds }
@@ -643,6 +1116,66 @@ export class SqlitePluginPlatformRepository {
     return { value: parseJson(valueJson, 'Plugin state'), schemaVersion, updatedAt: now }
   }
 
+  readPluginStateValues(
+    pluginId: string,
+    scope: PluginPlatformScope
+  ): Record<string, PluginJsonValue> {
+    const id = normalizeId(pluginId, 'Plugin id')
+    this.requireDefinition(id)
+    validatePluginPlatformScope(scope)
+    const prefix = `${getPluginPlatformScopeKey(scope)}::`
+    const rows = this.db.prepare(`
+      SELECT scope_key, value_json
+      FROM plugin_state
+      WHERE plugin_id = ? AND substr(scope_key, 1, ?) = ?
+      ORDER BY scope_key ASC
+    `).all(id, prefix.length, prefix) as Array<{ scope_key: string; value_json: string }>
+    const values: Record<string, PluginJsonValue> = {}
+    for (const row of rows) {
+      const encodedKey = row.scope_key.slice(prefix.length)
+      let key: string
+      try {
+        key = decodeURIComponent(encodedKey)
+      } catch (error) {
+        throw new Error('Stored plugin state key is corrupt.', { cause: error })
+      }
+      normalizeStateKey(key)
+      values[key] = parseJson(row.value_json, 'Plugin state')
+    }
+    return values
+  }
+
+  findStateSnapshotForRevision(
+    installationId: string,
+    revisionId: string
+  ): PluginStateSnapshotRecord | null {
+    const installation = this.requireInstallation(installationId)
+    const targetRevisionId = normalizeRevisionId(revisionId)
+    const row = this.db.prepare(`
+      SELECT from_revision_id, to_revision_id, schema_version, state_json, created_at
+      FROM plugin_state_snapshots
+      WHERE installation_id = ? AND from_revision_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(installation.id, targetRevisionId) as {
+      from_revision_id: string
+      to_revision_id: string
+      schema_version: number
+      state_json: string
+      created_at: string
+    } | undefined
+    if (!row) {
+      return null
+    }
+    return {
+      fromRevisionId: row.from_revision_id,
+      toRevisionId: row.to_revision_id,
+      schemaVersion: normalizeStateSchemaVersion(row.schema_version),
+      values: normalizeStateValues(parseJson(row.state_json, 'Plugin state snapshot')),
+      createdAt: row.created_at
+    }
+  }
+
   appendPluginLog(input: AppendPluginLogInput): void {
     const id = normalizeId(input.id, 'Plugin log id', 500)
     const pluginId = normalizeId(input.pluginId, 'Plugin id')
@@ -662,6 +1195,9 @@ export class SqlitePluginPlatformRepository {
     const dataJson = input.data === undefined || input.data === null
       ? null
       : stringifyJson(input.data, 'Plugin log data')
+    if (dataJson && Buffer.byteLength(dataJson, 'utf8') > 64 * 1024) {
+      throw new Error('Plugin log data exceeds 65536 bytes.')
+    }
     this.db.prepare(`
       INSERT INTO plugin_logs (
         id, plugin_id, revision_id, run_id, level, event, message, data_json, created_at
@@ -679,12 +1215,105 @@ export class SqlitePluginPlatformRepository {
     )
   }
 
+  listPluginLogs(pluginId: string, limit = 100): PluginLogRecord[] {
+    const id = normalizeId(pluginId, 'Plugin id')
+    const normalizedLimit = normalizeListLimit(limit, 'Plugin log list limit')
+    this.requireDefinition(id)
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_logs
+      WHERE plugin_id = ?
+      ORDER BY created_at DESC, id ASC
+      LIMIT ?
+    `).all(id, normalizedLimit) as LogRow[]
+    return rows.map(mapPluginLog)
+  }
+
   private requireDefinition(pluginId: string): PluginDefinitionRecord {
     const definition = this.getDefinition(pluginId)
     if (!definition) {
       throw new Error(`Plugin definition "${pluginId}" does not exist.`)
     }
     return definition
+  }
+
+  private isRevisionReferenced(revisionId: string): boolean {
+    const id = normalizeRevisionId(revisionId)
+    const row = this.db.prepare(`
+      SELECT 1
+      WHERE EXISTS (
+        SELECT 1 FROM plugin_definitions
+        WHERE current_revision_id = ? OR pending_revision_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM plugin_installations
+        WHERE current_revision_id = ? OR pending_revision_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM plugin_grants WHERE revision_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM plugin_runs WHERE revision_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM plugin_logs WHERE revision_id = ?
+      ) OR EXISTS (
+        SELECT 1 FROM plugin_state_snapshots
+        WHERE from_revision_id = ? OR to_revision_id = ?
+      )
+      LIMIT 1
+    `).get(id, id, id, id, id, id, id, id, id) as { 1: number } | undefined
+    return Boolean(row)
+  }
+
+  private applyStateMigration(
+    installation: PluginInstallationRecord,
+    run: PluginRunRecord,
+    migration: PluginStateMigrationInput,
+    now: string
+  ): void {
+    const fromRevisionId = normalizeRevisionId(migration.fromRevisionId)
+    if (
+      installation.currentRevisionId !== fromRevisionId
+      || run.revisionId === fromRevisionId
+    ) {
+      throw new Error('Plugin state migration revision boundary is stale or invalid.')
+    }
+    const fromSchemaVersion = normalizeStateSchemaVersion(migration.fromSchemaVersion)
+    const toSchemaVersion = normalizeStateSchemaVersion(migration.toSchemaVersion)
+    if (fromSchemaVersion === toSchemaVersion) {
+      throw new Error('Plugin state migration requires different schema versions.')
+    }
+    const nextValues = normalizeStateValues(migration.values)
+    const previousValues = this.readPluginStateValues(run.pluginId, run.scope)
+    const prefix = `${getPluginPlatformScopeKey(run.scope)}::`
+    this.db.prepare(`
+      INSERT INTO plugin_state_snapshots (
+        id, installation_id, from_revision_id, to_revision_id,
+        schema_version, state_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      installation.id,
+      fromRevisionId,
+      run.revisionId,
+      fromSchemaVersion,
+      stringifyJson(previousValues, 'Plugin state migration snapshot'),
+      now
+    )
+    this.db.prepare(`
+      DELETE FROM plugin_state
+      WHERE plugin_id = ? AND substr(scope_key, 1, ?) = ?
+    `).run(run.pluginId, prefix.length, prefix)
+    const insert = this.db.prepare(`
+      INSERT INTO plugin_state (
+        plugin_id, scope_key, schema_version, value_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `)
+    for (const [key, value] of Object.entries(nextValues)) {
+      insert.run(
+        run.pluginId,
+        `${prefix}${encodeURIComponent(key)}`,
+        toSchemaVersion,
+        stringifyJson(value, 'Migrated plugin state value'),
+        now
+      )
+    }
   }
 
   private requireRevision(revisionId: string): PluginRevisionRecord {
@@ -701,6 +1330,14 @@ export class SqlitePluginPlatformRepository {
       throw new Error(`Active plugin grant set "${grantSetId}" does not exist.`)
     }
     return grant
+  }
+
+  private requireInstallation(installationId: string): PluginInstallationRecord {
+    const installation = this.getInstallation(installationId)
+    if (!installation) {
+      throw new Error(`Plugin installation "${installationId}" does not exist.`)
+    }
+    return installation
   }
 
   private requireRun(runId: string): PluginRunRecord {
@@ -753,10 +1390,39 @@ function mapGrantSet(row: GrantRow): PluginGrantSet {
     id: row.id,
     pluginId: row.plugin_id,
     revisionId: row.revision_id,
+    ...(row.installation_id ? { installationId: row.installation_id } : {}),
     scope: scopeFromRow(row.scope_kind, row.workspace_id, row.session_id),
     grants: parseJson(row.grants_json, 'Plugin grants') as unknown as PluginGrantSet['grants'],
     createdAt: row.created_at,
     ...(row.expires_at ? { expiresAt: row.expires_at } : {})
+  }
+}
+
+function mapInstallation(row: InstallationRow): PluginInstallationRecord {
+  if ((row.enabled !== 0 && row.enabled !== 1) || (row.quarantined !== 0 && row.quarantined !== 1)) {
+    throw new Error('Stored plugin installation enabled flag is corrupt.')
+  }
+  return {
+    id: row.id,
+    pluginId: row.plugin_id,
+    scope: scopeFromRow(row.scope_kind, row.workspace_id, row.session_id),
+    enabled: row.enabled === 1,
+    currentRevisionId: row.current_revision_id,
+    pendingRevisionId: row.pending_revision_id,
+    activeRunId: row.active_run_id,
+    currentGrantSetId: row.current_grant_set_id,
+    pendingGrantSetId: row.pending_grant_set_id,
+    lastError: row.last_error_json
+      ? parseJson(row.last_error_json, 'Plugin installation error')
+      : null,
+    quarantined: row.quarantined === 1,
+    violationCount: row.violation_count,
+    quarantineReason: row.quarantine_reason_json
+      ? parseJson(row.quarantine_reason_json, 'Plugin quarantine reason')
+      : null,
+    quarantinedAt: row.quarantined_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   }
 }
 
@@ -775,6 +1441,20 @@ function mapRun(row: RunRow): PluginRunRecord {
     readyAt: row.ready_at,
     stoppedAt: row.stopped_at,
     updatedAt: row.updated_at
+  }
+}
+
+function mapPluginLog(row: LogRow): PluginLogRecord {
+  return {
+    id: row.id,
+    pluginId: row.plugin_id,
+    revisionId: row.revision_id,
+    runId: row.run_id,
+    level: row.level,
+    event: row.event,
+    message: row.message,
+    data: row.data_json === null ? null : parseJson(row.data_json, 'Plugin log data'),
+    createdAt: row.created_at
   }
 }
 
@@ -826,6 +1506,32 @@ function normalizeStateKey(value: unknown): string {
   return key
 }
 
+function normalizeStateSchemaVersion(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 1_000_000) {
+    throw new Error('Plugin state schema version is invalid.')
+  }
+  return value as number
+}
+
+function normalizeStateValues(value: unknown): Record<string, PluginJsonValue> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Plugin state migration values must be an object.')
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length > 10_000) {
+    throw new Error('Plugin state migration contains too many keys.')
+  }
+  const result: Record<string, PluginJsonValue> = {}
+  for (const [key, entry] of entries) {
+    normalizeStateKey(key)
+    result[key] = parseJson(
+      stringifyJson(entry as PluginJsonValue, 'Plugin state migration value'),
+      'Plugin state migration value'
+    )
+  }
+  return result
+}
+
 function normalizeName(value: unknown): string {
   const normalized = typeof value === 'string' ? value.trim() : ''
   if (!normalized || normalized.length > 200) {
@@ -848,6 +1554,22 @@ function normalizePersistenceScope(value: unknown): PluginPersistenceScope {
   throw new Error('Plugin persistence scope is invalid.')
 }
 
+function assertInstallationScope(
+  definition: PluginDefinitionRecord,
+  scope: PluginPlatformScope
+): void {
+  if (
+    definition.persistenceScope === 'session-preview'
+    && (
+      scope.kind !== 'session'
+      || !definition.createdSessionId
+      || scope.sessionId !== definition.createdSessionId
+    )
+  ) {
+    throw new Error('Session-preview plugins require an installation in their owning session.')
+  }
+}
+
 function normalizeStaticCheckStatus(value: unknown): PluginStaticCheckStatus {
   if (value === 'passed' || value === 'warning' || value === 'failed') {
     return value
@@ -867,6 +1589,13 @@ function normalizeDate(value: unknown, label: string): string {
     throw new Error(`${label} must be a valid date.`)
   }
   return new Date(value).toISOString()
+}
+
+function normalizeListLimit(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 1_000) {
+    throw new Error(`${label} must be an integer from 1 to 1000.`)
+  }
+  return value as number
 }
 
 function stringifyJson(value: PluginJsonValue, label: string): string {

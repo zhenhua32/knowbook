@@ -221,6 +221,16 @@ CREATE TABLE IF NOT EXISTS plugin_installations (
   workspace_id TEXT,
   session_id TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
+  current_revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL,
+  pending_revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL,
+  active_run_id TEXT REFERENCES plugin_runs(id) ON DELETE SET NULL,
+  current_grant_set_id TEXT REFERENCES plugin_grants(id) ON DELETE SET NULL,
+  pending_grant_set_id TEXT REFERENCES plugin_grants(id) ON DELETE SET NULL,
+  last_error_json TEXT,
+  quarantined INTEGER NOT NULL DEFAULT 0,
+  violation_count INTEGER NOT NULL DEFAULT 0,
+  quarantine_reason_json TEXT,
+  quarantined_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -233,10 +243,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_plugin_installations_scope
     ifnull(session_id, '')
   );
 
+CREATE INDEX IF NOT EXISTS idx_plugin_installations_restore
+  ON plugin_installations(scope_kind, workspace_id, enabled, current_revision_id);
+
 CREATE TABLE IF NOT EXISTS plugin_grants (
   id TEXT PRIMARY KEY,
   plugin_id TEXT NOT NULL REFERENCES plugin_definitions(id) ON DELETE CASCADE,
   revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+  installation_id TEXT REFERENCES plugin_installations(id) ON DELETE CASCADE,
   scope_kind TEXT NOT NULL,
   workspace_id TEXT,
   session_id TEXT,
@@ -249,6 +263,8 @@ CREATE TABLE IF NOT EXISTS plugin_grants (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_grants_revision_status
   ON plugin_grants(revision_id, status);
+CREATE INDEX IF NOT EXISTS idx_plugin_grants_installation_status
+  ON plugin_grants(installation_id, status);
 
 CREATE TABLE IF NOT EXISTS plugin_runs (
   id TEXT PRIMARY KEY,
@@ -281,6 +297,19 @@ CREATE TABLE IF NOT EXISTS plugin_state (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (plugin_id, scope_key)
 );
+
+CREATE TABLE IF NOT EXISTS plugin_state_snapshots (
+  id TEXT PRIMARY KEY,
+  installation_id TEXT NOT NULL REFERENCES plugin_installations(id) ON DELETE CASCADE,
+  from_revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+  to_revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+  schema_version INTEGER NOT NULL,
+  state_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_state_snapshots_rollback
+  ON plugin_state_snapshots(installation_id, from_revision_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS plugin_logs (
   id TEXT PRIMARY KEY,

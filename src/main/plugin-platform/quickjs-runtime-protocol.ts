@@ -7,6 +7,7 @@ import type {
   PluginV2Manifest
 } from '@shared/plugin-platform'
 import type { PluginRuntimeActivationSnapshot } from './activation-coordinator'
+import type { PluginRuntimeStateMigrationInput } from './activation-coordinator'
 
 export interface QuickJsRuntimePackagePayload {
   revisionId: string
@@ -24,6 +25,17 @@ export type QuickJsRuntimeCommand =
     }
   | {
       type: 'activate'
+    }
+  | {
+      type: 'migrate-state'
+      input: PluginRuntimeStateMigrationInput
+    }
+  | {
+      type: 'validate-handlers'
+      handlerIds: string[]
+    }
+  | {
+      type: 'health'
     }
   | {
       type: 'invoke-handler'

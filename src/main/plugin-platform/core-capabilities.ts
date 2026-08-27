@@ -127,13 +127,25 @@ export function registerCorePluginCapabilities(
       version: 1,
       scopes: ['app', 'workspace', 'session'],
       parseInput: parseStorageWriteInput,
-      execute: (context, input) => json(store.pluginPlatform.writePluginState(
-        context.owner.pluginId,
-        context.owner.scope,
-        input.key,
-        input.value,
-        input.schemaVersion
-      ), 'plugin.storage.write result')
+      execute: (context, input) => {
+        const revision = store.pluginPlatform.getRevision(context.owner.revisionId)
+        if (!revision || revision.pluginId !== context.owner.pluginId) {
+          throw new Error('Active plugin revision metadata is unavailable.')
+        }
+        const schemaVersion = revision.stateSchemaVersion ?? 1
+        if (input.schemaVersion !== schemaVersion) {
+          throw new Error(
+            `plugin.storage.write schemaVersion must match active revision schema ${schemaVersion}.`
+          )
+        }
+        return json(store.pluginPlatform.writePluginState(
+          context.owner.pluginId,
+          context.owner.scope,
+          input.key,
+          input.value,
+          schemaVersion
+        ), 'plugin.storage.write result')
+      }
     }),
     broker.register({
       id: 'ui.notify',

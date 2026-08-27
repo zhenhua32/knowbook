@@ -1,10 +1,11 @@
-import type { PluginDescriptor, PluginSettingDescriptor, PluginSettingValue } from '@shared/contracts'
+import type { PluginDescriptor, PluginSettingDescriptor, PluginSettingValue, PluginV2InstallationSummary } from '@shared/contracts'
 import type { UiText } from '../i18n'
 
 type PluginsSectionProps = {
   ui: UiText
   pluginRoots: string[]
   plugins: PluginDescriptor[]
+  pluginV2Installations: PluginV2InstallationSummary[]
   pluginBusyId: string | null
   pluginSettingBusyKey: string | null
   pluginSettingDrafts: Record<string, PluginSettingValue>
@@ -16,6 +17,7 @@ type PluginsSectionProps = {
   onRemovePlugin: (plugin: PluginDescriptor) => void
   onUpdatePluginSettingDraft: (pluginId: string, settingId: string, value: PluginSettingValue) => void
   onUpdatePluginSetting: (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => void
+  onRecoverPluginV2Installation: (pluginId: string) => void
 }
 
 function getPluginSettingDraftKey(pluginId: string, settingId: string): string {
@@ -26,6 +28,7 @@ export function PluginsSection({
   ui,
   pluginRoots,
   plugins,
+  pluginV2Installations,
   pluginBusyId,
   pluginSettingBusyKey,
   pluginSettingDrafts,
@@ -36,7 +39,8 @@ export function PluginsSection({
   onSetPluginEnabled,
   onRemovePlugin,
   onUpdatePluginSettingDraft,
-  onUpdatePluginSetting
+  onUpdatePluginSetting,
+  onRecoverPluginV2Installation
 }: PluginsSectionProps) {
   return (
     <section className="detail-grid">
@@ -72,6 +76,7 @@ export function PluginsSection({
                   <div className="plugin-item-head">
                     <div>
                       <strong>{plugin.name}</strong>
+                      <span className="plugin-status plugin-status-legacy">Legacy v1</span>
                       <p className="mini-hint">{plugin.description}</p>
                     </div>
                     <span className={`plugin-status plugin-status-${plugin.status}`}>{statusLabel}</span>
@@ -198,6 +203,37 @@ export function PluginsSection({
         ) : (
           <p className="mini-hint">{ui.noPluginsDiscovered}</p>
         )}
+        {pluginV2Installations.length > 0 ? (
+          <div className="plugin-list plugin-v2-list">
+            {pluginV2Installations.map((plugin) => (
+              <div className="plugin-item" key={`v2:${plugin.pluginId}`}>
+                <div className="plugin-item-head">
+                  <div>
+                    <strong>{plugin.name}</strong>
+                    <p className="mini-hint">Plugin Platform v2 · {plugin.source}</p>
+                  </div>
+                  <span className={`plugin-status ${plugin.quarantined ? 'plugin-status-error' : 'plugin-status-running'}`}>
+                    {plugin.quarantined ? 'Quarantined' : plugin.activeRunId ? 'Running' : 'Stopped'}
+                  </span>
+                </div>
+                <div className="plugin-item-meta">
+                  <span>{plugin.currentRevisionId ?? 'No active revision'}</span>
+                  <span>{plugin.violationCount} violations</span>
+                </div>
+                {plugin.quarantineReason ? <p className="plugin-error">{JSON.stringify(plugin.quarantineReason)}</p> : null}
+                {plugin.quarantined ? (
+                  <button
+                    className="secondary-button"
+                    onClick={() => onRecoverPluginV2Installation(plugin.pluginId)}
+                    type="button"
+                  >
+                    Clear quarantine
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </article>
     </section>
   )

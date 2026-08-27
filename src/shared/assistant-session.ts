@@ -32,12 +32,13 @@ export interface CreateAssistantSessionRequest {
 export interface SendAssistantMessageRequest {
   sessionId: AssistantSessionId
   text: string
+  mode?: 'auto' | 'steer-current' | 'next-turn'
 }
 
 export interface SendAssistantMessageResult {
   sessionId: AssistantSessionId
   turnId: AssistantTurnId
-  status: 'completed' | 'awaiting-approval' | 'cancelled' | 'failed'
+  status: 'completed' | 'awaiting-approval' | 'cancelled' | 'failed' | 'queued'
 }
 
 export interface ResolveAssistantApprovalRequest {
@@ -72,6 +73,7 @@ export interface AssistantEventPayloadMap {
     provider: string
     model: string
     visibleTools: string[]
+    policy?: PluginJsonValue
   }
   'step.ended': {
     turnId: AssistantTurnId
@@ -83,6 +85,16 @@ export interface AssistantEventPayloadMap {
     turnId: AssistantTurnId
     text: string
     attachments?: PluginJsonValue[]
+  }
+  'inbox.message': {
+    messageId: string
+    text: string
+    mode: 'steer-current' | 'next-turn'
+    targetTurnId?: AssistantTurnId
+  }
+  'inbox.message.consumed': {
+    messageId: string
+    turnId: AssistantTurnId
   }
   'assistant.chunk': {
     turnId: AssistantTurnId
@@ -120,6 +132,7 @@ export interface AssistantEventPayloadMap {
     summary: string
     risk: 'low' | 'medium' | 'high'
     expiresAt: string
+    revisionPreview?: PluginJsonValue
   }
   'approval.resolved': {
     approvalId: AssistantApprovalId
@@ -145,6 +158,9 @@ export interface AssistantEventPayloadMap {
     pluginId: string
     revisionId: string
     runId: string
+    /** Missing on events written before lifecycle-operation tracking was introduced. */
+    operation?: 'activate' | 'rollback' | 'install-workspace'
+    fromRevisionId?: string
   }
   'plugin.run.started': { pluginId: string; revisionId: string; runId: string }
   'plugin.run.succeeded': { pluginId: string; revisionId: string; runId: string; epoch: number }
@@ -187,6 +203,8 @@ export const ASSISTANT_EVENT_SURFACES: Readonly<Record<AssistantEventType, Assis
   'step.started': 'audit-only',
   'step.ended': 'audit-only',
   'user.message': 'conversation',
+  'inbox.message': 'trajectory',
+  'inbox.message.consumed': 'audit-only',
   'assistant.chunk': 'conversation',
   'assistant.message': 'conversation',
   'tool.call': 'trajectory',

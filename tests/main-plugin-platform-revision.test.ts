@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import {
   buildPluginRevisionPackage,
-  PluginRevisionStore
+  PluginRevisionStore,
+  runPluginRevisionMaintenance
 } from '../src/main/plugin-platform/index.ts'
+import { KnowbookStore } from '../src/main/database/store.ts'
 
 test('revision packages normalize semantic input into one deterministic hash', () => {
   const first = buildPluginRevisionPackage({
@@ -121,6 +123,51 @@ test('revision store detects object tampering instead of executing changed code'
       workerSource: 'export const safe = true'
     }), /content hash mismatch/)
   })
+})
+
+test('revision maintenance removes only old unreferenced history and stale staging', () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-plugin-maintenance-test-'))
+  const revisionRoot = join(root, 'plugins-v2')
+  const revisions = new PluginRevisionStore(revisionRoot)
+  const store = new KnowbookStore(join(root, 'knowbook.sqlite'))
+  try {
+    store.pluginPlatform.createDefinition({
+      id: 'daily-review',
+      name: 'Daily Review',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const published = ['1.0.0', '2.0.0', '3.0.0'].map((version, index) => {
+      const packageValue = revisions.publish({
+        manifest: manifest({ version }),
+        workerSource: `export const value = ${index}`
+      })
+      store.pluginPlatform.createRevision({
+        package: packageValue,
+        staticCheckStatus: 'passed'
+      })
+      return packageValue
+    })
+    const staleStaging = join(revisionRoot, 'staging', 'abandoned')
+    mkdirSync(staleStaging)
+    const old = new Date('2020-01-01T00:00:00.000Z')
+    utimesSync(staleStaging, old, old)
+
+    const result = runPluginRevisionMaintenance(store.pluginPlatform, revisions, {
+      retainPerPlugin: 1,
+      olderThanMs: 0,
+      nowMs: Date.now() + 1_000
+    })
+
+    assert.deepEqual(result.deletedRevisionIds, published.slice(0, 2).map((entry) => entry.revisionId).sort())
+    assert.equal(revisions.has(published[0].revisionId), false)
+    assert.equal(revisions.has(published[1].revisionId), false)
+    assert.equal(revisions.has(published[2].revisionId), true)
+    assert.deepEqual(result.removedStagingNames, ['abandoned'])
+  } finally {
+    store.destroy()
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {

@@ -35,6 +35,23 @@ export default definePlugin({
           }
         },
         {
+          descriptor: { slot: 'workspace.dashboard', id: 'activity-pulse-view', order: 20 },
+          value: {
+            kind: 'view',
+            view: {
+              version: 1,
+              root: {
+                type: 'stack',
+                gap: 6,
+                children: [
+                  { type: 'badge', label: 'Plugin Platform v2', tone: 'success' },
+                  { type: 'text', text: 'Activity Pulse runs inside an isolated QuickJS/WASM utility process.', tone: 'muted' }
+                ]
+              }
+            }
+          }
+        },
+        {
           descriptor: { slot: 'document.action', id: 'summary-from-first-block', order: 20 },
           value: {
             label: 'Summary from first block (v2)',

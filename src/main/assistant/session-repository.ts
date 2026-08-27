@@ -387,6 +387,9 @@ function validateEventPayload(type: AssistantEventType, payload: PluginJsonValue
       if (!Array.isArray(payload.visibleTools) || payload.visibleTools.some((tool) => typeof tool !== 'string')) {
         throw new Error('Assistant visibleTools must be a string array.')
       }
+      if (payload.policy !== undefined && !isPlainObject(payload.policy)) {
+        throw new Error('Assistant step policy must be an object.')
+      }
       return
     case 'step.ended':
       assertEnum(payload.status, ['completed', 'cancelled', 'failed', 'awaiting-approval'], 'step status')
@@ -396,6 +399,9 @@ function validateEventPayload(type: AssistantEventType, payload: PluginJsonValue
         throw new Error('Assistant tool call version must be a positive integer.')
       }
       requireOwnField(payload, 'arguments', type)
+      return
+    case 'inbox.message':
+      assertEnum(payload.mode, ['steer-current', 'next-turn'], 'inbox mode')
       return
     case 'tool.result':
       assertEnum(payload.status, ['succeeded', 'failed', 'cancelled', 'awaiting-approval'], 'tool result status')
@@ -433,6 +439,20 @@ function validateEventPayload(type: AssistantEventType, payload: PluginJsonValue
     case 'plugin.run.failed':
       requireOwnField(payload, 'error', type)
       return
+    case 'plugin.run.requested':
+      if (payload.operation !== undefined) {
+        assertEnum(
+          payload.operation,
+          ['activate', 'rollback', 'install-workspace'],
+          'plugin run operation'
+        )
+      }
+      if (payload.operation === 'rollback') {
+        if (typeof payload.fromRevisionId !== 'string' || !payload.fromRevisionId.trim()) {
+          throw new Error('Assistant plugin rollback request requires fromRevisionId.')
+        }
+      }
+      return
     case 'session.error':
       requireOwnField(payload, 'error', type)
       return
@@ -466,6 +486,8 @@ function requiredStringFields(type: AssistantEventType): string[] {
     case 'step.started': return ['turnId', 'stepId', 'provider', 'model']
     case 'step.ended': return ['turnId', 'stepId', 'status']
     case 'user.message': return ['turnId', 'text']
+    case 'inbox.message': return ['messageId', 'text', 'mode']
+    case 'inbox.message.consumed': return ['messageId', 'turnId']
     case 'assistant.chunk': return ['turnId', 'stepId', 'text']
     case 'assistant.message': return ['turnId', 'stepId', 'text']
     case 'tool.call': return ['turnId', 'stepId', 'toolCallId', 'tool']
@@ -499,6 +521,7 @@ function requiresActiveTurn(type: AssistantEventType): boolean {
     || type === 'plugin.revision.defined'
     || type === 'plugin.validation.completed'
     || type === 'plugin.run.requested'
+    || type === 'inbox.message.consumed'
 }
 
 function normalizeEventJson(raw: unknown, label: string): PluginJsonValue {

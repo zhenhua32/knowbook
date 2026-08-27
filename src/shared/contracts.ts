@@ -8,6 +8,17 @@ import type {
   SendAssistantMessageRequest,
   SendAssistantMessageResult
 } from './assistant-session'
+import type {
+  PluginUiContribution,
+  RunPluginUiActionInput,
+  RunPluginUiActionResult
+} from './plugin-ui'
+
+export type {
+  PluginUiContribution,
+  RunPluginUiActionInput,
+  RunPluginUiActionResult
+} from './plugin-ui'
 
 export interface WorkspaceSummary {
   databasePath: string
@@ -511,6 +522,8 @@ export interface HomeData {
   plugins?: PluginDescriptor[]
   pluginDashboardCards?: PluginDashboardCard[]
   pluginDocumentActions?: PluginDocumentAction[]
+  pluginUiContributions?: PluginUiContribution[]
+  pluginV2Installations?: PluginV2InstallationSummary[]
   pluginHost?: PluginHostInfo
 }
 
@@ -566,7 +579,27 @@ export interface PluginHomeData {
   plugins: PluginDescriptor[]
   pluginDashboardCards: PluginDashboardCard[]
   pluginDocumentActions: PluginDocumentAction[]
+  pluginUiContributions: PluginUiContribution[]
+  pluginV2Installations: PluginV2InstallationSummary[]
   pluginHost: PluginHostInfo
+}
+
+export interface PluginV2InstallationSummary {
+  pluginId: string
+  name: string
+  source: 'builtin' | 'dynamic' | 'marketplace' | 'system' | 'legacy'
+  scope: 'workspace'
+  enabled: boolean
+  currentRevisionId: string | null
+  activeRunId: string | null
+  quarantined: boolean
+  violationCount: number
+  quarantineReason: import('./plugin-platform').PluginJsonValue | null
+  quarantinedAt: string | null
+}
+
+export interface RecoverPluginV2InstallationInput {
+  pluginId: string
 }
 
 export type UpdateDocumentResult =
@@ -789,6 +822,8 @@ export interface ElectronApi {
   removePlugin: (pluginId: string) => Promise<void>
   updatePluginSetting: (input: UpdatePluginSettingInput) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
+  runPluginUiAction: (input: RunPluginUiActionInput) => Promise<RunPluginUiActionResult>
+  recoverPluginV2Installation: (input: RecoverPluginV2InstallationInput) => Promise<void>
   triggerBackup: () => Promise<BackupResult>
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>

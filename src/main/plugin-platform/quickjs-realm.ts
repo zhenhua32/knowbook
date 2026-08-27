@@ -17,7 +17,9 @@ import {
 } from 'quickjs-wasi'
 import type {
   NoNodePluginRuntimeInstance,
-  PluginRuntimeActivationSnapshot
+  PluginRuntimeStateMigrationInput,
+  PluginRuntimeActivationSnapshot,
+  PluginRuntimeHealth
 } from './activation-coordinator'
 import {
   clonePluginRuntimeJson,
@@ -31,6 +33,7 @@ const DEFAULT_EXECUTION_SLICE_MS = 250
 const DEFAULT_ASYNC_COMMAND_TIMEOUT_MS = 10_000
 const MAX_HANDLER_COUNT = 256
 const MAX_ERROR_MESSAGE_CHARS = 2_000
+const MAX_PENDING_CAPABILITY_PROMISES = 16
 const BRIDGE_PREFIX = '__knowbook_capability_bridge_'
 
 type DeadlineControl = {
@@ -59,6 +62,7 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
   private readonly handlers = new Map<string, JSValueHandle>()
   private readonly pendingCapabilityPromises = new Set<Deferred>()
   private activateFunction: JSValueHandle | null = null
+  private migrateStateFunction: JSValueHandle | null = null
   private jsonParse: JSValueHandle | null = null
   private jsonStringify: JSValueHandle | null = null
   private owner: PluginActiveOwner | null = null
@@ -169,6 +173,36 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
     ) as unknown as PluginRuntimeActivationSnapshot
   }
 
+  async migrateState(input: PluginRuntimeStateMigrationInput): Promise<PluginJsonValue> {
+    this.assertUsable()
+    if (!this.migrateStateFunction) {
+      throw new Error('Plugin migrateState export is required for this state schema change.')
+    }
+    return this.runJsonFunction(
+      this.migrateStateFunction,
+      [input],
+      'Plugin state migration result'
+    )
+  }
+
+  validateHandlers(handlerIds: readonly string[]): void {
+    this.assertUsable()
+    for (const handlerId of handlerIds) {
+      if (!this.handlers.has(handlerId)) {
+        throw new Error(`Plugin UI references unregistered handler "${handlerId}".`)
+      }
+    }
+  }
+
+  health(): PluginRuntimeHealth {
+    this.assertUsable()
+    return {
+      status: this.owner ? 'active' : 'ready',
+      handlerCount: this.handlers.size,
+      pendingCapabilityCalls: this.pendingCapabilityPromises.size
+    }
+  }
+
   commit(owner: PluginActiveOwner): void {
     this.assertUsable()
     if (!sameActivationIdentity(this.identity, owner)) {
@@ -226,6 +260,8 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
     this.pendingCapabilityPromises.clear()
     this.activateFunction?.dispose()
     this.activateFunction = null
+    this.migrateStateFunction?.dispose()
+    this.migrateStateFunction = null
     for (const handler of this.handlers.values()) {
       handler.dispose()
     }
@@ -318,6 +354,17 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
         }
       } else {
         handlers?.dispose()
+      }
+
+      const migrateState = getDataProperty(definition, 'migrateState', 'Plugin migrateState export')
+      if (migrateState && !migrateState.isUndefined) {
+        if (!migrateState.isFunction) {
+          migrateState.dispose()
+          throw new Error('Plugin migrateState export must be a function.')
+        }
+        this.migrateStateFunction = migrateState
+      } else {
+        migrateState?.dispose()
       }
     } finally {
       definition.dispose()
@@ -421,6 +468,9 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
     let call: PluginCapabilityCall
     let owner: PluginActiveOwner
     try {
+      if (this.pendingCapabilityPromises.size > MAX_PENDING_CAPABILITY_PROMISES) {
+        throw new Error(`Plugin exceeds ${MAX_PENDING_CAPABILITY_PROMISES} pending capability calls.`)
+      }
       if (args.length !== 1 || !args[0].isString) {
         throw new Error('Capability bridge accepts exactly one serialized JSON argument.')
       }

@@ -35,7 +35,7 @@ test('activation coordinator commits verified runtime contributions and routes h
     const factory = runtimeFactory((context) => ({
       activate: async () => ({
         contributions: [{
-          descriptor: { slot: 'workspace.dashboard', id: 'daily-review' },
+          descriptor: { slot: 'dashboard.card', id: 'daily-review' },
           value: { title: 'Daily Review', handlerId: 'refresh' }
         }]
       }),
@@ -68,7 +68,7 @@ test('activation coordinator commits verified runtime contributions and routes h
     assert.equal(disposed, false)
     assert.equal(platform.kernel.isCurrent(receipt.owner), true)
     assert.deepEqual(
-      platform.kernel.listContributions<PluginJsonValue>('workspace.dashboard', scope).map((item) => item.value),
+      platform.kernel.listContributions<PluginJsonValue>('dashboard.card', scope).map((item) => item.value),
       [{ title: 'Daily Review', handlerId: 'refresh' }]
     )
     assert.deepEqual(await coordinator.invokeHandler(receipt.owner, 'refresh', {}), {
@@ -129,7 +129,7 @@ test('activation failure leaves the old epoch serving and persists the failed ru
     assert.equal(brokenDisposed, true)
     assert.equal(platform.kernel.isCurrent(firstReceipt.owner), true)
     assert.deepEqual(
-      platform.kernel.listContributions<string>('workspace.dashboard', scope).map((item) => item.value),
+      platform.kernel.listContributions<string>('dashboard.card', scope).map((item) => item.value),
       ['old-card']
     )
     assert.equal(platform.store.pluginPlatform.getRun('run-broken')?.status, 'failed')
@@ -183,7 +183,7 @@ test('runtime commit failure rolls kernel namespace back before SQLite pointers 
     assert.equal(secondDisposed, true)
     assert.equal(platform.kernel.isCurrent(firstReceipt.owner), true)
     assert.deepEqual(
-      platform.kernel.listContributions<string>('workspace.dashboard', scope).map((item) => item.value),
+      platform.kernel.listContributions<string>('dashboard.card', scope).map((item) => item.value),
       ['old-card']
     )
     assert.deepEqual(pointerSnapshot(platform.store), {
@@ -196,6 +196,132 @@ test('runtime commit failure rolls kernel namespace back before SQLite pointers 
   })
 })
 
+test('state migration commits with the new epoch and rollback restores the retained snapshot', async () => {
+  await withPlatform(async (platform) => {
+    const firstPackage = platform.createRevision(
+      '1.0.0',
+      'export const version = 1',
+      undefined,
+      1
+    )
+    platform.createGrant('grant-state-1', firstPackage.revisionId)
+    const firstCoordinator = platform.coordinator(runtimeFactory(() => staticRuntime('state-v1')))
+    await firstCoordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: firstPackage.revisionId,
+      grantSetId: 'grant-state-1',
+      scope,
+      runId: 'run-state-1'
+    })
+    platform.store.pluginPlatform.writePluginState(
+      'daily-review',
+      scope,
+      'settings',
+      { label: 'before' },
+      1
+    )
+
+    const secondPackage = platform.createRevision(
+      '2.0.0',
+      'export const version = 2',
+      firstPackage.revisionId,
+      2
+    )
+    platform.createGrant('grant-state-2', secondPackage.revisionId)
+    const secondCoordinator = platform.coordinator(runtimeFactory(() => ({
+      ...staticRuntime('state-v2'),
+      migrateState: async ({ previousVersion, nextVersion, state }) => {
+        assert.equal(previousVersion, 1)
+        assert.equal(nextVersion, 2)
+        assert.deepEqual(state, { settings: { label: 'before' } })
+        return { settings: { label: 'after' }, migrated: true }
+      }
+    })))
+    await secondCoordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: secondPackage.revisionId,
+      grantSetId: 'grant-state-2',
+      scope,
+      runId: 'run-state-2'
+    })
+
+    assert.deepEqual(platform.store.pluginPlatform.readPluginState('daily-review', scope, 'settings'), {
+      value: { label: 'after' },
+      schemaVersion: 2,
+      updatedAt: platform.store.pluginPlatform.readPluginState('daily-review', scope, 'settings')?.updatedAt
+    })
+    assert.deepEqual(
+      platform.store.pluginPlatform.readPluginState('daily-review', scope, 'migrated')?.value,
+      true
+    )
+    const installation = platform.store.pluginPlatform.getInstallationForScope('daily-review', scope)
+    assert.ok(installation)
+    assert.deepEqual(
+      platform.store.pluginPlatform.findStateSnapshotForRevision(installation.id, firstPackage.revisionId)?.values,
+      { settings: { label: 'before' } }
+    )
+
+    const rollbackCoordinator = platform.coordinator(runtimeFactory(() => staticRuntime('state-v1-restored')))
+    await rollbackCoordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: firstPackage.revisionId,
+      grantSetId: 'grant-state-1',
+      scope,
+      runId: 'run-state-rollback'
+    })
+    assert.deepEqual(platform.store.pluginPlatform.readPluginStateValues('daily-review', scope), {
+      settings: { label: 'before' }
+    })
+    assert.equal(
+      platform.store.pluginPlatform.readPluginState('daily-review', scope, 'settings')?.schemaVersion,
+      1
+    )
+    await platform.kernel.destroy()
+  })
+})
+
+test('failed state migration leaves the old run and state untouched', async () => {
+  await withPlatform(async (platform) => {
+    const firstPackage = platform.createRevision('1.0.0', 'export const version = 1', undefined, 1)
+    platform.createGrant('grant-migration-good', firstPackage.revisionId)
+    const firstCoordinator = platform.coordinator(runtimeFactory(() => staticRuntime('migration-old')))
+    const firstReceipt = await firstCoordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: firstPackage.revisionId,
+      grantSetId: 'grant-migration-good',
+      scope,
+      runId: 'run-migration-good'
+    })
+    platform.store.pluginPlatform.writePluginState('daily-review', scope, 'value', 'stable', 1)
+
+    const secondPackage = platform.createRevision(
+      '2.0.0',
+      'export const version = 2',
+      firstPackage.revisionId,
+      2
+    )
+    platform.createGrant('grant-migration-bad', secondPackage.revisionId)
+    const failingCoordinator = platform.coordinator(runtimeFactory(() => ({
+      ...staticRuntime('migration-new'),
+      migrateState: async () => {
+        throw new Error('migration rejected the stored value')
+      }
+    })))
+    await assert.rejects(failingCoordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: secondPackage.revisionId,
+      grantSetId: 'grant-migration-bad',
+      scope,
+      runId: 'run-migration-bad'
+    }), /migration rejected/)
+
+    assert.equal(platform.kernel.isCurrent(firstReceipt.owner), true)
+    assert.deepEqual(platform.store.pluginPlatform.readPluginState('daily-review', scope, 'value')?.value, 'stable')
+    assert.equal(platform.store.pluginPlatform.getRun('run-migration-bad')?.status, 'failed')
+    await platform.kernel.destroy()
+  })
+})
+
 test('coordinator rejects runtime factories that do not claim the no-node isolation boundary', async () => {
   await withPlatform(async (platform) => {
     const invalidFactory = {
@@ -203,6 +329,46 @@ test('coordinator rejects runtime factories that do not claim the no-node isolat
       create: async () => staticRuntime('unsafe')
     } as unknown as NoNodePluginRuntimeFactory
     assert.throws(() => platform.coordinator(invalidFactory), /no-node-isolate/)
+  })
+})
+
+test('activation rejects ViewSpec handlers the staged runtime cannot prove ready', async () => {
+  await withPlatform(async (platform) => {
+    const packageValue = platform.createRevision('1.0.0', 'export const version = 1')
+    platform.createGrant('grant-ui-handler', packageValue.revisionId)
+    let disposed = false
+    const coordinator = platform.coordinator(runtimeFactory(() => ({
+      activate: async () => ({
+        contributions: [{
+          descriptor: { slot: 'workspace.dashboard', id: 'action-view' },
+          value: {
+            kind: 'view',
+            view: {
+              version: 1,
+              root: { type: 'button', label: 'Run', action: { handler: 'missing-handler' } }
+            }
+          }
+        }]
+      }),
+      validateHandlers: async (handlerIds) => {
+        assert.deepEqual(handlerIds, ['missing-handler'])
+        throw new Error('Plugin handler "missing-handler" is not exported.')
+      },
+      commit: () => undefined,
+      invokeHandler: async () => null,
+      dispose: () => { disposed = true }
+    })))
+
+    await assert.rejects(coordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: packageValue.revisionId,
+      grantSetId: 'grant-ui-handler',
+      scope,
+      runId: 'run-ui-handler'
+    }), /not exported/)
+    assert.equal(disposed, true)
+    assert.equal(platform.kernel.listContributions('workspace.dashboard', scope).length, 0)
+    assert.equal(platform.store.pluginPlatform.getRun('run-ui-handler')?.status, 'failed')
   })
 })
 
@@ -219,7 +385,7 @@ function staticRuntime(value: string): NoNodePluginRuntimeInstance {
   return {
     activate: async () => ({
       contributions: [{
-        descriptor: { slot: 'workspace.dashboard', id: 'daily-review' },
+        descriptor: { slot: 'dashboard.card', id: 'daily-review' },
         value
       }]
     }),
@@ -282,7 +448,8 @@ function createPlatform(root: string) {
   const createRevision = (
     version: string,
     workerSource: string,
-    previousRevisionId?: string
+    previousRevisionId?: string,
+    stateSchemaVersion?: number
   ): PluginRevisionPackage => {
     const packageValue = revisions.publish({
       manifest: {
@@ -291,6 +458,7 @@ function createPlatform(root: string) {
         name: 'Daily Review',
         version,
         apiVersion: '2',
+        ...(stateSchemaVersion === undefined ? {} : { stateSchemaVersion }),
         permissions: [{ capability: 'documents.read', version: 1 }],
         standardModules: []
       },

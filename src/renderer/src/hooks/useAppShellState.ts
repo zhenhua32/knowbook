@@ -37,6 +37,8 @@ const emptyState: HomeData = {
   plugins: [],
   pluginDashboardCards: [],
   pluginDocumentActions: [],
+  pluginUiContributions: [],
+  pluginV2Installations: [],
   pluginHost: {
     roots: [],
     writableRoot: null

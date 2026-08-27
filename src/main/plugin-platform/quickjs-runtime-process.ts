@@ -46,6 +46,16 @@ class QuickJsRuntimeServer {
     switch (request.command.type) {
       case 'activate':
         return activationSnapshotToJson(await this.requireRealm().activate())
+      case 'migrate-state':
+        return clonePluginRuntimeJson(
+          await this.requireRealm().migrateState(request.command.input),
+          'Runtime state migration output'
+        )
+      case 'validate-handlers':
+        this.requireRealm().validateHandlers(request.command.handlerIds)
+        return null
+      case 'health':
+        return clonePluginRuntimeJson(this.requireRealm().health(), 'Runtime health')
       case 'invoke-handler': {
         if (!('epoch' in request.identity)) {
           throw new Error('Handler invocation requires an active owner identity.')

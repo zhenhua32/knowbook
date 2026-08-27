@@ -133,6 +133,12 @@ try {
   assert.deepEqual(await request(identity, { type: 'activate' }), { contributions: [] })
   child.postMessage({ kind: 'commit', identity: owner })
 
+  assert.deepEqual(await request(owner, { type: 'health' }), {
+    status: 'active',
+    handlerCount: 3,
+    pendingCapabilityCalls: 0
+  })
+
   assert.deepEqual(await request(owner, {
     type: 'invoke-handler',
     handlerId: 'inspect',

@@ -10,13 +10,19 @@ import {
   type AssistantModelCompletionInput
 } from '../src/main/assistant/model-adapter.ts'
 import { KnowbookStore } from '../src/main/database/store.ts'
-import type { PluginPlatformV2Service } from '../src/main/plugin-platform/platform-service.ts'
-import { assistantToolCallId } from '../src/shared/assistant-session.ts'
+import { PluginPlatformV2Service } from '../src/main/plugin-platform/platform-service.ts'
+import { assistantToolCallId, assistantTurnId } from '../src/shared/assistant-session.ts'
 
 test('assistant loop exposes only closed plugin tools and persists calls/results before continuing', async () => {
   await withStore(async (store) => {
     const calls: AssistantModelCompletionInput[] = []
     const model: AssistantModelAdapter = {
+      capabilities: {
+        streaming: false,
+        nativeToolCalling: true,
+        jsonSchema: true,
+        multimodal: false
+      },
       complete: async (input) => {
         calls.push(input)
         if (calls.length === 1) {
@@ -59,10 +65,25 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
       assert.equal(result.status, 'completed')
       assert.equal(calls.length, 2)
       assert.deepEqual(calls[0].tools.map((tool) => tool.eventName), [
+        'knowbook.inspect_capabilities',
+        'knowbook.inspect_ui_slots',
+        'workspace.search',
+        'documents.list',
+        'documents.get',
+        'documents.create',
+        'documents.update',
         'plugins.inspect_capabilities',
         'plugins.inspect_standard_modules',
+        'plugins.list',
+        'plugins.inspect',
         'plugins.define_revision',
-        'plugins.activate_revision'
+        'plugins.validate_revision',
+        'plugins.preview_revision',
+        'plugins.activate_revision',
+        'plugins.stop',
+        'plugins.install_workspace',
+        'plugins.rollback',
+        'plugins.read_diagnostics'
       ])
       assert.equal(calls[0].systemPrompt.includes('npm'), true)
       assert.equal(JSON.stringify(service.getSession(session.id)?.modelConfig).includes('not-persisted'), false)
@@ -146,11 +167,248 @@ test('OpenAI-compatible adapter maps canonical tool facts without trusting provi
   assert.equal(JSON.stringify(requestBody).includes('secret'), false)
 })
 
-async function withStore(run: (store: KnowbookStore) => Promise<void>): Promise<void> {
+test('OpenAI-compatible adapter normalizes SSE text, incremental tool arguments, and usage', async () => {
+  const chunks: string[] = []
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of [
+        { choices: [{ delta: { content: '你' } }] },
+        { choices: [{ delta: { content: '好', tool_calls: [{ index: 0, function: { name: 'plugins_inspect_capabilities', arguments: '{' } }] } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '}' } }] } }], usage: { total_tokens: 9 } }
+      ]) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      controller.close()
+    }
+  })
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+    })
+  })
+  const result = await adapter.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: [{
+      name: 'plugins_inspect_capabilities',
+      eventName: 'plugins.inspect_capabilities',
+      description: 'Inspect',
+      parameters: { type: 'object' }
+    }],
+    onChunk: (text) => { chunks.push(text) }
+  })
+  assert.equal(result.content, '你好')
+  assert.deepEqual(chunks, ['你', '好'])
+  assert.deepEqual(result.toolCalls, [{ name: 'plugins.inspect_capabilities', arguments: {} }])
+  assert.deepEqual(result.usage, { total_tokens: 9 })
+})
+
+test('assistant explicitly disables all tools for adapters without native tool calling', async () => {
+  await withStore(async (store) => {
+    const observed: AssistantModelCompletionInput[] = []
+    const model: AssistantModelAdapter = {
+      capabilities: { streaming: false, nativeToolCalling: false, jsonSchema: false, multimodal: false },
+      complete: async (input) => {
+        observed.push(input)
+        return { content: '普通问答可用。', toolCalls: [] }
+      }
+    }
+    const service = new AssistantAgentService(store.assistantSessions, {} as PluginPlatformV2Service, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({ enabled: true, apiKey: 'secret', baseUrl: 'https://example.invalid/v1', model: 'test' }),
+      modelAdapter: model
+    })
+    try {
+      const session = service.createSession()
+      assert.equal((await service.sendMessage({ sessionId: session.id, text: '你好' })).status, 'completed')
+      assert.deepEqual(observed[0]?.tools, [])
+      assert.match(observed[0]?.systemPrompt ?? '', /tools are disabled/i)
+      const step = service.listEvents(session.id).find((event) => event.type === 'step.started')
+      assert.deepEqual(step?.type === 'step.started' ? step.payload.visibleTools : null, [])
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
+test('a running turn can be steered by an inbox message without creating a second turn', async () => {
+  await withStore(async (store) => {
+    let calls = 0
+    let signalStarted!: () => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const model: AssistantModelAdapter = {
+      capabilities: { streaming: false, nativeToolCalling: true, jsonSchema: true, multimodal: false },
+      complete: async (input) => {
+        calls += 1
+        if (calls === 1) {
+          signalStarted()
+          return await new Promise((_resolve, reject) => {
+            input.signal?.addEventListener('abort', () => reject(input.signal?.reason), { once: true })
+          })
+        }
+        return { content: '已按新要求处理。', toolCalls: [] }
+      }
+    }
+    const service = new AssistantAgentService(store.assistantSessions, {} as PluginPlatformV2Service, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({ enabled: true, apiKey: 'secret', baseUrl: 'https://example.invalid/v1', model: 'test' }),
+      modelAdapter: model
+    })
+    try {
+      const session = service.createSession()
+      const first = service.sendMessage({ sessionId: session.id, text: '先做 A' })
+      await started
+      const steered = service.sendMessage({ sessionId: session.id, text: '改为做 B' })
+      assert.equal((await first).status, 'cancelled')
+      assert.equal((await steered).status, 'completed')
+      const events = service.listEvents(session.id, 0, 100)
+      assert.equal(events.filter((event) => event.type === 'turn.started').length, 1)
+      assert.deepEqual(events.filter((event) => event.type === 'user.message').map((event) => (
+        event.type === 'user.message' ? event.payload.text : ''
+      )), ['先做 A', '改为做 B'])
+      assert.equal(events.some((event) => event.type === 'inbox.message.consumed'), true)
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
+test('next-turn inbox messages run in order after the active turn commits', async () => {
+  await withStore(async (store) => {
+    let calls = 0
+    let signalStarted!: () => void
+    let finishFirst!: (value: { content: string; toolCalls: [] }) => void
+    const started = new Promise<void>((resolve) => { signalStarted = resolve })
+    const model: AssistantModelAdapter = {
+      capabilities: { streaming: false, nativeToolCalling: true, jsonSchema: true, multimodal: false },
+      complete: async () => {
+        calls += 1
+        if (calls === 1) {
+          signalStarted()
+          return await new Promise((resolve) => { finishFirst = resolve })
+        }
+        return { content: '第二轮完成。', toolCalls: [] }
+      }
+    }
+    const service = new AssistantAgentService(store.assistantSessions, {} as PluginPlatformV2Service, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({ enabled: true, apiKey: 'secret', baseUrl: 'https://example.invalid/v1', model: 'test' }),
+      modelAdapter: model
+    })
+    try {
+      const session = service.createSession()
+      const first = service.sendMessage({ sessionId: session.id, text: '第一轮' })
+      await started
+      const queued = await service.sendMessage({ sessionId: session.id, text: '第二轮', mode: 'next-turn' })
+      assert.equal(queued.status, 'queued')
+      finishFirst({ content: '第一轮完成。', toolCalls: [] })
+      assert.equal((await first).status, 'completed')
+      await waitUntil(() => service.listEvents(session.id, 0, 100).filter((event) => event.type === 'turn.ended').length === 2)
+      const events = service.listEvents(session.id, 0, 100)
+      assert.equal(events.filter((event) => event.type === 'turn.started').length, 2)
+      assert.deepEqual(events.filter((event) => event.type === 'user.message').map((event) => (
+        event.type === 'user.message' ? event.payload.text : ''
+      )), ['第一轮', '第二轮'])
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
+test('assistant event reads reconcile a committed plugin run from kernel authority', async () => {
+  await withStore(async (store) => {
+    const session = store.assistantSessions.createSession({
+      workspaceId: 'workspace-1',
+      title: 'Recovery',
+      modelConfig: { model: 'test' }
+    })
+    const turnId = assistantTurnId('recovery-turn')
+    store.assistantSessions.append(session.id, { type: 'turn.started', payload: { turnId } })
+    store.assistantSessions.append(session.id, {
+      type: 'plugin.run.requested',
+      payload: {
+        turnId,
+        toolCallId: assistantToolCallId('recovery-call'),
+        pluginId: 'recovered-plugin',
+        revisionId: 'sha256:recovered',
+        runId: 'recovered-run'
+      }
+    })
+    const platform = {
+      getPluginRunReconciliationState: () => ({
+        pluginId: 'recovered-plugin',
+        revisionId: 'sha256:recovered',
+        runId: 'recovered-run',
+        status: 'active',
+        epoch: 7,
+        error: null
+      })
+    } as unknown as PluginPlatformV2Service
+    const service = new AssistantAgentService(store.assistantSessions, platform, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({ enabled: false, apiKey: null, baseUrl: '', model: '' }),
+      modelAdapter: {
+        capabilities: { streaming: false, nativeToolCalling: false, jsonSchema: false, multimodal: false },
+        complete: async () => ({ content: 'unused', toolCalls: [] })
+      }
+    })
+    try {
+      const reconciled = service.listEvents(session.id, 0, 100).find((event) => event.type === 'plugin.run.succeeded')
+      assert.equal(reconciled?.type === 'plugin.run.succeeded' ? reconciled.payload.epoch : null, 7)
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
+test('assistant runtime context includes only the current document summary and marks it untrusted', async () => {
+  await withStore(async (store, root) => {
+    const documentId = store.createDocument(null)
+    store.updateDocument(documentId, {
+      title: 'Context title',
+      summary: 'Trusted only as user data, not instructions.',
+      blocks: [{ type: 'paragraph', content: 'BLOCK CONTENT MUST NOT ENTER THE AUTOMATIC CONTEXT' }]
+    })
+    const platform = new PluginPlatformV2Service(store, join(root, 'plugins-v2'), {
+      workspaceId: 'workspace-1'
+    })
+    try {
+      const session = store.assistantSessions.createSession({
+        workspaceId: 'workspace-1',
+        title: 'Context',
+        activeDocumentId: documentId,
+        modelConfig: { model: 'test' }
+      })
+      const context = platform.buildAssistantContext(session.id, documentId)
+      assert.match(context.systemPromptSuffix, /untrusted workspace context/i)
+      assert.match(context.systemPromptSuffix, /Trusted only as user data/)
+      assert.doesNotMatch(context.systemPromptSuffix, /BLOCK CONTENT MUST NOT ENTER/)
+      assert.deepEqual((context.policy as Record<string, unknown>).activeDocumentId, documentId)
+    } finally {
+      await platform.destroy()
+    }
+  })
+})
+
+async function waitUntil(predicate: () => boolean, attempts = 100): Promise<void> {
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  throw new Error('Timed out waiting for assistant state.')
+}
+
+async function withStore(run: (store: KnowbookStore, root: string) => Promise<void>): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-assistant-agent-test-'))
   const store = new KnowbookStore(join(root, 'knowbook.db'))
   try {
-    await run(store)
+    await run(store, root)
   } finally {
     store.destroy()
     rmSync(root, { recursive: true, force: true })

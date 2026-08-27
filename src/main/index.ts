@@ -39,9 +39,12 @@ import type {
   PreviewDocumentBlockAiEditInput,
   PreviewDocumentBlockAiEditResult,
   RenameDocumentDatabaseColumnInput,
+  RecoverPluginV2InstallationInput,
   ReorderDatabaseSavedViewsInput,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
+  RunPluginUiActionInput,
+  RunPluginUiActionResult,
   RunDocumentAiAutomationsResult,
   SearchSemanticNotesInput,
   SemanticSearchResult,
@@ -540,6 +543,26 @@ function getPluginHomeData(): PluginHomeData {
     plugins: pluginData.plugins,
     pluginDashboardCards: [...pluginData.dashboardCards, ...v2DashboardCards],
     pluginDocumentActions: [...pluginData.documentActions, ...v2DocumentActions],
+    pluginUiContributions: pluginPlatformV2.listUiContributions(),
+    pluginV2Installations: store.pluginPlatform
+      .listWorkspaceInstallations(LOCAL_WORKSPACE_ID)
+      .map((installation) => {
+        const definition = store.pluginPlatform.getDefinition(installation.pluginId)
+        if (!definition) throw new Error(`Plugin definition "${installation.pluginId}" is missing.`)
+        return {
+          pluginId: installation.pluginId,
+          name: definition.name,
+          source: definition.source,
+          scope: 'workspace' as const,
+          enabled: installation.enabled,
+          currentRevisionId: installation.currentRevisionId,
+          activeRunId: installation.activeRunId,
+          quarantined: installation.quarantined,
+          violationCount: installation.violationCount,
+          quarantineReason: installation.quarantineReason,
+          quarantinedAt: installation.quarantinedAt
+        }
+      }),
     pluginHost: pluginData.host
   }
 }
@@ -1005,6 +1028,16 @@ function registerIpcHandlers(): void {
     const result: RunPluginDocumentActionResult = await runV2DocumentAction(input)
       ?? await pluginHost.runDocumentAction(input)
     return result
+  })
+
+  ipcMain.handle('knowbook:run-plugin-ui-action', async (_event, input: RunPluginUiActionInput) => {
+    const result: RunPluginUiActionResult = await pluginPlatformV2.runUiAction(input)
+    return result
+  })
+
+  ipcMain.handle('knowbook:recover-plugin-v2-installation', (_event, input: RecoverPluginV2InstallationInput) => {
+    pluginPlatformV2.recoverWorkspaceInstallation(input.pluginId)
+    pluginMutationNotifier.notify()
   })
 
   ipcMain.handle('knowbook:trigger-backup', async () => {
@@ -1699,6 +1732,17 @@ if (hasSingleInstanceLock) {
     registerWorkspaceEventHandlers()
     registerIpcHandlers()
     pluginHost.discoverAll()
+    if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1') {
+      void pluginPlatformV2.activateBuiltinPlugins().then(() => {
+        console.log('KnowBook packaged Plugin Platform runtime smoke passed.')
+      }).catch((error) => {
+        process.exitCode = 1
+        console.error('KnowBook packaged Plugin Platform runtime smoke failed.', error)
+      }).finally(() => {
+        app.quit()
+      })
+      return
+    }
     const startupWindow = createWindow()
     let pluginStartupStarted = false
     let pluginStartupFallback: NodeJS.Timeout | null = null

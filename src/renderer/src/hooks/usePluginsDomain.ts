@@ -31,6 +31,7 @@ export function usePluginsDomain({
   const pluginDashboardCards = homeData.pluginDashboardCards ?? []
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
   const pluginRoots = homeData.pluginHost?.roots ?? []
+  const pluginV2Installations = homeData.pluginV2Installations ?? []
 
   const pluginState = usePluginManagement({
     plugins,
@@ -66,6 +67,16 @@ export function usePluginsDomain({
     pluginBusyId: pluginState.pluginBusyId,
     pluginInventoryBusy: pluginState.pluginInventoryBusy,
     pluginRoots,
+    pluginV2Installations,
+    onRecoverPluginV2Installation: (pluginId) => {
+      void window.knowbook.recoverPluginV2Installation({ pluginId }).then(async () => {
+        const refreshed = await window.knowbook.getPluginHomeData()
+        onHomeDataChange((current) => ({ ...current, ...refreshed }))
+        onMessage('插件隔离状态已解除；重新激活仍需新的审批。')
+      }).catch((error: unknown) => {
+        onMessage(error instanceof Error ? error.message : 'Plugin recovery failed.')
+      })
+    },
     pluginSettingBusyKey: pluginState.pluginSettingBusyKey,
     pluginSettingDrafts: pluginState.pluginSettingDrafts,
     plugins,

@@ -223,6 +223,35 @@ test('capability broker refuses stale owners after an atomic revision switch', a
   await kernel.destroy()
 })
 
+test('capability broker enforces per-run rate and AI token windows', async () => {
+  const kernel = new PluginPlatformKernel()
+  let now = new Date('2026-08-25T00:00:00.000Z')
+  const broker = new PluginCapabilityBroker(kernel, {
+    maxCallsPerMinutePerRun: 2,
+    maxAiTokensPerMinutePerRun: 100,
+    now: () => now
+  })
+  broker.register({
+    id: 'ai.complete',
+    version: 1,
+    scopes: ['workspace'],
+    parseInput: (input) => input as { maxTokens: number },
+    quotaCost: (input) => ({ aiTokens: input.maxTokens }),
+    execute: () => ({ text: 'ok' })
+  })
+  broker.registerGrantSet(grantSet('grant-rate', 'rev-1', [
+    { capability: 'ai.complete', version: 1 }
+  ]))
+  const owner = await activate(kernel, 'rev-1', 'run-rate', 'grant-rate')
+  await broker.invoke(owner, call('ai.complete', { maxTokens: 60 }))
+  await rejectsWithCode(broker.invoke(owner, call('ai.complete', { maxTokens: 60 })), 'quota-exceeded')
+  await rejectsWithCode(broker.invoke(owner, call('ai.complete', { maxTokens: 1 })), 'quota-exceeded')
+
+  now = new Date('2026-08-25T00:01:01.000Z')
+  assert.deepEqual(await broker.invoke(owner, call('ai.complete', { maxTokens: 100 })), { text: 'ok' })
+  await kernel.destroy()
+})
+
 function call(capability: string, input: PluginJsonValue): PluginCapabilityCall {
   return { capability, version: 1, input }
 }

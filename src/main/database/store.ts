@@ -66,7 +66,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 6
+const CURRENT_DATABASE_SCHEMA_VERSION = 8
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -392,6 +392,14 @@ export class KnowbookStore {
         this.migrateToSchemaVersion6()
         this.db.pragma('user_version = 6')
       }
+      if (schemaVersion < 7) {
+        this.migrateToSchemaVersion7()
+        this.db.pragma('user_version = 7')
+      }
+      if (schemaVersion < 8) {
+        this.migrateToSchemaVersion8()
+        this.db.pragma('user_version = 8')
+      }
     })
   }
 
@@ -402,6 +410,73 @@ export class KnowbookStore {
 
   private migrateToSchemaVersion6(): void {
     // Assistant append-only session tables are created by appSchema.
+  }
+
+  private migrateToSchemaVersion7(): void {
+    const installationColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(plugin_installations)').all() as Array<{ name: string }>)
+        .map((column) => column.name)
+    )
+    const grantColumns = new Set(
+      (this.db.prepare('PRAGMA table_info(plugin_grants)').all() as Array<{ name: string }>)
+        .map((column) => column.name)
+    )
+    const addInstallationColumn = (name: string, sql: string): void => {
+      if (!installationColumns.has(name)) {
+        this.db.exec(`ALTER TABLE plugin_installations ADD COLUMN ${sql}`)
+      }
+    }
+    addInstallationColumn(
+      'current_revision_id',
+      'current_revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL'
+    )
+    addInstallationColumn(
+      'pending_revision_id',
+      'pending_revision_id TEXT REFERENCES plugin_revisions(id) ON DELETE SET NULL'
+    )
+    addInstallationColumn(
+      'active_run_id',
+      'active_run_id TEXT REFERENCES plugin_runs(id) ON DELETE SET NULL'
+    )
+    addInstallationColumn(
+      'current_grant_set_id',
+      'current_grant_set_id TEXT REFERENCES plugin_grants(id) ON DELETE SET NULL'
+    )
+    addInstallationColumn(
+      'pending_grant_set_id',
+      'pending_grant_set_id TEXT REFERENCES plugin_grants(id) ON DELETE SET NULL'
+    )
+    addInstallationColumn('last_error_json', 'last_error_json TEXT')
+    if (!grantColumns.has('installation_id')) {
+      this.db.exec(`
+        ALTER TABLE plugin_grants
+        ADD COLUMN installation_id TEXT REFERENCES plugin_installations(id) ON DELETE CASCADE
+      `)
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_plugin_installations_restore
+        ON plugin_installations(scope_kind, workspace_id, enabled, current_revision_id);
+      CREATE INDEX IF NOT EXISTS idx_plugin_grants_installation_status
+        ON plugin_grants(installation_id, status);
+    `)
+  }
+
+  private migrateToSchemaVersion8(): void {
+    const columns = new Set(
+      (this.db.prepare('PRAGMA table_info(plugin_installations)').all() as Array<{ name: string }>)
+        .map((column) => column.name)
+    )
+    const add = (name: string, sql: string): void => {
+      if (!columns.has(name)) this.db.exec(`ALTER TABLE plugin_installations ADD COLUMN ${sql}`)
+    }
+    add('quarantined', 'quarantined INTEGER NOT NULL DEFAULT 0')
+    add('violation_count', 'violation_count INTEGER NOT NULL DEFAULT 0')
+    add('quarantine_reason_json', 'quarantine_reason_json TEXT')
+    add('quarantined_at', 'quarantined_at TEXT')
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_plugin_installations_quarantine
+        ON plugin_installations(quarantined, updated_at DESC);
+    `)
   }
 
   private createMigrationSafetyCopy(fromVersion: number, toVersion: number): void {

@@ -27,6 +27,7 @@ export interface AssistantModelCompletionInput {
   messages: readonly AssistantModelMessage[]
   tools: readonly AssistantModelToolDefinition[]
   signal?: AbortSignal
+  onChunk?: (text: string) => void | Promise<void>
 }
 
 export interface AssistantModelToolCall {
@@ -41,6 +42,12 @@ export interface AssistantModelCompletion {
 }
 
 export interface AssistantModelAdapter {
+  readonly capabilities: {
+    streaming: boolean
+    nativeToolCalling: boolean
+    jsonSchema: boolean
+    multimodal: boolean
+  }
   complete(input: AssistantModelCompletionInput): Promise<AssistantModelCompletion>
 }
 
@@ -50,6 +57,12 @@ export interface OpenAiCompatibleAssistantModelAdapterOptions {
 }
 
 export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdapter {
+  readonly capabilities = Object.freeze({
+    streaming: true,
+    nativeToolCalling: true,
+    jsonSchema: true,
+    multimodal: false
+  })
   private readonly fetchImplementation: FetchImplementation
   private readonly timeoutMilliseconds: number
 
@@ -92,6 +105,8 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
               }
             })),
             tool_choice: 'auto',
+            stream: true,
+            stream_options: { include_usage: true },
             temperature: 0.2
           }),
           signal
@@ -111,6 +126,9 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
         throw new Error(`Assistant request failed (${response.status}): ${body.slice(0, MAX_ERROR_BODY_CHARS)}`)
       }
 
+      if (response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
+        return await parseStreamingCompletion(response, toolByProviderName, input.onChunk, signal)
+      }
       let payload: unknown
       try {
         payload = await response.json()
@@ -122,6 +140,119 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
       clearTimeout(timeout)
     }
   }
+}
+
+async function parseStreamingCompletion(
+  response: Response,
+  toolByProviderName: ReadonlyMap<string, AssistantModelToolDefinition>,
+  onChunk: AssistantModelCompletionInput['onChunk'],
+  signal: AbortSignal
+): Promise<AssistantModelCompletion> {
+  if (!response.body) throw new Error('Assistant streaming response has no body.')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let content = ''
+  let usage: PluginJsonValue | undefined
+  const toolDeltas = new Map<number, { name: string; arguments: string }>()
+  const consumeLine = async (line: string): Promise<void> => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const data = trimmed.slice(5).trim()
+    if (!data || data === '[DONE]') return
+    let payload: unknown
+    try {
+      payload = JSON.parse(data)
+    } catch (error) {
+      throw new Error('Assistant stream contains invalid JSON.', { cause: error })
+    }
+    const root = objectValue(payload, 'Assistant stream event')
+    if (root.usage !== undefined) usage = clonePluginRuntimeJson(root.usage, 'Assistant stream usage')
+    if (!Array.isArray(root.choices)) return
+    for (const rawChoice of root.choices) {
+      const choice = objectValue(rawChoice, 'Assistant stream choice')
+      if (!choice.delta) continue
+      const delta = objectValue(choice.delta, 'Assistant stream delta')
+      const text = parseStreamingText(delta.content)
+      if (text) {
+        content += text
+        if (content.length > 100_000) throw new Error('Assistant stream text exceeds 100000 characters.')
+        await onChunk?.(text)
+      }
+      if (delta.tool_calls === undefined) continue
+      if (!Array.isArray(delta.tool_calls) || delta.tool_calls.length > 16) {
+        throw new Error('Assistant stream tool calls are invalid.')
+      }
+      for (const rawCall of delta.tool_calls) {
+        const call = objectValue(rawCall, 'Assistant stream tool call')
+        if (!Number.isSafeInteger(call.index) || (call.index as number) < 0 || (call.index as number) >= 16) {
+          throw new Error('Assistant stream tool call index is invalid.')
+        }
+        const index = call.index as number
+        const current = toolDeltas.get(index) ?? { name: '', arguments: '' }
+        if (call.function !== undefined) {
+          const fn = objectValue(call.function, 'Assistant stream tool function')
+          if (fn.name !== undefined) {
+            if (typeof fn.name !== 'string') throw new Error('Assistant stream tool name is invalid.')
+            current.name += fn.name
+          }
+          if (fn.arguments !== undefined) {
+            if (typeof fn.arguments !== 'string') throw new Error('Assistant stream tool arguments are invalid.')
+            current.arguments += fn.arguments
+            if (current.arguments.length > 1024 * 1024) throw new Error('Assistant stream tool arguments are too large.')
+          }
+        }
+        toolDeltas.set(index, current)
+      }
+    }
+  }
+  try {
+    while (true) {
+      if (signal.aborted) throw new Error('Assistant response body was cancelled.')
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      const lines = buffer.split(/\r?\n/)
+      buffer = done ? '' : lines.pop() ?? ''
+      for (const line of lines) await consumeLine(line)
+      if (done) {
+        if (buffer) await consumeLine(buffer)
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const toolCalls: AssistantModelToolCall[] = []
+  for (const [, delta] of [...toolDeltas.entries()].sort(([left], [right]) => left - right)) {
+    const tool = toolByProviderName.get(delta.name)
+    if (!tool) throw new Error(`Assistant model requested unavailable tool "${delta.name}".`)
+    let arguments_: unknown
+    try {
+      arguments_ = JSON.parse(delta.arguments || '{}')
+    } catch (error) {
+      throw new Error(`Assistant tool "${delta.name}" returned invalid streaming arguments.`, { cause: error })
+    }
+    toolCalls.push({
+      name: tool.eventName,
+      arguments: clonePluginRuntimeJson(arguments_, `Assistant tool ${delta.name} arguments`)
+    })
+  }
+  const normalizedContent = content.trim()
+  if (!normalizedContent && toolCalls.length === 0) {
+    throw new Error('Assistant model returned neither text nor tool calls.')
+  }
+  return { content: normalizedContent, toolCalls, ...(usage === undefined ? {} : { usage }) }
+}
+
+function parseStreamingText(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) throw new Error('Assistant streaming content is invalid.')
+  return value.map((part) => {
+    if (typeof part === 'string') return part
+    const item = objectValue(part, 'Assistant streaming content part')
+    return typeof item.text === 'string' ? item.text : ''
+  }).join('')
 }
 
 function toProviderMessage(

@@ -9,14 +9,21 @@ import type {
   PluginPlatformScope,
   PluginRevisionPackage
 } from '@shared/plugin-platform'
+import {
+  PLUGIN_UI_SLOT_CATALOG,
+  isPluginUiSlot,
+  validatePluginUiContribution
+} from '@shared/plugin-ui'
 import { PluginCapabilityBroker } from './capability-broker'
 import { PluginPlatformKernel } from './kernel'
 import type {
   PluginRunRecord,
+  PluginStateMigrationInput,
   SqlitePluginPlatformRepository
 } from './repository'
 import { PluginRevisionStore } from './revision-store'
 import { clonePluginRuntimeJson } from './runtime-json'
+import { validatePluginUiAssets } from './ui-materializer'
 
 const MAX_ACTIVATION_CONTRIBUTIONS = 256
 
@@ -33,10 +40,14 @@ export interface NoNodePluginRuntimeHostContext {
   identity: PluginActivationIdentity
   package: PluginRevisionPackage
   callCapability: (call: PluginCapabilityCall) => Promise<PluginJsonValue>
+  reportFatal: (error: Error) => void
 }
 
 export interface NoNodePluginRuntimeInstance {
   activate: () => Promise<PluginRuntimeActivationSnapshot>
+  migrateState?: (input: PluginRuntimeStateMigrationInput) => Promise<PluginJsonValue>
+  validateHandlers?: (handlerIds: readonly string[]) => void | Promise<void>
+  health?: () => PluginRuntimeHealth | Promise<PluginRuntimeHealth>
   commit: (owner: PluginActiveOwner) => void
   invokeHandler: (
     owner: PluginActiveOwner,
@@ -45,6 +56,18 @@ export interface NoNodePluginRuntimeInstance {
     signal: AbortSignal
   ) => Promise<PluginJsonValue>
   dispose: () => void | Promise<void>
+}
+
+export interface PluginRuntimeHealth {
+  status: 'ready' | 'active'
+  handlerCount: number
+  pendingCapabilityCalls: number
+}
+
+export interface PluginRuntimeStateMigrationInput {
+  previousVersion: number
+  nextVersion: number
+  state: Readonly<Record<string, PluginJsonValue>>
 }
 
 /**
@@ -61,6 +84,7 @@ export interface ActivatePluginRevisionInput {
   revisionId: string
   grantSetId: string
   scope: PluginPlatformScope
+  installationId?: string
   runId?: string
   drainTimeoutMs?: number
 }
@@ -75,16 +99,23 @@ type PluginPlatformLifecycleRepository = Pick<
   | 'getDefinition'
   | 'getRevision'
   | 'getGrantSet'
+  | 'getInstallation'
+  | 'ensureInstallation'
+  | 'readPluginStateValues'
+  | 'findStateSnapshotForRevision'
   | 'createRun'
   | 'markRunActive'
   | 'markRunFailed'
   | 'markRunStopped'
   | 'getRun'
+  | 'recordInstallationViolation'
+  | 'revokeGrantSet'
 >
 
 /** Coordinates verified objects, runtime readiness, kernel commit, and SQLite pointers. */
 export class PluginActivationCoordinator {
   private readonly activeRuntimes = new Map<string, ActiveRuntime>()
+  private readonly fatalRuns = new Set<string>()
 
   constructor(
     private readonly kernel: PluginPlatformKernel,
@@ -118,6 +149,23 @@ export class PluginActivationCoordinator {
     if (!grantSet) {
       throw new Error(`Active plugin grant set "${input.grantSetId}" does not exist.`)
     }
+    const installation = input.installationId
+      ? this.repository.getInstallation(input.installationId)
+      : this.repository.ensureInstallation({
+          id: randomUUID(),
+          pluginId: definition.id,
+          scope: input.scope
+        })
+    if (
+      !installation
+      || installation.pluginId !== definition.id
+      || JSON.stringify(installation.scope) !== JSON.stringify(input.scope)
+    ) {
+      throw new Error('Plugin installation does not match the activation plugin and scope.')
+    }
+    if (grantSet.installationId && grantSet.installationId !== installation.id) {
+      throw new Error('Plugin grant set is bound to a different installation.')
+    }
     this.broker.registerGrantSet(grantSet)
 
     const identity: PluginActivationIdentity = {
@@ -131,6 +179,7 @@ export class PluginActivationCoordinator {
       id: identity.runId,
       pluginId: identity.pluginId,
       revisionId: identity.revisionId,
+      installationId: installation.id,
       grantSetId: identity.grantSetId,
       scope: identity.scope
     })
@@ -146,6 +195,9 @@ export class PluginActivationCoordinator {
             return Promise.reject(new Error('Plugin capabilities are unavailable before atomic commit.'))
           }
           return this.broker.invoke(committedOwner, call)
+        },
+        reportFatal: (error) => {
+          if (committedOwner) void this.handleRuntimeFatal(committedOwner, error)
         }
       })
       stage.own(async () => {
@@ -156,7 +208,17 @@ export class PluginActivationCoordinator {
         await runtime.dispose()
       }, 'isolated-runtime')
 
-      const snapshot = normalizeActivationSnapshot(await runtime.activate())
+      const stateMigration = await this.prepareStateMigration(
+        installation,
+        revision,
+        runtime
+      )
+
+      const snapshot = await prepareActivationSnapshot(
+        normalizeActivationSnapshot(await runtime.activate()),
+        runtime,
+        revisionPackage
+      )
       for (const contribution of snapshot.contributions) {
         stage.contribute(contribution.descriptor, contribution.value)
       }
@@ -165,7 +227,12 @@ export class PluginActivationCoordinator {
         runtime.commit(owner)
         committedOwner = owner
         this.activeRuntimes.set(owner.runId, { owner, runtime })
-        this.repository.markRunActive(run.id, owner.epoch, previousOwner?.runId ?? null)
+        this.repository.markRunActive(
+          run.id,
+          owner.epoch,
+          previousOwner?.runId ?? null,
+          stateMigration ?? undefined
+        )
       })
 
       void receipt.previousDrain
@@ -210,14 +277,108 @@ export class PluginActivationCoordinator {
     }
     const id = normalizeHandlerId(handlerId)
     const normalizedInput = clonePluginRuntimeJson(input, 'Plugin handler input')
-    return this.kernel.runWithActiveOwner(owner, async (signal) => {
-      const result = await active.runtime.invokeHandler(owner, id, normalizedInput, signal)
-      return clonePluginRuntimeJson(result, 'Plugin handler result')
+    try {
+      return await this.kernel.runWithActiveOwner(owner, async (signal) => {
+        const result = await active.runtime.invokeHandler(owner, id, normalizedInput, signal)
+        return clonePluginRuntimeJson(result, 'Plugin handler result')
+      })
+    } catch (error) {
+      if (isRuntimeViolation(error) && !this.fatalRuns.has(owner.runId)) {
+        const run = this.repository.getRun(owner.runId)
+        if (run?.installationId) {
+          const installation = this.repository.recordInstallationViolation(
+            run.installationId,
+            serializeRuntimeError(error)
+          )
+          if (installation.quarantined && this.kernel.isCurrent(owner)) {
+            this.repository.revokeGrantSet(owner.grantSetId)
+            this.broker.revokeGrantSet(owner.grantSetId)
+            await this.kernel.stop(owner.pluginId, owner.scope)
+            const persisted = this.repository.getRun(owner.runId)
+            if (persisted && persisted.status !== 'failed' && persisted.status !== 'stopped') {
+              this.repository.markRunStopped(owner.runId)
+            }
+          }
+        }
+      }
+      throw error
+    }
+  }
+
+  private async handleRuntimeFatal(owner: PluginActiveOwner, error: Error): Promise<void> {
+    if (this.fatalRuns.has(owner.runId)) return
+    this.fatalRuns.add(owner.runId)
+    const run = this.repository.getRun(owner.runId)
+    if (run?.installationId) {
+      this.repository.recordInstallationViolation(run.installationId, serializeRuntimeError(error))
+    }
+    this.repository.revokeGrantSet(owner.grantSetId)
+    this.broker.revokeGrantSet(owner.grantSetId)
+    if (this.kernel.isCurrent(owner)) await this.kernel.stop(owner.pluginId, owner.scope)
+    const persisted = this.repository.getRun(owner.runId)
+    if (persisted && persisted.status !== 'failed' && persisted.status !== 'stopped') {
+      this.repository.markRunFailed(owner.runId, serializeRuntimeError(error))
+    }
+  }
+
+  private async prepareStateMigration(
+    installation: NonNullable<ReturnType<PluginPlatformLifecycleRepository['getInstallation']>>,
+    targetRevision: NonNullable<ReturnType<PluginPlatformLifecycleRepository['getRevision']>>,
+    runtime: NoNodePluginRuntimeInstance
+  ): Promise<PluginStateMigrationInput | null> {
+    if (!installation.currentRevisionId || installation.currentRevisionId === targetRevision.id) {
+      return null
+    }
+    const previousRevision = this.repository.getRevision(installation.currentRevisionId)
+    if (!previousRevision || previousRevision.pluginId !== targetRevision.pluginId) {
+      throw new Error('Plugin installation points to a missing current revision.')
+    }
+    const fromSchemaVersion = previousRevision.stateSchemaVersion ?? 1
+    const toSchemaVersion = targetRevision.stateSchemaVersion ?? 1
+    if (fromSchemaVersion === toSchemaVersion) {
+      return null
+    }
+    const rollbackSnapshot = this.repository.findStateSnapshotForRevision(
+      installation.id,
+      targetRevision.id
+    )
+    if (rollbackSnapshot && rollbackSnapshot.schemaVersion === toSchemaVersion) {
+      return {
+        fromRevisionId: previousRevision.id,
+        fromSchemaVersion,
+        toSchemaVersion,
+        values: rollbackSnapshot.values
+      }
+    }
+    if (!runtime.migrateState) {
+      throw new Error(
+        `Plugin state schema changes from ${fromSchemaVersion} to ${toSchemaVersion}, but migrateState is not implemented.`
+      )
+    }
+    const output = await runtime.migrateState({
+      previousVersion: fromSchemaVersion,
+      nextVersion: toSchemaVersion,
+      state: this.repository.readPluginStateValues(targetRevision.pluginId, installation.scope)
     })
+    if (!output || typeof output !== 'object' || Array.isArray(output)) {
+      throw new Error('Plugin migrateState must return a JSON object keyed by storage key.')
+    }
+    return {
+      fromRevisionId: previousRevision.id,
+      fromSchemaVersion,
+      toSchemaVersion,
+      values: clonePluginRuntimeJson(output, 'Plugin migrated state') as Record<string, PluginJsonValue>
+    }
   }
 
   getActiveOwner(runId: string): PluginActiveOwner | null {
     return this.activeRuntimes.get(runId)?.owner ?? null
+  }
+
+  async getRuntimeHealth(runId: string): Promise<PluginRuntimeHealth | null> {
+    const active = this.activeRuntimes.get(runId)
+    if (!active || !this.kernel.isCurrent(active.owner) || !active.runtime.health) return null
+    return active.runtime.health()
   }
 
   async stop(
@@ -232,6 +393,48 @@ export class PluginActivationCoordinator {
     await this.kernel.stop(pluginId, scope, drainTimeoutMs)
     return this.repository.markRunStopped(owner.runId)
   }
+}
+
+function isRuntimeViolation(error: unknown): boolean {
+  const message = normalizeError(error).message.toLowerCase()
+  return /timed out|timeout|memory|out of bounds|interrupted|protocol|complexity limit|exceeds \d+ bytes|must contain plain json/.test(message)
+}
+
+async function prepareActivationSnapshot(
+  snapshot: PluginRuntimeActivationSnapshot,
+  runtime: NoNodePluginRuntimeInstance,
+  revisionPackage: PluginRevisionPackage
+): Promise<PluginRuntimeActivationSnapshot> {
+  const counts = new Map<string, number>()
+  const handlerIds = new Set<string>()
+  const contributions = snapshot.contributions.map((contribution): PluginRuntimeContribution => {
+    const slot = contribution.descriptor.slot
+    if (!isPluginUiSlot(slot)) {
+      return contribution
+    }
+    const catalog = PLUGIN_UI_SLOT_CATALOG[slot]
+    const count = (counts.get(slot) ?? 0) + 1
+    if (count > catalog.maxContributions) {
+      throw new Error(`Plugin UI slot "${slot}" exceeds its contribution limit.`)
+    }
+    counts.set(slot, count)
+    const validated = validatePluginUiContribution(slot, contribution.value)
+    validatePluginUiAssets(validated.value, revisionPackage.assets)
+    if (validated.nodeCount > catalog.renderBudget) {
+      throw new Error(`Plugin UI contribution exceeds the "${slot}" render budget.`)
+    }
+    for (const action of validated.actions) {
+      handlerIds.add(action.handler)
+    }
+    return { descriptor: contribution.descriptor, value: validated.value as unknown as PluginJsonValue }
+  })
+  if (handlerIds.size > 0) {
+    if (!runtime.validateHandlers) {
+      throw new Error('Plugin runtime cannot prove ViewSpec handler readiness.')
+    }
+    await runtime.validateHandlers([...handlerIds].sort())
+  }
+  return { contributions }
 }
 
 function normalizeActivationSnapshot(raw: unknown): PluginRuntimeActivationSnapshot {
