@@ -8,6 +8,7 @@ import { WebClipExtractionWorkerPool } from '../src/main/web-clip-extract-worker
 import { isSameOriginNavigation } from '../src/main/window-navigation.ts'
 
 const mainIndexSource = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8')
+const rendererIndexSource = readFileSync(join(process.cwd(), 'src/renderer/index.html'), 'utf8')
 
 type FakeWorkerEvent =
   | 'message'
@@ -88,6 +89,25 @@ test('main window guards reloads via same-origin check and hardens asset respons
     /if\s*\(\s*isSameOriginNavigation\(/,
     'same-origin navigations must bypass the external-url handling'
   )
+
+  assert.match(
+    mainIndexSource,
+    /webContents\.on\('will-frame-navigate',[\s\S]*?!event\.isMainFrame[\s\S]*?getPluginUiDocumentRegistration\(event\.url\)[\s\S]*?event\.preventDefault\(\)/,
+    'sandbox subframes must only navigate to live main-process-issued plugin UI documents'
+  )
+
+  assert.match(
+    mainIndexSource,
+    /setWindowOpenHandler\(\(\) => \{[\s\S]*?return \{ action: 'deny' \}/,
+    'window.open must always be denied; trusted external links use validated IPC'
+  )
+
+  assert.match(
+    rendererIndexSource,
+    /frame-src knowbook-plugin-ui:/,
+    'renderer CSP must allow only the opaque plugin UI document scheme in frames'
+  )
+  assert.doesNotMatch(rendererIndexSource, /frame-src[^;]*(?:https?:|data:|blob:)/)
 
   assert.match(
     mainIndexSource,

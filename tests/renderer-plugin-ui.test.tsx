@@ -46,14 +46,35 @@ test('PluginSlot renders ViewSpec as escaped host controls without arbitrary HTM
 
 test('sandbox frame uses only allow-scripts, one-time MessageChannel, exact identity checks, and cleanup', () => {
   const source = readFileSync(new URL('../src/renderer/src/components/PluginSlot.tsx', import.meta.url), 'utf8')
+  const protocol = readFileSync(new URL('../src/shared/plugin-frame-protocol.ts', import.meta.url), 'utf8')
   assert.match(source, /sandbox="allow-scripts"/)
+  assert.match(source, /src=\{contribution\.value\.src\}/)
+  assert.equal(source.includes('srcDoc='), false)
   assert.equal(source.includes('allow-same-origin'), false)
   assert.match(source, /new MessageChannel\(\)/)
-  assert.match(source, /revisionId === expected\.revisionId/)
-  assert.match(source, /runId === expected\.runId/)
-  assert.match(source, /candidate\.epoch === expected\.epoch/)
+  assert.match(protocol, /revisionId === expected\.revisionId/)
+  assert.match(protocol, /runId === expected\.runId/)
+  assert.match(protocol, /candidate\.epoch === expected\.epoch/)
+  assert.match(protocol, /MAX_FRAME_MESSAGE_DEPTH/)
+  assert.match(protocol, /MAX_FRAME_MESSAGE_BYTES/)
   assert.match(source, /portRef\.current\?\.close\(\)/)
+  assert.match(source, /reportPluginUiRuntimeFailure/)
+  assert.match(source, /MAX_PENDING_IFRAME_ACTIONS/)
+  assert.match(source, /ready handshake timed out after activation/)
   assert.equal(source.includes('addEventListener(\'message\''), false)
+})
+
+test('renderer mounts a hidden staging host for iframe ready handshakes', () => {
+  const host = readFileSync(new URL('../src/renderer/src/components/PluginUiPreparationHost.tsx', import.meta.url), 'utf8')
+  const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
+  assert.match(app, /<PluginUiPreparationHost \/>/)
+  assert.match(host, /onPluginUiPreparation/)
+  assert.match(host, /reportPluginUiPreparation/)
+  assert.match(host, /sandbox="allow-scripts"/)
+  assert.match(host, /src=\{frame\.src\}/)
+  assert.equal(host.includes('srcDoc='), false)
+  assert.match(host, /new MessageChannel\(\)/)
+  assert.match(host, /Plugin iframe ready handshake timed out/)
 })
 
 test('all published slots are mounted in product surfaces', () => {

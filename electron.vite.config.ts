@@ -27,6 +27,18 @@ function katexWoff2OnlyPlugin() {
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/main/bootstrap.ts')
+        },
+        output: {
+          format: 'cjs',
+          entryFileNames: '[name].cjs',
+          chunkFileNames: 'chunks/[name]-[hash].cjs'
+        }
+      }
+    },
     resolve: {
       alias: {
         '@main': resolve(__dirname, 'src/main'),

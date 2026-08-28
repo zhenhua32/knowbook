@@ -16,6 +16,7 @@ export const ACTIVITY_PULSE_V2_PACKAGE: PluginRevisionPackageInput = {
     permissions: [
       { capability: 'documents.read', version: 1, reason: 'Read the selected document for its summary action.' },
       { capability: 'documents.update', version: 1, reason: 'Update the selected document summary.' },
+      { capability: 'ai.automation.summarize-document', version: 1, reason: 'Run the enabled automatic summary workflow after document updates.' },
       { capability: 'plugin.storage.write', version: 1, reason: 'Remember the latest observed workspace activity.' },
       { capability: 'ui.notify', version: 1, reason: 'Confirm that the document action completed.' }
     ],
@@ -66,11 +67,28 @@ export default definePlugin({
             handlerId: 'workspace.remember-activity',
             includeSelf: false
           }
+        },
+        {
+          descriptor: { slot: 'workspace.event', id: 'auto-summary-on-document-update', order: 10 },
+          value: {
+            types: ['document.updated'],
+            handlerId: 'ai.auto-summary-on-save',
+            includeSelf: false
+          }
         }
       ]
     };
   },
   handlers: {
+    async 'ai.auto-summary-on-save'(input) {
+      const event = input && input.event ? input.event : {};
+      if (typeof event.documentId !== 'string' || !event.documentId) return null;
+      return callCapability({
+        capability: 'ai.automation.summarize-document',
+        version: 1,
+        input: { documentId: event.documentId }
+      });
+    },
     async 'workspace.remember-activity'(input) {
       const event = input && input.event ? input.event : {};
       await callCapability({

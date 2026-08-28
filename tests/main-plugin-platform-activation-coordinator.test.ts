@@ -11,7 +11,8 @@ import {
   PluginRevisionStore,
   type NoNodePluginRuntimeFactory,
   type NoNodePluginRuntimeHostContext,
-  type NoNodePluginRuntimeInstance
+  type NoNodePluginRuntimeInstance,
+  type PluginUiPreparationHook
 } from '../src/main/plugin-platform/index.ts'
 import type {
   PluginActiveOwner,
@@ -193,6 +194,49 @@ test('runtime commit failure rolls kernel namespace back before SQLite pointers 
     })
     assert.equal(platform.store.pluginPlatform.getRun('run-2')?.status, 'failed')
     await platform.kernel.destroy()
+  })
+})
+
+test('renderer UI readiness failure aborts staging before the old epoch is replaced', async () => {
+  await withPlatform(async (platform) => {
+    const firstPackage = platform.createRevision('1.0.0', 'export const version = 1')
+    platform.createGrant('grant-ui-old', firstPackage.revisionId)
+    const firstReceipt = await platform.coordinator(runtimeFactory(() => staticRuntime('old-ui'))).activate({
+      pluginId: 'daily-review',
+      revisionId: firstPackage.revisionId,
+      grantSetId: 'grant-ui-old',
+      scope,
+      runId: 'run-ui-old'
+    })
+
+    const secondPackage = platform.createRevision('2.0.0', 'export const version = 2', firstPackage.revisionId)
+    platform.createGrant('grant-ui-new', secondPackage.revisionId)
+    let disposed = false
+    const prepareUi: PluginUiPreparationHook = async ({ identity, snapshot }) => {
+      assert.equal(identity.runId, 'run-ui-new')
+      assert.deepEqual(snapshot.contributions.map((item) => item.value), ['new-ui'])
+      throw new Error('iframe ready handshake failed')
+    }
+    const coordinator = platform.coordinator(runtimeFactory(() => ({
+      ...staticRuntime('new-ui'),
+      dispose: () => { disposed = true }
+    })), prepareUi)
+
+    await assert.rejects(coordinator.activate({
+      pluginId: 'daily-review',
+      revisionId: secondPackage.revisionId,
+      grantSetId: 'grant-ui-new',
+      scope,
+      runId: 'run-ui-new'
+    }), /iframe ready handshake failed/)
+
+    assert.equal(disposed, true)
+    assert.equal(platform.kernel.isCurrent(firstReceipt.owner), true)
+    assert.deepEqual(
+      platform.kernel.listContributions<string>('dashboard.card', scope).map((item) => item.value),
+      ['old-ui']
+    )
+    assert.equal(platform.store.pluginPlatform.getRun('run-ui-new')?.status, 'failed')
   })
 })
 
@@ -490,12 +534,13 @@ function createPlatform(root: string) {
     broker,
     createRevision,
     createGrant,
-    coordinator: (factory: NoNodePluginRuntimeFactory) => new PluginActivationCoordinator(
+    coordinator: (factory: NoNodePluginRuntimeFactory, prepareUi?: PluginUiPreparationHook) => new PluginActivationCoordinator(
       kernel,
       broker,
       store.pluginPlatform,
       revisions,
-      factory
+      factory,
+      prepareUi
     )
   }
 }

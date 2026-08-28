@@ -89,6 +89,12 @@ export interface ActivatePluginRevisionInput {
   drainTimeoutMs?: number
 }
 
+export type PluginUiPreparationHook = (input: {
+  identity: PluginActivationIdentity
+  snapshot: PluginRuntimeActivationSnapshot
+  package: PluginRevisionPackage
+}) => void | Promise<void>
+
 type ActiveRuntime = {
   owner: PluginActiveOwner
   runtime: NoNodePluginRuntimeInstance
@@ -122,7 +128,8 @@ export class PluginActivationCoordinator {
     private readonly broker: PluginCapabilityBroker,
     private readonly repository: PluginPlatformLifecycleRepository,
     private readonly revisions: PluginRevisionStore,
-    private readonly runtimeFactory: NoNodePluginRuntimeFactory
+    private readonly runtimeFactory: NoNodePluginRuntimeFactory,
+    private readonly prepareUi?: PluginUiPreparationHook
   ) {
     if (runtimeFactory.isolation !== 'no-node-isolate') {
       throw new Error('Dynamic plugins require a no-node-isolate runtime factory.')
@@ -219,6 +226,7 @@ export class PluginActivationCoordinator {
         runtime,
         revisionPackage
       )
+      await this.prepareUi?.({ identity, snapshot, package: revisionPackage })
       for (const contribution of snapshot.contributions) {
         stage.contribute(contribution.descriptor, contribution.value)
       }
@@ -379,6 +387,11 @@ export class PluginActivationCoordinator {
     const active = this.activeRuntimes.get(runId)
     if (!active || !this.kernel.isCurrent(active.owner) || !active.runtime.health) return null
     return active.runtime.health()
+  }
+
+  async failRuntime(owner: PluginActiveOwner, error: Error): Promise<void> {
+    if (!this.kernel.isCurrent(owner)) return
+    await this.handleRuntimeFatal(owner, error)
   }
 
   async stop(

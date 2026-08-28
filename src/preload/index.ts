@@ -33,6 +33,9 @@ import type {
   HomeData,
   HomeDataIpcPayload,
   PluginHomeData,
+  PluginUiPreparationRequest,
+  PluginUiPreparationResult,
+  PluginUiRuntimeFailure,
   MarketplacePluginInstallResult,
   MarketplacePluginPackage,
   InstallPluginResult,
@@ -80,7 +83,20 @@ import { buildDocumentTreeFromCatalog } from '@shared/document-tree'
 const { contextBridge, ipcRenderer } = electron
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
+const PLUGIN_UI_PREPARE_CHANNEL = 'knowbook:plugin-ui-prepare'
 const ASSISTANT_SESSION_CHANGED_CHANNEL = 'knowbook:assistant-session-changed'
+
+const pluginUiPreparationListeners = new Set<(request: PluginUiPreparationRequest) => void>()
+const queuedPluginUiPreparations: PluginUiPreparationRequest[] = []
+
+ipcRenderer.on(PLUGIN_UI_PREPARE_CHANNEL, (_event, request: PluginUiPreparationRequest) => {
+  if (pluginUiPreparationListeners.size === 0) {
+    queuedPluginUiPreparations.push(request)
+    if (queuedPluginUiPreparations.length > 16) queuedPluginUiPreparations.shift()
+    return
+  }
+  for (const listener of pluginUiPreparationListeners) listener(request)
+})
 
 const api: ElectronApi = {
   getHomeData: async () => {
@@ -107,6 +123,15 @@ const api: ElectronApi = {
       ipcRenderer.removeListener(PLUGINS_MUTATED_CHANNEL, wrapped)
     }
   },
+  onPluginUiPreparation: (listener) => {
+    pluginUiPreparationListeners.add(listener)
+    for (const request of queuedPluginUiPreparations.splice(0)) listener(request)
+    return () => {
+      pluginUiPreparationListeners.delete(listener)
+    }
+  },
+  reportPluginUiPreparation: (result: PluginUiPreparationResult) => ipcRenderer.invoke('knowbook:report-plugin-ui-preparation', result) as Promise<void>,
+  reportPluginUiRuntimeFailure: (failure: PluginUiRuntimeFailure) => ipcRenderer.invoke('knowbook:report-plugin-ui-runtime-failure', failure) as Promise<void>,
   getAppUpdateState: () => ipcRenderer.invoke('knowbook:get-app-update-state') as Promise<AppUpdateState>,
   checkForAppUpdates: () => ipcRenderer.invoke('knowbook:check-for-app-updates') as Promise<AppUpdateState>,
   installAppUpdate: () => ipcRenderer.invoke('knowbook:install-app-update') as Promise<void>,

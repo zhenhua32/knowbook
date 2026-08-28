@@ -1,6 +1,7 @@
 # ADR-0001：插件信任分层与依赖策略
 
-- 状态：Accepted
+- 状态：Implemented
+- 实现日期：2026-08-28
 - 日期：2026-08-25
 - 决策范围：Plugin Platform v2
 
@@ -114,9 +115,11 @@ AI 可以选择已审核模块，但不能请求运行时下载新的第三方�
 - API Key、凭证和用户秘密不得被打包、写入插件日志或作为环境变量传给插件。
 - 对依赖策略的放宽必须通过新的 ADR，不得仅靠增加一个隐藏设置实现。
 
-## 后续工作
+## 实现证据
 
-- 定义 `@knowbook/plugin-sdk` 的版本兼容策略。
-- 建立首批 `@knowbook/std/*` 模块目录。
-- 设计市场插件签名、SBOM 和扫描格式。
-- 为现有 v1 插件提供 bundle 化迁移工具。
+- `src/main/plugin-platform/revision-package.ts` 与 `revision-store.ts` 实现规范化、自包含 revision、内容哈希、路径/符号链接/包体/原生文件限制和原子对象发布。
+- `src/main/plugin-platform/standard-modules.ts` 提供首个版本锁定的 `@knowbook/std/plugin@1.0.0`；动态插件 manifest 只能声明已审核标准模块。
+- `src/main/plugin-platform/marketplace-package.ts` 与 `marketplace-installer.ts` 实现发布者签名、artifact 哈希、锁定依赖、SBOM、安全扫描和“安装但不自动启用”。
+- `plugin_trust` 持久化与主进程 IPC 实现高级系统插件的独立请求、风险确认和不可静默安装语义。
+- v1 `PluginHost` 继续作为兼容层，renderer 在插件管理界面明确显示 `Legacy v1`；AI 工具只创建 v2 revision。
+- `tests/main-plugin-platform-revision.test.ts`、`main-plugin-marketplace-package.test.ts`、`main-plugin-platform-repository.test.ts` 和 `main-plugin-host.test.ts` 覆盖上述边界。

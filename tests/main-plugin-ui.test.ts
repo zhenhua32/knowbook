@@ -86,8 +86,12 @@ test('iframe materialization puts CSP before untrusted bytes and only emits revi
   assert.equal(result.value.kind, 'iframe')
   if (result.value.kind !== 'iframe') return
   const cspOffset = result.value.srcdoc.indexOf('Content-Security-Policy')
+  const bootstrapOffset = result.value.srcdoc.indexOf("type:'knowbook:ready'")
   const pluginScriptOffset = result.value.srcdoc.indexOf('window.ready')
   assert.ok(cspOffset >= 0 && cspOffset < pluginScriptOffset)
+  assert.ok(bootstrapOffset > cspOffset && bootstrapOffset < pluginScriptOffset)
+  assert.match(result.value.srcdoc, /type:'knowbook:error'/)
+  assert.match(result.value.srcdoc, /event\.ports\[0\]/)
   assert.match(result.value.srcdoc, /default-src 'none'/)
   assert.match(result.value.srcdoc, /connect-src 'none'/)
   assert.match(result.value.srcdoc, /form-action 'none'/)

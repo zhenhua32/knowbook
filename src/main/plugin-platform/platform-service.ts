@@ -19,7 +19,6 @@ import {
   type CorePluginCapabilityHooks
 } from './core-capabilities'
 import { PluginPlatformKernel } from './kernel'
-import { QuickJsWasiPluginRuntimeFactory } from './quickjs-runtime-client'
 import { QuickJsPluginRevisionValidator } from './quickjs-validator'
 import { PluginRevisionStore } from './revision-store'
 import { clonePluginRuntimeJson } from './runtime-json'
@@ -34,13 +33,17 @@ import { installMarketplacePluginPackage } from './marketplace-installer'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import {
   getDeclaredPluginUiActions,
+  materializePluginIframePreparation,
   materializePluginUiContribution
 } from './ui-materializer'
 import {
   PLUGIN_UI_SLOT_CATALOG,
   isPluginUiSlot,
+  validatePluginUiContribution,
   validateRunPluginUiActionInput,
-  type PluginUiContribution,
+  type PluginUiDocumentContribution,
+  type PluginUiDocumentPreparation,
+  type PluginUiRuntimeFailure,
   type PluginUiSlot,
   type RunPluginUiActionInput,
   type RunPluginUiActionResult
@@ -69,8 +72,9 @@ type PluginEventQueue = {
 
 export interface PluginPlatformV2ServiceOptions extends CorePluginCapabilityHooks {
   workspaceId: string
-  runtimeFactory?: NoNodePluginRuntimeFactory
+  runtimeFactory: NoNodePluginRuntimeFactory
   marketplacePublishers?: readonly TrustedMarketplacePublisher[]
+  preparePluginUi?: (input: PluginUiDocumentPreparation) => Promise<void>
 }
 
 export interface PluginEventSubscriptionValue {
@@ -103,6 +107,7 @@ export class PluginPlatformV2Service {
   private readonly validator = new QuickJsPluginRevisionValidator()
   private readonly disposeCapabilities: () => void
   private readonly eventQueues = new Map<string, PluginEventQueue>()
+  private readonly uiFailureRuns = new Set<string>()
   private destroyed = false
 
   constructor(
@@ -121,7 +126,28 @@ export class PluginPlatformV2Service {
       this.broker,
       this.store.pluginPlatform,
       this.revisions,
-      options.runtimeFactory ?? new QuickJsWasiPluginRuntimeFactory()
+      options.runtimeFactory,
+      options.preparePluginUi
+        ? async ({ identity, snapshot, package: revisionPackage }) => {
+            const frames = snapshot.contributions.flatMap((contribution) => {
+              if (!isPluginUiSlot(contribution.descriptor.slot)) return []
+              const validated = validatePluginUiContribution(
+                contribution.descriptor.slot,
+                contribution.value
+              )
+              if (validated.value.kind !== 'iframe') return []
+              return [materializePluginIframePreparation(
+                contribution.descriptor.slot,
+                contribution.descriptor.id,
+                validated.value,
+                revisionPackage.assets
+              )]
+            })
+            if (frames.length > 0) {
+              await options.preparePluginUi?.({ identity, frames })
+            }
+          }
+        : undefined
     )
     this.authoring = new AssistantPluginAuthoringService(
       this.store.assistantSessions,
@@ -179,7 +205,7 @@ export class PluginPlatformV2Service {
     return [...result.values()].sort((left, right) => left.order - right.order)
   }
 
-  listUiContributions(slot?: PluginUiSlot): PluginUiContribution[] {
+  listUiContributions(slot?: PluginUiSlot): PluginUiDocumentContribution[] {
     this.assertUsable()
     const slots = slot ? [slot] : Object.keys(PLUGIN_UI_SLOT_CATALOG) as PluginUiSlot[]
     return slots.flatMap((slotId) => {
@@ -233,6 +259,65 @@ export class PluginPlatformV2Service {
     }, 'Plugin UI action')
     return {
       result: await this.coordinator.invokeHandler(input.owner, input.handler, payload)
+    }
+  }
+
+  async reportUiRuntimeFailure(raw: PluginUiRuntimeFailure): Promise<void> {
+    this.assertUsable()
+    if (!raw || typeof raw !== 'object' || !raw.owner || typeof raw.contributionId !== 'string') {
+      throw new Error('Plugin UI runtime failure report is invalid.')
+    }
+    const owner = raw.owner
+    this.kernel.assertCurrent(owner)
+    const contributionId = raw.contributionId.trim()
+    if (!contributionId || contributionId.length > 200) {
+      throw new Error('Plugin UI runtime failure contribution id is invalid.')
+    }
+    const contribution = Object.keys(PLUGIN_UI_SLOT_CATALOG).flatMap((slot) => (
+      this.listExperienceContributions(slot)
+    )).find((candidate) => candidate.id === contributionId && sameOwner(candidate.owner, owner))
+    if (!contribution || (contribution.value as Record<string, PluginJsonValue>).kind !== 'iframe') {
+      throw new Error('Plugin iframe contribution is stale or no longer active.')
+    }
+    if (this.uiFailureRuns.has(owner.runId)) return
+    this.uiFailureRuns.add(owner.runId)
+    const message = typeof raw.error === 'string' && raw.error.trim()
+      ? raw.error.trim().slice(0, 2_000)
+      : 'Plugin iframe UI failed after activation.'
+    const failedRun = this.store.pluginPlatform.getRun(owner.runId)
+    const fallback = failedRun
+      ? this.store.pluginPlatform.listPluginRuns(owner.pluginId, 100).find((run) => (
+          run.id !== owner.runId
+          && run.revisionId !== owner.revisionId
+          && run.readyAt !== null
+          && run.installationId === failedRun.installationId
+          && sameScope(run.scope, owner.scope)
+          && this.store.pluginPlatform.getGrantSet(run.grantSetId) !== null
+        )) ?? null
+      : null
+    this.logRuntimeFailure(owner, 'ui.runtime.failed', new Error(message))
+    await this.coordinator.failRuntime(owner, new Error(`Plugin iframe UI failed: ${message}`))
+
+    if (!fallback || !failedRun?.installationId) return
+    const installation = this.store.pluginPlatform.getInstallation(failedRun.installationId)
+    const grant = this.store.pluginPlatform.getGrantSet(fallback.grantSetId)
+    if (!installation || installation.quarantined || !grant) return
+    try {
+      const receipt = await this.coordinator.activate({
+        pluginId: fallback.pluginId,
+        revisionId: fallback.revisionId,
+        grantSetId: fallback.grantSetId,
+        installationId: failedRun.installationId,
+        scope: fallback.scope
+      })
+      this.logRuntimeInfo(
+        receipt.owner,
+        'ui.auto-rollback.succeeded',
+        `Automatically restored revision ${fallback.revisionId} after iframe readiness failure.`
+      )
+    } catch (error) {
+      this.logRuntimeFailure(owner, 'ui.auto-rollback.failed', error)
+      throw error
     }
   }
 
@@ -694,6 +779,22 @@ export class PluginPlatformV2Service {
       // Runtime logging must not take down workspace event dispatch.
     }
   }
+
+  private logRuntimeInfo(owner: PluginActiveOwner, event: string, message: string): void {
+    try {
+      this.store.pluginPlatform.appendPluginLog({
+        id: randomUUID(),
+        pluginId: owner.pluginId,
+        revisionId: owner.revisionId,
+        runId: owner.runId,
+        level: 'info',
+        event,
+        message: message.slice(0, 2_000)
+      })
+    } catch {
+      // Runtime logging must not change a successfully restored namespace.
+    }
+  }
 }
 
 function parseEventSubscription(value: unknown): PluginEventSubscriptionValue {
@@ -764,6 +865,10 @@ function scopeKey(scope: PluginPlatformScope): string {
     case 'session':
       return `session:${scope.workspaceId}:${scope.sessionId}`
   }
+}
+
+function sameScope(left: PluginPlatformScope, right: PluginPlatformScope): boolean {
+  return scopeKey(left) === scopeKey(right)
 }
 
 function readOptionalEventOrigin(event: WorkspaceEvent): string | null {

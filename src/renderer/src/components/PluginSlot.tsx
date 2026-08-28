@@ -9,6 +9,10 @@ import {
   type ReactNode
 } from 'react'
 import type { PluginJsonValue } from '@shared/plugin-platform'
+import {
+  readPluginFrameAction,
+  readPluginFrameReadiness
+} from '@shared/plugin-frame-protocol'
 import type {
   PluginUiContribution,
   PluginUiSlot,
@@ -25,6 +29,9 @@ type PluginSlotProps = {
   context?: PluginUiContext
   className?: string
 }
+
+const MAX_PENDING_IFRAME_ACTIONS = 8
+const MAX_IFRAME_ACTIONS_PER_MINUTE = 120
 
 export function PluginSlot({ contributions = [], slot, context, className }: PluginSlotProps) {
   const visible = useMemo(
@@ -189,20 +196,78 @@ function PluginSandboxFrame({ contribution, context }: {
   if (contribution.value.kind !== 'iframe') return null
   const frameRef = useRef<HTMLIFrameElement>(null)
   const portRef = useRef<MessagePort | null>(null)
+  const readyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const failureReportedRef = useRef(false)
+  const pendingActionIdsRef = useRef(new Set<string>())
+  const actionTimesRef = useRef<number[]>([])
   const [error, setError] = useState<string | null>(null)
   useEffect(() => () => {
+    if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
     portRef.current?.close()
     portRef.current = null
+    pendingActionIdsRef.current.clear()
+    actionTimesRef.current = []
   }, [contribution.owner.runId, contribution.owner.epoch])
+  const reportFailure = (message: string) => {
+    if (failureReportedRef.current) return
+    failureReportedRef.current = true
+    const normalized = message.slice(0, 2_000)
+    setError(normalized)
+    void window.knowbook.reportPluginUiRuntimeFailure({
+      owner: contribution.owner,
+      contributionId: contribution.id,
+      error: normalized
+    }).catch((reason: unknown) => setError(errorMessage(reason)))
+  }
   const connect = () => {
+    failureReportedRef.current = false
+    pendingActionIdsRef.current.clear()
+    actionTimesRef.current = []
+    if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
     portRef.current?.close()
     const frameWindow = frameRef.current?.contentWindow
     if (!frameWindow) return
     const channel = new MessageChannel()
     portRef.current = channel.port1
     channel.port1.onmessage = (event: MessageEvent<unknown>) => {
-      const request = readFrameAction(event.data, contribution)
+      const address = {
+        owner: contribution.owner,
+        contributionId: contribution.id,
+        slot: contribution.slot
+      }
+      const readiness = readPluginFrameReadiness(event.data, address)
+      if (readiness?.status === 'ready') {
+        if (readyTimeoutRef.current) clearTimeout(readyTimeoutRef.current)
+        readyTimeoutRef.current = null
+        return
+      }
+      if (readiness?.status === 'failed') {
+        reportFailure(readiness.error)
+        return
+      }
+      const request = readPluginFrameAction(event.data, address)
       if (!request) return
+      const now = Date.now()
+      actionTimesRef.current = actionTimesRef.current.filter((timestamp) => timestamp > now - 60_000)
+      if (
+        pendingActionIdsRef.current.has(request.requestId)
+        || pendingActionIdsRef.current.size >= MAX_PENDING_IFRAME_ACTIONS
+        || actionTimesRef.current.length >= MAX_IFRAME_ACTIONS_PER_MINUTE
+      ) {
+        const message = 'Plugin iframe action rate or concurrency limit exceeded.'
+        channel.port1.postMessage({
+          type: 'knowbook:action-error',
+          owner: contribution.owner,
+          contributionId: contribution.id,
+          slot: contribution.slot,
+          requestId: request.requestId,
+          error: message
+        })
+        reportFailure(message)
+        return
+      }
+      pendingActionIdsRef.current.add(request.requestId)
+      actionTimesRef.current.push(now)
       void window.knowbook.runPluginUiAction({
         owner: contribution.owner,
         slot: contribution.slot,
@@ -212,70 +277,35 @@ function PluginSandboxFrame({ contribution, context }: {
         ...(request.control === undefined ? {} : { control: request.control }),
         ...(context === undefined ? {} : { context })
       }).then(({ result }) => {
-        channel.port1.postMessage({ type: 'knowbook:action-result', owner: contribution.owner, requestId: request.requestId, result })
+        channel.port1.postMessage({
+          type: 'knowbook:action-result',
+          owner: contribution.owner,
+          contributionId: contribution.id,
+          slot: contribution.slot,
+          requestId: request.requestId,
+          result
+        })
       }).catch((reason: unknown) => {
         setError(errorMessage(reason))
-        channel.port1.postMessage({ type: 'knowbook:action-error', owner: contribution.owner, requestId: request.requestId, error: 'Action failed.' })
+        channel.port1.postMessage({
+          type: 'knowbook:action-error',
+          owner: contribution.owner,
+          contributionId: contribution.id,
+          slot: contribution.slot,
+          requestId: request.requestId,
+          error: 'Action failed.'
+        })
+      }).finally(() => {
+        pendingActionIdsRef.current.delete(request.requestId)
       })
     }
     channel.port1.start()
     frameWindow.postMessage({ type: 'knowbook:init', owner: contribution.owner, contributionId: contribution.id, slot: contribution.slot }, '*', [channel.port2])
+    readyTimeoutRef.current = setTimeout(() => {
+      reportFailure('Plugin iframe ready handshake timed out after activation.')
+    }, 8_000)
   }
-  return <div className="plugin-sandbox"><iframe aria-label={contribution.value.title} height={contribution.value.height} onLoad={connect} ref={frameRef} referrerPolicy="no-referrer" sandbox="allow-scripts" srcDoc={contribution.value.srcdoc} title={contribution.value.title} />{error ? <p role="alert">{error}</p> : null}</div>
-}
-
-function readFrameAction(value: unknown, contribution: PluginUiContribution): {
-  requestId: string
-  handler: string
-  arguments?: PluginJsonValue
-  control?: RunPluginUiActionInput['control']
-} | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const candidate = value as Record<string, unknown>
-  const allowed = new Set(['type', 'owner', 'contributionId', 'requestId', 'handler', 'arguments', 'control'])
-  if (Object.keys(candidate).some((key) => !allowed.has(key))) return null
-  if (candidate.type !== 'knowbook:action' || candidate.contributionId !== contribution.id) return null
-  if (typeof candidate.requestId !== 'string' || candidate.requestId.length === 0 || candidate.requestId.length > 200) return null
-  if (typeof candidate.handler !== 'string' || candidate.handler.length === 0 || candidate.handler.length > 200) return null
-  if (!sameOwner(candidate.owner, contribution.owner)) return null
-  if (!isJson(candidate.arguments) || !isControl(candidate.control)) return null
-  return {
-    requestId: candidate.requestId,
-    handler: candidate.handler,
-    ...(candidate.arguments === undefined ? {} : { arguments: candidate.arguments }),
-    ...(candidate.control === undefined ? {} : { control: candidate.control })
-  }
-}
-
-function sameOwner(value: unknown, expected: PluginUiContribution['owner']): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const candidate = value as Record<string, unknown>
-  return candidate.pluginId === expected.pluginId
-    && candidate.revisionId === expected.revisionId
-    && candidate.runId === expected.runId
-    && candidate.grantSetId === expected.grantSetId
-    && candidate.epoch === expected.epoch
-    && JSON.stringify(candidate.scope) === JSON.stringify(expected.scope)
-}
-
-function isControl(value: unknown): value is RunPluginUiActionInput['control'] | undefined {
-  if (value === undefined) return true
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const candidate = value as Record<string, unknown>
-  return Object.keys(candidate).every((key) => key === 'id' || key === 'value')
-    && typeof candidate.id === 'string'
-    && candidate.id.length > 0
-    && candidate.id.length <= 200
-    && isJson(candidate.value)
-}
-
-function isJson(value: unknown): value is PluginJsonValue | undefined {
-  if (value === undefined || value === null || typeof value === 'string' || typeof value === 'boolean') return true
-  if (typeof value === 'number') return Number.isFinite(value)
-  if (Array.isArray(value)) return value.length <= 1_000 && value.every(isJson)
-  if (typeof value !== 'object') return false
-  return Object.entries(value as Record<string, unknown>).length <= 1_000
-    && Object.entries(value as Record<string, unknown>).every(([key, child]) => key.length <= 500 && isJson(child))
+  return <div className="plugin-sandbox"><iframe aria-label={contribution.value.title} height={contribution.value.height} onError={() => reportFailure('Plugin iframe failed to load after activation.')} onLoad={connect} ref={frameRef} referrerPolicy="no-referrer" sandbox="allow-scripts" src={contribution.value.src} title={contribution.value.title} />{error ? <p role="alert">{error}</p> : null}</div>
 }
 
 class PluginContributionBoundary extends Component<{

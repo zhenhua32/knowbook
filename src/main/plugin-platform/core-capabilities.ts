@@ -15,6 +15,10 @@ const MAX_BLOCK_CONTENT_CHARS = 500_000
 export interface CorePluginCapabilityHooks {
   onDocumentCreated?: (document: DocumentDetail, owner: PluginActiveOwner) => void | Promise<void>
   onDocumentUpdated?: (document: DocumentDetail, owner: PluginActiveOwner) => void | Promise<void>
+  runDocumentSummaryAutomation?: (
+    documentId: string,
+    owner: PluginActiveOwner
+  ) => PluginJsonValue | Promise<PluginJsonValue>
   notify?: (
     notification: { title?: string; message: string; level: 'info' | 'success' | 'warning' | 'error' },
     owner: PluginActiveOwner
@@ -107,6 +111,18 @@ export function registerCorePluginCapabilities(
         await hooks.onDocumentUpdated?.(updated, context.owner)
         return json(updated, 'documents.update result')
       }
+    }),
+    broker.register({
+      id: 'ai.automation.summarize-document',
+      version: 1,
+      scopes: DATA_SCOPES,
+      parseInput: parseDocumentIdInput,
+      authorize: authorizeDocumentConstraint,
+      execute: async (context, input) => json(
+        await hooks.runDocumentSummaryAutomation?.(input.documentId, context.owner)
+          ?? { summaryGenerated: false },
+        'ai.automation.summarize-document result'
+      )
     }),
     broker.register({
       id: 'plugin.storage.read',

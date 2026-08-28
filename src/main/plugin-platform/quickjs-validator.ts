@@ -15,8 +15,9 @@ const VALIDATION_TIMEOUT_MS = 1_000
 export class QuickJsPluginRevisionValidator implements PluginRevisionValidator {
   async validate(revision: PluginRevisionPackage): Promise<PluginRevisionValidationResult> {
     const diagnostics: PluginJsonValue[] = []
+    let standardModules: ReturnType<typeof resolvePluginStandardModules>
     try {
-      resolvePluginStandardModules(
+      standardModules = resolvePluginStandardModules(
         revision.manifest.standardModules,
         `__validation_bridge_${randomUUID().replaceAll('-', '')}`
       )
@@ -43,7 +44,22 @@ export class QuickJsPluginRevisionValidator implements PluginRevisionValidator {
         wasm,
         memoryLimit: VALIDATION_MEMORY_LIMIT_BYTES,
         interruptHandler: () => performance.now() >= deadline.value,
-        timezoneOffset: 0
+        timezoneOffset: 0,
+        moduleLoader: {
+          normalize: (_baseName, specifier) => {
+            if (!standardModules.has(specifier)) {
+              throw new Error(`Plugin import "${specifier}" is not declared or installed.`)
+            }
+            return specifier
+          },
+          load: (moduleName) => {
+            const source = standardModules.get(moduleName)
+            if (source === undefined) {
+              throw new Error(`Plugin module "${moduleName}" is unavailable.`)
+            }
+            return source
+          }
+        }
       })
       deadline.value = performance.now() + VALIDATION_TIMEOUT_MS
       const bytecode = vm.compile(

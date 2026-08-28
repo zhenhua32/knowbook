@@ -1,6 +1,7 @@
 # ADR-0002：AI/用户动态插件使用无 Node 的隔离运行时
 
-- 状态：Accepted
+- 状态：Implemented
+- 实现日期：2026-08-28
 - 日期：2026-08-25
 - 决策范围：Plugin Platform v2 动态逻辑代码
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)
@@ -157,3 +158,13 @@ Broker 对每次调用执行：
 - 旧 `runId` 的消息和撤销后的 grant 均被拒绝。
 - 所有跨边界输入输出均有 schema、大小和深度限制。
 - 安全测试覆盖 Windows、macOS 和 Linux 打包运行时。
+
+## 实现证据
+
+- `src/main/plugin-platform/quickjs-realm.ts` 使用 QuickJS/WASM 执行不可信源码；插件 realm 不暴露 Node、Electron、网络、宿主对象或 `WebAssembly`。
+- `quickjs-runtime-process.ts`、`quickjs-runtime-client.ts` 和 `quickjs-runtime-protocol.ts` 实现独立 utility process、严格身份协议、健康检查、可终止运行、消息大小/深度限制和 fatal 故障上报。
+- `capability-broker.ts` 对每次调用执行 schema、scope、grant、epoch、并发、速率、token、超时、取消、结果裁剪与审计校验；`platform-service.ts` 实现有界事件队列、背压、违规计数和 quarantine/recover。
+- `core-capabilities.ts` 只向已授权 owner 提供最小数据能力；API Key 从不进入插件包、事件或 utility-process 环境。
+- `builtin-activity-pulse.ts` 是通过 capability、事件、设置、ViewSpec 和文档动作运行的 v2 迁移参考插件。
+- `.github/workflows/ci.yml` 在 Windows、macOS、Linux 上执行隔离安全测试、构建未打包应用并运行打包态 runtime probe；`scripts/quickjs-runtime-smoke.mjs` 和 `packaged-runtime-smoke.mjs` 验证真实 Electron utility process。
+- `tests/main-plugin-platform-quickjs-realm.test.ts`、`main-plugin-platform-capability-broker.test.ts`、`main-plugin-isolation.test.ts` 和 runtime smoke 覆盖验收标准。

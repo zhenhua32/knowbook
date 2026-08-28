@@ -10,6 +10,9 @@ import type {
 } from './assistant-session'
 import type {
   PluginUiContribution,
+  PluginUiPreparationRequest,
+  PluginUiPreparationResult,
+  PluginUiRuntimeFailure,
   RunPluginUiActionInput,
   RunPluginUiActionResult
 } from './plugin-ui'
@@ -23,6 +26,9 @@ import type {
 
 export type {
   PluginUiContribution,
+  PluginUiPreparationRequest,
+  PluginUiPreparationResult,
+  PluginUiRuntimeFailure,
   RunPluginUiActionInput,
   RunPluginUiActionResult
 } from './plugin-ui'
@@ -795,6 +801,9 @@ export interface ElectronApi {
   getPluginHomeData: () => Promise<PluginHomeData>
   onWorkspaceMutated: (listener: () => void) => () => void
   onPluginsMutated: (listener: () => void) => () => void
+  onPluginUiPreparation: (listener: (request: PluginUiPreparationRequest) => void) => () => void
+  reportPluginUiPreparation: (result: PluginUiPreparationResult) => Promise<void>
+  reportPluginUiRuntimeFailure: (failure: PluginUiRuntimeFailure) => Promise<void>
   getAppUpdateState: () => Promise<AppUpdateState>
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>

@@ -21,6 +21,7 @@ import {
   type QuickJsRuntimeRequest
 } from './quickjs-runtime-protocol'
 import { clonePluginRuntimeJson } from './runtime-json'
+import { waitForUtilityProcessExit } from './utility-process-lifecycle'
 
 const INITIALIZE_TIMEOUT_MS = 30_000
 const ACTIVATE_TIMEOUT_MS = 5_000
@@ -29,6 +30,7 @@ const VALIDATE_HANDLERS_TIMEOUT_MS = 5_000
 const HEALTH_TIMEOUT_MS = 2_000
 const HANDLER_TIMEOUT_MS = 15_000
 const DISPOSE_TIMEOUT_MS = 2_000
+const PROCESS_EXIT_TIMEOUT_MS = 5_000
 const UTILITY_PROCESS_MAX_HEAP_MB = 96
 const MAX_ERROR_CHARS = 2_000
 const MAX_PENDING_RUNTIME_REQUESTS = 32
@@ -75,25 +77,30 @@ export class QuickJsWasiPluginRuntimeFactory implements NoNodePluginRuntimeFacto
 
 class ElectronQuickJsPluginRuntime implements NoNodePluginRuntimeInstance {
   private readonly pending = new Map<number, PendingRequest>()
+  private readonly processExit: Promise<void>
   private requestSequence = 0
   private owner: PluginActiveOwner | null = null
   private stopped = false
   private failure: Error | null = null
+  private disposal: Promise<void> | null = null
 
   constructor(
     private readonly context: NoNodePluginRuntimeHostContext,
     private readonly process: QuickJsUtilityTransport
   ) {
+    this.processExit = new Promise<void>((resolve) => {
+      this.process.on('exit', (code) => {
+        resolve()
+        if (!this.stopped) {
+          this.fail(new Error(`QuickJS utility process exited unexpectedly (code ${code}).`))
+        }
+      })
+    })
     this.process.on('message', (message) => {
       this.handleMessage(message)
     })
     this.process.on('error', (type, location) => {
       this.fail(new Error(`QuickJS utility process fatal error (${type}) at ${location || 'unknown'}.`))
-    })
-    this.process.on('exit', (code) => {
-      if (!this.stopped) {
-        this.fail(new Error(`QuickJS utility process exited unexpectedly (code ${code}).`))
-      }
     })
   }
 
@@ -172,10 +179,12 @@ class ElectronQuickJsPluginRuntime implements NoNodePluginRuntimeInstance {
     )
   }
 
-  async dispose(): Promise<void> {
-    if (this.stopped) {
-      return
-    }
+  dispose(): Promise<void> {
+    this.disposal ??= this.disposeOnce()
+    return this.disposal
+  }
+
+  private async disposeOnce(): Promise<void> {
     try {
       if (!this.failure) {
         await this.request(
@@ -189,6 +198,7 @@ class ElectronQuickJsPluginRuntime implements NoNodePluginRuntimeInstance {
       this.owner = null
       this.rejectPending(new Error('QuickJS plugin runtime was disposed.'))
       this.process.kill()
+      await waitForUtilityProcessExit(this.processExit, PROCESS_EXIT_TIMEOUT_MS)
     }
   }
 
@@ -443,6 +453,7 @@ function normalizeError(error: unknown): Error {
 function normalizeAbortReason(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error('Plugin invocation was cancelled.')
 }
+
 
 function parseProcessMessage(raw: unknown): QuickJsRuntimeProcessMessage {
   const message = plainObject(raw, 'Runtime process message')

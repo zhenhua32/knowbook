@@ -303,14 +303,44 @@ test('rejected or expired approvals never create plugin runs or reusable grants'
     assert.equal(rejected.status, 'rejected')
     assert.equal(platform.store.pluginPlatform.getRun('run-rejected'), null)
 
+    const replayCall = assistantToolCallId('rejected-equivalent-replay')
+    appendActivationToolCall(
+      platform,
+      replayCall,
+      defined.revision.id,
+      platform.sessionScope,
+      'same operation with rephrased text'
+    )
+    assert.throws(() => platform.service.requestActivation({
+      ...platform.context,
+      toolCallId: replayCall
+    }, {
+      pluginId: 'daily-review',
+      revisionId: defined.revision.id,
+      scope: platform.sessionScope,
+      summary: 'same operation with rephrased text',
+      runId: 'run-rejected-replay'
+    }), /equivalent plugin operation was already rejected in this turn/)
+    assert.equal(platform.store.pluginPlatform.getRun('run-rejected-replay'), null)
+
+    const expiringRevision = await platform.service.defineRevision(platform.context, {
+      ...revisionInput('1.0.1', 'export const version = 2', []),
+      previousRevisionId: defined.revision.id
+    })
     const expiredCall = assistantToolCallId('expired-call')
-    appendActivationToolCall(platform, expiredCall, defined.revision.id, platform.sessionScope, 'expires')
+    appendActivationToolCall(
+      platform,
+      expiredCall,
+      expiringRevision.revision.id,
+      platform.sessionScope,
+      'expires'
+    )
     const expiredApproval = platform.service.requestActivation({
       ...platform.context,
       toolCallId: expiredCall
     }, {
       pluginId: 'daily-review',
-      revisionId: defined.revision.id,
+      revisionId: expiringRevision.revision.id,
       scope: platform.sessionScope,
       summary: 'expires',
       approvalLifetimeMs: 1_000,

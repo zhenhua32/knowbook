@@ -1,4 +1,5 @@
 import type {
+  PluginActivationIdentity,
   PluginActiveOwner,
   PluginJsonValue,
   PluginPlatformScope
@@ -104,8 +105,67 @@ export interface PluginUiContribution {
         kind: 'iframe'
         title: string
         height: number
+        src: string
+      }
+}
+
+export interface PluginUiPreparationFrame {
+  slot: PluginUiSlot
+  contributionId: string
+  title: string
+  height: number
+  src: string
+}
+
+/** Main-process materialized document before an opaque protocol URL is issued. */
+export interface PluginUiDocumentFrame {
+  slot: PluginUiSlot
+  contributionId: string
+  title: string
+  height: number
+  srcdoc: string
+}
+
+export interface PluginUiDocumentPreparation {
+  identity: PluginActivationIdentity
+  frames: PluginUiDocumentFrame[]
+}
+
+export interface PluginUiDocumentContribution {
+  owner: PluginActiveOwner
+  slot: PluginUiSlot
+  id: string
+  order: number
+  value:
+    | PluginViewContributionValue
+    | {
+        kind: 'iframe'
+        title: string
+        height: number
         srcdoc: string
       }
+}
+
+export interface PluginUiPreparation {
+  identity: PluginActivationIdentity
+  frames: PluginUiPreparationFrame[]
+}
+
+export interface PluginUiPreparationRequest extends PluginUiPreparation {
+  requestId: string
+}
+
+export interface PluginUiPreparationResult {
+  requestId: string
+  identity: PluginActivationIdentity
+  status: 'ready' | 'failed'
+  error?: string
+}
+
+export interface PluginUiRuntimeFailure {
+  owner: PluginActiveOwner
+  contributionId: string
+  error: string
 }
 
 export interface RunPluginUiActionInput {

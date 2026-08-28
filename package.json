@@ -3,7 +3,7 @@
   "version": "0.1.2",
   "private": true,
   "type": "module",
-  "main": "out/main/index.js",
+  "main": "out/main/index.cjs",
   "description": "Local-first knowledge management client built with Electron, React, TypeScript, and SQLite.",
   "author": "zhenhua32",
   "repository": {

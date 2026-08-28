@@ -1,7 +1,8 @@
 import type { PluginActiveOwner, PluginJsonValue } from '@shared/plugin-platform'
 import type {
-  PluginUiContribution,
   PluginUiContributionValue,
+  PluginUiDocumentContribution,
+  PluginUiDocumentFrame,
   PluginUiSlot,
   PluginViewNode,
   PluginViewSpec
@@ -10,7 +11,7 @@ import { validatePluginUiContribution } from '@shared/plugin-ui'
 import type { PluginRevisionStore } from './revision-store'
 
 const MAX_IFRAME_HTML_BYTES = 1024 * 1024
-const FRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"
+export const PLUGIN_IFRAME_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"
 const IMAGE_MIME: Readonly<Record<string, string>> = Object.freeze({
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -28,11 +29,16 @@ export function materializePluginUiContribution(
     order: number
     value: PluginJsonValue
   }
-): PluginUiContribution {
+): PluginUiDocumentContribution {
   const validated = validatePluginUiContribution(input.slot, input.value)
   const package_ = revisions.load(input.owner.revisionId)
   if (validated.value.kind === 'iframe') {
-    const html = readIframeHtml(validated.value.asset, package_.assets)
+    const frame = materializePluginIframePreparation(
+      input.slot,
+      input.id,
+      validated.value,
+      package_.assets
+    )
     return {
       owner: structuredClone(input.owner),
       slot: input.slot,
@@ -40,9 +46,9 @@ export function materializePluginUiContribution(
       order: input.order,
       value: {
         kind: 'iframe',
-        title: validated.value.title,
-        height: validated.value.height ?? 320,
-        srcdoc: createSandboxedPluginDocument(html)
+        title: frame.title,
+        height: frame.height,
+        srcdoc: frame.srcdoc
       }
     }
   }
@@ -55,6 +61,22 @@ export function materializePluginUiContribution(
       kind: 'view',
       view: materializeViewAssets(validated.value.view, package_.assets)
     }
+  }
+}
+
+export function materializePluginIframePreparation(
+  slot: PluginUiSlot,
+  contributionId: string,
+  value: Extract<PluginUiContributionValue, { kind: 'iframe' }>,
+  assets: Readonly<Record<string, Uint8Array>>
+): PluginUiDocumentFrame {
+  const html = readIframeHtml(value.asset, assets)
+  return {
+    slot,
+    contributionId,
+    title: value.title,
+    height: value.height ?? 320,
+    srcdoc: createSandboxedPluginDocument(html)
   }
 }
 
@@ -114,12 +136,15 @@ function materializeNode(
 }
 
 function createSandboxedPluginDocument(untrustedHtml: string): string {
-  const csp = `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(FRAME_CSP)}">`
+  const csp = `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(PLUGIN_IFRAME_CSP)}">`
   const charset = '<meta charset="utf-8">'
+  const bootstrap = `<script>${FRAME_BOOTSTRAP}</script>`
   // The policy is emitted before every untrusted byte. This also covers
   // malformed documents that place executable content before their own head.
-  return `<!doctype html>${charset}${csp}${untrustedHtml}`
+  return `<!doctype html>${charset}${csp}${bootstrap}${untrustedHtml}`
 }
+
+const FRAME_BOOTSTRAP = `(()=>{let port=null;let connection=null;let startupError=null;const text=value=>String(value&&value.message||value||'Plugin frame failed.').slice(0,2000);const report=error=>{const message=text(error);startupError=startupError||message;if(port&&connection){port.postMessage({type:'knowbook:error',...connection,error:message});}};addEventListener('error',event=>report(event.error||event.message));addEventListener('unhandledrejection',event=>report(event.reason));addEventListener('message',event=>{if(event.source!==parent||!event.data||event.data.type!=='knowbook:init'||!event.ports[0]||port)return;port=event.ports[0];connection={owner:event.data.owner,contributionId:event.data.contributionId,slot:event.data.slot};port.start();port.postMessage(startupError?{type:'knowbook:error',...connection,error:startupError}:{type:'knowbook:ready',...connection});dispatchEvent(new CustomEvent('knowbook:connected',{detail:{...connection,port}}));});})();`
 
 function readIframeHtml(asset: string, assets: Readonly<Record<string, Uint8Array>>): string {
   const bytes = assets[asset]

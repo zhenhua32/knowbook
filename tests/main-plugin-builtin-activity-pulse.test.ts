@@ -37,6 +37,7 @@ test('activity-pulse v2 activates and performs document/event work through capab
       'dashboard.card',
       'workspace.dashboard',
       'document.action',
+      'workspace.event',
       'workspace.event'
     ])
     const owner = { ...identity, epoch: 1 }
@@ -67,6 +68,11 @@ test('activity-pulse v2 activates and performs document/event work through capab
       }
     }, new AbortController().signal)
     assert.equal(calls.at(-1)?.capability, 'plugin.storage.write')
+
+    await realm.invokeHandler(owner, 'ai.auto-summary-on-save', {
+      event: { type: 'document.updated', documentId: 'doc-1' }
+    }, new AbortController().signal)
+    assert.equal(calls.at(-1)?.capability, 'ai.automation.summarize-document')
   } finally {
     await realm.dispose()
   }

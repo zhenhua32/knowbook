@@ -74,9 +74,18 @@ import type {
   ResolveAssistantApprovalRequest,
   SendAssistantMessageRequest
 } from '@shared/assistant-session'
+import type {
+  PluginUiContribution,
+  PluginUiDocumentContribution,
+  PluginUiDocumentPreparation,
+  PluginUiPreparationRequest,
+  PluginUiPreparationResult,
+  PluginUiRuntimeFailure
+} from '@shared/plugin-ui'
 import { encodeDocumentCatalogEntry, encodeDocumentIndexEntry } from '@shared/document-catalog-payload'
 import { scoreKeywordSearchCandidate } from '@shared/semantic-search'
 import { buildDocumentSummarySource } from '@shared/ai-summary'
+import { samePluginFrameIdentity } from '@shared/plugin-frame-protocol'
 import {
   getDocumentSummarySourceVersion,
   normalizeDocumentBlockAiEditResponse,
@@ -94,6 +103,8 @@ import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginHost } from './plugin-host'
 import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { PluginPlatformV2Service } from './plugin-platform/platform-service'
+import { QuickJsWasiPluginRuntimeFactory } from './plugin-platform/quickjs-runtime-client'
+import { PLUGIN_IFRAME_CSP } from './plugin-platform/ui-materializer'
 import { AssistantAgentService } from './assistant/agent-service'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
@@ -115,10 +126,33 @@ type ElectronBrowserWindow = InstanceType<typeof BrowserWindow>
 const BACKUP_INTERVAL_MS = 5 * 60 * 1000
 const WORKSPACE_MUTATED_CHANNEL = 'knowbook:workspace-mutated'
 const PLUGINS_MUTATED_CHANNEL = 'knowbook:plugins-mutated'
+const PLUGIN_UI_PREPARE_CHANNEL = 'knowbook:plugin-ui-prepare'
 const ASSISTANT_SESSION_CHANGED_CHANNEL = 'knowbook:assistant-session-changed'
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
+const KNOWBOOK_PLUGIN_UI_SCHEME = 'knowbook-plugin-ui'
+const PLUGIN_UI_E2E_PROBE_TOKEN = '00000000-0000-4000-8000-000000000001'
 const WEB_CLIP_BRIDGE_ENABLED_KEY = 'webclip.bridge.enabled'
 const PACKAGED_RUNTIME_SMOKE_RESULT_PATH = process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE_RESULT']?.trim()
+const PLUGIN_UI_PREPARATION_TIMEOUT_MS = 10_000
+
+type PendingPluginUiPreparation = {
+  identity: PluginUiDocumentPreparation['identity']
+  documentTokens: string[]
+  resolve: () => void
+  reject: (error: Error) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
+const pendingPluginUiPreparations = new Map<string, PendingPluginUiPreparation>()
+type PluginUiDocumentRegistration = {
+  token: string
+  srcdoc: string
+  activeKey?: string
+  owner?: import('@shared/plugin-platform').PluginActiveOwner
+  preparationRequestId?: string
+}
+const pluginUiDocuments = new Map<string, PluginUiDocumentRegistration>()
+const activePluginUiDocumentTokens = new Map<string, string>()
 
 function recordPackagedRuntimeSmoke(status: 'started' | 'passed' | 'failed', error?: unknown): void {
   if (!PACKAGED_RUNTIME_SMOKE_RESULT_PATH) return
@@ -153,6 +187,14 @@ protocol.registerSchemesAsPrivileged([
       supportFetchAPI: true,
       stream: true,
       corsEnabled: true
+    }
+  },
+  {
+    scheme: KNOWBOOK_PLUGIN_UI_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true
     }
   }
 ])
@@ -263,6 +305,200 @@ let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
 let restoreWorkflowInProgress = false
 
+function preparePluginUi(input: PluginUiDocumentPreparation): Promise<void> {
+  const window = mainWindow
+  if (!window || window.webContents.isDestroyed()) {
+    return Promise.reject(new Error('Plugin iframe UI cannot be prepared without an active renderer.'))
+  }
+  const requestId = randomUUID()
+  const documentTokens: string[] = []
+  const frames = input.frames.map((frame) => {
+    const registration = registerPluginUiDocument(frame.srcdoc, { preparationRequestId: requestId })
+    documentTokens.push(registration.token)
+    return {
+      slot: frame.slot,
+      contributionId: frame.contributionId,
+      title: frame.title,
+      height: frame.height,
+      src: pluginUiDocumentUrl(registration.token)
+    }
+  })
+  return new Promise<void>((resolve_, reject) => {
+    const timeout = setTimeout(() => {
+      pendingPluginUiPreparations.delete(requestId)
+      removePluginUiDocuments(documentTokens)
+      reject(new Error('Plugin iframe UI ready handshake timed out.'))
+    }, PLUGIN_UI_PREPARATION_TIMEOUT_MS)
+    pendingPluginUiPreparations.set(requestId, {
+      identity: input.identity,
+      documentTokens,
+      resolve: resolve_,
+      reject,
+      timeout
+    })
+    window.webContents.send(PLUGIN_UI_PREPARE_CHANNEL, {
+      identity: input.identity,
+      frames,
+      requestId
+    } satisfies PluginUiPreparationRequest)
+  })
+}
+
+function completePluginUiPreparation(result: PluginUiPreparationResult): void {
+  if (!result || typeof result !== 'object') {
+    throw new Error('Plugin UI preparation result is invalid.')
+  }
+  const requestId = typeof result.requestId === 'string' ? result.requestId.trim() : ''
+  const pending = requestId ? pendingPluginUiPreparations.get(requestId) : undefined
+  if (!pending) {
+    throw new Error('Plugin UI preparation request is stale or unknown.')
+  }
+  if (!samePluginFrameIdentity(result.identity, pending.identity)) {
+    throw new Error('Plugin UI preparation identity does not match its request.')
+  }
+  if (result.status !== 'ready' && result.status !== 'failed') {
+    throw new Error('Plugin UI preparation status is invalid.')
+  }
+  pendingPluginUiPreparations.delete(requestId)
+  clearTimeout(pending.timeout)
+  removePluginUiDocuments(pending.documentTokens)
+  if (result.status === 'ready') {
+    pending.resolve()
+  } else {
+    pending.reject(new Error(
+      typeof result.error === 'string' && result.error.trim()
+        ? `Plugin iframe UI failed readiness: ${result.error.trim().slice(0, 2_000)}`
+        : 'Plugin iframe UI failed readiness.'
+    ))
+  }
+}
+
+function rejectPendingPluginUiPreparations(reason: string): void {
+  for (const [requestId, pending] of pendingPluginUiPreparations) {
+    pendingPluginUiPreparations.delete(requestId)
+    clearTimeout(pending.timeout)
+    removePluginUiDocuments(pending.documentTokens)
+    pending.reject(new Error(reason))
+  }
+}
+
+function exposePluginUiContributions(
+  contributions: PluginUiDocumentContribution[]
+): PluginUiContribution[] {
+  prunePluginUiDocuments()
+  return contributions.map((contribution) => {
+    if (contribution.value.kind !== 'iframe') {
+      return {
+        owner: contribution.owner,
+        slot: contribution.slot,
+        id: contribution.id,
+        order: contribution.order,
+        value: contribution.value
+      }
+    }
+    const activeKey = [
+      contribution.owner.pluginId,
+      contribution.owner.revisionId,
+      contribution.owner.runId,
+      String(contribution.owner.epoch),
+      contribution.slot,
+      contribution.id
+    ].join('\0')
+    const existingToken = activePluginUiDocumentTokens.get(activeKey)
+    const existing = existingToken ? pluginUiDocuments.get(existingToken) : undefined
+    const registration = existing?.srcdoc === contribution.value.srcdoc
+      ? existing
+      : registerPluginUiDocument(contribution.value.srcdoc, {
+          activeKey,
+          owner: contribution.owner
+        })
+    return {
+      owner: contribution.owner,
+      slot: contribution.slot,
+      id: contribution.id,
+      order: contribution.order,
+      value: {
+        kind: 'iframe',
+        title: contribution.value.title,
+        height: contribution.value.height,
+        src: pluginUiDocumentUrl(registration.token)
+      }
+    }
+  })
+}
+
+function registerPluginUiDocument(
+  srcdoc: string,
+  binding: Pick<PluginUiDocumentRegistration, 'activeKey' | 'owner' | 'preparationRequestId'>
+): PluginUiDocumentRegistration {
+  if (binding.activeKey) {
+    const previousToken = activePluginUiDocumentTokens.get(binding.activeKey)
+    if (previousToken) removePluginUiDocuments([previousToken])
+  }
+  const token = randomUUID()
+  const registration: PluginUiDocumentRegistration = {
+    token,
+    srcdoc,
+    ...(binding.activeKey ? { activeKey: binding.activeKey } : {}),
+    ...(binding.owner ? { owner: binding.owner } : {}),
+    ...(binding.preparationRequestId ? { preparationRequestId: binding.preparationRequestId } : {})
+  }
+  pluginUiDocuments.set(token, registration)
+  if (binding.activeKey) activePluginUiDocumentTokens.set(binding.activeKey, token)
+  return registration
+}
+
+function removePluginUiDocuments(tokens: readonly string[]): void {
+  for (const token of tokens) {
+    const registration = pluginUiDocuments.get(token)
+    if (!registration) continue
+    pluginUiDocuments.delete(token)
+    if (
+      registration.activeKey
+      && activePluginUiDocumentTokens.get(registration.activeKey) === token
+    ) activePluginUiDocumentTokens.delete(registration.activeKey)
+  }
+}
+
+function prunePluginUiDocuments(): void {
+  const stale: string[] = []
+  for (const registration of pluginUiDocuments.values()) {
+    if (registration.owner && !pluginPlatformV2.kernel.isCurrent(registration.owner)) {
+      stale.push(registration.token)
+    }
+  }
+  removePluginUiDocuments(stale)
+}
+
+function pluginUiDocumentUrl(token: string): string {
+  return `${KNOWBOOK_PLUGIN_UI_SCHEME}://frame/${token}`
+}
+
+function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistration | null {
+  try {
+    const parsed = new URL(url)
+    if (parsed.protocol !== `${KNOWBOOK_PLUGIN_UI_SCHEME}:` || parsed.hostname !== 'frame') return null
+    const token = parsed.pathname.replace(/^\//, '')
+    if (!/^[a-f0-9-]{36}$/i.test(token)) return null
+    const registration = pluginUiDocuments.get(token)
+    if (!registration) return null
+    if (registration.owner && !pluginPlatformV2.kernel.isCurrent(registration.owner)) {
+      removePluginUiDocuments([token])
+      return null
+    }
+    if (
+      registration.preparationRequestId
+      && !pendingPluginUiPreparations.has(registration.preparationRequestId)
+    ) {
+      removePluginUiDocuments([token])
+      return null
+    }
+    return registration
+  } catch {
+    return null
+  }
+}
+
 function initializeServices(): void {
   store = new KnowbookStore(databasePath)
   try {
@@ -286,6 +522,8 @@ function initializeServices(): void {
     join(userDataRoot, 'storage', 'plugin-revisions-v2'),
     {
       workspaceId: LOCAL_WORKSPACE_ID,
+      runtimeFactory: new QuickJsWasiPluginRuntimeFactory(),
+      preparePluginUi,
       onDocumentCreated: async (document, owner) => {
         await workspaceEventBus.emit({
           type: 'document.created',
@@ -312,6 +550,14 @@ function initializeServices(): void {
           correlationId: owner.runId
         })
         notifyWorkspaceMutation()
+      },
+      runDocumentSummaryAutomation: async (documentId) => {
+        const config = store.getAiConfigPublic()
+        if (!config.enabled || !config.autoSummaryOnSave || !getDecryptedAiApiKey()) {
+          return { summaryGenerated: false }
+        }
+        const result = await runDocumentAiAutomations(documentId)
+        return { summaryGenerated: result.summaryGenerated }
       },
       notify: (notification) => {
         if (mainWindow && !mainWindow.webContents.isDestroyed()) {
@@ -416,17 +662,16 @@ function createWindow(): ElectronBrowserWindow {
     backgroundColor: '#f3f5f9',
     title: 'KnowBook',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.cjs'),
+      preload: join(app.getAppPath(), 'out', 'preload', 'index.cjs'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false
     }
   })
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openManagedExternalUrl(url).catch((error) => {
-      console.warn('Blocked or failed to open external URL.', error)
-    })
+  mainWindow.webContents.setWindowOpenHandler(() => {
+    // Never let untrusted subframes turn window.open() into an OS browser
+    // launch. Trusted renderer links use the validated openExternalUrl IPC.
     return { action: 'deny' }
   })
 
@@ -441,7 +686,17 @@ function createWindow(): ElectronBrowserWindow {
     })
   })
 
+  mainWindow.webContents.on('will-frame-navigate', (event) => {
+    if (!event.isMainFrame) {
+      // Only exact, live documents issued by the main-process registry may be
+      // loaded in a subframe. Self-navigation to network/file/data/blob URLs is
+      // rejected before Chromium issues the request.
+      if (!getPluginUiDocumentRegistration(event.url)) event.preventDefault()
+    }
+  })
+
   mainWindow.on('closed', () => {
+    rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled because the renderer closed.')
     mainWindow = null
   })
 
@@ -450,7 +705,7 @@ function createWindow(): ElectronBrowserWindow {
       console.warn('Failed to load the renderer dev server URL.', error)
     })
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html')).catch((error) => {
+    void mainWindow.loadFile(join(app.getAppPath(), 'out', 'renderer', 'index.html')).catch((error) => {
       console.error('Failed to load the packaged renderer entry.', error)
     })
   }
@@ -472,58 +727,9 @@ function registerWorkspaceEventHandlers(): void {
   })
 
   workspaceEventBus.subscribe((event) => {
-    if (event.type !== 'document.updated') {
-      return
-    }
-
     setImmediate(() => {
-      void (async () => {
-        const aiConfig = store.getAiConfigPublic()
-        if (!aiConfig.enabled || !aiConfig.autoSummaryOnSave) {
-          return
-        }
-
-        const apiKey = getDecryptedAiApiKey()
-        if (!apiKey) {
-          return
-        }
-
-        const detail = store.getDocumentDetail(event.documentId)
-        if (!detail || !shouldGenerateDocumentSummary(
-          detail.summary,
-          detail.blocks.map((block) => block.content),
-          DEFAULT_DOCUMENT_SUMMARY
-        )) {
-          cancelDocumentSummaryGeneration(event.documentId)
-          return
-        }
-
-        const generatedSummary = await generateDocumentSummaryDeduplicated(detail, aiConfig, apiKey)
-        if (!generatedSummary || generatedSummary === detail.summary.trim()) {
-          return
-        }
-
-        const latestAiConfig = store.getAiConfigPublic()
-        if (!latestAiConfig.enabled || !latestAiConfig.autoSummaryOnSave) {
-          return
-        }
-
-        const updatedDetail = commitGeneratedSummaryIfCurrent(detail, generatedSummary)
-        if (!updatedDetail) {
-          return
-        }
-
-        await workspaceEventBus.emit({
-          type: 'document.summary.generated',
-          createdAt: new Date().toISOString(),
-          documentId: updatedDetail.id,
-          documentTitle: updatedDetail.title,
-          path: updatedDetail.path,
-          summary: generatedSummary
-        })
-        notifyWorkspaceMutation()
-      })().catch((error) => {
-        console.warn(`Automatic summary failed for document ${event.documentId}.`, error)
+      void pluginPlatformV2.handleWorkspaceEvent(event).catch((error) => {
+        console.warn('Plugin Platform v2 workspace event handling failed.', error)
       })
     })
   })
@@ -567,7 +773,7 @@ function getPluginHomeData(): PluginHomeData {
     plugins: pluginData.plugins,
     pluginDashboardCards: [...pluginData.dashboardCards, ...v2DashboardCards],
     pluginDocumentActions: [...pluginData.documentActions, ...v2DocumentActions],
-    pluginUiContributions: pluginPlatformV2.listUiContributions(),
+    pluginUiContributions: exposePluginUiContributions(pluginPlatformV2.listUiContributions()),
     pluginV2Installations: store.pluginPlatform
       .listWorkspaceInstallations(LOCAL_WORKSPACE_ID)
       .map((installation) => {
@@ -802,8 +1008,6 @@ function registerIpcHandlers(): void {
     const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
     return view
   })
-
-  workspaceEventBus.subscribe((event) => pluginPlatformV2.handleWorkspaceEvent(event))
 
   ipcMain.handle('knowbook:reorder-database-saved-views', (_event, input: ReorderDatabaseSavedViewsInput) => {
     return store.reorderDatabaseSavedViews(input)
@@ -1058,6 +1262,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:run-plugin-ui-action', async (_event, input: RunPluginUiActionInput) => {
     const result: RunPluginUiActionResult = await pluginPlatformV2.runUiAction(input)
     return result
+  })
+
+  ipcMain.handle('knowbook:report-plugin-ui-preparation', (_event, result: PluginUiPreparationResult) => {
+    completePluginUiPreparation(result)
+  })
+
+  ipcMain.handle('knowbook:report-plugin-ui-runtime-failure', async (_event, failure: PluginUiRuntimeFailure) => {
+    await pluginPlatformV2.reportUiRuntimeFailure(failure)
+    pluginMutationNotifier.notify()
   })
 
   ipcMain.handle('knowbook:recover-plugin-v2-installation', (_event, input: RecoverPluginV2InstallationInput) => {
@@ -1411,11 +1624,12 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
     summaryGenerated: false
   }
 
-  if (aiConfig.autoSummaryOnSave && shouldGenerateDocumentSummary(
+  const shouldGenerateSummary = aiConfig.autoSummaryOnSave && shouldGenerateDocumentSummary(
     detail.summary,
     detail.blocks.map((block) => block.content),
     DEFAULT_DOCUMENT_SUMMARY
-  )) {
+  )
+  if (shouldGenerateSummary) {
     const generatedSummary = await generateDocumentSummaryDeduplicated(detail, aiConfig, apiKey)
     if (generatedSummary && generatedSummary !== detail.summary.trim()) {
       const latestAiConfig = store.getAiConfigPublic()
@@ -1433,8 +1647,11 @@ async function runDocumentAiAutomations(documentId: string): Promise<RunDocument
           path: detail.path,
           summary: generatedSummary
         })
+        notifyWorkspaceMutation()
       }
     }
+  } else {
+    cancelDocumentSummaryGeneration(documentId)
   }
 
   return result
@@ -1702,6 +1919,9 @@ async function shutdownServices(): Promise<void> {
     }
   }
 
+  rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled during shutdown.')
+  pluginUiDocuments.clear()
+  activePluginUiDocumentTokens.clear()
   store.destroy()
 }
 
@@ -1741,6 +1961,48 @@ function registerAssetPreviewProtocol(): void {
   })
 }
 
+function registerPluginUiProtocol(): void {
+  protocol.handle(KNOWBOOK_PLUGIN_UI_SCHEME, (request) => {
+    const registration = getPluginUiDocumentRegistration(request.url)
+    if (!registration) {
+      return new Response('Plugin UI document is stale or unavailable.', {
+        status: 410,
+        headers: { 'content-type': 'text/plain; charset=utf-8' }
+      })
+    }
+    return new Response(registration.srcdoc, {
+      status: 200,
+      headers: {
+        'cache-control': 'no-store',
+        'content-security-policy': PLUGIN_IFRAME_CSP,
+        'content-type': 'text/html; charset=utf-8',
+        'referrer-policy': 'no-referrer',
+        'x-content-type-options': 'nosniff'
+      }
+    })
+  })
+  registerPluginUiE2EProbe()
+}
+
+function registerPluginUiE2EProbe(): void {
+  if (
+    app.isPackaged
+    || process.env['KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE'] !== '1'
+    || process.env['KNOWBOOK_E2E_PLUGIN_UI_PROBE'] !== '1'
+  ) return
+  const target = process.env['KNOWBOOK_E2E_PLUGIN_UI_TARGET']?.trim() ?? ''
+  try {
+    const parsed = new URL(target)
+    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') return
+  } catch {
+    return
+  }
+  pluginUiDocuments.set(PLUGIN_UI_E2E_PROBE_TOKEN, {
+    token: PLUGIN_UI_E2E_PROBE_TOKEN,
+    srcdoc: `<!doctype html><script>parent.postMessage('plugin-frame-loaded','*');setTimeout(()=>{location.href=${JSON.stringify(target)};open(${JSON.stringify(`${target}?popup=1`)})},50)<\/script>`
+  })
+}
+
 function getAssetContentType(filePath: string): string {
   const extension = extname(filePath).toLowerCase()
 
@@ -1776,6 +2038,7 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(() => {
     initializeServices()
     registerAssetPreviewProtocol()
+    registerPluginUiProtocol()
     appUpdateManager.initialize()
     registerWorkspaceEventHandlers()
     registerIpcHandlers()
@@ -1788,10 +2051,20 @@ if (hasSingleInstanceLock) {
         process.exitCode = 1
         recordPackagedRuntimeSmoke('failed', error)
         console.error('KnowBook packaged Plugin Platform runtime smoke failed.', error)
-      }).finally(() => {
-        // This is a disposable, isolated-profile probe. Exiting directly keeps
-        // unrelated backup/update shutdown work from obscuring runtime results.
-        app.exit(typeof process.exitCode === 'number' ? process.exitCode : 0)
+      }).finally(async () => {
+        // The probe still owns a live QuickJS utility process after activation.
+        // Dispose every service before asking Electron to tear down its Node
+        // environment; an abrupt app.exit() can race the utility-process module
+        // loader and turn an otherwise successful probe into a native V8 crash.
+        try {
+          await shutdownServices()
+        } catch (error) {
+          process.exitCode = 1
+          recordPackagedRuntimeSmoke('failed', error)
+          console.error('KnowBook packaged runtime smoke cleanup failed.', error)
+        }
+        shutdownComplete = true
+        app.quit()
       })
       return
     }

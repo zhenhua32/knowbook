@@ -1,6 +1,7 @@
 # ADR-0004：声明式 UI 优先，隔离 iframe 承载高级 UI
 
-- 状态：Accepted
+- 状态：Implemented
+- 实现日期：2026-08-28
 - 日期：2026-08-25
 - 决策范围：Plugin Platform v2 renderer 扩展
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)、[ADR-0002](0002-plugin-runtime-isolation.md)、[ADR-0003](0003-plugin-versioning-and-atomic-hot-reload.md)
@@ -151,9 +152,11 @@ UI 热更新遵循 ADR-0003：
 - 一个插件的渲染异常不会卸载应用主页面。
 - 主要产品区域都有文档化、版本化、可测试的扩展槽。
 
-## 后续工作
+## 实现证据
 
-- 定义 ViewSpec v1 schema 和 React renderer。
-- 建立 slot catalog 与 AI 可查询的 inspect API。
-- 制定 iframe CSP、资源 scheme 和 MessagePort 协议。
-- 增加主题 token、可访问性和渲染预算测试。
+- `src/shared/plugin-ui.ts` 定义封闭的 ViewSpec v1、11 个版本化 slot、作用域、数量/节点预算、主题与无障碍契约，并拒绝未知节点、属性、HTML 和脚本表达式。
+- `src/renderer/src/components/PluginSlot.tsx` 仅用宿主 React 控件解释 ViewSpec；action 携带精确 owner，经主进程 Kernel 再校验后才调用 handler。
+- `ui-materializer.ts` 为 iframe 在所有不可信字节之前注入严格 CSP 和 readiness bootstrap；iframe 只有 `sandbox="allow-scripts"`，没有 same-origin、preload、外部网络或导航能力。
+- `PluginUiPreparationHost.tsx` 在提交前创建不可见 staging frame，通过一次性 MessagePort 完成 ready/error 握手；`PluginSlot.tsx` 对提交后的 failure/timeout 上报并触发自动恢复。
+- `AppPageContent.tsx` 与 `WorkspaceShellSidebar.tsx` 挂载全部公开 slot；owner 的 revision/run/grant/epoch 不匹配时 UI action 和 frame 消息均被拒绝。
+- `tests/main-plugin-ui.test.ts`、`renderer-plugin-ui.test.tsx` 与 `main-plugin-platform-activation-coordinator.test.ts` 覆盖 schema、CSP、sandbox、MessagePort、slot 挂载、ready 失败不提交和清理。

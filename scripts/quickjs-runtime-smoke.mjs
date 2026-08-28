@@ -23,13 +23,14 @@ void app.whenReady().then(run).catch((error) => {
 
 async function run() {
 const mainOutput = resolve('out/main')
-const runtimeEntry = readdirSync(mainOutput)
-  .find((name) => /^quickjs-runtime-process-[A-Za-z0-9_-]+\.js$/.test(name))
+const runtimeOutput = join(mainOutput, 'chunks')
+const runtimeEntry = readdirSync(runtimeOutput)
+  .find((name) => /^quickjs-runtime-process-[A-Za-z0-9_-]+\.(?:c?js)$/.test(name))
 if (!runtimeEntry) {
   throw new Error('Build the app before running the QuickJS runtime smoke probe.')
 }
 
-const child = utilityProcess.fork(join(mainOutput, runtimeEntry), [], {
+const child = utilityProcess.fork(join(runtimeOutput, runtimeEntry), [], {
   stdio: 'pipe',
   serviceName: 'KnowBook QuickJS Runtime Smoke'
 })

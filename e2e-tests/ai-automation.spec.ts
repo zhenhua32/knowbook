@@ -243,7 +243,7 @@ test.describe('AI Settings @electron', () => {
       await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini')
 
       await openAiPage(page)
-      await expect(page.locator('.ai-panel .pill, .panel-head .pill')).toContainText(`AI Config Doc ${suffix}`)
+      await expect(page.getByRole('main').getByText(`AI Config Doc ${suffix}`, { exact: true })).toBeVisible()
       await expect(runAutomationsButton).toBeEnabled()
     })
   })

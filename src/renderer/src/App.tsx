@@ -7,6 +7,7 @@ import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
 import { useWorkspaceOperations } from './hooks/useWorkspaceOperations'
 import { AppPageContent } from './components/AppPageContent'
 import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
+import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
@@ -44,6 +45,8 @@ export function App() {
     shell,
   })
 return (
+    <>
+     <PluginUiPreparationHost />
      <div className="shell" data-testid="shell">
        <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
           <WorkspaceShellSidebar
@@ -60,7 +63,8 @@ return (
           shell={shell}
           workspace={workspaceOperations}
         />
-    </div>
+     </div>
+    </>
   )
 }
 

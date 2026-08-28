@@ -1,6 +1,7 @@
 # ADR-0003：不可变 revision 与原子热更新
 
-- 状态：Accepted
+- 状态：Implemented
+- 实现日期：2026-08-28
 - 日期：2026-08-25
 - 决策范围：Plugin Platform v2 生命周期与持久化
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)、[ADR-0002](0002-plugin-runtime-isolation.md)
@@ -167,9 +168,11 @@ Plugin Platform v2 使用稳定 Plugin、不可变 Revision 和一次性 Run 三
 - 应用崩溃后能区分最后成功 revision、未完成 run 和 staging 残留。
 - session preview 不会在未保存时变成 workspace 持久插件。
 
-## 后续工作
+## 实现证据
 
-- 定义 revision 包的规范化和哈希算法。
-- 定义 contribution namespace 的原子切换 API。
-- 为 UI handshake、状态迁移和自动回滚编写故障注入测试。
-- 制定 revision、日志和 staging 的保留及垃圾回收策略。
+- `revision-package.ts` 与 `revision-store.ts` 实现规范化 SHA-256 revision、不可变对象目录、独立 staging 和原子 rename；`revision-maintenance.ts` 实现保留与垃圾回收。
+- `repository.ts` 持久化 definition、revision、installation、run、grant、state、snapshot 和 log，并在事务中维护 current/pending/active 指针与崩溃恢复状态。
+- `kernel.ts` 通过 staging `EffectScope`、namespace/epoch 临界区替换、旧 run drain/取消和 stale owner 拒绝实现原子热更新。
+- `activation-coordinator.ts` 在提交前完成 runtime、handler、UI asset、state migration 和 renderer iframe readiness；失败保持旧 epoch，提交后故障可由 `platform-service.ts` 自动恢复仍有效的旧成功 revision。
+- session-preview 与 workspace 安装分别持久化；workspace 提升必须单独审批，未保存 preview 不会跨重启恢复。
+- `tests/main-plugin-platform-revision.test.ts`、`main-plugin-platform-activation-coordinator.test.ts`、`main-plugin-platform-repository.test.ts` 和 `main-plugin-platform-restore.test.ts` 覆盖哈希、故障注入、迁移、回滚、恢复和清理。

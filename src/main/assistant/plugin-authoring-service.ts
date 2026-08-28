@@ -401,7 +401,8 @@ export class AssistantPluginAuthoringService {
       : operation === 'install-workspace'
         ? 'plugins.install_workspace'
         : 'plugins.activate_revision'
-    const toolCall = listAllEvents(this.sessions, context.sessionId).find((event) => (
+    const events = listAllEvents(this.sessions, context.sessionId)
+    const toolCall = events.find((event) => (
       event.type === 'tool.call'
       && event.payload.toolCallId === context.toolCallId
       && event.payload.turnId === context.turnId
@@ -409,6 +410,7 @@ export class AssistantPluginAuthoringService {
     if (!toolCall || toolCall.type !== 'tool.call' || toolCall.payload.tool !== expectedTool) {
       throw new Error(`Plugin approval requires the exact persisted ${expectedTool} tool call.`)
     }
+    assertNoRejectedEquivalentApproval(events, toolCall)
     const toolArguments = toolCall.payload.arguments
     const persistedRevisionId = operation === 'rollback'
       && toolArguments
@@ -887,6 +889,65 @@ function findApprovalRequest(
     candidate.type === 'approval.requested' && candidate.payload.approvalId === approvalId
   ))
   return event?.type === 'approval.requested' ? event : null
+}
+
+function assertNoRejectedEquivalentApproval(
+  events: readonly AssistantEvent[],
+  currentToolCall: Extract<AssistantEvent, { type: 'tool.call' }>
+): void {
+  const currentFingerprint = pluginApprovalTargetFingerprint(currentToolCall)
+  if (!currentFingerprint) return
+  const rejectedApprovalIds = new Set(events.flatMap((event) => (
+    event.type === 'approval.resolved' && event.payload.decision === 'rejected'
+      ? [event.payload.approvalId]
+      : []
+  )))
+  const rejectedToolCallIds = new Set(events.flatMap((event) => (
+    event.type === 'approval.requested'
+      && event.payload.turnId === currentToolCall.payload.turnId
+      && rejectedApprovalIds.has(event.payload.approvalId)
+      ? [event.payload.toolCallId]
+      : []
+  )))
+  const equivalentRejectedCall = events.some((event) => (
+    event.type === 'tool.call'
+    && event.payload.turnId === currentToolCall.payload.turnId
+    && rejectedToolCallIds.has(event.payload.toolCallId)
+    && pluginApprovalTargetFingerprint(event) === currentFingerprint
+  ))
+  if (equivalentRejectedCall) {
+    throw new Error(
+      'An equivalent plugin operation was already rejected in this turn; a new user turn is required to reconsider it.'
+    )
+  }
+}
+
+function pluginApprovalTargetFingerprint(
+  event: Extract<AssistantEvent, { type: 'tool.call' }>
+): string | null {
+  if (![
+    'plugins.activate_revision',
+    'plugins.rollback',
+    'plugins.install_workspace'
+  ].includes(event.payload.tool)) return null
+  const input = event.payload.arguments
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const pluginId = input.pluginId
+  const revisionId = event.payload.tool === 'plugins.rollback'
+    ? input.targetRevisionId
+    : input.revisionId
+  if (typeof pluginId !== 'string' || typeof revisionId !== 'string') return null
+  try {
+    return [
+      event.payload.tool,
+      String(event.payload.version),
+      pluginId,
+      revisionId,
+      getPluginPlatformScopeKey(input.scope as PluginPlatformScope)
+    ].join('\0')
+  } catch {
+    return null
+  }
 }
 
 function listAllEvents(

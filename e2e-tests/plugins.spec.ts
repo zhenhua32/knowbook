@@ -1,8 +1,22 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
+function getLegacyPluginList(page: Page): Locator {
+  return page.locator('.plugin-list').filter({ has: page.locator('.plugin-status-legacy') })
+}
+
 function getPluginItem(page: Page): Locator {
-  return page.locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
+  return getLegacyPluginList(page).locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
+}
+
+function getLegacyDashboardCard(page: Page): Locator {
+  return page.locator('.plugin-dashboard-card').filter({
+    has: page.locator('.pill').filter({ hasText: /^activity-pulse$/ })
+  })
+}
+
+function getLegacyDocumentAction(page: Page): Locator {
+  return page.getByRole('button', { name: 'Summary from first block', exact: true })
 }
 
 function getTitleInput(page: Page): Locator {
@@ -29,7 +43,7 @@ async function openPluginsPage(page: Page): Promise<void> {
   const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Plugins', '插件中心'))).first()
   await navigationButton.click()
   await expect(navigationButton).toHaveClass(/active/)
-  await expect(page.locator('.plugin-list')).toBeVisible()
+  await expect(getLegacyPluginList(page)).toBeVisible()
 }
 
 async function openDashboardPage(page: Page): Promise<void> {
@@ -56,7 +70,7 @@ async function createRootDocument(page: Page, title: string, body: string): Prom
 }
 
 async function ensureAuxPanelVisible(page: Page): Promise<void> {
-  const actionButton = page.getByRole('button', { name: 'Summary from first block' })
+  const actionButton = getLegacyDocumentAction(page)
 
   if (await actionButton.isVisible().catch(() => false)) {
     return
@@ -119,7 +133,7 @@ test.describe('Plugin System @electron', () => {
       }
 
       await openDashboardPage(page)
-      const dashboardCard = page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })
+      const dashboardCard = getLegacyDashboardCard(page)
 
       if (isEnabled) {
         await expect(dashboardCard.first()).toBeVisible()
@@ -136,12 +150,12 @@ test.describe('Plugin System @electron', () => {
       await enableActivityPulse(page)
 
       await openDashboardPage(page)
-      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' }).first()).toBeVisible()
+      await expect(getLegacyDashboardCard(page)).toBeVisible()
 
       await disableActivityPulse(page)
 
       await openDashboardPage(page)
-      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })).toHaveCount(0)
+      await expect(getLegacyDashboardCard(page)).toHaveCount(0)
     })
   })
 
@@ -157,7 +171,7 @@ test.describe('Plugin System @electron', () => {
       await expect(getPluginItem(page)).toBeVisible()
 
       await openDashboardPage(page)
-      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' }).first()).toBeVisible()
+      await expect(getLegacyDashboardCard(page)).toBeVisible()
     })
   })
 
@@ -183,7 +197,7 @@ test.describe('Plugin System @electron', () => {
       const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the configured summary action.')
       await ensureAuxPanelVisible(page)
 
-      await page.getByRole('button', { name: 'Summary from first block' }).click()
+      await getLegacyDocumentAction(page).click()
 
       await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
       await expect(getSummaryInput(page)).toHaveValue(`${prefix}${initialSeedTitle}`)
@@ -208,7 +222,7 @@ test.describe('Plugin System @electron', () => {
       const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the summary action.')
       await ensureAuxPanelVisible(page)
 
-      await page.getByRole('button', { name: 'Summary from first block' }).click()
+      await getLegacyDocumentAction(page).click()
 
       await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
 
@@ -262,7 +276,7 @@ test.describe('Plugin System @electron', () => {
 
       await expect(getPluginItem(page).locator('.plugin-status-error')).toBeVisible()
       await openDashboardPage(page)
-      await expect(page.locator('.plugin-dashboard-card').filter({ hasText: 'activity-pulse' })).toHaveCount(0)
+      await expect(getLegacyDashboardCard(page)).toHaveCount(0)
       await openDocumentsPage(page)
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
     })

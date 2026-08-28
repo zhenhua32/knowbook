@@ -12,7 +12,7 @@ export type ElectronAppContext = {
 }
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const builtMainEntry = join(repoRoot, 'out', 'main', 'index.js')
+const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
 
 export function hasBuiltElectronApp(): boolean {
   return existsSync(builtMainEntry)
@@ -32,7 +32,7 @@ export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
   await expect(titleInput).toBeVisible()
 }
 
-export async function launchElectronApp(): Promise<ElectronAppContext> {
+export async function launchElectronApp(extraEnv: Record<string, string> = {}): Promise<ElectronAppContext> {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
   const app = await electron.launch({
     args: ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu', '.'],
@@ -44,7 +44,8 @@ export async function launchElectronApp(): Promise<ElectronAppContext> {
       KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
       KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
       KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE: '1',
-      KNOWBOOK_USER_DATA_DIR: tempRoot
+      KNOWBOOK_USER_DATA_DIR: tempRoot,
+      ...extraEnv
     }
   })
 
@@ -101,8 +102,11 @@ export async function closeElectronApp(context: Pick<ElectronAppContext, 'app' |
   }
 }
 
-export async function withElectronApp(run: (context: ElectronAppContext) => Promise<void>): Promise<void> {
-  const context = await launchElectronApp()
+export async function withElectronApp(
+  run: (context: ElectronAppContext) => Promise<void>,
+  extraEnv: Record<string, string> = {}
+): Promise<void> {
+  const context = await launchElectronApp(extraEnv)
   try {
     await run(context)
   } finally {
