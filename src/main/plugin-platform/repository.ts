@@ -332,6 +332,24 @@ export class SqlitePluginPlatformRepository {
     return rows.map(mapDefinition)
   }
 
+  /**
+   * Legacy assistant builds created dynamic plugins as session-only previews.
+   * The current workspace-first model keeps the original session id as
+   * provenance, but removes the ownership boundary so any conversation in the
+   * workspace can inspect, revise, and activate the plugin.
+   */
+  promoteDefinitionToWorkspace(pluginId: string): PluginDefinitionRecord {
+    const definition = this.requireDefinition(pluginId)
+    if (definition.persistenceScope === 'workspace') return definition
+    const now = this.now().toISOString()
+    this.db.prepare(`
+      UPDATE plugin_definitions
+      SET persistence_scope = 'workspace', updated_at = ?
+      WHERE id = ?
+    `).run(now, definition.id)
+    return this.requireDefinition(definition.id)
+  }
+
   createRevision(input: CreatePluginRevisionInput): PluginRevisionRecord {
     const revisionPackage = input.package
     validateRevisionPackageMetadata(revisionPackage)

@@ -77,7 +77,7 @@ const THEME_PLUGIN_INPUT = {
   previousRevisionId: null
 }
 
-test('MiMo-style streaming builds, approves, activates, and runs a light/dark theme plugin', async () => {
+test('MiMo-style streaming builds, immediately activates, and runs a workspace theme plugin', async () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-assistant-theme-plugin-'))
   const store = new KnowbookStore(join(root, 'knowbook.sqlite'))
   const runtimeFactory: NoNodePluginRuntimeFactory = {
@@ -155,17 +155,18 @@ test('MiMo-style streaming builds, approves, activates, and runs a light/dark th
 
   try {
     const session = agent.createSession({ title: '主题插件完整测试' })
-    const pending = await agent.sendMessage({
+    const completed = await agent.sendMessage({
       sessionId: session.id,
       text: '做一个深色模式和浅色模式切换的插件'
     })
-    assert.equal(pending.status, 'awaiting-approval')
+    assert.equal(completed.status, 'completed')
+    assert.equal(completionNumber, 9)
 
-    const eventsBeforeApproval = agent.listEvents(session.id, 0, 200)
-    assert.equal(eventsBeforeApproval.some((event) => event.type === 'session.error'), false)
-    assert.equal(JSON.stringify(eventsBeforeApproval).includes('ui.theme.write'), true)
+    const activationEvents = agent.listEvents(session.id, 0, 200)
+    assert.equal(activationEvents.some((event) => event.type === 'session.error'), false)
+    assert.equal(JSON.stringify(activationEvents).includes('ui.theme.write'), true)
     assert.deepEqual(
-      eventsBeforeApproval.filter((event) => event.type === 'tool.call').map((event) => (
+      activationEvents.filter((event) => event.type === 'tool.call').map((event) => (
         event.type === 'tool.call' ? event.payload.tool : ''
       )),
       [
@@ -179,19 +180,14 @@ test('MiMo-style streaming builds, approves, activates, and runs a light/dark th
         'plugins.activate_revision'
       ]
     )
-    const approval = eventsBeforeApproval.find((event) => event.type === 'approval.requested')
-    assert.ok(approval && approval.type === 'approval.requested')
-
-    const completed = await agent.resolveApproval({
-      sessionId: session.id,
-      approvalId: approval.payload.approvalId,
-      decision: 'allowed-once'
-    })
-    assert.equal(completed.status, 'completed')
-    assert.equal(completionNumber, 9)
+    assert.equal(activationEvents.some((event) => event.type === 'approval.requested'), true)
+    assert.equal(activationEvents.some((event) => (
+      event.type === 'approval.resolved' && event.payload.decision === 'allowed-once'
+    )), true)
 
     const definition = store.pluginPlatform.getDefinition('appearance-theme-toggle')
     assert.ok(definition?.currentRevisionId)
+    assert.equal(definition.persistenceScope, 'workspace')
     assert.equal(store.pluginPlatform.getRevision(definition.currentRevisionId)?.staticCheckStatus, 'passed')
     const contribution = platform.listUiContributions('settings.sections').find((entry) => (
       entry.id === 'appearance-theme-toggle'

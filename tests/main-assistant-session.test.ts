@@ -251,6 +251,60 @@ test('model projection excludes chunks and audit/plugin events while marking too
   })
 })
 
+test('legacy provider tool markup is removed from conversation and model projections', () => {
+  withStore((store) => {
+    const repository = store.assistantSessions
+    const session = repository.createSession({
+      workspaceId: 'workspace-1',
+      title: 'Legacy tool markup',
+      modelConfig: { model: 'test' }
+    })
+    const turnId = assistantTurnId('turn-markup')
+    const stepId = assistantStepId('step-markup')
+    const toolCallId = assistantToolCallId('call-markup')
+    repository.append(session.id, { type: 'turn.started', payload: { turnId } })
+    repository.append(session.id, {
+      type: 'user.message',
+      payload: { turnId, text: '创建插件' }
+    })
+    repository.append(session.id, {
+      type: 'assistant.message',
+      payload: {
+        turnId,
+        stepId,
+        text: '<tool_call>\n<function=plugins_define_revision>\n<parameter=workerSource>export default {}</parameter>\n</function>\n</tool_call>'
+      }
+    })
+    repository.append(session.id, {
+      type: 'tool.call',
+      payload: {
+        turnId,
+        stepId,
+        toolCallId,
+        tool: 'plugins.define_revision',
+        version: 1,
+        arguments: {}
+      }
+    })
+    repository.append(session.id, {
+      type: 'tool.result',
+      payload: {
+        turnId,
+        stepId,
+        toolCallId,
+        status: 'failed',
+        result: { error: { message: 'invalid arguments' } }
+      }
+    })
+
+    const events = repository.listEvents(session.id)
+    assert.deepEqual(projectAssistantSession(events).messages.map((message) => message.text), ['创建插件'])
+    const messages = deriveAssistantModelMessages(events)
+    assert.equal(messages.some((message) => message.content.includes('<tool_call>')), false)
+    assert.equal(messages.find((message) => message.tool)?.content, '')
+  })
+})
+
 test('assistant event boundary refuses secret fields and survives database reopen', () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-assistant-reopen-test-'))
   const databasePath = join(root, 'knowbook.sqlite')

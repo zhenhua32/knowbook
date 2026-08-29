@@ -182,8 +182,10 @@ export class AssistantPluginAuthoringService {
     this.requireActiveTurn(context)
     const session = this.sessions.getSession(context.sessionId)!
     return this.plugins.listDefinitions()
-      .filter((definition) => isDefinitionVisible(definition, context.sessionId))
-      .map((definition) => {
+      .map((storedDefinition) => {
+        const definition = storedDefinition.persistenceScope === 'session-preview'
+          ? this.plugins.promoteDefinitionToWorkspace(storedDefinition.id)
+          : storedDefinition
         const sessionInstallation = this.plugins.getInstallationForScope(definition.id, {
           kind: 'session', workspaceId: session.workspaceId, sessionId: context.sessionId
         })
@@ -314,12 +316,6 @@ export class AssistantPluginAuthoringService {
   ): PluginActivationApprovalRequest {
     this.requireActiveTurn(context)
     const definition = this.requireVisibleDefinition(context.sessionId, input.pluginId)
-    if (
-      definition.persistenceScope !== 'session-preview'
-      || definition.createdSessionId !== context.sessionId
-    ) {
-      throw new Error('Only an owning session-preview plugin can be saved to the workspace.')
-    }
     return this.requestActivation(context, {
       pluginId: definition.id,
       revisionId: input.revisionId,
@@ -343,11 +339,13 @@ export class AssistantPluginAuthoringService {
         id: revisionPackage.manifest.id,
         name: revisionPackage.manifest.name,
         source: 'dynamic',
-        persistenceScope: 'session-preview',
+        persistenceScope: 'workspace',
         createdSessionId: context.sessionId
       })
     } else if (definition.source !== 'dynamic') {
       throw new Error(`Assistant cannot replace ${definition.source} plugin "${definition.id}".`)
+    } else if (definition.persistenceScope === 'session-preview') {
+      definition = this.plugins.promoteDefinitionToWorkspace(definition.id)
     }
 
     const previousRevisionId = input.previousRevisionId === undefined
@@ -431,18 +429,17 @@ export class AssistantPluginAuthoringService {
     ) {
       throw new Error('Plugin activation request does not match its persisted tool arguments.')
     }
-    const definition = this.plugins.getDefinition(input.pluginId)
+    let definition = this.plugins.getDefinition(input.pluginId)
     const revision = this.plugins.getRevision(input.revisionId)
     if (!definition || !revision || revision.pluginId !== definition.id) {
       throw new Error('Plugin activation target does not exist.')
     }
+    if (input.scope.kind === 'workspace' && definition.persistenceScope === 'session-preview') {
+      definition = this.plugins.promoteDefinitionToWorkspace(definition.id)
+    }
     if (operation === 'install-workspace') {
-      if (
-        definition.persistenceScope !== 'session-preview'
-        || definition.createdSessionId !== context.sessionId
-        || input.scope.kind !== 'workspace'
-      ) {
-        throw new Error('Workspace installation requires the owning preview plugin and workspace scope.')
+      if (input.scope.kind !== 'workspace') {
+        throw new Error('Workspace installation requires workspace scope.')
       }
     } else {
       this.assertScopeAccess(context.sessionId, definition, input.scope)
@@ -473,17 +470,6 @@ export class AssistantPluginAuthoringService {
         `Plugin capability "${missingCapability.capability}@${missingCapability.version}" is unavailable.`
       )
     }
-    if (
-      operation !== 'install-workspace'
-      && definition.persistenceScope === 'session-preview'
-      && (
-        input.scope.kind !== 'session'
-        || input.scope.sessionId !== context.sessionId
-      )
-    ) {
-      throw new Error('Session-preview plugins can only activate inside their owning assistant session.')
-    }
-
     const lifetime = normalizeApprovalLifetime(input.approvalLifetimeMs)
     const expiresAt = new Date(this.now().getTime() + lifetime).toISOString()
     const approvalId = assistantApprovalId(randomUUID())
@@ -580,20 +566,14 @@ export class AssistantPluginAuthoringService {
     }
 
     const operation = runRequest.payload.operation ?? 'activate'
-    const installation = operation === 'install-workspace'
-      ? request.payload.scope.kind === 'workspace'
-        ? this.plugins.prepareWorkspacePromotionInstallation({
-            id: randomUUID(),
-            pluginId: revision.pluginId,
-            workspaceId: request.payload.scope.workspaceId,
-            sessionId
-          })
-        : (() => { throw new Error('Workspace installation approval scope is invalid.') })()
-      : this.plugins.ensureInstallation({
-          id: randomUUID(),
-          pluginId: revision.pluginId,
-          scope: request.payload.scope
-        })
+    if (request.payload.scope.kind === 'workspace') {
+      this.plugins.promoteDefinitionToWorkspace(revision.pluginId)
+    }
+    const installation = this.plugins.ensureInstallation({
+      id: randomUUID(),
+      pluginId: revision.pluginId,
+      scope: request.payload.scope
+    })
     const grantSetId = randomUUID()
     this.plugins.createGrantSet({
       id: grantSetId,
@@ -633,7 +613,6 @@ export class AssistantPluginAuthoringService {
       this.broker.revokeGrantSet(grantSetId)
       throw new Error('Plugin rollback run is missing its source revision identity.')
     }
-    let stoppedPreview: Awaited<ReturnType<PluginActivationCoordinator['stop']>> = null
     let receipt: Awaited<ReturnType<PluginActivationCoordinator['activate']>>
     try {
       receipt = await this.coordinator.activate({
@@ -644,25 +623,7 @@ export class AssistantPluginAuthoringService {
         scope: request.payload.scope,
         runId: runRequest.payload.runId
       })
-      if (operation === 'install-workspace') {
-        if (request.payload.scope.kind !== 'workspace') {
-          throw new Error('Workspace installation approval scope changed before commit.')
-        }
-        stoppedPreview = await this.coordinator.stop(revision.pluginId, {
-          kind: 'session',
-          workspaceId: request.payload.scope.workspaceId,
-          sessionId
-        })
-        if (stoppedPreview) {
-          this.plugins.revokeGrantSet(stoppedPreview.grantSetId)
-          this.broker.revokeGrantSet(stoppedPreview.grantSetId)
-        }
-        this.plugins.finalizeWorkspacePromotion(installation.id, sessionId)
-      }
     } catch (error) {
-      if (operation === 'install-workspace') {
-        await this.coordinator.stop(revision.pluginId, request.payload.scope).catch(() => null)
-      }
       this.plugins.revokeGrantSet(grantSetId)
       this.broker.revokeGrantSet(grantSetId)
       const serialized = serializeError(error)
@@ -685,10 +646,33 @@ export class AssistantPluginAuthoringService {
       }
     }
 
+    // A workspace run replaces every historical session-preview run for this
+    // plugin. Cleanup is deliberately best-effort and happens only after the
+    // workspace activation committed, so a stale preview can never turn a
+    // successful activation into a reported failure.
+    const stoppedPreviews: PluginRunRecord[] = []
+    if (request.payload.scope.kind === 'workspace') {
+      const workspaceId = request.payload.scope.workspaceId
+      const previewScopes = this.plugins.listPluginRuns(revision.pluginId)
+        .filter((run) => (
+          run.status === 'active'
+          && run.scope.kind === 'session'
+          && run.scope.workspaceId === workspaceId
+        ))
+        .map((run) => run.scope)
+      for (const scope of previewScopes) {
+        const stopped = await this.coordinator.stop(revision.pluginId, scope).catch(() => null)
+        if (!stopped) continue
+        this.plugins.revokeGrantSet(stopped.grantSetId)
+        this.broker.revokeGrantSet(stopped.grantSetId)
+        stoppedPreviews.push(stopped)
+      }
+    }
+
     // The kernel commit is authoritative. Audit projection failures after this point
     // must never revoke a successfully activated run or its grant.
     try {
-      if (stoppedPreview) {
+      for (const stoppedPreview of stoppedPreviews) {
         this.sessions.append(sessionId, {
           type: 'plugin.run.stopped',
           payload: {
@@ -739,31 +723,24 @@ export class AssistantPluginAuthoringService {
   }
 
   private requireVisibleDefinition(
-    sessionId: AssistantSessionId,
+    _sessionId: AssistantSessionId,
     pluginId: string
   ): PluginDefinitionRecord {
     const definition = this.plugins.getDefinition(pluginId)
-    if (!definition || !isDefinitionVisible(definition, sessionId)) {
-      throw new Error(`Plugin definition "${pluginId}" is not visible in this assistant session.`)
-    }
-    return definition
+    if (!definition) throw new Error(`Plugin definition "${pluginId}" does not exist.`)
+    return definition.persistenceScope === 'session-preview'
+      ? this.plugins.promoteDefinitionToWorkspace(definition.id)
+      : definition
   }
 
   private assertScopeAccess(
-    sessionId: AssistantSessionId,
+    _sessionId: AssistantSessionId,
     definition: PluginDefinitionRecord,
-    scope: PluginPlatformScope
+    _scope: PluginPlatformScope
   ): void {
-    if (
-      definition.persistenceScope === 'session-preview'
-      && (
-        definition.createdSessionId !== sessionId
-        || scope.kind !== 'session'
-        || scope.sessionId !== sessionId
-      )
-    ) {
-      throw new Error('Session-preview plugins can only activate inside their owning assistant session or be stopped there.')
-    }
+    // Dynamic plugins are workspace assets. The parameters remain here to keep
+    // the lifecycle API stable for callers compiled against the old model.
+    void definition
   }
 }
 
@@ -986,12 +963,4 @@ function isSameScope(value: PluginJsonValue | undefined, scope: PluginPlatformSc
   } catch {
     return false
   }
-}
-
-function isDefinitionVisible(
-  definition: PluginDefinitionRecord,
-  sessionId: AssistantSessionId
-): boolean {
-  return definition.persistenceScope !== 'session-preview'
-    || definition.createdSessionId === sessionId
 }

@@ -27,7 +27,7 @@ import type {
   PluginRevisionPackageInput
 } from '../src/shared/plugin-platform.ts'
 
-test('assistant plugin tools define, diff, approve once, and atomically activate a session preview', async () => {
+test('assistant plugin tools define a workspace plugin and atomically activate an exact revision', async () => {
   await withAuthoringPlatform(async (platform) => {
     const first = await platform.service.defineRevision(platform.context, revisionInput(
       '1.0.0',
@@ -38,7 +38,7 @@ test('assistant plugin tools define, diff, approve once, and atomically activate
     assert.equal(first.revision.staticCheckStatus, 'passed')
     assert.equal(first.diff.previousRevisionId, null)
     assert.deepEqual(first.diff.permissionsAdded, ['documents.read@1'])
-    assert.equal(platform.store.pluginPlatform.getDefinition('daily-review')?.persistenceScope, 'session-preview')
+    assert.equal(platform.store.pluginPlatform.getDefinition('daily-review')?.persistenceScope, 'workspace')
     assert.deepEqual(
       platform.service.inspectCapabilities().map((entry) => `${entry.id}@${entry.version}`),
       ['documents.read@1']
@@ -95,7 +95,7 @@ test('assistant plugin tools define, diff, approve once, and atomically activate
   })
 })
 
-test('assistant plugin approval is bound to persisted tool arguments and cannot promote preview to workspace', async () => {
+test('assistant plugin activation is bound to persisted tool arguments and supports workspace scope', async () => {
   await withAuthoringPlatform(async (platform) => {
     const defined = await platform.service.defineRevision(
       platform.context,
@@ -119,19 +119,73 @@ test('assistant plugin approval is bound to persisted tool arguments and cannot 
     }
     const workspaceCallId = assistantToolCallId('workspace-call')
     appendActivationToolCall(platform, workspaceCallId, defined.revision.id, workspaceScope, 'silent promotion')
-    assert.throws(() => platform.service.requestActivation({
+    const approval = platform.service.requestActivation({
       ...platform.context,
       toolCallId: workspaceCallId
     }, {
       pluginId: 'daily-review',
       revisionId: defined.revision.id,
       scope: workspaceScope,
-      summary: 'silent promotion'
-    }), /only activate inside their owning assistant session/)
+      summary: 'silent promotion',
+      runId: 'workspace-run'
+    })
+    const result = await platform.service.resolveActivationApproval(
+      platform.sessionId,
+      approval.approvalId,
+      'allowed-once'
+    )
+    assert.equal(result.status, 'succeeded')
+    assert.equal(platform.kernel.getActiveOwner('daily-review', workspaceScope)?.runId, 'workspace-run')
   })
 })
 
-test('explicit approved workspace installation persists the preview revision and stops its session run', async () => {
+test('legacy session-preview plugins become workspace-visible from another conversation', async () => {
+  await withAuthoringPlatform(async (platform) => {
+    platform.store.pluginPlatform.createDefinition({
+      id: 'daily-review',
+      name: 'Daily Review',
+      source: 'dynamic',
+      persistenceScope: 'session-preview',
+      createdSessionId: 'legacy-session'
+    })
+    const packageValue = platform.revisions.publish(revisionInput(
+      '1.0.0',
+      'export const version = 1',
+      []
+    ))
+    platform.store.pluginPlatform.createRevision({
+      package: packageValue,
+      staticCheckStatus: 'passed',
+      generatedBySessionId: 'legacy-session'
+    })
+
+    const secondSessionId = assistantSessionId('session-second')
+    const secondTurnId = assistantTurnId('turn-second')
+    platform.store.assistantSessions.createSession({
+      id: secondSessionId,
+      workspaceId: 'workspace-1',
+      title: 'Second conversation',
+      modelConfig: { model: 'test' }
+    })
+    platform.store.assistantSessions.append(secondSessionId, {
+      type: 'turn.started',
+      payload: { turnId: secondTurnId }
+    })
+
+    const listed = platform.service.listPlugins({ sessionId: secondSessionId, turnId: secondTurnId })
+    assert.deepEqual(listed.map((entry) => entry.definition.id), ['daily-review'])
+    assert.equal(listed[0]?.definition.persistenceScope, 'workspace')
+    assert.equal(
+      platform.service.inspectPlugin(
+        { sessionId: secondSessionId, turnId: secondTurnId },
+        'daily-review'
+      ).revisions.length,
+      1
+    )
+  })
+})
+
+test('legacy workspace installation alias activates the revision and stops an older session run', async () => {
   await withAuthoringPlatform(async (platform) => {
     const defined = await platform.service.defineRevision(
       platform.context,

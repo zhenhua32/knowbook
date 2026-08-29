@@ -87,6 +87,8 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
         'plugins.read_diagnostics'
       ])
       assert.equal(calls[0].systemPrompt.includes('npm'), true)
+      assert.equal(calls[0].systemPrompt.includes('Button actions never use handlerId'), true)
+      assert.equal(calls[0].systemPrompt.includes("action: { handler, arguments? }"), true)
       assert.equal(JSON.stringify(service.getSession(session.id)?.modelConfig).includes('not-persisted'), false)
 
       const events = service.listEvents(session.id, 0, 100)
@@ -110,6 +112,57 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
         calls[1].messages.find((message) => message.tool)?.reasoningContent,
         '需要先检查平台能力。'
       )
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
+test('assistant plugin repair loop can continue beyond the old twelve-step limit', async () => {
+  await withStore(async (store) => {
+    let calls = 0
+    const model: AssistantModelAdapter = {
+      capabilities: {
+        streaming: false,
+        nativeToolCalling: true,
+        jsonSchema: true,
+        multimodal: false
+      },
+      complete: async () => {
+        calls += 1
+        return calls <= 13
+          ? {
+              content: '',
+              toolCalls: [{ name: 'plugins.inspect_capabilities', arguments: {} }]
+            }
+          : { content: '修复完成。', toolCalls: [] }
+      }
+    }
+    const platform = {
+      authoring: { inspectCapabilities: () => [] },
+      getSessionScope: (sessionId: string) => ({
+        kind: 'session', workspaceId: 'workspace-1', sessionId
+      })
+    } as unknown as PluginPlatformV2Service
+    const service = new AssistantAgentService(store.assistantSessions, platform, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({
+        enabled: true,
+        apiKey: 'secret',
+        baseUrl: 'https://example.invalid/v1',
+        model: 'test-model'
+      }),
+      modelAdapter: model
+    })
+
+    try {
+      const session = service.createSession({ title: '长插件修复' })
+      const result = await service.sendMessage({ sessionId: session.id, text: '持续修复插件直到运行' })
+      assert.equal(result.status, 'completed')
+      assert.equal(calls, 14)
+      const events = service.listEvents(session.id, 0, 200)
+      assert.equal(events.filter((event) => event.type === 'tool.result').length, 13)
+      assert.equal(events.some((event) => event.type === 'session.error'), false)
     } finally {
       await service.destroy()
     }
@@ -269,6 +322,300 @@ test('OpenAI-compatible adapter normalizes SSE text, incremental tool arguments,
   assert.deepEqual(chunks, ['你', '好'])
   assert.deepEqual(result.toolCalls, [{ name: 'plugins.inspect_capabilities', arguments: {} }])
   assert.deepEqual(result.usage, { total_tokens: 9 })
+})
+
+test('OpenAI-compatible adapter tolerates cumulative tool-argument snapshots', async () => {
+  const completeArguments = JSON.stringify({
+    pluginId: 'appearance-theme-toggle',
+    workerSource: 'export default {}'
+  })
+  const response = sseResponse([
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: {
+              name: 'plugins_define_revision',
+              arguments: completeArguments.slice(0, 18)
+            }
+          }]
+        }
+      }]
+    },
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { name: null, arguments: completeArguments }
+          }]
+        },
+        finish_reason: 'tool_calls'
+      }]
+    },
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { name: null, arguments: completeArguments }
+          }]
+        }
+      }]
+    }
+  ])
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => response
+  })
+
+  const result = await adapter.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: [{
+      name: 'plugins_define_revision',
+      eventName: 'plugins.define_revision',
+      description: 'Define',
+      parameters: { type: 'object' }
+    }]
+  })
+
+  assert.deepEqual(result.toolCalls, [{
+    name: 'plugins.define_revision',
+    arguments: JSON.parse(completeArguments)
+  }])
+})
+
+test('OpenAI-compatible adapter recovers duplicated names and tagged arguments without leaking tool markup', async () => {
+  const manifest = {
+    schemaVersion: 2,
+    id: 'theme-switcher',
+    name: 'Theme Switcher',
+    version: '1.0.0',
+    apiVersion: '2',
+    permissions: [],
+    standardModules: []
+  }
+  const taggedCall = [
+    '<tool_call>',
+    '<function=plugins_define_revision>',
+    `<parameter=manifest>${JSON.stringify(manifest)}</parameter>`,
+    '<parameter=workerSource>export default {};\\n</parameter>',
+    '<parameter=views>{}</parameter>',
+    '<parameter=previousRevisionId>null</parameter>',
+    '</function>',
+    '</tool_call>'
+  ].join('\n')
+  const response = sseResponse([
+    { choices: [{ delta: { content: '<tool_' } }] },
+    {
+      choices: [{
+        delta: {
+          content: taggedCall.slice('<tool_'.length),
+          tool_calls: [{
+            index: 0,
+            function: {
+              name: 'plugins_define_revision',
+              arguments: '{"manifest":'
+            }
+          }]
+        }
+      }]
+    },
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { name: 'plugins_define_revision', arguments: '' }
+          }]
+        },
+        finish_reason: 'tool_calls'
+      }]
+    }
+  ])
+  const chunks: string[] = []
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => response
+  })
+
+  const result = await adapter.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: [{
+      name: 'plugins_define_revision',
+      eventName: 'plugins.define_revision',
+      description: 'Define',
+      parameters: {
+        type: 'object',
+        properties: {
+          manifest: { type: 'object' },
+          workerSource: { type: 'string' },
+          views: {},
+          previousRevisionId: { type: ['string', 'null'] }
+        },
+        required: ['manifest', 'workerSource']
+      }
+    }],
+    onChunk: (text) => { chunks.push(text) }
+  })
+
+  assert.equal(result.content, '')
+  assert.deepEqual(chunks, [])
+  assert.deepEqual(result.toolCalls, [{
+    name: 'plugins.define_revision',
+    arguments: {
+      manifest,
+      workerSource: 'export default {};\n',
+      views: {},
+      previousRevisionId: null
+    }
+  }])
+})
+
+test('OpenAI-compatible adapter treats a repeated complete tool name as a snapshot', async () => {
+  const response = sseResponse([
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { name: 'plugins_define_revision', arguments: '{"worker' }
+          }]
+        }
+      }]
+    },
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: { name: 'plugins_define_revision', arguments: 'Source":"ok"}' }
+          }]
+        },
+        finish_reason: 'tool_calls'
+      }]
+    }
+  ])
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => response
+  })
+
+  const result = await adapter.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: [{
+      name: 'plugins_define_revision',
+      eventName: 'plugins.define_revision',
+      description: 'Define',
+      parameters: { type: 'object' }
+    }]
+  })
+
+  assert.deepEqual(result.toolCalls, [{
+    name: 'plugins.define_revision',
+    arguments: { workerSource: 'ok' }
+  }])
+})
+
+test('malformed streamed tool arguments become a failed, non-executing tool result that the model can repair', async () => {
+  const malformedResponse = sseResponse([
+    {
+      choices: [{
+        delta: {
+          tool_calls: [{
+            index: 0,
+            function: {
+              name: 'plugins_define_revision',
+              arguments: '{"manifest":{"id":"broken"}'
+            }
+          }]
+        },
+        finish_reason: 'length'
+      }]
+    }
+  ])
+  const model = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => malformedResponse
+  })
+  const firstCompletion = await model.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: [{
+      name: 'plugins_define_revision',
+      eventName: 'plugins.define_revision',
+      description: 'Define',
+      parameters: { type: 'object' }
+    }]
+  })
+
+  assert.equal(firstCompletion.toolCalls[0]?.name, 'plugins.define_revision')
+  assert.deepEqual(firstCompletion.toolCalls[0]?.arguments, {})
+  assert.match(firstCompletion.toolCalls[0]?.argumentsError ?? '', /invalid streaming arguments/)
+
+  await withStore(async (store) => {
+    const calls: AssistantModelCompletionInput[] = []
+    const recoveringModel: AssistantModelAdapter = {
+      capabilities: {
+        streaming: false,
+        nativeToolCalling: true,
+        jsonSchema: true,
+        multimodal: false
+      },
+      complete: async (input) => {
+        calls.push(input)
+        if (calls.length === 1) {
+          return {
+            content: '',
+            toolCalls: [{
+              name: 'plugins.define_revision',
+              arguments: {},
+              argumentsError: 'Assistant tool "plugins_define_revision" returned invalid streaming arguments.'
+            }]
+          }
+        }
+        return { content: '参数已重新生成。', toolCalls: [] }
+      }
+    }
+    const service = new AssistantAgentService(store.assistantSessions, {} as PluginPlatformV2Service, {
+      workspaceId: 'workspace-1',
+      getAiConfig: () => ({
+        enabled: true,
+        apiKey: 'secret',
+        baseUrl: 'https://example.invalid/v1',
+        model: 'test-model'
+      }),
+      modelAdapter: recoveringModel
+    })
+
+    try {
+      const session = service.createSession()
+      const result = await service.sendMessage({ sessionId: session.id, text: '定义主题插件' })
+      assert.equal(result.status, 'completed')
+      assert.equal(calls.length, 2)
+      assert.equal(calls[1]?.messages.some((message) => (
+        message.role === 'tool'
+        && message.content.includes('No operation was executed')
+      )), true)
+      const events = service.listEvents(session.id, 0, 100)
+      assert.equal(events.some((event) => event.type === 'session.error'), false)
+      assert.equal(events.find((event) => event.type === 'tool.result')?.payload.status, 'failed')
+    } finally {
+      await service.destroy()
+    }
+  })
 })
 
 test('assistant explicitly disables all tools for adapters without native tool calling', async () => {
@@ -435,6 +782,23 @@ async function waitUntil(predicate: () => boolean, attempts = 100): Promise<void
     await new Promise<void>((resolve) => setImmediate(resolve))
   }
   throw new Error('Timed out waiting for assistant state.')
+}
+
+function sseResponse(events: unknown[]): Response {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+      controller.close()
+    }
+  })
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream; charset=utf-8' }
+  })
 }
 
 async function withStore(run: (store: KnowbookStore) => Promise<void>): Promise<void> {

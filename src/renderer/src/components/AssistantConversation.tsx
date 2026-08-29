@@ -185,6 +185,7 @@ export function AssistantConversation({
           ) : item.kind === 'tool' ? (
             <div className="assistant-tool-event" key={item.key}>
               <code>{item.tool}</code>
+              {item.detail ? <small>{item.detail}</small> : null}
               <span>{toolStatusText(item.status, isZh)}</span>
             </div>
           ) : (
@@ -254,7 +255,7 @@ export function AssistantConversation({
 
 type ProjectionItem =
   | { kind: 'message'; key: string; role: 'user' | 'assistant'; text: string; streaming?: boolean }
-  | { kind: 'tool'; key: string; tool: string; status: string }
+  | { kind: 'tool'; key: string; tool: string; status: string; detail?: string }
   | { kind: 'lifecycle'; key: string; eventType: AssistantEvent['type']; status: string; detail: string }
 
 export function projectEvents(events: readonly AssistantEvent[]): {
@@ -298,8 +299,18 @@ export function projectEvents(events: readonly AssistantEvent[]): {
     } else if (event.type === 'tool.result') {
       const index = toolIndexes.get(event.payload.toolCallId)
       const item = index === undefined ? undefined : items[index]
-      if (item?.kind === 'tool') item.status = event.payload.status
-      else items.push({ kind: 'tool', key: event.id, tool: toolNames.get(event.payload.toolCallId) ?? 'tool', status: event.payload.status })
+      if (item?.kind === 'tool') {
+        item.status = event.payload.status
+        if (event.payload.status === 'failed') item.detail = safeErrorDetail(event.payload.result)
+      } else {
+        items.push({
+          kind: 'tool',
+          key: event.id,
+          tool: toolNames.get(event.payload.toolCallId) ?? 'tool',
+          status: event.payload.status,
+          ...(event.payload.status === 'failed' ? { detail: safeErrorDetail(event.payload.result) } : {})
+        })
+      }
     } else if (event.type === 'approval.requested') {
       pending.set(event.payload.approvalId, event)
     } else if (event.type === 'approval.resolved') {
@@ -332,7 +343,7 @@ function lifecycleProjection(event: AssistantEvent): Extract<ProjectionItem, { k
           : event.type === 'plugin.run.stopped' ? 'cancelled'
             : event.type === 'plugin.run.succeeded' ? 'succeeded'
               : 'running',
-        detail: `${event.payload.pluginId} · ${shortRevision(event.payload.revisionId)}`
+        detail: `${event.payload.pluginId} · ${shortRevision(event.payload.revisionId)}${event.type === 'plugin.run.failed' ? ` · ${safeErrorDetail(event.payload.error)}` : ''}`
       }
     case 'plugin.rollback.completed':
       return { ...base, status: 'succeeded', detail: `${event.payload.pluginId} · ${shortRevision(event.payload.fromRevisionId)} → ${shortRevision(event.payload.toRevisionId)}` }
@@ -366,9 +377,20 @@ function assistantEventTitle(type: AssistantEvent['type'], isZh: boolean): strin
 }
 
 function safeErrorDetail(value: unknown): string {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'error'
-  const message = (value as Record<string, unknown>).message
-  return typeof message === 'string' ? message.slice(0, 240) : 'error'
+  if (typeof value === 'string') return value.slice(0, 240)
+  if (Array.isArray(value)) {
+    const detail = value.map((entry) => safeErrorDetail(entry)).find((entry) => entry !== 'error')
+    return detail ?? 'error'
+  }
+  if (!value || typeof value !== 'object') return 'error'
+  const record = value as Record<string, unknown>
+  const message = record.message
+  if (typeof message === 'string') return message.slice(0, 240)
+  for (const key of ['error', 'details', 'cause', 'result', 'value']) {
+    const detail = safeErrorDetail(record[key])
+    if (detail !== 'error') return detail
+  }
+  return 'error'
 }
 
 function toolStatusText(status: string, isZh: boolean): string {

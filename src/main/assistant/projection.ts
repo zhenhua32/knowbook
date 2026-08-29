@@ -101,12 +101,14 @@ export function projectAssistantSession(events: readonly AssistantEvent[]): Assi
       case 'assistant.message': {
         const key = `${event.payload.turnId}\0${event.payload.stepId}`
         streaming.delete(key)
+        const text = stripProviderToolMarkup(event.payload.text)
+        if (!text) break
         messages.push({
           eventId: event.id,
           seq: event.seq,
           turnId: event.payload.turnId,
           role: 'assistant',
-          text: event.payload.text
+          text
         })
         break
       }
@@ -164,7 +166,8 @@ export function deriveAssistantModelMessages(
     const key = `${event.payload.turnId}\0${event.payload.stepId}`
     const firstToolCallSeq = firstToolCallSeqByStep.get(key)
     if (firstToolCallSeq !== undefined && event.seq < firstToolCallSeq) {
-      assistantContentByToolStep.set(key, event.payload.text)
+      const content = stripProviderToolMarkup(event.payload.text)
+      if (content) assistantContentByToolStep.set(key, content)
     }
   }
   const emittedToolStepContent = new Set<string>()
@@ -181,7 +184,10 @@ export function deriveAssistantModelMessages(
         ) {
           break
         }
-        messages.push({ role: 'assistant', content: clampText(event.payload.text, maxItem) })
+        {
+          const content = stripProviderToolMarkup(event.payload.text)
+          if (content) messages.push({ role: 'assistant', content: clampText(content, maxItem) })
+        }
         break
       case 'tool.call': {
         const stepKey = `${event.payload.turnId}\0${event.payload.stepId}`
@@ -258,4 +264,13 @@ function modelMessageSize(message: AssistantModelMessage): number {
   return message.content.length
     + (message.reasoningContent?.length ?? 0)
     + (message.tool ? JSON.stringify(message.tool).length : 0)
+}
+
+/** Removes provider-internal tagged function syntax from persisted legacy turns. */
+function stripProviderToolMarkup(content: string): string {
+  if (!content.includes('<tool_call')) return content
+  return content
+    .replace(/<tool_call>\s*<function=[^>\s]+>[\s\S]*?<\/function>\s*<\/tool_call>/g, '')
+    .replace(/<tool_call[\s\S]*$/g, '')
+    .trim()
 }

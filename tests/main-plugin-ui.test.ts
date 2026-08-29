@@ -52,6 +52,36 @@ test('ViewSpec rejects unknown nodes, properties, and non-JSON action values', (
   }), /handler is invalid/)
 })
 
+test('ViewSpec buttons use the strict action shape used by generated plugins', () => {
+  const validated = validatePluginUiContribution('settings.sections', {
+    kind: 'view',
+    view: {
+      version: 1,
+      root: {
+        type: 'button',
+        label: 'Toggle theme',
+        variant: 'primary',
+        action: { handler: 'theme.toggle' }
+      }
+    }
+  })
+  assert.deepEqual(validated.actions, [{ handler: 'theme.toggle' }])
+  assert.throws(() => validatePluginUiContribution('settings.sections', {
+    kind: 'view',
+    view: {
+      version: 1,
+      root: {
+        type: 'button',
+        id: 'theme-toggle-btn',
+        label: 'Toggle theme',
+        variant: 'ghost',
+        icon: 'sun-moon',
+        handlerId: 'theme.toggle'
+      }
+    }
+  }), /button node contains unknown field "id"/)
+})
+
 test('iframe materialization puts CSP before untrusted bytes and only emits revision assets', () => {
   const package_: PluginRevisionPackage = {
     revisionId: owner.revisionId,

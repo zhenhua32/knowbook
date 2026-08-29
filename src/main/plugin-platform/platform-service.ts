@@ -184,7 +184,7 @@ export class PluginPlatformV2Service {
     }))
   }
 
-  /** Workspace UI includes durable workspace plugins and live session-preview plugins. */
+  /** Workspace UI includes workspace plugins plus any not-yet-migrated preview runs. */
   listExperienceContributions<T extends PluginJsonValue>(slot: string): Array<{
     owner: PluginActiveOwner
     id: string
@@ -409,10 +409,17 @@ export class PluginPlatformV2Service {
     }> = []
     const contributionIds: string[] = []
     let remainingCharacters = 16_000
-    for (const contribution of this.kernel.listContributions<PluginJsonValue>(
-      'assistant.context',
-      this.getSessionScope(sessionId)
-    ).slice(0, 8)) {
+    const contextContributions = [
+      ...this.kernel.listContributions<PluginJsonValue>(
+        'assistant.context',
+        this.getWorkspaceScope()
+      ),
+      ...this.kernel.listContributions<PluginJsonValue>(
+        'assistant.context',
+        this.getSessionScope(sessionId)
+      )
+    ].slice(0, 8)
+    for (const contribution of contextContributions) {
       try {
         const value = parseAssistantContextContribution(contribution.value)
         if (remainingCharacters <= 0) break
