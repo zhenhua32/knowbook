@@ -463,6 +463,45 @@ test('repeated installation violations quarantine until explicit recovery', () =
   })
 })
 
+test('deleting a plugin definition cascades its installed lifecycle records', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    repository.createDefinition({
+      id: 'uninstall-plugin',
+      name: 'Uninstall Plugin',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const published = revision('uninstall-plugin', '1.0.0', 'export const installed = true')
+    repository.createRevision({ package: published, staticCheckStatus: 'passed' })
+    const installation = repository.ensureInstallation({
+      id: 'uninstall-installation',
+      pluginId: 'uninstall-plugin',
+      scope
+    })
+    repository.createGrantSet({
+      ...grant('uninstall-grant', published.revisionId, 'uninstall-plugin'),
+      installationId: installation.id
+    })
+    repository.createRun({
+      id: 'uninstall-run',
+      pluginId: 'uninstall-plugin',
+      revisionId: published.revisionId,
+      installationId: installation.id,
+      grantSetId: 'uninstall-grant',
+      scope
+    })
+    repository.markRunActive('uninstall-run', 1)
+
+    assert.deepEqual(repository.deleteDefinition('uninstall-plugin'), [published.revisionId])
+    assert.equal(repository.getDefinition('uninstall-plugin'), null)
+    assert.equal(repository.getRevision(published.revisionId), null)
+    assert.equal(repository.getInstallation(installation.id), null)
+    assert.equal(repository.getGrantSet('uninstall-grant'), null)
+    assert.equal(repository.getRun('uninstall-run'), null)
+  })
+})
+
 function revision(
   pluginId: string,
   version: string,

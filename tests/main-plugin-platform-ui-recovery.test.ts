@@ -117,6 +117,79 @@ test('post-commit iframe failure revokes the failed run and automatically restor
   }
 })
 
+test('workspace lifecycle controls disable, restore, and fully uninstall a dynamic plugin', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-plugin-lifecycle-test-'))
+  const store = new KnowbookStore(join(root, 'knowbook.sqlite'))
+  const service = new PluginPlatformV2Service(store, join(root, 'plugins-v2'), {
+    workspaceId: 'workspace-1',
+    runtimeFactory: {
+      isolation: 'no-node-isolate',
+      create: async () => ({
+        activate: async () => ({ contributions: [] }),
+        commit: () => undefined,
+        invokeHandler: async () => null,
+        dispose: () => undefined
+      })
+    }
+  })
+  const scope: PluginPlatformScope = { kind: 'workspace', workspaceId: 'workspace-1' }
+
+  try {
+    store.pluginPlatform.createDefinition({
+      id: 'advanced-ui',
+      name: 'Advanced UI',
+      source: 'dynamic',
+      persistenceScope: 'workspace'
+    })
+    const revision = publishRevision(service, store, '1.0.0')
+    const installation = store.pluginPlatform.ensureInstallation({
+      id: 'advanced-ui-installation',
+      pluginId: 'advanced-ui',
+      scope
+    })
+    const grant = store.pluginPlatform.createGrantSet({
+      id: 'advanced-ui-grant',
+      pluginId: 'advanced-ui',
+      revisionId: revision.revisionId,
+      installationId: installation.id,
+      scope,
+      grants: [],
+      createdAt: '2026-08-29T00:00:00.000Z'
+    })
+    await service.coordinator.activate({
+      pluginId: 'advanced-ui',
+      revisionId: revision.revisionId,
+      grantSetId: grant.id,
+      installationId: installation.id,
+      scope,
+      runId: 'initial-run'
+    })
+
+    await service.setWorkspacePluginEnabled('advanced-ui', false)
+    assert.equal(store.pluginPlatform.getInstallation(installation.id)?.enabled, false)
+    assert.equal(store.pluginPlatform.getInstallation(installation.id)?.activeRunId, null)
+    assert.equal(store.pluginPlatform.getRun('initial-run')?.status, 'stopped')
+    assert.equal(service.kernel.getActiveOwner('advanced-ui', scope), null)
+
+    await service.setWorkspacePluginEnabled('advanced-ui', true)
+    const restored = store.pluginPlatform.getInstallation(installation.id)
+    assert.equal(restored?.enabled, true)
+    assert.ok(restored?.activeRunId)
+    assert.notEqual(restored?.activeRunId, 'initial-run')
+    assert.equal(restored?.currentRevisionId, revision.revisionId)
+
+    await service.removeWorkspacePlugin('advanced-ui')
+    assert.equal(store.pluginPlatform.getDefinition('advanced-ui'), null)
+    assert.equal(store.pluginPlatform.getInstallation(installation.id), null)
+    assert.equal(service.revisions.has(revision.revisionId), false)
+    assert.equal(service.kernel.getActiveOwner('advanced-ui', scope), null)
+  } finally {
+    await service.destroy()
+    store.destroy()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 function publishRevision(
   service: PluginPlatformV2Service,
   store: KnowbookStore,

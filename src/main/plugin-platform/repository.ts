@@ -332,6 +332,19 @@ export class SqlitePluginPlatformRepository {
     return rows.map(mapDefinition)
   }
 
+  deleteDefinition(pluginId: string): string[] {
+    const definition = this.requireDefinition(pluginId)
+    const revisionIds = this.listRevisions(definition.id).map((revision) => revision.id)
+    const transaction = this.db.transaction(() => {
+      const result = this.db.prepare('DELETE FROM plugin_definitions WHERE id = ?').run(definition.id)
+      if (result.changes !== 1) {
+        throw new Error(`Plugin definition "${definition.id}" could not be removed.`)
+      }
+    })
+    transaction()
+    return revisionIds
+  }
+
   /**
    * Legacy assistant builds created dynamic plugins as session-only previews.
    * The current workspace-first model keeps the original session id as

@@ -469,6 +469,59 @@ export class PluginPlatformV2Service {
     this.store.pluginPlatform.clearInstallationQuarantine(installation.id)
   }
 
+  async setWorkspacePluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    this.assertUsable()
+    const scope = this.getWorkspaceScope()
+    const installation = this.store.pluginPlatform.getInstallationForScope(pluginId, scope)
+    if (!installation) {
+      throw new Error(`Workspace plugin "${pluginId}" is not installed.`)
+    }
+
+    if (!enabled) {
+      await this.coordinator.stop(pluginId, scope)
+      this.store.pluginPlatform.setInstallationEnabled(installation.id, false)
+      return
+    }
+
+    this.store.pluginPlatform.setInstallationEnabled(installation.id, true)
+    const result = await this.restoreWorkspaceInstallations()
+    if (result.failedInstallationIds.includes(installation.id)) {
+      throw new Error(`Plugin "${pluginId}" could not be started. Open AI customization to inspect and repair it.`)
+    }
+  }
+
+  async removeWorkspacePlugin(pluginId: string): Promise<void> {
+    this.assertUsable()
+    const definition = this.store.pluginPlatform.getDefinition(pluginId)
+    if (!definition) {
+      throw new Error(`Plugin "${pluginId}" does not exist.`)
+    }
+    if (definition.source === 'builtin') {
+      throw new Error('Built-in plugins can be disabled, but cannot be uninstalled.')
+    }
+    if (definition.source === 'system') {
+      throw new Error('System plugins must be removed through the system plugin workflow.')
+    }
+
+    const scope = this.getWorkspaceScope()
+    const installation = this.store.pluginPlatform.getInstallationForScope(pluginId, scope)
+    if (!installation) {
+      throw new Error(`Workspace plugin "${pluginId}" is not installed.`)
+    }
+    await this.coordinator.stop(pluginId, scope)
+    if (installation.currentGrantSetId) {
+      this.broker.revokeGrantSet(installation.currentGrantSetId)
+    }
+    const revisionIds = this.store.pluginPlatform.deleteDefinition(pluginId)
+    for (const revisionId of revisionIds) {
+      try {
+        this.revisions.remove(revisionId)
+      } catch (error) {
+        console.warn(`Plugin revision object ${revisionId} could not be removed during uninstall.`, error)
+      }
+    }
+  }
+
   async installMarketplacePackage(input: MarketplacePluginPackage): Promise<MarketplacePluginInstallResult> {
     this.assertUsable()
     return installMarketplacePluginPackage({
@@ -639,9 +692,9 @@ export class PluginPlatformV2Service {
     })
   }
 
-  async restoreWorkspaceInstallations(): Promise<void> {
+  async restoreWorkspaceInstallations(): Promise<import('./installation-restorer').RestoreWorkspacePluginInstallationsResult> {
     this.assertUsable()
-    await restoreWorkspacePluginInstallations({
+    return restoreWorkspacePluginInstallations({
       repository: this.store.pluginPlatform,
       coordinator: this.coordinator,
       workspaceId: this.options.workspaceId,

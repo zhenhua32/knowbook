@@ -52,6 +52,8 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SetPluginEnabledInput,
+  SetPluginV2EnabledInput,
+  RemovePluginV2Input,
   SystemPluginInstallRequest,
   SystemPluginInstallRequestInput,
   UpdatePluginSettingInput,
@@ -784,14 +786,23 @@ function getPluginHomeData(): PluginHomeData {
       .map((installation) => {
         const definition = store.pluginPlatform.getDefinition(installation.pluginId)
         if (!definition) throw new Error(`Plugin definition "${installation.pluginId}" is missing.`)
+        const revision = installation.currentRevisionId
+          ? store.pluginPlatform.getRevision(installation.currentRevisionId)
+          : null
         return {
           pluginId: installation.pluginId,
           name: definition.name,
+          version: revision?.manifest.version ?? '—',
+          description: revision?.manifest.description ?? '',
+          author: revision?.manifest.author ?? null,
           source: definition.source,
           scope: 'workspace' as const,
           enabled: installation.enabled,
           currentRevisionId: installation.currentRevisionId,
           activeRunId: installation.activeRunId,
+          revisionCount: store.pluginPlatform.listRevisions(installation.pluginId).length,
+          updatedAt: installation.updatedAt,
+          lastError: installation.lastError,
           quarantined: installation.quarantined,
           violationCount: installation.violationCount,
           quarantineReason: installation.quarantineReason,
@@ -1280,6 +1291,19 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:recover-plugin-v2-installation', (_event, input: RecoverPluginV2InstallationInput) => {
     pluginPlatformV2.recoverWorkspaceInstallation(input.pluginId)
+    pluginMutationNotifier.notify()
+  })
+
+  ipcMain.handle('knowbook:set-plugin-v2-enabled', async (_event, input: SetPluginV2EnabledInput) => {
+    try {
+      await pluginPlatformV2.setWorkspacePluginEnabled(input.pluginId, input.enabled)
+    } finally {
+      pluginMutationNotifier.notify()
+    }
+  })
+
+  ipcMain.handle('knowbook:remove-plugin-v2', async (_event, input: RemovePluginV2Input) => {
+    await pluginPlatformV2.removeWorkspacePlugin(input.pluginId)
     pluginMutationNotifier.notify()
   })
 

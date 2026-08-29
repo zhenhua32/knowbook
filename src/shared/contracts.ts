@@ -612,11 +612,17 @@ export interface PluginHomeData {
 export interface PluginV2InstallationSummary {
   pluginId: string
   name: string
+  version: string
+  description: string
+  author: string | null
   source: 'builtin' | 'dynamic' | 'marketplace' | 'system' | 'legacy'
   scope: 'workspace'
   enabled: boolean
   currentRevisionId: string | null
   activeRunId: string | null
+  revisionCount: number
+  updatedAt: string
+  lastError: import('./plugin-platform').PluginJsonValue | null
   quarantined: boolean
   violationCount: number
   quarantineReason: import('./plugin-platform').PluginJsonValue | null
@@ -624,6 +630,15 @@ export interface PluginV2InstallationSummary {
 }
 
 export interface RecoverPluginV2InstallationInput {
+  pluginId: string
+}
+
+export interface SetPluginV2EnabledInput {
+  pluginId: string
+  enabled: boolean
+}
+
+export interface RemovePluginV2Input {
   pluginId: string
 }
 
@@ -852,6 +867,8 @@ export interface ElectronApi {
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   runPluginUiAction: (input: RunPluginUiActionInput) => Promise<RunPluginUiActionResult>
   recoverPluginV2Installation: (input: RecoverPluginV2InstallationInput) => Promise<void>
+  setPluginV2Enabled: (input: SetPluginV2EnabledInput) => Promise<void>
+  removePluginV2: (input: RemovePluginV2Input) => Promise<void>
   installMarketplacePluginPackage: (input: MarketplacePluginPackage) => Promise<MarketplacePluginInstallResult>
   requestSystemPluginInstall: (input: SystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
   listSystemPluginInstallRequests: () => Promise<SystemPluginInstallRequest[]>

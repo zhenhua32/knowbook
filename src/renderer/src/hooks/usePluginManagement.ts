@@ -5,7 +5,8 @@ import type {
   PluginDescriptor,
   PluginDocumentAction,
   PluginSettingDescriptor,
-  PluginSettingValue
+  PluginSettingValue,
+  PluginV2InstallationSummary
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
 
@@ -189,6 +190,40 @@ export function usePluginManagement({
     }
   }, [onMessage, refreshPluginHomeData, ui])
 
+  const setPluginV2Enabled = useCallback(async (plugin: PluginV2InstallationSummary, enabled: boolean) => {
+    setPluginBusyId(plugin.pluginId)
+    try {
+      await window.knowbook.setPluginV2Enabled({ pluginId: plugin.pluginId, enabled })
+      await refreshPluginHomeData()
+      onMessage(ui.language === 'zh-CN'
+        ? `插件“${plugin.name}”已${enabled ? '启用' : '停用'}。`
+        : `Plugin "${plugin.name}" was ${enabled ? 'enabled' : 'disabled'}.`)
+    } catch (error) {
+      await refreshPluginHomeData().catch(() => undefined)
+      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件状态更新失败。' : 'Plugin status update failed.'))
+    } finally {
+      setPluginBusyId(null)
+    }
+  }, [onMessage, refreshPluginHomeData, ui.language])
+
+  const removePluginV2 = useCallback(async (plugin: PluginV2InstallationSummary) => {
+    const accepted = window.confirm(ui.language === 'zh-CN'
+      ? `确定卸载“${plugin.name}”吗？插件代码、历史版本、授权和本地状态都会被移除，此操作无法撤销。`
+      : `Uninstall "${plugin.name}"? Its code, revision history, grants, and local state will be removed. This cannot be undone.`)
+    if (!accepted) return
+
+    setPluginBusyId(plugin.pluginId)
+    try {
+      await window.knowbook.removePluginV2({ pluginId: plugin.pluginId })
+      await refreshPluginHomeData()
+      onMessage(ui.language === 'zh-CN' ? `插件“${plugin.name}”已卸载。` : `Plugin "${plugin.name}" was uninstalled.`)
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件卸载失败。' : 'Plugin uninstall failed.'))
+    } finally {
+      setPluginBusyId(null)
+    }
+  }, [onMessage, refreshPluginHomeData, ui.language])
+
   const runPluginDocumentAction = useCallback(async (action: PluginDocumentAction) => {
     if (!selectedDocumentId) {
       return
@@ -234,8 +269,10 @@ export function usePluginManagement({
     reloadPlugins,
     installPluginFromFolder,
     removePlugin,
+    removePluginV2,
     updatePluginSetting,
     reloadPlugin,
+    setPluginV2Enabled,
     runPluginDocumentAction
   }
 }

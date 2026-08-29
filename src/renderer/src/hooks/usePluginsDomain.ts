@@ -58,8 +58,14 @@ export function usePluginsDomain({
     onRemovePlugin: (plugin) => {
       void pluginState.removePlugin(plugin)
     },
+    onRemovePluginV2: (plugin) => {
+      void pluginState.removePluginV2(plugin)
+    },
     onSetPluginEnabled: (plugin, enabled) => {
       void pluginState.setPluginEnabled(plugin, enabled)
+    },
+    onSetPluginV2Enabled: (plugin, enabled) => {
+      void pluginState.setPluginV2Enabled(plugin, enabled)
     },
     onUpdatePluginSetting: (plugin, setting, value) => {
       void pluginState.updatePluginSetting(plugin, setting, value)
@@ -98,6 +104,8 @@ export function usePluginsDomain({
     pluginSettingBusyKey: pluginState.pluginSettingBusyKey,
     pluginSettingDrafts: pluginState.pluginSettingDrafts,
     plugins,
+    aiEnabled: homeData.aiConfig.enabled,
+    hasApiKey: homeData.aiConfig.hasApiKey,
     ui
   }
 

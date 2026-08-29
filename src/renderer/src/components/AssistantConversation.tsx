@@ -11,18 +11,22 @@ type AssistantConversationProps = {
   aiEnabled: boolean
   hasApiKey: boolean
   isZh: boolean
+  initialDraft?: string
+  newSessionTitle?: string
 }
 
 export function AssistantConversation({
   activeDocumentId,
   aiEnabled,
   hasApiKey,
-  isZh
+  isZh,
+  initialDraft = '',
+  newSessionTitle
 }: AssistantConversationProps) {
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<AssistantSessionId | null>(null)
   const [events, setEvents] = useState<AssistantEvent[]>([])
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState(initialDraft)
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -74,12 +78,15 @@ export function AssistantConversation({
   const canUseAi = aiEnabled && hasApiKey
 
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
-    const created = await window.knowbook.createAssistantSession({ activeDocumentId })
+    const created = await window.knowbook.createAssistantSession({
+      activeDocumentId,
+      ...(newSessionTitle ? { title: newSessionTitle } : {})
+    })
     setSelectedId(created.id)
     setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
     setEvents(await window.knowbook.getAssistantSessionEvents(created.id, 0, 1_000))
     return created
-  }, [activeDocumentId])
+  }, [activeDocumentId, newSessionTitle])
 
   const send = useCallback(async () => {
     const text = draft.trim()
