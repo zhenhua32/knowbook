@@ -592,7 +592,8 @@ export class AssistantAgentService {
               toolCallId,
               tool: modelCall.name,
               version: 1,
-              arguments: args
+              arguments: args,
+              ...(completion.reasoningContent ? { reasoningContent: completion.reasoningContent } : {})
             }
           })
           const result = await this.executeTool(sessionId, turnId, toolCallId, modelCall.name, args, signal)

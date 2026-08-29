@@ -58,6 +58,7 @@ test('buildDocumentTreeFromCatalog derives the hierarchy without a duplicate IPC
 
 test('applyIncrementalDocumentUpdate replaces only the saved document projection', () => {
   const homeData = {
+    appearanceTheme: 'light',
     summary: {
       databasePath: 'workspace.sqlite',
       backupRoot: 'backup',

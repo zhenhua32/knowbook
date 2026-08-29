@@ -398,6 +398,12 @@ function validateEventPayload(type: AssistantEventType, payload: PluginJsonValue
       if (!Number.isSafeInteger(payload.version) || (payload.version as number) < 1) {
         throw new Error('Assistant tool call version must be a positive integer.')
       }
+      if (
+        payload.reasoningContent !== undefined
+        && (typeof payload.reasoningContent !== 'string' || payload.reasoningContent.length > 100_000)
+      ) {
+        throw new Error('Assistant tool call reasoning content is invalid.')
+      }
       requireOwnField(payload, 'arguments', type)
       return
     case 'inbox.message':

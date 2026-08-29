@@ -177,7 +177,7 @@ const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
 const LOCAL_WORKSPACE_ID = 'local-workspace'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const WORKSPACE_MUTATION_NOTIFY_DELAY_MS = 25
-const RENDERER_SETTING_KEYS = new Set(['pinned_documents', 'ui.language'])
+const RENDERER_SETTING_KEYS = new Set(['appearance.theme', 'pinned_documents', 'ui.language'])
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -564,6 +564,10 @@ function initializeServices(): void {
         if (mainWindow && !mainWindow.webContents.isDestroyed()) {
           mainWindow.webContents.send('knowbook:plugin-notification', notification)
         }
+      },
+      setAppearanceTheme: (theme) => {
+        store.setAppearanceTheme(theme)
+        notifyWorkspaceMutation()
       }
     }
   )

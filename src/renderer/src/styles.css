@@ -6518,3 +6518,113 @@ select:focus-visible {
 .plugin-view-error { color: var(--danger, #b42318); }
 .plugin-sandbox iframe { background: transparent; border: 0; display: block; max-width: 100%; width: 100%; }
 .sidebar > .plugin-slot { margin: 8px; }
+
+/* Host appearance is persisted by the main process and may be changed only
+   through the permissioned ui.theme.write capability. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --surface: #202630;
+  --muted-surface: #2b3441;
+  --border: #3d4858;
+  --text: #eef3f8;
+  --accent: #8aa9ff;
+  --danger: #ff9b95;
+  color: #eef3f8;
+  background:
+    radial-gradient(circle at top left, rgba(112, 76, 38, 0.3), transparent 30%),
+    radial-gradient(circle at right 20%, rgba(66, 94, 170, 0.25), transparent 32%),
+    linear-gradient(145deg, #151922 0%, #1b202a 52%, #11151c 100%);
+}
+
+:root[data-theme='dark'] body,
+:root[data-theme='dark'] .shell,
+:root[data-theme='dark'] .content,
+:root[data-theme='dark'] .sidebar {
+  color: #eef3f8;
+}
+
+:root[data-theme='dark'] .sidebar {
+  background: rgba(20, 25, 34, 0.86);
+  border-color: rgba(190, 205, 225, 0.16);
+}
+
+:root[data-theme='dark'] :is(
+  .panel,
+  .hero,
+  .stat-card,
+  .plugin-item,
+  .plugin-setting-item,
+  .plugin-dashboard-card,
+  .settings-card,
+  .document-summary-card,
+  .document-row,
+  .database-panel,
+  .database-entity-card,
+  .database-schema-chip,
+  .assistant-transcript,
+  .assistant-message-assistant,
+  .assistant-approval,
+  .block-rich-media-image-card,
+  .plugin-view,
+  .plugin-sandbox
+) {
+  background: rgba(31, 38, 49, 0.94);
+  border-color: rgba(190, 205, 225, 0.18);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+  color: #eef3f8;
+}
+
+:root[data-theme='dark'] :is(
+  .panel-accent,
+  .assistant-message-user,
+  .database-entity-card-selected,
+  .block-editor-row-selected,
+  .page-nav-item-active
+) {
+  background: rgba(47, 65, 96, 0.88);
+  color: #f4f7fb;
+}
+
+:root[data-theme='dark'] :is(
+  input,
+  textarea,
+  select,
+  .editor-input,
+  .editor-textarea,
+  .editor-select,
+  .compact-select,
+  .table-search,
+  .secondary-button,
+  .document-header-icon-button,
+  .root-drop-zone,
+  .tree-button
+) {
+  background: rgba(22, 28, 37, 0.96);
+  border-color: rgba(190, 205, 225, 0.22);
+  color: #eef3f8;
+}
+
+:root[data-theme='dark'] :is(
+  .eyebrow,
+  .panel-label,
+  .stat-label,
+  .pill,
+  .mini-hint,
+  .empty-text,
+  .tree-path,
+  .page-nav-item span,
+  .plugin-item-meta,
+  .document-updated,
+  .editor-label,
+  .toggle-row
+) {
+  color: #aebbc9;
+}
+
+:root[data-theme='dark'] ::placeholder {
+  color: #8391a1;
+}
+
+:root[data-theme='dark'] * {
+  scrollbar-color: rgba(180, 195, 215, 0.36) transparent;
+}

@@ -191,6 +191,10 @@ test('model projection excludes chunks and audit/plugin events while marking too
       payload: { turnId, stepId, text: '不会进入模型历史' }
     })
     repository.append(session.id, {
+      type: 'assistant.message',
+      payload: { turnId, stepId, text: '我将读取文档。' }
+    })
+    repository.append(session.id, {
       type: 'tool.call',
       payload: {
         turnId,
@@ -198,7 +202,8 @@ test('model projection excludes chunks and audit/plugin events while marking too
         toolCallId,
         tool: 'documents.get',
         version: 1,
-        arguments: { documentId: 'doc-1' }
+        arguments: { documentId: 'doc-1' },
+        reasoningContent: '需要读取文档后再回答。'
       }
     })
     repository.append(session.id, {
@@ -238,6 +243,8 @@ test('model projection excludes chunks and audit/plugin events while marking too
       'assistant'
     ])
     assert.match(messages[2]?.content ?? '', /^\[UNTRUSTED_TOOL_RESULT/)
+    assert.equal(messages[1]?.content, '我将读取文档。')
+    assert.equal(messages[1]?.reasoningContent, '需要读取文档后再回答。')
     assert.equal(messages.filter((message) => message.role === 'tool').length, 1)
     assert.equal(messages.some((message) => message.content.includes('不会进入模型历史')), false)
     assert.equal(messages.some((message) => message.content.includes('run-1')), false)

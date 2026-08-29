@@ -39,6 +39,8 @@ export interface AssistantModelToolCall {
 export interface AssistantModelCompletion {
   content: string
   toolCalls: AssistantModelToolCall[]
+  /** Opaque provider reasoning that must be replayed with tool-call history. */
+  reasoningContent?: string
   usage?: PluginJsonValue
 }
 
@@ -106,7 +108,6 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
                 parameters: tool.parameters
               }
             })),
-            tool_choice: 'auto',
             stream: true,
             stream_options: { include_usage: true },
             temperature: 0.2
@@ -155,6 +156,7 @@ async function parseStreamingCompletion(
   const decoder = new TextDecoder()
   let buffer = ''
   let content = ''
+  let reasoningContent = ''
   let usage: PluginJsonValue | undefined
   const toolDeltas = new Map<number, { name: string; arguments: string }>()
   const consumeLine = async (line: string): Promise<void> => {
@@ -175,13 +177,24 @@ async function parseStreamingCompletion(
       const choice = objectValue(rawChoice, 'Assistant stream choice')
       if (!choice.delta) continue
       const delta = objectValue(choice.delta, 'Assistant stream delta')
+      if (delta.reasoning_content !== null && delta.reasoning_content !== undefined) {
+        if (typeof delta.reasoning_content !== 'string') {
+          throw new Error('Assistant stream reasoning content is invalid.')
+        }
+        reasoningContent += delta.reasoning_content
+        if (reasoningContent.length > 100_000) {
+          throw new Error('Assistant stream reasoning content exceeds 100000 characters.')
+        }
+      }
       const text = parseStreamingText(delta.content)
       if (text) {
         content += text
         if (content.length > 100_000) throw new Error('Assistant stream text exceeds 100000 characters.')
         await onChunk?.(text)
       }
-      if (delta.tool_calls === undefined) continue
+      // Several OpenAI-compatible providers emit an explicit null on ordinary
+      // content/final chunks. It means "no tool-call delta", not malformed data.
+      if (delta.tool_calls === null || delta.tool_calls === undefined) continue
       if (!Array.isArray(delta.tool_calls) || delta.tool_calls.length > 16) {
         throw new Error('Assistant stream tool calls are invalid.')
       }
@@ -192,13 +205,13 @@ async function parseStreamingCompletion(
         }
         const index = call.index as number
         const current = toolDeltas.get(index) ?? { name: '', arguments: '' }
-        if (call.function !== undefined) {
+        if (call.function !== null && call.function !== undefined) {
           const fn = objectValue(call.function, 'Assistant stream tool function')
-          if (fn.name !== undefined) {
+          if (fn.name !== null && fn.name !== undefined) {
             if (typeof fn.name !== 'string') throw new Error('Assistant stream tool name is invalid.')
             current.name += fn.name
           }
-          if (fn.arguments !== undefined) {
+          if (fn.arguments !== null && fn.arguments !== undefined) {
             if (typeof fn.arguments !== 'string') throw new Error('Assistant stream tool arguments are invalid.')
             current.arguments += fn.arguments
             if (current.arguments.length > 1024 * 1024) throw new Error('Assistant stream tool arguments are too large.')
@@ -243,7 +256,15 @@ async function parseStreamingCompletion(
   if (!normalizedContent && toolCalls.length === 0) {
     throw new Error('Assistant model returned neither text nor tool calls.')
   }
-  return { content: normalizedContent, toolCalls, ...(usage === undefined ? {} : { usage }) }
+  // Replay provider reasoning byte-for-byte at the string level. Some
+  // compatible APIs validate this field against the preceding tool call.
+  const normalizedReasoningContent = reasoningContent
+  return {
+    content: normalizedContent,
+    toolCalls,
+    ...(normalizedReasoningContent ? { reasoningContent: normalizedReasoningContent } : {}),
+    ...(usage === undefined ? {} : { usage })
+  }
 }
 
 function parseStreamingText(value: unknown): string {
@@ -275,7 +296,10 @@ function toProviderMessage(
     }
     return {
       role: 'assistant',
-      content: message.content || null,
+      // MiMo and some other compatible providers require the content field to
+      // remain present for tool-call history, even when its value is empty.
+      content: message.content,
+      ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {}),
       tool_calls: [{
         id: message.tool.id,
         type: 'function',
@@ -300,8 +324,9 @@ function parseCompletion(
   const choice = objectValue(root.choices[0], 'Assistant response choice')
   const message = objectValue(choice.message, 'Assistant response message')
   const content = parseContent(message.content)
+  const reasoningContent = parseOptionalReasoningContent(message.reasoning_content)
   const toolCalls: AssistantModelToolCall[] = []
-  if (message.tool_calls !== undefined) {
+  if (message.tool_calls !== null && message.tool_calls !== undefined) {
     if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) {
       throw new Error('Assistant model returned an invalid tool call list.')
     }
@@ -332,10 +357,19 @@ function parseCompletion(
   return {
     content,
     toolCalls,
+    ...(reasoningContent ? { reasoningContent } : {}),
     ...(root.usage === undefined ? {} : {
       usage: clonePluginRuntimeJson(root.usage, 'Assistant model usage')
     })
   }
+}
+
+function parseOptionalReasoningContent(value: unknown): string {
+  if (value === null || value === undefined) return ''
+  if (typeof value !== 'string' || value.length > 100_000) {
+    throw new Error('Assistant model returned invalid reasoning content.')
+  }
+  return value
 }
 
 function parseContent(value: unknown): string {

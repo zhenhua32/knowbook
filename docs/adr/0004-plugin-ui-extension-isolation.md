@@ -91,6 +91,7 @@ UI 只能挂载到稳定、版本化的扩展槽。首批槽位包括：
 
 - ViewSpec 使用 KnowBook 主题 token，不允许任意全局 CSS。
 - iframe CSS 只作用于自己的文档。
+- 插件若要切换宿主深浅色主题，必须声明并获批 `ui.theme.write@1`；worker 只能通过 capability broker 提交 `light`/`dark` 枚举，不能访问父页面 DOM 或注入全局样式。
 - 插件资源通过受控 scheme 加载，并校验路径、MIME 和 revision 身份。
 - 禁止通过 CSS、SVG、URL 或 Markdown 注入脚本。
 - 所有可交互元素必须满足键盘操作和基础无障碍要求。
@@ -161,4 +162,5 @@ UI 热更新遵循 ADR-0003：
 - `plugin-frame-protocol.ts` 对 readiness/action 使用封闭消息结构，精确绑定 owner、contribution 与 slot，并限制 256 KiB、深度、节点数和集合规模；renderer 另外限制 iframe action 的并发、重复 request id 与分钟速率。
 - 主窗口 CSP 仅允许 `knowbook-plugin-ui:` frame；`will-frame-navigate` 只放行仍绑定 staging request 或当前 active owner 的注册 URL，`window.open` 一律拒绝，可信外链使用单独的受校验 IPC。
 - `AppPageContent.tsx` 与 `WorkspaceShellSidebar.tsx` 挂载全部公开 slot；owner 的 revision/run/grant/epoch 不匹配时 UI action 和 frame 消息均被拒绝。
+- `core-capabilities.ts`、`store.ts` 与 renderer appearance theme 投影实现 `ui.theme.write@1` 的授权调用、持久化和根主题应用；`main-assistant-theme-plugin-e2e.test.ts` 从 MiMo 风格流式工具调用创建、校验、批准并激活主题插件，再通过真实 QuickJS handler 往返切换主题，`appearance-theme.spec.ts` 验证 Electron 重载后的深浅色状态和计算样式。
 - `tests/main-plugin-ui.test.ts`、`renderer-plugin-ui.test.tsx`、`shared-plugin-frame-protocol.test.ts` 与 `main-plugin-platform-ui-recovery.test.ts` 覆盖 schema、CSP、sandbox、MessagePort 限额、slot 挂载、ready 失败不提交和提交后恢复；`e2e-tests/plugin-ui-security.spec.ts` 在真实 Electron 中证明插件文档可执行且自导航/弹窗不会产生网络请求。

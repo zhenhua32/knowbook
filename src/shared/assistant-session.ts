@@ -113,6 +113,8 @@ export interface AssistantEventPayloadMap {
     tool: string
     version: number
     arguments: PluginJsonValue
+    /** Provider-issued reasoning required to replay some compatible tool-call protocols. */
+    reasoningContent?: string
   }
   'tool.result': {
     turnId: AssistantTurnId

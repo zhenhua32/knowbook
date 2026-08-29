@@ -4,6 +4,7 @@ import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import type {
   AiConfig,
+  AppearanceTheme,
   AskAiInput,
   BlockReferenceResult,
   CreateDatabaseEntityInput,
@@ -665,6 +666,7 @@ export class KnowbookStore {
     const documentRows = this.getHomeDocumentCatalogRows()
     const recentDocuments = this.getRecentDocuments(documentRows)
     return {
+      appearanceTheme: this.getAppearanceTheme(),
       summary: this.getSummary(backupRoot, documentRows),
       recentDocuments,
       recentEvents: this.getRecentWorkspaceEvents(),
@@ -679,6 +681,7 @@ export class KnowbookStore {
   getHomeDataPayload(backupRoot: string): HomeDataPayload {
     const recentDocuments = this.getRecentDocuments()
     return {
+      appearanceTheme: this.getAppearanceTheme(),
       summary: this.getSummary(backupRoot),
       recentDocuments,
       recentEvents: this.getRecentWorkspaceEvents(),
@@ -3873,6 +3876,18 @@ export class KnowbookStore {
     `).run(name, filterQuery, filterScope, sortMode, viewMode, JSON.stringify(config), sortOrder, now, currentRow.id)
 
     return this.getDatabaseSavedView(currentRow.id)
+  }
+
+  getAppearanceTheme(): AppearanceTheme {
+    return this.readSetting('appearance.theme') === 'dark' ? 'dark' : 'light'
+  }
+
+  setAppearanceTheme(theme: AppearanceTheme): AppearanceTheme {
+    if (theme !== 'light' && theme !== 'dark') {
+      throw new Error('Appearance theme must be light or dark.')
+    }
+    this.saveSetting('appearance.theme', theme)
+    return theme
   }
 
   reorderDatabaseSavedViews(input: ReorderDatabaseSavedViewsInput): DatabaseSavedView[] {

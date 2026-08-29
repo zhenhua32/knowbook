@@ -42,6 +42,7 @@ export interface AssistantSessionProjection {
 export interface AssistantModelMessage {
   role: 'user' | 'assistant' | 'tool'
   content: string
+  reasoningContent?: string
   toolCallId?: AssistantToolCallId
   tool?: {
     id: AssistantToolCallId
@@ -147,11 +148,26 @@ export function deriveAssistantModelMessages(
   )
   const messages: AssistantModelMessage[] = []
   const finalizedToolCalls = new Set<AssistantToolCallId>()
+  const firstToolCallSeqByStep = new Map<string, number>()
   for (const event of events) {
     if (event.type === 'tool.result' && event.payload.status !== 'awaiting-approval') {
       finalizedToolCalls.add(event.payload.toolCallId)
     }
+    if (event.type === 'tool.call') {
+      const key = `${event.payload.turnId}\0${event.payload.stepId}`
+      if (!firstToolCallSeqByStep.has(key)) firstToolCallSeqByStep.set(key, event.seq)
+    }
   }
+  const assistantContentByToolStep = new Map<string, string>()
+  for (const event of events) {
+    if (event.type !== 'assistant.message') continue
+    const key = `${event.payload.turnId}\0${event.payload.stepId}`
+    const firstToolCallSeq = firstToolCallSeqByStep.get(key)
+    if (firstToolCallSeq !== undefined && event.seq < firstToolCallSeq) {
+      assistantContentByToolStep.set(key, event.payload.text)
+    }
+  }
+  const emittedToolStepContent = new Set<string>()
 
   for (const event of events) {
     switch (event.type) {
@@ -159,20 +175,35 @@ export function deriveAssistantModelMessages(
         messages.push({ role: 'user', content: clampText(event.payload.text, maxItem) })
         break
       case 'assistant.message':
+        if (
+          firstToolCallSeqByStep.has(`${event.payload.turnId}\0${event.payload.stepId}`)
+          && event.seq < (firstToolCallSeqByStep.get(`${event.payload.turnId}\0${event.payload.stepId}`) as number)
+        ) {
+          break
+        }
         messages.push({ role: 'assistant', content: clampText(event.payload.text, maxItem) })
         break
-      case 'tool.call':
+      case 'tool.call': {
+        const stepKey = `${event.payload.turnId}\0${event.payload.stepId}`
+        const isFirstToolCallForStep = !emittedToolStepContent.has(stepKey)
+        emittedToolStepContent.add(stepKey)
         messages.push({
           role: 'assistant',
-          content: '',
+          content: isFirstToolCallForStep
+            ? clampText(assistantContentByToolStep.get(stepKey) ?? '', maxItem)
+            : '',
           tool: {
             id: event.payload.toolCallId,
             name: event.payload.tool,
             version: event.payload.version,
             arguments: event.payload.arguments
-          }
+          },
+          ...(event.payload.reasoningContent ? {
+            reasoningContent: clampText(event.payload.reasoningContent, maxItem)
+          } : {})
         })
         break
+      }
       case 'tool.result':
         // Approval pauses are UI/trajectory facts. Once a final result exists,
         // the provider must see exactly one response for the tool call id.
@@ -224,5 +255,7 @@ function clampText(value: string, limit: number): string {
 }
 
 function modelMessageSize(message: AssistantModelMessage): number {
-  return message.content.length + (message.tool ? JSON.stringify(message.tool).length : 0)
+  return message.content.length
+    + (message.reasoningContent?.length ?? 0)
+    + (message.tool ? JSON.stringify(message.tool).length : 0)
 }

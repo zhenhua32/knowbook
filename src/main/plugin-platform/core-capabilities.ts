@@ -1,5 +1,5 @@
 import type { PluginActiveOwner, PluginJsonValue } from '@shared/plugin-platform'
-import type { DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
+import type { AppearanceTheme, DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
 import type { KnowbookStore } from '../database/store'
 import {
   PluginCapabilityBroker,
@@ -21,6 +21,10 @@ export interface CorePluginCapabilityHooks {
   ) => PluginJsonValue | Promise<PluginJsonValue>
   notify?: (
     notification: { title?: string; message: string; level: 'info' | 'success' | 'warning' | 'error' },
+    owner: PluginActiveOwner
+  ) => void | Promise<void>
+  setAppearanceTheme?: (
+    theme: AppearanceTheme,
     owner: PluginActiveOwner
   ) => void | Promise<void>
 }
@@ -164,6 +168,19 @@ export function registerCorePluginCapabilities(
       }
     }),
     broker.register({
+      id: 'ui.theme.write',
+      version: 1,
+      scopes: ['workspace', 'session'],
+      parseInput: parseAppearanceTheme,
+      execute: async (context, input) => {
+        if (!hooks.setAppearanceTheme) {
+          throw new Error('Host appearance theme changes are unavailable.')
+        }
+        await hooks.setAppearanceTheme(input.theme, context.owner)
+        return { theme: input.theme }
+      }
+    }),
+    broker.register({
       id: 'ui.notify',
       version: 1,
       scopes: ['app', 'workspace', 'session'],
@@ -194,6 +211,17 @@ type UpdateDocumentCapabilityInput = DocumentIdInput & {
   title?: string
   summary?: string
   blocks?: DocumentBlockDraft[]
+}
+
+type AppearanceThemeInput = { theme: AppearanceTheme }
+
+function parseAppearanceTheme(value: PluginJsonValue): AppearanceThemeInput {
+  const input = objectInput(value, 'ui.theme.write input')
+  onlyKeys(input, ['theme'], 'ui.theme.write input')
+  if (input.theme !== 'light' && input.theme !== 'dark') {
+    throw new Error('ui.theme.write theme must be light or dark.')
+  }
+  return { theme: input.theme }
 }
 
 function parseDocumentQuery(value: PluginJsonValue): DocumentQueryInput {

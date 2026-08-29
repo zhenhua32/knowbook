@@ -28,6 +28,7 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
         if (calls.length === 1) {
           return {
             content: '',
+            reasoningContent: '需要先检查平台能力。',
             toolCalls: [{ name: 'plugins.inspect_capabilities', arguments: {} }]
           }
         }
@@ -105,6 +106,10 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
       const toolResult = events.find((event) => event.type === 'tool.result')
       assert.equal(toolResult?.payload.status, 'succeeded')
       assert.equal(calls[1].messages.some((message) => message.role === 'tool'), true)
+      assert.equal(
+        calls[1].messages.find((message) => message.tool)?.reasoningContent,
+        '需要先检查平台能力。'
+      )
     } finally {
       await service.destroy()
     }
@@ -120,6 +125,7 @@ test('OpenAI-compatible adapter maps canonical tool facts without trusting provi
         choices: [{
           message: {
             content: null,
+            reasoning_content: 'inspect before acting',
             tool_calls: [{
               id: 'provider-controlled-id',
               type: 'function',
@@ -145,6 +151,7 @@ test('OpenAI-compatible adapter maps canonical tool facts without trusting provi
     messages: [{
       role: 'assistant',
       content: '',
+      reasoningContent: 'provider replay context',
       tool: {
         id: assistantToolCallId('host-call-id'),
         name: tool.eventName,
@@ -160,9 +167,13 @@ test('OpenAI-compatible adapter maps canonical tool facts without trusting provi
   })
 
   assert.deepEqual(result.toolCalls, [{ name: 'plugins.inspect_capabilities', arguments: {} }])
+  assert.equal(result.reasoningContent, 'inspect before acting')
   assert.deepEqual(result.usage, { total_tokens: 12 })
   const messages = (requestBody as Record<string, unknown>).messages as Array<Record<string, unknown>>
+  assert.equal(Object.hasOwn(requestBody as Record<string, unknown>, 'tool_choice'), false)
   assert.equal((messages[1].tool_calls as Array<{ id: string }>)[0].id, 'host-call-id')
+  assert.equal(messages[1].content, '')
+  assert.equal(messages[1].reasoning_content, 'provider replay context')
   assert.equal(messages[2].tool_call_id, 'host-call-id')
   assert.equal(JSON.stringify(requestBody).includes('secret'), false)
 })
@@ -187,15 +198,45 @@ test('OpenAI-compatible adapter rejects invalid API keys before invoking fetch',
   assert.equal(fetchCalled, false)
 })
 
+test('OpenAI-compatible adapter accepts null tool calls and preserves reasoning content verbatim', async () => {
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => Response.json({
+      choices: [{
+        message: {
+          content: 'done',
+          reasoning_content: '  provider reasoning  ',
+          tool_calls: null
+        }
+      }]
+    })
+  })
+
+  const result = await adapter.complete({
+    apiKey: 'secret',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: []
+  })
+
+  assert.equal(result.content, 'done')
+  assert.equal(result.reasoningContent, '  provider reasoning  ')
+  assert.deepEqual(result.toolCalls, [])
+})
+
 test('OpenAI-compatible adapter normalizes SSE text, incremental tool arguments, and usage', async () => {
   const chunks: string[] = []
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       for (const event of [
-        { choices: [{ delta: { content: '你' } }] },
-        { choices: [{ delta: { content: '好', tool_calls: [{ index: 0, function: { name: 'plugins_inspect_capabilities', arguments: '{' } }] } }] },
-        { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '}' } }] } }], usage: { total_tokens: 9 } }
+        { choices: [{ delta: { reasoning_content: '先检查', content: '你', tool_calls: null } }] },
+        { choices: [{ delta: { reasoning_content: '能力', content: '好', tool_calls: [{ index: 0, function: { name: 'plugins_inspect_capabilities', arguments: '{' } }] } }] },
+        { choices: [{ delta: { reasoning_content: null, tool_calls: [{ index: 0, function: { name: null, arguments: '}' } }] } }], usage: { total_tokens: 9 } },
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: null, arguments: null } }] } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: null }] } }] },
+        { choices: [{ delta: { tool_calls: null } }] }
       ]) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
       }
@@ -224,6 +265,7 @@ test('OpenAI-compatible adapter normalizes SSE text, incremental tool arguments,
     onChunk: (text) => { chunks.push(text) }
   })
   assert.equal(result.content, '你好')
+  assert.equal(result.reasoningContent, '先检查能力')
   assert.deepEqual(chunks, ['你', '好'])
   assert.deepEqual(result.toolCalls, [{ name: 'plugins.inspect_capabilities', arguments: {} }])
   assert.deepEqual(result.usage, { total_tokens: 9 })

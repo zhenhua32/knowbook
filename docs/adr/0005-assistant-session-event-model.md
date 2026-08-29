@@ -95,6 +95,7 @@ AI 核心依赖 `ModelAdapter` seam，不直接绑定一个 HTTP payload。首�
 
 - 文本流 chunk。
 - tool call 增量和完整参数。
+- provider 要求随 tool call 重放的受限推理上下文；该上下文只进入持久化模型投影，不进入会话正文。
 - usage。
 - finish reason。
 - provider/model 身份。
@@ -275,8 +276,8 @@ Renderer 不是会话状态的权威来源。窗口刷新或重新打开后，UI
 
 - `src/shared/assistant-session.ts` 定义品牌化 ID 与事件 discriminated union；`session-repository.ts` 以 `(session_id, seq)` 事务追加并实现 session/turn/step/approval 的恢复约束。
 - `projection.ts` 分别投影会话、轨迹和模型上下文，裁剪 chunk/工具数据并排除 audit-only 事实；renderer 的 `AssistantConversation.tsx` 完全从事件重建消息、审批、工具和插件卡片。
-- `model-adapter.ts` 实现 OpenAI-compatible SSE 文本、增量 tool call、usage、取消和结构化错误，并显式声明 provider 能力。
+- `model-adapter.ts` 实现 OpenAI-compatible SSE 文本、增量 tool call、usage、取消和结构化错误，并显式声明 provider 能力；兼容流中的 `tool_calls: null` 以及增量 `function`/`name`/`arguments` 的显式 `null`，保留 MiMo 等 provider 要求的 `reasoning_content`，回放工具调用时保持空 `content` 字段而不改写为 `null`，并依赖协议默认的自动工具选择以避免向不支持 `tool_choice` 的兼容端点发送该字段。
 - `tool-registry.ts` 与 `agent-service.ts` 实现封闭 schema、scope/capability/单调 guard、审批、超时、取消、并发、结果限制、多 step loop、inbox steering/next-turn 和启动恢复。
 - `plugin-authoring-service.ts` 实现 inspect→define→validate→diff→approval→activate/rollback/stop/diagnostics 的完整闭环；审批绑定精确 tool call、revision hash、权限和 scope。同一 turn 中被拒绝的等价 activation（即使更换 toolCallId 或改写摘要）会按语义目标指纹阻断，必须由新的用户 turn 重新发起。
 - 自动摘要的事件触发已迁入 `builtin-activity-pulse.ts`；主进程只通过 `ai.automation.summarize-document` capability 保留凭证、并发去重和 source-version 提交保护。
-- `tests/main-assistant-*.test.ts`、`renderer-assistant-conversation.test.ts`、`main-plugin-builtin-activity-pulse.test.ts` 和 IPC 契约测试覆盖回放、恢复、审批、取消、provider 降级、插件闭环与 UI 重建。
+- `tests/main-assistant-*.test.ts`、`renderer-assistant-conversation.test.ts`、`main-plugin-builtin-activity-pulse.test.ts` 和 IPC 契约测试覆盖回放、恢复、审批、取消、provider 降级、插件闭环与 UI 重建；主题插件端到端用例以九次 MiMo 风格 SSE 补全覆盖 capability/module/slot/plugin inspect、revision 创建/校验/预览、审批、QuickJS 激活、handler 调用和深浅色持久化。

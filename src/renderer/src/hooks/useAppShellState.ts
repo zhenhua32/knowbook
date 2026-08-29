@@ -10,8 +10,10 @@ import {
 } from '../i18n'
 import { createTrailingSingleFlightRefresh } from '../utils/singleFlightRefresh'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
+import { applyAppearanceTheme } from '../utils/appearanceTheme'
 
 const emptyState: HomeData = {
+  appearanceTheme: 'light',
   summary: {
     databasePath: '',
     backupRoot: '',
@@ -72,6 +74,9 @@ export function useAppShellState() {
   useEffect(() => {
     setActiveUiLanguage(uiLanguage)
   }, [uiLanguage])
+  useEffect(() => {
+    applyAppearanceTheme(document.documentElement, homeData.appearanceTheme)
+  }, [homeData.appearanceTheme])
   const ui = getUiText(uiLanguage)
   const isZh = uiLanguage === 'zh-CN'
 

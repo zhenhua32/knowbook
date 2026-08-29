@@ -531,6 +531,7 @@ export interface AppUpdateState {
 }
 
 export interface HomeData {
+  appearanceTheme: AppearanceTheme
   summary: WorkspaceSummary
   recentDocuments: RecentDocument[]
   recentEvents: WorkspaceEventRecord[]
@@ -547,6 +548,8 @@ export interface HomeData {
   systemPluginInstallRequests?: SystemPluginInstallRequest[]
   pluginHost?: PluginHostInfo
 }
+
+export type AppearanceTheme = 'light' | 'dark'
 
 export type DetailedHomeData = Omit<HomeData, 'documentCatalog'> & {
   documentCatalog: DocumentCatalogEntry[]
