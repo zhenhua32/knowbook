@@ -32,7 +32,7 @@ npm run test:packaged-runtime-smoke
 2026-08-29 最终复核结果：
 
 - `npm run typecheck`、`npm run build` 通过。
-- `npm test`：435/435 通过。
+- `npm test`：438/438 通过。
 - Electron E2E：79/79 场景逐项通过；构建入口检查已改为 `out/main/index.cjs`，不再因错误检查 `.js` 而静默跳过。
 - 未打包 QuickJS utility-process smoke 通过。
 - Windows unpacked 打包态 smoke 通过，应用在插件激活后正常退出；runtime disposal 会等待 utility process 的 `exit` 确认，避免 Electron/V8 退出竞态。

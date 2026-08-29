@@ -13,6 +13,10 @@ import {
   resolveDocumentBlockAiEditInstruction,
   shouldGenerateDocumentSummary
 } from '../src/main/ai-service.ts'
+import {
+  buildAiAuthorizationHeader,
+  normalizeAiApiKey
+} from '../src/main/ai-auth.ts'
 
 const defaultRequest = {
   apiKey: 'secret',
@@ -83,6 +87,40 @@ test('AI endpoint builder rejects missing, malformed, and non-HTTP URLs', () => 
   assert.throws(() => buildAiChatCompletionsEndpoint('localhost:1234'), /Invalid AI Base URL protocol/)
   assert.throws(() => buildAiChatCompletionsEndpoint('not a url'), /Invalid AI Base URL/)
   assert.throws(() => buildAiChatCompletionsEndpoint('file:///tmp/model'), /Use http:\/\/ or https:\/\//)
+})
+
+test('AI API key validation accepts raw ASCII credentials and rejects unsafe header values', () => {
+  assert.equal(normalizeAiApiKey('  sk-test_123  '), 'sk-test_123')
+  assert.equal(buildAiAuthorizationHeader('sk-test_123'), 'Bearer sk-test_123')
+  assert.throws(
+    () => normalizeAiApiKey('Bearer sk-test_123'),
+    /without the "Bearer " prefix/
+  )
+  assert.throws(
+    () => normalizeAiApiKey('继续使用已保存的密钥'),
+    /unsupported non-ASCII or whitespace characters/
+  )
+  assert.throws(
+    () => normalizeAiApiKey('sk-test key'),
+    /unsupported non-ASCII or whitespace characters/
+  )
+})
+
+test('AI completion rejects an invalid stored key before invoking fetch', async () => {
+  let fetchCalled = false
+  await assert.rejects(
+    requestAiChatCompletion({
+      ...defaultRequest,
+      apiKey: '继续使用已保存的密钥'
+    }, {
+      fetchImplementation: async () => {
+        fetchCalled = true
+        return Response.json({})
+      }
+    }),
+    /AI API Key contains unsupported non-ASCII or whitespace characters/
+  )
+  assert.equal(fetchCalled, false)
 })
 
 test('AI completion request sends the expected OpenAI-compatible payload and trims content', async () => {

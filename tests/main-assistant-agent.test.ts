@@ -167,6 +167,26 @@ test('OpenAI-compatible adapter maps canonical tool facts without trusting provi
   assert.equal(JSON.stringify(requestBody).includes('secret'), false)
 })
 
+test('OpenAI-compatible adapter rejects invalid API keys before invoking fetch', async () => {
+  let fetchCalled = false
+  const adapter = new OpenAiCompatibleAssistantModelAdapter({
+    fetchImplementation: async () => {
+      fetchCalled = true
+      return Response.json({})
+    }
+  })
+
+  await assert.rejects(adapter.complete({
+    apiKey: '继续使用已保存的密钥',
+    baseUrl: 'https://example.invalid/v1',
+    model: 'test-model',
+    systemPrompt: 'system',
+    messages: [],
+    tools: []
+  }), /AI API Key contains unsupported non-ASCII or whitespace characters/)
+  assert.equal(fetchCalled, false)
+})
+
 test('OpenAI-compatible adapter normalizes SSE text, incremental tool arguments, and usage', async () => {
   const chunks: string[] = []
   const encoder = new TextEncoder()

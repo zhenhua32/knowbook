@@ -2,6 +2,7 @@ import type {
   DocumentDetail,
   PreviewDocumentBlockAiEditInput
 } from '@shared/contracts'
+import { buildAiAuthorizationHeader } from './ai-auth'
 
 const DEFAULT_AI_REQUEST_TIMEOUT_MS = 60_000
 const MAX_AI_ERROR_BODY_LENGTH = 4_000
@@ -140,6 +141,7 @@ export async function requestAiChatCompletion(
   options: AiChatCompletionOptions = {}
 ): Promise<string> {
   const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
+  const authorization = buildAiAuthorizationHeader(input.apiKey)
   const fetchImplementation = options.fetchImplementation ?? fetch
   const timeoutMilliseconds = options.timeoutMilliseconds ?? DEFAULT_AI_REQUEST_TIMEOUT_MS
   const timeoutController = new AbortController()
@@ -156,7 +158,7 @@ export async function requestAiChatCompletion(
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${input.apiKey}`
+          Authorization: authorization
         },
         body: JSON.stringify({
           model: input.model,

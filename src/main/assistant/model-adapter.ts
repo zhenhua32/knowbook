@@ -1,5 +1,6 @@
 import type { PluginJsonValue } from '@shared/plugin-platform'
 import { buildAiChatCompletionsEndpoint } from '../ai-service'
+import { buildAiAuthorizationHeader } from '../ai-auth'
 import type { AssistantModelMessage } from './projection'
 import { clonePluginRuntimeJson } from '../plugin-platform/runtime-json'
 
@@ -73,6 +74,7 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
 
   async complete(input: AssistantModelCompletionInput): Promise<AssistantModelCompletion> {
     const endpoint = buildAiChatCompletionsEndpoint(input.baseUrl)
+    const authorization = buildAiAuthorizationHeader(input.apiKey)
     const toolByEventName = new Map(input.tools.map((tool) => [tool.eventName, tool]))
     const toolByProviderName = new Map(input.tools.map((tool) => [tool.name, tool]))
     const timeoutController = new AbortController()
@@ -88,7 +90,7 @@ export class OpenAiCompatibleAssistantModelAdapter implements AssistantModelAdap
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${input.apiKey}`
+            Authorization: authorization
           },
           body: JSON.stringify({
             model: input.model,

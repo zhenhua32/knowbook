@@ -94,6 +94,7 @@ import {
   resolveDocumentBlockAiEditInstruction,
   shouldGenerateDocumentSummary
 } from './ai-service'
+import { normalizeAiApiKey } from './ai-auth'
 import { MarkdownBackupService } from './backup/exporter'
 import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
@@ -1116,7 +1117,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:update-ai-config', async (_event, input: UpdateAiConfigInput) => {
     const protectedApiKey = !input.clearApiKey && typeof input.apiKey === 'string' && input.apiKey.trim()
-      ? protectAiApiKey(input.apiKey.trim())
+      ? protectAiApiKey(normalizeAiApiKey(input.apiKey))
       : undefined
     store.updateAiConfig({
       ...input,
