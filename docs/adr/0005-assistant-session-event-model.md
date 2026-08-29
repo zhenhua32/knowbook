@@ -277,6 +277,6 @@ Renderer 不是会话状态的权威来源。窗口刷新或重新打开后，UI
 - `projection.ts` 分别投影会话、轨迹和模型上下文，裁剪 chunk/工具数据并排除 audit-only 事实；renderer 的 `AssistantConversation.tsx` 完全从事件重建消息、审批、工具和插件卡片。
 - `model-adapter.ts` 实现 OpenAI-compatible SSE 文本、增量 tool call、usage、取消和结构化错误，并显式声明 provider 能力。
 - `tool-registry.ts` 与 `agent-service.ts` 实现封闭 schema、scope/capability/单调 guard、审批、超时、取消、并发、结果限制、多 step loop、inbox steering/next-turn 和启动恢复。
-- `plugin-authoring-service.ts` 实现 inspect→define→validate→diff→approval→activate/rollback/stop/diagnostics 的完整闭环；审批绑定精确 tool call、revision hash、权限和 scope。
+- `plugin-authoring-service.ts` 实现 inspect→define→validate→diff→approval→activate/rollback/stop/diagnostics 的完整闭环；审批绑定精确 tool call、revision hash、权限和 scope。同一 turn 中被拒绝的等价 activation（即使更换 toolCallId 或改写摘要）会按语义目标指纹阻断，必须由新的用户 turn 重新发起。
 - 自动摘要的事件触发已迁入 `builtin-activity-pulse.ts`；主进程只通过 `ai.automation.summarize-document` capability 保留凭证、并发去重和 source-version 提交保护。
 - `tests/main-assistant-*.test.ts`、`renderer-assistant-conversation.test.ts`、`main-plugin-builtin-activity-pulse.test.ts` 和 IPC 契约测试覆盖回放、恢复、审批、取消、provider 降级、插件闭环与 UI 重建。

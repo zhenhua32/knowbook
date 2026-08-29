@@ -156,7 +156,9 @@ UI 热更新遵循 ADR-0003：
 
 - `src/shared/plugin-ui.ts` 定义封闭的 ViewSpec v1、11 个版本化 slot、作用域、数量/节点预算、主题与无障碍契约，并拒绝未知节点、属性、HTML 和脚本表达式。
 - `src/renderer/src/components/PluginSlot.tsx` 仅用宿主 React 控件解释 ViewSpec；action 携带精确 owner，经主进程 Kernel 再校验后才调用 handler。
-- `ui-materializer.ts` 为 iframe 在所有不可信字节之前注入严格 CSP 和 readiness bootstrap；iframe 只有 `sandbox="allow-scripts"`，没有 same-origin、preload、外部网络或导航能力。
+- `ui-materializer.ts` 为 iframe 在所有不可信字节之前注入严格 CSP 和 readiness bootstrap；主进程只向 renderer 暴露一次性 `knowbook-plugin-ui:` opaque URL，并从内存注册表返回文档。iframe 只有 `sandbox="allow-scripts"`，没有 same-origin、preload、外部网络或导航能力。
 - `PluginUiPreparationHost.tsx` 在提交前创建不可见 staging frame，通过一次性 MessagePort 完成 ready/error 握手；`PluginSlot.tsx` 对提交后的 failure/timeout 上报并触发自动恢复。
+- `plugin-frame-protocol.ts` 对 readiness/action 使用封闭消息结构，精确绑定 owner、contribution 与 slot，并限制 256 KiB、深度、节点数和集合规模；renderer 另外限制 iframe action 的并发、重复 request id 与分钟速率。
+- 主窗口 CSP 仅允许 `knowbook-plugin-ui:` frame；`will-frame-navigate` 只放行仍绑定 staging request 或当前 active owner 的注册 URL，`window.open` 一律拒绝，可信外链使用单独的受校验 IPC。
 - `AppPageContent.tsx` 与 `WorkspaceShellSidebar.tsx` 挂载全部公开 slot；owner 的 revision/run/grant/epoch 不匹配时 UI action 和 frame 消息均被拒绝。
-- `tests/main-plugin-ui.test.ts`、`renderer-plugin-ui.test.tsx` 与 `main-plugin-platform-activation-coordinator.test.ts` 覆盖 schema、CSP、sandbox、MessagePort、slot 挂载、ready 失败不提交和清理。
+- `tests/main-plugin-ui.test.ts`、`renderer-plugin-ui.test.tsx`、`shared-plugin-frame-protocol.test.ts` 与 `main-plugin-platform-ui-recovery.test.ts` 覆盖 schema、CSP、sandbox、MessagePort 限额、slot 挂载、ready 失败不提交和提交后恢复；`e2e-tests/plugin-ui-security.spec.ts` 在真实 Electron 中证明插件文档可执行且自导航/弹窗不会产生网络请求。

@@ -176,3 +176,4 @@ Plugin Platform v2 使用稳定 Plugin、不可变 Revision 和一次性 Run 三
 - `activation-coordinator.ts` 在提交前完成 runtime、handler、UI asset、state migration 和 renderer iframe readiness；失败保持旧 epoch，提交后故障可由 `platform-service.ts` 自动恢复仍有效的旧成功 revision。
 - session-preview 与 workspace 安装分别持久化；workspace 提升必须单独审批，未保存 preview 不会跨重启恢复。
 - `tests/main-plugin-platform-revision.test.ts`、`main-plugin-platform-activation-coordinator.test.ts`、`main-plugin-platform-repository.test.ts` 和 `main-plugin-platform-restore.test.ts` 覆盖哈希、故障注入、迁移、回滚、恢复和清理。
+- `tests/main-plugin-platform-ui-recovery.test.ts` 使用真实 Platform v2 service 验证提交后的 iframe 故障会令新 run 失败、撤销 grant，并以全新 run 自动恢复最近成功 revision 与 installation pointer。

@@ -1,6 +1,6 @@
 # Plugin Platform v2 ADR 实现审计
 
-- 审计日期：2026-08-28
+- 审计日期：2026-08-29
 - 范围：ADR-0001 至 ADR-0005
 - 结论：全部验收条款已实现，ADR 状态为 `Implemented`
 
@@ -29,7 +29,7 @@ npm run test:packaged-runtime-smoke
 
 `.github/workflows/ci.yml` 在 Windows、macOS、Linux 上执行插件安全测试、未打包构建和打包态 QuickJS 探针。打包态探针会启动隔离用户目录中的真实应用，激活内置 v2 插件，并以结果文件和退出码确认主入口、标准模块加载、utility process 与 QuickJS/WASM 均可工作。
 
-2026-08-28 最终复核结果：
+2026-08-29 最终复核结果：
 
 - `npm run typecheck`、`npm run build` 通过。
 - `npm test`：435/435 通过。
