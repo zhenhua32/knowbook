@@ -12,7 +12,10 @@ test('appearance theme application updates the host root and publishes dark surf
   assert.equal(root.dataset.theme, 'light')
 
   const styles = readFileSync(join(process.cwd(), 'src/renderer/src/styles.css'), 'utf8')
+  const managementStyles = readFileSync(join(process.cwd(), 'src/renderer/src/sections/management-sections.css'), 'utf8')
   assert.match(styles, /:root\[data-theme='dark'\]/)
   assert.match(styles, /color-scheme:\s*dark/)
   assert.match(styles, /--surface:\s*#202630/)
+  assert.match(managementStyles, /--kb-text:\s*#eef3f8/)
+  assert.match(managementStyles, /--kb-bg:\s*#171c25/)
 })

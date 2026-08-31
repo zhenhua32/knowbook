@@ -60,8 +60,8 @@ export function WorkspaceDashboardSection({
         </article>
       </section>
 
-      <section className="detail-grid">
-        <article className="panel large-panel">
+      <section className="detail-grid single-column">
+        <article className={`panel large-panel${recentEvents.length === 0 ? ' dashboard-events-empty' : ''}`}>
           <div className="panel-head">
             <div>
               <p className="panel-label">{ui.automationFeedLabel}</p>

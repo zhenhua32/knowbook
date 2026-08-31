@@ -6715,7 +6715,7 @@ select:focus-visible {
 }
 
 :root[data-theme='dark'] .sidebar {
-  background: rgba(20, 25, 34, 0.86);
+  background: #141922;
   border-color: rgba(190, 205, 225, 0.16);
 }
 
@@ -6769,8 +6769,7 @@ select:focus-visible {
   .table-search,
   .secondary-button,
   .document-header-icon-button,
-  .root-drop-zone,
-  .tree-button
+  .root-drop-zone
 ) {
   background: rgba(22, 28, 37, 0.96);
   border-color: rgba(190, 205, 225, 0.22);

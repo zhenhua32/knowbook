@@ -1,4 +1,24 @@
 /* Settings and AI management surfaces are lazy-loaded with their sections. */
+:root[data-theme='dark'] .content.management-page {
+  --kb-bg: #171c25;
+  --kb-canvas: #202631;
+  --kb-text: #eef3f8;
+  --kb-text-soft: #c7d0dc;
+  --kb-text-muted: #aebbc9;
+  --kb-line: rgba(190, 205, 225, 0.18);
+  --kb-line-strong: rgba(190, 205, 225, 0.28);
+  --kb-accent: #aeb4ff;
+  --kb-accent-strong: #c7cbff;
+  --kb-accent-soft: #303755;
+  --kb-danger: #ff9aaa;
+  --kb-success: #62c99f;
+  --kb-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.2);
+  background:
+    radial-gradient(circle at 72% -10%, rgba(111, 119, 247, 0.1), transparent 34%),
+    var(--kb-bg);
+  color: var(--kb-text);
+}
+
 .management-page .toggle-row input[type='checkbox'] {
   width: 18px;
   height: 18px;
@@ -75,6 +95,10 @@
   color: var(--kb-text-soft);
   font-size: var(--kb-type-body);
   line-height: 22px;
+}
+
+.management-page .dashboard-events-empty {
+  min-height: 180px;
 }
 
 .management-page .meta-grid {
@@ -213,6 +237,10 @@
   background: #f8f9fc;
 }
 
+.page-ai .assistant-transcript.is-empty {
+  min-height: 160px;
+}
+
 .management-page .assistant-message {
   padding: 11px 14px;
 }
@@ -266,8 +294,29 @@
   line-height: 22px;
 }
 
-:root[data-theme='dark'] :is(.settings-group, .management-page .settings-card) {
+:root[data-theme='dark'] .management-page :is(
+  .event-feed-item,
+  .document-row,
+  .settings-group,
+  .settings-card,
+  .assistant-transcript,
+  .ai-context-card
+) {
   border-color: rgba(190, 205, 225, 0.18);
   background: rgba(31, 38, 49, 0.94);
-  color: #eef3f8;
+  color: var(--kb-text);
+}
+
+:root[data-theme='dark'] .management-page :is(
+  .settings-group-heading h4,
+  .settings-card-title,
+  .ai-context-title,
+  .event-feed-head strong,
+  .document-row strong
+) {
+  color: var(--kb-text);
+}
+
+:root[data-theme='dark'] .management-page .plugin-dashboard-card p:last-child {
+  color: var(--kb-text-soft);
 }

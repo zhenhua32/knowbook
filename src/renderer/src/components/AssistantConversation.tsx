@@ -176,7 +176,7 @@ export function AssistantConversation({
         ) : null}
       </div>
 
-      <div className="assistant-transcript" aria-live="polite">
+      <div className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`} aria-live="polite">
         {projection.items.length === 0 ? (
           <p className="mini-hint">
             {isZh
