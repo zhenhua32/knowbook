@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   AssistantApprovalId,
   AssistantEvent,
@@ -13,6 +13,7 @@ type AssistantConversationProps = {
   isZh: boolean
   initialDraft?: string
   newSessionTitle?: string
+  onDraftChange?: (draft: string) => void
 }
 
 export function AssistantConversation({
@@ -21,7 +22,8 @@ export function AssistantConversation({
   hasApiKey,
   isZh,
   initialDraft = '',
-  newSessionTitle
+  newSessionTitle,
+  onDraftChange
 }: AssistantConversationProps) {
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<AssistantSessionId | null>(null)
@@ -30,6 +32,20 @@ export function AssistantConversation({
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const transcriptRef = useRef<HTMLDivElement>(null)
+  const keepTranscriptPinnedRef = useRef(true)
+  const draftRef = useRef(initialDraft)
+  const onDraftChangeRef = useRef(onDraftChange)
+
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange
+  }, [onDraftChange])
+
+  const commitDraft = useCallback((next: string) => {
+    draftRef.current = next
+    setDraft(next)
+    onDraftChangeRef.current?.(next)
+  }, [])
 
   const refreshSessions = useCallback(async () => {
     const next = await window.knowbook.listAssistantSessions()
@@ -59,6 +75,7 @@ export function AssistantConversation({
   }, [refreshSessions])
 
   useEffect(() => {
+    keepTranscriptPinnedRef.current = true
     if (!selectedId) {
       setEvents([])
       return
@@ -77,7 +94,15 @@ export function AssistantConversation({
   const selected = sessions.find((session) => session.id === selectedId) ?? null
   const canUseAi = aiEnabled && hasApiKey
 
+  useLayoutEffect(() => {
+    const transcript = transcriptRef.current
+    if (transcript && keepTranscriptPinnedRef.current) {
+      transcript.scrollTop = transcript.scrollHeight
+    }
+  }, [projection, selected?.activeTurnId])
+
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
+    keepTranscriptPinnedRef.current = true
     const created = await window.knowbook.createAssistantSession({
       activeDocumentId,
       ...(newSessionTitle ? { title: newSessionTitle } : {})
@@ -91,9 +116,10 @@ export function AssistantConversation({
   const send = useCallback(async () => {
     const text = draft.trim()
     if (!text || busy || !canUseAi) return
+    keepTranscriptPinnedRef.current = true
     setBusy(true)
     setError('')
-    setDraft('')
+    commitDraft('')
     try {
       const session = selected ?? await createSession()
       const request = window.knowbook.sendAssistantMessage({ sessionId: session.id, text, mode: 'auto' })
@@ -101,15 +127,15 @@ export function AssistantConversation({
       void request
         .then(() => Promise.all([refreshSessions(), refreshEvents(session.id)]))
         .catch((reason) => {
-          setDraft((current) => current || text)
+          if (!draftRef.current) commitDraft(text)
           setError(errorMessage(reason))
         })
     } catch (reason) {
-      setDraft((current) => current || text)
+      if (!draftRef.current) commitDraft(text)
       setError(errorMessage(reason))
       setBusy(false)
     }
-  }, [busy, canUseAi, createSession, draft, refreshEvents, refreshSessions, selected])
+  }, [busy, canUseAi, commitDraft, createSession, draft, refreshEvents, refreshSessions, selected])
 
   const resolveApproval = useCallback(async (
     approvalId: AssistantApprovalId,
@@ -151,7 +177,10 @@ export function AssistantConversation({
           aria-label={isZh ? '助手对话' : 'Assistant session'}
           className="editor-select assistant-session-select"
           disabled={busy || loading}
-          onChange={(event) => setSelectedId((event.target.value || null) as AssistantSessionId | null)}
+          onChange={(event) => {
+            keepTranscriptPinnedRef.current = true
+            setSelectedId((event.target.value || null) as AssistantSessionId | null)
+          }}
           value={selectedId ?? ''}
         >
           {sessions.length === 0 ? <option value="">{isZh ? '尚无对话' : 'No sessions yet'}</option> : null}
@@ -178,7 +207,14 @@ export function AssistantConversation({
         ) : null}
       </div>
 
-      <div className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`} aria-live="polite">
+      <div
+        aria-live="polite"
+        className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`}
+        onScroll={(event) => {
+          keepTranscriptPinnedRef.current = isTranscriptNearBottom(event.currentTarget)
+        }}
+        ref={transcriptRef}
+      >
         {projection.items.length === 0 ? (
           <p className="mini-hint">
             {isZh
@@ -243,7 +279,7 @@ export function AssistantConversation({
         <textarea
           className="editor-textarea"
           disabled={!canUseAi}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => commitDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
@@ -260,6 +296,13 @@ export function AssistantConversation({
       </div>
     </div>
   )
+}
+
+export function isTranscriptNearBottom(
+  transcript: Pick<HTMLElement, 'clientHeight' | 'scrollHeight' | 'scrollTop'>,
+  threshold = 48
+): boolean {
+  return transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop <= threshold
 }
 
 export function assistantSessionLabel(session: Pick<AssistantSessionSummary, 'createdAt' | 'title'>): string {

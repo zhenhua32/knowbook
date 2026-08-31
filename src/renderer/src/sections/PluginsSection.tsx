@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   PluginDescriptor,
   PluginSettingDescriptor,
@@ -8,6 +8,7 @@ import type {
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
+import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import './plugins-section.css'
 
 type PluginFilter = 'all' | 'running' | 'disabled' | 'attention'
@@ -143,7 +144,10 @@ export function PluginsSection({
   const [filter, setFilter] = useState<PluginFilter>('all')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [customizingPlugin, setCustomizingPlugin] = useState<PluginV2InstallationSummary | null>(null)
+  const [customizerDrafts, setCustomizerDrafts] = useState<Record<string, string>>({})
   const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
+  const customizerDialogRef = useRef<HTMLElement>(null)
+  const customizerReturnFocusRef = useRef<HTMLElement | null>(null)
 
   const inventory = useMemo<InventoryPlugin[]>(() => [
     ...plugins.map((plugin) => ({ key: `legacy:${plugin.id}`, kind: 'legacy' as const, plugin })),
@@ -169,14 +173,47 @@ export function PluginsSection({
     if (selectedKey && !inventory.some((item) => item.key === selectedKey)) setSelectedKey(null)
   }, [inventory, selectedKey])
 
+  const customizingPluginId = customizingPlugin?.pluginId ?? null
+  const customizerDraft = customizingPlugin
+    ? customizerDrafts[customizingPlugin.pluginId] ?? pluginCustomizationDraft(customizingPlugin, isZh)
+    : ''
+
   useEffect(() => {
-    if (!customizingPlugin) return undefined
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCustomizingPlugin(null)
+    if (!customizingPluginId) return undefined
+    const dialog = customizerDialogRef.current
+    if (!dialog) return undefined
+    const returnFocus = customizerReturnFocusRef.current
+    const focusFrame = window.requestAnimationFrame(() => {
+      const textarea = dialog.querySelector<HTMLTextAreaElement>('.assistant-composer textarea:not(:disabled)')
+      const initialFocus = textarea ?? dialog.querySelector<HTMLElement>('.plugin-customizer-close') ?? dialog
+      initialFocus.focus()
+      if (textarea) textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+    })
+    const handleDialogKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        setCustomizingPlugin(null)
+        return
+      }
+      trapFocusWithinDialog(event, dialog)
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [customizingPlugin])
+    window.addEventListener('keydown', handleDialogKeyDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      window.removeEventListener('keydown', handleDialogKeyDown)
+      window.requestAnimationFrame(() => {
+        if (returnFocus?.isConnected) returnFocus.focus()
+      })
+    }
+  }, [customizingPluginId])
+
+  const openPluginCustomizer = (plugin: PluginV2InstallationSummary) => {
+    customizerReturnFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    setCustomizingPlugin(plugin)
+  }
 
   return (
     <section className="plugins-page">
@@ -328,7 +365,7 @@ export function PluginsSection({
 
                     <div className="plugin-item-actions" onClick={(event) => event.stopPropagation()}>
                       {canCustomize && item.kind === 'v2' ? (
-                        <button className="plugin-ai-action" disabled={busy} onClick={() => setCustomizingPlugin(item.plugin)} type="button">
+                        <button className="plugin-ai-action" disabled={busy} onClick={() => openPluginCustomizer(item.plugin)} type="button">
                           <span aria-hidden="true">✦</span>{isZh ? '通过 AI 继续定制' : 'Customize with AI'}
                         </button>
                       ) : null}
@@ -385,7 +422,7 @@ export function PluginsSection({
               <V2PluginInspector
                 busy={pluginBusyId === selected.plugin.pluginId || pluginInventoryBusy}
                 isZh={isZh}
-                onCustomize={() => setCustomizingPlugin(selected.plugin)}
+                onCustomize={() => openPluginCustomizer(selected.plugin)}
                 onRecover={() => onRecoverPluginV2Installation(selected.plugin.pluginId)}
                 onRemove={() => onRemovePluginV2(selected.plugin)}
                 onSetEnabled={(enabled) => onSetPluginV2Enabled(selected.plugin, enabled)}
@@ -464,7 +501,14 @@ export function PluginsSection({
         <div className="plugin-customizer-backdrop" onMouseDown={(event) => {
           if (event.currentTarget === event.target) setCustomizingPlugin(null)
         }}>
-          <aside aria-label={isZh ? 'AI 插件定制' : 'AI plugin customization'} aria-modal="true" className="plugin-customizer" role="dialog">
+          <aside
+            aria-label={isZh ? 'AI 插件定制' : 'AI plugin customization'}
+            aria-modal="true"
+            className="plugin-customizer"
+            ref={customizerDialogRef}
+            role="dialog"
+            tabIndex={-1}
+          >
             <header>
               <div className="plugin-customizer-title">
                 <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(customizingPlugin.name)}</span>
@@ -484,18 +528,27 @@ export function PluginsSection({
               activeDocumentId={null}
               aiEnabled={aiEnabled}
               hasApiKey={hasApiKey}
-              initialDraft={isZh
-                ? `请检查并继续定制插件“${customizingPlugin.name}”（ID: ${customizingPlugin.pluginId}）。先使用 plugins.inspect 查看当前 revision 和诊断，保留未明确要求改动的现有行为，然后根据我的要求创建并验证新的 revision；激活前请清楚展示变更与权限差异。我的定制要求是：`
-                : `Inspect and continue customizing plugin "${customizingPlugin.name}" (ID: ${customizingPlugin.pluginId}). Use plugins.inspect to review the current revision and diagnostics, preserve behavior I do not explicitly change, then create and validate a new revision. Show the change and permission diff before activation. My customization request is: `}
+              initialDraft={customizerDraft}
               isZh={isZh}
               key={customizingPlugin.pluginId}
               newSessionTitle={isZh ? `定制 · ${customizingPlugin.name}` : `Customize · ${customizingPlugin.name}`}
+              onDraftChange={(draft) => {
+                setCustomizerDrafts((current) => current[customizingPlugin.pluginId] === draft
+                  ? current
+                  : { ...current, [customizingPlugin.pluginId]: draft })
+              }}
             />
           </aside>
         </div>
       ) : null}
     </section>
   )
+}
+
+function pluginCustomizationDraft(plugin: PluginV2InstallationSummary, isZh: boolean): string {
+  return isZh
+    ? `请检查并继续定制插件“${plugin.name}”（ID: ${plugin.pluginId}）。先使用 plugins.inspect 查看当前 revision 和诊断，保留未明确要求改动的现有行为，然后根据我的要求创建并验证新的 revision；激活前请清楚展示变更与权限差异。我的定制要求是：`
+    : `Inspect and continue customizing plugin "${plugin.name}" (ID: ${plugin.pluginId}). Use plugins.inspect to review the current revision and diagnostics, preserve behavior I do not explicitly change, then create and validate a new revision. Show the change and permission diff before activation. My customization request is: `
 }
 
 type PluginSettingsProps = {

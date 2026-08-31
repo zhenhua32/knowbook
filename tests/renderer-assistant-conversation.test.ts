@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   assistantSessionLabel,
+  isTranscriptNearBottom,
   projectEvents
 } from '../src/renderer/src/components/AssistantConversation.tsx'
 import type { AssistantEvent, AssistantSessionSummary } from '../src/shared/assistant-session.ts'
@@ -13,6 +14,12 @@ test('assistant conversation labels start with their creation time', () => {
   } satisfies Pick<AssistantSessionSummary, 'createdAt' | 'title'>
 
   assert.equal(assistantSessionLabel(session), '2026-08-27 12:34 · 做一个每日回顾插件')
+})
+
+test('assistant transcript only follows new messages while the reader is near the bottom', () => {
+  assert.equal(isTranscriptNearBottom({ scrollHeight: 1_000, clientHeight: 400, scrollTop: 552 }), true)
+  assert.equal(isTranscriptNearBottom({ scrollHeight: 1_000, clientHeight: 400, scrollTop: 551 }), false)
+  assert.equal(isTranscriptNearBottom({ scrollHeight: 300, clientHeight: 400, scrollTop: 0 }), true)
 })
 
 test('assistant renderer rebuilds streaming, tool, approval, and plugin lifecycle cards from events alone', () => {
