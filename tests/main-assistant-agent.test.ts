@@ -62,7 +62,10 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
 
     try {
       const session = service.createSession({ title: '插件会话' })
-      const result = await service.sendMessage({ sessionId: session.id, text: '检查插件能力' })
+      const result = await service.sendMessage({
+        sessionId: session.id,
+        text: '检查插件能力。第二句话不应进入标题'
+      })
       assert.equal(result.status, 'completed')
       assert.equal(calls.length, 2)
       assert.deepEqual(calls[0].tools.map((tool) => tool.eventName), [
@@ -90,10 +93,12 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
       assert.equal(calls[0].systemPrompt.includes('Button actions never use handlerId'), true)
       assert.equal(calls[0].systemPrompt.includes("action: { handler, arguments? }"), true)
       assert.equal(JSON.stringify(service.getSession(session.id)?.modelConfig).includes('not-persisted'), false)
+      assert.equal(service.getSession(session.id)?.title, '检查插件能力。')
 
       const events = service.listEvents(session.id, 0, 100)
       assert.deepEqual(events.map((event) => event.type), [
         'session.created',
+        'session.title.updated',
         'turn.started',
         'user.message',
         'step.started',
@@ -111,6 +116,12 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
       assert.equal(
         calls[1].messages.find((message) => message.tool)?.reasoningContent,
         '需要先检查平台能力。'
+      )
+      await service.sendMessage({ sessionId: session.id, text: '继续检查' })
+      assert.equal(service.getSession(session.id)?.title, '检查插件能力。')
+      assert.equal(
+        service.listEvents(session.id).filter((event) => event.type === 'session.title.updated').length,
+        1
       )
     } finally {
       await service.destroy()

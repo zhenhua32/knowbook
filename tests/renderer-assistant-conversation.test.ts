@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { projectEvents } from '../src/renderer/src/components/AssistantConversation.tsx'
-import type { AssistantEvent } from '../src/shared/assistant-session.ts'
+import {
+  assistantSessionLabel,
+  projectEvents
+} from '../src/renderer/src/components/AssistantConversation.tsx'
+import type { AssistantEvent, AssistantSessionSummary } from '../src/shared/assistant-session.ts'
+
+test('assistant conversation labels start with their creation time', () => {
+  const session = {
+    title: '做一个每日回顾插件',
+    createdAt: '2026-08-27T12:34:00'
+  } satisfies Pick<AssistantSessionSummary, 'createdAt' | 'title'>
+
+  assert.equal(assistantSessionLabel(session), '2026-08-27 12:34 · 做一个每日回顾插件')
+})
 
 test('assistant renderer rebuilds streaming, tool, approval, and plugin lifecycle cards from events alone', () => {
   const events = [

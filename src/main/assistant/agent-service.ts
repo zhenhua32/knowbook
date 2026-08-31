@@ -41,6 +41,7 @@ import type { SqliteAssistantSessionRepository } from './session-repository'
 // without making it part of the expected workflow.
 const MAX_AGENT_STEPS = 64
 const MAX_MESSAGE_CHARS = 100_000
+const MAX_SESSION_TITLE_CHARS = 80
 const EVENT_PAGE_SIZE = 1_000
 
 const TOOL_DEFINITIONS: readonly AssistantModelToolDefinition[] = [
@@ -364,6 +365,7 @@ export class AssistantAgentService {
     if (mode === 'steer-current') {
       throw new Error('There is no running assistant turn to steer.')
     }
+    this.titleSessionFromFirstUserMessage(session.id, text)
     const turnId = assistantTurnId(randomUUID())
     this.append(session.id, { type: 'turn.started', payload: { turnId } })
     this.append(session.id, { type: 'user.message', payload: { turnId, text } })
@@ -838,6 +840,7 @@ export class AssistantAgentService {
     if (session.activeTurnId) {
       return { sessionId, turnId: session.activeTurnId, status: 'queued' }
     }
+    this.titleSessionFromFirstUserMessage(sessionId, text)
     const turnId = assistantTurnId(randomUUID())
     this.append(sessionId, { type: 'turn.started', payload: { turnId } })
     this.append(sessionId, {
@@ -1205,6 +1208,17 @@ export class AssistantAgentService {
     return event
   }
 
+  private titleSessionFromFirstUserMessage(sessionId: AssistantSessionId, text: string): void {
+    const events = listAllEvents(this.sessions, sessionId)
+    if (events.some((event) => event.type === 'user.message')) return
+
+    const session = this.requireSession(sessionId)
+    const title = firstSentenceTitle(text)
+    if (title !== session.title) {
+      this.append(sessionId, { type: 'session.title.updated', payload: { title } })
+    }
+  }
+
   private notify(sessionId: AssistantSessionId): void {
     const session = this.sessions.getSession(sessionId)
     if (session) {
@@ -1358,6 +1372,18 @@ function objectValue(value: unknown, label: string): Record<string, PluginJsonVa
 function normalizeOptionalTitle(value: unknown): string | null {
   if (value === undefined || value === null || value === '') return null
   return normalizeText(value, 'Assistant session title', 500)
+}
+
+function firstSentenceTitle(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  const sentenceEnd = /[。！？!?]|\.(?=\s|$)/.exec(normalized)
+  const sentence = sentenceEnd
+    ? normalized.slice(0, sentenceEnd.index + sentenceEnd[0].length)
+    : normalized
+  const characters = Array.from(sentence)
+  return characters.length <= MAX_SESSION_TITLE_CHARS
+    ? sentence
+    : `${characters.slice(0, MAX_SESSION_TITLE_CHARS).join('')}…`
 }
 
 function normalizeOptionalId(value: unknown, label: string): string | null {

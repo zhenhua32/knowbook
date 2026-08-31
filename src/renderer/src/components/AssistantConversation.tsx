@@ -155,7 +155,9 @@ export function AssistantConversation({
           value={selectedId ?? ''}
         >
           {sessions.length === 0 ? <option value="">{isZh ? '尚无对话' : 'No sessions yet'}</option> : null}
-          {sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
+          {sessions.map((session) => (
+            <option key={session.id} value={session.id}>{assistantSessionLabel(session)}</option>
+          ))}
         </select>
         <button
           className="secondary-button"
@@ -258,6 +260,19 @@ export function AssistantConversation({
       </div>
     </div>
   )
+}
+
+export function assistantSessionLabel(session: Pick<AssistantSessionSummary, 'createdAt' | 'title'>): string {
+  const createdAt = new Date(session.createdAt)
+  if (Number.isNaN(createdAt.getTime())) return session.title
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const timestamp = [
+    createdAt.getFullYear(),
+    pad(createdAt.getMonth() + 1),
+    pad(createdAt.getDate())
+  ].join('-')
+  const time = `${pad(createdAt.getHours())}:${pad(createdAt.getMinutes())}`
+  return `${timestamp} ${time} · ${session.title}`
 }
 
 type ProjectionItem =
