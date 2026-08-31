@@ -1008,3 +1008,321 @@
 :root[data-theme='dark'] .plugin-customizer-context span { border-color: rgba(144, 151, 242, 0.18); background: #2b3044; color: #b5bdd0; }
 :root[data-theme='dark'] .plugin-inspector-error,
 :root[data-theme='dark'] .plugin-inventory-item > .plugin-error { border-color: rgba(230, 113, 131, 0.25); background: rgba(105, 35, 49, 0.34); color: #ffb0bd; }
+
+/* Management UI typography contract: no informational text below 12px. */
+.plugin-page-kicker {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-page-heading h3 {
+  font-size: var(--kb-type-display);
+  line-height: var(--kb-leading-display);
+}
+
+.plugin-page-heading p {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-overview-card {
+  min-height: 104px;
+  padding: 18px 20px;
+}
+
+.plugin-overview-card > span {
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.plugin-overview-card strong {
+  font-size: var(--kb-type-metric);
+  line-height: 36px;
+}
+
+.plugin-overview-card small {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-management-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(350px, 390px);
+  gap: 20px;
+}
+
+.plugin-inventory-head {
+  padding: 22px 22px 16px;
+}
+
+.plugin-inventory-head h4,
+.plugin-inspector h4,
+.plugin-section-title h4 {
+  font-size: var(--kb-type-title-lg);
+  line-height: 28px;
+}
+
+.plugin-inventory-head p {
+  margin-top: 4px;
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-search {
+  min-height: var(--kb-control-height);
+  padding-inline: 13px;
+}
+
+.plugin-search input {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-filter-tabs {
+  gap: 6px;
+  padding: 0 22px 14px;
+}
+
+.plugin-filter-tabs button {
+  min-height: var(--kb-control-height-compact);
+  padding: 7px 12px;
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.plugin-inventory-panel .plugin-item {
+  min-height: 88px;
+  padding: 18px 20px;
+}
+
+.plugin-card-main {
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 14px;
+}
+
+.plugin-avatar {
+  width: 46px;
+  height: 46px;
+  font-size: var(--kb-type-caption);
+}
+
+.plugin-card-title-row > strong {
+  font-size: var(--kb-type-title-md);
+  line-height: 24px;
+}
+
+.plugin-ai-badge,
+.plugin-status-legacy,
+.plugin-card-state .plugin-status {
+  padding: 3px 8px;
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-card-copy > p {
+  margin-top: 5px;
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-card-meta {
+  gap: 7px;
+  margin-top: 5px;
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-card-state {
+  gap: 14px;
+}
+
+.plugin-switch,
+.plugin-switch > span {
+  width: 36px;
+}
+
+.plugin-switch > span {
+  height: 20px;
+}
+
+.plugin-switch > span::after {
+  width: 16px;
+  height: 16px;
+}
+
+.plugin-switch input:checked + span::after {
+  transform: translateX(16px);
+}
+
+.plugin-inventory-item > .plugin-item-actions,
+.plugin-inventory-item .plugin-settings-panel,
+.plugin-inventory-item > .plugin-error {
+  margin-left: 60px;
+}
+
+.plugin-ai-action,
+.plugin-text-action {
+  min-height: 28px;
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.plugin-settings-heading {
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.plugin-inventory-item .plugin-setting-item {
+  gap: 8px;
+  padding: 12px;
+}
+
+.plugin-inventory-item .plugin-setting-actions .secondary-button {
+  min-height: var(--kb-control-height-compact);
+  padding: 7px 10px;
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-inventory-item > .plugin-error {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-inspector {
+  gap: 18px;
+  padding: 24px;
+}
+
+.plugin-inspector-head > div > span,
+.plugin-inspector-head code {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-inspector-head h4 {
+  margin-top: 3px;
+  font-size: var(--kb-type-title-lg);
+}
+
+.plugin-inspector-description {
+  margin-top: -2px;
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-inspector-ai {
+  min-height: var(--kb-button-height);
+  font-size: var(--kb-type-body);
+  line-height: 20px;
+}
+
+.plugin-detail-grid > div {
+  gap: 4px;
+  padding: 13px 14px;
+}
+
+.plugin-detail-grid span {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-detail-grid strong {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-lifecycle-card {
+  padding: 16px;
+}
+
+.plugin-lifecycle-head {
+  margin-bottom: 14px;
+}
+
+.plugin-lifecycle-head strong {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-lifecycle-head span {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-lifecycle-card li {
+  grid-template-columns: 17px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 50px;
+}
+
+.plugin-lifecycle-card li strong {
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.plugin-lifecycle-card li span,
+.plugin-lifecycle-card li code {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-inspector-error,
+.plugin-inspector-note {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-inspector-actions button {
+  min-height: var(--kb-button-height);
+  padding: 9px 12px;
+  font-size: var(--kb-type-body);
+  line-height: 20px;
+}
+
+.plugin-empty-state strong {
+  font-size: var(--kb-type-title-md);
+  line-height: 24px;
+}
+
+.plugin-empty-state p {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-section-title span,
+.system-plugin-request code,
+.plugin-roots-disclosure,
+.plugin-roots-disclosure .plugin-root-path {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-section-title > strong {
+  font-size: var(--kb-type-caption);
+}
+
+.system-plugin-request {
+  gap: 12px;
+  padding: 16px;
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.plugin-customizer-title span:not(.plugin-avatar),
+.plugin-customizer-context span {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.plugin-customizer-intro {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+@media (max-width: 1100px) {
+  .plugin-management-layout { grid-template-columns: minmax(0, 1fr) 340px; }
+}
+
+@media (max-width: 820px) {
+  .plugin-management-layout { grid-template-columns: 1fr; }
+}

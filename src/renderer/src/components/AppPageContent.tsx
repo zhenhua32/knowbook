@@ -57,7 +57,7 @@ export function AppPageContent({
     ? { databaseId: database.databaseEntityDatabaseId }
     : undefined
   return (
-    <main className={`content page-${shell.activePage}`}>
+    <main className={`content page-${shell.activePage}${shell.activePage === 'documents' ? '' : ' management-page'}`}>
       {shell.backupMessage ? (
         <p className="flash-message">
           {shell.backupMessage}

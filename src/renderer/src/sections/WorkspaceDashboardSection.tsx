@@ -1,5 +1,6 @@
 import type { PluginDashboardCard, WorkspaceEventRecord, WorkspaceSummary } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import './management-sections.css'
 
 type WorkspaceDashboardSectionProps = {
   isAiEnabled: boolean

@@ -477,3 +477,225 @@
   .dbw-board { max-height: calc(100vh - 380px); }
   .dbw-drawer { width: 100vw; }
 }
+
+/* Management UI typography contract: compact data UI without tiny text. */
+.dbw-shell {
+  font-size: var(--kb-type-body);
+  line-height: var(--kb-leading-body);
+}
+
+.dbw-header {
+  min-height: 108px;
+  padding: 22px 26px;
+}
+
+.dbw-source-trigger {
+  font-size: 24px;
+  line-height: 32px;
+}
+
+.dbw-source-wrap > p {
+  margin-top: 5px;
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-primary-button,
+.dbw-save-button,
+.dbw-danger-button,
+.dbw-quiet-button,
+.dbw-danger-quiet-button,
+.dbw-open-document-button {
+  min-height: var(--kb-button-height);
+  padding: 9px 14px;
+  font-size: var(--kb-type-body);
+  line-height: 20px;
+}
+
+.dbw-icon-button {
+  width: var(--kb-button-height);
+  height: var(--kb-button-height);
+}
+
+.dbw-search-field {
+  min-height: var(--kb-control-height);
+  font-size: var(--kb-type-body);
+}
+
+.dbw-menu-label,
+.dbw-source-option-copy small,
+.dbw-system-badge,
+.dbw-toolbar-button b,
+.dbw-popover-heading button,
+.dbw-record-count {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-view-tabs {
+  min-height: 54px;
+}
+
+.dbw-view-tab {
+  min-height: var(--kb-control-height-compact);
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-toolbar {
+  min-height: 64px;
+}
+
+.dbw-toolbar :is(input, select),
+.dbw-filter-row input,
+.dbw-layout-switcher button {
+  min-height: var(--kb-control-height-compact);
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-toolbar-button,
+.dbw-toolbar-select {
+  min-height: var(--kb-control-height-compact);
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-save-button {
+  min-height: var(--kb-control-height-compact);
+  font-size: var(--kb-type-label);
+}
+
+.dbw-selection-toolbar {
+  min-height: 48px;
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-table :is(th, td) {
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-table th {
+  height: 44px;
+  font-weight: 650;
+}
+
+.dbw-record-title strong {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-record-title small,
+.dbw-tag {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-card-body > strong {
+  font-size: var(--kb-type-title-md);
+  line-height: 24px;
+}
+
+.dbw-card-body > small,
+.dbw-card-body dt,
+.dbw-card-body dd {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-board-column > header strong,
+.dbw-board-column > header b,
+.dbw-board-card small,
+.dbw-board-empty,
+.dbw-board-load-more {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-board-card strong {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-empty-state h3 {
+  font-size: var(--kb-type-title-lg);
+  line-height: 28px;
+}
+
+.dbw-empty-state p {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-drawer-header h2,
+.dbw-dialog h2 {
+  font-size: var(--kb-type-title-lg);
+  line-height: 28px;
+}
+
+.dbw-drawer-header p,
+.dbw-field-copy small,
+.dbw-field-options,
+.dbw-eyebrow,
+.dbw-dialog > label > span,
+.dbw-confirm-dialog .dbw-dialog-note {
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-field-row {
+  min-height: 64px;
+}
+
+.dbw-field-name {
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-field-copy > input,
+.dbw-field-create-form > input,
+.dbw-field-create-form > select,
+.dbw-record-form input,
+.dbw-record-form select,
+.dbw-record-form textarea,
+.dbw-dialog > label input,
+.dbw-dialog > label textarea {
+  min-height: var(--kb-control-height);
+  padding: 9px 11px;
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.dbw-field-visibility {
+  min-height: var(--kb-control-height-compact);
+  padding: 7px 10px;
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dbw-field-row-actions button {
+  width: var(--kb-control-height-compact);
+  height: var(--kb-control-height-compact);
+}
+
+.dbw-add-field-button {
+  min-height: var(--kb-button-height);
+  font-size: var(--kb-type-body);
+  line-height: 20px;
+}
+
+.dbw-record-form label > span {
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dbw-record-title-input {
+  font-size: var(--kb-type-title-lg) !important;
+  line-height: 28px !important;
+}
+
+.dbw-dialog {
+  border-radius: 16px;
+}
