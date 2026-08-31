@@ -530,7 +530,10 @@ export class AssistantAgentService {
         let pendingChunk = ''
         let lastChunkFlushAt = Date.now()
         const flushChunk = () => {
-          if (!pendingChunk) return
+          // Compatible providers may emit spaces or newlines as standalone
+          // deltas. Keep them buffered until visible text arrives because the
+          // event store deliberately rejects blank conversation events.
+          if (!pendingChunk.trim()) return
           this.append(sessionId, {
             type: 'assistant.chunk',
             payload: { turnId, stepId: stepId as AssistantStepId, text: pendingChunk }

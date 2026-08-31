@@ -129,6 +129,54 @@ test('assistant loop exposes only closed plugin tools and persists calls/results
   })
 })
 
+test('assistant buffers whitespace-only streaming deltas without persisting blank chunks', async () => {
+  await withStore(async (store) => {
+    const model: AssistantModelAdapter = {
+      capabilities: {
+        streaming: true,
+        nativeToolCalling: true,
+        jsonSchema: true,
+        multimodal: false
+      },
+      complete: async (input) => {
+        await input.onChunk?.(' '.repeat(512))
+        await input.onChunk?.('正文')
+        await input.onChunk?.('\n'.repeat(512))
+        return { content: '正文', toolCalls: [] }
+      }
+    }
+    const service = new AssistantAgentService(
+      store.assistantSessions,
+      {} as PluginPlatformV2Service,
+      {
+        workspaceId: 'workspace-1',
+        getAiConfig: () => ({
+          enabled: true,
+          apiKey: 'secret',
+          baseUrl: 'https://example.invalid/v1',
+          model: 'test-model'
+        }),
+        modelAdapter: model
+      }
+    )
+
+    try {
+      const session = service.createSession()
+      const result = await service.sendMessage({ sessionId: session.id, text: '测试空白流式分片' })
+      const events = service.listEvents(session.id, 0, 100)
+      const chunks = events.filter((event) => event.type === 'assistant.chunk')
+
+      assert.equal(result.status, 'completed')
+      assert.equal(service.getSession(session.id)?.activeTurnId, null)
+      assert.equal(chunks.length, 1)
+      assert.equal(chunks[0]?.payload.text.trim(), '正文')
+      assert.equal(chunks.every((event) => Boolean(event.payload.text.trim())), true)
+    } finally {
+      await service.destroy()
+    }
+  })
+})
+
 test('assistant plugin repair loop can continue beyond the old twelve-step limit', async () => {
   await withStore(async (store) => {
     let calls = 0
