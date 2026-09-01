@@ -3,11 +3,13 @@ import type {
   PluginDescriptor,
   PluginSettingDescriptor,
   PluginSettingValue,
+  PluginV2Details,
   PluginV2InstallationSummary,
   SystemPluginInstallRequest
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
+import { PluginV2TechnicalDetails } from '../components/PluginV2TechnicalDetails'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import './plugins-section.css'
 
@@ -146,6 +148,10 @@ export function PluginsSection({
   const [customizingPlugin, setCustomizingPlugin] = useState<PluginV2InstallationSummary | null>(null)
   const [customizerDrafts, setCustomizerDrafts] = useState<Record<string, string>>({})
   const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
+  const [pluginV2Details, setPluginV2Details] = useState<PluginV2Details | null>(null)
+  const [pluginV2DetailsLoading, setPluginV2DetailsLoading] = useState(false)
+  const [pluginV2DetailsError, setPluginV2DetailsError] = useState<string | null>(null)
+  const [pluginV2DetailsReload, setPluginV2DetailsReload] = useState(0)
   const customizerDialogRef = useRef<HTMLElement>(null)
   const customizerReturnFocusRef = useRef<HTMLElement | null>(null)
 
@@ -172,6 +178,42 @@ export function PluginsSection({
   useEffect(() => {
     if (selectedKey && !inventory.some((item) => item.key === selectedKey)) setSelectedKey(null)
   }, [inventory, selectedKey])
+
+  const selectedV2DetailsKey = selected?.kind === 'v2'
+    ? [
+        selected.plugin.pluginId,
+        selected.plugin.updatedAt,
+        selected.plugin.currentRevisionId,
+        selected.plugin.activeRunId,
+        selected.plugin.revisionCount
+      ].join(':')
+    : null
+
+  useEffect(() => {
+    if (!selectedV2DetailsKey || selected?.kind !== 'v2') {
+      setPluginV2Details(null)
+      setPluginV2DetailsError(null)
+      setPluginV2DetailsLoading(false)
+      return undefined
+    }
+    const pluginId = selected.plugin.pluginId
+    let cancelled = false
+    setPluginV2DetailsLoading(true)
+    setPluginV2DetailsError(null)
+    void window.knowbook.getPluginV2Details({ pluginId }).then((details) => {
+      if (!cancelled) setPluginV2Details(details)
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        setPluginV2Details(null)
+        setPluginV2DetailsError(error instanceof Error ? error.message : 'Plugin details could not be loaded.')
+      }
+    }).finally(() => {
+      if (!cancelled) setPluginV2DetailsLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [pluginV2DetailsReload, selectedV2DetailsKey])
 
   const customizingPluginId = customizingPlugin?.pluginId ?? null
   const customizerDraft = customizingPlugin
@@ -421,8 +463,12 @@ export function PluginsSection({
             selected.kind === 'v2' ? (
               <V2PluginInspector
                 busy={pluginBusyId === selected.plugin.pluginId || pluginInventoryBusy}
+                details={pluginV2Details?.pluginId === selected.plugin.pluginId ? pluginV2Details : null}
+                detailsError={pluginV2DetailsError}
+                detailsLoading={pluginV2DetailsLoading}
                 isZh={isZh}
                 onCustomize={() => openPluginCustomizer(selected.plugin)}
+                onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
                 onRecover={() => onRecoverPluginV2Installation(selected.plugin.pluginId)}
                 onRemove={() => onRemovePluginV2(selected.plugin)}
                 onSetEnabled={(enabled) => onSetPluginV2Enabled(selected.plugin, enabled)}
@@ -522,8 +568,8 @@ export function PluginsSection({
               <span>{customizingPlugin.revisionCount} revisions</span>
             </div>
             <p className="plugin-customizer-intro">{isZh
-              ? '描述你想增加、删除或调整的行为。助手会先检查现有实现，再生成新 revision；任何激活都需要你审批。'
-              : 'Describe what to add, remove, or adjust. The assistant inspects the current implementation before creating a new revision, and activation always requires approval.'}</p>
+              ? '描述你想增加、删除或调整的行为。助手会先检查现有实现，再生成并验证新 revision；应用前会清楚展示变更与权限差异。'
+              : 'Describe what to add, remove, or adjust. The assistant inspects the current implementation, creates and validates a new revision, and shows the change and permission diff before applying it.'}</p>
             <AssistantConversation
               activeDocumentId={null}
               aiEnabled={aiEnabled}
@@ -619,16 +665,24 @@ function PluginSettings({
 function V2PluginInspector({
   plugin,
   busy,
+  details,
+  detailsError,
+  detailsLoading,
   isZh,
   onCustomize,
+  onReloadDetails,
   onRecover,
   onRemove,
   onSetEnabled
 }: {
   plugin: PluginV2InstallationSummary
   busy: boolean
+  details: PluginV2Details | null
+  detailsError: string | null
+  detailsLoading: boolean
   isZh: boolean
   onCustomize: () => void
+  onReloadDetails: () => void
   onRecover: () => void
   onRemove: () => void
   onSetEnabled: (enabled: boolean) => void
@@ -661,6 +715,13 @@ function V2PluginInspector({
           <li className={plugin.activeRunId ? 'active' : plugin.quarantined || plugin.lastError ? 'error' : ''}><i /><div><strong>{plugin.activeRunId ? (isZh ? '运行实例健康' : 'Runtime healthy') : (isZh ? '当前没有运行实例' : 'No active runtime')}</strong><span>{plugin.quarantined ? (isZh ? '安全隔离中' : 'Security quarantine') : plugin.enabled ? (isZh ? '可重新启动' : 'Ready to restart') : (isZh ? '已由你停用' : 'Disabled by you')}</span></div></li>
         </ol>
       </div>
+      <PluginV2TechnicalDetails
+        details={details}
+        error={detailsError}
+        isZh={isZh}
+        loading={detailsLoading}
+        onReload={onReloadDetails}
+      />
       {plugin.quarantined || plugin.lastError ? <p className="plugin-inspector-error">{errorDetail(plugin.quarantineReason ?? plugin.lastError)}</p> : null}
       <div className="plugin-inspector-actions">
         {plugin.quarantined ? <button className="secondary-button" disabled={busy} onClick={onRecover} type="button">{isZh ? '解除安全隔离' : 'Clear quarantine'}</button> : null}

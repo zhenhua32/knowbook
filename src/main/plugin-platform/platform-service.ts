@@ -30,7 +30,7 @@ import type {
   TrustedMarketplacePublisher
 } from './marketplace-package'
 import { installMarketplacePluginPackage } from './marketplace-installer'
-import type { DocumentBlockDraft } from '@shared/contracts'
+import type { DocumentBlockDraft, PluginV2Details } from '@shared/contracts'
 import {
   getDeclaredPluginUiActions,
   materializePluginIframePreparation,
@@ -467,6 +467,50 @@ export class PluginPlatformV2Service {
       throw new Error('Workspace plugin installation is not quarantined.')
     }
     this.store.pluginPlatform.clearInstallationQuarantine(installation.id)
+  }
+
+  getWorkspacePluginDetails(pluginId: string): PluginV2Details {
+    this.assertUsable()
+    const installation = this.store.pluginPlatform.getInstallationForScope(
+      pluginId,
+      this.getWorkspaceScope()
+    )
+    if (!installation) {
+      throw new Error(`Workspace plugin "${pluginId}" is not installed.`)
+    }
+
+    const revisions = this.store.pluginPlatform.listRevisions(pluginId).slice(0, 20)
+    const currentRevision = installation.currentRevisionId
+      ? revisions.find((revision) => revision.id === installation.currentRevisionId)
+        ?? this.store.pluginPlatform.getRevision(installation.currentRevisionId)
+      : null
+    return {
+      pluginId,
+      currentRevisionId: installation.currentRevisionId,
+      permissions: (currentRevision?.requestedPermissions ?? []).map((permission) => ({
+        capability: permission.capability,
+        version: permission.version
+      })),
+      revisions: revisions.map((revision) => ({
+        id: revision.id,
+        version: revision.manifest.version,
+        previousRevisionId: revision.previousRevisionId,
+        createdAt: revision.createdAt,
+        staticCheckStatus: revision.staticCheckStatus,
+        permissionCount: revision.requestedPermissions.length,
+        activated: this.store.pluginPlatform.wasRevisionActivated(pluginId, revision.id),
+        current: revision.id === installation.currentRevisionId
+      })),
+      recentLogs: this.store.pluginPlatform.listPluginLogs(pluginId, 20).map((entry) => ({
+        id: entry.id,
+        revisionId: entry.revisionId,
+        runId: entry.runId,
+        level: entry.level,
+        event: entry.event,
+        message: entry.message,
+        createdAt: entry.createdAt
+      }))
+    }
   }
 
   async setWorkspacePluginEnabled(pluginId: string, enabled: boolean): Promise<void> {

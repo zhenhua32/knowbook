@@ -9,6 +9,10 @@ function getPluginItem(page: Page): Locator {
   return getLegacyPluginList(page).locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
 }
 
+function getV2PluginItem(page: Page): Locator {
+  return page.locator('.plugin-item').filter({ hasText: 'Activity Pulse v2' }).first()
+}
+
 function getLegacyDashboardCard(page: Page): Locator {
   return page.locator('.plugin-dashboard-card').filter({
     has: page.locator('.pill').filter({ hasText: /^activity-pulse$/ })
@@ -115,6 +119,23 @@ async function disableActivityPulse(page: Page): Promise<void> {
 }
 
 test.describe('Plugin System @electron', () => {
+  test('inspects v2 permissions, revision history, and runtime logs on demand', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    await withElectronApp(async ({ page }) => {
+      await openPluginsPage(page)
+      await getV2PluginItem(page).click()
+
+      const details = page.locator('.plugin-technical-details')
+      await expect(details).toBeVisible()
+      await expect(details.getByText(uiText('Current permissions', '当前权限'))).toBeVisible()
+      await expect(details).toContainText('documents.read@1')
+      await expect(details.getByText(uiText('Revision history', '版本历史'))).toBeVisible()
+      await expect(details).toContainText('1.0.0')
+      await expect(details.getByText(uiText('Recent runtime logs', '最近运行日志'))).toBeVisible()
+    })
+  })
+
   test('loads the workspace plugin inventory entry and keeps dashboard state consistent', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 

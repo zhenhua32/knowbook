@@ -31,9 +31,11 @@ import type {
   DocumentDetail,
   DocumentSuggestion,
   GlobalSearchResult,
+  GetPluginV2DetailsInput,
   HomeData,
   HomeDataIpcPayload,
   PluginHomeData,
+  PluginV2Details,
   MarketplacePluginInstallResult,
   MarketplacePluginPackage,
   InstallPluginResult,
@@ -1279,6 +1281,11 @@ function registerIpcHandlers(): void {
     const result: RunPluginUiActionResult = await pluginPlatformV2.runUiAction(input)
     return result
   })
+
+  ipcMain.handle('knowbook:get-plugin-v2-details', (
+    _event,
+    input: GetPluginV2DetailsInput
+  ): PluginV2Details => pluginPlatformV2.getWorkspacePluginDetails(input.pluginId))
 
   ipcMain.handle('knowbook:report-plugin-ui-preparation', (_event, result: PluginUiPreparationResult) => {
     completePluginUiPreparation(result)

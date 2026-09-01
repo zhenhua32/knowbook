@@ -88,7 +88,7 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 
 ## 插件边界
 
-Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话中检查 capability/标准模块目录、定义不可变 revision，并在用户批准精确 revision 后热激活 session preview。动态插件运行在独立 Electron utility process 内的 QuickJS/WASM realm；没有 Node.js、Electron、文件系统、网络、shell 或运行时 `npm install`，所有副作用必须走带权限、配额和审计的 host capability。
+Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话中检查 capability/标准模块目录、定义并验证不可变 revision，然后把精确 revision 直接激活为工作区插件。动态插件运行在独立 Electron utility process 内的 QuickJS/WASM realm；没有 Node.js、Electron、文件系统、网络、shell 或运行时 `npm install`，所有副作用必须走带权限、配额和审计的 host capability。
 
 `activity-pulse-v2` 是首个 v2 内置参考插件。工作区 `plugins/` 和 Electron userData `plugins/` 的旧插件宿主仍保留为兼容层，其中仓库内的 `plugins/activity-pulse/` 是旧格式示例。架构决策见 [ADR 目录](docs/adr/)，使用说明见 [使用文档](docs/使用文档.md#插件开发)。
 
@@ -107,6 +107,6 @@ Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话�
 
 - 相关笔记检索为关键词匹配，不是向量检索。
 - Database 的表格采用行虚拟化；看板和卡片采用分批渲染。极端数据规模下仍建议使用搜索与筛选缩小当前视图。
-- v2 插件市场、workspace 持久化授权和独立发布 SDK 尚未开放；AI 生成插件当前以 session preview 激活。
+- v2 插件市场尚无公开的发现/安装界面，独立发布 SDK 也未开放；AI 生成插件会直接进入当前工作区，其授权仍绑定精确 revision。
 - 自动化目前主要覆盖文档摘要。
 - 带 manifest 的 Markdown 恢复采用快照语义，选择目录前必须先做数据库级备份。

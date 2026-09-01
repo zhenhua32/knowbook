@@ -629,6 +629,44 @@ export interface PluginV2InstallationSummary {
   quarantinedAt: string | null
 }
 
+export interface PluginV2RevisionSummary {
+  id: string
+  version: string
+  previousRevisionId: string | null
+  createdAt: string
+  staticCheckStatus: 'passed' | 'warning' | 'failed'
+  permissionCount: number
+  activated: boolean
+  current: boolean
+}
+
+export interface PluginV2PermissionSummary {
+  capability: string
+  version: number
+}
+
+export interface PluginV2LogSummary {
+  id: string
+  revisionId: string | null
+  runId: string | null
+  level: 'debug' | 'info' | 'warning' | 'error'
+  event: string
+  message: string
+  createdAt: string
+}
+
+export interface PluginV2Details {
+  pluginId: string
+  currentRevisionId: string | null
+  permissions: PluginV2PermissionSummary[]
+  revisions: PluginV2RevisionSummary[]
+  recentLogs: PluginV2LogSummary[]
+}
+
+export interface GetPluginV2DetailsInput {
+  pluginId: string
+}
+
 export interface RecoverPluginV2InstallationInput {
   pluginId: string
 }
@@ -866,6 +904,7 @@ export interface ElectronApi {
   updatePluginSetting: (input: UpdatePluginSettingInput) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   runPluginUiAction: (input: RunPluginUiActionInput) => Promise<RunPluginUiActionResult>
+  getPluginV2Details: (input: GetPluginV2DetailsInput) => Promise<PluginV2Details>
   recoverPluginV2Installation: (input: RecoverPluginV2InstallationInput) => Promise<void>
   setPluginV2Enabled: (input: SetPluginV2EnabledInput) => Promise<void>
   removePluginV2: (input: RemovePluginV2Input) => Promise<void>
