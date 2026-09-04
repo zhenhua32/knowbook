@@ -338,12 +338,170 @@ CREATE TABLE IF NOT EXISTS system_plugin_install_requests (
   requested_by TEXT NOT NULL,
   status TEXT NOT NULL,
   restart_required INTEGER NOT NULL DEFAULT 1,
+  staged_artifact_path TEXT,
+  computed_artifact_sha256 TEXT,
+  manifest_snapshot_json TEXT,
+  dependency_plan_json TEXT,
+  confirmation_version INTEGER,
+  installation_id TEXT,
+  error_json TEXT,
   created_at TEXT NOT NULL,
   resolved_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_system_plugin_install_status
   ON system_plugin_install_requests(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS system_plugin_packages (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  publisher TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  artifact_path TEXT NOT NULL,
+  manifest_snapshot_json TEXT NOT NULL,
+  file_manifest_json TEXT NOT NULL,
+  runtime_fingerprint_json TEXT,
+  status TEXT NOT NULL,
+  source_request_id TEXT REFERENCES system_plugin_install_requests(id) ON DELETE SET NULL,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  published_at TEXT,
+  UNIQUE(plugin_id, content_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_packages_plugin_created
+  ON system_plugin_packages(plugin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_plugin_packages_status
+  ON system_plugin_packages(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS system_plugin_installations (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  auto_start INTEGER NOT NULL DEFAULT 0,
+  safe_mode_disabled INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  current_package_id TEXT REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
+  pending_package_id TEXT REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
+  last_error_json TEXT,
+  backup_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_installations_restore
+  ON system_plugin_installations(enabled, safe_mode_disabled, auto_start, status);
+
+CREATE TABLE IF NOT EXISTS system_plugin_runs (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  installation_id TEXT NOT NULL REFERENCES system_plugin_installations(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
+  component TEXT NOT NULL,
+  status TEXT NOT NULL,
+  pid INTEGER,
+  exit_code INTEGER,
+  exit_signal TEXT,
+  restart_count INTEGER NOT NULL DEFAULT 0,
+  health_json TEXT,
+  error_json TEXT,
+  log_path TEXT,
+  started_at TEXT NOT NULL,
+  ready_at TEXT,
+  last_heartbeat_at TEXT,
+  stopped_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_runs_installation_started
+  ON system_plugin_runs(installation_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_plugin_runs_status
+  ON system_plugin_runs(status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS system_plugin_audit (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  installation_id TEXT REFERENCES system_plugin_installations(id) ON DELETE SET NULL,
+  package_id TEXT REFERENCES system_plugin_packages(id) ON DELETE SET NULL,
+  request_id TEXT REFERENCES system_plugin_install_requests(id) ON DELETE SET NULL,
+  run_id TEXT REFERENCES system_plugin_runs(id) ON DELETE SET NULL,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  details_json TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_audit_plugin_created
+  ON system_plugin_audit(plugin_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS system_plugin_dependency_jobs (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  package_id TEXT NOT NULL REFERENCES system_plugin_packages(id) ON DELETE CASCADE,
+  installation_id TEXT REFERENCES system_plugin_installations(id) ON DELETE SET NULL,
+  request_id TEXT REFERENCES system_plugin_install_requests(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  package_manager TEXT NOT NULL,
+  command_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  pid INTEGER,
+  exit_code INTEGER,
+  log_path TEXT,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_dependency_jobs_package_created
+  ON system_plugin_dependency_jobs(package_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_system_plugin_dependency_jobs_status
+  ON system_plugin_dependency_jobs(status, updated_at ASC);
+
+CREATE TABLE IF NOT EXISTS system_plugin_crash_markers (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL,
+  installation_id TEXT NOT NULL REFERENCES system_plugin_installations(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
+  run_id TEXT REFERENCES system_plugin_runs(id) ON DELETE SET NULL,
+  phase TEXT NOT NULL,
+  state TEXT NOT NULL,
+  error_json TEXT,
+  recovery_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  cleared_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_crash_markers_installation_created
+  ON system_plugin_crash_markers(installation_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_system_plugin_crash_markers_active_phase
+  ON system_plugin_crash_markers(installation_id, phase)
+  WHERE cleared_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS system_plugin_os_persistence (
+  id TEXT PRIMARY KEY,
+  plugin_id TEXT NOT NULL UNIQUE,
+  installation_id TEXT NOT NULL UNIQUE REFERENCES system_plugin_installations(id) ON DELETE CASCADE,
+  package_id TEXT NOT NULL REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
+  revision_hash TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  method TEXT NOT NULL,
+  command_json TEXT NOT NULL,
+  descriptor_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_json TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_system_plugin_os_persistence_status
+  ON system_plugin_os_persistence(status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS assistant_sessions (
   id TEXT PRIMARY KEY,

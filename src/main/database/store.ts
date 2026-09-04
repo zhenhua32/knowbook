@@ -67,7 +67,7 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 9
+const CURRENT_DATABASE_SCHEMA_VERSION = 11
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -405,6 +405,14 @@ export class KnowbookStore {
         this.migrateToSchemaVersion9()
         this.db.pragma('user_version = 9')
       }
+      if (schemaVersion < 10) {
+        this.migrateToSchemaVersion10()
+        this.db.pragma('user_version = 10')
+      }
+      if (schemaVersion < 11) {
+        this.migrateToSchemaVersion11()
+        this.db.pragma('user_version = 11')
+      }
     })
   }
 
@@ -486,6 +494,33 @@ export class KnowbookStore {
 
   private migrateToSchemaVersion9(): void {
     // System-plugin request tables are created by appSchema before migrations run.
+  }
+
+  private migrateToSchemaVersion10(): void {
+    // Full Trust v3 tables are created by appSchema. Existing request tables
+    // need nullable staging/result columns without changing the v1 request flow.
+    const columns = new Set(
+      (this.db.prepare('PRAGMA table_info(system_plugin_install_requests)').all() as Array<{ name: string }>)
+        .map((column) => column.name)
+    )
+    const add = (name: string, sql: string): void => {
+      if (!columns.has(name)) {
+        this.db.exec(`ALTER TABLE system_plugin_install_requests ADD COLUMN ${sql}`)
+      }
+    }
+    add('staged_artifact_path', 'staged_artifact_path TEXT')
+    add('computed_artifact_sha256', 'computed_artifact_sha256 TEXT')
+    add('manifest_snapshot_json', 'manifest_snapshot_json TEXT')
+    add('dependency_plan_json', 'dependency_plan_json TEXT')
+    add('confirmation_version', 'confirmation_version INTEGER')
+    add('installation_id', 'installation_id TEXT')
+    add('error_json', 'error_json TEXT')
+  }
+
+  private migrateToSchemaVersion11(): void {
+    // Host-managed Full Trust login-item/autostart registrations are created by
+    // appSchema. The descriptor is durable so uninstall can verify exact
+    // ownership before attempting cleanup.
   }
 
   private createMigrationSafetyCopy(fromVersion: number, toVersion: number): void {
@@ -2398,6 +2433,14 @@ export class KnowbookStore {
 
   getDatabasePath(): string {
     return this.databasePath
+  }
+
+  /**
+   * Full Trust/System Plugin v3 escape hatch. Callers receive the live
+   * connection owned by KnowBook and can bypass every Store invariant.
+   */
+  getUnsafeDatabaseHandle(): SqliteDatabase {
+    return this.db
   }
 
   getDocumentCount(): number {

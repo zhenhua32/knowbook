@@ -88,6 +88,13 @@ export interface SystemPluginInstallRequest {
   requestedBy: 'user' | 'assistant'
   status: 'awaiting-confirmation' | 'confirmed-restart-required' | 'cancelled'
   restartRequired: true
+  stagedArtifactPath: string | null
+  computedArtifactSha256: string | null
+  manifestSnapshot: PluginJsonValue | null
+  dependencyPlan: PluginJsonValue | null
+  confirmationVersion: number | null
+  installationId: string | null
+  error: PluginJsonValue | null
   createdAt: string
   resolvedAt: string | null
 }
@@ -95,6 +102,8 @@ export interface SystemPluginInstallRequest {
 export interface ResolveSystemPluginInstallRequestInput {
   requestId: string
   pluginId: string
+  /** Exact reviewed artifact. Required by the v3 manager for confirmation. */
+  artifactSha256?: string
   acknowledgeSystemAccess: boolean
   decision: 'confirm' | 'cancel'
 }

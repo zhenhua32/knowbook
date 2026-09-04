@@ -23,6 +23,18 @@ import type {
   SystemPluginInstallRequest,
   SystemPluginInstallRequestInput
 } from './plugin-trust'
+import type {
+  SetSystemPluginEnabledInput,
+  RollbackSystemPluginInput,
+  ResolveSystemPluginOsPersistenceInput,
+  SystemPluginMutationInput,
+  SystemPluginOsPersistenceRecord,
+  SystemPluginSummary
+} from './system-plugin-state'
+import type {
+  RemoveSystemPluginFramePolicyInput,
+  SystemPluginFramePolicyInput
+} from './system-plugin'
 
 export type {
   PluginUiContribution,
@@ -39,6 +51,18 @@ export type {
   SystemPluginInstallRequest,
   SystemPluginInstallRequestInput
 } from './plugin-trust'
+export type {
+  SetSystemPluginEnabledInput,
+  RollbackSystemPluginInput,
+  ResolveSystemPluginOsPersistenceInput,
+  SystemPluginMutationInput,
+  SystemPluginOsPersistenceRecord,
+  SystemPluginSummary
+} from './system-plugin-state'
+export type {
+  RemoveSystemPluginFramePolicyInput,
+  SystemPluginFramePolicyInput
+} from './system-plugin'
 
 export interface WorkspaceSummary {
   databasePath: string
@@ -546,6 +570,7 @@ export interface HomeData {
   pluginUiContributions?: PluginUiContribution[]
   pluginV2Installations?: PluginV2InstallationSummary[]
   systemPluginInstallRequests?: SystemPluginInstallRequest[]
+  systemPlugins?: SystemPluginSummary[]
   pluginHost?: PluginHostInfo
 }
 
@@ -606,6 +631,7 @@ export interface PluginHomeData {
   pluginUiContributions: PluginUiContribution[]
   pluginV2Installations: PluginV2InstallationSummary[]
   systemPluginInstallRequests: SystemPluginInstallRequest[]
+  systemPlugins: SystemPluginSummary[]
   pluginHost: PluginHostInfo
 }
 
@@ -910,8 +936,24 @@ export interface ElectronApi {
   removePluginV2: (input: RemovePluginV2Input) => Promise<void>
   installMarketplacePluginPackage: (input: MarketplacePluginPackage) => Promise<MarketplacePluginInstallResult>
   requestSystemPluginInstall: (input: SystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
+  chooseAndPrepareSystemPluginInstall: () => Promise<SystemPluginInstallRequest | null>
   listSystemPluginInstallRequests: () => Promise<SystemPluginInstallRequest[]>
   resolveSystemPluginInstallRequest: (input: ResolveSystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
+  listSystemPlugins: () => Promise<SystemPluginSummary[]>
+  setSystemPluginEnabled: (input: SetSystemPluginEnabledInput) => Promise<SystemPluginSummary>
+  uninstallSystemPlugin: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  recoverSystemPlugin: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  rollbackSystemPlugin: (input: RollbackSystemPluginInput) => Promise<SystemPluginSummary>
+  startSystemPluginService: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  stopSystemPluginService: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  requestSystemPluginOsPersistence: (input: SystemPluginMutationInput) => Promise<SystemPluginOsPersistenceRecord>
+  resolveSystemPluginOsPersistence: (input: ResolveSystemPluginOsPersistenceInput) => Promise<SystemPluginOsPersistenceRecord>
+  removeSystemPluginOsPersistence: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  openSystemPluginDataDirectory: (input: SystemPluginMutationInput) => Promise<void>
+  openSystemPluginLogDirectory: (input: SystemPluginMutationInput) => Promise<void>
+  restartInSystemPluginSafeMode: () => Promise<void>
+  registerSystemPluginFramePolicy: (input: SystemPluginFramePolicyInput) => Promise<void>
+  removeSystemPluginFramePolicy: (input: RemoveSystemPluginFramePolicyInput) => Promise<void>
   triggerBackup: () => Promise<BackupResult>
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>

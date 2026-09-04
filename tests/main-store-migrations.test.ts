@@ -41,13 +41,13 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v9-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v11-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 9)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 11)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
@@ -114,6 +114,58 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   rmSync(tempRoot, { recursive: true, force: true })
 })
 
+test('KnowbookStore v10 migration extends legacy system plugin requests without changing them', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-v10-system-plugin-migration-test-'))
+  const databasePath = join(tempRoot, 'v9.sqlite')
+  const sourceStore = new KnowbookStore(databasePath)
+  const request = sourceStore.pluginPlatform.createSystemPluginInstallRequest({
+    pluginId: 'legacy.system',
+    name: 'Legacy System',
+    version: '1.0.0',
+    publisher: 'Example Publisher',
+    artifactSha256: 'a'.repeat(64),
+    systemPermissions: ['system.full-access'],
+    reason: 'Preserve this pending request across the v10 migration.',
+    requestedBy: 'assistant'
+  })
+  sourceStore.destroy()
+
+  const legacyDatabase = new Database(databasePath)
+  try {
+    for (const column of [
+      'staged_artifact_path',
+      'computed_artifact_sha256',
+      'manifest_snapshot_json',
+      'dependency_plan_json',
+      'confirmation_version',
+      'installation_id',
+      'error_json'
+    ]) {
+      legacyDatabase.exec(`ALTER TABLE system_plugin_install_requests DROP COLUMN ${column}`)
+    }
+    legacyDatabase.pragma('user_version = 9')
+  } finally {
+    legacyDatabase.close()
+  }
+
+  const migratedStore = new KnowbookStore(databasePath)
+  try {
+    const migrated = migratedStore.pluginPlatform.getSystemPluginInstallRequest(request.id)
+    assert.equal(migrated?.status, 'awaiting-confirmation')
+    assert.equal(migrated?.pluginId, 'legacy.system')
+    assert.equal(migrated?.stagedArtifactPath, null)
+    assert.equal(migrated?.computedArtifactSha256, null)
+    assert.equal(migrated?.manifestSnapshot, null)
+    assert.equal(migrated?.dependencyPlan, null)
+    assert.equal(migrated?.confirmationVersion, null)
+    assert.equal(migrated?.installationId, null)
+    assert.equal(migrated?.error, null)
+  } finally {
+    migratedStore.destroy()
+    rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('KnowbookStore v4 migration backfills full view config and readable record titles', () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-v4-migration-test-'))
   const databasePath = join(tempRoot, 'v3.sqlite')
@@ -159,7 +211,7 @@ test('KnowbookStore v4 migration backfills full view config and readable record 
     assert.deepEqual(migratedView?.config.sorts, [{ fieldId: '__created_at__', direction: 'asc' }])
     assert.equal(migratedEntity?.title, document.title)
     assert.equal(
-      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v9-')),
+      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v11-')),
       true
     )
   } finally {

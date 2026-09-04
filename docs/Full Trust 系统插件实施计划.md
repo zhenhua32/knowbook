@@ -1,8 +1,8 @@
 # KnowBook Full Trust 系统插件实施计划
 
-> 文档状态：已批准，待实施
+> 文档状态：实施中
 > 适用版本：KnowBook 0.2.x+
-> 最后更新：2026-09-01
+> 最后更新：2026-09-04
 > 目标读者：产品、Main/Preload/Renderer 开发、插件作者、安全评审与测试
 
 ## 1. 执行摘要
@@ -24,11 +24,12 @@ Full Trust 不是对 v2 capability 的简单扩容，也不使用沙箱或细粒
 
 ### 2.1 当前插件体系
 
-当前仓库已经具备三类基础：
+当前仓库已经具备四类基础：
 
 1. Plugin Platform v2：使用 QuickJS/WASM、不可变 revision、Grant Set、Capability Broker、声明式 ViewSpec 和 sandboxed iframe。
 2. Legacy v1：使用现有 `PluginHost` 和 utility process，提供首页卡片、文档动作、设置、事件监听、文档读取和摘要更新等兼容能力。
-3. System 插件请求：数据库和插件中心能够记录、展示、确认或取消系统插件请求，但确认后只进入 `confirmed-restart-required`，尚无 artifact 安装、运行时、生命周期或恢复逻辑。
+3. System Plugin v3 核心链路：已加入 v3 manifest 与 artifact 校验、精确 SHA-256 确认、不可变发布、持久化状态、重启激活、Main 生命周期、版本化 service RPC、宿主服务、Renderer registry、插件中心入口、回滚/卸载和启动恢复的首轮实现及自动化测试；受控 Windows Electron E2E 已验证精确确认、离线 npm 依赖准备，以及重启后的 Main、任意 AI 请求、app-lifetime service RPC、Renderer、HTTP/WebSocket Full Trust frame、主进程创建的 Node 特权窗口和最终 `active` 状态。
+4. 发布验收缺口：十二类能力的代码入口、后台监督、可跨宿主重连的 service RPC、native probe 和宿主管理的登录启动均已有首轮实现，但仍缺三平台打包态 native/login 验证、真实系统登录/重启与卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
 
 v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、Store、SQLite、用户目录、API Key 或宿主 Renderer，这一边界是有意设计，不能为实现 Full Trust 而拆除。
 
@@ -43,6 +44,35 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 - 在用户完全知情的前提下读取密钥、用户文件或运行外部程序。
 
 这些需求不能在“不可信代码仍受强隔离”的前提下同时满足。因此 v3 明确采用完全信任模型，并把风险控制重点放在来源、精确 artifact、显式确认、可恢复启动、备份、日志和卸载上。
+
+### 2.3 实施进度矩阵
+
+本节记录截至 2026-09-04 的仓库实现快照。“已落地”只表示相应代码及针对性自动化测试已经存在，不等于第 20 节最终验收完成，也不表示 ADR-0007 已达到 `Implemented`。凡缺少打包态、跨平台或完整 E2E 证据的项目，均保留在“仍待完成”列。
+
+| 阶段 | 当前状态 | 已完成（当前代码范围） | 仍待完成与验收 |
+| --- | --- | --- | --- |
+| 阶段 0：ADR、契约与防回归 | 大部分完成 | ADR-0007、v3 manifest/风险目录/共享状态类型和受控验收插件工程已经建立；v2 iframe 默认拒绝与 v3 精确 token 例外已有防回归测试；Windows Electron 已跑通受控安装/重启、远程 frame 与特权窗口验收链路 | 固化并执行 macOS、Linux 以及三平台打包态可执行验证矩阵 |
+| 阶段 1：安装、持久化与插件中心 | 大部分完成 | 目录/ZIP artifact 检查与 staging、ZIP 路径/大小/链接防护、文件清单和 SHA-256、精确 artifact 用户确认、schema v11、installation/package/run/audit/job/crash marker/OS persistence repository、重启待激活、回滚与卸载状态机、插件中心管理操作已经接线；启动时会清扫已结束请求遗留的 staging；artifact 发布使用排他目录占用、排他复制和发布后重算 hash，竞争发布不会覆盖已有 revision；Windows Electron E2E 已覆盖选择、确认和重启待处理状态 | 补齐升级、回滚、卸载及更多失败 UI 状态的 Electron E2E；验证真实打包应用与异常中断下的原子性 |
+| 阶段 2：Main Runtime 与基础系统能力 | 大部分完成（代码、单测与 Windows E2E） | `SystemPluginHost`、CJS/ESM 加载、Context/disposable、Node/Electron/`process`/`require`、Store/raw SQLite/路径/事件、重启激活、crash marker 恢复与一次性安全模式已经实现；同步启动失败会回滚/安全停用，失败的启动 Promise 会从缓存清除以允许受控重试；ABI 指纹不匹配会触发重新准备或失败阻断；Windows Electron E2E 已验证重启后 Main 使用 Node/文件系统、raw Store/SQLite、Electron、环境变量、HTTP 和托管子进程 | 完成坏插件、死循环、`process.exit()` 和原生崩溃场景的 Electron 集成验证，并在 macOS/Linux 打包态复验 |
+| 阶段 3：数据、AI 与桌面 API | 部分完成 | 文档移动/删除和数据库 CRUD 包装、raw Store/SQLite、AI complete/stream/raw request、AI Key 与环境变量、任意 settings、剪贴板/shell/窗口/菜单/托盘 helper、启用/升级前备份路径已经实现；Windows Electron E2E 已验证文档创建/移动/删除、数据库/列/实体 CRUD、任意设置读写删除、Electron 窗口访问，以及向本地 OpenAI-compatible mock 发送任意 messages、tools、seed 并使用宿主 API Key 认证 | 以真实 Renderer 验证全部 mutation event/刷新和回滚恢复；补齐 AI 流式/取消/错误、剪贴板、菜单、托盘、外部程序及密钥日志脱敏的打包态 E2E；核对所有稳定 API 的版本化契约 |
+| 阶段 4：Renderer、React 与 Full Trust Frame | 大部分完成（代码、单测与 Windows E2E） | Renderer entry 注入、React singleton/slot/root/portal、command/page/route/shortcut、DOM/CSS/theme/disposable registry、无 sandbox frame、精确 revision/origin/popup/navigation/download/permission 策略、停用清理和 v2 默认拒绝已经实现并有针对性测试；Windows Electron E2E 已验证同一精确 revision 的 React/DOM/CSS、远程 HTTP/WebSocket frame、权限请求、导航、下载、主进程独立创建的 Node 特权窗口及停用时 frame/CSS/popup 清理 | 补齐升级 revision 切换、专属 preload 和 macOS/Linux 打包态窗口行为验证 |
+| 阶段 5：npm、Native Module 与后台服务 | 大部分完成（代码、单测与部分 E2E） | 确认后的 npm/pnpm/yarn 任务执行、build、Electron target native rebuild、原生模块隔离 probe、依赖 job/log；所有包（包括无依赖包）先复制到可变 runtime，确认 artifact 保持不可变；native scan 覆盖整个 runtime，并支持取消和总预算；依赖命令与 native probe 在 timeout/cancel 后等待进程树退出；Windows 对 npm/pnpm/yarn `.cmd` shim 使用受限参数的 `cmd.exe` 适配；受控 Electron E2E 已真实运行离线 `npm ci --ignore-scripts`、实体化本地 `file:` 依赖并在重启后从可变 runtime 成功 `require()`；supervisor 已接入 manager/run/插件中心/退出和卸载，支持 app-lifetime、detached adoption、心跳、日志、有界重启与停止；service RPC v1 以闭合 JSON 协议、精确 plugin/revision、白名单方法、超时/并发/大小/深度限制和元数据审计接入 Documents、Databases、Settings、AI、Secrets、事件、路径、剪贴板与 shell，受控 Windows Electron E2E 已验证真实子进程往返；本机命名管道/Unix socket 以精确 revision 与 launch nonce 认证，真实子进程测试已验证宿主端点关闭、重建后原 PID 恢复 RPC；detached 身份以 PID、可执行文件、OS start token、revision、service entry 和 launch nonce 校验，支持手动启动身份落盘、adoption 后停止再启动、安全模式停服及升级旧 revision 清理；macOS `mainAppService` 按全局单例协调；Windows/macOS Electron login item 和 Linux XDG autostart 具备独立精确确认、持久记录、状态核验与卸载清理 | 用真实 native module、pnpm/yarn 和登录启动项完成 Windows、macOS、Linux 打包态安装、升级、回滚、ABI 变化、系统登录/重启及卸载无残留验证 |
+
+十二类能力的当前证据和缺口如下。这里的“可用”指首轮代码入口存在；在第 20 节验收全部通过前，产品和文档不得将整个 Full Trust v3 标记为 `Implemented`。
+
+| 能力编号 | 当前证据 | 仍待完成 |
+| --- | --- | --- |
+| 1–2 | Main Context 已暴露文件/路径、Store、raw SQLite、Node、Electron、`process`、`require`、shell 和子进程入口；受控 Windows Electron E2E 已验证精确 revision 读写 `dataRoot`、读取用户数据路径、查询 raw Store/SQLite、读取 Node/Electron 版本、访问主窗口并运行托管 Electron-Node 子进程 | 继续完成用户选择目录、shell 与异常子进程 E2E，并在 macOS/Linux 打包态复验 |
+| 3 | Main 可使用 Node 网络；Windows Electron E2E 已验证 Main HTTP fetch，以及远程 v3 frame 的 HTTP 和 WebSocket 往返 | 取消、TLS/错误及三平台打包态验证 |
+| 4 | 依赖 runner/package preparer 已覆盖 npm/pnpm/yarn、脚本、build、Electron target rebuild、ABI 指纹和隔离 native module probe；Windows Electron E2E 已按锁文件真实运行离线 `npm ci --ignore-scripts`，实体化本地 `file:` 纯 JS 包并在重启后成功加载 | 验证生命周期/build 失败、pnpm/yarn、真实 native module、ABI 变化和三平台打包结果 |
+| 5 | AI complete、stream、raw request、配置和 API Key 入口已实现；Windows Electron E2E 已用本地 OpenAI-compatible mock 验证任意 messages、tools、seed、宿主 API Key 认证和响应透传 | 完成流式、取消、错误和非 JSON/raw response 集成测试 |
+| 6–7 | Documents/Databases 稳定包装及 raw SQLite 已实现，并有针对性服务测试；Windows Electron E2E 已验证文档创建/移动/删除，以及数据库、select 列、实体创建/更新/删除 | 完整验证递归删除、链接、视图/实体批量 CRUD、事件和 Renderer 一致性 |
+| 8–9 | Electron desktop helper、环境/Secrets 与任意 settings API 已实现；Windows Electron E2E 已验证环境变量、任意设置 round-trip、主窗口访问和停用关闭特权窗口 | 在真实打包应用中验证剪贴板、菜单、托盘、外部程序、资源自动清理和 UI 更新 |
+| 10 | Renderer registry 与 entry 注入已实现，覆盖 React/DOM/CSS/preload 访问入口和清理；受控 Windows Electron E2E 已验证重启后精确 revision 的可见 React contribution、全局 CSS、frame DOM 以及停用清理 | 继续完成自定义路由/命令、专属 preload 和升级 revision 切换 E2E |
+| 11 | v3 无 sandbox frame 与精确 revision/origin token 已接入，v2 默认拒绝测试仍保留；Windows Electron E2E 已验证远程联网、权限请求、popup、导航、下载、主进程独立创建的 Node 特权窗口以及停用关窗 | 补齐升级撤销及 macOS/Linux 打包态端到端策略验证 |
+| 12 | supervisor 已接入生命周期和持久化，支持 app-lifetime/detached、ready/heartbeat、日志、重启上限、强制停止和重启 adoption；service RPC v1 已有协议、真实子进程和 Windows Electron E2E，本机 transport 测试已验证 detached 跨宿主重连且 PID 不变；detached 身份校验、手动启动、adoption 后重启、安全模式停服、旧 revision 清理和 macOS `mainAppService` 单例已有单测；OS startup 已有独立确认、三平台适配、插件中心控制和卸载清理 | 完成真实系统登录/应用升级/系统重启后的三平台打包态无残留验证 |
+
+当前受控 Windows Electron E2E 的已通过链路为：用户选择插件目录 → 插件中心展示主进程计算的精确 SHA-256、风险声明和 npm 依赖计划 → 用户勾选完整风险确认 → 输入完整插件 ID → 确认后真实执行离线 `npm ci --ignore-scripts` 并进入 `pending-restart` → 使用同一隔离 userData 重启 → Main entry 从可变 runtime 加载纯 JS 依赖，并使用 Node/文件系统、raw Store/SQLite、用户数据路径、环境变量、Electron、托管子进程和 HTTP，完成任意 AI 请求、文档移动/删除、数据库 CRUD 与任意设置 round-trip → Main 通过 Electron 向 Renderer 传递受控测试地址 → app-lifetime service 通过 `globalThis.knowbookService` 调用 `system.ping` 与 `paths.get` 并写入精确 revision/路径标记 → Renderer entry 注入可见 React contribution 与 CSS → 无 sandbox 远程 frame 完成 HTTP、WebSocket、权限、导航与下载 → 精确 popup token 触发主进程创建独立 Node 特权窗口 → 停用插件后 frame、CSS 与特权窗口一并清理。该证据只覆盖当前 Windows Electron 构建中的这条受控链路，不替代三平台打包态或十二项能力的最终验收。
 
 ## 3. 目标与非目标
 
@@ -199,11 +229,11 @@ README.md                    # 推荐
 3. 安装器校验 manifest、路径、文件类型和体积，计算 SHA-256 与文件清单。
 4. 插件中心展示插件 ID、版本、发布者、精确 hash、entry、依赖命令、安装脚本、风险类别和是否包含 native module。
 5. 用户勾选完整系统访问确认，并确认精确插件 ID；只有用户发起的 IPC 可以完成确认。
-6. 确认后在 staging 目录运行依赖安装、生命周期脚本、构建和 native rebuild，并保存完整输出。
-7. 成功后将 artifact 原子移动到 `userData/system-plugins/artifacts/<pluginId>/<contentHash>`。
-8. installation 指向 pending revision，状态变为 `confirmed-restart-required`。
+6. 确认后将已复核的 staging 内容原子发布到 `userData/system-plugins/artifacts/<pluginId>/<contentHash>`；发布过程排他占用目标、排他复制并重新计算 hash，不替换已经存在的 revision。
+7. 将不可变 artifact 复制到 `userData/system-plugins/runtime/<pluginId>/<contentHash>`；包括无依赖包在内的所有代码都从可变 runtime 执行，依赖安装、生命周期脚本、构建、native rebuild 与 probe 也只修改该副本，并保存完整输出。
+8. runtime 准备成功后，installation 指向 pending revision，状态变为 `confirmed-restart-required`。
 9. 重启后启动协调器激活 pending revision；健康检查通过后提交为 current revision。
-10. 激活失败时恢复上一个已知可用 revision，并在插件中心显示错误。
+10. 激活失败时清理失败的启动任务，恢复上一个已知可用 revision 或安全停用，并在插件中心显示错误。
 
 依赖安装开始后，插件脚本已经拥有与 Full Trust 代码相同的系统风险，因此确认必须发生在任何 `preinstall`、`install`、`postinstall` 或 build 命令之前。
 
@@ -213,7 +243,7 @@ README.md                    # 推荐
 - AI 创建的请求必须停在 `awaiting-confirmation`。
 - AI 工具不得调用确认、启用、重启安装或 OS persistence 接口。
 - 助手当前对 v2 使用的自动 `allowed-once` 路径不得复用于 v3。
-- 用户拒绝或请求过期后，staging artifact 可以安全删除，且不得执行其中代码。
+- 用户拒绝或请求过期后，staging artifact 可以安全删除，且不得执行其中代码；启动协调器会清扫已结束请求遗留的受管 staging 目录并写入审计记录。
 
 ### 6.3 升级、回滚和卸载
 
@@ -230,6 +260,7 @@ README.md                    # 推荐
 - 应用异常退出且存在未 ready marker 时，下次启动自动跳过该 revision，并恢复上一个已知可用版本或停用插件。
 - 提供全局安全模式：本次启动不加载任何 Full Trust 插件。
 - 用户解除安全停用前，失败 revision 不得自动重试。
+- 同步启动失败不会留下伪 `active` 状态；被 reject 的启动 Promise 会从协调器缓存移除，避免后续受控恢复复用永久失败的 Promise。
 
 ## 7. Full Trust SDK 与生命周期
 
@@ -295,7 +326,7 @@ export async function beforeQuit(): Promise<void> {}
 - CJS 使用以插件 entry 为根的 `createRequire`，ESM 使用本地文件 URL dynamic import。
 - 插件自己的 `node_modules` 参与正常 Node 模块解析。
 - 主进程向 Context 注入 Store、原始 SQLite、AI、event bus、当前窗口和 mutation notifier。
-- 同步异常和 rejected promise 写入运行记录；原生崩溃、死循环、`process.exit()` 和全局 monkey patch 无法隔离。
+- 同步异常和 rejected promise 写入运行记录并触发回滚或安全停用；失败的启动 Promise 不会永久留在缓存。原生崩溃、死循环、`process.exit()` 和全局 monkey patch 无法隔离。
 
 ### 8.2 Renderer entry
 
@@ -320,8 +351,11 @@ export async function beforeQuit(): Promise<void> {}
 ### 8.4 Service entry
 
 - `app-lifetime` 服务随 KnowBook 启停，由宿主跟踪 PID、退出码、日志和重启次数。
-- service 默认使用 Node 子进程，继承 Full Trust 所需环境，并获得插件数据目录和主进程 RPC 地址。
-- service 不能直接持有 Main 内存中的 Store 对象；可通过 Full Trust RPC 调用稳定 API，或自行使用数据库路径和 `better-sqlite3`。
+- service 默认使用 Node 子进程，继承 Full Trust 所需环境，并获得插件数据目录。
+- service 不能直接持有 Main 内存中的 Store 对象；宿主在执行 entry 前安装只读的 `globalThis.knowbookService`，通过 service RPC v1 调用 Main 白名单 API。
+- RPC 请求绑定精确 plugin ID 与 revision，使用闭合 JSON envelope；宿主限制单条消息大小、对象深度/节点数、并发数和执行时间，并只审计 method、request ID、结果和耗时，不记录参数或返回值。
+- manager 为 service RPC 建立确定性的本机命名管道（Windows）或 Unix socket（macOS/Linux）；连接使用精确 plugin ID、revision 与 detached launch nonce 完成闭合握手，Unix socket 权限收敛为当前用户。bootstrap 在宿主不可用时采用有界指数退避，并限制帧大小、待处理请求和重连队列；新宿主 adoption 后以持久化 nonce 重新开放端点，原 detached PID 无需重启即可恢复 RPC。未配置本机端点的低层 supervisor 调用仍保留父子进程 IPC 兼容路径。
+- service 始终可以自行使用数据库路径和 `better-sqlite3`，但绕过 RPC 后必须自行承担并发写入、事件通知和领域一致性风险。
 - detached/OS-startup 服务使用单独的持久化安装步骤，见第 13 节。
 
 ## 9. 十二类能力映射与验收
@@ -378,24 +412,59 @@ raw SQLite handle 是 escape hatch，不自动补发事件或修复领域不变�
 
 SDK helper 为常用 Electron 资源返回 disposable，以便停用时清理；直接 Electron 模块始终可用。Settings API 支持任意 key 的 get/set/delete/list，并在已知设置改变时触发相应宿主刷新。
 
+### 10.5 Service RPC v1
+
+service entry 启动前可直接取得以下全局接口：
+
+```ts
+interface KnowbookServiceRpcV1 {
+  readonly protocolVersion: 1
+  readonly pluginId: string
+  readonly revisionHash: string
+  call(method: string, params?: JsonValue, options?: { timeoutMs?: number }): Promise<JsonValue>
+  ready(payload?: JsonValue): void
+  heartbeat(payload?: JsonValue): void
+  on(event: string, listener: (payload: JsonValue) => void): () => void
+  dispose(): void
+}
+
+declare const knowbookService: KnowbookServiceRpcV1
+```
+
+v1 白名单覆盖：
+
+- `system.ping`、`paths.get`。
+- `documents.list/get/create/update/move/delete`。
+- `databases.list/create/update-metadata/delete`，以及 column、view、entity 和 document value 的完整 CRUD/批量入口。
+- `settings.get/list/set/delete/get-appearance-theme/set-appearance-theme/get-ai-config`。
+- `secrets.get-ai-api-key/get-environment-variable/get-environment-snapshot`。
+- `ai.get-config/complete/raw-request`；流式或非 JSON 场景仍可由 Full Trust service 直接发起网络请求。
+- `events.emit`、`workspace.notify-mutation`、`os-persistence.request`。
+- `desktop.clipboard.*` 与 `desktop.shell.open-external/open-path/show-item-in-folder`。
+
+未知方法返回 `method-not-found`，身份不匹配返回 `identity-mismatch`，超时、取消、拥塞、无效请求和 handler 失败均返回无堆栈的结构化错误。RPC 是稳定集成接口，不改变 Full Trust 插件可以绕过它的事实。
+
 ## 11. npm、构建与原生模块
 
 ### 11.1 包管理器
 
 - 支持 npm、pnpm 和 yarn；默认按锁文件选择，并允许 manifest 显式指定。
 - `install: ci` 要求锁文件，`install: install` 允许更新依赖解析结果并在确认页突出显示。
-- 命令使用参数数组执行；只有 manifest 明确要求时才使用 shell。
+- 逻辑命令始终以可审计的参数数组保存并执行；常规命令保持 `shell: false`。Windows 的 npm/pnpm/yarn 是 `.cmd` shim，宿主仅对这三类已知入口通过 `%ComSpec% /d /s /c` 适配，并拒绝含空白或 shell 元字符的参数，避免把 manifest 变成自由格式命令行。
 - 包管理器不可用、网络失败或脚本失败时保留安装日志，artifact 不进入 active 目录。
+- timeout 或用户取消会先请求优雅终止，再强制终止整个进程树；runner 等待进程实际关闭后才返回，避免仍在运行的脚本与 runtime 清理竞争。
 
 ### 11.2 生命周期与构建
 
-允许依赖和插件自身的 `preinstall`、`install`、`postinstall`、prepare 和 build 脚本。安装确认必须展示实际命令与 `allowScripts` 状态。构建产物在 staging 中重新校验 entry 存在性后才能发布。
+允许依赖和插件自身的 `preinstall`、`install`、`postinstall`、prepare 和 build 脚本。安装确认必须展示实际命令与 `allowScripts` 状态。宿主先保留已确认、不可变的 artifact 基线，再将所有包复制到可变 runtime；构建和探测不修改该基线，runtime entry 在激活前重新校验。
 
 ### 11.3 Native module
 
 - 根据当前 Electron version、ABI、平台和架构执行 rebuild。
 - 保存锁文件 hash、平台、架构、Electron ABI 和 rebuild 结果作为运行时指纹。
 - 平台或 Electron ABI 改变后，在插件激活前重新 rebuild；失败则停用该 revision。
+- probe 扫描完整 runtime，而不只扫描 `node_modules`，因此也覆盖插件自带的 `build/Release/*.node` 与包管理器的展开目录；发现与逐模块加载均支持取消，并受总时间预算和单模块 timeout 约束。
+- native probe timeout/cancel 与依赖命令采用相同的进程树终止和关闭等待语义；指纹记录过 native module 的包在 ABI 变化后必须重新准备并探测，即使 manifest 没有声明 rebuild 计划。
 - native module 无法热卸载，相关升级、回滚和删除统一在重启后完成。
 
 ## 12. Renderer、iframe 与窗口策略
@@ -415,7 +484,7 @@ React 及 ReactDOM 由宿主提供，插件 renderer bundle 将其视为 externa
 
 ### 12.2 Full Trust frame registry
 
-Full Trust iframe 必须登记 pluginId、frameId、目标 URL或 origin、是否允许 popup/导航/下载以及可选权限。主进程只对当前启用且 revision 匹配的登记放行。插件停用或 revision 切换时立即撤销登记。
+Full Trust iframe 必须登记 pluginId、精确 revision、不可猜测的 frameName/popupName、允许的 origin，以及是否允许 popup、导航、下载和权限请求。主进程只对当前启用且 revision 匹配的登记放行。由于 Electron 不允许沙箱 opener 将原生子窗口提权，匹配 popup token 时由主进程独立创建 `nodeIntegration: true`、`sandbox: false` 的特权 `BrowserWindow`，原始 `window.open` 仍返回 deny。插件停用或 revision 切换时立即撤销登记并关闭所属窗口。
 
 主窗口 CSP 可加入 Full Trust frame 所需协议或受控网络 scheme，但 v2 继续只使用 `knowbook-plugin-ui:` 和严格 sandbox。现有 v2 frame 导航与 popup 安全测试不得放宽预期。
 
@@ -433,6 +502,11 @@ Full Trust iframe 必须登记 pluginId、frameId、目标 URL或 origin、是�
 - `background.mode: detached` 允许 KnowBook 退出后继续运行。
 - `os-persistence` 允许安装登录启动项或系统服务，必须在安装确认中单独突出显示。
 - 宿主记录安装方法、命令、PID/service id 和卸载步骤。
+- detached adoption 不只按 PID 认领进程，还核对可执行文件、OS process start token、revision、service entry 和 launch nonce，拒绝 PID 复用或旧 revision 冒充。停止时先发送优雅终止，超时后升级为强制终止，并再次确认目标已经退出。
+- detached service 的 RPC 使用确定性本机端点和持久化 launch nonce；KnowBook 退出时关闭端点但保留进程，服务持续退避重连，新宿主完成复合身份校验后重新开放同一端点。手动启动也会捕获身份；安全模式、停用、升级、回滚和卸载会在发信号前再次核对 PID、start token 与可执行文件，无法核验时拒绝误杀并保留错误记录。
+- 当前宿主管理实现使用 Windows/macOS Electron login item 与 Linux XDG autostart desktop file；登记命令启动 KnowBook，再由已确认 installation 恢复 detached service。
+- macOS 的 `mainAppService` 是应用级全局单例；manager 对多个插件请求做唯一归属协调，避免后启动插件静默覆盖另一个插件的登记。
+- 登记前先持久化可执行文件、参数、service id、revision 和清理描述，只有用户再次核对并确认后才写入系统；AI 和插件自身只能创建待确认请求。
 - 插件中心必须提供停止与移除入口；应用卸载流程对已登记服务做尽力清理。
 - 插件绕过 SDK 创建的计划任务、服务或启动项无法保证自动发现和清理。
 
@@ -448,6 +522,7 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 | `system_plugin_audit` | 安装、确认、升级、回滚、启停、外部命令和恢复操作 |
 | `system_plugin_dependency_jobs` | 包管理器、build、native rebuild 命令与日志 |
 | `system_plugin_crash_markers` | 启动阶段、失败 revision 和自动恢复依据 |
+| `system_plugin_os_persistence` | 登录启动的精确命令、revision、service id、平台清理描述、确认状态和错误 |
 
 现有 `system_plugin_install_requests` 增加 staged artifact、真实 hash、manifest snapshot、依赖计划、确认版本、最终 installation 和错误信息。请求中的 hash 必须由主进程对本地 artifact 计算，不能信任 Renderer 或 AI 传入的声明值。
 
@@ -576,6 +651,8 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 ## 19. 测试计划
 
+第 19.1–19.3 节描述最终需要具备的完整测试矩阵，不代表其中每一项已经完成。当前已经取得的证据单列在第 19.4 节。
+
 ### 19.1 单元测试
 
 - v3 manifest、风险目录、entry 路径、hash 和兼容版本校验。
@@ -600,12 +677,23 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 - 插件中心完成选择、风险确认、重启提示、启停、回滚和卸载。
 - React/DOM/CSS 注入可见且停用后清理。
-- Full Trust iframe 可联网和打开 popup，v2 iframe 仍不能联网、逃逸或弹窗。
+- Full Trust iframe 可联网、请求登记权限并触发主进程创建 Node 特权窗口，v2 iframe 仍不能联网、逃逸或弹窗。
 - 菜单、托盘、剪贴板、窗口和外部程序测试资源可创建并清理。
 - Windows、macOS、Linux 打包应用执行 runtime smoke。
 - 安全模式能在坏插件或主进程启动失败后进入应用。
 
+### 19.4 当前自动化证据与剩余门槛
+
+- 受控验收工程与 [Windows Electron E2E](../e2e-tests/system-plugins.spec.ts) 已覆盖：选择目录、展示主进程计算的精确 SHA-256、风险声明和依赖计划、确认复选框、完整插件 ID 匹配、用户确认；真实离线 `npm ci --ignore-scripts`、锁文件、本地 `file:` 纯 JS 依赖实体化、可变 runtime 加载、`pending-restart`、复用隔离 userData 重启；Main Node/文件系统/用户数据路径/raw Store/SQLite/环境变量/Electron/子进程/HTTP、Documents/Databases/Settings，以及使用宿主 API Key 向本地 OpenAI-compatible mock 发送任意 messages/tools/seed；app-lifetime service 的真实 Main RPC 往返；Renderer React/DOM/CSS、远程 HTTP/WebSocket frame、权限请求、导航、下载、独立 Node 特权窗口、停用清理，以及最终 `active` 状态。
+- 针对性单元/集成测试已覆盖：macOS `mainAppService` 单例冲突；detached PID 复用拒绝、复合身份校验、停止升级、手动启动身份落盘、adoption 后停止再启动、安全模式停服和升级旧 revision 清理；同步服务启动失败回滚；rejected 启动 Promise 清理；已结束请求的 staging sweep；并发 artifact 发布排他占用且不覆盖竞争目标。
+- 依赖与 native 测试已覆盖：timeout/cancel 后等待进程树关闭、native runner 协作取消、全 runtime `.node` 扫描、扫描取消、单模块 timeout、总预算、ABI 变化后的重新探测，以及无依赖包也从可变 runtime 激活。
+- service RPC 测试已覆盖：闭合协议、危险原型键/大小/深度限制、并发、timeout、生命周期取消、未知方法、精确 revision、响应过滤、错误 launch token、本机端点隔离、真实 Electron Node 子进程 bootstrap、宿主端点关闭与重建后的同 PID 重连、Documents/Databases/Settings/AI 映射，以及不包含参数/返回值的 manager 审计。
+- 当前 Windows E2E 没有覆盖 AI 流式/取消/错误、native module、pnpm/yarn、生命周期/build 脚本、剪贴板/菜单/托盘/外部程序、detached/OS 登录启动、真实 login item、升级 revision 切换或专属 preload；它不是 Windows 安装包 smoke，更不能替代 macOS/Linux 验证。
+- 发布前仍必须完成：Windows、macOS、Linux 打包态真实 native module 与登录启动项测试；真实系统登录/重启、应用升级/回滚和卸载残留验证；第 9 节十二项能力的统一验收矩阵。
+
 ## 20. 最终验收标准
+
+截至 2026-09-04，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。当前最明确的阻塞项是三平台打包态 native/login、真实系统登录/重启/卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
 
 ### 20.1 功能验收
 

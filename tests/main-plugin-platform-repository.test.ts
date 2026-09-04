@@ -223,6 +223,8 @@ test('system plugins remain inert until exact strong confirmation and always req
     })
     assert.equal(request.status, 'awaiting-confirmation')
     assert.equal(request.restartRequired, true)
+    assert.equal(request.stagedArtifactPath, null)
+    assert.equal(request.installationId, null)
     assert.equal(store.pluginPlatform.getDefinition('native.capture'), null)
     assert.throws(() => store.pluginPlatform.resolveSystemPluginInstallRequest({
       requestId: request.id,
@@ -251,6 +253,220 @@ test('system plugins remain inert until exact strong confirmation and always req
       decision: 'cancel',
       acknowledgeSystemAccess: false
     }), /already resolved/)
+  })
+})
+
+test('system plugin v3 repository persists package, installation, run, jobs, audit, and crash state', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    const request = repository.createSystemPluginInstallRequest({
+      pluginId: 'full.example',
+      name: 'Full Example',
+      version: '1.2.3',
+      publisher: 'Example Publisher',
+      artifactSha256: 'b'.repeat(64),
+      systemPermissions: ['full-trust'],
+      reason: 'Exercises the v3 persistence model.',
+      requestedBy: 'user'
+    })
+    const staged = repository.updateSystemPluginInstallRequestState(request.id, {
+      stagedArtifactPath: 'C:\\staging\\full.example',
+      computedArtifactSha256: 'c'.repeat(64),
+      manifestSnapshot: { schemaVersion: 3, fullAccess: true },
+      dependencyPlan: { packageManager: 'npm', commands: [['npm', 'ci']] },
+      confirmationVersion: 1
+    })
+    assert.equal(staged.computedArtifactSha256, 'c'.repeat(64))
+    assert.deepEqual(staged.manifestSnapshot, { schemaVersion: 3, fullAccess: true })
+
+    const packageRecord = repository.createSystemPluginPackage({
+      id: 'package-full-example-v1',
+      pluginId: 'full.example',
+      version: '1.2.3',
+      publisher: 'Example Publisher',
+      contentHash: 'c'.repeat(64),
+      artifactPath: 'C:\\staging\\full.example',
+      manifestSnapshot: { schemaVersion: 3, id: 'full.example' },
+      fileManifest: [{ path: 'plugin.json', sha256: 'd'.repeat(64) }],
+      sourceRequestId: request.id
+    })
+    const published = repository.updateSystemPluginPackage(packageRecord.id, {
+      artifactPath: 'C:\\plugins\\full.example\\cccc',
+      runtimeFingerprint: { platform: 'win32', arch: 'x64' },
+      status: 'ready'
+    })
+    assert.equal(published.status, 'ready')
+    assert.ok(published.publishedAt)
+
+    const installation = repository.createSystemPluginInstallation({
+      id: 'system-install-full-example',
+      pluginId: 'full.example',
+      enabled: true,
+      autoStart: true,
+      status: 'pending-restart',
+      pendingPackageId: packageRecord.id,
+      backupPath: 'C:\\backups\\knowbook-before-full-example.db'
+    })
+    repository.updateSystemPluginInstallRequestState(request.id, {
+      installationId: installation.id
+    })
+
+    const dependencyJob = repository.createSystemPluginDependencyJob({
+      id: 'dependency-job-full-example',
+      packageId: packageRecord.id,
+      installationId: installation.id,
+      requestId: request.id,
+      kind: 'install',
+      packageManager: 'npm',
+      command: ['npm', 'ci'],
+      logPath: 'C:\\logs\\dependency.log'
+    })
+    repository.updateSystemPluginDependencyJob(dependencyJob.id, {
+      status: 'running',
+      pid: 4321
+    })
+    const completedJob = repository.updateSystemPluginDependencyJob(dependencyJob.id, {
+      status: 'succeeded',
+      exitCode: 0
+    })
+    assert.ok(completedJob.startedAt)
+    assert.ok(completedJob.finishedAt)
+
+    const run = repository.createSystemPluginRun({
+      id: 'system-run-full-example-main',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      component: 'main',
+      pid: 5000,
+      logPath: 'C:\\logs\\main.log'
+    })
+    const marker = repository.createSystemPluginCrashMarker({
+      id: 'crash-marker-full-example',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      phase: 'activation.main'
+    })
+    assert.deepEqual(
+      repository.listActiveSystemPluginCrashMarkers().map((entry) => entry.id),
+      [marker.id]
+    )
+    const readyRun = repository.updateSystemPluginRun(run.id, {
+      status: 'ready',
+      health: { ok: true },
+      lastHeartbeatAt: '2026-09-02T00:00:00.000Z'
+    })
+    assert.ok(readyRun.readyAt)
+    assert.deepEqual(readyRun.health, { ok: true })
+    repository.updateSystemPluginCrashMarker(marker.id, {
+      state: 'recovered',
+      recovery: { action: 'accepted-ready-run' }
+    })
+    assert.equal(repository.listActiveSystemPluginCrashMarkers().length, 0)
+
+    const activeInstallation = repository.updateSystemPluginInstallation(installation.id, {
+      status: 'active',
+      currentPackageId: packageRecord.id,
+      pendingPackageId: null
+    })
+    assert.equal(activeInstallation.currentPackageId, packageRecord.id)
+    assert.equal(activeInstallation.pendingPackageId, null)
+
+    const osPersistence = repository.upsertSystemPluginOsPersistence({
+      id: 'os-persistence-full-example',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      revisionHash: `sha256:${'c'.repeat(64)}`,
+      serviceId: 'knowbook.full.example',
+      method: 'electron-login-item',
+      command: {
+        executable: 'C:\\Program Files\\KnowBook\\KnowBook.exe',
+        args: ['--knowbook-system-plugin-os-startup=full.example']
+      },
+      descriptor: {
+        schemaVersion: 1,
+        platform: 'win32',
+        method: 'electron-login-item'
+      }
+    })
+    assert.equal(osPersistence.status, 'awaiting-confirmation')
+    assert.deepEqual(
+      repository.getSystemPluginOsPersistenceByPlugin('full.example'),
+      osPersistence
+    )
+    const registeredPersistence = repository.updateSystemPluginOsPersistence(
+      osPersistence.id,
+      { status: 'registered', resolvedAt: '2026-09-02T00:00:00.000Z' }
+    )
+    assert.equal(registeredPersistence.status, 'registered')
+    assert.equal(registeredPersistence.resolvedAt, '2026-09-02T00:00:00.000Z')
+    assert.deepEqual(repository.listSystemPluginOsPersistence(), [registeredPersistence])
+
+    const audit = repository.appendSystemPluginAudit({
+      id: 'audit-full-example-activation',
+      pluginId: 'full.example',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      requestId: request.id,
+      runId: run.id,
+      actor: 'system',
+      action: 'activation.ready',
+      outcome: 'success',
+      details: { component: 'main' }
+    })
+    assert.deepEqual(repository.listSystemPluginAudit('full.example'), [audit])
+    assert.deepEqual(repository.listSystemPluginDependencyJobs(packageRecord.id), [completedJob])
+    assert.deepEqual(repository.listSystemPluginRuns(installation.id), [readyRun])
+    assert.equal(
+      repository.getSystemPluginInstallRequest(request.id)?.installationId,
+      installation.id
+    )
+  })
+})
+
+test('system plugin v3 repository rejects cross-plugin lifecycle references', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    const firstPackage = repository.createSystemPluginPackage({
+      id: 'package-first',
+      pluginId: 'first.system',
+      version: '1.0.0',
+      publisher: 'Publisher',
+      contentHash: '1'.repeat(64),
+      artifactPath: 'C:\\plugins\\first',
+      manifestSnapshot: { id: 'first.system' },
+      fileManifest: []
+    })
+    const secondPackage = repository.createSystemPluginPackage({
+      id: 'package-second',
+      pluginId: 'second.system',
+      version: '1.0.0',
+      publisher: 'Publisher',
+      contentHash: '2'.repeat(64),
+      artifactPath: 'C:\\plugins\\second',
+      manifestSnapshot: { id: 'second.system' },
+      fileManifest: []
+    })
+    const installation = repository.createSystemPluginInstallation({
+      id: 'install-first',
+      pluginId: 'first.system',
+      currentPackageId: firstPackage.id
+    })
+    assert.throws(() => repository.updateSystemPluginInstallation(installation.id, {
+      pendingPackageId: secondPackage.id
+    }), /another plugin/)
+    assert.throws(() => repository.createSystemPluginRun({
+      installationId: installation.id,
+      packageId: secondPackage.id,
+      component: 'main'
+    }), /does not belong/)
+    assert.throws(() => repository.appendSystemPluginAudit({
+      pluginId: 'second.system',
+      installationId: installation.id,
+      actor: 'system',
+      action: 'activation.failed',
+      outcome: 'failure'
+    }), /another plugin/)
   })
 })
 

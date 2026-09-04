@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
+import { rm as removePath } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -45,6 +46,7 @@ import type {
   RenameDocumentDatabaseColumnInput,
   RecoverPluginV2InstallationInput,
   ResolveSystemPluginInstallRequestInput,
+  ResolveSystemPluginOsPersistenceInput,
   ReorderDatabaseSavedViewsInput,
   RunPluginDocumentActionInput,
   RunPluginDocumentActionResult,
@@ -55,9 +57,15 @@ import type {
   SemanticSearchResult,
   SetPluginEnabledInput,
   SetPluginV2EnabledInput,
+  SetSystemPluginEnabledInput,
+  RollbackSystemPluginInput,
   RemovePluginV2Input,
   SystemPluginInstallRequest,
   SystemPluginInstallRequestInput,
+  SystemPluginFramePolicyInput,
+  RemoveSystemPluginFramePolicyInput,
+  SystemPluginMutationInput,
+  SystemPluginSummary,
   UpdatePluginSettingInput,
   UpdateAiConfigInput,
   UpdateWebClipBridgeSettingsInput,
@@ -118,6 +126,18 @@ import { WebClipExtractionWorkerRunner } from './web-clip-extract-worker-client'
 import { CoalescedNotifier } from './coalesced-notifier'
 import { isSameOriginNavigation } from './window-navigation'
 import {
+  createKnowbookFullTrustServices,
+  createKnowbookFullTrustServiceRpcMethods,
+  createFullTrustOsPersistenceAdapter,
+  createSystemPluginPackagePreparer,
+  getSystemPluginRuntimeRoot,
+  SystemPluginManager,
+  type FullTrustPluginContextFactoryBindings,
+  type SystemPluginManagerSummary
+} from './system-plugin'
+import { normalizeSystemPluginV3Manifest } from './system-plugin-artifact'
+import { extractSystemPluginArchive } from './system-plugin-archive'
+import {
   createEphemeralCredentialStorage,
   isSecureStorageUsable,
   protectCredential,
@@ -158,6 +178,11 @@ type PluginUiDocumentRegistration = {
 }
 const pluginUiDocuments = new Map<string, PluginUiDocumentRegistration>()
 const activePluginUiDocumentTokens = new Map<string, string>()
+const fullTrustFramePolicies = new Map<string, SystemPluginFramePolicyInput>()
+const fullTrustPopupWindows = new Map<number, {
+  frameName: string
+  window: ElectronBrowserWindow
+}>()
 
 function recordPackagedRuntimeSmoke(status: 'started' | 'passed' | 'failed', error?: unknown): void {
   if (!PACKAGED_RUNTIME_SMOKE_RESULT_PATH) return
@@ -178,6 +203,7 @@ if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1') {
 }
 const WEB_CLIP_BRIDGE_PORT_KEY = 'webclip.bridge.port'
 const WEB_CLIP_BRIDGE_TOKEN_KEY = 'webclip.bridge.token'
+const SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY = 'system-plugin.safe-mode-next-boot'
 const LOCAL_WORKSPACE_ID = 'local-workspace'
 const DEFAULT_WEB_CLIP_BRIDGE_PORT = 3210
 const WORKSPACE_MUTATION_NOTIFY_DELAY_MS = 25
@@ -296,6 +322,13 @@ const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const restoreSafetyBackupRoot = join(userDataRoot, 'backups', 'restore-safety')
 const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
+const systemPluginRoot = join(userDataRoot, 'system-plugins')
+const systemPluginStagingRoot = join(systemPluginRoot, 'staging')
+const systemPluginArtifactRoot = join(systemPluginRoot, 'artifacts')
+const systemPluginRuntimeRoot = join(systemPluginRoot, 'runtime')
+const systemPluginDataRoot = join(systemPluginRoot, 'data')
+const systemPluginLogRoot = join(systemPluginRoot, 'logs')
+const systemPluginBackupRoot = join(userDataRoot, 'backups', 'system-plugins')
 let store: KnowbookStore
 let backupService: MarkdownBackupService
 let restoreService: MarkdownRestoreService
@@ -305,6 +338,7 @@ let webClipExtractionWorker: WebClipExtractionWorkerRunner
 let webClipBridge: WebClipBridgeService
 let pluginHost: PluginHost
 let pluginPlatformV2: PluginPlatformV2Service
+let systemPluginManager: SystemPluginManager<ReturnType<typeof createKnowbookFullTrustServices>>
 let assistantAgent: AssistantAgentService
 let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
@@ -575,6 +609,80 @@ function initializeServices(): void {
       }
     }
   )
+  const createFullTrustPluginServices = (
+    bindings: Pick<FullTrustPluginContextFactoryBindings, 'plugin' | 'registerDisposable'>
+  ) => createKnowbookFullTrustServices({
+    store,
+    sqlite: store.getUnsafeDatabaseHandle(),
+    workspaceEventBus,
+    electron,
+    getMainWindow: () => mainWindow,
+    getAiCredentials: () => {
+      const config = store.getAiConfigPublic()
+      return {
+        enabled: config.enabled,
+        apiKey: getDecryptedAiApiKey(),
+        baseUrl: config.baseUrl,
+        model: config.model
+      }
+    },
+    notifyWorkspaceMutation,
+    cancelDocumentSummaryGeneration,
+    registerDisposable: bindings.registerDisposable,
+    requestOsPersistence: () => systemPluginManager.requestOsPersistence(
+      bindings.plugin.id,
+      'plugin'
+    ),
+    renderer: {
+      activate: activateFullTrustRenderer,
+      deactivate: deactivateFullTrustRenderer
+    },
+    paths: {
+      userData: app.getPath('userData'),
+      appData: app.getPath('appData'),
+      documents: app.getPath('documents'),
+      downloads: app.getPath('downloads'),
+      temp: app.getPath('temp')
+    }
+  })
+  systemPluginManager = new SystemPluginManager({
+    repository: store.pluginPlatform,
+    stagingRoot: systemPluginStagingRoot,
+    artifactRoot: systemPluginArtifactRoot,
+    dataRoot: systemPluginDataRoot,
+    backupRoot: systemPluginBackupRoot,
+    runtimeRoot: systemPluginRuntimeRoot,
+    logRoot: systemPluginLogRoot,
+    osPersistenceAdapter: createFullTrustOsPersistenceAdapter({
+      platform: process.platform,
+      electronApp: app
+    }),
+    serviceEnvironment: () => {
+      const ai = store.getAiConfigPublic()
+      return {
+        KNOWBOOK_USER_DATA: userDataRoot,
+        KNOWBOOK_DATABASE_PATH: databasePath,
+        KNOWBOOK_APP_PATH: app.getAppPath(),
+        KNOWBOOK_AI_ENABLED: ai.enabled ? '1' : '0',
+        KNOWBOOK_AI_API_KEY: getDecryptedAiApiKey() ?? '',
+        KNOWBOOK_AI_BASE_URL: ai.baseUrl,
+        KNOWBOOK_AI_MODEL: ai.model
+      }
+    },
+    backupDatabase: (destinationPath) => store.backupDatabase(destinationPath),
+    preparePublishedPackage: createSystemPluginPackagePreparer({
+      repository: store.pluginPlatform,
+      runtimeRoot: systemPluginRuntimeRoot,
+      logRoot: systemPluginLogRoot
+    }),
+    createServices: createFullTrustPluginServices,
+    createServiceRpcMethods: ({ plugin }) => createKnowbookFullTrustServiceRpcMethods(
+      createFullTrustPluginServices({
+        plugin,
+        registerDisposable: () => undefined
+      })
+    )
+  })
   assistantAgent = new AssistantAgentService(
     store.assistantSessions,
     pluginPlatformV2,
@@ -662,6 +770,116 @@ type SemanticContextNote = SemanticSearchResult & {
   contentHash: string
 }
 
+async function activateFullTrustRenderer(input: {
+  pluginId: string
+  version: string
+  revisionHash: string
+  source: string
+}): Promise<void> {
+  const window = mainWindow
+  if (!window || window.webContents.isDestroyed()) {
+    throw new Error('Full Trust renderer activation requires an active KnowBook window.')
+  }
+  const payload = JSON.stringify(input)
+  const script = `
+    (async () => {
+      const input = ${payload};
+      const registry = window.knowbookFullTrust;
+      if (!registry || typeof registry.activatePlugin !== 'function') {
+        throw new Error('Full Trust renderer registry is unavailable.');
+      }
+      let exported;
+      if (/^\\s*(?:import|export)\\s/m.test(input.source)) {
+        const url = URL.createObjectURL(new Blob([input.source], { type: 'text/javascript' }));
+        try {
+          exported = await import(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      } else {
+        const module = { exports: {} };
+        const evaluate = new Function(
+          'module',
+          'exports',
+          'React',
+          'ReactDOM',
+          'ReactDOMClient',
+          'window',
+          'document',
+          input.source + '\\n//# sourceURL=knowbook-full-trust://' + encodeURIComponent(input.pluginId) + '/renderer.js'
+        );
+        const returned = evaluate(
+          module,
+          module.exports,
+          registry.React,
+          registry.ReactDOM,
+          registry.ReactDOMClient,
+          window,
+          document
+        );
+        exported = returned === undefined ? module.exports : returned;
+      }
+      const initializer = exported?.default ?? exported?.activate ?? exported;
+      if (typeof initializer !== 'function') {
+        throw new Error('Full Trust renderer entry must export an initializer function.');
+      }
+      await registry.activatePlugin({
+        id: input.pluginId,
+        version: input.version,
+        revisionHash: input.revisionHash
+      }, initializer);
+    })()
+  `
+  await window.webContents.executeJavaScript(script, true)
+}
+
+async function deactivateFullTrustRenderer(pluginId: string): Promise<void> {
+  const window = mainWindow
+  if (!window || window.webContents.isDestroyed()) return
+  const encodedPluginId = JSON.stringify(pluginId)
+  await window.webContents.executeJavaScript(
+    `window.knowbookFullTrust?.deactivatePlugin(${encodedPluginId})`,
+    true
+  )
+}
+
+async function deactivateAllFullTrustRenderers(): Promise<void> {
+  const window = mainWindow
+  if (!window || window.webContents.isDestroyed()) return
+  await window.webContents.executeJavaScript(
+    'window.knowbookFullTrust?.deactivateAll()',
+    true
+  )
+}
+
+async function synchronizeFullTrustRendererPlugins(): Promise<void> {
+  if (!servicesInitialized) return
+  for (const summary of systemPluginManager.list()) {
+    const packageRecord = summary.currentPackage
+    if (summary.installation.status !== 'active' || !packageRecord) continue
+    const manifest = normalizeSystemPluginV3Manifest(packageRecord.manifestSnapshot)
+    if (!manifest.entries.renderer) continue
+    const runtimeRoot = getSystemPluginRuntimeRoot(packageRecord)
+    const entryPath = resolve(runtimeRoot, manifest.entries.renderer)
+    if (!isPathInsideRoot(entryPath, runtimeRoot)) {
+      console.error(`Blocked Full Trust renderer entry outside package root: ${manifest.id}`)
+      await systemPluginManager.disable(manifest.id).catch(() => undefined)
+      continue
+    }
+    try {
+      await activateFullTrustRenderer({
+        pluginId: manifest.id,
+        version: manifest.version,
+        revisionHash: `sha256:${packageRecord.contentHash}`,
+        source: readFileSync(entryPath, 'utf8')
+      })
+    } catch (error) {
+      console.error(`Full Trust renderer activation failed for ${manifest.id}.`, error)
+      await systemPluginManager.disable(manifest.id).catch(() => undefined)
+    }
+  }
+}
+
 function createWindow(): ElectronBrowserWindow {
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -678,10 +896,93 @@ function createWindow(): ElectronBrowserWindow {
     }
   })
 
-  mainWindow.webContents.setWindowOpenHandler(() => {
-    // Never let untrusted subframes turn window.open() into an OS browser
-    // launch. Trusted renderer links use the validated openExternalUrl IPC.
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    const policyEntry = [...fullTrustFramePolicies.entries()].find(([, candidate]) => (
+      candidate.popupName === details.frameName
+    ))
+    const policy = policyEntry?.[1]
+    if (
+      policyEntry
+      && policy
+      && policy.allowPopups
+      && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+      && isAllowedFullTrustFrameUrl(details.url, policy.allowedOrigins)
+    ) {
+      const [frameName] = policyEntry
+      const popup = new BrowserWindow({
+        width: 960,
+        height: 720,
+        parent: mainWindow ?? undefined,
+        webPreferences: {
+          contextIsolation: false,
+          sandbox: false,
+          nodeIntegration: true
+        }
+      })
+      const webContentsId = popup.webContents.id
+      fullTrustPopupWindows.set(webContentsId, { frameName, window: popup })
+      popup.once('closed', () => fullTrustPopupWindows.delete(webContentsId))
+      popup.webContents.on('will-navigate', (event, url) => {
+        const livePolicy = fullTrustFramePolicies.get(frameName)
+        if (
+          !livePolicy
+          || !isActiveSystemPluginRevision(livePolicy.pluginId, livePolicy.revisionHash)
+          || !isAllowedFullTrustFrameUrl(url, livePolicy.allowedOrigins)
+        ) event.preventDefault()
+      })
+      popup.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+      void popup.loadURL(details.url).catch((error) => {
+        console.error(`Full Trust popup failed to load for ${policy.pluginId}.`, error)
+        if (!popup.isDestroyed()) popup.close()
+      })
+    }
+    // v2 and ordinary renderer frames remain blocked. Full Trust popups require
+    // an exact, live policy token registered by an active v3 plugin. The host
+    // creates a separate privileged BrowserWindow because Electron prevents a
+    // sandboxed opener from elevating a native child window's preferences.
     return { action: 'deny' }
+  })
+
+  const fullTrustDownloadHandler = (
+    event: Electron.Event,
+    item: Electron.DownloadItem
+  ): void => {
+    const url = item.getURL()
+    const allowed = [...fullTrustFramePolicies.values()].some((policy) => (
+      policy.allowDownloads
+      && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+      && isAllowedFullTrustFrameUrl(url, policy.allowedOrigins)
+    ))
+    if (!allowed) event.preventDefault()
+  }
+  const pluginSession = mainWindow.webContents.session
+  pluginSession.setPermissionRequestHandler((webContents, _permission, callback, details) => {
+    callback(Boolean(findFullTrustPermissionPolicy(
+      webContents,
+      details.requestingUrl,
+      details.isMainFrame
+    )))
+  })
+  pluginSession.setPermissionCheckHandler((webContents, _permission, requestingOrigin, details) => (
+    Boolean(findFullTrustPermissionPolicy(
+      webContents,
+      details.requestingUrl ?? details.securityOrigin ?? requestingOrigin,
+      details.isMainFrame
+    ))
+  ))
+  pluginSession.setDevicePermissionHandler((details) => (
+    [...fullTrustFramePolicies.values()].some((policy) => (
+      policy.allowPermissions
+      && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+      && isAllowedFullTrustFrameUrl(details.origin, policy.allowedOrigins)
+    ))
+  ))
+  pluginSession.on('will-download', fullTrustDownloadHandler)
+  mainWindow.once('closed', () => {
+    pluginSession.removeListener('will-download', fullTrustDownloadHandler)
+    pluginSession.setPermissionRequestHandler(null)
+    pluginSession.setPermissionCheckHandler(null)
+    pluginSession.setDevicePermissionHandler(null)
   })
 
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -697,6 +998,13 @@ function createWindow(): ElectronBrowserWindow {
 
   mainWindow.webContents.on('will-frame-navigate', (event) => {
     if (!event.isMainFrame) {
+      const policy = event.frame?.name ? fullTrustFramePolicies.get(event.frame.name) : null
+      if (
+        policy
+        && policy.allowNavigation
+        && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+        && isAllowedFullTrustFrameUrl(event.url, policy.allowedOrigins)
+      ) return
       // Only exact, live documents issued by the main-process registry may be
       // loaded in a subframe. Self-navigation to network/file/data/blob URLs is
       // rejected before Chromium issues the request.
@@ -707,6 +1015,17 @@ function createWindow(): ElectronBrowserWindow {
   mainWindow.on('closed', () => {
     rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled because the renderer closed.')
     mainWindow = null
+    for (const popup of fullTrustPopupWindows.values()) {
+      if (!popup.window.isDestroyed()) popup.window.close()
+    }
+    fullTrustPopupWindows.clear()
+    fullTrustFramePolicies.clear()
+  })
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    void synchronizeFullTrustRendererPlugins().catch((error) => {
+      console.error('Full Trust renderer synchronization failed.', error)
+    })
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -811,8 +1130,174 @@ function getPluginHomeData(): PluginHomeData {
           quarantinedAt: installation.quarantinedAt
         }
       }),
-    systemPluginInstallRequests: pluginPlatformV2.listSystemPluginInstallRequests(),
+    systemPluginInstallRequests: store.pluginPlatform.listSystemPluginInstallRequests(),
+    systemPlugins: getSystemPluginSummaries(),
     pluginHost: pluginData.host
+  }
+}
+
+function getSystemPluginSummaries(): SystemPluginSummary[] {
+  return systemPluginManager.list().map(toSystemPluginSummary)
+}
+
+function toSystemPluginSummary(summary: SystemPluginManagerSummary): SystemPluginSummary {
+  const packageRecord = summary.pendingPackage ?? summary.currentPackage
+  const manifest = packageRecord
+    ? normalizeSystemPluginV3Manifest(packageRecord.manifestSnapshot)
+    : null
+  return {
+    pluginId: summary.pluginId,
+    name: manifest?.name ?? summary.pluginId,
+    description: manifest?.description ?? '',
+    publisher: manifest?.publisher ?? '—',
+    enabled: summary.installation.enabled,
+    safeModeDisabled: summary.installation.safeModeDisabled,
+    status: summary.installation.status,
+    currentVersion: summary.currentPackage?.version ?? null,
+    currentArtifactSha256: summary.currentPackage?.contentHash ?? null,
+    pendingVersion: summary.pendingPackage?.version ?? null,
+    pendingArtifactSha256: summary.pendingPackage?.contentHash ?? null,
+    riskDeclarations: manifest?.riskDeclarations ?? [],
+    lastError: summary.installation.lastError,
+    restartRequired: summary.installation.status === 'pending-restart'
+      || summary.installation.status === 'uninstall-pending',
+    updatedAt: summary.installation.updatedAt,
+    runtimeStatus: summary.runtime?.status ?? null,
+    backupPath: summary.installation.backupPath,
+    availablePackages: store.pluginPlatform.listSystemPluginPackages(summary.pluginId, 1_000)
+      .map((packageRecord) => ({
+        packageId: packageRecord.id,
+        version: packageRecord.version,
+        artifactSha256: packageRecord.contentHash,
+        status: packageRecord.status,
+        createdAt: packageRecord.createdAt
+      })),
+    dependencyJobs: packageRecord
+      ? store.pluginPlatform.listSystemPluginDependencyJobs(packageRecord.id, 100)
+      : [],
+    lastRun: summary.lastRun,
+    recentRuns: summary.recentRuns,
+    osPersistence: summary.osPersistence,
+    dataPath: join(systemPluginDataRoot, summary.pluginId),
+    logPath: join(systemPluginLogRoot, summary.pluginId)
+  }
+}
+
+function isActiveSystemPluginRevision(pluginId: string, revisionHash: string): boolean {
+  const summary = systemPluginManager.get(pluginId)
+  const packageRecord = summary?.currentPackage
+  return Boolean(
+    summary
+    && packageRecord
+    && summary.installation.enabled
+    && summary.installation.status === 'active'
+    && summary.runtime?.status === 'active'
+    && summary.runtime.packageId === packageRecord.id
+    && revisionHash === `sha256:${packageRecord.contentHash}`
+  )
+}
+
+function normalizeSystemPluginFramePolicy(input: SystemPluginFramePolicyInput): SystemPluginFramePolicyInput {
+  if (!isActiveSystemPluginRevision(input.pluginId, input.revisionHash)) {
+    throw new Error('Full Trust frame policies require the exact active System Plugin v3 revision.')
+  }
+  const escapedPluginId = input.pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!new RegExp(`^knowbook-full-trust-frame:${escapedPluginId}:[a-f0-9-]{36}$`, 'i').test(input.frameName)) {
+    throw new Error('Full Trust frame policy name is invalid.')
+  }
+  if (!new RegExp(`^knowbook-full-trust-popup:${escapedPluginId}:[a-f0-9-]{36}$`, 'i').test(input.popupName)) {
+    throw new Error('Full Trust popup policy name is invalid.')
+  }
+  if (!Array.isArray(input.allowedOrigins) || input.allowedOrigins.length < 1 || input.allowedOrigins.length > 100) {
+    throw new Error('Full Trust frame policy requires 1 to 100 allowed origins.')
+  }
+  const allowedOrigins = input.allowedOrigins.map((value) => {
+    if (value === '*' || value === 'javascript:') {
+      throw new Error('Full Trust frame origins must be explicit and cannot use javascript: URLs.')
+    }
+    if (/^(?:about|blob|data|file|knowbook-plugin-ui):$/i.test(value)) return value.toLowerCase()
+    const parsed = new URL(value)
+    if (!parsed.origin || parsed.origin === 'null') {
+      throw new Error(`Full Trust frame origin "${value}" must be an absolute origin or protocol token.`)
+    }
+    return parsed.origin
+  })
+  return {
+    pluginId: input.pluginId,
+    revisionHash: input.revisionHash,
+    frameName: input.frameName,
+    popupName: input.popupName,
+    allowedOrigins: [...new Set(allowedOrigins)],
+    allowPopups: input.allowPopups === true,
+    allowNavigation: input.allowNavigation === true,
+    allowDownloads: input.allowDownloads === true,
+    allowPermissions: input.allowPermissions === true
+  }
+}
+
+function isAllowedFullTrustFrameUrl(url: string, allowedOrigins: string[]): boolean {
+  try {
+    const parsed = new URL(url)
+    const origin = parsed.origin && parsed.origin !== 'null' ? parsed.origin : parsed.protocol
+    return allowedOrigins.includes(origin)
+  } catch {
+    return false
+  }
+}
+
+function removeSystemPluginFramePolicies(pluginId: string): void {
+  const removedFrameNames = new Set<string>()
+  for (const [frameName, policy] of fullTrustFramePolicies) {
+    if (policy.pluginId !== pluginId) continue
+    removedFrameNames.add(frameName)
+    fullTrustFramePolicies.delete(frameName)
+  }
+  for (const [webContentsId, popup] of fullTrustPopupWindows) {
+    if (!removedFrameNames.has(popup.frameName)) continue
+    fullTrustPopupWindows.delete(webContentsId)
+    if (!popup.window.isDestroyed()) popup.window.close()
+  }
+}
+
+function removeSystemPluginFramePolicy(frameName: string): void {
+  fullTrustFramePolicies.delete(frameName)
+  for (const [webContentsId, popup] of fullTrustPopupWindows) {
+    if (popup.frameName !== frameName) continue
+    fullTrustPopupWindows.delete(webContentsId)
+    if (!popup.window.isDestroyed()) popup.window.close()
+  }
+}
+
+function findFullTrustPermissionPolicy(
+  webContents: Electron.WebContents | null,
+  requestingUrl: string,
+  isMainFrame: boolean
+): SystemPluginFramePolicyInput | null {
+  if (!webContents || !isAllowedPermissionUrl(requestingUrl)) return null
+  if (mainWindow && webContents.id === mainWindow.webContents.id) {
+    if (isMainFrame) return null
+    return [...fullTrustFramePolicies.values()].find((policy) => (
+      policy.allowPermissions
+      && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+      && isAllowedFullTrustFrameUrl(requestingUrl, policy.allowedOrigins)
+    )) ?? null
+  }
+  const popup = fullTrustPopupWindows.get(webContents.id)
+  const policy = popup ? fullTrustFramePolicies.get(popup.frameName) : null
+  return policy
+    && policy.allowPermissions
+    && isActiveSystemPluginRevision(policy.pluginId, policy.revisionHash)
+    && isAllowedFullTrustFrameUrl(requestingUrl, policy.allowedOrigins)
+    ? policy
+    : null
+}
+
+function isAllowedPermissionUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol !== 'javascript:'
+  } catch {
+    return false
   }
 }
 
@@ -1326,16 +1811,226 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:request-system-plugin-install', (
     _event,
     input: SystemPluginInstallRequestInput
-  ): SystemPluginInstallRequest => pluginPlatformV2.requestSystemPluginInstall(input))
+  ): SystemPluginInstallRequest => store.pluginPlatform.createSystemPluginInstallRequest(input))
+
+  ipcMain.handle('knowbook:choose-and-prepare-system-plugin-install', async (event): Promise<SystemPluginInstallRequest | null> => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+    const sourceChoiceOptions = {
+      type: 'warning' as const,
+      title: '安装 Full Trust 系统插件',
+      message: '选择插件来源',
+      detail: '目录和 ZIP 都会先复制到 staging、校验并计算精确 SHA-256；确认前不会执行任何插件代码。',
+      buttons: ['选择目录', '选择 ZIP', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
+    }
+    const sourceChoice = targetWindow
+      ? await dialog.showMessageBox(targetWindow, sourceChoiceOptions)
+      : await dialog.showMessageBox(sourceChoiceOptions)
+    if (sourceChoice.response === 2) return null
+    const options: OpenDialogOptions = {
+      title: sourceChoice.response === 0
+        ? '选择 Full Trust 系统插件目录'
+        : '选择 Full Trust 系统插件 ZIP',
+      buttonLabel: '检查插件',
+      properties: sourceChoice.response === 0 ? ['openDirectory'] : ['openFile'],
+      ...(sourceChoice.response === 1
+        ? { filters: [{ name: 'ZIP archive', extensions: ['zip'] }] }
+        : {})
+    }
+    const result = targetWindow
+      ? await dialog.showOpenDialog(targetWindow, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return null
+    let extracted: Awaited<ReturnType<typeof extractSystemPluginArchive>> | null = null
+    try {
+      const sourceDirectory = sourceChoice.response === 1
+        ? (extracted = await extractSystemPluginArchive({
+            archivePath: result.filePaths[0],
+            extractionRoot: join(systemPluginStagingRoot, 'archive-imports')
+          })).artifactDirectory
+        : result.filePaths[0]
+      const request = await systemPluginManager.prepareInstallFromDirectory({
+        sourceDirectory,
+        reason: '用户从插件中心选择本地 Full Trust artifact。',
+        requestedBy: 'user'
+      })
+      pluginMutationNotifier.notify()
+      return request
+    } finally {
+      if (extracted) {
+        await removePath(extracted.extractionDirectory, { recursive: true, force: true })
+          .catch(() => undefined)
+      }
+    }
+  })
 
   ipcMain.handle('knowbook:list-system-plugin-install-requests', (): SystemPluginInstallRequest[] => (
-    pluginPlatformV2.listSystemPluginInstallRequests()
+    store.pluginPlatform.listSystemPluginInstallRequests()
   ))
 
-  ipcMain.handle('knowbook:resolve-system-plugin-install-request', (
+  ipcMain.handle('knowbook:resolve-system-plugin-install-request', async (
     _event,
     input: ResolveSystemPluginInstallRequestInput
-  ): SystemPluginInstallRequest => pluginPlatformV2.resolveSystemPluginInstallRequest(input))
+  ): Promise<SystemPluginInstallRequest> => {
+    const resolution = await systemPluginManager.resolveInstallRequest({ ...input, actor: 'user' })
+    pluginMutationNotifier.notify()
+    return resolution.request
+  })
+
+  ipcMain.handle('knowbook:list-system-plugins', (): SystemPluginSummary[] => getSystemPluginSummaries())
+
+  ipcMain.handle('knowbook:set-system-plugin-enabled', async (
+    _event,
+    input: SetSystemPluginEnabledInput
+  ): Promise<SystemPluginSummary> => {
+    const summary = input.enabled
+      ? await systemPluginManager.enable(input.pluginId)
+      : await systemPluginManager.disable(input.pluginId)
+    if (!input.enabled) {
+      removeSystemPluginFramePolicies(input.pluginId)
+      await deactivateFullTrustRenderer(input.pluginId).catch(() => undefined)
+    }
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:uninstall-system-plugin', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<SystemPluginSummary> => {
+    removeSystemPluginFramePolicies(input.pluginId)
+    await deactivateFullTrustRenderer(input.pluginId).catch(() => undefined)
+    const summary = await systemPluginManager.requestUninstall(input.pluginId)
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:recover-system-plugin', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<SystemPluginSummary> => {
+    const summary = await systemPluginManager.recover(input.pluginId)
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:rollback-system-plugin', async (
+    _event,
+    input: RollbackSystemPluginInput
+  ): Promise<SystemPluginSummary> => {
+    const summary = await systemPluginManager.rollback(input.pluginId, input.packageId)
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:start-system-plugin-service', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<SystemPluginSummary> => {
+    const summary = await systemPluginManager.startService(input.pluginId)
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:stop-system-plugin-service', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<SystemPluginSummary> => {
+    const summary = await systemPluginManager.stopService(input.pluginId)
+    pluginMutationNotifier.notify()
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:request-system-plugin-os-persistence', (
+    _event,
+    input: SystemPluginMutationInput
+  ) => {
+    const record = systemPluginManager.requestOsPersistence(input.pluginId, 'user')
+    pluginMutationNotifier.notify()
+    return record
+  })
+
+  ipcMain.handle('knowbook:resolve-system-plugin-os-persistence', async (
+    _event,
+    input: ResolveSystemPluginOsPersistenceInput
+  ) => {
+    const record = await systemPluginManager.resolveOsPersistence({
+      ...input,
+      actor: 'user'
+    })
+    pluginMutationNotifier.notify()
+    return record
+  })
+
+  ipcMain.handle('knowbook:remove-system-plugin-os-persistence', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<SystemPluginSummary> => {
+    await systemPluginManager.removeOsPersistence(input.pluginId, 'user')
+    pluginMutationNotifier.notify()
+    const summary = systemPluginManager.get(input.pluginId)
+    if (!summary) throw new Error('System plugin is not installed.')
+    return toSystemPluginSummary(summary)
+  })
+
+  ipcMain.handle('knowbook:open-system-plugin-data-directory', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<void> => {
+    const summary = systemPluginManager.get(input.pluginId)
+    if (!summary) throw new Error('System plugin is not installed.')
+    const directory = join(systemPluginDataRoot, summary.pluginId)
+    mkdirSync(directory, { recursive: true })
+    const errorMessage = await shell.openPath(directory)
+    if (errorMessage) throw new Error(errorMessage)
+  })
+
+  ipcMain.handle('knowbook:open-system-plugin-log-directory', async (
+    _event,
+    input: SystemPluginMutationInput
+  ): Promise<void> => {
+    const summary = systemPluginManager.get(input.pluginId)
+    if (!summary) throw new Error('System plugin is not installed.')
+    const directory = join(systemPluginLogRoot, summary.pluginId)
+    mkdirSync(directory, { recursive: true })
+    const errorMessage = await shell.openPath(directory)
+    if (errorMessage) throw new Error(errorMessage)
+  })
+
+  ipcMain.handle('knowbook:restart-in-system-plugin-safe-mode', (): void => {
+    store.saveSetting(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY, '1')
+    app.relaunch()
+    app.quit()
+  })
+
+  ipcMain.handle('knowbook:register-system-plugin-frame-policy', (
+    _event,
+    input: SystemPluginFramePolicyInput
+  ): void => {
+    const policy = normalizeSystemPluginFramePolicy(input)
+    const existing = fullTrustFramePolicies.get(policy.frameName)
+    if (existing && (
+      existing.pluginId !== policy.pluginId
+      || existing.revisionHash !== policy.revisionHash
+    )) {
+      throw new Error('Full Trust frame policy token is already owned by another plugin revision.')
+    }
+    fullTrustFramePolicies.set(policy.frameName, policy)
+  })
+
+  ipcMain.handle('knowbook:remove-system-plugin-frame-policy', (
+    _event,
+    input: RemoveSystemPluginFramePolicyInput
+  ): void => {
+    const existing = fullTrustFramePolicies.get(input.frameName)
+    if (!existing) return
+    if (existing.pluginId !== input.pluginId || existing.revisionHash !== input.revisionHash) {
+      throw new Error('Full Trust frame policy belongs to another plugin revision.')
+    }
+    removeSystemPluginFramePolicy(input.frameName)
+  })
 
   ipcMain.handle('knowbook:trigger-backup', async () => {
     const result: BackupResult = await backupService.exportAll(true)
@@ -1943,6 +2638,18 @@ async function shutdownServices(): Promise<void> {
     console.warn('Assistant cleanup failed during shutdown.', error)
   }
 
+  try {
+    await systemPluginManager.destroy()
+  } catch (error) {
+    console.warn('Full Trust system plugin cleanup failed during shutdown.', error)
+  }
+
+  try {
+    await deactivateAllFullTrustRenderers()
+  } catch (error) {
+    console.warn('Full Trust renderer cleanup failed during shutdown.', error)
+  }
+
   const results = await Promise.allSettled([
     webClipBridge.destroy(),
     webClipExtractionWorker.destroy(),
@@ -2117,15 +2824,24 @@ if (hasSingleInstanceLock) {
         pluginStartupFallback = null
       }
       setImmediate(() => {
+        const safeModeNextBoot = store.getSettingPublic(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY) === '1'
+        if (safeModeNextBoot) store.deleteSetting(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY)
         void Promise.allSettled([
           pluginHost.activateAll(),
-          pluginPlatformV2.activateBuiltinPlugins()
+          pluginPlatformV2.activateBuiltinPlugins(),
+          systemPluginManager.startup({
+            safeMode: safeModeNextBoot || process.env['KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE'] === '1'
+          })
         ]).then((results) => {
           for (const result of results) {
             if (result.status === 'rejected') {
               console.error('Background plugin startup failed.', result.reason)
             }
           }
+          return synchronizeFullTrustRendererPlugins()
+        }).catch((error) => {
+          console.error('Full Trust renderer startup failed.', error)
+        }).finally(() => {
           pluginMutationNotifier.notify()
         })
       })

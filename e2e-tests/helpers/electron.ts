@@ -11,6 +11,16 @@ export type ElectronAppContext = {
   tempRoot: string
 }
 
+export type ElectronLaunchOptions = {
+  /** Reuse a prior isolated user-data root to exercise restart-only behavior. */
+  userDataRoot?: string
+}
+
+export type ElectronCloseOptions = {
+  /** Keep the isolated user-data root for a deliberate relaunch in the same test. */
+  preserveUserData?: boolean
+}
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
 
@@ -32,8 +42,11 @@ export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
   await expect(titleInput).toBeVisible()
 }
 
-export async function launchElectronApp(extraEnv: Record<string, string> = {}): Promise<ElectronAppContext> {
-  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
+export async function launchElectronApp(
+  extraEnv: Record<string, string> = {},
+  options: ElectronLaunchOptions = {}
+): Promise<ElectronAppContext> {
+  const tempRoot = options.userDataRoot ?? mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
   const app = await electron.launch({
     args: ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu', '.'],
     cwd: repoRoot,
@@ -58,7 +71,10 @@ export async function launchElectronApp(extraEnv: Record<string, string> = {}): 
   return { app, page, tempRoot }
 }
 
-export async function closeElectronApp(context: Pick<ElectronAppContext, 'app' | 'tempRoot'> | null): Promise<void> {
+export async function closeElectronApp(
+  context: Pick<ElectronAppContext, 'app' | 'tempRoot'> | null,
+  options: ElectronCloseOptions = {}
+): Promise<void> {
   if (!context) {
     return
   }
@@ -92,7 +108,7 @@ export async function closeElectronApp(context: Pick<ElectronAppContext, 'app' |
     }
   }
 
-  if (context.tempRoot) {
+  if (context.tempRoot && !options.preserveUserData) {
     rmSync(context.tempRoot, {
       recursive: true,
       force: true,

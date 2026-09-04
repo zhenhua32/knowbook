@@ -98,16 +98,37 @@ test('main window guards reloads via same-origin check and hardens asset respons
 
   assert.match(
     mainIndexSource,
-    /setWindowOpenHandler\(\(\) => \{[\s\S]*?return \{ action: 'deny' \}/,
-    'window.open must always be denied; trusted external links use validated IPC'
+    /setWindowOpenHandler\(\(details\) => \{[\s\S]*?candidate\.popupName === details\.frameName[\s\S]*?isActiveSystemPluginRevision\(policy\.pluginId, policy\.revisionHash\)[\s\S]*?new BrowserWindow\([\s\S]*?nodeIntegration: true[\s\S]*?return \{ action: 'deny' \}/,
+    'window.open must default to deny while exact active Full Trust tokens create an isolated privileged window'
   )
 
   assert.match(
     rendererIndexSource,
-    /frame-src knowbook-plugin-ui:/,
-    'renderer CSP must allow only the opaque plugin UI document scheme in frames'
+    /frame-src \* data: blob: file: knowbook-plugin-ui:/,
+    'renderer CSP may host Full Trust frames while main-process frame policies remain authoritative'
   )
-  assert.doesNotMatch(rendererIndexSource, /frame-src[^;]*(?:https?:|data:|blob:)/)
+  assert.match(mainIndexSource, /fullTrustFramePolicies\.get\(event\.frame\.name\)/)
+  assert.match(mainIndexSource, /getPluginUiDocumentRegistration\(event\.url\)/)
+  assert.match(
+    mainIndexSource,
+    /setPermissionRequestHandler\([\s\S]*?findFullTrustPermissionPolicy\([\s\S]*?details\.requestingUrl[\s\S]*?details\.isMainFrame/,
+    'permission requests must use the exact active Full Trust revision/origin policy'
+  )
+  assert.match(
+    mainIndexSource,
+    /setPermissionCheckHandler\([\s\S]*?findFullTrustPermissionPolicy\(/,
+    'permission checks must share the Full Trust policy gate'
+  )
+  assert.match(
+    mainIndexSource,
+    /setDevicePermissionHandler\([\s\S]*?policy\.allowPermissions[\s\S]*?isActiveSystemPluginRevision[\s\S]*?isAllowedFullTrustFrameUrl/,
+    'device permissions must remain bound to an active Full Trust origin'
+  )
+  assert.match(
+    mainIndexSource,
+    /removeSystemPluginFramePolicies\([\s\S]*?fullTrustPopupWindows[\s\S]*?popup\.window\.close\(\)/,
+    'deactivation must close popups owned by removed Full Trust frame policies'
+  )
 
   assert.match(
     mainIndexSource,

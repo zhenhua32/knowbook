@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 3,
+  "trust": "full",
+  "id": "system.e2e.full-trust-acceptance",
+  "name": "Full Trust Acceptance",
+  "version": "1.0.0",
+  "description": "Controlled System Plugin v3 acceptance fixture.",
+  "publisher": "KnowBook E2E",
+  "entries": {
+    "main": "main.cjs",
+    "renderer": "renderer.cjs",
+    "service": "service.cjs"
+  },
+  "background": {
+    "mode": "app-lifetime",
+    "autoStart": true
+  },
+  "fullAccess": true,
+  "dependencies": {
+    "packageManager": "npm",
+    "install": "ci",
+    "allowScripts": false,
+    "rebuildNativeModules": false
+  },
+  "riskDeclarations": [
+    "ai",
+    "background-service",
+    "database",
+    "electron",
+    "environment",
+    "filesystem",
+    "network",
+    "node",
+    "npm",
+    "raw-sqlite",
+    "renderer",
+    "secrets",
+    "settings",
+    "subprocess",
+    "user-data",
+    "unsandboxed-frame"
+  ]
+}

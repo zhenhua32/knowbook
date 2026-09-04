@@ -33,6 +33,7 @@ export function usePluginsDomain({
   const pluginRoots = homeData.pluginHost?.roots ?? []
   const pluginV2Installations = homeData.pluginV2Installations ?? []
   const systemPluginInstallRequests = homeData.systemPluginInstallRequests ?? []
+  const systemPlugins = homeData.systemPlugins ?? []
 
   const pluginState = usePluginManagement({
     plugins,
@@ -76,6 +77,47 @@ export function usePluginsDomain({
     pluginRoots,
     pluginV2Installations,
     systemPluginInstallRequests,
+    systemPlugins,
+    onInstallSystemPluginFromFolder: () => {
+      void pluginState.installSystemPluginFromFolder()
+    },
+    onSetSystemPluginEnabled: (plugin, enabled) => {
+      void pluginState.setSystemPluginEnabled(plugin, enabled)
+    },
+    onRecoverSystemPlugin: (plugin) => {
+      void pluginState.recoverSystemPlugin(plugin)
+    },
+    onUninstallSystemPlugin: (plugin) => {
+      void pluginState.uninstallSystemPlugin(plugin)
+    },
+    onRollbackSystemPlugin: (plugin, packageId) => {
+      void pluginState.rollbackSystemPlugin(plugin, packageId)
+    },
+    onStartSystemPluginService: (plugin) => {
+      void pluginState.startSystemPluginService(plugin)
+    },
+    onStopSystemPluginService: (plugin) => {
+      void pluginState.stopSystemPluginService(plugin)
+    },
+    onRequestSystemPluginOsPersistence: (plugin) => {
+      void pluginState.requestSystemPluginOsPersistence(plugin)
+    },
+    onResolveSystemPluginOsPersistence: (plugin, decision, acknowledgeSystemStartup) => {
+      void pluginState.resolveSystemPluginOsPersistence(
+        plugin,
+        decision,
+        acknowledgeSystemStartup
+      )
+    },
+    onRemoveSystemPluginOsPersistence: (plugin) => {
+      void pluginState.removeSystemPluginOsPersistence(plugin)
+    },
+    onOpenSystemPluginDirectory: (plugin, target) => {
+      void pluginState.openSystemPluginDirectory(plugin, target)
+    },
+    onRestartInSystemPluginSafeMode: () => {
+      void pluginState.restartInSystemPluginSafeMode()
+    },
     onRecoverPluginV2Installation: (pluginId) => {
       void window.knowbook.recoverPluginV2Installation({ pluginId }).then(async () => {
         const refreshed = await window.knowbook.getPluginHomeData()
@@ -85,10 +127,11 @@ export function usePluginsDomain({
         onMessage(error instanceof Error ? error.message : 'Plugin recovery failed.')
       })
     },
-    onResolveSystemPluginInstallRequest: (requestId, pluginId, decision, acknowledgeSystemAccess) => {
+    onResolveSystemPluginInstallRequest: (requestId, pluginId, artifactSha256, decision, acknowledgeSystemAccess) => {
       void window.knowbook.resolveSystemPluginInstallRequest({
         requestId,
         pluginId,
+        artifactSha256,
         decision,
         acknowledgeSystemAccess
       }).then(async () => {

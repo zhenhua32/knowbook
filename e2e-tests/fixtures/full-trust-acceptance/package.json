@@ -1,0 +1,8 @@
+{
+  "name": "knowbook-full-trust-acceptance",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "full-trust-local-dependency": "file:vendor/full-trust-local-dependency"
+  }
+}

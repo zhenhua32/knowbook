@@ -20,6 +20,10 @@ import type {
   PluginViewNode,
   RunPluginUiActionInput
 } from '@shared/plugin-ui'
+import {
+  useFullTrustSlotContributions,
+  type FullTrustReactSlotContribution
+} from '../full-trust-plugin-registry'
 
 export type PluginUiContext = NonNullable<RunPluginUiActionInput['context']>
 
@@ -38,7 +42,8 @@ export function PluginSlot({ contributions = [], slot, context, className }: Plu
     () => contributions.filter((contribution) => contribution.slot === slot),
     [contributions, slot]
   )
-  if (visible.length === 0) return null
+  const fullTrustContributions = useFullTrustSlotContributions(slot)
+  if (visible.length === 0 && fullTrustContributions.length === 0) return null
   return (
     <section
       aria-label={`Plugin slot ${slot}`}
@@ -54,7 +59,35 @@ export function PluginSlot({ contributions = [], slot, context, className }: Plu
           <PluginContributionView contribution={contribution} context={context} />
         </PluginContributionBoundary>
       ))}
+      {fullTrustContributions.map((contribution) => (
+        <PluginContributionBoundary
+          contributionId={`${contribution.plugin.id}:${contribution.id}`}
+          key={`${contribution.plugin.id}:${contribution.plugin.revisionHash}:${contribution.id}`}
+        >
+          <FullTrustContributionView contribution={contribution} context={context} />
+        </PluginContributionBoundary>
+      ))}
     </section>
+  )
+}
+
+function FullTrustContributionView({
+  contribution,
+  context
+}: {
+  contribution: FullTrustReactSlotContribution
+  context?: PluginUiContext
+}) {
+  const Contribution = contribution.component
+  return (
+    <div
+      className="plugin-view plugin-full-trust-view"
+      data-full-trust-plugin={contribution.plugin.id}
+      data-full-trust-plugin-revision={contribution.plugin.revisionHash}
+      data-plugin-contribution={contribution.id}
+    >
+      <Contribution plugin={contribution.plugin} slot={contribution.slot} context={context} />
+    </div>
   )
 }
 

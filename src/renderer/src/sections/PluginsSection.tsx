@@ -5,7 +5,8 @@ import type {
   PluginSettingValue,
   PluginV2Details,
   PluginV2InstallationSummary,
-  SystemPluginInstallRequest
+  SystemPluginInstallRequest,
+  SystemPluginSummary
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
@@ -27,12 +28,14 @@ type PluginsSectionProps = {
   plugins: PluginDescriptor[]
   pluginV2Installations: PluginV2InstallationSummary[]
   systemPluginInstallRequests: SystemPluginInstallRequest[]
+  systemPlugins: SystemPluginSummary[]
   pluginBusyId: string | null
   pluginSettingBusyKey: string | null
   pluginSettingDrafts: Record<string, PluginSettingValue>
   pluginInventoryBusy: boolean
   onReloadPlugins: () => void
   onInstallPluginFromFolder: () => void
+  onInstallSystemPluginFromFolder: () => void
   onReloadPlugin: (plugin: PluginDescriptor) => void
   onSetPluginEnabled: (plugin: PluginDescriptor, enabled: boolean) => void
   onRemovePlugin: (plugin: PluginDescriptor) => void
@@ -41,9 +44,25 @@ type PluginsSectionProps = {
   onUpdatePluginSettingDraft: (pluginId: string, settingId: string, value: PluginSettingValue) => void
   onUpdatePluginSetting: (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => void
   onRecoverPluginV2Installation: (pluginId: string) => void
+  onSetSystemPluginEnabled: (plugin: SystemPluginSummary, enabled: boolean) => void
+  onRecoverSystemPlugin: (plugin: SystemPluginSummary) => void
+  onUninstallSystemPlugin: (plugin: SystemPluginSummary) => void
+  onRollbackSystemPlugin: (plugin: SystemPluginSummary, packageId: string) => void
+  onStartSystemPluginService: (plugin: SystemPluginSummary) => void
+  onStopSystemPluginService: (plugin: SystemPluginSummary) => void
+  onRequestSystemPluginOsPersistence: (plugin: SystemPluginSummary) => void
+  onResolveSystemPluginOsPersistence: (
+    plugin: SystemPluginSummary,
+    decision: 'confirm' | 'cancel',
+    acknowledgeSystemStartup: boolean
+  ) => void
+  onRemoveSystemPluginOsPersistence: (plugin: SystemPluginSummary) => void
+  onOpenSystemPluginDirectory: (plugin: SystemPluginSummary, target: 'data' | 'logs') => void
+  onRestartInSystemPluginSafeMode: () => void
   onResolveSystemPluginInstallRequest: (
     requestId: string,
     pluginId: string,
+    artifactSha256: string,
     decision: 'confirm' | 'cancel',
     acknowledgeSystemAccess: boolean
   ) => void
@@ -125,12 +144,14 @@ export function PluginsSection({
   plugins,
   pluginV2Installations,
   systemPluginInstallRequests,
+  systemPlugins,
   pluginBusyId,
   pluginSettingBusyKey,
   pluginSettingDrafts,
   pluginInventoryBusy,
   onReloadPlugins,
   onInstallPluginFromFolder,
+  onInstallSystemPluginFromFolder,
   onReloadPlugin,
   onSetPluginEnabled,
   onRemovePlugin,
@@ -139,6 +160,17 @@ export function PluginsSection({
   onUpdatePluginSettingDraft,
   onUpdatePluginSetting,
   onRecoverPluginV2Installation,
+  onSetSystemPluginEnabled,
+  onRecoverSystemPlugin,
+  onUninstallSystemPlugin,
+  onRollbackSystemPlugin,
+  onStartSystemPluginService,
+  onStopSystemPluginService,
+  onRequestSystemPluginOsPersistence,
+  onResolveSystemPluginOsPersistence,
+  onRemoveSystemPluginOsPersistence,
+  onOpenSystemPluginDirectory,
+  onRestartInSystemPluginSafeMode,
   onResolveSystemPluginInstallRequest
 }: PluginsSectionProps) {
   const isZh = ui.language === 'zh-CN'
@@ -148,6 +180,9 @@ export function PluginsSection({
   const [customizingPlugin, setCustomizingPlugin] = useState<PluginV2InstallationSummary | null>(null)
   const [customizerDrafts, setCustomizerDrafts] = useState<Record<string, string>>({})
   const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
+  const [systemPluginIdConfirmations, setSystemPluginIdConfirmations] = useState<Record<string, string>>({})
+  const [osPersistenceAcknowledgements, setOsPersistenceAcknowledgements] = useState<Record<string, boolean>>({})
+  const [osPersistenceIdConfirmations, setOsPersistenceIdConfirmations] = useState<Record<string, string>>({})
   const [pluginV2Details, setPluginV2Details] = useState<PluginV2Details | null>(null)
   const [pluginV2DetailsLoading, setPluginV2DetailsLoading] = useState(false)
   const [pluginV2DetailsError, setPluginV2DetailsError] = useState<string | null>(null)
@@ -275,6 +310,10 @@ export function PluginsSection({
           <button className="primary-button" disabled={pluginInventoryBusy} onClick={onInstallPluginFromFolder} type="button">
             <span aria-hidden="true">＋</span>
             {pluginInventoryBusy ? ui.common.working : ui.installFolder}
+          </button>
+          <button className="danger-button" disabled={pluginInventoryBusy} onClick={onInstallSystemPluginFromFolder} type="button">
+            <span aria-hidden="true">⚠</span>
+            {isZh ? '安装 Full Trust' : 'Install Full Trust'}
           </button>
         </div>
       </header>
@@ -493,6 +532,163 @@ export function PluginsSection({
         </aside>
       </div>
 
+      {systemPlugins.length > 0 ? (
+        <section className="panel plugin-security-requests">
+          <div className="plugin-section-title">
+            <div><span>System Plugin v3</span><h4>{isZh ? '已安装的 Full Trust 插件' : 'Installed Full Trust plugins'}</h4></div>
+            <div className="plugin-item-actions">
+              <button className="secondary-button" onClick={onRestartInSystemPluginSafeMode} type="button">{isZh ? '安全模式重启' : 'Restart in safe mode'}</button>
+              <strong>{systemPlugins.length}</strong>
+            </div>
+          </div>
+          <div className="system-plugin-request-list">
+            {systemPlugins.map((plugin) => {
+              const busy = pluginBusyId === plugin.pluginId || pluginInventoryBusy
+              const serviceRun = plugin.recentRuns.find((run) => (
+                run.component === 'service' || run.component === 'detached'
+              ))
+              const serviceRunning = serviceRun?.status === 'starting'
+                || serviceRun?.status === 'ready'
+                || serviceRun?.status === 'stopping'
+              const osPersistence = plugin.osPersistence
+              const canRequestOsPersistence = plugin.status === 'active'
+                && serviceRun?.component === 'detached'
+                && plugin.riskDeclarations.includes('os-persistence')
+                && (!osPersistence
+                  || osPersistence.status === 'removed'
+                  || osPersistence.status === 'cancelled')
+              const rollbackTarget = plugin.availablePackages.find((candidate) => (
+                candidate.status === 'ready'
+                && candidate.artifactSha256 !== plugin.currentArtifactSha256
+                && candidate.artifactSha256 !== plugin.pendingArtifactSha256
+              ))
+              return (
+                <div className="system-plugin-request" key={`full-trust:${plugin.pluginId}`}>
+                  <div className="plugin-item-head">
+                    <div><strong>{plugin.name}</strong><p>{plugin.publisher} · {plugin.pluginId}</p></div>
+                    <span className={`plugin-status ${plugin.safeModeDisabled || plugin.lastError ? 'plugin-status-error' : plugin.enabled ? 'plugin-status-running' : 'plugin-status-disabled'}`}>{plugin.status}</span>
+                  </div>
+                  {plugin.description ? <p>{plugin.description}</p> : null}
+                  <code>{isZh ? '当前' : 'Current'}: {plugin.currentVersion ?? '—'} · {plugin.currentArtifactSha256 ?? '—'}</code>
+                  {plugin.pendingVersion ? <code>{isZh ? '待生效' : 'Pending'}: {plugin.pendingVersion} · {plugin.pendingArtifactSha256}</code> : null}
+                  <code>{plugin.riskDeclarations.join(' · ')}</code>
+                  {plugin.backupPath ? <code>{isZh ? '安全备份' : 'Safety backup'}: {plugin.backupPath}</code> : null}
+                  {plugin.lastRun ? <code>{isZh ? '最近运行' : 'Last run'}: {plugin.lastRun.component} · {plugin.lastRun.status} · PID {plugin.lastRun.pid ?? '—'}</code> : null}
+                  {serviceRun ? (
+                    <div className="plugin-inspector-note">
+                      <strong>{serviceRun.component === 'detached' ? 'Detached service' : 'App-lifetime service'} · {serviceRun.status}</strong>
+                      <code>PID {serviceRun.pid ?? '—'} · {isZh ? '重启' : 'restarts'} {serviceRun.restartCount}</code>
+                      <code>{isZh ? '心跳' : 'heartbeat'}: {serviceRun.lastHeartbeatAt ?? '—'} · {isZh ? '退出' : 'exit'}: {serviceRun.exitCode ?? serviceRun.exitSignal ?? '—'}</code>
+                      {serviceRun.logPath ? <code>{serviceRun.logPath}</code> : null}
+                    </div>
+                  ) : null}
+                  {osPersistence ? (
+                    <div className="plugin-inspector-note">
+                      <strong>{isZh ? '系统登录启动' : 'OS login startup'} · {osPersistence.status}</strong>
+                      <code>{osPersistence.method} · {osPersistence.serviceId}</code>
+                      <code>{osPersistence.command.executable} {osPersistence.command.args.join(' ')}</code>
+                      <code>{isZh ? '修订' : 'Revision'}: {osPersistence.revisionHash}</code>
+                      {osPersistence.error ? <p className="plugin-error">{errorDetail(osPersistence.error)}</p> : null}
+                      {osPersistence.status === 'awaiting-confirmation' ? (
+                        <>
+                          <label className="toggle-row system-plugin-acknowledgement">
+                            <input
+                              checked={Boolean(osPersistenceAcknowledgements[osPersistence.id])}
+                              onChange={(event) => setOsPersistenceAcknowledgements((current) => ({
+                                ...current,
+                                [osPersistence.id]: event.target.checked
+                              }))}
+                              type="checkbox"
+                            />
+                            <span>{isZh
+                              ? '我已核对上方精确可执行文件、参数和 service id，并同意 KnowBook 在系统登录时启动以恢复该 detached 服务。此确认独立于插件安装确认。'
+                              : 'I reviewed the exact executable, arguments, and service id, and allow KnowBook to start at login to restore this detached service. This is separate from plugin installation approval.'}</span>
+                          </label>
+                          <label className="plugin-field">
+                            <span>{isZh ? `再次输入插件 ID：${plugin.pluginId}` : `Type the plugin ID again: ${plugin.pluginId}`}</span>
+                            <input
+                              autoComplete="off"
+                              onChange={(event) => setOsPersistenceIdConfirmations((current) => ({
+                                ...current,
+                                [osPersistence.id]: event.target.value
+                              }))}
+                              spellCheck={false}
+                              value={osPersistenceIdConfirmations[osPersistence.id] ?? ''}
+                            />
+                          </label>
+                          <div className="plugin-item-actions">
+                            <button
+                              className="danger-button"
+                              disabled={busy
+                                || !osPersistenceAcknowledgements[osPersistence.id]
+                                || osPersistenceIdConfirmations[osPersistence.id] !== plugin.pluginId}
+                              onClick={() => onResolveSystemPluginOsPersistence(plugin, 'confirm', true)}
+                              type="button"
+                            >
+                              {isZh ? '确认登录启动' : 'Confirm login startup'}
+                            </button>
+                            <button
+                              className="secondary-button"
+                              disabled={busy}
+                              onClick={() => onResolveSystemPluginOsPersistence(plugin, 'cancel', false)}
+                              type="button"
+                            >
+                              {isZh ? '取消请求' : 'Cancel request'}
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        osPersistence.status !== 'removed' && osPersistence.status !== 'cancelled'
+                          ? (
+                              <button
+                                className="secondary-button"
+                                disabled={busy}
+                                onClick={() => onRemoveSystemPluginOsPersistence(plugin)}
+                                type="button"
+                              >
+                                {isZh ? '移除登录启动项' : 'Remove login startup'}
+                              </button>
+                            )
+                          : null
+                      )}
+                    </div>
+                  ) : null}
+                  {plugin.dependencyJobs.map((job) => (
+                    <div className="plugin-inspector-note" key={job.id}>
+                      <strong>{job.kind} · {job.status}</strong>
+                      <code>{job.command.join(' ')}</code>
+                      {job.logPath ? <code>{job.logPath}</code> : null}
+                    </div>
+                  ))}
+                  {plugin.restartRequired ? <p className="plugin-inspector-note">{isZh ? '需要重启 KnowBook 才能完成此状态变更。' : 'Restart KnowBook to complete this state change.'}</p> : null}
+                  {plugin.lastError ? <p className="plugin-error">{errorDetail(plugin.lastError)}</p> : null}
+                  <div className="plugin-item-actions">
+                    {serviceRun && plugin.status === 'active' ? (
+                      serviceRunning
+                        ? <button className="secondary-button" disabled={busy} onClick={() => onStopSystemPluginService(plugin)} type="button">{isZh ? '停止后台服务' : 'Stop service'}</button>
+                        : <button className="secondary-button" disabled={busy} onClick={() => onStartSystemPluginService(plugin)} type="button">{isZh ? '启动后台服务' : 'Start service'}</button>
+                    ) : null}
+                    {canRequestOsPersistence ? (
+                      <button className="secondary-button" disabled={busy} onClick={() => onRequestSystemPluginOsPersistence(plugin)} type="button">
+                        {isZh ? '申请登录启动' : 'Request login startup'}
+                      </button>
+                    ) : null}
+                    <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'data')} type="button">{isZh ? '打开数据目录' : 'Open data'}</button>
+                    <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'logs')} type="button">{isZh ? '打开日志目录' : 'Open logs'}</button>
+                    <button className="secondary-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onSetSystemPluginEnabled(plugin, !plugin.enabled)} type="button">
+                      {plugin.enabled ? (isZh ? '停用' : 'Disable') : (isZh ? '启用（重启后）' : 'Enable after restart')}
+                    </button>
+                    {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => onRecoverSystemPlugin(plugin)} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
+                    {rollbackTarget ? <button className="secondary-button" disabled={busy} onClick={() => onRollbackSystemPlugin(plugin, rollbackTarget.packageId)} type="button">{isZh ? `回滚到 ${rollbackTarget.version}` : `Roll back to ${rollbackTarget.version}`}</button> : null}
+                    <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onUninstallSystemPlugin(plugin)} type="button">{isZh ? '卸载' : 'Uninstall'}</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      ) : null}
+
       {systemPluginInstallRequests.length > 0 ? (
         <section className="panel plugin-security-requests">
           <div className="plugin-section-title">
@@ -507,7 +703,10 @@ export function PluginsSection({
                   <span className={`plugin-status ${request.status === 'awaiting-confirmation' ? 'plugin-status-error' : 'plugin-status-disabled'}`}>{request.status}</span>
                 </div>
                 <p>{request.reason}</p>
+                <code>SHA-256: {request.artifactSha256}</code>
                 <code>{request.systemPermissions.join(' · ')}</code>
+                {request.dependencyPlan ? <code>{isZh ? '依赖计划' : 'Dependency plan'}: {JSON.stringify(request.dependencyPlan)}</code> : null}
+                {request.error ? <p className="plugin-error">{errorDetail(request.error)}</p> : null}
                 {request.status === 'awaiting-confirmation' ? (
                   <>
                     <label className="toggle-row system-plugin-acknowledgement">
@@ -516,13 +715,22 @@ export function PluginsSection({
                         onChange={(event) => setSystemAcknowledgements((current) => ({ ...current, [request.id]: event.target.checked }))}
                         type="checkbox"
                       />
-                      <span>{isZh ? '我理解此插件将获得列出的系统权限，并需要重启。' : 'I understand this plugin receives the listed system permissions and requires a restart.'}</span>
+                      <span>{isZh ? '我核对了上方精确 SHA-256，并理解 Full Trust 可读取密钥、泄露数据、损坏数据库、执行任意代码或导致主进程崩溃；此风险声明不是安全边界。' : 'I verified the exact SHA-256 and understand Full Trust can read secrets, exfiltrate data, corrupt the database, execute arbitrary code, or crash the main process; this disclosure is not a security boundary.'}</span>
+                    </label>
+                    <label className="plugin-field">
+                      <span>{isZh ? `输入完整插件 ID 以确认：${request.pluginId}` : `Type the exact plugin ID to confirm: ${request.pluginId}`}</span>
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => setSystemPluginIdConfirmations((current) => ({ ...current, [request.id]: event.target.value }))}
+                        spellCheck={false}
+                        value={systemPluginIdConfirmations[request.id] ?? ''}
+                      />
                     </label>
                     <div className="plugin-item-actions">
-                      <button className="danger-button" disabled={!systemAcknowledgements[request.id]} onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, 'confirm', true)} type="button">
+                      <button className="danger-button" disabled={!systemAcknowledgements[request.id] || systemPluginIdConfirmations[request.id] !== request.pluginId} onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, request.artifactSha256, 'confirm', true)} type="button">
                         {isZh ? '确认系统安装' : 'Confirm system install'}
                       </button>
-                      <button className="secondary-button" onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, 'cancel', false)} type="button">
+                      <button className="secondary-button" onClick={() => onResolveSystemPluginInstallRequest(request.id, request.pluginId, request.artifactSha256, 'cancel', false)} type="button">
                         {isZh ? '取消' : 'Cancel'}
                       </button>
                     </div>
