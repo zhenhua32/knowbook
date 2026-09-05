@@ -50,6 +50,7 @@ export interface LoadedSystemPluginLifecycle<TContext extends object = FullTrust
 export type SystemPluginRuntimeStatus =
   | 'idle'
   | 'loading'
+  | 'migrating'
   | 'activating'
   | 'health-checking'
   | 'active'
@@ -61,6 +62,7 @@ export type SystemPluginRuntimeStatus =
 export type SystemPluginErrorStage =
   | 'load'
   | 'context'
+  | 'migrate'
   | 'activate'
   | 'health-check'
   | 'before-quit'
@@ -86,6 +88,7 @@ export interface SystemPluginErrorEvent {
 }
 
 export interface SystemPluginRuntimeTimeouts {
+  migrateMs: number
   activateMs: number
   healthCheckMs: number
   beforeQuitMs: number
@@ -109,6 +112,8 @@ export interface SystemPluginHostOptions<TServices extends object = Record<never
   pluginRoot: string
   dataRoot: string
   mainEntry: string
+  /** Previous active package version when this host is staging an upgrade. */
+  fromVersion?: string
   services?: TServices
   createServices?(bindings: FullTrustPluginContextFactoryBindings): TServices
   process?: NodeJS.Process

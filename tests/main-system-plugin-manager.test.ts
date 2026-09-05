@@ -11,6 +11,10 @@ import {
   type PreparePublishedSystemPluginPackage,
   type SystemPluginDetachedProcessInspector,
   type SystemPluginHostController,
+  type SystemPluginHostFactory,
+  type SystemPluginRendererActivator,
+  type SystemPluginRendererCommitter,
+  type SystemPluginRendererDeactivator,
   type SystemPluginServiceController,
   type SystemPluginServiceFactory,
   type SystemPluginServiceRpcServerFactory
@@ -180,6 +184,464 @@ test('SystemPluginManager binds confirmation to exact bytes and activates only a
       (entry) => entry.action === 'installation.uninstalled'
     ), true)
     await cleanupRestart.destroy()
+  })
+})
+
+test('SystemPluginManager passes the current version only when activating a pending upgrade', async () => {
+  await withManagerFixture(async ({ root, source, createManager, activations }) => {
+    const hostCalls: Array<{ version: string; fromVersion: string | null }> = []
+    const createHost: SystemPluginHostFactory<Record<never, never>> = (options) => {
+      hostCalls.push({
+        version: options.plugin.version,
+        fromVersion: options.fromVersion ?? null
+      })
+      return fakeHost(activations)
+    }
+
+    const installer = createManager({ createHost })
+    await installForRestart(installer, source)
+    await installer.destroy()
+
+    const firstBoot = createManager({ createHost })
+    const [initialSummary] = await firstBoot.startup()
+    assert.equal(initialSummary.currentPackage?.version, '1.0.0')
+    assert.deepEqual(hostCalls, [{ version: '1.0.0', fromVersion: null }])
+
+    const updateSource = join(root, 'migration-update')
+    writePlugin(updateSource, '2.0.0')
+    const updateRequest = await firstBoot.prepareInstallFromDirectory({
+      sourceDirectory: updateSource,
+      reason: 'Upgrade migration fixture.',
+      requestedBy: 'user'
+    })
+    await firstBoot.resolveInstallRequest({
+      requestId: updateRequest.id,
+      pluginId: updateRequest.pluginId,
+      artifactSha256: updateRequest.artifactSha256,
+      acknowledgeSystemAccess: true,
+      decision: 'confirm',
+      actor: 'user'
+    })
+    await firstBoot.destroy()
+
+    const upgraded = createManager({ createHost })
+    const [upgradedSummary] = await upgraded.startup()
+    assert.equal(upgradedSummary.currentPackage?.version, '2.0.0')
+    assert.deepEqual(hostCalls, [
+      { version: '1.0.0', fromVersion: null },
+      { version: '2.0.0', fromVersion: '1.0.0' }
+    ])
+    await upgraded.destroy()
+  })
+})
+
+test('SystemPluginManager falls back to the current package when pending migration fails', async () => {
+  await withManagerFixture(async ({ root, source, store, createManager, activations }) => {
+    const installer = createManager()
+    await installForRestart(installer, source)
+    await installer.destroy()
+
+    const current = createManager()
+    await current.startup()
+    const updateSource = join(root, 'failing-migration-update')
+    writePlugin(updateSource, '2.0.0')
+    const updateRequest = await current.prepareInstallFromDirectory({
+      sourceDirectory: updateSource,
+      reason: 'Fail migration and restore the current package.',
+      requestedBy: 'user'
+    })
+    const update = await current.resolveInstallRequest({
+      requestId: updateRequest.id,
+      pluginId: updateRequest.pluginId,
+      artifactSha256: updateRequest.artifactSha256,
+      acknowledgeSystemAccess: true,
+      decision: 'confirm',
+      actor: 'user'
+    })
+    await current.destroy()
+
+    const hostCalls: Array<{ version: string; fromVersion: string | null }> = []
+    const recovering = createManager({
+      createHost: (options) => {
+        hostCalls.push({
+          version: options.plugin.version,
+          fromVersion: options.fromVersion ?? null
+        })
+        if (!options.fromVersion) return fakeHost(activations)
+        let status: SystemPluginRuntimeStatus = 'idle'
+        return {
+          get status() { return status },
+          async activate() {
+            status = 'failed'
+            throw new Error('pending migration failed api_key=migration-secret')
+          },
+          async healthCheck() { return { ok: false } },
+          async beforeQuit() {},
+          async deactivate() { status = 'stopped' }
+        }
+      }
+    })
+    const [summary] = await recovering.startup()
+
+    assert.equal(summary.installation.status, 'active')
+    assert.equal(summary.currentPackage?.version, '1.0.0')
+    assert.equal(summary.pendingPackage, null)
+    assert.equal(store.pluginPlatform.getSystemPluginPackage(update.packageRecord!.id)?.status, 'failed')
+    assert.deepEqual(hostCalls, [
+      { version: '2.0.0', fromVersion: '1.0.0' },
+      { version: '1.0.0', fromVersion: null }
+    ])
+    assert.equal(store.pluginPlatform.listSystemPluginAudit(updateRequest.pluginId).some(
+      (entry) => entry.action === 'activation.rollback'
+        && JSON.stringify(entry.details).includes('pending migration failed')
+    ), true)
+    assert.equal(JSON.stringify(summary).includes('migration-secret'), false)
+    assert.equal(
+      JSON.stringify(store.pluginPlatform.listSystemPluginAudit(updateRequest.pluginId))
+        .includes('migration-secret'),
+      false
+    )
+    await recovering.destroy()
+  })
+})
+
+for (const failurePhase of ['activate', 'commit'] as const) {
+test(`SystemPluginManager commits Renderer activation atomically and falls back on ${failurePhase} upgrade failure`, async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const rendererV1 = join(root, 'renderer-v1')
+    writeRendererPlugin(rendererV1, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, rendererV1)
+    await installer.destroy()
+
+    const firstActivations: string[] = []
+    const firstBoot = createManager({
+      activateRenderer: async (input) => {
+        firstActivations.push(input.version)
+        assert.equal(firstBoot.get(input.pluginId)?.runtime, null)
+      },
+      commitRenderer: async (pluginId, revisionHash) => {
+        const prepared = firstBoot.get(pluginId)!
+        assert.equal(prepared.runtime?.status, 'active')
+        assert.equal(prepared.runtime?.packageId, installed.packageRecord?.id)
+        assert.equal(prepared.currentPackage?.id, installed.packageRecord?.id)
+        assert.equal(revisionHash, `sha256:${prepared.currentPackage?.contentHash}`)
+        assert.equal(store.pluginPlatform.listActiveSystemPluginCrashMarkers().length, 1)
+      },
+      deactivateRenderer: async () => undefined
+    })
+    const [firstSummary] = await firstBoot.startup()
+    assert.equal(firstSummary.installation.status, 'active')
+    assert.equal(firstSummary.currentPackage?.version, '1.0.0')
+    assert.deepEqual(firstActivations, ['1.0.0'])
+
+    const rendererV2 = join(root, 'renderer-v2')
+    writeRendererPlugin(rendererV2, '2.0.0')
+    const request = await firstBoot.prepareInstallFromDirectory({
+      sourceDirectory: rendererV2,
+      reason: 'Renderer upgrade failure fixture.',
+      requestedBy: 'user'
+    })
+    const update = await firstBoot.resolveInstallRequest({
+      requestId: request.id,
+      pluginId: request.pluginId,
+      artifactSha256: request.artifactSha256,
+      acknowledgeSystemAccess: true,
+      decision: 'confirm',
+      actor: 'user'
+    })
+    await firstBoot.destroy()
+
+    const attemptedVersions: string[] = []
+    const deactivations: string[] = []
+    const recovering = createManager({
+      activateRenderer: async (input) => {
+        attemptedVersions.push(input.version)
+        assert.match(input.source, new RegExp(`renderer:${input.version.replaceAll('.', '\\.')}`))
+        if (failurePhase === 'activate' && input.version === '2.0.0') {
+          throw new Error('Renderer upgrade rejected token=renderer-upgrade-secret')
+        }
+      },
+      commitRenderer: async (_pluginId, revisionHash) => {
+        const pendingPackage = store.pluginPlatform.getSystemPluginPackage(update.packageRecord!.id)!
+        if (failurePhase === 'commit' && revisionHash === `sha256:${pendingPackage.contentHash}`) {
+          const inProgress = store.pluginPlatform.getSystemPluginInstallationByPlugin(request.pluginId)!
+          assert.equal(inProgress.currentPackageId, pendingPackage.id)
+          assert.equal(store.pluginPlatform.listActiveSystemPluginCrashMarkers().length, 1)
+          assert.equal(store.pluginPlatform.listSystemPluginAudit(request.pluginId).some(
+            (entry) => entry.packageId === pendingPackage.id && entry.action === 'activation.ready'
+          ), false)
+          throw new Error('Renderer upgrade rejected token=renderer-upgrade-secret')
+        }
+      },
+      deactivateRenderer: async (pluginId) => { deactivations.push(pluginId) }
+    })
+    const [summary] = await recovering.startup()
+
+    assert.equal(summary.installation.status, 'active')
+    assert.equal(summary.installation.enabled, true)
+    assert.equal(summary.currentPackage?.id, installed.packageRecord?.id)
+    assert.equal(summary.currentPackage?.version, '1.0.0')
+    assert.equal(summary.pendingPackage, null)
+    assert.deepEqual(attemptedVersions, ['2.0.0', '1.0.0'])
+    assert.deepEqual(deactivations, ['system.renderer.fixture'])
+    assert.equal(store.pluginPlatform.getSystemPluginPackage(update.packageRecord!.id)?.status, 'failed')
+    assert.equal(JSON.stringify(summary).includes('renderer-upgrade-secret'), false)
+    assert.equal(store.pluginPlatform.listSystemPluginAudit(request.pluginId).some(
+      (entry) => entry.action === 'activation.rollback'
+        && JSON.stringify(entry.details).includes('Renderer upgrade rejected')
+    ), true)
+    await recovering.destroy()
+  })
+})
+}
+
+test('SystemPluginManager does not publish Renderer contributions when the ready transaction fails', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-database-failure')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    await installForRestart(installer, source)
+    await installer.destroy()
+    const repository = store.pluginPlatform
+    const originalCommit = repository.commitSystemPluginActivationReady
+    repository.commitSystemPluginActivationReady = () => {
+      throw new Error('Database ready commit rejected')
+    }
+    let commits = 0
+    let deactivations = 0
+    const manager = createManager({
+      activateRenderer: async () => undefined,
+      commitRenderer: async () => { commits += 1 },
+      deactivateRenderer: async () => { deactivations += 1 }
+    })
+    try {
+      const [summary] = await manager.startup()
+      assert.equal(summary.installation.status, 'safe-mode-disabled')
+      assert.equal(summary.currentPackage, null)
+      assert.equal(summary.runtime, null)
+      assert.equal(commits, 0)
+      assert.equal(deactivations, 1)
+    } finally {
+      repository.commitSystemPluginActivationReady = originalCommit
+      await manager.destroy()
+    }
+  })
+})
+
+test('SystemPluginManager revokes the prepared runtime before failed Renderer commit cleanup can yield', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-commit-policy')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+
+    const commitStarted = deferredSignal()
+    const releaseCommit = deferredSignal()
+    const cleanupStarted = deferredSignal()
+    const releaseCleanup = deferredSignal()
+    const manager = createManager({
+      activateRenderer: async () => undefined,
+      commitRenderer: async () => {
+        commitStarted.resolve()
+        await releaseCommit.promise
+        throw new Error('Renderer publication rejected')
+      },
+      deactivateRenderer: async () => {
+        cleanupStarted.resolve()
+        await releaseCleanup.promise
+      }
+    })
+    const startup = manager.startup()
+    await commitStarted.promise
+    const prepared = manager.get('system.renderer.fixture')!
+    assert.equal(prepared.runtime?.status, 'active')
+    assert.equal(prepared.runtime?.packageId, installed.packageRecord!.id)
+    assert.equal(prepared.currentPackage?.id, installed.packageRecord!.id)
+    assert.equal(store.pluginPlatform.listActiveSystemPluginCrashMarkers().length, 1)
+
+    releaseCommit.resolve()
+    await cleanupStarted.promise
+    assert.equal(manager.get('system.renderer.fixture')?.runtime, null)
+    assert.equal(store.pluginPlatform.listActiveSystemPluginCrashMarkers().length, 1)
+    releaseCleanup.resolve()
+    const [failed] = await startup
+    assert.equal(failed.installation.status, 'safe-mode-disabled')
+    assert.equal(failed.currentPackage, null)
+    assert.equal(failed.runtime, null)
+    await manager.destroy()
+  })
+})
+
+test('SystemPluginManager cleans a timed-out Renderer commit and preserves its last-known-good pointer', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-commit-timeout')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    await installForRestart(installer, source)
+    await installer.destroy()
+    let deactivations = 0
+    const manager = createManager({
+      activateRenderer: async () => undefined,
+      commitRenderer: () => new Promise(() => undefined),
+      deactivateRenderer: async () => { deactivations += 1 },
+      rendererActivationTimeoutMs: 20
+    })
+    const [summary] = await manager.startup()
+    assert.equal(summary.installation.status, 'safe-mode-disabled')
+    assert.equal(summary.currentPackage, null)
+    assert.equal(summary.runtime, null)
+    assert.equal(deactivations, 1)
+    assert.deepEqual(store.pluginPlatform.listActiveSystemPluginCrashMarkers(), [])
+    assert.equal(store.pluginPlatform.listSystemPluginAudit(summary.pluginId).some(
+      (entry) => entry.action === 'activation.ready'
+    ), false)
+    await manager.destroy()
+  })
+})
+
+test('SystemPluginManager can activate a service-only package configured for manual start', async () => {
+  await withManagerFixture(async ({ source, createManager }) => {
+    writeFileSync(join(source, 'plugin.json'), JSON.stringify({
+      schemaVersion: 3,
+      trust: 'full',
+      id: 'system.manager.fixture',
+      name: 'Manual service fixture',
+      version: '1.0.0',
+      publisher: 'KnowBook tests',
+      entries: { service: 'dist/service.cjs' },
+      background: { mode: 'app-lifetime', autoStart: false },
+      fullAccess: true,
+      riskDeclarations: ['node']
+    }))
+    const installer = createManager()
+    await installForRestart(installer, source)
+    await installer.destroy()
+    const manager = createManager()
+    const [summary] = await manager.startup()
+    assert.equal(summary.installation.status, 'active')
+    assert.equal(summary.lastRun?.status, 'stopped')
+    const running = await manager.startService(summary.pluginId)
+    assert.equal(running.lastRun?.status, 'ready')
+    await manager.destroy()
+  })
+})
+
+test('SystemPluginManager cannot be revived by an activation already in flight when disabled', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-disable-race')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+
+    const stagingStarted = deferredSignal()
+    const releaseStaging = deferredSignal()
+    let commits = 0
+    let deactivations = 0
+    const manager = createManager({
+      activateRenderer: async () => {
+        stagingStarted.resolve()
+        await releaseStaging.promise
+      },
+      commitRenderer: async () => { commits += 1 },
+      deactivateRenderer: async () => { deactivations += 1 }
+    })
+    const startup = manager.startup()
+    await stagingStarted.promise
+
+    const disabling = manager.disable('system.renderer.fixture')
+    assert.equal(
+      store.pluginPlatform.getSystemPluginInstallationByPlugin('system.renderer.fixture')?.status,
+      'disabled'
+    )
+    releaseStaging.resolve()
+    const [, disabled] = await Promise.all([startup, disabling])
+
+    assert.equal(disabled.installation.enabled, false)
+    assert.equal(disabled.installation.status, 'disabled')
+    assert.equal(disabled.runtime, null)
+    assert.equal(commits, 0)
+    assert.equal(deactivations, 1)
+    assert.equal(store.pluginPlatform.getSystemPluginPackage(installed.packageRecord!.id)?.status, 'ready')
+    await manager.destroy()
+  })
+})
+
+test('SystemPluginManager cleans a Renderer committed concurrently with uninstall', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-uninstall-race')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+
+    const commitStarted = deferredSignal()
+    const releaseCommit = deferredSignal()
+    let deactivations = 0
+    const manager = createManager({
+      activateRenderer: async () => undefined,
+      commitRenderer: async () => {
+        commitStarted.resolve()
+        await releaseCommit.promise
+      },
+      deactivateRenderer: async () => { deactivations += 1 }
+    })
+    const startup = manager.startup()
+    await commitStarted.promise
+
+    const uninstalling = manager.requestUninstall('system.renderer.fixture')
+    assert.equal(
+      store.pluginPlatform.getSystemPluginInstallationByPlugin('system.renderer.fixture')?.status,
+      'uninstall-pending'
+    )
+    releaseCommit.resolve()
+    const [, uninstall] = await Promise.all([startup, uninstalling])
+
+    assert.equal(uninstall.installation.enabled, false)
+    assert.equal(uninstall.installation.status, 'uninstall-pending')
+    assert.equal(uninstall.runtime, null)
+    assert.equal(deactivations, 1)
+    assert.equal(store.pluginPlatform.getSystemPluginPackage(installed.packageRecord!.id)?.status, 'ready')
+    await manager.destroy()
+  })
+})
+
+test('SystemPluginManager waits for and cleans activation before destroy completes', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-destroy-race')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+
+    const stagingStarted = deferredSignal()
+    const releaseStaging = deferredSignal()
+    let commits = 0
+    let deactivations = 0
+    const manager = createManager({
+      activateRenderer: async () => {
+        stagingStarted.resolve()
+        await releaseStaging.promise
+      },
+      commitRenderer: async () => { commits += 1 },
+      deactivateRenderer: async () => { deactivations += 1 }
+    })
+    const startup = manager.startup()
+    await stagingStarted.promise
+
+    const destroying = manager.destroy()
+    releaseStaging.resolve()
+    const [summaries] = await Promise.all([startup, destroying])
+    const summary = summaries[0]
+
+    assert.equal(summary?.installation.enabled, true)
+    assert.equal(summary?.installation.status, 'pending-restart')
+    assert.equal(summary?.runtime, null)
+    assert.equal(commits, 0)
+    assert.equal(deactivations, 1)
+    assert.equal(store.pluginPlatform.getSystemPluginPackage(installed.packageRecord!.id)?.status, 'ready')
   })
 })
 
@@ -923,6 +1385,12 @@ async function withManagerFixture(run: (input: {
     osPersistenceAdapter?: FullTrustOsPersistenceAdapter
     osPersistenceCommand?: (pluginId: string) => { executable: string; args: string[] }
     inspectDetachedProcess?: SystemPluginDetachedProcessInspector
+    createHost?: SystemPluginHostFactory<Record<never, never>>
+    activateRenderer?: SystemPluginRendererActivator
+    commitRenderer?: SystemPluginRendererCommitter
+    deactivateRenderer?: SystemPluginRendererDeactivator
+    rendererActivationTimeoutMs?: number
+    rendererDeactivationTimeoutMs?: number
     createServiceSupervisor?: SystemPluginServiceFactory
     createServiceRpcMethods?: CreateSystemPluginServiceRpcMethods
     createServiceRpcServer?: SystemPluginServiceRpcServerFactory
@@ -965,6 +1433,14 @@ async function withManagerFixture(run: (input: {
     store.destroy()
     rmSync(root, { recursive: true, force: true })
   }
+}
+
+function deferredSignal(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((settle) => {
+    resolve = settle
+  })
+  return { promise, resolve }
 }
 
 function fakeHost(activations: { count: number }): SystemPluginHostController {
@@ -1062,6 +1538,25 @@ function writePlugin(
   }, null, 2))
   writeFileSync(join(root, 'dist', 'main.cjs'), `module.exports = { activate() { return ${JSON.stringify(version)} } }\n`)
   writeFileSync(join(root, 'dist', 'service.cjs'), `module.exports = { activate() { return ${JSON.stringify(version)} } }\n`)
+}
+
+function writeRendererPlugin(root: string, version: string): void {
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  writeFileSync(join(root, 'plugin.json'), JSON.stringify({
+    schemaVersion: 3,
+    trust: 'full',
+    id: 'system.renderer.fixture',
+    name: 'Renderer manager fixture',
+    version,
+    publisher: 'KnowBook tests',
+    entries: { renderer: 'dist/renderer.cjs' },
+    fullAccess: true,
+    riskDeclarations: ['renderer']
+  }, null, 2))
+  writeFileSync(
+    join(root, 'dist', 'renderer.cjs'),
+    `module.exports = () => ${JSON.stringify(`renderer:${version}`)}\n`
+  )
 }
 
 class FakeManagerLoginItems implements FullTrustElectronLoginItemApplication {

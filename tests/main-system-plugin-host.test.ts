@@ -125,6 +125,118 @@ test('SystemPluginHost loads ESM default lifecycle and supports explicit health 
   })
 })
 
+test('SystemPluginHost runs migration before activation only when fromVersion is provided', async () => {
+  await withPluginRoot(async ({ root, dataRoot }) => {
+    writeFileSync(join(root, 'main.cjs'), `
+      module.exports.migrate = function migrate(context, fromVersion) {
+        context.trace.push('migrate:' + fromVersion + '->' + context.plugin.version)
+      }
+      module.exports.activate = function activate(context) {
+        context.trace.push('activate:' + context.plugin.version)
+      }
+    `)
+
+    const initialTrace: string[] = []
+    const initial = new SystemPluginHost({
+      plugin: { id: 'test.migrate', version: '1.0.0', revisionHash: 'sha256:migrate-initial' },
+      pluginRoot: root,
+      dataRoot,
+      mainEntry: 'main.cjs',
+      services: { trace: initialTrace }
+    })
+    await initial.activate()
+    assert.deepEqual(initialTrace, ['activate:1.0.0'])
+    await initial.deactivate()
+
+    const upgradeTrace: string[] = []
+    const statuses: SystemPluginStatusEvent[] = []
+    const upgrade = new SystemPluginHost({
+      plugin: { id: 'test.migrate', version: '2.0.0', revisionHash: 'sha256:migrate-upgrade' },
+      pluginRoot: root,
+      dataRoot,
+      mainEntry: 'main.cjs',
+      fromVersion: '1.0.0',
+      services: { trace: upgradeTrace },
+      onStatus: (event) => statuses.push(event)
+    })
+    await upgrade.activate()
+    assert.deepEqual(upgradeTrace, ['migrate:1.0.0->2.0.0', 'activate:2.0.0'])
+    assert.deepEqual(statuses.map((event) => event.status), [
+      'loading',
+      'migrating',
+      'activating',
+      'active'
+    ])
+    await upgrade.deactivate()
+  })
+})
+
+test('SystemPluginHost treats migration failure as fatal and cleans registered effects', async () => {
+  await withPluginRoot(async ({ root, dataRoot }) => {
+    writeFileSync(join(root, 'main.cjs'), `
+      module.exports.migrate = function migrate(context) {
+        context.trace.push('migrate')
+        context.registerDisposable(() => context.trace.push('dispose:migrate'), 'migration effect')
+        throw new Error('migration rejected old state')
+      }
+      module.exports.activate = function activate(context) {
+        context.trace.push('activate')
+      }
+    `)
+
+    const trace: string[] = []
+    const errors: SystemPluginErrorEvent[] = []
+    const host = new SystemPluginHost({
+      plugin: { id: 'test.migrate-failure', version: '2.0.0', revisionHash: 'sha256:migrate-failure' },
+      pluginRoot: root,
+      dataRoot,
+      mainEntry: 'main.cjs',
+      fromVersion: '1.0.0',
+      services: { trace },
+      onError: (event) => errors.push(event)
+    })
+
+    await assert.rejects(host.activate(), /migration rejected old state/)
+    assert.equal(host.status, 'failed')
+    assert.deepEqual(trace, ['migrate', 'dispose:migrate'])
+    assert.deepEqual(errors.map((event) => event.stage), ['migrate'])
+    assert.equal(errors[0]?.fatal, true)
+  })
+})
+
+test('SystemPluginHost bounds migration independently from activation', async () => {
+  await withPluginRoot(async ({ root, dataRoot }) => {
+    writeFileSync(join(root, 'main.cjs'), `
+      module.exports.migrate = function migrate() {
+        return new Promise(() => {})
+      }
+      module.exports.activate = function activate() {
+        throw new Error('activate must not run after migration timeout')
+      }
+    `)
+
+    const errors: SystemPluginErrorEvent[] = []
+    const host = new SystemPluginHost({
+      plugin: { id: 'test.migrate-timeout', version: '2.0.0', revisionHash: 'sha256:migrate-timeout' },
+      pluginRoot: root,
+      dataRoot,
+      mainEntry: 'main.cjs',
+      fromVersion: '1.0.0',
+      timeouts: { migrateMs: 20 },
+      onError: (event) => errors.push(event)
+    })
+
+    await assert.rejects(host.activate(), (error: unknown) => {
+      assert.ok(error instanceof SystemPluginLifecycleTimeoutError)
+      assert.equal(error.stage, 'migrate')
+      assert.equal(error.timeoutMs, 20)
+      return true
+    })
+    assert.equal(host.status, 'failed')
+    assert.deepEqual(errors.map((event) => event.stage), ['migrate'])
+  })
+})
+
 test('SystemPluginHost bounds activation and performs LIFO rollback cleanup', async () => {
   await withPluginRoot(async ({ root, dataRoot }) => {
     writeFileSync(join(root, 'main.cjs'), `

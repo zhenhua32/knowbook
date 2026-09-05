@@ -1,4 +1,4 @@
-import { appendFile, cp, lstat, mkdir, rename, rm } from 'node:fs/promises'
+import { cp, lstat, mkdir, rename, rm } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
@@ -15,6 +15,7 @@ import {
   type SystemPluginDependencyTask
 } from './dependency-runner'
 import type { SystemPluginPackageManager } from '@shared/system-plugin'
+import { createSystemPluginLogWriter, redactSystemPluginLog } from './log-writer'
 
 export interface SystemPluginPackagePreparerOptions {
   repository: SqlitePluginPlatformRepository
@@ -76,6 +77,7 @@ export function createSystemPluginPackagePreparer(
       `${artifact.artifactSha256}-dependencies.log`
     )
     assertInside(logPath, logRoot, 'dependency log')
+    const logWriter = createSystemPluginLogWriter(logPath)
 
     await mkdir(pluginRuntimeRoot, { recursive: true })
     await mkdir(dirname(logPath), { recursive: true })
@@ -96,7 +98,6 @@ export function createSystemPluginPackagePreparer(
           logPath
         }))
       : []
-    let logWrites = Promise.resolve()
     let dependencyTasksCompleted = false
     let nativeProbeCompleted = false
 
@@ -108,7 +109,7 @@ export function createSystemPluginPackagePreparer(
           timeoutMs: options.dependencyTimeoutMs,
           onLog: (event) => {
             const prefix = `[${event.timestamp}] [${event.stream}] [${event.task.kind}] `
-            logWrites = logWrites.then(() => appendFile(logPath, `${prefix}${event.text}`, 'utf8'))
+            void logWriter.append(`${prefix}${event.text}`).catch(() => undefined)
           },
           onStatus: (event) => {
             options.repository.updateSystemPluginDependencyJob(jobs[event.taskIndex].id, {
@@ -134,11 +135,11 @@ export function createSystemPluginPackagePreparer(
         timeoutMs: options.nativeProbeTimeoutMs,
         onLog: (event) => {
           const prefix = `[${event.timestamp}] [${event.stream}] [native-probe:${event.modulePath}] `
-          logWrites = logWrites.then(() => appendFile(logPath, `${prefix}${event.text}`, 'utf8'))
+          void logWriter.append(`${prefix}${event.text}`).catch(() => undefined)
         }
       })
       nativeProbeCompleted = true
-      await logWrites
+      await logWriter.flush()
       await replaceRuntimeDirectory(temporaryRoot, targetRoot, pluginRuntimeRoot)
       return {
         runtimeFingerprint: {
@@ -155,7 +156,7 @@ export function createSystemPluginPackagePreparer(
           error: serializeError(error)
         })
       }
-      await logWrites.catch(() => undefined)
+      await logWriter.flush().catch(() => undefined)
       await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined)
       throw error
     }
@@ -277,9 +278,11 @@ function assertInside(candidate: string, root: string, label: string): void {
 function serializeError(error: unknown): Record<string, unknown> {
   const normalized = error instanceof Error ? error : new Error(String(error))
   return {
-    name: normalized.name.slice(0, 200),
-    message: normalized.message.slice(0, 4_000),
-    ...(normalized.stack ? { stack: normalized.stack.slice(0, 16_000) } : {})
+    name: redactSystemPluginLog(normalized.name).slice(0, 200),
+    message: redactSystemPluginLog(normalized.message).slice(0, 4_000),
+    ...(normalized.stack
+      ? { stack: redactSystemPluginLog(normalized.stack).slice(0, 16_000) }
+      : {})
   }
 }
 

@@ -142,8 +142,62 @@ async function exerciseAi(context, frameTarget) {
     messages: [{ role: 'user', content: 'Full Trust arbitrary prompt' }],
     temperature: 0,
     tools: [{ type: 'function', function: { name: 'full_trust_tool' } }],
-    extra: { seed: 7 }
+    extra: { seed: 7, stream: true }
   })
+  const stream = await context.ai.stream({
+    messages: [{ role: 'user', content: 'Stream arbitrary UTF-8 text' }],
+    extra: { stream: false }
+  })
+  const streamText = await stream.text()
+  const controller = new AbortController()
+  const cancelledResponse = await context.ai.stream({
+    model: 'full-trust-cancel-stream',
+    messages: [],
+    signal: controller.signal
+  })
+  const cancelledReader = cancelledResponse.body.getReader()
+  await cancelledReader.read()
+  controller.abort()
+  const cancelledStream = await captureFailure(() => cancelledReader.read(), 'name')
+  cancelledReader.releaseLock()
+
+  const completionError = await captureFailure(() => context.ai.complete({
+    model: 'full-trust-http-error', messages: []
+  }), 'message')
+  const streamError = await captureFailure(() => context.ai.stream({
+    model: 'full-trust-http-error', messages: []
+  }), 'message')
+  const invalidJsonError = await captureFailure(() => context.ai.complete({
+    model: 'full-trust-invalid-json', messages: []
+  }), 'name')
+  const rawResponse = await context.ai.rawRequest({ pathOrUrl: 'raw-text' })
+  const raw = {
+    status: rawResponse.status,
+    header: rawResponse.headers.get('x-full-trust-probe'),
+    body: await rawResponse.text()
+  }
+
+  // Keep an SDK stream open through activation and verify host disposal aborts it.
+  const disposalResponse = await context.ai.stream({
+    model: 'full-trust-dispose-stream', messages: []
+  })
+  const disposalReader = disposalResponse.body.getReader()
+  await disposalReader.read()
+  void (async () => {
+    let errorName = null
+    try {
+      while (!(await disposalReader.read()).done) { /* wait for host disposal */ }
+    } catch (error) {
+      errorName = error.name
+    } finally {
+      disposalReader.releaseLock()
+    }
+    context.require('node:fs').writeFileSync(
+      context.require('node:path').join(context.plugin.dataRoot, 'ai-disposed.json'),
+      JSON.stringify({ errorName }),
+      'utf8'
+    )
+  })()
   return {
     configured: true,
     id: response.id,
@@ -151,7 +205,22 @@ async function exerciseAi(context, frameTarget) {
     prompt: response.received?.messages?.[0]?.content ?? null,
     seed: response.received?.seed ?? null,
     toolName: response.received?.tools?.[0]?.function?.name ?? null,
-    apiKeyAccessible: context.secrets.getAiApiKey() === 'full-trust-e2e-key'
+    apiKeyAccessible: context.secrets.getAiApiKey() === 'full-trust-e2e-key',
+    streamText,
+    cancelledStream,
+    completionError,
+    streamError,
+    invalidJsonError,
+    raw
+  }
+}
+
+async function captureFailure(operation, property) {
+  try {
+    await operation()
+    return 'unexpected-success'
+  } catch (error) {
+    return error[property]
   }
 }
 

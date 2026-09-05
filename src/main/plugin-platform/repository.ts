@@ -198,6 +198,25 @@ export interface PluginLogRecord {
   createdAt: string
 }
 
+export interface CommitSystemPluginActivationReadyInput {
+  markerId: string
+  installationId: string
+  packageId: string
+  runId: string
+  commitPending: boolean
+  readyAt: string
+  health: unknown
+  auditId?: string
+  /** Renderer publication must acknowledge before its crash marker is cleared. */
+  rendererCommitPhase?: 'prepare' | 'complete'
+}
+
+export interface SystemPluginActivationReadyCommitResult {
+  marker: SystemPluginCrashMarkerRecord
+  installation: SystemPluginInstallationRecord
+  audit: SystemPluginAuditRecord
+}
+
 type DefinitionRow = {
   id: string
   name: string
@@ -2242,6 +2261,125 @@ export class SqlitePluginPlatformRepository {
     return this.requireSystemPluginCrashMarker(record.id)
   }
 
+  commitSystemPluginActivationReady(
+    input: CommitSystemPluginActivationReadyInput
+  ): SystemPluginActivationReadyCommitResult {
+    const markerId = normalizeId(input.markerId, 'System plugin crash marker id', 500)
+    const installationId = normalizeId(
+      input.installationId,
+      'System plugin installation id',
+      500
+    )
+    const packageId = normalizeId(input.packageId, 'System plugin package id', 500)
+    const runId = normalizeId(input.runId, 'System plugin run id', 500)
+    const commitPending = normalizeBoolean(
+      input.commitPending,
+      'System plugin pending package commit flag'
+    )
+    const readyAt = normalizeDate(input.readyAt, 'System plugin activation ready time')
+    const health = normalizeRequiredJson(input.health, 'System plugin activation health')
+    const rendererCommitPhase = input.rendererCommitPhase
+    if (rendererCommitPhase !== undefined && rendererCommitPhase !== 'prepare' && rendererCommitPhase !== 'complete') {
+      throw new Error('System plugin renderer commit phase must be prepare or complete.')
+    }
+    const auditId = input.auditId === undefined
+      ? randomUUID()
+      : normalizeId(input.auditId, 'System plugin audit id', 500)
+
+    const transaction = this.db.transaction((): SystemPluginActivationReadyCommitResult => {
+      const marker = this.requireSystemPluginCrashMarker(markerId)
+      const installation = this.requireSystemPluginInstallation(installationId)
+      const packageRecord = this.requireSystemPluginPackage(packageId)
+      const run = this.requireSystemPluginRun(runId)
+
+      if (marker.state !== 'armed' || marker.clearedAt !== null) {
+        throw new Error(`System plugin crash marker "${marker.id}" is not armed.`)
+      }
+      if (
+        marker.installationId !== installation.id
+        || marker.packageId !== packageRecord.id
+        || marker.runId !== run.id
+      ) {
+        throw new Error(
+          'System plugin activation crash marker does not match its installation, package, and run.'
+        )
+      }
+      if (
+        installation.pluginId !== packageRecord.pluginId
+        || run.pluginId !== installation.pluginId
+        || run.installationId !== installation.id
+        || run.packageId !== packageRecord.id
+      ) {
+        throw new Error(
+          'System plugin activation records do not belong to the same plugin lifecycle.'
+        )
+      }
+      if (!installation.enabled || installation.safeModeDisabled) {
+        throw new Error('Disabled system plugin installations cannot commit activation.')
+      }
+      if (installation.status !== (rendererCommitPhase === 'complete' ? 'active' : 'starting')) {
+        throw new Error(
+          `System plugin installation "${installation.id}" cannot commit activation from ${installation.status} status.`
+        )
+      }
+      if (packageRecord.status !== 'ready') {
+        throw new Error(
+          `System plugin package "${packageRecord.id}" cannot commit activation from ${packageRecord.status} status.`
+        )
+      }
+      const manualService = (run.component === 'service' || run.component === 'detached')
+        && run.status === 'stopped'
+        && isRecord(packageRecord.manifestSnapshot)
+        && isRecord(packageRecord.manifestSnapshot.background)
+        && packageRecord.manifestSnapshot.background.autoStart === false
+      if (run.status !== 'ready' && !manualService) {
+        throw new Error(
+          `System plugin run "${run.id}" cannot commit activation from ${run.status} status.`
+        )
+      }
+      if (commitPending && rendererCommitPhase !== 'complete' && installation.pendingPackageId !== packageRecord.id) {
+        throw new Error('System plugin pending package pointer changed before activation commit.')
+      }
+      if ((!commitPending || rendererCommitPhase === 'complete') && installation.currentPackageId !== packageRecord.id) {
+        throw new Error('System plugin current package pointer changed before activation commit.')
+      }
+      if (rendererCommitPhase === 'complete' && commitPending && installation.pendingPackageId !== null) {
+        throw new Error('System plugin pending package pointer changed before renderer commit.')
+      }
+
+      const committedMarker = rendererCommitPhase === 'prepare'
+        ? marker
+        : this.updateSystemPluginCrashMarker(marker.id, {
+            state: 'ready',
+            recovery: { action: 'activation-ready', readyAt }
+          })
+      const committedInstallation = this.updateSystemPluginInstallation(installation.id, {
+        status: 'active',
+        currentPackageId: commitPending ? packageRecord.id : installation.currentPackageId,
+        pendingPackageId: commitPending ? null : installation.pendingPackageId,
+        safeModeDisabled: false,
+        lastError: null
+      })
+      const audit = this.appendSystemPluginAudit({
+        id: auditId,
+        pluginId: installation.pluginId,
+        installationId: installation.id,
+        packageId: packageRecord.id,
+        runId: run.id,
+        actor: 'system',
+        action: rendererCommitPhase === 'prepare' ? 'activation.prepared' : 'activation.ready',
+        outcome: 'success',
+        details: { health, committedPending: commitPending }
+      })
+      return {
+        marker: committedMarker,
+        installation: committedInstallation,
+        audit
+      }
+    })
+    return transaction()
+  }
+
   upsertSystemPluginOsPersistence(
     input: UpsertSystemPluginOsPersistenceInput
   ): SystemPluginOsPersistenceRecord {
@@ -3078,6 +3216,10 @@ function normalizeSystemPluginRunComponent(value: unknown): SystemPluginRunRecor
     return value
   }
   throw new Error('System plugin run component is invalid.')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function normalizeSystemPluginRunStatus(value: unknown): SystemPluginRunRecord['status'] {

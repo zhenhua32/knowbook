@@ -23,6 +23,7 @@ import type {
 import { SystemPluginUnhealthyError } from './types'
 
 const DEFAULT_TIMEOUTS: SystemPluginRuntimeTimeouts = Object.freeze({
+  migrateMs: 30_000,
   activateMs: 30_000,
   healthCheckMs: 10_000,
   beforeQuitMs: 5_000,
@@ -118,6 +119,23 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
         this.pluginContext = this.buildContext(this.loaded)
       } catch (error) {
         throw this.recordError('context', error, true)
+      }
+
+      if (this.options.fromVersion && this.loaded.lifecycle.migrate) {
+        this.transition('migrating')
+        try {
+          await runWithTimeout(
+            invoke(() => this.loaded!.lifecycle.migrate!(
+              this.pluginContext!,
+              this.options.fromVersion!
+            )),
+            this.timeouts.migrateMs,
+            'migrate',
+            `System plugin "${this.options.plugin.id}" migrate`
+          )
+        } catch (error) {
+          throw this.recordError('migrate', error, true)
+        }
       }
 
       this.transition('activating')
@@ -228,6 +246,7 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
   private async runDeactivation(): Promise<void> {
     if (this.activation && !this.activationResult && (
       this.currentStatus === 'loading' ||
+      this.currentStatus === 'migrating' ||
       this.currentStatus === 'activating' ||
       this.currentStatus === 'health-checking'
     )) {
@@ -360,6 +379,12 @@ function validateOptions<TServices extends object>(options: SystemPluginHostOpti
   }
   if (options.services && options.createServices) {
     throw new Error('System plugin host accepts either services or createServices, not both.')
+  }
+  if (
+    options.fromVersion !== undefined
+    && (typeof options.fromVersion !== 'string' || !options.fromVersion.trim())
+  ) {
+    throw new Error('System plugin host option "fromVersion" must be a non-empty string when provided.')
   }
 }
 

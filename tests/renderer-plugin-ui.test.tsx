@@ -75,6 +75,8 @@ test('PluginSlot appends registered Full Trust React contributions without chang
     assert.equal(api.React.createElement, React.createElement)
     assert.equal(typeof api.ReactDOM.createPortal, 'function')
     assert.equal(typeof api.ReactDOMClient.createRoot, 'function')
+    assert.equal(fullTrustPluginRegistry.getSlotContributions('workspace.dashboard').length, 0)
+    await fullTrustPluginRegistry.commitPlugin(api.plugin.id, api.plugin.revisionHash)
 
     const html = renderToStaticMarkup(
       <PluginSlot
@@ -95,6 +97,171 @@ test('PluginSlot appends registered Full Trust React contributions without chang
     assert.equal(afterDeactivate, '')
   } finally {
     await fullTrustPluginRegistry.deactivateAll()
+  }
+})
+
+test('Full Trust renderer activation can be cancelled and cannot publish late effects', async () => {
+  const registry = new FullTrustPluginRegistry()
+  let releaseActivation!: () => void
+  const activationGate = new Promise<void>((resolve) => {
+    releaseActivation = resolve
+  })
+  let reportActivationStarted!: () => void
+  const activationStarted = new Promise<void>((resolve) => {
+    reportActivationStarted = resolve
+  })
+  let lateCleanup = 0
+  const activation = registry.activatePlugin({
+    id: 'cancelled-renderer',
+    version: '1.0.0',
+    revisionHash: 'sha256:cancelled'
+  }, async (api) => {
+    api.registerSlotContribution({
+      id: 'temporary-card',
+      slot: 'workspace.dashboard',
+      component: () => null
+    })
+    reportActivationStarted()
+    await activationGate
+    return () => { lateCleanup += 1 }
+  })
+
+  await activationStarted
+  assert.equal(registry.getSlotContributions('workspace.dashboard').length, 0)
+  await registry.deactivatePlugin('cancelled-renderer')
+  assert.equal(registry.currentPlugin, null)
+  assert.equal(registry.getSlotContributions('workspace.dashboard').length, 0)
+
+  await registry.activatePlugin({
+    id: 'replacement-renderer',
+    version: '1.0.0',
+    revisionHash: 'sha256:replacement'
+  }, () => undefined)
+  releaseActivation()
+  await assert.rejects(activation, /is not active/)
+  assert.equal(lateCleanup, 1)
+  await registry.commitPlugin('replacement-renderer', 'sha256:replacement')
+  await registry.deactivateAll()
+})
+
+test('Full Trust renderer commits complete revisions atomically and preserves the previous revision on failure', async () => {
+  const registry = new FullTrustPluginRegistry()
+  const observations: Array<Array<string | undefined>> = []
+  const observe = () => {
+    observations.push([
+      registry.getSlotContributions('workspace.dashboard')[0]?.plugin.revisionHash,
+      registry.listCommands()[0]?.plugin.revisionHash,
+      registry.listPages()[0]?.plugin.revisionHash
+    ])
+  }
+  registry.subscribeToSlot('workspace.dashboard', observe)
+  registry.subscribeToCommands(observe)
+  registry.subscribeToPages(observe)
+  const identity = { id: 'atomic-renderer', version: '1.0.0', revisionHash: 'sha256:first' }
+  const firstApi = await registry.activatePlugin(identity, (api) => {
+    api.registerSlotContribution({ id: 'card', slot: 'workspace.dashboard', component: () => null })
+    api.registerCommand({ id: 'atomic.run', title: 'Run', execute: () => 'first' })
+    api.registerPage({ id: 'atomic.page', title: 'Page', route: '/atomic', component: () => null })
+  })
+  assert.deepEqual(observations, [])
+  await registry.commitPlugin(identity.id, identity.revisionHash)
+  assert.deepEqual(observations, [['sha256:first', 'sha256:first', 'sha256:first']])
+
+  await assert.rejects(registry.activatePlugin({ ...identity, revisionHash: 'sha256:failed' }, (api) => {
+    api.registerCommand({ id: 'atomic.run', title: 'Replacement', execute: () => 'failed' })
+    throw new Error('Initializer failed')
+  }), /Initializer failed/)
+  assert.equal(await registry.executeCommand('atomic.run'), 'first')
+  assert.equal(observations.length, 1)
+
+  await registry.activatePlugin({ ...identity, revisionHash: 'sha256:second' }, (api) => {
+    api.registerSlotContribution({ id: 'card', slot: 'workspace.dashboard', component: () => null })
+    api.registerCommand({ id: 'atomic.run', title: 'Replacement', execute: () => 'second' })
+    api.registerPage({ id: 'atomic.page', title: 'Replacement', route: '/atomic', component: () => null })
+  })
+  assert.equal(await registry.executeCommand('atomic.run'), 'first')
+  assert.equal(observations.length, 1)
+  await registry.commitPlugin(identity.id, 'sha256:second')
+  assert.equal(await registry.executeCommand('atomic.run'), 'second')
+  assert.deepEqual(observations[1], ['sha256:second', 'sha256:second', 'sha256:second'])
+  assert.throws(() => firstApi.registerDisposable(() => undefined), /is not active/)
+  await registry.deactivateAll()
+  assert.deepEqual(observations[2], [undefined, undefined, undefined])
+})
+
+test('Full Trust renderer commit errors restore the previous resources and allow retry', async () => {
+  const registry = new FullTrustPluginRegistry()
+  const identity = { id: 'retry-renderer', version: '1.0.0', revisionHash: 'sha256:first' }
+  await registry.activatePlugin(identity, (api) => {
+    api.registerCommand({ id: 'retry.command', title: 'Previous', execute: () => 'previous' })
+  })
+  await registry.commitPlugin(identity.id, identity.revisionHash)
+  const failingTarget = {
+    addEventListener() { throw new Error('Listener installation failed') },
+    removeEventListener() {}
+  } as unknown as EventTarget
+  await registry.activatePlugin({ ...identity, revisionHash: 'sha256:failed' }, (api) => {
+    api.registerCommand({ id: 'retry.command', title: 'Failed', execute: () => 'failed' })
+    api.addDomEventListener(failingTarget, 'fail', () => undefined)
+  })
+  await assert.rejects(registry.commitPlugin(identity.id, 'sha256:failed'), /Listener installation failed/)
+  assert.equal(registry.listCommands()[0]?.title, 'Previous')
+  assert.equal(await registry.executeCommand('retry.command'), 'previous')
+
+  await registry.activatePlugin({ ...identity, revisionHash: 'sha256:retry' }, (api) => {
+    api.registerCommand({ id: 'retry.command', title: 'Retry', execute: () => 'retry' })
+  })
+  await registry.commitPlugin(identity.id, 'sha256:retry')
+  assert.equal(await registry.executeCommand('retry.command'), 'retry')
+  await registry.deactivateAll()
+})
+
+test('Full Trust renderer registrations made after commit publish immediately and remain disposable', async () => {
+  const registry = new FullTrustPluginRegistry()
+  const identity = { id: 'dynamic-renderer', version: '1.0.0', revisionHash: 'sha256:dynamic' }
+  const api = await registry.activatePlugin(identity, () => undefined)
+  await registry.commitPlugin(identity.id, identity.revisionHash)
+
+  const disposeCommand = api.registerCommand({ id: 'dynamic.command', title: 'Dynamic', execute: () => 42 })
+  api.registerPage({ id: 'dynamic.page', title: 'Dynamic', route: '/dynamic', component: () => null })
+  api.registerSlotContribution({ id: 'dynamic.card', slot: 'workspace.dashboard', component: () => null })
+  assert.equal(await registry.executeCommand('dynamic.command'), 42)
+  assert.equal(registry.listCommands().length, 1)
+  assert.equal(registry.listPages().length, 1)
+  assert.equal(registry.getSlotContributions('workspace.dashboard').length, 1)
+  await disposeCommand()
+  assert.deepEqual(registry.listCommands(), [])
+  await registry.deactivateAll()
+  assert.deepEqual(registry.listPages(), [])
+  assert.deepEqual(registry.getSlotContributions('workspace.dashboard'), [])
+})
+
+test('Full Trust renderer hung cleanup does not retain registrations or block later publication', async () => {
+  for (const deactivateAll of [false, true]) {
+    const registry = new FullTrustPluginRegistry()
+    let releaseCleanup!: () => void
+    const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve })
+    const identity = { id: 'slow-renderer', version: '1.0.0', revisionHash: 'sha256:slow' }
+    await registry.activatePlugin(identity, (api) => {
+      api.registerCommand({ id: 'slow.command', title: 'Slow', execute: () => undefined })
+      api.registerSlotContribution({ id: 'slow.card', slot: 'workspace.dashboard', component: () => null })
+      return () => cleanupGate
+    })
+    await registry.commitPlugin(identity.id, identity.revisionHash)
+    const cleanup = deactivateAll ? registry.deactivateAll() : registry.deactivatePlugin(identity.id)
+    assert.deepEqual(registry.listCommands(), [])
+    assert.deepEqual(registry.getSlotContributions('workspace.dashboard'), [])
+
+    await registry.activatePlugin(identity, (api) => {
+      api.registerCommand({ id: 'slow.command', title: 'Restarted', execute: () => 'restarted' })
+    })
+    await registry.commitPlugin(identity.id, identity.revisionHash)
+    assert.equal(registry.listCommands()[0]?.title, 'Restarted')
+    assert.equal(await registry.executeCommand('slow.command'), 'restarted')
+    releaseCleanup()
+    await cleanup
+    assert.equal(registry.listCommands()[0]?.title, 'Restarted')
+    await registry.deactivateAll()
   }
 })
 
@@ -182,6 +349,10 @@ test('Full Trust renderer deactivation removes managed roots, CSS, frames, and d
         assert.match(frame.frameName, /^knowbook-full-trust-frame:managed-renderer:/)
         assert.match(frame.popupName, /^knowbook-full-trust-popup:managed-renderer:/)
       })
+      assert.equal(mount.textContent, '')
+      assert.equal(dom.window.document.querySelector('style[data-full-trust-style="global-test"]'), null)
+      assert.equal(frameMount.querySelectorAll('iframe').length, 0)
+      await registry.commitPlugin('managed-renderer', 'sha256:managed')
     })
 
     assert.match(mount.textContent ?? '', /Managed renderer root/)
@@ -283,6 +454,13 @@ test('Full Trust renderer commands, pages, DOM listeners, and theme subscription
         themes.push(theme)
       })
     })
+
+    assert.deepEqual(registry.listCommands(), [])
+    assert.deepEqual(registry.listPages(), [])
+    assert.deepEqual(themes, [])
+    document.dispatchEvent(new dom.window.Event('knowbook-extension-test'))
+    assert.equal(domEvents, 0)
+    await registry.commitPlugin(api.plugin.id, api.plugin.revisionHash)
 
     assert.equal(Object.isFrozen(registry.listCommands()), true)
     assert.equal(Object.isFrozen(registry.listCommands()[0]), true)

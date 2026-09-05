@@ -358,17 +358,25 @@ test('system plugin v3 repository persists package, installation, run, jobs, aud
     })
     assert.ok(readyRun.readyAt)
     assert.deepEqual(readyRun.health, { ok: true })
-    repository.updateSystemPluginCrashMarker(marker.id, {
-      state: 'recovered',
-      recovery: { action: 'accepted-ready-run' }
+    repository.updateSystemPluginInstallation(installation.id, { status: 'starting' })
+    const activationCommit = repository.commitSystemPluginActivationReady({
+      markerId: marker.id,
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      commitPending: true,
+      readyAt: '2026-09-02T00:00:00.000Z',
+      health: readyRun.health,
+      auditId: 'audit-full-example-activation'
+    })
+    assert.equal(activationCommit.marker.state, 'ready')
+    assert.deepEqual(activationCommit.marker.recovery, {
+      action: 'activation-ready',
+      readyAt: '2026-09-02T00:00:00.000Z'
     })
     assert.equal(repository.listActiveSystemPluginCrashMarkers().length, 0)
 
-    const activeInstallation = repository.updateSystemPluginInstallation(installation.id, {
-      status: 'active',
-      currentPackageId: packageRecord.id,
-      pendingPackageId: null
-    })
+    const activeInstallation = activationCommit.installation
     assert.equal(activeInstallation.currentPackageId, packageRecord.id)
     assert.equal(activeInstallation.pendingPackageId, null)
 
@@ -402,18 +410,8 @@ test('system plugin v3 repository persists package, installation, run, jobs, aud
     assert.equal(registeredPersistence.resolvedAt, '2026-09-02T00:00:00.000Z')
     assert.deepEqual(repository.listSystemPluginOsPersistence(), [registeredPersistence])
 
-    const audit = repository.appendSystemPluginAudit({
-      id: 'audit-full-example-activation',
-      pluginId: 'full.example',
-      installationId: installation.id,
-      packageId: packageRecord.id,
-      requestId: request.id,
-      runId: run.id,
-      actor: 'system',
-      action: 'activation.ready',
-      outcome: 'success',
-      details: { component: 'main' }
-    })
+    const audit = activationCommit.audit
+    assert.deepEqual(audit.details, { health: { ok: true }, committedPending: true })
     assert.deepEqual(repository.listSystemPluginAudit('full.example'), [audit])
     assert.deepEqual(repository.listSystemPluginDependencyJobs(packageRecord.id), [completedJob])
     assert.deepEqual(repository.listSystemPluginRuns(installation.id), [readyRun])
@@ -421,6 +419,119 @@ test('system plugin v3 repository persists package, installation, run, jobs, aud
       repository.getSystemPluginInstallRequest(request.id)?.installationId,
       installation.id
     )
+  })
+})
+
+test('system plugin activation-ready commit rolls back every lifecycle write when audit insert fails', () => {
+  withStore((store) => {
+    const repository = store.pluginPlatform
+    const packageRecord = repository.createSystemPluginPackage({
+      id: 'package-atomic-activation',
+      pluginId: 'atomic.activation',
+      version: '1.0.0',
+      publisher: 'Publisher',
+      contentHash: 'a'.repeat(64),
+      artifactPath: 'C:\\plugins\\atomic.activation',
+      manifestSnapshot: { id: 'atomic.activation' },
+      fileManifest: [],
+      status: 'ready'
+    })
+    const installation = repository.createSystemPluginInstallation({
+      id: 'install-atomic-activation',
+      pluginId: packageRecord.pluginId,
+      enabled: true,
+      status: 'starting',
+      pendingPackageId: packageRecord.id
+    })
+    const run = repository.createSystemPluginRun({
+      id: 'run-atomic-activation',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      component: 'main'
+    })
+    repository.updateSystemPluginRun(run.id, {
+      status: 'ready',
+      health: { ok: true }
+    })
+    const marker = repository.createSystemPluginCrashMarker({
+      id: 'marker-atomic-activation',
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      phase: 'activation.main'
+    })
+    repository.appendSystemPluginAudit({
+      id: 'duplicate-audit-id',
+      pluginId: packageRecord.pluginId,
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      actor: 'system',
+      action: 'activation.started',
+      outcome: 'success'
+    })
+
+    assert.throws(() => repository.commitSystemPluginActivationReady({
+      markerId: marker.id,
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      commitPending: true,
+      readyAt: '2026-09-02T00:00:00.000Z',
+      health: { ok: true },
+      auditId: 'duplicate-audit-id'
+    }))
+
+    assert.deepEqual(repository.getSystemPluginCrashMarker(marker.id), marker)
+    assert.deepEqual(repository.getSystemPluginInstallation(installation.id), installation)
+    assert.equal(
+      repository.listSystemPluginAudit(packageRecord.pluginId)
+        .some((entry) => entry.action === 'activation.ready'),
+      false
+    )
+
+    const rendererCommit = {
+      markerId: marker.id,
+      installationId: installation.id,
+      packageId: packageRecord.id,
+      runId: run.id,
+      commitPending: true,
+      readyAt: '2026-09-02T00:00:00.000Z',
+      health: { ok: true }
+    }
+    repository.updateSystemPluginInstallation(installation.id, { enabled: false })
+    assert.throws(() => repository.commitSystemPluginActivationReady({
+      ...rendererCommit,
+      rendererCommitPhase: 'prepare'
+    }), /Disabled system plugin/)
+    repository.updateSystemPluginInstallation(installation.id, { enabled: true })
+
+    const prepared = repository.commitSystemPluginActivationReady({
+      ...rendererCommit,
+      rendererCommitPhase: 'prepare'
+    })
+    assert.equal(prepared.installation.currentPackageId, packageRecord.id)
+    assert.equal(prepared.installation.pendingPackageId, null)
+    assert.equal(prepared.audit.action, 'activation.prepared')
+    assert.deepEqual(prepared.marker, marker)
+    assert.deepEqual(repository.listActiveSystemPluginCrashMarkers(), [marker])
+
+    assert.throws(() => repository.commitSystemPluginActivationReady({
+      ...rendererCommit,
+      rendererCommitPhase: 'complete',
+      auditId: 'duplicate-audit-id'
+    }))
+    assert.deepEqual(repository.getSystemPluginCrashMarker(marker.id), marker)
+    assert.deepEqual(repository.getSystemPluginInstallation(installation.id), prepared.installation)
+
+    const completed = repository.commitSystemPluginActivationReady({
+      ...rendererCommit,
+      rendererCommitPhase: 'complete'
+    })
+    assert.equal(completed.marker.state, 'ready')
+    assert.ok(completed.marker.clearedAt)
+    assert.equal(completed.audit.action, 'activation.ready')
+    assert.deepEqual(repository.listActiveSystemPluginCrashMarkers(), [])
   })
 })
 

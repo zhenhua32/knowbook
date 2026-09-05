@@ -53,6 +53,58 @@ test('Full Trust services expose Store/SQLite and keep document mutations observ
   })
 })
 
+test('Full Trust workspace events retain plugin-run correlation and unique mutation causation', async () => {
+  let causationSequence = 0
+  await withServices(async ({ services, events }) => {
+    const document = await services.documents.create({
+      title: 'Attributed document',
+      blocks: [block('Original body')]
+    })
+    await services.documents.update(document.id, {
+      title: 'Attributed update',
+      summary: '',
+      blocks: [block('Updated body')]
+    })
+    await services.documents.move(document.id, null)
+    await services.documents.delete(document.id)
+    await services.events.emit({
+      type: 'ai.config.updated',
+      createdAt: new Date().toISOString(),
+      model: 'test-model',
+      aiEnabled: true,
+      originPluginId: 'spoofed-plugin',
+      correlationId: 'spoofed-correlation',
+      causationId: 'spoofed-causation'
+    })
+
+    assert.deepEqual(events.map((event) => event.type), [
+      'document.created',
+      'document.updated',
+      'document.moved',
+      'document.deleted',
+      'ai.config.updated'
+    ])
+    assert.deepEqual(
+      events.map(({ originPluginId, correlationId, causationId }) => ({
+        originPluginId,
+        correlationId,
+        causationId
+      })),
+      [1, 2, 3, 4, 5].map((sequence) => ({
+        originPluginId: 'system.metadata-test',
+        correlationId: 'system-run-123',
+        causationId: `mutation-${sequence}`
+      }))
+    )
+  }, fetch, {
+    workspaceEventContext: {
+      originPluginId: 'system.metadata-test',
+      correlationId: 'system-run-123',
+      createCausationId: () => `mutation-${++causationSequence}`
+    }
+  })
+})
+
 test('Full Trust database and settings APIs notify the renderer while retaining raw access', async () => {
   await withServices(async ({ services, notifications }) => {
     const database = services.databases.create({ name: 'Automation DB', description: 'Created by plugin' })
@@ -204,7 +256,7 @@ test('Full Trust desktop helpers register lifecycle cleanup for windows, menus a
     services.desktop.createTray('plugin-icon.png')
     assert.deepEqual(
       lifecycle.map((entry) => entry.label),
-      ['Electron BrowserWindow', 'Electron Menu', 'Electron Tray']
+      ['AI requests', 'Electron BrowserWindow', 'Electron Menu', 'Electron Tray']
     )
 
     for (const entry of [...lifecycle].reverse()) await entry.dispose()
@@ -281,11 +333,20 @@ test('Full Trust service RPC uses stable Main APIs for documents, databases, set
     assert.equal(completion.id, 'completion-1')
 
     assert.equal(events[0]?.type, 'document.created')
+    assert.equal(events[0]?.originPluginId, 'system.service.rpc')
+    assert.equal(events[0]?.correlationId, 'service-run-123')
+    assert.equal(events[0]?.causationId, 'service-mutation-1')
     assert.ok(notifications.count >= 4)
   }, async () => new Response(JSON.stringify({ id: 'completion-1' }), {
     status: 200,
     headers: { 'content-type': 'application/json' }
-  }))
+  }), {
+    workspaceEventContext: {
+      originPluginId: 'system.service.rpc',
+      correlationId: 'service-run-123',
+      createCausationId: () => 'service-mutation-1'
+    }
+  })
 })
 
 function block(content: string) {
@@ -308,6 +369,7 @@ async function withServices(
     electron?: KnowbookFullTrustServiceOptions['electron']
     environment?: NodeJS.ProcessEnv
     registerDisposable?: KnowbookFullTrustServiceOptions['registerDisposable']
+    workspaceEventContext?: KnowbookFullTrustServiceOptions['workspaceEventContext']
   } = {}
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'knowbook-system-plugin-services-'))
@@ -323,6 +385,7 @@ async function withServices(
       store,
       sqlite: store.getUnsafeDatabaseHandle(),
       workspaceEventBus: eventBus,
+      workspaceEventContext: overrides.workspaceEventContext,
       electron: overrides.electron ?? ({} as KnowbookFullTrustServiceOptions['electron']),
       getMainWindow: () => null,
       getAiCredentials: () => ({

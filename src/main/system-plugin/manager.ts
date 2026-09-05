@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir, readFile, readlink, realpath, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, readlink, realpath, rm, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   ResolveSystemPluginInstallRequestInput,
@@ -56,11 +56,19 @@ import type {
   SystemPluginHostOptions,
   SystemPluginRuntimeStatus
 } from './types'
+import { runWithTimeout } from './runtime'
+import {
+  createSystemPluginLogWriter,
+  redactSystemPluginLog,
+  type SystemPluginLogWriter
+} from './log-writer'
 
 const CONFIRMATION_VERSION = 1
 const FULL_TRUST_DISCLOSURE = 'full-trust'
 const DEFAULT_ADOPTED_STOP_TIMEOUT_MS = 5_000
 const DEFAULT_ADOPTED_FORCE_KILL_TIMEOUT_MS = 1_000
+const DEFAULT_RENDERER_ACTIVATION_TIMEOUT_MS = 30_000
+const DEFAULT_RENDERER_DEACTIVATION_TIMEOUT_MS = 5_000
 const DETACHED_PROCESS_IDENTITY_VERSION = 1
 
 export interface PrepareSystemPluginInstallInput {
@@ -100,6 +108,26 @@ export interface SystemPluginHostController {
 export type SystemPluginHostFactory<TServices extends object> = (
   options: SystemPluginHostOptions<TServices>
 ) => SystemPluginHostController
+
+export interface SystemPluginRendererActivationInput {
+  pluginId: string
+  version: string
+  revisionHash: string
+  source: string
+}
+
+export type SystemPluginRendererActivator = (
+  input: Readonly<SystemPluginRendererActivationInput>
+) => Promise<void>
+
+export type SystemPluginRendererCommitter = (
+  pluginId: string,
+  revisionHash: string
+) => Promise<void>
+
+export type SystemPluginRendererDeactivator = (
+  pluginId: string
+) => Promise<void>
 
 export interface SystemPluginServiceController {
   readonly snapshot: Readonly<SystemPluginServiceSnapshot>
@@ -159,6 +187,11 @@ export interface SystemPluginManagerOptions<TServices extends object = Record<ne
   services?: TServices
   createServices?(bindings: FullTrustPluginContextFactoryBindings): TServices
   createHost?: SystemPluginHostFactory<TServices>
+  activateRenderer?: SystemPluginRendererActivator
+  commitRenderer?: SystemPluginRendererCommitter
+  deactivateRenderer?: SystemPluginRendererDeactivator
+  rendererActivationTimeoutMs?: number
+  rendererDeactivationTimeoutMs?: number
   createServiceSupervisor?: SystemPluginServiceFactory
   createServiceRpcMethods?: CreateSystemPluginServiceRpcMethods
   createServiceRpcServer?: SystemPluginServiceRpcServerFactory
@@ -217,7 +250,17 @@ type ActiveSystemPluginRuntime = {
     launchNonce: string | null
     runtimeRoot: string
     serviceEntry: string
+    logWriter: SystemPluginLogWriter | null
   } | null
+}
+
+type InFlightSystemPluginActivation = {
+  promise: Promise<void>
+  cancelRequested: boolean
+}
+
+class SystemPluginActivationCancelledError extends Error {
+  override readonly name = 'SystemPluginActivationCancelledError'
 }
 
 type PersistedDetachedProcessIdentity = SystemPluginDetachedProcessIdentity & {
@@ -250,6 +293,11 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   private readonly now: () => Date
   private readonly hostProcess: NodeJS.Process
   private readonly createHost: SystemPluginHostFactory<TServices>
+  private readonly activateRenderer: SystemPluginRendererActivator | null
+  private readonly commitRenderer: SystemPluginRendererCommitter | null
+  private readonly deactivateRenderer: SystemPluginRendererDeactivator | null
+  private readonly rendererActivationTimeoutMs: number
+  private readonly rendererDeactivationTimeoutMs: number
   private readonly createServiceSupervisor: SystemPluginServiceFactory
   private readonly createServiceRpcServer: SystemPluginServiceRpcServerFactory
   private readonly preparePublishedPackage: PreparePublishedSystemPluginPackage
@@ -262,6 +310,8 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   private readonly adoptedServiceStopTimeoutMs: number
   private readonly adoptedServiceForceKillTimeoutMs: number
   private readonly active = new Map<string, ActiveSystemPluginRuntime>()
+  private readonly activating = new Map<string, { packageId: string; revisionHash: string }>()
+  private readonly activationOperations = new Map<string, InFlightSystemPluginActivation>()
   private startupOperation: Promise<SystemPluginManagerSummary[]> | null = null
   private macMainAppRegistrationClaim: string | null = null
   private destroyOperation: Promise<void> | null = null
@@ -270,6 +320,16 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   constructor(private readonly options: SystemPluginManagerOptions<TServices>) {
     if (options.services && options.createServices) {
       throw new Error('SystemPluginManager accepts either services or createServices, not both.')
+    }
+    const rendererLifecycleCallbackCount = [
+      options.activateRenderer,
+      options.commitRenderer,
+      options.deactivateRenderer
+    ].filter(Boolean).length
+    if (rendererLifecycleCallbackCount !== 0 && rendererLifecycleCallbackCount !== 3) {
+      throw new Error(
+        'SystemPluginManager requires activateRenderer, commitRenderer, and deactivateRenderer together.'
+      )
     }
     this.repository = options.repository
     this.stagingRoot = resolveRequiredPath(options.stagingRoot, 'stagingRoot')
@@ -285,6 +345,19 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     this.now = options.now ?? (() => new Date())
     this.hostProcess = options.process ?? process
     this.createHost = options.createHost ?? ((hostOptions) => new SystemPluginHost(hostOptions))
+    this.activateRenderer = options.activateRenderer ?? null
+    this.commitRenderer = options.commitRenderer ?? null
+    this.deactivateRenderer = options.deactivateRenderer ?? null
+    this.rendererActivationTimeoutMs = normalizePositiveDuration(
+      options.rendererActivationTimeoutMs,
+      DEFAULT_RENDERER_ACTIVATION_TIMEOUT_MS,
+      'Full Trust renderer activation timeout'
+    )
+    this.rendererDeactivationTimeoutMs = normalizePositiveDuration(
+      options.rendererDeactivationTimeoutMs,
+      DEFAULT_RENDERER_DEACTIVATION_TIMEOUT_MS,
+      'Full Trust renderer deactivation timeout'
+    )
     this.createServiceSupervisor = options.createServiceSupervisor
       ?? ((supervisorOptions) => new SystemPluginServiceSupervisor(supervisorOptions))
     this.createServiceRpcServer = options.createServiceRpcServer
@@ -580,6 +653,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       enabled: false,
       status: 'disabled'
     })
+    await this.cancelActivationAndWait(pluginId)
     const stopFailures: Error[] = []
     try {
       await this.stopRuntime(pluginId, false, 'disabled')
@@ -637,6 +711,15 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   async requestUninstall(pluginId: string): Promise<SystemPluginManagerSummary> {
     this.assertUsable()
     const installation = this.requireInstallation(pluginId)
+    // Persist the uninstall intent before waiting for any in-flight activation.
+    // The activation commit gate observes this synchronously and cannot revive
+    // the runtime while cleanup is waiting for staging/initialization to settle.
+    this.repository.updateSystemPluginInstallation(installation.id, {
+      enabled: false,
+      safeModeDisabled: false,
+      status: 'uninstall-pending'
+    })
+    await this.cancelActivationAndWait(pluginId)
     const cleanupFailures: Error[] = []
     try {
       await this.stopRuntime(pluginId, false, 'disabled')
@@ -1106,6 +1189,15 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     return this.get(pluginId)
   }
 
+  isActivatingRevision(pluginId: string, revisionHash: string): boolean {
+    const activation = this.activating.get(pluginId)
+    return Boolean(
+      activation
+      && activation.revisionHash === revisionHash
+      && activation.packageId.length > 0
+    )
+  }
+
   destroy(): Promise<void> {
     if (this.destroyOperation) return this.destroyOperation
     this.destroyed = true
@@ -1137,6 +1229,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
 
     const installations = this.repository.listSystemPluginInstallations()
     for (const installation of installations) {
+      if (this.destroyed) break
       if (!installation.enabled || installation.safeModeDisabled || this.active.has(installation.pluginId)) {
         continue
       }
@@ -1457,7 +1550,27 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     }
   }
 
-  private async startInstallation(installation: SystemPluginInstallationRecord): Promise<void> {
+  private startInstallation(installation: SystemPluginInstallationRecord): Promise<void> {
+    const existing = this.activationOperations.get(installation.pluginId)
+    if (existing) return existing.promise
+    if (!this.isActivationDesired(installation.id)) return Promise.resolve()
+
+    const operation = this.runStartInstallation(installation)
+    const inFlight: InFlightSystemPluginActivation = {
+      promise: operation,
+      cancelRequested: false
+    }
+    this.activationOperations.set(installation.pluginId, inFlight)
+    const clearOperation = (): void => {
+      if (this.activationOperations.get(installation.pluginId) === inFlight) {
+        this.activationOperations.delete(installation.pluginId)
+      }
+    }
+    void operation.then(clearOperation, clearOperation)
+    return operation
+  }
+
+  private async runStartInstallation(installation: SystemPluginInstallationRecord): Promise<void> {
     const pending = installation.pendingPackageId
       ? this.repository.getSystemPluginPackage(installation.pendingPackageId)
       : null
@@ -1474,6 +1587,12 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       await this.activatePackage(installation, target, Boolean(pending))
       return
     } catch (pendingError) {
+      if (
+        pendingError instanceof SystemPluginActivationCancelledError
+        || !this.isActivationDesired(installation.id)
+      ) {
+        return
+      }
       if (!pending || !current || pending.id === current.id || current.status !== 'ready') {
         await this.safeDisable(installation, normalizeError(pendingError))
         return
@@ -1499,6 +1618,12 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
           false
         )
       } catch (fallbackError) {
+        if (
+          fallbackError instanceof SystemPluginActivationCancelledError
+          || !this.isActivationDesired(installation.id)
+        ) {
+          return
+        }
         await this.safeDisable(
           this.repository.getSystemPluginInstallation(installation.id) ?? installation,
           new AggregateError(
@@ -1515,6 +1640,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     packageRecord: SystemPluginPackageRecord,
     commitPending: boolean
   ): Promise<void> {
+    this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
     if (packageRecord.status !== 'ready') {
       throw new Error(
         `System plugin package ${packageRecord.id} cannot activate from ${packageRecord.status} status.`
@@ -1542,6 +1668,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
 
     await this.stopPersistedDetachedRuns(installation, packageRecord.id, 'superseded')
 
+    this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
     this.repository.updateSystemPluginInstallation(installation.id, {
       status: 'starting',
       lastError: null
@@ -1549,6 +1676,14 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     const runtimeRoot = getSystemPluginRuntimeRoot(packageRecord)
     const pluginDataRoot = join(this.dataRoot, installation.pluginId)
     await mkdir(pluginDataRoot, { recursive: true })
+    const previousPackage = commitPending
+      && installation.currentPackageId
+      && installation.currentPackageId !== packageRecord.id
+      ? this.repository.getSystemPluginPackage(installation.currentPackageId)
+      : null
+    const fromVersion = previousPackage?.status === 'ready'
+      ? previousPackage.version
+      : null
     const hostComponent = manifest.entries.main
       ? 'main' as const
       : manifest.entries.renderer
@@ -1564,6 +1699,9 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       : null
     const serviceLogPath = manifest.entries.service && this.logRoot
       ? join(this.logRoot, installation.pluginId, `${packageRecord.contentHash}-service.log`)
+      : null
+    const serviceLogWriter = serviceLogPath
+      ? createSystemPluginLogWriter(serviceLogPath)
       : null
     if (serviceLogPath) await mkdir(join(this.logRoot!, installation.pluginId), { recursive: true })
     const adoptedService = manifest.entries.service && manifest.background?.mode === 'detached'
@@ -1598,23 +1736,56 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     let serviceRpcServer: SystemPluginServiceRpcServerController | null = null
     let serviceLaunchNonce: string | null = null
     let activeServiceEntry: string | null = null
+    let internalCommitApplied = false
+    const activatingRevision = {
+      packageId: packageRecord.id,
+      revisionHash: `sha256:${packageRecord.contentHash}`
+    }
+    this.activating.set(installation.pluginId, activatingRevision)
     try {
-      host = manifest.entries.main
-        ? this.createHost({
-            plugin: {
-              id: manifest.id,
-              version: manifest.version,
-              revisionHash: `sha256:${packageRecord.contentHash}`
-            },
-            pluginRoot: runtimeRoot,
-            dataRoot: pluginDataRoot,
-            mainEntry: manifest.entries.main,
-            ...(this.options.services ? { services: this.options.services } : {}),
-            ...(this.options.createServices ? { createServices: this.options.createServices } : {}),
-            process: this.hostProcess
-          })
-        : createRendererLifecyclePlaceholder()
+      this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
+      const lifecycleHosts: SystemPluginHostController[] = []
+      if (manifest.entries.main) {
+        lifecycleHosts.push(this.createHost({
+          plugin: {
+            id: manifest.id,
+            version: manifest.version,
+            revisionHash: `sha256:${packageRecord.contentHash}`
+          },
+          pluginRoot: runtimeRoot,
+          dataRoot: pluginDataRoot,
+          mainEntry: manifest.entries.main,
+          ...(fromVersion ? { fromVersion } : {}),
+          ...(this.options.services ? { services: this.options.services } : {}),
+          ...(this.options.createServices ? { createServices: this.options.createServices } : {}),
+          process: this.hostProcess
+        }))
+      }
+      if (manifest.entries.renderer) {
+        if (!this.activateRenderer || !this.commitRenderer || !this.deactivateRenderer) {
+          throw new Error(
+            `System plugin "${manifest.id}" declares a renderer entry, but renderer lifecycle support is unavailable.`
+          )
+        }
+        lifecycleHosts.push(createRendererLifecycleHost({
+          pluginId: manifest.id,
+          version: manifest.version,
+          revisionHash: `sha256:${packageRecord.contentHash}`,
+          runtimeRoot,
+          rendererEntry: manifest.entries.renderer,
+          activate: this.activateRenderer,
+          deactivate: this.deactivateRenderer,
+          activationTimeoutMs: this.rendererActivationTimeoutMs,
+          deactivationTimeoutMs: this.rendererDeactivationTimeoutMs
+        }))
+      }
+      host = lifecycleHosts.length === 0
+        ? createRendererLifecyclePlaceholder()
+        : lifecycleHosts.length === 1
+          ? lifecycleHosts[0]
+          : createCompositeLifecycleHost(lifecycleHosts)
       const activation = await host.activate()
+      this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
       const readyAt = this.isoNow()
       if (hostRun) {
         this.repository.updateSystemPluginRun(hostRun.id, {
@@ -1675,7 +1846,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
               installation,
               packageRecord,
               serviceRun.id,
-              serviceLogPath,
+              serviceLogWriter,
               error
             )
           })
@@ -1709,7 +1880,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
             installation,
             packageRecord,
             serviceRun.id,
-            serviceLogPath,
+            serviceLogWriter,
             event
           )
         })
@@ -1760,17 +1931,21 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
           }
         }
       }
-      this.repository.updateSystemPluginCrashMarker(marker.id, {
-        state: 'ready',
-        recovery: { action: 'activation-ready', readyAt }
+      this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
+      this.repository.commitSystemPluginActivationReady({
+        markerId: marker.id,
+        installationId: installation.id,
+        packageId: packageRecord.id,
+        runId: run.id,
+        commitPending,
+        readyAt,
+        health: activation.health,
+        ...(manifest.entries.renderer ? { rendererCommitPhase: 'prepare' as const } : {})
       })
-      this.repository.updateSystemPluginInstallation(installation.id, {
-        status: 'active',
-        currentPackageId: commitPending ? packageRecord.id : installation.currentPackageId,
-        pendingPackageId: commitPending ? null : installation.pendingPackageId,
-        safeModeDisabled: false,
-        lastError: null
-      })
+      internalCommitApplied = true
+      // Renderer publication may immediately navigate a frame or consume another
+      // revision-bound policy. Make this prepared runtime available only after
+      // its installation pointer has committed, while the crash marker is armed.
       this.active.set(installation.pluginId, {
         installationId: installation.id,
         packageId: packageRecord.id,
@@ -1785,53 +1960,77 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
               rpcServer: serviceRpcServer,
               launchNonce: serviceLaunchNonce,
               runtimeRoot,
-              serviceEntry: activeServiceEntry!
+              serviceEntry: activeServiceEntry!,
+              logWriter: serviceLogWriter
             }
           : null
       })
-      this.repository.appendSystemPluginAudit({
-        pluginId: installation.pluginId,
-        installationId: installation.id,
-        packageId: packageRecord.id,
-        runId: run.id,
-        actor: 'system',
-        action: 'activation.ready',
-        outcome: 'success',
-        details: { health: activation.health, committedPending: commitPending }
-      })
+      if (manifest.entries.renderer) {
+        await runWithTimeout(
+          this.commitRenderer!(installation.pluginId, activatingRevision.revisionHash),
+          this.rendererActivationTimeoutMs,
+          'activate',
+          `System plugin "${installation.pluginId}" Renderer commit`
+        )
+        this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, true)
+        this.repository.commitSystemPluginActivationReady({
+          markerId: marker.id,
+          installationId: installation.id,
+          packageId: packageRecord.id,
+          runId: run.id,
+          commitPending,
+          readyAt: this.isoNow(),
+          health: activation.health,
+          rendererCommitPhase: 'complete'
+        })
+      }
     } catch (error) {
+      // Revoke policy access before asynchronous cleanup can yield to Renderer.
+      this.active.delete(installation.pluginId)
+      const cancelled = error instanceof SystemPluginActivationCancelledError
+        || !this.isActivationDesired(installation.id)
       const details = serializeError(error)
       if (serviceController) await serviceController.stop().catch(() => undefined)
       if (serviceRpcServer) await serviceRpcServer.close().catch(() => undefined)
+      await serviceLogWriter?.flush().catch(() => undefined)
       if (host) await host.deactivate().catch(() => undefined)
-      this.active.delete(installation.pluginId)
+      if (internalCommitApplied || cancelled) {
+        this.restoreInstallationAfterCancelledCommit(installation, packageRecord.id, internalCommitApplied)
+      }
       for (const failedRun of [hostRun, serviceRun]) {
         if (!failedRun) continue
         this.repository.updateSystemPluginRun(failedRun.id, {
+          status: cancelled ? 'stopped' : 'failed',
+          error: cancelled ? null : details
+        })
+      }
+      this.repository.updateSystemPluginCrashMarker(marker.id, {
+        state: cancelled ? 'recovered' : 'failed',
+        error: cancelled ? null : details,
+        ...(cancelled ? { recovery: { action: 'activation-cancelled' } } : {}),
+        clearedAt: this.isoNow()
+      })
+      if (!cancelled) {
+        this.repository.updateSystemPluginPackage(packageRecord.id, {
           status: 'failed',
           error: details
         })
       }
-      this.repository.updateSystemPluginCrashMarker(marker.id, {
-        state: 'failed',
-        error: details,
-        clearedAt: this.isoNow()
-      })
-      this.repository.updateSystemPluginPackage(packageRecord.id, {
-        status: 'failed',
-        error: details
-      })
       this.repository.appendSystemPluginAudit({
         pluginId: installation.pluginId,
         installationId: installation.id,
         packageId: packageRecord.id,
         runId: run.id,
         actor: 'system',
-        action: 'activation.failed',
-        outcome: 'failure',
+        action: cancelled ? 'activation.cancelled' : 'activation.failed',
+        outcome: cancelled ? 'success' : 'failure',
         details
       })
       throw normalizeError(error)
+    } finally {
+      if (this.activating.get(installation.pluginId) === activatingRevision) {
+        this.activating.delete(installation.pluginId)
+      }
     }
   }
 
@@ -2136,7 +2335,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     installation: SystemPluginInstallationRecord,
     packageRecord: SystemPluginPackageRecord,
     runId: string,
-    logPath: string | null,
+    logWriter: SystemPluginLogWriter | null,
     event: SystemPluginServiceEvent
   ): void {
     try {
@@ -2210,10 +2409,9 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
           }, 0)
           break
         case 'log':
-          if (logPath) {
-            const line = `[${event.timestamp}] [${event.stream}] ${redactSystemPluginLog(event.text)}`
-            void appendFile(logPath, line.endsWith('\n') ? line : `${line}\n`, 'utf8')
-              .catch(() => undefined)
+          if (logWriter) {
+            const line = `[${event.timestamp}] [${event.stream}] ${event.text}`
+            void logWriter.append(line).catch(() => undefined)
           }
           break
         case 'message':
@@ -2281,7 +2479,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     installation: SystemPluginInstallationRecord,
     packageRecord: SystemPluginPackageRecord,
     runId: string,
-    logPath: string | null,
+    logWriter: SystemPluginLogWriter | null,
     error: Error
   ): void {
     const details = {
@@ -2305,9 +2503,9 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     } catch {
       // Diagnostics cannot affect the transport.
     }
-    if (logPath) {
+    if (logWriter) {
       const line = `[${this.isoNow()}] [rpc] ${details.name}: ${details.message}`
-      void appendFile(logPath, `${line}\n`, 'utf8').catch(() => undefined)
+      void logWriter.append(line).catch(() => undefined)
     }
   }
 
@@ -2346,6 +2544,89 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       action: 'service.restart-limit-reached',
       outcome: 'failure',
       details
+    })
+  }
+
+  private isActivationDesired(installationId: string): boolean {
+    if (this.destroyed) return false
+    const installation = this.repository.getSystemPluginInstallation(installationId)
+    if (!installation) return false
+    const inFlight = this.activationOperations.get(installation.pluginId)
+    return Boolean(
+      installation.enabled
+      && !installation.safeModeDisabled
+      && installation.status !== 'disabled'
+      && installation.status !== 'uninstall-pending'
+      && installation.status !== 'safe-mode-disabled'
+      && !inFlight?.cancelRequested
+    )
+  }
+
+  private assertActivationCanCommit(
+    installationId: string,
+    packageId: string,
+    commitPending: boolean,
+    internalCommitApplied: boolean
+  ): SystemPluginInstallationRecord {
+    if (!this.isActivationDesired(installationId)) {
+      throw new SystemPluginActivationCancelledError(
+        'System plugin activation was cancelled because the installation is no longer enabled.'
+      )
+    }
+    const installation = this.repository.getSystemPluginInstallation(installationId)
+    if (!installation) {
+      throw new SystemPluginActivationCancelledError(
+        'System plugin activation was cancelled because the installation no longer exists.'
+      )
+    }
+    const expectedPackageId = internalCommitApplied
+      ? installation.currentPackageId
+      : commitPending
+        ? installation.pendingPackageId
+        : installation.currentPackageId
+    if (expectedPackageId !== packageId || (internalCommitApplied && installation.status !== 'active')) {
+      throw new SystemPluginActivationCancelledError(
+        'System plugin activation was cancelled because the requested package changed.'
+      )
+    }
+    return installation
+  }
+
+  private async cancelActivationAndWait(pluginId: string): Promise<void> {
+    const inFlight = this.activationOperations.get(pluginId)
+    if (!inFlight) return
+    inFlight.cancelRequested = true
+    await inFlight.promise.catch(() => undefined)
+  }
+
+  private restoreInstallationAfterCancelledCommit(
+    original: SystemPluginInstallationRecord,
+    packageId: string,
+    internalCommitApplied: boolean
+  ): void {
+    const current = this.repository.getSystemPluginInstallation(original.id)
+    if (!current) return
+    const preserveExternalIntent = (
+      !current.enabled
+      || current.safeModeDisabled
+      || current.status === 'disabled'
+      || current.status === 'uninstall-pending'
+      || current.status === 'safe-mode-disabled'
+    )
+    this.repository.updateSystemPluginInstallation(original.id, {
+      ...(internalCommitApplied && current.currentPackageId === packageId
+        ? {
+            currentPackageId: original.currentPackageId,
+            pendingPackageId: current.pendingPackageId ?? original.pendingPackageId
+          }
+        : {}),
+      status: preserveExternalIntent
+        ? current.status
+        : this.destroyed
+          ? 'pending-restart'
+          : current.status === 'pending-restart'
+            ? 'pending-restart'
+            : 'starting'
     })
   }
 
@@ -2420,6 +2701,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
         failures.push(normalizeError(error))
       }
     }
+    await runtime.service?.logWriter?.flush().catch(() => undefined)
     this.active.delete(pluginId)
     if (runtime.hostRunId) {
       this.repository.updateSystemPluginRun(runtime.hostRunId, failures.length > 0
@@ -2454,6 +2736,14 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
 
   private async runDestroy(): Promise<void> {
     const failures: Error[] = []
+    for (const activation of this.activationOperations.values()) {
+      activation.cancelRequested = true
+    }
+    while (this.activationOperations.size > 0) {
+      await Promise.allSettled(
+        [...this.activationOperations.values()].map((activation) => activation.promise)
+      )
+    }
     for (const pluginId of [...this.active.keys()]) {
       const installation = this.repository.getSystemPluginInstallationByPlugin(pluginId)
       try {
@@ -2946,6 +3236,18 @@ function normalizeNonNegativeDuration(
   return duration
 }
 
+function normalizePositiveDuration(
+  value: number | undefined,
+  fallback: number,
+  label: string
+): number {
+  const duration = value ?? fallback
+  if (!Number.isSafeInteger(duration) || duration < 1 || duration > 60_000) {
+    throw new Error(`${label} must be an integer between 1 and 60000 milliseconds.`)
+  }
+  return duration
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path)
@@ -2976,13 +3278,6 @@ function isMissingProcessError(error: unknown): boolean {
   return error instanceof Error
     && 'code' in error
     && (error as NodeJS.ErrnoException).code === 'ESRCH'
-}
-
-function redactSystemPluginLog(value: string): string {
-  return value
-    .slice(0, 65_536)
-    .replace(/(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;]+/gi, '$1[REDACTED]')
-    .replace(/((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]')
 }
 
 async function defaultPreparePublishedPackage(
@@ -3163,22 +3458,122 @@ function jsonEqual(left: unknown, right: unknown): boolean {
 function serializeError(error: unknown): Record<string, unknown> {
   const normalized = normalizeError(error)
   return {
-    name: normalized.name.slice(0, 200),
-    message: normalized.message.slice(0, 4_000),
-    ...(normalized.stack ? { stack: normalized.stack.slice(0, 16_000) } : {})
+    name: redactSystemPluginLog(normalized.name).slice(0, 200),
+    message: redactSystemPluginLog(normalized.message).slice(0, 4_000),
+    ...(normalized.stack
+      ? { stack: redactSystemPluginLog(normalized.stack).slice(0, 16_000) }
+      : {})
   }
 }
 
 function serializeErrors(errors: Error[]): Record<string, unknown> {
   return {
     name: 'AggregateError',
-    message: errors.map((error) => error.message).join('; ').slice(0, 4_000),
+    message: redactSystemPluginLog(errors.map((error) => error.message).join('; ')).slice(0, 4_000),
     errors: errors.map(serializeError)
   }
 }
 
 function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+interface RendererLifecycleHostOptions {
+  pluginId: string
+  version: string
+  revisionHash: string
+  runtimeRoot: string
+  rendererEntry: string
+  activate: SystemPluginRendererActivator
+  deactivate: SystemPluginRendererDeactivator
+  activationTimeoutMs: number
+  deactivationTimeoutMs: number
+}
+
+function createRendererLifecycleHost(
+  options: RendererLifecycleHostOptions
+): SystemPluginHostController {
+  const entryPath = resolve(options.runtimeRoot, options.rendererEntry)
+  if (!isPathInside(entryPath, options.runtimeRoot) || entryPath === options.runtimeRoot) {
+    throw new Error('System plugin renderer entry escapes its runtime root.')
+  }
+  let status: SystemPluginRuntimeStatus = 'idle'
+  let activation: Promise<SystemPluginActivationResult> | null = null
+  let cleanup: Promise<void> | null = null
+
+  const cleanupRenderer = (): Promise<void> => {
+    cleanup ??= runWithTimeout(
+      options.deactivate(options.pluginId),
+      options.deactivationTimeoutMs,
+      'deactivate',
+      `System plugin "${options.pluginId}" Renderer deactivate`
+    )
+    return cleanup
+  }
+
+  return {
+    get status() {
+      return status
+    },
+    activate() {
+      if (activation) return activation
+      if (status !== 'idle') {
+        return Promise.reject(new Error(
+          `System plugin "${options.pluginId}" Renderer cannot activate from ${status} status.`
+        ))
+      }
+      activation = (async () => {
+        try {
+          status = 'loading'
+          const source = await readFile(entryPath, 'utf8')
+          status = 'activating'
+          await runWithTimeout(
+            options.activate({
+              pluginId: options.pluginId,
+              version: options.version,
+              revisionHash: options.revisionHash,
+              source
+            }),
+            options.activationTimeoutMs,
+            'activate',
+            `System plugin "${options.pluginId}" Renderer activate`
+          )
+          status = 'active'
+          return {
+            entryPath,
+            format: /^\s*(?:import|export)\s/m.test(source) ? 'esm' : 'cjs',
+            health: { ok: true, message: 'Renderer entry activated.' }
+          }
+        } catch (error) {
+          await cleanupRenderer().catch(() => undefined)
+          status = 'failed'
+          throw normalizeError(error)
+        }
+      })()
+      return activation
+    },
+    async healthCheck() {
+      return {
+        ok: status === 'active',
+        ...(status === 'active' ? {} : { message: `Renderer is ${status}.` })
+      }
+    },
+    async beforeQuit() {},
+    async deactivate() {
+      if (status === 'stopped') return
+      if (activation && status !== 'active' && status !== 'failed') {
+        await activation.catch(() => undefined)
+      }
+      status = 'deactivating'
+      try {
+        await cleanupRenderer()
+        status = 'stopped'
+      } catch (error) {
+        status = 'failed'
+        throw normalizeError(error)
+      }
+    }
+  }
 }
 
 function createRendererLifecyclePlaceholder(): SystemPluginHostController {

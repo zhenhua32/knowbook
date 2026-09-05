@@ -611,40 +611,50 @@ function initializeServices(): void {
   )
   const createFullTrustPluginServices = (
     bindings: Pick<FullTrustPluginContextFactoryBindings, 'plugin' | 'registerDisposable'>
-  ) => createKnowbookFullTrustServices({
-    store,
-    sqlite: store.getUnsafeDatabaseHandle(),
-    workspaceEventBus,
-    electron,
-    getMainWindow: () => mainWindow,
-    getAiCredentials: () => {
-      const config = store.getAiConfigPublic()
-      return {
-        enabled: config.enabled,
-        apiKey: getDecryptedAiApiKey(),
-        baseUrl: config.baseUrl,
-        model: config.model
+  ) => {
+    const pluginRunCorrelationId = randomUUID()
+    return createKnowbookFullTrustServices({
+      store,
+      sqlite: store.getUnsafeDatabaseHandle(),
+      workspaceEventBus,
+      workspaceEventContext: {
+        originPluginId: bindings.plugin.id,
+        correlationId: pluginRunCorrelationId
+      },
+      electron,
+      getMainWindow: () => mainWindow,
+      getAiCredentials: () => {
+        const config = store.getAiConfigPublic()
+        return {
+          enabled: config.enabled,
+          apiKey: getDecryptedAiApiKey(),
+          baseUrl: config.baseUrl,
+          model: config.model
+        }
+      },
+      notifyWorkspaceMutation,
+      cancelDocumentSummaryGeneration,
+      registerDisposable: bindings.registerDisposable,
+      requestOsPersistence: () => systemPluginManager.requestOsPersistence(
+        bindings.plugin.id,
+        'plugin'
+      ),
+      renderer: {
+        activate: async (input) => {
+          await activateFullTrustRenderer(input)
+          await commitFullTrustRenderer(input.pluginId, input.revisionHash)
+        },
+        deactivate: deactivateFullTrustRenderer
+      },
+      paths: {
+        userData: app.getPath('userData'),
+        appData: app.getPath('appData'),
+        documents: app.getPath('documents'),
+        downloads: app.getPath('downloads'),
+        temp: app.getPath('temp')
       }
-    },
-    notifyWorkspaceMutation,
-    cancelDocumentSummaryGeneration,
-    registerDisposable: bindings.registerDisposable,
-    requestOsPersistence: () => systemPluginManager.requestOsPersistence(
-      bindings.plugin.id,
-      'plugin'
-    ),
-    renderer: {
-      activate: activateFullTrustRenderer,
-      deactivate: deactivateFullTrustRenderer
-    },
-    paths: {
-      userData: app.getPath('userData'),
-      appData: app.getPath('appData'),
-      documents: app.getPath('documents'),
-      downloads: app.getPath('downloads'),
-      temp: app.getPath('temp')
-    }
-  })
+    })
+  }
   systemPluginManager = new SystemPluginManager({
     repository: store.pluginPlatform,
     stagingRoot: systemPluginStagingRoot,
@@ -675,6 +685,9 @@ function initializeServices(): void {
       runtimeRoot: systemPluginRuntimeRoot,
       logRoot: systemPluginLogRoot
     }),
+    activateRenderer: activateFullTrustRenderer,
+    commitRenderer: commitFullTrustRenderer,
+    deactivateRenderer: deactivateFullTrustRenderer,
     createServices: createFullTrustPluginServices,
     createServiceRpcMethods: ({ plugin }) => createKnowbookFullTrustServiceRpcMethods(
       createFullTrustPluginServices({
@@ -788,75 +801,112 @@ async function activateFullTrustRenderer(input: {
       if (!registry || typeof registry.activatePlugin !== 'function') {
         throw new Error('Full Trust renderer registry is unavailable.');
       }
-      let exported;
-      if (/^\\s*(?:import|export)\\s/m.test(input.source)) {
-        const url = URL.createObjectURL(new Blob([input.source], { type: 'text/javascript' }));
-        try {
-          exported = await import(url);
-        } finally {
-          URL.revokeObjectURL(url);
-        }
-      } else {
-        const module = { exports: {} };
-        const evaluate = new Function(
-          'module',
-          'exports',
-          'React',
-          'ReactDOM',
-          'ReactDOMClient',
-          'window',
-          'document',
-          input.source + '\\n//# sourceURL=knowbook-full-trust://' + encodeURIComponent(input.pluginId) + '/renderer.js'
-        );
-        const returned = evaluate(
-          module,
-          module.exports,
-          registry.React,
-          registry.ReactDOM,
-          registry.ReactDOMClient,
-          window,
-          document
-        );
-        exported = returned === undefined ? module.exports : returned;
-      }
-      const initializer = exported?.default ?? exported?.activate ?? exported;
-      if (typeof initializer !== 'function') {
-        throw new Error('Full Trust renderer entry must export an initializer function.');
-      }
       await registry.activatePlugin({
         id: input.pluginId,
         version: input.version,
         revisionHash: input.revisionHash
-      }, initializer);
+      }, async (api) => {
+        let exported;
+        if (/^\\s*(?:import|export)\\s/m.test(input.source)) {
+          const url = URL.createObjectURL(new Blob([input.source], { type: 'text/javascript' }));
+          try {
+            exported = await import(url);
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        } else {
+          const module = { exports: {} };
+          const evaluate = new Function(
+            'module',
+            'exports',
+            'React',
+            'ReactDOM',
+            'ReactDOMClient',
+            'window',
+            'document',
+            input.source + '\\n//# sourceURL=knowbook-full-trust://' + encodeURIComponent(input.pluginId) + '/renderer.js'
+          );
+          const returned = evaluate(
+            module,
+            module.exports,
+            api.React,
+            api.ReactDOM,
+            api.ReactDOMClient,
+            window,
+            document
+          );
+          exported = returned === undefined ? module.exports : returned;
+        }
+        const initializer = exported?.default ?? exported?.activate ?? exported;
+        if (typeof initializer !== 'function') {
+          throw new Error('Full Trust renderer entry must export an initializer function.');
+        }
+        return await initializer(api);
+      });
     })()
   `
   await window.webContents.executeJavaScript(script, true)
 }
 
-async function deactivateFullTrustRenderer(pluginId: string): Promise<void> {
+async function commitFullTrustRenderer(pluginId: string, revisionHash: string): Promise<void> {
   const window = mainWindow
-  if (!window || window.webContents.isDestroyed()) return
+  if (!window || window.webContents.isDestroyed()) {
+    throw new Error('Full Trust renderer commit requires an active KnowBook window.')
+  }
   const encodedPluginId = JSON.stringify(pluginId)
+  const encodedRevisionHash = JSON.stringify(revisionHash)
   await window.webContents.executeJavaScript(
-    `window.knowbookFullTrust?.deactivatePlugin(${encodedPluginId})`,
+    `(() => {
+      const registry = window.knowbookFullTrust;
+      if (!registry || typeof registry.commitPlugin !== 'function') {
+        throw new Error('Full Trust renderer registry commit API is unavailable.');
+      }
+      return registry.commitPlugin(${encodedPluginId}, ${encodedRevisionHash});
+    })()`,
     true
   )
 }
 
+async function deactivateFullTrustRenderer(pluginId: string): Promise<void> {
+  try {
+    const window = mainWindow
+    if (!window || window.webContents.isDestroyed()) return
+    const encodedPluginId = JSON.stringify(pluginId)
+    await window.webContents.executeJavaScript(
+      `window.knowbookFullTrust?.deactivatePlugin(${encodedPluginId})`,
+      true
+    )
+  } finally {
+    removeSystemPluginFramePolicies(pluginId)
+  }
+}
+
 async function deactivateAllFullTrustRenderers(): Promise<void> {
-  const window = mainWindow
-  if (!window || window.webContents.isDestroyed()) return
-  await window.webContents.executeJavaScript(
-    'window.knowbookFullTrust?.deactivateAll()',
-    true
-  )
+  try {
+    const window = mainWindow
+    if (!window || window.webContents.isDestroyed()) return
+    await window.webContents.executeJavaScript(
+      'window.knowbookFullTrust?.deactivateAll()',
+      true
+    )
+  } finally {
+    const pluginIds = new Set(
+      [...fullTrustFramePolicies.values()].map((policy) => policy.pluginId)
+    )
+    for (const pluginId of pluginIds) removeSystemPluginFramePolicies(pluginId)
+  }
 }
 
 async function synchronizeFullTrustRendererPlugins(): Promise<void> {
   if (!servicesInitialized) return
   for (const summary of systemPluginManager.list()) {
     const packageRecord = summary.currentPackage
-    if (summary.installation.status !== 'active' || !packageRecord) continue
+    if (
+      summary.installation.status !== 'active'
+      || !packageRecord
+      || summary.runtime?.status !== 'active'
+      || summary.runtime.packageId !== packageRecord.id
+    ) continue
     const manifest = normalizeSystemPluginV3Manifest(packageRecord.manifestSnapshot)
     if (!manifest.entries.renderer) continue
     const runtimeRoot = getSystemPluginRuntimeRoot(packageRecord)
@@ -873,6 +923,7 @@ async function synchronizeFullTrustRendererPlugins(): Promise<void> {
         revisionHash: `sha256:${packageRecord.contentHash}`,
         source: readFileSync(entryPath, 'utf8')
       })
+      await commitFullTrustRenderer(manifest.id, `sha256:${packageRecord.contentHash}`)
     } catch (error) {
       console.error(`Full Trust renderer activation failed for ${manifest.id}.`, error)
       await systemPluginManager.disable(manifest.id).catch(() => undefined)
@@ -1197,9 +1248,14 @@ function isActiveSystemPluginRevision(pluginId: string, revisionHash: string): b
   )
 }
 
+function canRegisterSystemPluginRevision(pluginId: string, revisionHash: string): boolean {
+  return systemPluginManager.isActivatingRevision(pluginId, revisionHash)
+    || isActiveSystemPluginRevision(pluginId, revisionHash)
+}
+
 function normalizeSystemPluginFramePolicy(input: SystemPluginFramePolicyInput): SystemPluginFramePolicyInput {
-  if (!isActiveSystemPluginRevision(input.pluginId, input.revisionHash)) {
-    throw new Error('Full Trust frame policies require the exact active System Plugin v3 revision.')
+  if (!canRegisterSystemPluginRevision(input.pluginId, input.revisionHash)) {
+    throw new Error('Full Trust frame policies require the exact staging or active System Plugin v3 revision.')
   }
   const escapedPluginId = input.pluginId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   if (!new RegExp(`^knowbook-full-trust-frame:${escapedPluginId}:[a-f0-9-]{36}$`, 'i').test(input.frameName)) {
@@ -1890,7 +1946,6 @@ function registerIpcHandlers(): void {
       : await systemPluginManager.disable(input.pluginId)
     if (!input.enabled) {
       removeSystemPluginFramePolicies(input.pluginId)
-      await deactivateFullTrustRenderer(input.pluginId).catch(() => undefined)
     }
     pluginMutationNotifier.notify()
     return toSystemPluginSummary(summary)
@@ -1901,7 +1956,6 @@ function registerIpcHandlers(): void {
     input: SystemPluginMutationInput
   ): Promise<SystemPluginSummary> => {
     removeSystemPluginFramePolicies(input.pluginId)
-    await deactivateFullTrustRenderer(input.pluginId).catch(() => undefined)
     const summary = await systemPluginManager.requestUninstall(input.pluginId)
     pluginMutationNotifier.notify()
     return toSystemPluginSummary(summary)
@@ -2838,9 +2892,8 @@ if (hasSingleInstanceLock) {
               console.error('Background plugin startup failed.', result.reason)
             }
           }
-          return synchronizeFullTrustRendererPlugins()
         }).catch((error) => {
-          console.error('Full Trust renderer startup failed.', error)
+          console.error('Plugin startup coordination failed.', error)
         }).finally(() => {
           pluginMutationNotifier.notify()
         })

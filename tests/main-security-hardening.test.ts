@@ -129,6 +129,20 @@ test('main window guards reloads via same-origin check and hardens asset respons
     /removeSystemPluginFramePolicies\([\s\S]*?fullTrustPopupWindows[\s\S]*?popup\.window\.close\(\)/,
     'deactivation must close popups owned by removed Full Trust frame policies'
   )
+  assert.match(
+    mainIndexSource,
+    /function canRegisterSystemPluginRevision[\s\S]*?isActivatingRevision[\s\S]*?function normalizeSystemPluginFramePolicy[\s\S]*?canRegisterSystemPluginRevision/,
+    'a verified staging revision may register a policy before Renderer commit'
+  )
+  const activeRevisionGate = mainIndexSource.match(
+    /function isActiveSystemPluginRevision[\s\S]*?\n}\n/
+  )?.[0] ?? ''
+  assert.ok(activeRevisionGate.length > 0, 'expected an exact active revision gate')
+  assert.equal(
+    activeRevisionGate.includes('isActivatingRevision'),
+    false,
+    'staging revisions must not consume popup, navigation, download, or permission policies'
+  )
 
   assert.match(
     mainIndexSource,

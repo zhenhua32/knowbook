@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type electron from 'electron'
 import { spawn as spawnChildProcess, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import type {
   AiConfig,
   CreateDatabaseEntityInput,
@@ -91,6 +92,17 @@ export interface FullTrustFramePolicy {
   allowDownloads?: boolean
 }
 
+/**
+ * Attribution shared by workspace events emitted during one Full Trust plugin
+ * activation. The correlation id identifies that activation while every
+ * mutation receives a fresh causation id.
+ */
+export interface FullTrustWorkspaceEventContext {
+  originPluginId: string
+  correlationId: string
+  createCausationId?: () => string
+}
+
 export interface KnowbookFullTrustServiceOptions {
   store: KnowbookStore
   sqlite: SqliteDatabase
@@ -104,6 +116,7 @@ export interface KnowbookFullTrustServiceOptions {
   registerDisposable?: (disposable: () => void | Promise<void>, label?: string) => void
   requestOsPersistence?: () => SystemPluginOsPersistenceRecord
   renderer?: FullTrustRendererController
+  workspaceEventContext?: FullTrustWorkspaceEventContext
   /** Defaults to the live Node.js process environment. Primarily injectable for tests. */
   environment?: NodeJS.ProcessEnv
   paths: {
@@ -156,18 +169,23 @@ export function createKnowbookFullTrustServices(
 ): KnowbookFullTrustServices {
   const notify = (): void => options.notifyWorkspaceMutation()
   const environment = options.environment ?? process.env
+  const attributeWorkspaceEvent = createWorkspaceEventAttributor(options.workspaceEventContext)
   return {
     paths: Object.freeze({ ...options.paths }),
     store: options.store,
     sqlite: options.sqlite,
-    documents: createDocumentsApi(options, notify),
+    documents: createDocumentsApi(options, notify, attributeWorkspaceEvent),
     databases: createDatabasesApi(options.store, notify),
-    ai: createAiApi(options.getAiCredentials, options.fetchImplementation ?? fetch),
+    ai: createAiApi(
+      options.getAiCredentials,
+      options.fetchImplementation ?? fetch,
+      options.registerDisposable
+    ),
     settings: createSettingsApi(options, notify),
     secrets: createSecretsApi(options.getAiCredentials, environment),
     events: {
       subscribe: options.workspaceEventBus.subscribe.bind(options.workspaceEventBus),
-      emit: (event) => options.workspaceEventBus.emit(event)
+      emit: (event) => options.workspaceEventBus.emit(attributeWorkspaceEvent(event))
     },
     desktop: createDesktopApi(options),
     background: createBackgroundApi(options.registerDisposable),
@@ -471,7 +489,8 @@ function createBackgroundApi(
 
 function createDocumentsApi(
   options: KnowbookFullTrustServiceOptions,
-  notify: () => void
+  notify: () => void,
+  attributeWorkspaceEvent: (event: WorkspaceEvent) => WorkspaceEvent
 ) {
   const { store, workspaceEventBus } = options
   return {
@@ -494,14 +513,14 @@ function createDocumentsApi(
         }
         const document = requireDocument(store, documentId)
         const snapshot = store.getDocumentSnapshot(documentId)
-        await workspaceEventBus.emit({
+        await workspaceEventBus.emit(attributeWorkspaceEvent({
           type: 'document.created',
           createdAt: new Date().toISOString(),
           documentId: document.id,
           documentTitle: document.title,
           path: document.path,
           parentId: snapshot?.parentId ?? null
-        })
+        }))
         notify()
         return document
       } catch (error) {
@@ -518,7 +537,7 @@ function createDocumentsApi(
       const affectedDocumentIds = store.updateDocument(documentId, input)
       const after = store.getDocumentSnapshot(documentId)
       if (before && after) {
-        await workspaceEventBus.emit({
+        await workspaceEventBus.emit(attributeWorkspaceEvent({
           type: 'document.updated',
           createdAt: new Date().toISOString(),
           documentId: after.id,
@@ -526,7 +545,7 @@ function createDocumentsApi(
           path: after.path,
           affectedDocumentIds,
           pathChanged: before.path !== after.path
-        })
+        }))
       }
       notify()
       return requireDocument(store, documentId)
@@ -536,7 +555,7 @@ function createDocumentsApi(
       const affectedDocumentIds = store.moveDocument(documentId, newParentId)
       const after = store.getDocumentSnapshot(documentId)
       if (before && after) {
-        await workspaceEventBus.emit({
+        await workspaceEventBus.emit(attributeWorkspaceEvent({
           type: 'document.moved',
           createdAt: new Date().toISOString(),
           documentId: after.id,
@@ -544,7 +563,7 @@ function createDocumentsApi(
           oldPath: before.path,
           newPath: after.path,
           affectedDocumentIds
-        })
+        }))
       }
       notify()
       return requireDocument(store, documentId)
@@ -554,19 +573,32 @@ function createDocumentsApi(
       options.cancelDocumentSummaryGeneration?.(documentId)
       const affectedDocumentIds = store.deleteDocument(documentId)
       if (before) {
-        await workspaceEventBus.emit({
+        await workspaceEventBus.emit(attributeWorkspaceEvent({
           type: 'document.deleted',
           createdAt: new Date().toISOString(),
           documentId: before.id,
           documentTitle: before.title,
           oldPath: before.path,
           affectedDocumentIds
-        })
+        }))
       }
       notify()
       return affectedDocumentIds
     }
   }
+}
+
+function createWorkspaceEventAttributor(
+  context: FullTrustWorkspaceEventContext | undefined
+): (event: WorkspaceEvent) => WorkspaceEvent {
+  if (!context) return (event) => event
+  const createCausationId = context.createCausationId ?? randomUUID
+  return (event) => ({
+    ...event,
+    originPluginId: context.originPluginId,
+    correlationId: context.correlationId,
+    causationId: createCausationId()
+  })
 }
 
 function createDatabasesApi(store: KnowbookStore, notify: () => void) {
@@ -624,9 +656,22 @@ function createDatabasesApi(store: KnowbookStore, notify: () => void) {
 
 function createAiApi(
   getCredentials: () => FullTrustAiCredentials,
-  fetchImplementation: typeof fetch
+  fetchImplementation: typeof fetch,
+  registerDisposable: KnowbookFullTrustServiceOptions['registerDisposable']
 ) {
+  const lifecycle = new AbortController()
+  registerDisposable?.(() => {
+    lifecycle.abort(new DOMException('The plugin AI services have been disposed.', 'AbortError'))
+  }, 'AI requests')
+
   const rawRequest = async (input: FullTrustAiRequestInput = {}): Promise<Response> => {
+    // Keep the lifecycle signal attached to the native Response after headers
+    // arrive, so disposing a plugin also interrupts any pending body reads.
+    // Native fetch owns response consumption, cancellation and listener cleanup.
+    const signal = input.signal
+      ? AbortSignal.any([lifecycle.signal, input.signal])
+      : lifecycle.signal
+    signal.throwIfAborted()
     const credentials = getCredentials()
     if (!credentials.enabled) throw new Error('AI is disabled in KnowBook settings.')
     if (!credentials.apiKey) throw new Error('KnowBook AI API key is not configured.')
@@ -648,7 +693,7 @@ function createAiApi(
       method: input.method ?? (body === undefined ? 'GET' : 'POST'),
       headers,
       body,
-      signal: input.signal
+      signal
     })
   }
 
@@ -662,6 +707,7 @@ function createAiApi(
         ...input.extra,
         model: input.model ?? credentials.model,
         messages: input.messages,
+        stream: false,
         ...(input.temperature === undefined ? {} : { temperature: input.temperature }),
         ...(input.tools === undefined ? {} : { tools: input.tools }),
         ...(input.toolChoice === undefined ? {} : { tool_choice: input.toolChoice }),
@@ -679,6 +725,7 @@ function createAiApi(
     rawRequest,
     complete,
     async stream(input: FullTrustAiCompletionInput): Promise<Response> {
+      if (!Array.isArray(input.messages)) throw new TypeError('AI completion messages must be an array.')
       const credentials = getCredentials()
       const response = await rawRequest({
         pathOrUrl: buildAiChatCompletionsEndpoint(credentials.baseUrl),
@@ -785,7 +832,29 @@ function resolveAiEndpoint(baseUrl: string, pathOrUrl: string | undefined): stri
 
 async function requireOkAiResponse(response: Response): Promise<void> {
   if (response.ok) return
-  const detail = (await response.text().catch(() => response.statusText)).slice(0, 4_000)
+  const reader = response.body?.getReader()
+  let detail = ''
+  if (reader) {
+    const decoder = new TextDecoder()
+    let finished = false
+    try {
+      while (detail.length < 4_000) {
+        const chunk = await reader.read()
+        if (chunk.done) {
+          finished = true
+          detail += decoder.decode()
+          break
+        }
+        detail += decoder.decode(chunk.value, { stream: true })
+      }
+    } finally {
+      // Stop an oversized or unending error response instead of buffering it
+      // completely. Body transport errors (including abort) remain observable.
+      if (!finished) await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    }
+  }
+  detail = detail.slice(0, 4_000) || response.statusText
   throw new Error(`AI request failed (${response.status}): ${detail}`)
 }
 

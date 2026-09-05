@@ -177,18 +177,31 @@ export type FullTrustRendererPluginInitializer = (
 type TrackedDisposable = {
   label: string
   disposed: boolean
+  committed: boolean
+  commit?: () => void
   dispose: FullTrustRendererDisposable
 }
 
+type PluginRecordState = 'staging' | 'committing' | 'committed' | 'inactive'
+
 type ActivePluginRecord = {
   identity: Readonly<FullTrustRendererPluginIdentity>
+  state: PluginRecordState
   disposables: TrackedDisposable[]
+  contributions: Map<string, FullTrustReactSlotContribution>
+  commands: Map<string, RegisteredCommand>
+  shortcutOwners: Map<string, RegisteredCommand>
+  pages: Map<string, FullTrustPageRegistration>
+  pageRoutes: Map<string, FullTrustPageRegistration>
 }
 
 type RegisteredCommand = {
   publicValue: FullTrustCommandRegistration
   execute: FullTrustCommandInput['execute']
   owner: ActivePluginRecord
+  shortcutKey?: string
+  keyboardTarget?: Document
+  keyboardListener?: (event: KeyboardEvent) => void
 }
 
 const EMPTY_CONTRIBUTIONS: readonly FullTrustReactSlotContribution[] = Object.freeze([])
@@ -207,11 +220,12 @@ export class FullTrustPluginRegistry {
   readonly ReactDOMClient = ReactDOMClient
 
   private readonly activePlugins = new Map<string, ActivePluginRecord>()
+  private readonly stagedPlugins = new Map<string, ActivePluginRecord>()
   private readonly contributions = new Map<string, FullTrustReactSlotContribution>()
   private readonly slotSnapshots = new Map<PluginUiSlot, readonly FullTrustReactSlotContribution[]>()
   private readonly slotListeners = new Map<PluginUiSlot, Set<() => void>>()
   private readonly commands = new Map<string, RegisteredCommand>()
-  private readonly shortcutOwners = new Map<string, string>()
+  private readonly shortcutOwners = new Map<string, RegisteredCommand>()
   private readonly commandListeners = new Set<() => void>()
   private commandSnapshot: readonly FullTrustCommandRegistration[] = EMPTY_COMMANDS
   private readonly pages = new Map<string, FullTrustPageRegistration>()
@@ -219,6 +233,10 @@ export class FullTrustPluginRegistry {
   private readonly pageListeners = new Set<() => void>()
   private pageSnapshot: readonly FullTrustPageRegistration[] = EMPTY_PAGES
   private activatingPlugin: ActivePluginRecord | null = null
+  private publishBatchDepth = 0
+  private readonly pendingSlotPublishes = new Set<PluginUiSlot>()
+  private pendingCommandPublish = false
+  private pendingPagePublish = false
 
   get currentPlugin(): Readonly<FullTrustRendererPluginIdentity> | null {
     return this.activatingPlugin?.identity ?? null
@@ -234,13 +252,41 @@ export class FullTrustPluginRegistry {
       )
     }
     const identity = normalizeIdentity(identityInput)
-    await this.deactivatePlugin(identity.id)
-    const record: ActivePluginRecord = { identity, disposables: [] }
-    this.activePlugins.set(identity.id, record)
+    if (this.stagedPlugins.size > 0) {
+      const [staged] = this.stagedPlugins.values()
+      throw new Error(
+        `Full Trust renderer plugin "${staged.identity.id}" is awaiting commit or deactivation.`
+      )
+    }
+    const record: ActivePluginRecord = {
+      identity,
+      state: 'staging',
+      disposables: [],
+      contributions: new Map(),
+      commands: new Map(),
+      shortcutOwners: new Map(),
+      pages: new Map(),
+      pageRoutes: new Map()
+    }
+    this.stagedPlugins.set(identity.id, record)
     this.activatingPlugin = record
     const api = this.createPluginApi(record)
     try {
       const disposable = await initializer(api)
+      if (!this.isLiveRecord(record)) {
+        const inactiveError = this.createInactiveRecordError(record)
+        if (typeof disposable === 'function') {
+          try {
+            await disposable()
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [inactiveError, normalizeError(cleanupError)],
+              `Full Trust renderer plugin "${identity.id}" returned a disposer after cancellation, but cleanup failed.`
+            )
+          }
+        }
+        throw inactiveError
+      }
       if (typeof disposable === 'function') {
         this.trackDisposable(record, disposable, 'activation result')
       }
@@ -260,24 +306,120 @@ export class FullTrustPluginRegistry {
     }
   }
 
-  async deactivatePlugin(pluginId: string): Promise<void> {
-    const record = this.activePlugins.get(pluginId)
-    if (!record) return
-    if (this.activatingPlugin === record) {
-      throw new Error(`Full Trust renderer plugin "${pluginId}" cannot deactivate while activating.`)
+  async commitPlugin(pluginId: string, revisionHash: string): Promise<void> {
+    const record = this.stagedPlugins.get(pluginId)
+    if (!record || record.identity.revisionHash !== revisionHash) {
+      throw new Error(
+        `Full Trust renderer plugin "${pluginId}" has no staged revision matching "${revisionHash}".`
+      )
     }
-    await this.cleanupRecord(record)
+    if (this.activatingPlugin === record) {
+      throw new Error(`Full Trust renderer plugin "${pluginId}" cannot commit while activating.`)
+    }
+    this.validateCommit(record)
+
+    const previous = this.activePlugins.get(pluginId) ?? null
+    const contributionsSnapshot = new Map(this.contributions)
+    const commandsSnapshot = new Map(this.commands)
+    const shortcutOwnersSnapshot = new Map(this.shortcutOwners)
+    const pagesSnapshot = new Map(this.pages)
+    const pageRoutesSnapshot = new Map(this.pageRoutes)
+    const affectedSlots = new Set<PluginUiSlot>([
+      ...[...this.contributions.values()].map(({ slot }) => slot),
+      ...[...record.contributions.values()].map(({ slot }) => slot)
+    ])
+
+    const cleanupOperations: Promise<void>[] = []
+    let commitError: Error | null = null
+    this.beginPublishBatch()
+    try {
+      try {
+        record.state = 'committing'
+        for (const tracked of record.disposables) this.commitTracked(tracked)
+        this.stagedPlugins.delete(pluginId)
+        this.activePlugins.set(pluginId, record)
+        record.state = 'committed'
+      } catch (error) {
+        commitError = normalizeError(error)
+        cleanupOperations.push(this.cleanupRecord(record))
+        replaceMap(this.contributions, contributionsSnapshot)
+        replaceMap(this.commands, commandsSnapshot)
+        replaceMap(this.shortcutOwners, shortcutOwnersSnapshot)
+        replaceMap(this.pages, pagesSnapshot)
+        replaceMap(this.pageRoutes, pageRoutesSnapshot)
+        for (const slot of affectedSlots) this.publishSlot(slot)
+        this.publishCommands()
+        this.publishPages()
+      }
+      if (!commitError && previous && previous !== record) {
+        cleanupOperations.push(this.cleanupRecord(previous).catch((error) => {
+          console.warn(
+            `Full Trust renderer plugin ${pluginId} previous revision cleanup failed after commit.`,
+            error
+          )
+        }))
+      }
+    } finally {
+      this.endPublishBatch()
+    }
+    const cleanupResults = await Promise.allSettled(cleanupOperations)
+    if (commitError) {
+      const failures = [commitError, ...cleanupResults.flatMap((result) => (
+        result.status === 'rejected' ? [normalizeError(result.reason)] : []
+      ))]
+      throw failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures, `Full Trust renderer plugin "${pluginId}" commit failed.`)
+    }
+  }
+
+  async deactivatePlugin(pluginId: string): Promise<void> {
+    const records = [
+      this.stagedPlugins.get(pluginId),
+      this.activePlugins.get(pluginId)
+    ].filter((record): record is ActivePluginRecord => Boolean(record))
+    if (records.length === 0) return
+    const cleanupOperations: Promise<void>[] = []
+    this.beginPublishBatch()
+    try {
+      for (const record of records) {
+        if (this.activatingPlugin === record) this.activatingPlugin = null
+        cleanupOperations.push(this.cleanupRecord(record))
+      }
+    } finally {
+      this.endPublishBatch()
+    }
+    const results = await Promise.allSettled(cleanupOperations)
+    const failures = results.flatMap((result) => (
+      result.status === 'rejected' ? [normalizeError(result.reason)] : []
+    ))
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `Full Trust renderer plugin "${pluginId}" cleanup failed.`
+      )
+    }
   }
 
   async deactivateAll(): Promise<void> {
-    const failures: unknown[] = []
-    for (const record of [...this.activePlugins.values()].reverse()) {
-      try {
-        await this.cleanupRecord(record)
-      } catch (error) {
-        failures.push(error)
+    const cleanupOperations: Promise<void>[] = []
+    const records = [
+      ...this.stagedPlugins.values(),
+      ...this.activePlugins.values()
+    ].reverse()
+    this.activatingPlugin = null
+    this.beginPublishBatch()
+    try {
+      for (const record of records) {
+        cleanupOperations.push(this.cleanupRecord(record))
       }
+    } finally {
+      this.endPublishBatch()
     }
+    const results = await Promise.allSettled(cleanupOperations)
+    const failures = results.flatMap((result) => (
+      result.status === 'rejected' ? [normalizeError(result.reason)] : []
+    ))
     if (failures.length > 0) {
       throw new AggregateError(failures, 'One or more Full Trust renderer plugins failed to deactivate.')
     }
@@ -337,12 +479,8 @@ export class FullTrustPluginRegistry {
       ReactDOMClient,
       registerSlotContribution: (input: FullTrustReactSlotContributionInput) =>
         this.registerSlotContribution(record, input),
-      createRoot: (container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions) => {
-        this.assertActiveRecord(record)
-        const root = ReactDOMClient.createRoot(container, options)
-        this.trackDisposable(record, () => root.unmount(), 'React root')
-        return root
-      },
+      createRoot: (container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions) =>
+        this.createRoot(record, container, options),
       createPortal: (children: ReactNode, container: Element | DocumentFragment, key?: string | null) => {
         this.assertActiveRecord(record)
         return ReactDOM.createPortal(children, container, key)
@@ -357,7 +495,7 @@ export class FullTrustPluginRegistry {
         input: FullTrustCommandInput<TArguments, TResult>
       ) => this.registerCommand(record, input),
       executeCommand: <TResult = unknown>(commandId: string, argumentsValue?: unknown) =>
-        this.executeRegisteredCommand<TResult>(commandId, argumentsValue, 'api'),
+        this.executePluginCommand<TResult>(record, commandId, argumentsValue),
       listCommands: () => this.listCommands(),
       registerPage: (input: FullTrustPageInput) => this.registerPage(record, input),
       listPages: () => this.listPages(),
@@ -376,6 +514,47 @@ export class FullTrustPluginRegistry {
     })
   }
 
+  private createRoot(
+    record: ActivePluginRecord,
+    container: Element | DocumentFragment,
+    options?: ReactDOMClient.RootOptions
+  ): ReactDOMClient.Root {
+    this.assertActiveRecord(record)
+    let committedRoot: ReactDOMClient.Root | null = null
+    let pendingChildren: ReactNode = null
+    let hasPendingRender = false
+    let unmounted = false
+    const facade = {
+      render: (children: ReactNode) => {
+        this.assertActiveRecord(record)
+        if (unmounted) throw new Error('Cannot update an unmounted Full Trust renderer root.')
+        if (committedRoot) committedRoot.render(children)
+        else {
+          pendingChildren = children
+          hasPendingRender = true
+        }
+      },
+      unmount: () => {
+        if (unmounted) return
+        unmounted = true
+        hasPendingRender = false
+        committedRoot?.unmount()
+        committedRoot = null
+      }
+    } as ReactDOMClient.Root
+    this.trackDisposable(
+      record,
+      () => facade.unmount(),
+      'React root',
+      () => {
+        if (unmounted) return
+        committedRoot = ReactDOMClient.createRoot(container, options)
+        if (hasPendingRender) committedRoot.render(pendingChildren)
+      }
+    )
+    return facade
+  }
+
   private registerCommand<TArguments, TResult>(
     record: ActivePluginRecord,
     input: FullTrustCommandInput<TArguments, TResult>
@@ -386,17 +565,24 @@ export class FullTrustPluginRegistry {
     if (typeof input.execute !== 'function') {
       throw new Error(`Full Trust renderer command "${id}" execute must be a function.`)
     }
-    if (this.commands.has(id)) {
+    if (record.commands.has(id)) {
+      throw new Error(`Full Trust renderer command "${id}" is already registered.`)
+    }
+    const committedCommand = this.commands.get(id)
+    if (committedCommand && committedCommand.owner.identity.id !== record.identity.id) {
       throw new Error(`Full Trust renderer command "${id}" is already registered.`)
     }
     const order = normalizeOrder(input.order, 'command')
     const shortcut = input.shortcut ? normalizeShortcut(input.shortcut) : undefined
     const shortcutKey = shortcut ? serializeShortcut(shortcut) : undefined
     if (shortcutKey && shortcut) {
-      const owner = this.shortcutOwners.get(shortcutKey)
+      const stagedOwner = record.shortcutOwners.get(shortcutKey)
+      const committedOwner = this.shortcutOwners.get(shortcutKey)
+      const owner = stagedOwner
+        ?? (committedOwner?.owner.identity.id === record.identity.id ? undefined : committedOwner)
       if (owner) {
         throw new Error(
-          `Full Trust renderer shortcut "${describeShortcut(shortcut)}" is already registered by "${owner}".`
+          `Full Trust renderer shortcut "${describeShortcut(shortcut)}" is already registered by "${owner.publicValue.id}".`
         )
       }
     }
@@ -413,21 +599,20 @@ export class FullTrustPluginRegistry {
     const registered: RegisteredCommand = {
       publicValue,
       execute: input.execute as FullTrustCommandInput['execute'],
-      owner: record
+      owner: record,
+      ...(shortcutKey ? { shortcutKey } : {})
     }
-    this.commands.set(id, registered)
-    if (shortcutKey) this.shortcutOwners.set(shortcutKey, id)
+    record.commands.set(id, registered)
+    if (shortcutKey) record.shortcutOwners.set(shortcutKey, registered)
 
-    let keyboardTarget: Document | undefined
-    let keyboardListener: ((event: KeyboardEvent) => void) | undefined
     if (shortcut) {
       if (typeof document === 'undefined') {
-        this.commands.delete(id)
-        if (shortcutKey) this.shortcutOwners.delete(shortcutKey)
+        record.commands.delete(id)
+        if (shortcutKey) record.shortcutOwners.delete(shortcutKey)
         throw new Error(`Full Trust renderer command "${id}" shortcut requires a document.`)
       }
-      keyboardTarget = document
-      keyboardListener = (event) => {
+      registered.keyboardTarget = document
+      registered.keyboardListener = (event) => {
         if (!matchesShortcut(event, shortcut)) return
         if (!shortcut.allowInEditable && isEditableEventTarget(event.target)) return
         if (shortcut.preventDefault) event.preventDefault()
@@ -436,18 +621,47 @@ export class FullTrustPluginRegistry {
           console.error(`Full Trust renderer command "${id}" failed from keyboard.`, error)
         })
       }
-      keyboardTarget.addEventListener('keydown', keyboardListener)
     }
-    this.publishCommands()
-    return this.trackDisposable(record, () => {
-      keyboardTarget?.removeEventListener('keydown', keyboardListener!)
-      if (this.commands.get(id) !== registered) return
-      this.commands.delete(id)
-      if (shortcutKey && this.shortcutOwners.get(shortcutKey) === id) {
-        this.shortcutOwners.delete(shortcutKey)
+    return this.trackDisposable(
+      record,
+      () => {
+        if (registered.keyboardTarget && registered.keyboardListener) {
+          registered.keyboardTarget.removeEventListener('keydown', registered.keyboardListener)
+        }
+        record.commands.delete(id)
+        if (shortcutKey && record.shortcutOwners.get(shortcutKey) === registered) {
+          record.shortcutOwners.delete(shortcutKey)
+        }
+        if (this.commands.get(id) !== registered) return
+        this.commands.delete(id)
+        if (shortcutKey && this.shortcutOwners.get(shortcutKey) === registered) {
+          this.shortcutOwners.delete(shortcutKey)
+        }
+        this.publishCommands()
+      },
+      `command ${id}`,
+      () => {
+        this.commands.set(id, registered)
+        if (shortcutKey) this.shortcutOwners.set(shortcutKey, registered)
+        if (registered.keyboardTarget && registered.keyboardListener) {
+          registered.keyboardTarget.addEventListener('keydown', registered.keyboardListener)
+        }
+        this.publishCommands()
       }
-      this.publishCommands()
-    }, `command ${id}`)
+    )
+  }
+
+  private async executePluginCommand<TResult>(
+    record: ActivePluginRecord,
+    commandId: string,
+    argumentsValue: unknown
+  ): Promise<TResult> {
+    this.assertActiveRecord(record)
+    const staged = record.commands.get(commandId)
+    if (staged) {
+      return this.invokeRegisteredCommand<TResult>(staged, argumentsValue, 'api')
+    }
+    return this.executeRegisteredCommand<TResult>(commandId, argumentsValue, 'api')
   }
 
   private async executeRegisteredCommand<TResult>(
@@ -460,10 +674,19 @@ export class FullTrustPluginRegistry {
     if (!registered) {
       throw new Error(`Full Trust renderer command "${commandId}" is not registered.`)
     }
+    return this.invokeRegisteredCommand<TResult>(registered, argumentsValue, source, keyboardEvent)
+  }
+
+  private async invokeRegisteredCommand<TResult>(
+    registered: RegisteredCommand,
+    argumentsValue: unknown,
+    source: 'api' | 'keyboard',
+    keyboardEvent?: KeyboardEvent
+  ): Promise<TResult> {
     this.assertActiveRecord(registered.owner)
     return await registered.execute({
       plugin: registered.owner.identity,
-      commandId,
+      commandId: registered.publicValue.id,
       arguments: argumentsValue,
       source,
       ...(keyboardEvent ? { keyboardEvent } : {})
@@ -482,12 +705,20 @@ export class FullTrustPluginRegistry {
     if (typeof input.component !== 'function') {
       throw new Error(`Full Trust renderer page "${id}" component is invalid.`)
     }
-    if (this.pages.has(id)) {
+    if (record.pages.has(id)) {
       throw new Error(`Full Trust renderer page "${id}" is already registered.`)
     }
-    const routeOwner = this.pageRoutes.get(route)
+    const committedPage = this.pages.get(id)
+    if (committedPage && committedPage.plugin.id !== record.identity.id) {
+      throw new Error(`Full Trust renderer page "${id}" is already registered.`)
+    }
+    const committedRouteOwnerId = this.pageRoutes.get(route)
+    const routeOwner = record.pageRoutes.get(route)
+      ?? (committedRouteOwnerId ? this.pages.get(committedRouteOwnerId) : undefined)
     if (routeOwner) {
-      throw new Error(`Full Trust renderer route "${route}" is already registered by "${routeOwner}".`)
+      if (routeOwner.plugin.id !== record.identity.id || record.pageRoutes.has(route)) {
+        throw new Error(`Full Trust renderer route "${route}" is already registered by "${routeOwner.id}".`)
+      }
     }
     const page: FullTrustPageRegistration = Object.freeze({
       id,
@@ -497,15 +728,25 @@ export class FullTrustPluginRegistry {
       component: input.component,
       plugin: record.identity
     })
-    this.pages.set(id, page)
-    this.pageRoutes.set(route, id)
-    this.publishPages()
-    return this.trackDisposable(record, () => {
-      if (this.pages.get(id) !== page) return
-      this.pages.delete(id)
-      if (this.pageRoutes.get(route) === id) this.pageRoutes.delete(route)
-      this.publishPages()
-    }, `page ${id}`)
+    record.pages.set(id, page)
+    record.pageRoutes.set(route, page)
+    return this.trackDisposable(
+      record,
+      () => {
+        record.pages.delete(id)
+        if (record.pageRoutes.get(route) === page) record.pageRoutes.delete(route)
+        if (this.pages.get(id) !== page) return
+        this.pages.delete(id)
+        if (this.pageRoutes.get(route) === id) this.pageRoutes.delete(route)
+        this.publishPages()
+      },
+      `page ${id}`,
+      () => {
+        this.pages.set(id, page)
+        this.pageRoutes.set(route, id)
+        this.publishPages()
+      }
+    )
   }
 
   private addDomEventListener(
@@ -520,10 +761,20 @@ export class FullTrustPluginRegistry {
       throw new Error('Full Trust renderer DOM event target is invalid.')
     }
     if (!type.trim()) throw new Error('Full Trust renderer DOM event type is invalid.')
-    target.addEventListener(type, listener, options)
-    return this.trackDisposable(record, () => {
-      target.removeEventListener(type, listener, options)
-    }, `DOM event ${type}`)
+    let listening = false
+    return this.trackDisposable(
+      record,
+      () => {
+        if (!listening) return
+        listening = false
+        target.removeEventListener(type, listener, options)
+      },
+      `DOM event ${type}`,
+      () => {
+        target.addEventListener(type, listener, options)
+        listening = true
+      }
+    )
   }
 
   private subscribeToTheme(
@@ -548,14 +799,20 @@ export class FullTrustPluginRegistry {
     const observer = new MutationObserverConstructor((mutations) => {
       if (mutations.some((mutation) => mutation.attributeName === 'data-theme')) emit()
     })
-    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
-    try {
-      if (options?.emitCurrent ?? true) emit()
-    } catch (error) {
-      observer.disconnect()
-      throw error
-    }
-    return this.trackDisposable(record, () => observer.disconnect(), 'theme subscription')
+    return this.trackDisposable(
+      record,
+      () => observer.disconnect(),
+      'theme subscription',
+      () => {
+        observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+        try {
+          if (options?.emitCurrent ?? true) emit()
+        } catch (error) {
+          observer.disconnect()
+          throw error
+        }
+      }
+    )
   }
 
   private registerSlotContribution(
@@ -577,7 +834,7 @@ export class FullTrustPluginRegistry {
       throw new Error('Full Trust renderer contribution order must be an integer.')
     }
     const key = contributionKey(record.identity.id, input.slot, input.id)
-    if (this.contributions.has(key)) {
+    if (record.contributions.has(key)) {
       throw new Error(
         `Full Trust renderer contribution "${input.id}" is already registered in ${input.slot}.`
       )
@@ -589,12 +846,21 @@ export class FullTrustPluginRegistry {
       plugin: record.identity,
       component: input.component
     })
-    this.contributions.set(key, contribution)
-    this.publishSlot(input.slot)
-    return this.trackDisposable(record, () => {
-      if (!this.contributions.delete(key)) return
-      this.publishSlot(input.slot)
-    }, `slot contribution ${input.slot}:${input.id}`)
+    record.contributions.set(key, contribution)
+    return this.trackDisposable(
+      record,
+      () => {
+        record.contributions.delete(key)
+        if (this.contributions.get(key) !== contribution) return
+        this.contributions.delete(key)
+        this.publishSlot(input.slot)
+      },
+      `slot contribution ${input.slot}:${input.id}`,
+      () => {
+        this.contributions.set(key, contribution)
+        this.publishSlot(input.slot)
+      }
+    )
   }
 
   private injectCss(
@@ -613,8 +879,12 @@ export class FullTrustPluginRegistry {
     if (options?.media) style.media = options.media
     style.textContent = cssText
     const target = options?.target ?? document.head
-    target.appendChild(style)
-    return this.trackDisposable(record, () => style.remove(), `CSS ${options?.id ?? 'style'}`)
+    return this.trackDisposable(
+      record,
+      () => style.remove(),
+      `CSS ${options?.id ?? 'style'}`,
+      () => { target.appendChild(style) }
+    )
   }
 
   private async createUnsandboxedFrame(
@@ -625,7 +895,7 @@ export class FullTrustPluginRegistry {
     const token = createPolicyToken()
     const frameName = `knowbook-full-trust-frame:${record.identity.id}:${token}`
     const popupName = `knowbook-full-trust-popup:${record.identity.id}:${token}`
-    await window.knowbook.registerSystemPluginFramePolicy({
+    const policy = {
       pluginId: record.identity.id,
       revisionHash: record.identity.revisionHash,
       frameName,
@@ -635,25 +905,49 @@ export class FullTrustPluginRegistry {
       allowNavigation: options.allowNavigation ?? true,
       allowDownloads: options.allowDownloads ?? true,
       allowPermissions: options.allowPermissions ?? true
-    })
-    const frame = document.createElement('iframe')
-    frame.name = frameName
-    frame.dataset.fullTrustPlugin = record.identity.id
-    frame.dataset.fullTrustPopupName = popupName
-    if (options.className) frame.className = options.className
-    if (options.title) frame.title = options.title
-    if (options.allow) frame.allow = options.allow
-    frame.src = options.src
-    if (options.container) options.container.appendChild(frame)
-    const dispose = this.trackDisposable(record, async () => {
-      frame.remove()
-      await window.knowbook.removeSystemPluginFramePolicy({
-        pluginId: record.identity.id,
-        revisionHash: record.identity.revisionHash,
-        frameName
-      })
-    }, `unsandboxed frame ${frameName}`)
-    return Object.freeze({ frame, frameName, popupName, dispose })
+    }
+    let policyRegistered = false
+    try {
+      await window.knowbook.registerSystemPluginFramePolicy(policy)
+      policyRegistered = true
+      this.assertActiveRecord(record)
+      const frame = document.createElement('iframe')
+      frame.name = frameName
+      frame.dataset.fullTrustPlugin = record.identity.id
+      frame.dataset.fullTrustPopupName = popupName
+      if (options.className) frame.className = options.className
+      if (options.title) frame.title = options.title
+      if (options.allow) frame.allow = options.allow
+      frame.src = options.src
+      const dispose = this.trackDisposable(
+        record,
+        async () => {
+          frame.remove()
+          if (!policyRegistered) return
+          policyRegistered = false
+          await window.knowbook.removeSystemPluginFramePolicy({
+            pluginId: record.identity.id,
+            revisionHash: record.identity.revisionHash,
+            frameName
+          })
+        },
+        `unsandboxed frame ${frameName}`,
+        () => {
+          if (options.container) options.container.appendChild(frame)
+        }
+      )
+      return Object.freeze({ frame, frameName, popupName, dispose })
+    } catch (error) {
+      if (policyRegistered) {
+        policyRegistered = false
+        await window.knowbook.removeSystemPluginFramePolicy({
+          pluginId: record.identity.id,
+          revisionHash: record.identity.revisionHash,
+          frameName
+        }).catch(() => undefined)
+      }
+      throw error
+    }
   }
 
   private async openPrivilegedPopup(
@@ -664,7 +958,7 @@ export class FullTrustPluginRegistry {
     const token = createPolicyToken()
     const frameName = `knowbook-full-trust-frame:${record.identity.id}:${token}`
     const popupName = `knowbook-full-trust-popup:${record.identity.id}:${token}`
-    await window.knowbook.registerSystemPluginFramePolicy({
+    const policy = {
       pluginId: record.identity.id,
       revisionHash: record.identity.revisionHash,
       frameName,
@@ -674,31 +968,84 @@ export class FullTrustPluginRegistry {
       allowNavigation: true,
       allowDownloads: true,
       allowPermissions: true
-    })
-    const opened = window.open(options.url, popupName, options.features)
-    const dispose = this.trackDisposable(record, async () => {
-      opened?.close()
-      await window.knowbook.removeSystemPluginFramePolicy({
-        pluginId: record.identity.id,
-        revisionHash: record.identity.revisionHash,
-        frameName
+    }
+    let policyRegistered = false
+    let opened: Window | null = null
+    try {
+      await window.knowbook.registerSystemPluginFramePolicy(policy)
+      policyRegistered = true
+      this.assertActiveRecord(record)
+      const dispose = this.trackDisposable(
+        record,
+        async () => {
+          opened?.close()
+          opened = null
+          if (!policyRegistered) return
+          policyRegistered = false
+          await window.knowbook.removeSystemPluginFramePolicy({
+            pluginId: record.identity.id,
+            revisionHash: record.identity.revisionHash,
+            frameName
+          })
+        },
+        `privileged popup ${popupName}`,
+        () => {
+          opened = window.open(options.url, popupName, options.features)
+        }
+      )
+      return Object.freeze({
+        get window() { return opened },
+        popupName,
+        dispose
       })
-    }, `privileged popup ${popupName}`)
-    return Object.freeze({ window: opened, popupName, dispose })
+    } catch (error) {
+      if (policyRegistered) {
+        policyRegistered = false
+        await window.knowbook.removeSystemPluginFramePolicy({
+          pluginId: record.identity.id,
+          revisionHash: record.identity.revisionHash,
+          frameName
+        }).catch(() => undefined)
+      }
+      throw error
+    }
   }
 
   private trackDisposable(
     record: ActivePluginRecord,
     dispose: FullTrustRendererDisposable,
-    label: string
+    label: string,
+    commit?: () => void
   ): FullTrustRendererDisposable {
     this.assertActiveRecord(record)
     if (typeof dispose !== 'function') {
       throw new Error('Full Trust renderer disposable must be a function.')
     }
-    const tracked: TrackedDisposable = { label, disposed: false, dispose }
+    const tracked: TrackedDisposable = {
+      label,
+      disposed: false,
+      committed: commit === undefined,
+      ...(commit ? { commit } : {}),
+      dispose
+    }
     record.disposables.push(tracked)
+    if (record.state === 'committed') {
+      try {
+        this.commitTracked(tracked)
+      } catch (error) {
+        void this.disposeTracked(tracked).catch((cleanupError) => {
+          console.warn(`Full Trust renderer cleanup failed for ${label}.`, cleanupError)
+        })
+        throw error
+      }
+    }
     return () => this.disposeTracked(tracked)
+  }
+
+  private commitTracked(tracked: TrackedDisposable): void {
+    if (tracked.disposed || tracked.committed) return
+    tracked.committed = true
+    tracked.commit?.()
   }
 
   private async disposeTracked(tracked: TrackedDisposable): Promise<void> {
@@ -711,8 +1058,15 @@ export class FullTrustPluginRegistry {
     if (this.activePlugins.get(record.identity.id) === record) {
       this.activePlugins.delete(record.identity.id)
     }
+    if (this.stagedPlugins.get(record.identity.id) === record) {
+      this.stagedPlugins.delete(record.identity.id)
+    }
+    record.state = 'inactive'
     const failures: Error[] = []
-    for (const tracked of [...record.disposables].reverse()) {
+    // Begin every release before awaiting plugin code: a hung custom disposer
+    // must not keep commands, DOM resources, or the publication batch alive.
+    const disposables = record.disposables.splice(0).reverse()
+    await Promise.all(disposables.map(async (tracked) => {
       try {
         await this.disposeTracked(tracked)
       } catch (error) {
@@ -721,8 +1075,7 @@ export class FullTrustPluginRegistry {
           { cause: error }
         ))
       }
-    }
-    record.disposables.length = 0
+    }))
     if (failures.length > 0) {
       throw new AggregateError(
         failures,
@@ -731,13 +1084,60 @@ export class FullTrustPluginRegistry {
     }
   }
 
+  private isLiveRecord(record: ActivePluginRecord): boolean {
+    return record.state !== 'inactive' && (
+      this.activePlugins.get(record.identity.id) === record
+      || this.stagedPlugins.get(record.identity.id) === record
+    )
+  }
+
+  private createInactiveRecordError(record: ActivePluginRecord): Error {
+    return new Error(`Full Trust renderer plugin "${record.identity.id}" is not active.`)
+  }
+
   private assertActiveRecord(record: ActivePluginRecord): void {
-    if (this.activePlugins.get(record.identity.id) !== record) {
-      throw new Error(`Full Trust renderer plugin "${record.identity.id}" is not active.`)
+    if (!this.isLiveRecord(record)) throw this.createInactiveRecordError(record)
+  }
+
+  private validateCommit(record: ActivePluginRecord): void {
+    for (const [id, command] of record.commands) {
+      const existing = this.commands.get(id)
+      if (existing && existing.owner.identity.id !== record.identity.id) {
+        throw new Error(`Full Trust renderer command "${id}" is already registered.`)
+      }
+      if (command.shortcutKey) {
+        const shortcutOwner = this.shortcutOwners.get(command.shortcutKey)
+        if (shortcutOwner && shortcutOwner.owner.identity.id !== record.identity.id) {
+          throw new Error(
+            `Full Trust renderer shortcut is already registered by "${shortcutOwner.publicValue.id}".`
+          )
+        }
+      }
+    }
+    for (const [id, page] of record.pages) {
+      const existing = this.pages.get(id)
+      if (existing && existing.plugin.id !== record.identity.id) {
+        throw new Error(`Full Trust renderer page "${id}" is already registered.`)
+      }
+      const routeOwnerId = this.pageRoutes.get(page.route)
+      const routeOwner = routeOwnerId ? this.pages.get(routeOwnerId) : null
+      if (routeOwner && routeOwner.plugin.id !== record.identity.id) {
+        throw new Error(
+          `Full Trust renderer route "${page.route}" is already registered by "${routeOwner.id}".`
+        )
+      }
     }
   }
 
   private publishSlot(slot: PluginUiSlot): void {
+    if (this.publishBatchDepth > 0) {
+      this.pendingSlotPublishes.add(slot)
+      return
+    }
+    this.publishSlotNow(slot)
+  }
+
+  private publishSlotNow(slot: PluginUiSlot, notify = true): void {
     const next = [...this.contributions.values()]
       .filter((contribution) => contribution.slot === slot)
       .sort((left, right) =>
@@ -746,10 +1146,18 @@ export class FullTrustPluginRegistry {
         || left.id.localeCompare(right.id)
       )
     this.slotSnapshots.set(slot, Object.freeze(next))
-    for (const listener of this.slotListeners.get(slot) ?? []) listener()
+    if (notify) this.notifySubscribers(this.slotListeners.get(slot) ?? [])
   }
 
   private publishCommands(): void {
+    if (this.publishBatchDepth > 0) {
+      this.pendingCommandPublish = true
+      return
+    }
+    this.publishCommandsNow()
+  }
+
+  private publishCommandsNow(notify = true): void {
     this.commandSnapshot = Object.freeze(
       [...this.commands.values()]
         .map(({ publicValue }) => publicValue)
@@ -759,16 +1167,18 @@ export class FullTrustPluginRegistry {
           || left.id.localeCompare(right.id)
         )
     )
-    for (const listener of this.commandListeners) {
-      try {
-        listener()
-      } catch (error) {
-        console.error('Full Trust renderer command subscriber failed.', error)
-      }
-    }
+    if (notify) this.notifySubscribers(this.commandListeners)
   }
 
   private publishPages(): void {
+    if (this.publishBatchDepth > 0) {
+      this.pendingPagePublish = true
+      return
+    }
+    this.publishPagesNow()
+  }
+
+  private publishPagesNow(notify = true): void {
     this.pageSnapshot = Object.freeze(
       [...this.pages.values()].sort((left, right) =>
         left.order - right.order
@@ -776,13 +1186,52 @@ export class FullTrustPluginRegistry {
         || left.id.localeCompare(right.id)
       )
     )
-    for (const listener of this.pageListeners) {
+    if (notify) this.notifySubscribers(this.pageListeners)
+  }
+
+  private notifySubscribers(listeners: Iterable<() => void>): void {
+    for (const listener of listeners) {
       try {
         listener()
       } catch (error) {
-        console.error('Full Trust renderer page subscriber failed.', error)
+        console.error('Full Trust renderer registry subscriber failed.', error)
       }
     }
+  }
+
+  private beginPublishBatch(): void {
+    this.publishBatchDepth += 1
+  }
+
+  private endPublishBatch(): void {
+    this.publishBatchDepth -= 1
+    if (this.publishBatchDepth > 0) return
+    if (this.publishBatchDepth < 0) {
+      this.publishBatchDepth = 0
+      throw new Error('Full Trust renderer publish batch underflow.')
+    }
+    const slots = [...this.pendingSlotPublishes]
+    this.pendingSlotPublishes.clear()
+    const publishCommands = this.pendingCommandPublish
+    const publishPages = this.pendingPagePublish
+    this.pendingCommandPublish = false
+    this.pendingPagePublish = false
+    // Refresh every public snapshot before any subscriber can observe the
+    // revision, including subscribers that read more than one registry.
+    const listeners = new Set<() => void>()
+    for (const slot of slots) {
+      this.publishSlotNow(slot, false)
+      for (const listener of this.slotListeners.get(slot) ?? []) listeners.add(listener)
+    }
+    if (publishCommands) {
+      this.publishCommandsNow(false)
+      for (const listener of this.commandListeners) listeners.add(listener)
+    }
+    if (publishPages) {
+      this.publishPagesNow(false)
+      for (const listener of this.pageListeners) listeners.add(listener)
+    }
+    this.notifySubscribers(listeners)
   }
 }
 
@@ -823,6 +1272,18 @@ function normalizeIdentity(
     version: identity.version,
     revisionHash: identity.revisionHash
   })
+}
+
+function replaceMap<TKey, TValue>(
+  target: Map<TKey, TValue>,
+  source: ReadonlyMap<TKey, TValue>
+): void {
+  target.clear()
+  for (const [key, value] of source) target.set(key, value)
+}
+
+function normalizeError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
 }
 
 function contributionKey(pluginId: string, slot: PluginUiSlot, id: string): string {

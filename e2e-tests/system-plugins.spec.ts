@@ -1,11 +1,21 @@
 import { expect, test } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Duplex } from 'node:stream'
 import { fileURLToPath } from 'node:url'
+import { handleFullTrustAiRequest, type FullTrustAiProbe } from './helpers/full-trust-ai'
 import {
   closeElectronApp,
   hasBuiltElectronApp,
@@ -29,6 +39,7 @@ test.describe('System Plugin v3 @electron', () => {
     let restarted: ElectronAppContext | null = null
     let retainedRoot: string | null = null
     const requests: string[] = []
+    const aiProbe: FullTrustAiProbe = { openedStreams: new Set(), closedStreams: new Set() }
     const upgradedSockets = new Set<Duplex>()
     const server = createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
@@ -38,26 +49,7 @@ test.describe('System Plugin v3 @electron', () => {
         response.end(JSON.stringify({ ok: true }))
         return
       }
-      if (url.pathname === '/v1/chat/completions') {
-        let body = ''
-        request.setEncoding('utf8')
-        request.on('data', (chunk) => { body += chunk })
-        request.on('end', () => {
-          let received: unknown = null
-          try {
-            received = JSON.parse(body)
-          } catch {
-            received = null
-          }
-          response.writeHead(200, { 'content-type': 'application/json' })
-          response.end(JSON.stringify({
-            id: 'full-trust-ai-ok',
-            authorized: request.headers.authorization === 'Bearer full-trust-e2e-key',
-            received
-          }))
-        })
-        return
-      }
+      if (handleFullTrustAiRequest(request, response, aiProbe)) return
       if (url.pathname === '/download') {
         response.writeHead(200, {
           'content-disposition': 'attachment; filename="full-trust.txt"',
@@ -234,6 +226,12 @@ test.describe('System Plugin v3 @electron', () => {
           seed: number | null
           toolName: string | null
           apiKeyAccessible: boolean
+          streamText: string
+          cancelledStream: string
+          completionError: string
+          streamError: string
+          invalidJsonError: string
+          raw: { status: number; header: string; body: string }
         }
         documents: { movedPath: string; parentDeleted: boolean; childDeleted: boolean }
         database: { updatedTitle: string | null; deleted: boolean }
@@ -262,8 +260,17 @@ test.describe('System Plugin v3 @electron', () => {
         prompt: 'Full Trust arbitrary prompt',
         seed: 7,
         toolName: 'full_trust_tool',
-        apiKeyAccessible: true
+        apiKeyAccessible: true,
+        streamText: 'data: {"delta":"你好","authorized":true}\n\ndata: {"delta":"，世界"}\n\ndata: [DONE]\n\n',
+        cancelledStream: 'AbortError',
+        completionError: 'AI request failed (429): {"error":{"message":"controlled-rate-limit"}}',
+        streamError: 'AI request failed (429): {"error":{"message":"controlled-rate-limit"}}',
+        invalidJsonError: 'SyntaxError',
+        raw: { status: 418, header: 'raw-response', body: '原始响应：teapot' }
       })
+      await expect.poll(() => aiProbe.closedStreams.has('full-trust-cancel-stream')).toBe(true)
+      expect(aiProbe.openedStreams.has('full-trust-dispose-stream')).toBe(true)
+      expect(aiProbe.closedStreams.has('full-trust-dispose-stream')).toBe(false)
       expect(capabilities.documents).toEqual({
         movedPath: 'Full Trust E2E Child',
         parentDeleted: true,
@@ -414,6 +421,10 @@ test.describe('System Plugin v3 @electron', () => {
       await expect(restarted.page.locator('style[data-full-trust-style="acceptance-global-style"]'))
         .toHaveCount(0)
       await expect.poll(() => popup.isClosed()).toBe(true)
+      await expect.poll(() => aiProbe.closedStreams.has('full-trust-dispose-stream')).toBe(true)
+      const aiDisposalMarker = join(retainedRoot, 'system-plugins', 'data', pluginId, 'ai-disposed.json')
+      await expect.poll(() => existsSync(aiDisposalMarker)).toBe(true)
+      expect(JSON.parse(readFileSync(aiDisposalMarker, 'utf8'))).toEqual({ errorName: 'AbortError' })
     } finally {
       if (first) await closeElectronApp(first)
       if (restarted) await closeElectronApp(restarted)
@@ -422,12 +433,378 @@ test.describe('System Plugin v3 @electron', () => {
       }
       for (const socket of upgradedSockets) socket.destroy()
       upgradedSockets.clear()
+      server.closeAllConnections()
       await new Promise<void>((resolve, reject) => server.close((error) => (
         error ? reject(error) : resolve()
       )))
     }
   })
+
+  test('migrates upgrades, switches Renderer revisions, recovers failed upgrades, and uninstalls cleanly', async () => {
+    test.setTimeout(120_000)
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const lifecyclePluginId = 'system.e2e.full-trust-lifecycle'
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'knowbook-full-trust-lifecycle-'))
+    let current: ElectronAppContext | null = null
+    let retainedRoot: string | null = null
+
+    try {
+      writeLifecyclePluginFixture(sourceRoot, lifecyclePluginId, '1.0.0')
+      current = await launchElectronApp()
+      retainedRoot = current.tempRoot
+      const firstRevision = await prepareAndConfirmSystemPlugin(current, sourceRoot)
+      expect(firstRevision.version).toBe('1.0.0')
+
+      await closeElectronApp(current, { preserveUserData: true })
+      current = null
+      current = await launchElectronApp({}, { userDataRoot: retainedRoot })
+
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'active',
+        currentVersion: '1.0.0',
+        currentArtifactSha256: firstRevision.artifactSha256,
+        pendingVersion: null,
+        pendingArtifactSha256: null
+      })
+      const dataRoot = join(retainedRoot, 'system-plugins', 'data', lifecyclePluginId)
+      const lifecycleMarker = join(dataRoot, 'lifecycle.json')
+      const migrationMarker = join(dataRoot, 'migration.json')
+      await expect.poll(() => existsSync(lifecycleMarker)).toBe(true)
+      expect(readLifecycleMarker(lifecycleMarker)).toMatchObject({
+        version: '1.0.0',
+        revisionHash: `sha256:${firstRevision.artifactSha256}`
+      })
+      expect(existsSync(migrationMarker)).toBe(false)
+      await expectLifecycleRenderer(current, '1.0.0', firstRevision.artifactSha256)
+
+      writeLifecyclePluginFixture(sourceRoot, lifecyclePluginId, '2.0.0')
+      const secondRevision = await prepareAndConfirmSystemPlugin(current, sourceRoot)
+      expect(secondRevision.version).toBe('2.0.0')
+      expect(secondRevision.artifactSha256).not.toBe(firstRevision.artifactSha256)
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'pending-restart',
+        currentVersion: '1.0.0',
+        currentArtifactSha256: firstRevision.artifactSha256,
+        pendingVersion: '2.0.0',
+        pendingArtifactSha256: secondRevision.artifactSha256
+      })
+      await expectLifecycleRenderer(current, '1.0.0', firstRevision.artifactSha256)
+
+      await closeElectronApp(current, { preserveUserData: true })
+      current = null
+      current = await launchElectronApp({}, { userDataRoot: retainedRoot })
+
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'active',
+        currentVersion: '2.0.0',
+        currentArtifactSha256: secondRevision.artifactSha256,
+        pendingVersion: null,
+        pendingArtifactSha256: null
+      })
+      await expect.poll(() => readLifecycleMarker(lifecycleMarker).version).toBe('2.0.0')
+      expect(readLifecycleMarker(migrationMarker)).toMatchObject({
+        fromVersion: '1.0.0',
+        toVersion: '2.0.0',
+        revisionHash: `sha256:${secondRevision.artifactSha256}`
+      })
+      await expectLifecycleRenderer(current, '2.0.0', secondRevision.artifactSha256)
+
+      await openPluginsPage(current.page)
+      const installed = installedSystemPluginCard(current, 'Full Trust Lifecycle')
+      const rollback = installed.getByRole('button', {
+        name: uiText('Roll back to 1.0.0', '回滚到 1.0.0')
+      })
+      await expect(rollback).toBeEnabled()
+      await rollback.click()
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'pending-restart',
+        currentVersion: '2.0.0',
+        currentArtifactSha256: secondRevision.artifactSha256,
+        pendingVersion: '1.0.0',
+        pendingArtifactSha256: firstRevision.artifactSha256
+      })
+
+      await closeElectronApp(current, { preserveUserData: true })
+      current = null
+      current = await launchElectronApp({}, { userDataRoot: retainedRoot })
+
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'active',
+        currentVersion: '1.0.0',
+        currentArtifactSha256: firstRevision.artifactSha256,
+        pendingVersion: null,
+        pendingArtifactSha256: null
+      })
+      expect(readLifecycleMarker(migrationMarker)).toMatchObject({
+        fromVersion: '2.0.0',
+        toVersion: '1.0.0',
+        revisionHash: `sha256:${firstRevision.artifactSha256}`
+      })
+      await expectLifecycleRenderer(current, '1.0.0', firstRevision.artifactSha256)
+
+      writeLifecyclePluginFixture(sourceRoot, lifecyclePluginId, '3.0.0', true)
+      const failedRevision = await prepareAndConfirmSystemPlugin(current, sourceRoot)
+      await closeElectronApp(current, { preserveUserData: true })
+      current = null
+      current = await launchElectronApp({}, { userDataRoot: retainedRoot })
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'active',
+        currentVersion: '1.0.0',
+        currentArtifactSha256: firstRevision.artifactSha256,
+        pendingVersion: null,
+        pendingArtifactSha256: null
+      })
+      await expectLifecycleRenderer(current, '1.0.0', firstRevision.artifactSha256)
+      await expect(current.page.locator('style[data-full-trust-style="failed-upgrade-style"]'))
+        .toHaveCount(0)
+      expect(readLifecycleMarker(join(dataRoot, 'deactivated-3.0.0.json'))).toMatchObject({
+        version: '3.0.0',
+        revisionHash: `sha256:${failedRevision.artifactSha256}`
+      })
+      expect(readLifecycleMarker(lifecycleMarker)).toMatchObject({
+        version: '1.0.0',
+        revisionHash: `sha256:${firstRevision.artifactSha256}`
+      })
+
+      await openPluginsPage(current.page)
+      await current.page.evaluate(() => {
+        window.confirm = () => true
+      })
+      const uninstall = installedSystemPluginCard(current, 'Full Trust Lifecycle').getByRole(
+        'button',
+        { name: uiText('Uninstall', '卸载') }
+      )
+      await expect(uninstall).toBeEnabled()
+      await uninstall.click()
+      await expectSystemPluginState(current, lifecyclePluginId, {
+        status: 'uninstall-pending',
+        currentVersion: '1.0.0',
+        currentArtifactSha256: firstRevision.artifactSha256,
+        pendingVersion: null,
+        pendingArtifactSha256: null
+      })
+      await expect(current.page.getByTestId('full-trust-lifecycle')).toHaveCount(0)
+      await expect(current.page.locator('style[data-full-trust-style="lifecycle-style"]'))
+        .toHaveCount(0)
+
+      await closeElectronApp(current, { preserveUserData: true })
+      current = null
+      current = await launchElectronApp({}, { userDataRoot: retainedRoot })
+
+      await expect.poll(async () => current?.page.evaluate(async (id) => (
+        (await window.knowbook.listSystemPlugins()).some((plugin) => plugin.pluginId === id)
+      ), lifecyclePluginId)).toBe(false)
+      expect(existsSync(dataRoot)).toBe(false)
+      expect(existsSync(join(retainedRoot, 'system-plugins', 'logs', lifecyclePluginId))).toBe(false)
+      expect(revisionDirectoryExists(
+        join(retainedRoot, 'system-plugins', 'artifacts', lifecyclePluginId),
+        firstRevision.artifactSha256
+      )).toBe(false)
+      expect(revisionDirectoryExists(
+        join(retainedRoot, 'system-plugins', 'artifacts', lifecyclePluginId),
+        secondRevision.artifactSha256
+      )).toBe(false)
+      expect(revisionDirectoryExists(
+        join(retainedRoot, 'system-plugins', 'runtime', lifecyclePluginId),
+        firstRevision.artifactSha256
+      )).toBe(false)
+      expect(revisionDirectoryExists(
+        join(retainedRoot, 'system-plugins', 'runtime', lifecyclePluginId),
+        secondRevision.artifactSha256
+      )).toBe(false)
+      for (const directory of ['artifacts', 'runtime']) {
+        expect(revisionDirectoryExists(
+          join(retainedRoot, 'system-plugins', directory, lifecyclePluginId),
+          failedRevision.artifactSha256
+        )).toBe(false)
+      }
+    } finally {
+      if (current) await closeElectronApp(current)
+      if (!current && retainedRoot && existsSync(retainedRoot)) {
+        rmSync(retainedRoot, { recursive: true, force: true })
+      }
+      rmSync(sourceRoot, { recursive: true, force: true })
+    }
+  })
 })
+
+type PreparedSystemPlugin = {
+  pluginId: string
+  version: string
+  artifactSha256: string
+}
+
+type ExpectedSystemPluginState = {
+  status: string
+  currentVersion: string | null
+  currentArtifactSha256: string | null
+  pendingVersion: string | null
+  pendingArtifactSha256: string | null
+}
+
+async function prepareAndConfirmSystemPlugin(
+  context: ElectronAppContext,
+  sourceDirectory: string
+): Promise<PreparedSystemPlugin> {
+  await context.app.evaluate(({ dialog }, selectedDirectory) => {
+    Object.defineProperty(dialog, 'showMessageBox', {
+      configurable: true,
+      value: async () => ({ response: 0, checkboxChecked: false })
+    })
+    Object.defineProperty(dialog, 'showOpenDialog', {
+      configurable: true,
+      value: async () => ({ canceled: false, filePaths: [selectedDirectory] })
+    })
+  }, sourceDirectory)
+  const prepared = await context.page.evaluate(() => (
+    window.knowbook.chooseAndPrepareSystemPluginInstall()
+  ))
+  if (!prepared) throw new Error('Expected a prepared Full Trust install request.')
+  const confirmation: [string, string, string] = [
+    prepared.id,
+    prepared.pluginId,
+    prepared.artifactSha256
+  ]
+  await context.page.evaluate(async ([requestId, pluginId, artifactSha256]) => {
+    await window.knowbook.resolveSystemPluginInstallRequest({
+      requestId,
+      pluginId,
+      artifactSha256,
+      acknowledgeSystemAccess: true,
+      decision: 'confirm'
+    })
+  }, confirmation)
+  return {
+    pluginId: prepared.pluginId,
+    version: prepared.version,
+    artifactSha256: prepared.artifactSha256
+  }
+}
+
+async function expectSystemPluginState(
+  context: ElectronAppContext,
+  id: string,
+  expected: ExpectedSystemPluginState
+): Promise<void> {
+  await expect.poll(async () => context.page.evaluate(async (pluginId) => {
+    const plugin = (await window.knowbook.listSystemPlugins())
+      .find((candidate) => candidate.pluginId === pluginId)
+    return plugin
+      ? {
+          status: plugin.status,
+          currentVersion: plugin.currentVersion,
+          currentArtifactSha256: plugin.currentArtifactSha256,
+          pendingVersion: plugin.pendingVersion,
+          pendingArtifactSha256: plugin.pendingArtifactSha256
+        }
+      : null
+  }, id)).toEqual(expected)
+}
+
+async function expectLifecycleRenderer(
+  context: ElectronAppContext,
+  version: string,
+  artifactSha256: string
+): Promise<void> {
+  await openDashboardPage(context.page)
+  const contribution = context.page.getByTestId('full-trust-lifecycle')
+  await expect(contribution).toBeVisible()
+  await expect(contribution).toHaveAttribute('data-plugin-version', version)
+  await expect(contribution).toHaveAttribute('data-plugin-revision', `sha256:${artifactSha256}`)
+  await expect(context.page.locator('style[data-full-trust-style="lifecycle-style"]')).toHaveCount(1)
+}
+
+function installedSystemPluginCard(
+  context: ElectronAppContext,
+  name: string
+) {
+  return context.page.locator('.system-plugin-request').filter({
+    hasText: name,
+    has: context.page.getByRole('button', { name: uiText('Uninstall', '卸载') })
+  }).first()
+}
+
+function readLifecycleMarker(path: string): Record<string, string> {
+  return JSON.parse(readFileSync(path, 'utf8')) as Record<string, string>
+}
+
+function revisionDirectoryExists(root: string, artifactSha256: string): boolean {
+  return existsSync(join(root, artifactSha256))
+    || existsSync(join(root, `sha256:${artifactSha256}`))
+}
+
+function writeLifecyclePluginFixture(root: string, id: string, version: string, failRenderer = false): void {
+  mkdirSync(root, { recursive: true })
+  writeFileSync(join(root, 'plugin.json'), JSON.stringify({
+    schemaVersion: 3,
+    trust: 'full',
+    id,
+    name: 'Full Trust Lifecycle',
+    version,
+    description: 'Controlled upgrade, rollback, and uninstall fixture.',
+    publisher: 'KnowBook E2E',
+    entries: {
+      main: 'main.cjs',
+      renderer: 'renderer.cjs'
+    },
+    fullAccess: true,
+    riskDeclarations: ['node', 'renderer']
+  }, null, 2))
+  writeFileSync(join(root, 'main.cjs'), `'use strict'
+const fs = require('node:fs')
+const path = require('node:path')
+function writeMarker(context, name, value) {
+  fs.mkdirSync(context.plugin.dataRoot, { recursive: true })
+  fs.writeFileSync(path.join(context.plugin.dataRoot, name), JSON.stringify(value), 'utf8')
+}
+module.exports = {
+  migrate(context, fromVersion) {
+    writeMarker(context, 'migration.json', {
+      fromVersion,
+      toVersion: context.plugin.version,
+      revisionHash: context.plugin.revisionHash
+    })
+  },
+  activate(context) {
+    context.registerDisposable(() => writeMarker(context, 'deactivated-' + context.plugin.version + '.json', {
+      version: context.plugin.version,
+      revisionHash: context.plugin.revisionHash
+    }), 'lifecycle cleanup evidence')
+    writeMarker(context, 'lifecycle.json', {
+      version: context.plugin.version,
+      revisionHash: context.plugin.revisionHash
+    })
+  },
+  healthCheck() {
+    return { ok: true }
+  }
+}
+`)
+  writeFileSync(join(root, 'renderer.cjs'), `'use strict'
+module.exports = function activate(api) {
+  api.registerSlotContribution({
+    id: 'lifecycle-dashboard-card',
+    slot: 'workspace.dashboard',
+    order: 0,
+    component: ({ plugin }) => React.createElement(
+      'section',
+      {
+        'data-testid': 'full-trust-lifecycle',
+        'data-plugin-version': plugin.version,
+        'data-plugin-revision': plugin.revisionHash
+      },
+      'Lifecycle revision ' + plugin.version
+    )
+  })
+  api.injectCss('[data-testid="full-trust-lifecycle"] { display: block; }', {
+    id: 'lifecycle-style'
+  })
+  ${failRenderer ? `api.injectCss('body { color: red; }', { id: 'failed-upgrade-style' })
+  throw new Error('Controlled Renderer upgrade failure')` : ''}
+}
+`)
+}
 
 function fullTrustFrameHtml(pageKind: 'initial' | 'navigated'): string {
   return `<!doctype html>

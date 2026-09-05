@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
@@ -78,6 +86,13 @@ test('package preparation installs into a runtime copy and persists dependency j
         writeFileSync(join(options.rootDirectory, 'node_modules', 'fixture', 'index.js'), 'module.exports = 1')
         writeFileSync(join(options.rootDirectory, 'node_modules', 'fixture', 'binding.node'), 'fake native binary')
         options.tasks.forEach((task, taskIndex) => {
+          options.onLog?.({
+            taskIndex,
+            task,
+            stream: 'stdout',
+            text: 'Authorization: Bearer dependency-log-secret\n',
+            timestamp: new Date().toISOString()
+          })
           options.onStatus?.({
             taskIndex,
             task,
@@ -102,11 +117,19 @@ test('package preparation installs into a runtime copy and persists dependency j
       },
       probeNativeModules: async (options) => {
         probeRoots.push(options.rootDirectory)
+        options.onLog?.({
+          modulePath: 'node_modules/fixture/binding.node',
+          stream: 'stderr',
+          text: '{"apiKey":"native-probe-secret"}\n',
+          timestamp: new Date().toISOString()
+        })
         assert.equal(
           existsSync(join(options.rootDirectory, 'node_modules', 'fixture', 'binding.node')),
           true
         )
-        if (probeShouldFail) throw new Error('native ABI probe rejected fixture')
+        if (probeShouldFail) {
+          throw new Error('native ABI probe rejected fixture token=native-probe-secret')
+        }
         return {
           rootDirectory: resolve(options.rootDirectory),
           strategy: 'electron-node-require',
@@ -156,6 +179,15 @@ test('package preparation installs into a runtime copy and persists dependency j
     assert.deepEqual(jobs.map((job) => job.status), ['succeeded', 'succeeded', 'failed'])
     assert.ok(jobs.every((job) => JSON.stringify(job.command) === JSON.stringify(['npm', 'install'])))
     assert.match(String((jobs.at(-1)?.error as Record<string, unknown>)?.message), /ABI probe/i)
+    assert.equal(JSON.stringify(jobs.at(-1)?.error).includes('native-probe-secret'), false)
+    const log = readFileSync(
+      join(root, 'logs', manifest.id, `${contentHash}-dependencies.log`),
+      'utf8'
+    )
+    assert.match(log, /\[install\].*Authorization: Bearer \[REDACTED\]/)
+    assert.match(log, /\[native-probe:node_modules\/fixture\/binding\.node\].*"apiKey":"\[REDACTED\]"/)
+    assert.equal(log.includes('dependency-log-secret'), false)
+    assert.equal(log.includes('native-probe-secret'), false)
   } finally {
     store.destroy()
     rmSync(root, { recursive: true, force: true })
