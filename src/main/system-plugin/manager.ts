@@ -1658,6 +1658,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       throw new Error('Published Full Trust artifact no longer matches its immutable package record.')
     }
     const compatiblePackage = await this.ensureRuntimeCompatibility(
+      installation,
       packageRecord,
       manifest,
       verified
@@ -2084,7 +2085,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   private async stopPersistedDetachedRuns(
     installation: SystemPluginInstallationRecord,
     keepPackageId: string | null,
-    reason: 'disabled' | 'safe-mode' | 'superseded' | 'uninstall'
+    reason: 'disabled' | 'safe-mode' | 'superseded' | 'uninstall' | 'runtime-incompatible'
   ): Promise<void> {
     const candidates = this.repository.listSystemPluginRuns(installation.id, 1_000)
       .filter((run) => (
@@ -2214,6 +2215,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   }
 
   private async ensureRuntimeCompatibility(
+    installation: SystemPluginInstallationRecord,
     packageRecord: SystemPluginPackageRecord,
     manifest: SystemPluginV3Manifest,
     artifact: SystemPluginArtifactDescriptor
@@ -2233,6 +2235,9 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     if (!request || request.status !== 'confirmed-restart-required') {
       throw new Error('Native Full Trust runtime requires rebuild, but its confirmed install request is unavailable.')
     }
+    if (!this.options.preparePublishedPackage) {
+      throw new Error('Native Full Trust runtime requires rebuild, but no runtime package preparer was configured.')
+    }
     this.repository.updateSystemPluginPackage(packageRecord.id, {
       status: 'installing',
       error: null
@@ -2250,6 +2255,10 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       }
     })
     try {
+      // A detached process can still hold native binaries from this exact
+      // revision. Wait for verified termination before replacing its runtime,
+      // and retire the old run so it cannot be adopted with the previous ABI.
+      await this.stopPersistedDetachedRuns(installation, null, 'runtime-incompatible')
       const preparation = await this.preparePublishedPackage({
         artifact: { ...artifact, artifactDirectory: packageRecord.artifactPath },
         packageRecord,

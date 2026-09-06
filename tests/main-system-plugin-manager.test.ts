@@ -710,6 +710,15 @@ test('SystemPluginManager preserves and adopts a live detached service across ap
     })
     assert.ok(installed.installation)
     await installer.destroy()
+    store.pluginPlatform.updateSystemPluginPackage(installed.packageRecord!.id, {
+      runtimeFingerprint: {
+        platform: process.platform,
+        arch: process.arch,
+        electron: process.versions.electron ?? null,
+        modules: process.versions.modules ?? null,
+        nativeModuleProbe: { status: 'passed', moduleCount: 1, modules: ['build/addon.node'] }
+      }
+    })
 
     const firstBoot = createManager()
     await firstBoot.startup()
@@ -735,6 +744,201 @@ test('SystemPluginManager preserves and adopts a live detached service across ap
     await secondBoot.destroy()
   })
 })
+
+test('an ABI change waits for the same-revision detached process to exit before preparing and starts a new run', async () => {
+  await withManagerFixture(async ({ source, store, createManager, activations }) => {
+    writePlugin(source, '1.0.0', 'detached')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+
+    let processState: 'old' | 'stopping' | 'stopped' | 'new' = 'old'
+    const stopRequested = deferredSignal()
+    const allowExit = deferredSignal()
+    const order: string[] = []
+    const hostProcess = Object.create(process) as NodeJS.Process
+    Object.defineProperty(hostProcess, 'kill', {
+      configurable: true,
+      value: (_pid: number, signal: NodeJS.Signals) => {
+        order.push(signal)
+        processState = 'stopping'
+        stopRequested.resolve()
+        return true
+      }
+    })
+    const inspectDetachedProcess: SystemPluginDetachedProcessInspector = async (pid) => {
+      if (pid !== process.pid) return null
+      if (processState === 'stopping') {
+        await allowExit.promise
+        processState = 'stopped'
+        order.push('exit-observed')
+      }
+      if (processState === 'stopped') return null
+      return {
+        pid,
+        executable: process.execPath,
+        startToken: processState === 'old' ? 'old-abi-process' : 'new-abi-process'
+      }
+    }
+    const lifecycleOptions = { process: hostProcess, inspectDetachedProcess }
+    const firstBoot = createManager(lifecycleOptions)
+    await firstBoot.startup()
+    const oldRun = store.pluginPlatform.listSystemPluginRuns(installed.installation!.id)
+      .find((run) => run.component === 'detached')!
+    assert.equal(oldRun.status, 'ready')
+    await firstBoot.destroy()
+    store.pluginPlatform.updateSystemPluginPackage(installed.packageRecord!.id, {
+      runtimeFingerprint: {
+        platform: process.platform,
+        arch: process.arch,
+        electron: process.versions.electron ?? null,
+        modules: 'previous-electron-abi',
+        nativeModuleProbe: { status: 'passed', moduleCount: 1, modules: ['build/addon.node'] }
+      }
+    })
+
+    let preparations = 0
+    const restarted = createManager({
+      ...lifecycleOptions,
+      preparePublishedPackage: async () => {
+        preparations += 1
+        assert.equal(processState, 'stopped')
+        assert.equal(store.pluginPlatform.getSystemPluginRun(oldRun.id)?.status, 'stopped')
+        order.push('prepare')
+        processState = 'new'
+        return {
+          runtimeFingerprint: {
+            platform: process.platform,
+            arch: process.arch,
+            electron: process.versions.electron ?? null,
+            modules: process.versions.modules ?? null,
+            nativeModuleProbe: { status: 'passed', moduleCount: 1, modules: ['build/addon.node'] }
+          }
+        }
+      }
+    })
+    const startup = restarted.startup()
+    try {
+      await Promise.race([
+        stopRequested.promise,
+        startup.then(() => { throw new Error('ABI preparation did not wait for detached termination.') })
+      ])
+      assert.equal(preparations, 0)
+      assert.equal(store.pluginPlatform.getSystemPluginRun(oldRun.id)?.status, 'stopping')
+      allowExit.resolve()
+      const [summary] = await startup
+      assert.equal(summary.installation.status, 'active')
+      assert.equal(preparations, 1)
+      assert.deepEqual(order, ['SIGTERM', 'exit-observed', 'prepare'])
+      assert.equal(activations.count, 4)
+      const detachedRuns = store.pluginPlatform.listSystemPluginRuns(installed.installation!.id)
+        .filter((run) => run.component === 'detached')
+      assert.equal(detachedRuns.length, 2)
+      const stopped = detachedRuns.find((run) => run.id === oldRun.id)!
+      assert.equal(stopped.status, 'stopped')
+      assert.equal(stopped.pid, null)
+      assert.equal((stopped.health as { cleanupReason?: string }).cleanupReason, 'runtime-incompatible')
+      const started = detachedRuns.find((run) => run.id !== oldRun.id)!
+      assert.equal(started.packageId, oldRun.packageId)
+      assert.equal(started.status, 'ready')
+      assert.equal(
+        (started.health as { detachedProcessIdentity?: { startToken?: string } })
+          .detachedProcessIdentity?.startToken,
+        'new-abi-process'
+      )
+    } finally {
+      allowExit.resolve()
+      await startup
+      await restarted.destroy()
+    }
+  })
+})
+
+for (const failure of ['identity-changed', 'termination-timeout', 'preparer-missing'] as const) {
+  test(`an ABI change cannot replace a detached runtime when ${failure}`, async () => {
+    await withManagerFixture(async ({ source, store, createManager, activations }) => {
+      writePlugin(source, '1.0.0', 'detached')
+      const installer = createManager()
+      const installed = await installForRestart(installer, source)
+      await installer.destroy()
+      const firstBoot = createManager()
+      await firstBoot.startup()
+      const oldRun = store.pluginPlatform.listSystemPluginRuns(installed.installation!.id)
+        .find((run) => run.component === 'detached')!
+      await firstBoot.destroy()
+      store.pluginPlatform.updateSystemPluginPackage(installed.packageRecord!.id, {
+        runtimeFingerprint: {
+          platform: process.platform,
+          arch: process.arch,
+          electron: process.versions.electron ?? null,
+          modules: 'previous-electron-abi',
+          nativeModuleProbe: { status: 'passed', moduleCount: 1, modules: ['build/addon.node'] }
+        }
+      })
+
+      const killSignals: NodeJS.Signals[] = []
+      const hostProcess = Object.create(process) as NodeJS.Process
+      Object.defineProperty(hostProcess, 'kill', {
+        configurable: true,
+        value: (_pid: number, signal: NodeJS.Signals) => {
+          killSignals.push(signal)
+          return true
+        }
+      })
+      let preparations = 0
+      const restarted = createManager({
+        process: hostProcess,
+        inspectDetachedProcess: async (pid) => ({
+          pid,
+          executable: process.execPath,
+          startToken: failure === 'identity-changed' ? 'reused-pid' : 'fixture-process-start'
+        }),
+        adoptedServiceStopTimeoutMs: 0,
+        adoptedServiceForceKillTimeoutMs: 0,
+        ...(failure === 'preparer-missing' ? {} : {
+          preparePublishedPackage: async () => {
+            preparations += 1
+            throw new Error('Preparation must remain blocked.')
+          }
+        })
+      })
+      try {
+        const [summary] = await restarted.startup()
+        assert.equal(summary.installation.status, 'safe-mode-disabled')
+        assert.equal(preparations, 0)
+        assert.equal(activations.count, 2)
+        assert.deepEqual(killSignals, failure === 'termination-timeout' ? ['SIGTERM', 'SIGKILL'] : [])
+        assert.equal(store.pluginPlatform.getSystemPluginRun(oldRun.id)?.pid, oldRun.pid)
+        assert.equal(
+          store.pluginPlatform.listSystemPluginRuns(installed.installation!.id)
+            .filter((run) => run.component === 'detached').length,
+          1
+        )
+        assert.equal(
+          store.pluginPlatform.getSystemPluginPackage(installed.packageRecord!.id)?.status,
+          failure === 'preparer-missing' ? 'ready' : 'failed'
+        )
+        assert.equal(
+          (summary.currentPackage?.runtimeFingerprint as { modules?: string }).modules,
+          'previous-electron-abi'
+        )
+        const audits = store.pluginPlatform.listSystemPluginAudit(installed.request.pluginId)
+        assert.equal(audits.some((entry) => entry.action === 'runtime.compatibility-rebuilt'), false)
+        if (failure === 'preparer-missing') {
+          assert.match(JSON.stringify(summary.installation.lastError), /no runtime package preparer/)
+          assert.equal(store.pluginPlatform.getSystemPluginRun(oldRun.id)?.status, 'ready')
+          assert.equal(audits.some((entry) => entry.action === 'service.detached-cleanup'), false)
+        } else {
+          assert.equal(audits.some((entry) => (
+            entry.action === 'runtime.compatibility-rebuild-failed' && entry.outcome === 'failure'
+          )), true)
+        }
+      } finally {
+        await restarted.destroy()
+      }
+    })
+  })
+}
 
 test('SystemPluginManager reopens adopted detached RPC with the persisted launch nonce', async () => {
   await withManagerFixture(async ({ source, store, createManager, activations }) => {

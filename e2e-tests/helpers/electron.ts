@@ -1,8 +1,8 @@
 import { expect, type Page } from '@playwright/test'
 import { _electron as electron, type ElectronApplication } from 'playwright'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export type ElectronAppContext = {
@@ -25,7 +25,25 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
 
 export function hasBuiltElectronApp(): boolean {
-  return existsSync(builtMainEntry)
+  // An explicitly requested packaged app must fail loudly if missing, rather
+  // than letting every acceptance test pass as skipped.
+  return Boolean(getElectronLaunchTarget().executablePath) || existsSync(builtMainEntry)
+}
+
+export function getElectronLaunchTarget(executable = process.env.KNOWBOOK_E2E_EXECUTABLE): {
+  executablePath?: string
+  args: string[]
+  cwd: string
+} {
+  const args = ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu']
+  if (executable?.trim()) {
+    const executablePath = resolve(repoRoot, executable.trim())
+    if (!existsSync(executablePath) || !statSync(executablePath).isFile()) {
+      throw new Error(`Packaged KnowBook executable is missing: ${executablePath}`)
+    }
+    return { executablePath, args, cwd: repoRoot }
+  }
+  return { args: [...args, '.'], cwd: repoRoot }
 }
 
 export function uiText(en: string, zh: string): RegExp {
@@ -46,29 +64,39 @@ export async function launchElectronApp(
   extraEnv: Record<string, string> = {},
   options: ElectronLaunchOptions = {}
 ): Promise<ElectronAppContext> {
+  const target = getElectronLaunchTarget(extraEnv.KNOWBOOK_E2E_EXECUTABLE ?? process.env.KNOWBOOK_E2E_EXECUTABLE)
   const tempRoot = options.userDataRoot ?? mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
-  const app = await electron.launch({
-    args: ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu', '.'],
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      APPDATA: tempRoot,
-      LOCALAPPDATA: tempRoot,
-      KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
-      KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
-      KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE: '1',
-      KNOWBOOK_USER_DATA_DIR: tempRoot,
-      ...extraEnv
+  const env: Record<string, string> = {
+    ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    ...extraEnv,
+    APPDATA: tempRoot,
+    LOCALAPPDATA: tempRoot,
+    KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
+    KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
+    KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE: '1',
+    KNOWBOOK_USER_DATA_DIR: tempRoot
+  }
+  delete env.ELECTRON_RUN_AS_NODE
+  delete env.ELECTRON_RENDERER_URL
+  let app: ElectronApplication | undefined
+  try {
+    app = await electron.launch({ ...target, env })
+
+    const page = await app.firstWindow()
+    page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
+    page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
+    await page.waitForLoadState('domcontentloaded')
+    await expect(page.locator('[data-testid="shell"]')).toBeVisible()
+
+    return { app, page, tempRoot }
+  } catch (error) {
+    if (app) {
+      await closeElectronApp({ app, tempRoot }, { preserveUserData: Boolean(options.userDataRoot) })
+    } else if (!options.userDataRoot) {
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
     }
-  })
-
-  const page = await app.firstWindow()
-  page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
-  page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
-  await page.waitForLoadState('domcontentloaded')
-  await expect(page.locator('[data-testid="shell"]')).toBeVisible()
-
-  return { app, page, tempRoot }
+    throw error
+  }
 }
 
 export async function closeElectronApp(

@@ -71,3 +71,19 @@ jobs:
       - name: Run packaged Electron utility-process probe
         if: runner.os != 'Linux'
         run: npm run test:packaged-runtime-smoke
+
+      - name: Run packaged native System Plugin acceptance (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum npm run test:packaged-system-plugins
+
+      - name: Run packaged native System Plugin acceptance
+        if: runner.os != 'Linux'
+        run: npm run test:packaged-system-plugins
+
+      - name: Upload native System Plugin acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-system-plugin-${{ matrix.os }}
+          path: test-results/**
+          if-no-files-found: ignore

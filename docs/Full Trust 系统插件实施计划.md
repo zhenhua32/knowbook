@@ -2,7 +2,7 @@
 
 > 文档状态：实施中
 > 适用版本：KnowBook 0.2.x+
-> 最后更新：2026-09-05
+> 最后更新：2026-09-06
 > 目标读者：产品、Main/Preload/Renderer 开发、插件作者、安全评审与测试
 
 ## 1. 执行摘要
@@ -29,7 +29,7 @@ Full Trust 不是对 v2 capability 的简单扩容，也不使用沙箱或细粒
 1. Plugin Platform v2：使用 QuickJS/WASM、不可变 revision、Grant Set、Capability Broker、声明式 ViewSpec 和 sandboxed iframe。
 2. Legacy v1：使用现有 `PluginHost` 和 utility process，提供首页卡片、文档动作、设置、事件监听、文档读取和摘要更新等兼容能力。
 3. System Plugin v3 核心链路：已加入 v3 manifest 与 artifact 校验、精确 SHA-256 确认、不可变发布、持久化状态、重启激活、Main 生命周期、版本化 service RPC、宿主服务、Renderer registry、插件中心入口、回滚/卸载和启动恢复的首轮实现及自动化测试；受控 Windows Electron E2E 已验证精确确认、离线 npm 依赖准备，以及重启后的 Main、任意 AI 请求、app-lifetime service RPC、Renderer、HTTP/WebSocket Full Trust frame、主进程创建的 Node 特权窗口和最终 `active` 状态。
-4. 发布验收缺口：十二类能力的代码入口、后台监督、可跨宿主重连的 service RPC、native probe 和宿主管理的登录启动均已有首轮实现，但仍缺三平台打包态 native/login 验证、真实系统登录/重启与卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
+4. 发布验收缺口：十二类能力的代码入口、后台监督、可跨宿主重连的 service RPC、native probe 和宿主管理的登录启动均已有首轮实现；Windows x64 unpacked 应用已通过真实 SQLite `.node` 加载、插件升级/回滚和卸载清理验收。macOS/Linux 实际打包态 CI、三平台 native 编译 rebuild/真实 Electron ABI 升级、登录启动与真实系统重启、安装包卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据仍待完成。
 
 v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、Store、SQLite、用户目录、API Key 或宿主 Renderer，这一边界是有意设计，不能为实现 Full Trust 而拆除。
 
@@ -47,7 +47,7 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 
 ### 2.3 实施进度矩阵
 
-本节记录截至 2026-09-05 的仓库实现快照。“已落地”只表示相应代码及针对性自动化测试已经存在，不等于第 20 节最终验收完成，也不表示 ADR-0007 已达到 `Implemented`。凡缺少打包态、跨平台或完整 E2E 证据的项目，均保留在“仍待完成”列。
+本节记录截至 2026-09-06 的仓库实现快照。“已落地”只表示相应代码及针对性自动化测试已经存在，不等于第 20 节最终验收完成，也不表示 ADR-0007 已达到 `Implemented`。凡缺少打包态、跨平台或完整 E2E 证据的项目，均保留在“仍待完成”列。
 
 | 阶段 | 当前状态 | 已完成（当前代码范围） | 仍待完成与验收 |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 | 阶段 2：Main Runtime 与基础系统能力 | 大部分完成（代码、单测与 Windows E2E） | `SystemPluginHost`、CJS/ESM 加载、Context/disposable、Node/Electron/`process`/`require`、Store/raw SQLite/路径/事件、重启激活、crash marker 恢复与一次性安全模式已经实现；升级 revision 会在 `activate` 前有界执行 `migrate(context, fromVersion)`，迁移失败复用 last-known-good 自动回滚；同步启动失败会回滚/安全停用，失败的启动 Promise 会从缓存清除以允许受控重试；ABI 指纹不匹配会触发重新准备或失败阻断；Windows Electron E2E 已验证重启后 Main 使用 Node/文件系统、raw Store/SQLite、Electron、环境变量、HTTP 和托管子进程 | 完成坏插件、死循环、`process.exit()` 和原生崩溃场景的 Electron 集成验证，并在 macOS/Linux 打包态复验 |
 | 阶段 3：数据、AI 与桌面 API | 部分完成 | 文档移动/删除和数据库 CRUD 包装、raw Store/SQLite、AI complete/stream/raw request、AI Key 与环境变量、任意 settings、剪贴板/shell/窗口/菜单/托盘 helper、启用/升级前备份路径已经实现；Full Trust Documents API 与显式事件会写入宿主控制的 `originPluginId`、运行期 `correlationId` 和逐操作 `causationId`；Windows Electron E2E 已验证文档创建/移动/删除、数据库/列/实体 CRUD、任意设置读写删除、Electron 窗口访问，以及向本地 OpenAI-compatible mock 发送任意 messages、tools、seed 并使用宿主 API Key 认证 | 以真实 Renderer 验证全部 mutation event/刷新和回滚恢复；补齐 AI 流式/取消/错误、剪贴板、菜单、托盘、外部程序及密钥日志脱敏的打包态 E2E；核对所有稳定 API 的版本化契约 |
 | 阶段 4：Renderer、React 与 Full Trust Frame | 大部分完成（代码、单测与 Windows E2E） | Renderer entry 注入、React singleton/slot/root/portal、command/page/route/shortcut、DOM/CSS/theme/disposable registry、无 sandbox frame、精确 revision/origin/popup/navigation/download/permission 策略、停用清理和 v2 默认拒绝已经实现并有针对性测试；Renderer 激活现在参与 Main 的原子 activation commit，失败或超时会清理部分注册并让 pending revision 走 last-known-good 回滚；Windows Electron E2E 已验证同一精确 revision 的 React/DOM/CSS、升级与回滚后的精确 Renderer revision 切换、远程 HTTP/WebSocket frame、权限请求、导航、下载、主进程独立创建的 Node 特权窗口及停用/卸载时 UI 清理 | 补齐专属 preload 和 macOS/Linux 打包态窗口行为验证 |
-| 阶段 5：npm、Native Module 与后台服务 | 大部分完成（代码、单测与部分 E2E） | 确认后的 npm/pnpm/yarn 任务执行、build、Electron target native rebuild、原生模块隔离 probe、依赖 job/log；所有包（包括无依赖包）先复制到可变 runtime，确认 artifact 保持不可变；native scan 覆盖整个 runtime，并支持取消和总预算；依赖命令与 native probe 在 timeout/cancel 后等待进程树退出；Windows 对 npm/pnpm/yarn `.cmd` shim 使用受限参数的 `cmd.exe` 适配；受控 Electron E2E 已真实运行离线 `npm ci --ignore-scripts`、实体化本地 `file:` 依赖并在重启后从可变 runtime 成功 `require()`；supervisor 已接入 manager/run/插件中心/退出和卸载，支持 app-lifetime、detached adoption、心跳、日志、有界重启与停止；service RPC v1 以闭合 JSON 协议、精确 plugin/revision、白名单方法、超时/并发/大小/深度限制和元数据审计接入 Documents、Databases、Settings、AI、Secrets、事件、路径、剪贴板与 shell，受控 Windows Electron E2E 已验证真实子进程往返；本机命名管道/Unix socket 以精确 revision 与 launch nonce 认证，真实子进程测试已验证宿主端点关闭、重建后原 PID 恢复 RPC；detached 身份以 PID、可执行文件、OS start token、revision、service entry 和 launch nonce 校验，支持手动启动身份落盘、adoption 后停止再启动、安全模式停服及升级旧 revision 清理；macOS `mainAppService` 按全局单例协调；Windows/macOS Electron login item 和 Linux XDG autostart 具备独立精确确认、持久记录、状态核验与卸载清理 | 用真实 native module、pnpm/yarn 和登录启动项完成 Windows、macOS、Linux 打包态安装、升级、回滚、ABI 变化、系统登录/重启及卸载无残留验证 |
+| 阶段 5：npm、Native Module 与后台服务 | 大部分完成（含 Windows unpacked native E2E） | 确认后的 npm/pnpm/yarn 任务执行、build、Electron target native rebuild、原生模块隔离 probe、依赖 job/log；所有包（包括无依赖包）先复制到可变 runtime，确认 artifact 保持不可变；native scan 覆盖整个 runtime，并支持取消和总预算；依赖命令与 native probe 在 timeout/cancel 后等待进程树退出；Windows 对 npm/pnpm/yarn `.cmd` shim 使用受限参数的 `cmd.exe` 适配；受控 Electron E2E 已真实运行离线 `npm ci --ignore-scripts`、实体化本地 `file:` 依赖并在重启后从可变 runtime 成功 `require()`；supervisor 已接入 manager/run/插件中心/退出和卸载，支持 app-lifetime、detached adoption、心跳、日志、有界重启与停止；service RPC v1 以闭合 JSON 协议、精确 plugin/revision、白名单方法、超时/并发/大小/深度限制和元数据审计接入 Documents、Databases、Settings、AI、Secrets、事件、路径、剪贴板与 shell，受控 Windows Electron E2E 已验证真实子进程往返；本机命名管道/Unix socket 以精确 revision 与 launch nonce 认证，真实子进程测试已验证宿主端点关闭、重建后原 PID 恢复 RPC；detached 身份以 PID、可执行文件、OS start token、revision、service entry 和 launch nonce 校验，支持手动启动身份落盘、adoption 后停止再启动、安全模式停服及升级旧 revision 清理；macOS `mainAppService` 按全局单例协调；Windows/macOS Electron login item 和 Linux XDG autostart 具备独立精确确认、持久记录、状态核验与卸载清理；Windows x64 unpacked（Electron 35.7.5、ABI 133）已通过真实 SQLite .node 探测/加载、坏二进制拒绝、插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、数据保持及正常/失败 revision 卸载清理；ABI 不匹配时 manager 先核验并停止 detached 进程，再准备 runtime，停止失败则阻断；模拟旧指纹后重新复制当前 ABI 预编译文件并探测的验收已通过 | 执行 macOS/Linux 实际打包态 CI；完成三平台 native 编译 rebuild、真实 Electron ABI 升级、pnpm/yarn、登录启动、系统登录/重启及安装包卸载无残留验证 |
 
 十二类能力的当前证据和缺口如下。这里的“可用”指首轮代码入口存在；在第 20 节验收全部通过前，产品和文档不得将整个 Full Trust v3 标记为 `Implemented`。
 
@@ -64,7 +64,7 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 | --- | --- | --- |
 | 1–2 | Main Context 已暴露文件/路径、Store、raw SQLite、Node、Electron、`process`、`require`、shell 和子进程入口；受控 Windows Electron E2E 已验证精确 revision 读写 `dataRoot`、读取用户数据路径、查询 raw Store/SQLite、读取 Node/Electron 版本、访问主窗口并运行托管 Electron-Node 子进程 | 继续完成用户选择目录、shell 与异常子进程 E2E，并在 macOS/Linux 打包态复验 |
 | 3 | Main 可使用 Node 网络；Windows Electron E2E 已验证 Main HTTP fetch，以及远程 v3 frame 的 HTTP 和 WebSocket 往返 | 取消、TLS/错误及三平台打包态验证 |
-| 4 | 依赖 runner/package preparer 已覆盖 npm/pnpm/yarn、脚本、build、Electron target rebuild、ABI 指纹和隔离 native module probe；Windows Electron E2E 已按锁文件真实运行离线 `npm ci --ignore-scripts`，实体化本地 `file:` 纯 JS 包并在重启后成功加载 | 验证生命周期/build 失败、pnpm/yarn、真实 native module、ABI 变化和三平台打包结果 |
+| 4 | 依赖 runner/package preparer 已覆盖 npm/pnpm/yarn、脚本、build、Electron target rebuild、ABI 指纹和隔离 native module probe；Windows Electron E2E 已真实运行离线 `npm ci --ignore-scripts` 并加载本地 `file:` 纯 JS 包；Windows x64 unpacked（Electron 35.7.5、ABI 133）已探测并加载真实 SQLite `.node`、拒绝坏二进制、完成插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、保持数据并在卸载时清除正常及失败 revision；模拟旧持久化 ABI 指纹后，重新复制当前 ABI 预编译文件并探测成功 | 验证生命周期/build 失败、pnpm/yarn、macOS/Linux 实际打包态 CI、三平台 native 编译 rebuild 与真实 Electron ABI 升级；模拟指纹刷新不代表后两项已验收 |
 | 5 | AI complete、stream、raw request、配置和 API Key 入口已实现；本地 HTTP 集成测试覆盖完整响应、流式读取、调用方取消、插件停用取消、HTTP/JSON/传输错误、错误体有界读取以及原始响应；Windows Electron E2E 已验证 SSE/UTF-8、取消、停用断连、HTTP/JSON 错误及非 JSON 原始响应 | 三平台打包态复验流式、取消、错误和原始响应 |
 | 6–7 | Documents/Databases 稳定包装及 raw SQLite 已实现，并有针对性服务测试；Windows Electron E2E 已验证文档创建/移动/删除，以及数据库、select 列、实体创建/更新/删除 | 完整验证递归删除、链接、视图/实体批量 CRUD、事件和 Renderer 一致性 |
 | 8–9 | Electron desktop helper、环境/Secrets 与任意 settings API 已实现；Windows Electron E2E 已验证环境变量、任意设置 round-trip、主窗口访问和停用关闭特权窗口 | 在真实打包应用中验证剪贴板、菜单、托盘、外部程序、资源自动清理和 UI 更新 |
@@ -650,6 +650,8 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 完成标准：验收插件通过能力 4 和 12，纯 JS/native 依赖及两类后台服务在打包应用中可安装、运行和移除。
 
+当前证据：2026-09-06 已完成 Windows x64 unpacked（Electron 35.7.5、ABI 133）的 native 专用夹具验收，覆盖真实 SQLite `.node` 探测/加载、坏二进制拒绝、插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、数据保持，以及卸载时正常/失败 revision 的 artifact/runtime 和插件 data/log 清理。ABI 刷新场景只修改旧持久化指纹，再重新复制当前 ABI 的预编译文件并探测；尚未验证实际 Electron 版本升级或 native 编译 rebuild。manager 在 ABI 不匹配时会先核验并停止持久化 detached 进程，确认停止后才准备 runtime，失败则阻断。这些证据不表示能力 12 或十二项能力的统一验收已完成；命令和其余门槛见第 19.4 节。
+
 ## 19. 测试计划
 
 第 19.1–19.3 节描述最终需要具备的完整测试矩阵，不代表其中每一项已经完成。当前已经取得的证据单列在第 19.4 节。
@@ -687,17 +689,36 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 - 受控验收工程与 [Windows Electron E2E](../e2e-tests/system-plugins.spec.ts) 已覆盖：选择目录、展示主进程计算的精确 SHA-256、风险声明和依赖计划、确认复选框、完整插件 ID 匹配、用户确认；真实离线 `npm ci --ignore-scripts`、锁文件、本地 `file:` 纯 JS 依赖实体化、可变 runtime 加载、`pending-restart`、复用隔离 userData 重启；Main Node/文件系统/用户数据路径/raw Store/SQLite/环境变量/Electron/子进程/HTTP、Documents/Databases/Settings，以及使用宿主 API Key 向本地 OpenAI-compatible mock 发送任意 messages/tools/seed；app-lifetime service 的真实 Main RPC 往返；Renderer React/DOM/CSS、远程 HTTP/WebSocket frame、权限请求、导航、下载、独立 Node 特权窗口、停用清理，以及最终 `active` 状态。
 - 独立的 Windows Electron 生命周期验收已覆盖：首次安装不执行迁移、1.0.0 → 2.0.0 升级前执行 `migrate`、重启后切换到精确 Renderer revision、从 2.0.0 回滚到 1.0.0、3.0.0 Renderer 初始化失败后回退 1.0.0 并清理 Main 资源、卸载时立即清理 Renderer/CSS，以及下一次启动清除正常和失败 revision 的 artifact/runtime 与插件 data/log。
+- [native 专用 E2E](../e2e-tests/system-plugins-native.spec.ts) 于 2026-09-06 在 Windows x64 unpacked 应用中通过（51.3 秒）；实际进程为 Electron 35.7.5、`process.versions.modules = 133`、`app.isPackaged = true`。夹具从当前 Electron ABI 的 `better_sqlite3.node` 制作精确 artifact，确认后隔离探测 `.node`，重启后在插件可变 runtime 加载该二进制并执行真实 SQLite 查询；错误二进制被 native probe 拒绝，当前可用版本继续保持 active；插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚保留 SQLite 数据；卸载重启后清除两个正常 revision、一个失败 revision 的 artifact/runtime，以及插件 data/log。原始 artifact 的二进制 hash 保持不变，Windows packaged utility-process runtime smoke 也已通过。
+- 上述 native E2E 的 ABI 刷新使用 `simulated-stale-fingerprint`：将数据库中持久化的 ABI 元数据改为旧值，触发重新复制当前 ABI 的预编译 `.node`、删除旧 runtime 标记并再次探测，验证新指纹及 `runtime.compatibility-rebuilt` 审计。它没有更换 Electron 版本、使用不同 ABI 的二进制或执行 native 编译 rebuild；插件版本升级/回滚也不代表宿主应用或操作系统升级验收。
 - 针对性单元/集成测试已覆盖：macOS `mainAppService` 单例冲突；detached PID 复用拒绝、复合身份校验、停止升级、手动启动身份落盘、adoption 后停止再启动、安全模式停服和升级旧 revision 清理；同步服务启动失败回滚；rejected 启动 Promise 清理；已结束请求的 staging sweep；并发 artifact 发布排他占用且不覆盖竞争目标。
 - 依赖与 native 测试已覆盖：timeout/cancel 后等待进程树关闭、native runner 协作取消、全 runtime `.node` 扫描、扫描取消、单模块 timeout、总预算、ABI 变化后的重新探测，以及无依赖包也从可变 runtime 激活。
+- manager 的 ABI 不匹配恢复现在先核验 detached 的复合进程身份并等待停止，再替换可变 runtime，避免旧进程仍持有同 revision 的原生二进制；停止失败会阻断准备和激活，并记录失败。回归测试覆盖执行顺序、旧进程记录结束，以及停止失败时不调用 runtime preparer。
 - service RPC 测试已覆盖：闭合协议、危险原型键/大小/深度限制、并发、timeout、生命周期取消、未知方法、精确 revision、响应过滤、错误 launch token、本机端点隔离、真实 Electron Node 子进程 bootstrap、宿主端点关闭与重建后的同 PID 重连、Documents/Databases/Settings/AI 映射，以及不包含参数/返回值的 manager 审计。
 - Windows Electron 受控验收已验证 AI 流式 UTF-8/SSE、调用方取消、停用时取消未完成响应体、HTTP 429、无效 JSON 和非 JSON/raw response；从服务端观察到取消和停用后连接关闭。
 - Renderer 生命周期回归覆盖暂存资源不可见、发布时精确 runtime 就绪、提交确认前 crash marker 保持 armed、失败时先撤销 runtime 再异步清理，以及停用/卸载/销毁与激活并发。发布后的新注册立即生效；多个 UI 快照同步切换，异步用户清理不会阻塞其他插件的快照发布。
-- 当前 Windows E2E 没有覆盖 native module、pnpm/yarn、生命周期/build 脚本、剪贴板/菜单/托盘/外部程序、detached/OS 登录启动、真实 login item 或专属 preload；它不是 Windows 安装包 smoke，更不能替代 macOS/Linux 验证。
-- 发布前仍必须完成：Windows、macOS、Linux 打包态真实 native module 与登录启动项测试；真实系统登录/重启、应用升级/回滚和卸载残留验证；第 9 节十二项能力的统一验收矩阵。
+- 本轮类型检查及完整 594 项测试已通过，包含打包 smoke 对退出码与最终 JSON 结果联合判定的回归：退出码为 0 但结果缺失、损坏、started 或 failed 时不能判成功；超时终止后等待进程关闭再清理隔离 profile。开发态的原生插件、Full Trust 完整链路、升级回滚及 v2 iframe 共四项 E2E 也已通过；其中离线 npm 用例在沙箱内遇到 EPERM，单独在沙箱外复跑通过。
+- [三平台 CI](../.github/workflows/ci.yml) 已接入 packaged native 专用验收：Windows/macOS 直接运行，Linux 经 `xvfb-run --auto-servernum` 运行；当前只取得本机 Windows 的实际打包态结果，macOS/Linux CI 结果仍待执行确认。native spec 在成功或失败的 `finally` 中将 JSON 写入 `test-results/**/native-acceptance-evidence.json` 并作为文件附件保存，内容包括进程平台/架构/Electron/ABI、binary hash、SQLite 数据、完成阶段、失败阶段和清理错误；CI 以 `native-system-plugin-${{ matrix.os }}` 上传 `test-results/**`。这是新增的 native 专用夹具，不能作为同一个受控验收插件已完成十二项能力的证据。
+- 当前 Windows E2E 尚未覆盖 pnpm/yarn、生命周期/build 脚本、三平台 native 编译 rebuild、真实 Electron ABI 升级、剪贴板/菜单/托盘/外部程序、detached/OS 登录启动、真实 login item 或专属 preload；本次 unpacked 验收也不替代 NSIS 安装/卸载或 macOS/Linux 验证。
+- 发布前仍必须完成：macOS/Linux 实际打包态 native CI，三平台 native 编译 rebuild、真实 Electron ABI 升级与登录启动项测试；真实系统登录/重启、宿主应用升级/回滚和安装包卸载残留验证；第 9 节十二项能力的统一验收矩阵。ADR-0007 继续保持 `Accepted`。
+
+标准打包态验收入口如下；`KNOWBOOK_E2E_EXECUTABLE` 可指定已打包可执行文件，未指定时根据当前平台和架构查找 `release` 下的 unpacked 产物。显式路径缺失会报错，已打包启动不会追加仓库入口 `.`；每次测试使用隔离 userData，只有重启场景复用同一隔离目录。
+
+```sh
+npm run pack
+npm run test:packaged-runtime-smoke
+npm run test:packaged-system-plugins
+```
+
+本机 Windows 打包时，electron-builder 签名工具解压所需的符号链接权限不足，因此在已通过构建的基础上，最终用以下命令生成本地 unpacked 包后执行上述两个 smoke。该参数只用于本次命令，未修改发行配置；此次结果不包含正式签名工具链或 NSIS 安装验收。
+
+```powershell
+npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=false'
+```
 
 ## 20. 最终验收标准
 
-截至 2026-09-05，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。当前最明确的阻塞项是三平台打包态 native/login、真实系统登录/重启/卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
+截至 2026-09-06，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。Windows unpacked native 专用验收已通过；当前最明确的阻塞项是 macOS/Linux 实际打包态 CI、三平台 native 编译 rebuild/真实 Electron ABI 升级与 login、真实系统登录/重启/安装包卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
 
 ### 20.1 功能验收
 
