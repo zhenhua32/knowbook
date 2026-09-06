@@ -590,7 +590,7 @@ function executeNativeModuleProbe(input: NativeModuleProbeExecutionInput): Promi
       env: input.environment,
       shell: false,
       windowsHide: true,
-      detached: input.processTree,
+      detached: input.processTree && process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe']
     })
   } catch (error) {
@@ -779,7 +779,10 @@ function executeProcessTask(input: ProcessExecutionInput): Promise<number> {
       cwd: input.cwd,
       shell: false,
       windowsHide: true,
-      detached: input.processTree,
+      // POSIX needs a dedicated process group for group signals. Windows uses
+      // taskkill /T and must keep inherited pipes: detaching cmd.exe from the
+      // GUI host can discard stdout from npm and its compiler subprocesses.
+      detached: input.processTree && process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe']
     })
   } catch (error) {

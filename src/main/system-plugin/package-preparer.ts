@@ -181,6 +181,9 @@ export function createSystemPluginElectronRebuildCommand(
   return Object.freeze([
     packageManager,
     'rebuild',
+    // npm otherwise captures lifecycle output internally; the host's job log
+    // must receive compiler diagnostics even when the build succeeds.
+    ...(packageManager === 'npm' ? ['--foreground-scripts', '--loglevel=notice'] : []),
     '--runtime=electron',
     `--target=${electron}`,
     `--arch=${arch}`,

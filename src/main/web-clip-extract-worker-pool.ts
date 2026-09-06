@@ -1,8 +1,12 @@
 import type { ExtractedWebClip, WebClipExtractionInput } from './web-clipper'
 
+export type WebClipExtractionWorkerRequest =
+  | { id: number; input: WebClipExtractionInput }
+  | { type: 'shutdown' }
+
 export type WebClipExtractionWorkerLike = {
   on: (event: string, listener: (payload: unknown) => void) => unknown
-  postMessage: (message: { id: number; input: WebClipExtractionInput }) => void
+  postMessage: (message: WebClipExtractionWorkerRequest) => void
   terminate: () => Promise<unknown>
 }
 
@@ -22,6 +26,7 @@ const DEFAULT_EXTRACTION_TIMEOUT_MS = 30_000
 
 type WorkerPoolOptions = {
   timeoutMilliseconds?: number
+  shutdownTimeoutMilliseconds?: number
 }
 
 export class WebClipExtractionWorkerPool {
@@ -30,12 +35,16 @@ export class WebClipExtractionWorkerPool {
   private nextRequestId = 1
   private destroyed = false
   private readonly timeoutMilliseconds: number
+  private readonly shutdownTimeoutMilliseconds: number
+  private readonly exits = new WeakMap<WebClipExtractionWorkerLike, Promise<void>>()
+  private destruction: Promise<void> | null = null
 
   constructor(
     private readonly createWorker: WebClipExtractionWorkerFactory,
     options: WorkerPoolOptions = {}
   ) {
     this.timeoutMilliseconds = options.timeoutMilliseconds ?? DEFAULT_EXTRACTION_TIMEOUT_MS
+    this.shutdownTimeoutMilliseconds = options.shutdownTimeoutMilliseconds ?? 10_000
     this.worker = this.spawnWorker()
   }
 
@@ -66,31 +75,54 @@ export class WebClipExtractionWorkerPool {
     })
   )
 
-  async destroy(): Promise<void> {
-    if (this.destroyed) {
-      return
-    }
+  destroy(): Promise<void> {
+    this.destruction ??= this.destroyOnce()
+    return this.destruction
+  }
+
+  private async destroyOnce(): Promise<void> {
     this.destroyed = true
     this.failAll(new Error('Web clip extraction worker was shut down.'))
     const worker = this.worker
     this.worker = null
     if (worker) {
+      // A worker may still be importing jsdom when a short-lived Electron
+      // probe quits. Let its module loader finish and close the port itself;
+      // terminating during a native module-resolution call can crash V8.
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        worker.postMessage({ type: 'shutdown' })
+        const exited = await Promise.race([
+          this.exits.get(worker)!.then(() => true),
+          new Promise<false>((resolve) => {
+            timeout = setTimeout(() => resolve(false), this.shutdownTimeoutMilliseconds)
+          })
+        ])
+        if (exited) return
+      } catch {
+        // A crashed or unresponsive worker still needs bounded cleanup.
+      } finally {
+        if (timeout) clearTimeout(timeout)
+      }
       await worker.terminate()
     }
   }
 
   private spawnWorker(): WebClipExtractionWorkerLike {
     const worker = this.createWorker()
+    this.exits.set(worker, new Promise<void>((resolve) => worker.on('exit', () => resolve())))
     worker.on('message', (response: unknown) => {
+      if (this.worker !== worker) return
       this.handleWorkerMessage(response as WebClipExtractionWorkerResponse)
     })
     worker.on('error', (error: unknown) => {
+      if (this.worker !== worker) return
       this.handleWorkerDeath(
         error instanceof Error ? error : new Error('Web clip extraction worker crashed.')
       )
     })
     worker.on('exit', (code: unknown) => {
-      if (!this.destroyed) {
+      if (!this.destroyed && this.worker === worker) {
         this.handleWorkerDeath(
           new Error(`Web clip extraction worker exited unexpectedly (code ${String(code)}).`)
         )

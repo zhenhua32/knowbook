@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
 import { requestAiChatCompletion } from '../src/main/ai-service.ts'
-import { WebClipExtractionWorkerPool } from '../src/main/web-clip-extract-worker-pool.ts'
+import { WebClipExtractionWorkerPool, type WebClipExtractionWorkerRequest } from '../src/main/web-clip-extract-worker-pool.ts'
 import { isSameOriginNavigation } from '../src/main/window-navigation.ts'
 
 const mainIndexSource = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8')
@@ -18,8 +18,15 @@ type FakeWorkerEvent =
 class FakeWorker extends EventEmitter {
   sent: Array<{ id: number; input: unknown }> = []
   terminated = false
+  shutdowns = 0
+  autoExit = true
 
-  postMessage(message: { id: number; input: unknown }): void {
+  postMessage(message: WebClipExtractionWorkerRequest): void {
+    if ('type' in message) {
+      this.shutdowns += 1
+      if (this.autoExit) queueMicrotask(() => this.emit('exit', 0))
+      return
+    }
     this.sent.push(message)
   }
 
@@ -228,6 +235,8 @@ test('extraction pool fails pending work and respawns after a timeout wedge', as
   const pending = pool.run(clipInput)
   await new Promise((resolve) => setTimeout(resolve, 0))
   assert.equal(workers.length, 2, 'the next run must use a freshly spawned worker')
+  workers[0]?.emit('exit', 1)
+  assert.equal(workers[1]?.terminated, false, 'an old worker exit must not kill its replacement')
   workers[1]?.emitMessage({ id: workers[1]?.sent[0]?.id, ok: true, clip: clipResult })
   assert.deepEqual(await pending, clipResult)
 
@@ -243,5 +252,34 @@ test('extraction pool destroy rejects later runs exactly once', async () => {
 
   await assert.rejects(pool.run(clipInput), /unavailable/)
   assert.equal(workers.length, 1)
-  assert.equal(workers[0]?.terminated, true)
+  assert.equal(workers[0]?.terminated, false)
+  assert.equal(workers[0]?.shutdowns, 1)
+})
+
+test('extraction pool shares shutdown and waits for the worker exit acknowledgement', async () => {
+  const { workers, factory } = createFactory()
+  const pool = new WebClipExtractionWorkerPool(factory)
+  workers[0].autoExit = false
+  const pending = pool.run(clipInput)
+  const rejected = assert.rejects(pending, /shut down/)
+  const first = pool.destroy()
+  assert.equal(pool.destroy(), first)
+  let finished = false
+  void first.then(() => { finished = true })
+  await rejected
+  assert.equal(finished, false)
+  assert.equal(workers[0].terminated, false)
+  workers[0].emit('exit', 0)
+  await first
+  assert.equal(finished, true)
+  assert.equal(workers[0].shutdowns, 1)
+})
+
+test('extraction pool force-terminates a worker that does not acknowledge shutdown', async () => {
+  const { workers, factory } = createFactory()
+  const pool = new WebClipExtractionWorkerPool(factory, { shutdownTimeoutMilliseconds: 5 })
+  workers[0].autoExit = false
+  await pool.destroy()
+  assert.equal(workers[0].terminated, true)
+  assert.equal(workers[0].shutdowns, 1)
 })

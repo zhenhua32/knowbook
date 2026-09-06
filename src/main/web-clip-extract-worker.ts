@@ -1,14 +1,9 @@
 import { parentPort } from 'node:worker_threads'
 import {
   extractWebClip,
-  type ExtractedWebClip,
-  type WebClipExtractionInput
+  type ExtractedWebClip
 } from './web-clipper'
-
-type WebClipExtractionWorkerRequest = {
-  id: number
-  input: WebClipExtractionInput
-}
+import type { WebClipExtractionWorkerRequest } from './web-clip-extract-worker-pool'
 
 type WebClipExtractionWorkerResponse =
   | { id: number; ok: true; clip: ExtractedWebClip }
@@ -16,6 +11,11 @@ type WebClipExtractionWorkerResponse =
 
 const port = parentPort
 port?.on('message', (request: WebClipExtractionWorkerRequest) => {
+  if ('type' in request && request.type === 'shutdown') {
+    port.close()
+    return
+  }
+  if (!('id' in request)) return
   try {
     const { input } = request
     const clip = extractWebClip(input.html, input.sourceUrl, input.overrides)

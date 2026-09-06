@@ -294,7 +294,10 @@ test('native rebuild command uses the manifest package manager and pins the Elec
       arch: 'arm64',
       platform: 'darwin'
     })
-    assert.deepEqual(command, [packageManager, ...suffix])
+    assert.deepEqual(command, [packageManager, suffix[0],
+      ...(packageManager === 'npm' ? ['--foreground-scripts', '--loglevel=notice'] : []),
+      ...suffix.slice(1)
+    ])
     assert.equal(Object.isFrozen(command), true)
   }
 
