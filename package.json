@@ -31,6 +31,8 @@
     "test:plugin-security": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test tests/main-plugin-platform-quickjs-realm.test.ts tests/main-plugin-platform-capability-broker.test.ts tests/main-plugin-isolation.test.ts",
     "test:packaged-runtime-smoke": "node scripts/packaged-runtime-smoke.mjs",
     "test:packaged-system-plugins": "node scripts/packaged-system-plugin-smoke.mjs",
+    "prepare:host-upgrade": "node scripts/prepare-host-upgrade.mjs",
+    "test:packaged-host-upgrade": "node scripts/packaged-host-upgrade.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "postinstall": "electron-builder install-app-deps"
   },

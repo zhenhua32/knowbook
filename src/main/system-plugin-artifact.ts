@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { constants, type Stats } from 'node:fs'
+import { constants, type BigIntStats } from 'node:fs'
 import {
   copyFile,
   lstat,
@@ -12,6 +12,7 @@ import {
 } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import semver from 'semver'
+import { isSameSystemPluginArtifactFile } from './system-plugin-file-identity'
 import {
   SYSTEM_PLUGIN_RISK_DECLARATIONS,
   SYSTEM_PLUGIN_V3_SCHEMA_VERSION,
@@ -100,7 +101,8 @@ export interface PublishedSystemPluginArtifact extends SystemPluginArtifactDescr
 type CollectedArtifactFile = {
   path: string
   absolutePath: string
-  stat: Stats
+  stat: BigIntStats
+  size: number
 }
 
 type CollectedArtifact = {
@@ -177,7 +179,7 @@ export async function inspectSystemPluginArtifact(
   if (!manifestFile) {
     throw new Error(`System plugin artifact must contain ${MANIFEST_FILE} at its root.`)
   }
-  if (manifestFile.stat.size > MAX_MANIFEST_BYTES) {
+  if (manifestFile.size > MAX_MANIFEST_BYTES) {
     throw new Error(`System plugin manifest exceeds ${MAX_MANIFEST_BYTES} bytes.`)
   }
 
@@ -526,7 +528,7 @@ async function collectArtifactFiles(
         throw new Error(`System plugin artifact paths differ only by case: ${collision} and ${artifactPath}`)
       }
       caseFoldedPaths.set(folded, artifactPath)
-      const entryStat = await lstat(absolutePath)
+      const entryStat = await lstat(absolutePath, { bigint: true })
       if (entryStat.isSymbolicLink()) {
         throw new Error(`System plugin artifact cannot contain symbolic links: ${artifactPath}`)
       }
@@ -542,11 +544,12 @@ async function collectArtifactFiles(
       if (!entryStat.isFile()) {
         throw new Error(`System plugin artifact contains an unsupported file type: ${artifactPath}`)
       }
-      if (!Number.isSafeInteger(entryStat.size) || entryStat.size < 0 || entryStat.size > limits.maxFileBytes) {
+      const fileSize = Number(entryStat.size)
+      if (!Number.isSafeInteger(fileSize) || fileSize < 0 || fileSize > limits.maxFileBytes) {
         throw new Error(`System plugin artifact file exceeds the ${limits.maxFileBytes}-byte limit: ${artifactPath}`)
       }
 
-      totalBytes += entryStat.size
+      totalBytes += fileSize
       if (!Number.isSafeInteger(totalBytes) || totalBytes > limits.maxTotalBytes) {
         throw new Error(`System plugin artifact exceeds the ${limits.maxTotalBytes}-byte total limit.`)
       }
@@ -555,7 +558,7 @@ async function collectArtifactFiles(
         throw new Error(`System plugin artifact file resolves outside its root: ${artifactPath}`)
       }
 
-      files.push({ path: artifactPath, absolutePath: realFile, stat: entryStat })
+      files.push({ path: artifactPath, absolutePath: realFile, stat: entryStat, size: fileSize })
     }
   }
 
@@ -578,14 +581,14 @@ async function hashCollectedFiles(collected: CollectedArtifact): Promise<{
     const pathBytes = Buffer.from(file.path, 'utf8')
     artifactHash.update(frameLength(pathBytes.byteLength))
     artifactHash.update(pathBytes)
-    artifactHash.update(frameLength(file.stat.size))
+    artifactHash.update(frameLength(file.size))
 
     const fileHash = createHash('sha256')
     const handle = await open(file.absolutePath, 'r')
     let bytesReadTotal = 0
     try {
-      const openedStat = await handle.stat()
-      assertUnchangedRegularFile(file, openedStat)
+      const openedStat = await handle.stat({ bigint: true })
+      assertUnchangedRegularFile(file, openedStat, true)
       const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES)
       while (true) {
         const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, null)
@@ -601,18 +604,18 @@ async function hashCollectedFiles(collected: CollectedArtifact): Promise<{
       await handle.close()
     }
 
-    if (bytesReadTotal !== file.stat.size) {
+    if (bytesReadTotal !== file.size) {
       throw new Error(`System plugin artifact changed while hashing: ${file.path}`)
     }
-    const afterStat = await lstat(file.absolutePath)
+    const afterStat = await lstat(file.absolutePath, { bigint: true })
     assertUnchangedRegularFile(file, afterStat)
     const currentRealPath = await realpath(file.absolutePath)
     if (!isPathInsideRoot(currentRealPath, collected.realRoot)) {
       throw new Error(`System plugin artifact file resolves outside its root: ${file.path}`)
     }
 
-    files.push({ path: file.path, size: file.stat.size, sha256: fileHash.digest('hex') })
-    sizeBytes += file.stat.size
+    files.push({ path: file.path, size: file.size, sha256: fileHash.digest('hex') })
+    sizeBytes += file.size
   }
 
   return { artifactSha256: artifactHash.digest('hex'), files, sizeBytes }
@@ -623,7 +626,7 @@ async function copyCollectedFile(
   sourceRoot: string,
   destinationRoot: string
 ): Promise<void> {
-  const sourceStat = await lstat(file.absolutePath)
+  const sourceStat = await lstat(file.absolutePath, { bigint: true })
   assertUnchangedRegularFile(file, sourceStat)
   const realSource = await realpath(file.absolutePath)
   if (!isPathInsideRoot(realSource, sourceRoot)) {
@@ -637,24 +640,16 @@ async function copyCollectedFile(
   await mkdir(dirname(destination), { recursive: true })
   await copyFile(realSource, destination, constants.COPYFILE_EXCL)
 
-  const sourceAfter = await lstat(file.absolutePath)
+  const sourceAfter = await lstat(file.absolutePath, { bigint: true })
   assertUnchangedRegularFile(file, sourceAfter)
-  const destinationStat = await lstat(destination)
+  const destinationStat = await lstat(destination, { bigint: true })
   if (!destinationStat.isFile() || destinationStat.isSymbolicLink() || destinationStat.size !== file.stat.size) {
     throw new Error(`System plugin artifact changed while staging: ${file.path}`)
   }
 }
 
-function assertUnchangedRegularFile(file: CollectedArtifactFile, current: Stats): void {
-  if (
-    !current.isFile()
-    || current.isSymbolicLink()
-    || (current.dev !== 0 && file.stat.dev !== 0 && current.dev !== file.stat.dev)
-    || (current.ino !== 0 && file.stat.ino !== 0 && current.ino !== file.stat.ino)
-    || current.size !== file.stat.size
-    || current.mtimeMs !== file.stat.mtimeMs
-    || current.ctimeMs !== file.stat.ctimeMs
-  ) {
+function assertUnchangedRegularFile(file: CollectedArtifactFile, current: BigIntStats, fromHandle = false): void {
+  if (!isSameSystemPluginArtifactFile(file.stat, current, process.platform, fromHandle)) {
     throw new Error(`System plugin artifact changed while it was being processed: ${file.path}`)
   }
 }

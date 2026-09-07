@@ -18,6 +18,42 @@ import {
   stageSystemPluginArtifact
 } from '../src/main/system-plugin-artifact.ts'
 import { SYSTEM_PLUGIN_RISK_DECLARATIONS } from '../src/shared/system-plugin.ts'
+import { isSameSystemPluginArtifactFile } from '../src/main/system-plugin-file-identity.ts'
+
+const fileIdentity = {
+  // Observed from the same unchanged file in packaged Electron 36 on Windows.
+  dev: 2189921435553221625n, ino: 39406496739752725n, size: 14n,
+  mtimeNs: 1788791670014933800n, ctimeNs: 1788791670014933800n,
+  isFile: () => true, isSymbolicLink: () => false
+}
+
+test('artifact identity accepts Windows path/handle volume serial width differences', () => {
+  const handle = { ...fileIdentity, dev: 1680460793n }
+  assert.equal(isSameSystemPluginArtifactFile(fileIdentity, handle, 'win32', true), true)
+  assert.equal(isSameSystemPluginArtifactFile({ ...fileIdentity, dev: 0n }, handle, 'win32'), true)
+  assert.equal(isSameSystemPluginArtifactFile(fileIdentity, handle, 'linux', true), false)
+  assert.equal(isSameSystemPluginArtifactFile(fileIdentity, handle, 'win32'), false)
+})
+
+test('artifact identity still rejects real volume changes and unsafe file replacements', () => {
+  const changes = [
+    { dev: 1680460794n }, { size: 15n }, { isFile: () => false }, { isSymbolicLink: () => true }
+  ]
+  for (const change of changes) {
+    assert.equal(isSameSystemPluginArtifactFile(fileIdentity, { ...fileIdentity, ...change }, 'win32', true), false)
+  }
+})
+
+test('artifact identity preserves inode and timestamp differences beyond Number precision', () => {
+  assert.equal(Number(fileIdentity.ino), Number(fileIdentity.ino + 1n))
+  for (const change of [
+    { ino: fileIdentity.ino + 1n },
+    { mtimeNs: fileIdentity.mtimeNs + 1n },
+    { ctimeNs: fileIdentity.ctimeNs + 1n }
+  ]) {
+    assert.equal(isSameSystemPluginArtifactFile(fileIdentity, { ...fileIdentity, ...change }, 'win32'), false)
+  }
+})
 
 test('v3 manifest normalization accepts the closed Full Trust contract', () => {
   const normalized = normalizeSystemPluginV3Manifest(validManifest())

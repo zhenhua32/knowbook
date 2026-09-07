@@ -39,12 +39,9 @@ jobs:
         run: xvfb-run --auto-servernum npx playwright test --grep @electron
 
   plugin-runtime-security:
-    name: Plugin runtime security (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: Plugin runtime security (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,26 +66,22 @@ jobs:
       - name: Build unpacked application
         run: npm run pack
 
-      - name: Run packaged Electron utility-process probe (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum npm run test:packaged-runtime-smoke
-
       - name: Run packaged Electron utility-process probe
-        if: runner.os != 'Linux'
         run: npm run test:packaged-runtime-smoke
 
-      - name: Run packaged native System Plugin acceptance (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run --auto-servernum npm run test:packaged-system-plugins
-
       - name: Run packaged native System Plugin acceptance
-        if: runner.os != 'Linux'
         run: npm run test:packaged-system-plugins
+
+      - name: Prepare isolated Electron host upgrade fixture
+        run: npm run prepare:host-upgrade
+
+      - name: Run real host ABI upgrade and rollback acceptance
+        run: npm run test:packaged-host-upgrade
 
       - name: Upload native System Plugin acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-system-plugin-${{ matrix.os }}
+          name: native-system-plugin-windows
           path: test-results/**
           if-no-files-found: ignore

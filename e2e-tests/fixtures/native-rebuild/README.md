@@ -19,6 +19,17 @@ npm run pack
 npm run test:packaged-system-plugins
 ```
 
-`KNOWBOOK_E2E_EXECUTABLE` 可指定打包应用。Python 不在 PATH 时可设置 `PYTHON` 或 `NODE_GYP_FORCE_PYTHON` 为本机 Python 的绝对路径。用例以 `@native-build` 标记，普通 `@electron` 回归不会要求额外的源码编译工具；三平台打包 CI 显式包含此用例。
+`KNOWBOOK_E2E_EXECUTABLE` 可指定打包应用。Python 不在 PATH 时可设置 `PYTHON` 或 `NODE_GYP_FORCE_PYTHON` 为本机 Python 的绝对路径。用例以 `@native-build` 标记，普通 `@electron` 回归不会要求额外的源码编译工具；Windows 打包 CI 显式包含此用例。当前验收范围不要求 macOS/Linux 实测。
 
-JSON 证据和编译日志写入 `test-results`，测试结束会清理临时源码和用户目录。本用例验证 Node → Electron 的真实 ABI 重编译；更换 KnowBook/Electron 宿主版本后的升级恢复仍需独立验收。
+JSON 证据和编译日志写入 `test-results`，测试结束会清理临时源码和用户目录。本用例验证 Node → Electron 的真实 ABI 重编译。
+
+另有 `e2e-tests/system-plugins-host-upgrade.spec.ts` 复用本源码，验证同一已确认插件在不同 Electron 宿主之间升级和回退：
+
+```sh
+npm run prepare:host-upgrade
+npm run test:packaged-host-upgrade
+```
+
+准备脚本在独立临时目录安装应用依赖并针对 Electron 36.0.0 打包，输出至 `release/host-upgrade`，不会重建仓库或基线包的原生依赖；运行前需已有基线 unpacked 包及最新 `out`。`KNOWBOOK_E2E_UPGRADE_ELECTRON_VERSION` 可指定其他完整版本，`KNOWBOOK_E2E_UPGRADE_EXECUTABLE` 可复用现有目标包。测试要求新宿主具有更高主版本及不同 ABI，相同版本/ABI 会明确失败。
+
+宿主测试以 `@host-upgrade` 标记，复用同一临时 userData 验证自动 rebuild、原确认复用、数据保留、artifact 不变、回退重编译、相同宿主再次启动不重复编译及卸载清理。JSON 和编译日志保存在 `test-results/host-upgrade`。此验收更换的是真实 Electron 可执行文件，不涉及自动更新器或 NSIS 安装。
