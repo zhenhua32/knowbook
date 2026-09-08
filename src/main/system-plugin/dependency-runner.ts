@@ -343,6 +343,7 @@ export async function executeSystemPluginDependencyTasks(
     if (options.signal?.aborted) {
       const error = cancellationError(task, options.signal.reason)
       emitStatus(options, taskIndex, task, 'pending', 'cancelled', error)
+      cancelRemainingDependencyTasks(options, taskIndex + 1, error)
       throw error
     }
 
@@ -380,11 +381,24 @@ export async function executeSystemPluginDependencyTasks(
         ? 'cancelled'
         : 'failed'
       emitStatus(options, taskIndex, task, 'running', status, error)
+      cancelRemainingDependencyTasks(options, taskIndex + 1, error)
       throw error
     }
   }
 
   return Object.freeze({ cwd, tasks: Object.freeze(results) })
+}
+
+function cancelRemainingDependencyTasks(
+  options: ExecuteSystemPluginDependencyTasksOptions,
+  fromIndex: number,
+  cause: Error
+): void {
+  for (let index = fromIndex; index < options.tasks.length; index += 1) {
+    const task = options.tasks[index]
+    emitStatus(options, index, task, 'pending', 'cancelled',
+      new SystemPluginDependencyCancelledError(task, { cause }))
+  }
 }
 
 /**

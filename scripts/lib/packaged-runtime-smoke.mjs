@@ -75,10 +75,17 @@ export async function runPackagedRuntimeSmoke({
       let timedOut = false
       let spawnError
       let killTimeout
+      let exitObserved = null
+      let deadlineState = null
+      child.once('exit', (code, signal) => { exitObserved = { code, signal } })
       const capture = (chunk) => { output = (output + chunk.toString()).slice(-8_000) }
       child.stdout.on('data', capture)
       child.stderr.on('data', capture)
       const timeout = setTimeout(() => {
+        deadlineState = {
+          pid: child.pid, exitObserved,
+          stdoutEnded: child.stdout.readableEnded, stderrEnded: child.stderr.readableEnded
+        }
         timedOut = true
         // Wait for close before deleting files; termination is not synchronous.
         child.kill('SIGKILL')
@@ -102,7 +109,8 @@ export async function runPackagedRuntimeSmoke({
             : timedOut
               ? 'timed out'
               : `exited with code ${code}${signal ? ` (${signal})` : ''}`
-          reject(new Error(`Packaged runtime smoke ${reason}. Result: ${diagnostic}.\n${output}`))
+          const lifecycle = deadlineState ? ` Process state at deadline: ${JSON.stringify(deadlineState)}.` : ''
+          reject(new Error(`Packaged runtime smoke ${reason}.${lifecycle} Result: ${diagnostic}.\n${output}`))
           return
         }
         resolve_({ output, result: result.value })

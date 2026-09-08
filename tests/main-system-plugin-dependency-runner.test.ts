@@ -188,6 +188,7 @@ test('an injected native rebuild runner receives cancellation context and can st
 
 test('a non-zero process failure exposes its exit code and prevents subsequent tasks', async () => {
   const spawnCalls: SpawnCall[] = []
+  const statuses: SystemPluginDependencyStatusEvent[] = []
   const spawn = createFakeSpawn(spawnCalls, () => {
     const child = new FakeChildProcess(901)
     queueMicrotask(() => child.emit('close', 7, null))
@@ -204,7 +205,8 @@ test('a non-zero process failure exposes its exit code and prevents subsequent t
   await assert.rejects(executeSystemPluginDependencyTasks({
     rootDirectory: './artifact',
     tasks,
-    spawn
+    spawn,
+    onStatus: (event) => statuses.push(event)
   }), (error: unknown) => {
     assert.ok(error instanceof SystemPluginDependencyExecutionError)
     assert.equal(error.exitCode, 7)
@@ -212,6 +214,9 @@ test('a non-zero process failure exposes its exit code and prevents subsequent t
     return true
   })
   assert.equal(spawnCalls.length, 1)
+  assert.deepEqual(statuses.map((event) => [event.task.kind, event.status]), [
+    ['install', 'running'], ['install', 'failed'], ['build', 'cancelled']
+  ])
 })
 
 test('external cancellation terminates the active process and reports cancelled state', async () => {
@@ -286,15 +291,42 @@ test('a pre-cancelled dependency execution never spawns a process', async () => 
   const controller = new AbortController()
   controller.abort(new Error('cancelled before execution'))
   const calls: SpawnCall[] = []
+  const statuses: SystemPluginDependencyStatusEvent[] = []
 
   await assert.rejects(executeSystemPluginDependencyTasks({
     rootDirectory: './artifact',
-    tasks: createSystemPluginDependencyTasks(basePlan()),
+    tasks: createSystemPluginDependencyTasks({ ...basePlan(), buildCommand: ['node', 'build.cjs'] }),
     spawn: createFakeSpawn(calls, () => succeedingChild(904)),
-    signal: controller.signal
+    signal: controller.signal,
+    onStatus: (event) => statuses.push(event)
   }), SystemPluginDependencyCancelledError)
 
   assert.equal(calls.length, 0)
+  assert.deepEqual(statuses.map((event) => [event.task.kind, event.status]), [
+    ['install', 'cancelled'], ['build', 'cancelled']
+  ])
+})
+
+test('a build failure retains the successful install and cancels pending native rebuild', async () => {
+  const calls: SpawnCall[] = []
+  const statuses: SystemPluginDependencyStatusEvent[] = []
+  const tasks = createSystemPluginDependencyTasks({
+    ...basePlan(), buildCommand: ['node', 'build.cjs'], rebuildNativeModules: true
+  }, { nativeRebuild: { type: 'command', command: ['node', 'rebuild.cjs'] } })
+  await assert.rejects(executeSystemPluginDependencyTasks({
+    rootDirectory: './artifact', tasks,
+    spawn: createFakeSpawn(calls, () => {
+      const child = new FakeChildProcess(905 + calls.length)
+      queueMicrotask(() => child.emit('close', calls.length === 1 ? 0 : 23, null))
+      return child
+    }),
+    onStatus: (event) => statuses.push(event)
+  }), SystemPluginDependencyExecutionError)
+  assert.equal(calls.length, 2)
+  assert.deepEqual(statuses.map((event) => [event.task.kind, event.status]), [
+    ['install', 'running'], ['install', 'succeeded'], ['build', 'running'],
+    ['build', 'failed'], ['native-rebuild', 'cancelled']
+  ])
 })
 
 test('native runner cancellation waits for abort cleanup before returning', async () => {

@@ -1,0 +1,13 @@
+{
+  "name": "knowbook-dependency-scripts-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "preinstall": "node lifecycle.cjs preinstall",
+    "install": "node lifecycle.cjs install",
+    "postinstall": "node lifecycle.cjs postinstall",
+    "prebuild": "node lifecycle.cjs prebuild",
+    "build": "node build.cjs",
+    "postbuild": "node lifecycle.cjs postbuild"
+  }
+}

@@ -69,7 +69,9 @@ test('packaged runtime smoke requires a passed result and a successful exit and 
   const profiles = join(root, 'profiles')
   mkdirSync(profiles)
   writeFileSync(fixture, fixtureSource)
-  const run = (mode: string, timeoutMs = 10_000) => runPackagedRuntimeSmoke({
+  // Result/exit-code cases use the real smoke budget. A separate hung-process
+  // case below supplies a short deadline to verify timeout and termination.
+  const run = (mode: string, timeoutMs?: number) => runPackagedRuntimeSmoke({
     executable: process.execPath,
     args: [fixture],
     env: { ELECTRON_RUN_AS_NODE: '1', SMOKE_TEST_MODE: mode, SMOKE_PID_PATH: join(root, 'child.pid') },
@@ -96,7 +98,11 @@ test('packaged runtime smoke requires a passed result and a successful exit and 
       })
     }
     await t.test('a hung probe is killed before its profile is deleted, even with a passed result', async () => {
-      await assert.rejects(run('timeout', 4_000), /timed out/)
+      await assert.rejects(run('timeout', 4_000), (error: Error) => {
+        assert.match(error.message, /timed out/)
+        assert.match(error.message, /Process state at deadline/)
+        return true
+      })
       const pid = Number(readFileSync(join(root, 'child.pid'), 'utf8'))
       assert.throws(() => process.kill(pid, 0), /ESRCH/)
       assert.deepEqual(readdirSync(profiles), [])
