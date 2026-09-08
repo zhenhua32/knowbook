@@ -551,6 +551,11 @@ export function PluginsSection({
                 || serviceRun?.status === 'ready'
                 || serviceRun?.status === 'stopping'
               const osPersistence = plugin.osPersistence
+              // The database record id survives removal and a new request.
+              // A fresh review must start with empty acknowledgement controls.
+              const osPersistenceReviewKey = osPersistence
+                ? JSON.stringify([osPersistence.id, osPersistence.revisionHash, osPersistence.updatedAt])
+                : ''
               const canRequestOsPersistence = plugin.status === 'active'
                 && serviceRun?.component === 'detached'
                 && plugin.riskDeclarations.includes('os-persistence')
@@ -593,10 +598,10 @@ export function PluginsSection({
                         <>
                           <label className="toggle-row system-plugin-acknowledgement">
                             <input
-                              checked={Boolean(osPersistenceAcknowledgements[osPersistence.id])}
+                              checked={Boolean(osPersistenceAcknowledgements[osPersistenceReviewKey])}
                               onChange={(event) => setOsPersistenceAcknowledgements((current) => ({
                                 ...current,
-                                [osPersistence.id]: event.target.checked
+                                [osPersistenceReviewKey]: event.target.checked
                               }))}
                               type="checkbox"
                             />
@@ -610,18 +615,18 @@ export function PluginsSection({
                               autoComplete="off"
                               onChange={(event) => setOsPersistenceIdConfirmations((current) => ({
                                 ...current,
-                                [osPersistence.id]: event.target.value
+                                [osPersistenceReviewKey]: event.target.value
                               }))}
                               spellCheck={false}
-                              value={osPersistenceIdConfirmations[osPersistence.id] ?? ''}
+                              value={osPersistenceIdConfirmations[osPersistenceReviewKey] ?? ''}
                             />
                           </label>
                           <div className="plugin-item-actions">
                             <button
                               className="danger-button"
                               disabled={busy
-                                || !osPersistenceAcknowledgements[osPersistence.id]
-                                || osPersistenceIdConfirmations[osPersistence.id] !== plugin.pluginId}
+                                || !osPersistenceAcknowledgements[osPersistenceReviewKey]
+                                || osPersistenceIdConfirmations[osPersistenceReviewKey] !== plugin.pluginId}
                               onClick={() => onResolveSystemPluginOsPersistence(plugin, 'confirm', true)}
                               type="button"
                             >

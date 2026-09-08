@@ -33,6 +33,7 @@
     "test:packaged-system-plugins": "node scripts/packaged-system-plugin-smoke.mjs",
     "prepare:host-upgrade": "node scripts/prepare-host-upgrade.mjs",
     "test:packaged-host-upgrade": "node scripts/packaged-host-upgrade.mjs",
+    "test:packaged-windows-startup": "node scripts/packaged-windows-startup.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "postinstall": "electron-builder install-app-deps"
   },

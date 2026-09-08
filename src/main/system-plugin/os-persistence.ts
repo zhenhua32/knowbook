@@ -7,6 +7,7 @@ import {
 } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
+import { formatWindowsLoginCommand, quoteWindowsLoginArgument, readWindowsLoginItemRegistryValues, type WindowsLoginItemRegistryValues } from './windows-login-command'
 
 export const FULL_TRUST_OS_PERSISTENCE_DESCRIPTOR_VERSION = 1 as const
 
@@ -125,6 +126,7 @@ export interface FullTrustElectronLoginItemObservation {
   status: string | null
   executableWillLaunchAtLogin: boolean | null
   launchItems: FullTrustElectronLoginItemLaunchItem[]
+  windowsRunValues?: WindowsLoginItemRegistryValues
 }
 
 export interface FullTrustLinuxAutostartObservation {
@@ -200,6 +202,7 @@ export interface FullTrustElectronLoginItemAdapterOptions {
   platform: 'win32' | 'darwin'
   app: FullTrustElectronLoginItemApplication
   now?: () => string
+  readWindowsRunValues?: (serviceId: string) => Promise<WindowsLoginItemRegistryValues>
 }
 
 export interface FullTrustLinuxPersistenceFileSystem {
@@ -268,11 +271,13 @@ implements FullTrustOsPersistenceAdapter {
 
   private readonly app: FullTrustElectronLoginItemApplication
   private readonly now: () => string
+  private readonly readWindowsRunValues: (serviceId: string) => Promise<WindowsLoginItemRegistryValues>
 
   constructor(options: FullTrustElectronLoginItemAdapterOptions) {
     this.platform = options.platform
     this.app = options.app
     this.now = options.now ?? defaultNow
+    this.readWindowsRunValues = options.readWindowsRunValues ?? readWindowsLoginItemRegistryValues
   }
 
   describe(
@@ -309,7 +314,7 @@ implements FullTrustOsPersistenceAdapter {
     }
 
     this.app.setLoginItemSettings(cloneLoginItemSettings(
-      descriptor.registration.settings
+      descriptor.registration.settings, this.platform
     ))
     const after = await this.query(descriptor)
     if (
@@ -331,11 +336,15 @@ implements FullTrustOsPersistenceAdapter {
   ): Promise<FullTrustOsPersistenceQueryResult> {
     assertElectronDescriptor(descriptor, this.platform)
     const raw = this.app.getLoginItemSettings(cloneLoginItemQuery(
-      descriptor.registration.query
+      descriptor.registration.query, this.platform
     ))
     const observed = normalizeElectronObservation(raw)
+    const windowsRunValues = this.platform === 'win32'
+      ? await this.readWindowsRunValues(descriptor.serviceId)
+      : null
+    if (windowsRunValues) observed.windowsRunValues = windowsRunValues
     const status = this.platform === 'win32'
-      ? queryWindowsLoginItemStatus(descriptor, raw)
+      ? queryWindowsLoginItemStatus(descriptor, raw, windowsRunValues!)
       : queryMacLoginItemStatus(raw)
     const exact = status === 'registered'
       || status === 'requires-approval'
@@ -359,7 +368,7 @@ implements FullTrustOsPersistenceAdapter {
     }
 
     this.app.setLoginItemSettings(cloneLoginItemSettings(
-      descriptor.cleanup.settings
+      descriptor.cleanup.settings, this.platform
     ))
     const after = await this.query(descriptor)
     if (after.status !== 'absent') {
@@ -840,21 +849,21 @@ function assertDescriptorBase(
 
 function queryWindowsLoginItemStatus(
   descriptor: FullTrustElectronLoginItemDescriptor,
-  raw: FullTrustElectronLoginItemState
+  raw: FullTrustElectronLoginItemState,
+  registry: WindowsLoginItemRegistryValues
 ): FullTrustOsPersistenceStatus {
-  if (Array.isArray(raw.launchItems)) {
-    const matchingName = raw.launchItems.filter(
-      (item) => item.name === descriptor.serviceId
-    )
-    const exact = matchingName.find((item) => (
-      windowsPathsEqual(item.path, descriptor.command.executable)
-      && arraysEqual(item.args, descriptor.command.args)
-    ))
-    if (exact) return exact.enabled === false ? 'disabled' : 'registered'
-    if (matchingName.length > 0 || raw.openAtLogin) return 'mismatch'
-    return 'absent'
-  }
-  return raw.openAtLogin ? 'registered' : 'absent'
+  // A same-name machine entry is not owned by this per-user adapter. Do not
+  // replace another program hidden by Electron's executable-filtered listing.
+  if (registry.machine !== null) return 'mismatch'
+  if (registry.user === null) return 'absent'
+  if (registry.user !== formatWindowsLoginCommand(descriptor.command)) return 'mismatch'
+  const exact = raw.launchItems?.find((item) => (
+    item.name === descriptor.serviceId
+    && item.scope === 'user'
+    && windowsPathsEqual(item.path, descriptor.command.executable)
+  ))
+  if (exact?.enabled === false) return 'disabled'
+  return exact?.enabled === true ? 'registered' : 'unknown'
 }
 
 function queryMacLoginItemStatus(
@@ -896,20 +905,22 @@ function normalizeElectronObservation(
 }
 
 function cloneLoginItemSettings(
-  settings: FullTrustElectronLoginItemSettings
+  settings: FullTrustElectronLoginItemSettings,
+  platform: 'win32' | 'darwin'
 ): FullTrustElectronLoginItemSettings {
   return {
     ...settings,
-    ...(settings.args ? { args: [...settings.args] } : {})
+    ...(settings.args ? { args: platform === 'win32' ? settings.args.map(quoteWindowsLoginArgument) : [...settings.args] } : {})
   }
 }
 
 function cloneLoginItemQuery(
-  query: FullTrustElectronLoginItemQuery
+  query: FullTrustElectronLoginItemQuery,
+  platform: 'win32' | 'darwin'
 ): FullTrustElectronLoginItemQuery {
   return {
     ...query,
-    ...(query.args ? { args: [...query.args] } : {})
+    ...(query.args ? { args: platform === 'win32' ? query.args.map(quoteWindowsLoginArgument) : [...query.args] } : {})
   }
 }
 

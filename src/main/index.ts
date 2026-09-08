@@ -136,6 +136,7 @@ import {
   type SystemPluginManagerSummary
 } from './system-plugin'
 import { normalizeSystemPluginV3Manifest } from './system-plugin-artifact'
+import { createSystemPluginStartupCommand, resolveKnowbookUserDataOverride } from './system-plugin/startup-command'
 import { extractSystemPluginArchive } from './system-plugin-archive'
 import {
   createEphemeralCredentialStorage,
@@ -304,7 +305,7 @@ if (process.env['KNOWBOOK_DISABLE_HARDWARE_ACCELERATION'] === '1') {
   app.disableHardwareAcceleration()
 }
 
-const userDataOverride = process.env['KNOWBOOK_USER_DATA_DIR']?.trim()
+const userDataOverride = resolveKnowbookUserDataOverride(process.argv, process.env['KNOWBOOK_USER_DATA_DIR'])
 if (userDataOverride) {
   app.setPath('userData', resolve(userDataOverride))
 }
@@ -666,6 +667,13 @@ function initializeServices(): void {
     osPersistenceAdapter: createFullTrustOsPersistenceAdapter({
       platform: process.platform,
       electronApp: app
+    }),
+    osPersistenceCommand: (pluginId) => createSystemPluginStartupCommand({
+      executable: process.execPath,
+      appPath: app.getAppPath(),
+      isPackaged: app.isPackaged,
+      userDataRoot,
+      pluginId
     }),
     serviceEnvironment: () => {
       const ai = store.getAiConfigPublic()

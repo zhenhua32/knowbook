@@ -14,6 +14,8 @@ export type ElectronAppContext = {
 export type ElectronLaunchOptions = {
   /** Reuse a prior isolated user-data root to exercise restart-only behavior. */
   userDataRoot?: string
+  /** Replay a registered startup command, without inheriting its original profile env. */
+  startupArgs?: string[]
 }
 
 export type ElectronCloseOptions = {
@@ -78,6 +80,10 @@ export async function launchElectronApp(
   }
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
+  if (options.startupArgs) {
+    target.args.push(...options.startupArgs)
+    delete env.KNOWBOOK_USER_DATA_DIR
+  }
   let app: ElectronApplication | undefined
   try {
     app = await electron.launch({ ...target, env })

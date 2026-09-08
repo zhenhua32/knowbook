@@ -286,8 +286,8 @@ test('System Plugin management keeps install and OS-startup approvals explicit a
 
   assert.match(section, /systemPluginIdConfirmations\[request\.id\] !== request\.pluginId/)
   assert.match(section, /!systemAcknowledgements\[request\.id\]/)
-  assert.match(section, /osPersistenceIdConfirmations\[osPersistence\.id\] !== plugin\.pluginId/)
-  assert.match(section, /!osPersistenceAcknowledgements\[osPersistence\.id\]/)
+  assert.match(section, /osPersistenceIdConfirmations\[osPersistenceReviewKey\] !== plugin\.pluginId/)
+  assert.match(section, /!osPersistenceAcknowledgements\[osPersistenceReviewKey\]/)
   assert.match(section, /This is separate from plugin installation approval/)
   assert.match(management, /revisionHash: record\.revisionHash/)
   assert.match(preload, /knowbook:resolve-system-plugin-install-request/)

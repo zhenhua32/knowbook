@@ -1188,7 +1188,11 @@ test('SystemPluginManager requires a separate exact confirmation for OS startup 
     const loginItems = new FakeManagerLoginItems()
     const adapter = createFullTrustElectronLoginItemAdapter({
       platform: 'win32',
-      app: loginItems
+      app: loginItems,
+      readWindowsRunValues: async (serviceId) => {
+        const item = loginItems.getLoginItemSettings().launchItems?.find((entry) => entry.name === serviceId)
+        return { user: item ? [`"${item.path}"`, ...item.args].join(' ') : null, machine: null }
+      }
     })
     const manager = createManager({
       osPersistenceAdapter: adapter,

@@ -72,6 +72,9 @@ jobs:
       - name: Run packaged native System Plugin acceptance
         run: npm run test:packaged-system-plugins
 
+      - name: Run Windows login startup and detached service acceptance
+        run: npm run test:packaged-windows-startup
+
       - name: Prepare isolated Electron host upgrade fixture
         run: npm run prepare:host-upgrade
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { App } from 'electron'
+import { formatWindowsLoginCommand, quoteWindowsLoginArgument } from '../src/main/system-plugin/windows-login-command'
 import {
   FullTrustOsPersistenceConflictError,
   createFullTrustElectronLoginItemAdapter,
@@ -23,11 +24,53 @@ const asInjectedElectronApp = (
 ): FullTrustElectronLoginItemApplication => app
 void asInjectedElectronApp
 
+test('Windows login argv quoting preserves spaces, empty args, embedded quotes and trailing slashes', () => {
+  assert.equal(quoteWindowsLoginArgument('--id=weather'), '--id=weather')
+  assert.equal(quoteWindowsLoginArgument(''), '""')
+  assert.equal(quoteWindowsLoginArgument('a b'), '"a b"')
+  assert.equal(quoteWindowsLoginArgument('say "hi"'), '"say \\"hi\\""')
+  assert.equal(quoteWindowsLoginArgument('C:\\user data\\'), '"C:\\user data\\\\"')
+  assert.equal(quoteWindowsLoginArgument('a\\"b'), '"a\\\\\\"b"')
+})
+
+test('Windows exact registry identity survives Electron omitting command-line switches', async () => {
+  const input = registrationInput()
+  let value = formatWindowsLoginCommand(input.command)
+  const app: FullTrustElectronLoginItemApplication = {
+    setLoginItemSettings() { throw new Error('Read-only test must not mutate Windows.') },
+    getLoginItemSettings() {
+      return { openAtLogin: true, launchItems: [{ name: input.serviceId, path: input.command.executable, args: [], scope: 'user', enabled: true }] }
+    }
+  }
+  const adapter = createFullTrustElectronLoginItemAdapter({ platform: 'win32', app, readWindowsRunValues: async () => ({ user: value, machine: null }) })
+  const descriptor = adapter.describe(input)
+  assert.equal((await adapter.query(descriptor)).status, 'registered')
+  value += ' --different-profile'
+  assert.equal((await adapter.query(descriptor)).status, 'mismatch')
+  assert.equal((await adapter.remove(descriptor)).removed, false)
+})
+
+test('Windows registry check refuses collisions hidden by Electron executable filtering', async () => {
+  const input = registrationInput()
+  const app: FullTrustElectronLoginItemApplication = {
+    setLoginItemSettings() { throw new Error('Conflicting registration must not be overwritten.') },
+    getLoginItemSettings() { return { openAtLogin: false, launchItems: [] } }
+  }
+  for (const values of [{ user: 'C:\\Other\\other.exe', machine: null }, { user: null, machine: 'C:\\Other\\other.exe' }]) {
+    const adapter = createFullTrustElectronLoginItemAdapter({ platform: 'win32', app, readWindowsRunValues: async () => values })
+    await assert.rejects(adapter.register(input), FullTrustOsPersistenceConflictError)
+    assert.equal((await adapter.remove(adapter.describe(input))).removed, false)
+  }
+  const unavailable = createFullTrustElectronLoginItemAdapter({ platform: 'win32', app, readWindowsRunValues: async () => { throw new Error('Registry unavailable') } })
+  await assert.rejects(unavailable.register(input), /Registry unavailable/)
+})
+
 test('Windows Electron login item records, queries, and removes one exact command', async () => {
   const app = new FakeWindowsLoginItems()
   const adapter = createFullTrustElectronLoginItemAdapter({
     platform: 'win32',
     app,
+    readWindowsRunValues: app.readRunValues,
     now: () => FIXED_TIME
   })
   const input = registrationInput({
@@ -43,7 +86,7 @@ test('Windows Electron login item records, queries, and removes one exact comman
     enabled: true,
     name: 'knowbook.plugin.weather',
     path: input.command.executable,
-    args: [...input.command.args]
+    args: input.command.args.map(quoteWindowsLoginArgument)
   })
   assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor)
   assert.equal(descriptor.registeredAt, FIXED_TIME)
@@ -67,7 +110,7 @@ test('Windows Electron login item records, queries, and removes one exact comman
   assert.equal(removed.removed, true)
   assert.equal(removed.before.status, 'registered')
   assert.equal(removed.after.status, 'absent')
-  assert.deepEqual(app.calls[1], descriptor.cleanup.settings)
+  assert.deepEqual(app.calls[1], { ...descriptor.cleanup.settings, args: input.command.args.map(quoteWindowsLoginArgument) })
 })
 
 test('Windows adapter refuses to overwrite or remove a same-id login item with another command', async () => {
@@ -81,7 +124,8 @@ test('Windows adapter refuses to overwrite or remove a same-id login item with a
   })
   const adapter = createFullTrustElectronLoginItemAdapter({
     platform: 'win32',
-    app
+    app,
+    readWindowsRunValues: app.readRunValues
   })
   const input = registrationInput()
 
@@ -266,6 +310,10 @@ function registrationInput(
 }
 
 class FakeWindowsLoginItems implements FullTrustElectronLoginItemApplication {
+  readonly readRunValues = async (serviceId: string) => {
+    const item = this.entries.get(serviceId)
+    return { user: item ? [quoteWindowsLoginArgument(item.path), ...item.args].join(' ') : null, machine: null }
+  }
   readonly entries = new Map<string, {
     name: string
     path: string

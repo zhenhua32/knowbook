@@ -2,7 +2,7 @@
 
 > 文档状态：实施中
 > 适用版本：KnowBook 0.2.x+
-> 最后更新：2026-09-07
+> 最后更新：2026-09-08
 > 当前验收范围：Windows；按 2026-09-07 用户要求，macOS/Linux 实测不列为本轮或发布阻塞项。已有跨平台实现与单元测试继续保留。
 > 目标读者：产品、Main/Preload/Renderer 开发、插件作者、安全评审与测试
 
@@ -706,8 +706,11 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 - 2026-09-07 文件身份修复后的类型检查、生产构建和完整 599 项测试均通过，真实双宿主 E2E 通过。修复前曾有一次全量测试中的 QuickJS 25 毫秒初始化超时，随后复跑 596 项全部通过；加入三个文件身份回归后的 599 项全量也全部通过，未放宽 QuickJS 执行预算。
 - 打包 utility-process smoke 曾在功能通过后于退出阶段触发 V8 模块加载崩溃。网页剪藏 worker 现在先接收关闭请求，等待模块加载结束和真实 exit 确认，超时才强制终止；旧 worker 的延迟事件不会影响替代 worker，重复销毁共享同一退出 Promise。新增协作关闭/超时兜底回归后，Windows unpacked smoke 连续三次以退出码 0 和最终 passed JSON 通过。
 - [Windows CI](../.github/workflows/ci.yml) 已接入 SQLite、源码重编译及宿主 ABI 升级/回退的 packaged native 专用验收，并配置 Python 3.12；按当前验收范围，插件打包 job 仅运行 Windows。native spec 在成功或失败的 `finally` 中将 JSON 写入 `test-results/**/native-acceptance-evidence.json` 并作为文件附件保存，内容包括进程平台/架构/Electron/ABI、binary hash、SQLite 数据、完成阶段、失败阶段和清理错误；源码 spec 另写入 `native-rebuild-evidence.json` 和 `native-compiler.log`，记录真实编译 ABI/hash、成功及失败 job、完成阶段和清理错误。双宿主 spec 另在 `test-results/host-upgrade` 保存 ABI 切换、确认记录、任务、审计、激活历史和编译日志。CI 以 `native-system-plugin-windows` 上传 `test-results/**`。这些是独立 native 专用夹具，不能作为同一个受控验收插件已完成十二项能力的证据。
-- 当前 Windows E2E 尚未覆盖 pnpm/yarn、独立生命周期/build 脚本、剪贴板/菜单/托盘/外部程序、detached/OS 登录启动、真实 login item 或专属 preload；本次 unpacked 验收也不替代 NSIS 安装/卸载；macOS/Linux 实测不在当前验收范围。
-- 发布前仍必须完成：Windows 登录启动项测试；真实系统登录/重启、安装器/更新器驱动的应用升级/回滚和安装包卸载残留验证；第 9 节十二项能力的统一验收矩阵。ADR-0007 继续保持 `Accepted`。
+- [Windows 登录启动与 detached E2E](../e2e-tests/system-plugins-windows-startup.spec.ts) 于 2026-09-08 在 Windows x64 unpacked（Electron 35.7.5）通过，耗时 1.3 分钟。七个阶段覆盖受控插件安装、登录启动的独立确认/拒绝未勾选请求/取消、真实 HKCU Run 注册、宿主退出后 detached 服务继续运行、重放注册表命令后同 PID/同 run id 接管及 RPC 重连、接管后的停止与重新启动、移除和重复申请、卸载与重启清理。含中文和空格的临时 userData 在移除环境变量后仍被正确恢复；同页再次申请必须重新勾选并输入完整插件 ID。最终 Run 和 StartupApproved 值、服务进程、各 artifact/runtime revision、data/log 均已清理；artifact/runtime 的空分组目录允许保留。JSON 证据的失败阶段和错误为 null，cleanupErrors 为空。Windows CI 已接入该独立入口；此测试未执行真实系统注销、登录或重启。
+- 实测修复：启动命令通过 `--knowbook-user-data-dir` 保存绝对工作区路径，并在单实例锁建立前恢复；开发态还保留绝对应用入口。Windows 参数在 Electron API 边界按 argv 规则转义，保存的待确认命令保持原始参数。Electron 35.7.5 的 `launchItems.args` 会省略这里的 `--...` 开关，`openAtLogin` 也会返回 false，旧比较不能验证完整命令；现在读取精确 service id 的 HKCU/HKLM Run 值并结合 per-user enabled 状态核验，遇到同名其他命令或无法读取时拒绝覆盖/移除。参数编码经 Windows `CommandLineToArgvW` 独立解码核验；Electron 对调用方转义的要求见 [官方 login-item 文档](https://www.electronjs.org/docs/latest/api/app#appsetloginitemsettingssettings-macos-windows)。新增回归覆盖空参数、引号/反斜杠、被 Electron 过滤的开关、同名其他可执行文件和读取失败。
+- 2026-09-08 最新类型检查、生产构建和打包态登录启动 E2E 通过，完整 605 项测试以 `--test-concurrency=4` 通过（75.8 秒）。默认并发下完整套件曾通过，但随后两次复跑的既有 packaged smoke 子进程退出超出测试的 10 秒预算；相关偶发超时仍需后续稳定性跟进。
+- 当前 Windows E2E 尚未覆盖 pnpm/yarn、独立生命周期/build 脚本、剪贴板/菜单/托盘/外部程序或专属 preload；unpacked 验收不替代 NSIS 安装/卸载；macOS/Linux 实测不在当前验收范围。
+- 发布前仍必须完成：真实系统登录/重启、安装器/更新器驱动的应用升级/回滚和安装包卸载残留验证；第 9 节十二项能力的统一验收矩阵。ADR-0007 继续保持 `Accepted`。
 
 源码验收需要 Python、C++ 工具链和对应 Node/Electron 头文件；首次构建可能下载官方头文件，npm 安装自身没有远程包依赖。Python 不在 PATH 时设置 `PYTHON` 或 `NODE_GYP_FORCE_PYTHON` 的绝对路径。新增用例标记为 `@native-build`，由打包入口显式执行，普通 `@electron` 回归不要求额外编译器。
 
@@ -717,13 +720,16 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 npm run pack
 npm run test:packaged-runtime-smoke
 npm run test:packaged-system-plugins
+npm run test:packaged-windows-startup
 npm run prepare:host-upgrade
 npm run test:packaged-host-upgrade
 ```
 
 宿主升级准备脚本默认生成独立 Electron 36.0.0 unpacked 包，并只在临时目录安装/重建应用依赖；当前项目依赖和基线包不会被修改。可用 `KNOWBOOK_E2E_UPGRADE_ELECTRON_VERSION` 指定完整版本，或用 `KNOWBOOK_E2E_UPGRADE_EXECUTABLE` 提供第二个真实宿主。新宿主必须有更高 Electron 主版本及不同 ABI；相同版本标签或修改数据库指纹不能满足此验收。默认从官方来源获取 Electron 并校验 checksum；本机 GitHub 资产连接出现 TLS 错误后，仅在准备命令中设置 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 完成同版本下载，发行配置未改变。准备结果保存在 `release/host-upgrade/fixture.json`，升级/回退证据保存在 `test-results/host-upgrade`。
 
-本机 Windows 打包时，electron-builder 签名工具解压所需的符号链接权限不足，因此在已通过构建的基础上，最终用以下命令生成本地 unpacked 包后执行上述两个 smoke。该参数只用于本次命令，未修改发行配置；此次结果不包含正式签名工具链或 NSIS 安装验收。
+Windows 登录启动验收入口为 `npm run test:packaged-windows-startup`，标记 `@windows-startup`，普通 `@electron` 回归不会修改登录启动项。该测试使用随机唯一 service id 和含中文、空格的临时 userData；注册表命令经真实 Windows `CommandLineToArgvW` 解码后用于重启，启动时移除数据目录环境变量。测试只执行登记命令，不触发整机注销或重启；成功或失败均清理测试启动项、后台服务与临时目录，JSON 证据写入 `test-results/windows-startup/**/windows-startup-evidence.json`。
+
+本机 Windows 打包时，electron-builder 签名工具解压所需的符号链接权限不足，因此在已通过构建的基础上，最终用以下命令生成本地 unpacked 包后执行上述验收。该参数只用于本次命令，未修改发行配置；此次结果不包含正式签名工具链或 NSIS 安装验收。
 
 ```powershell
 npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=false'
@@ -731,7 +737,7 @@ npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=f
 
 ## 20. 最终验收标准
 
-截至 2026-09-07，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。Windows unpacked SQLite、源码重编译和真实宿主 ABI 升级/回退验收已通过；当前最明确的阻塞项是 Windows login、真实系统登录/重启/安装包卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
+截至 2026-09-08，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。Windows unpacked SQLite、源码重编译、真实宿主 ABI 升级/回退、真实登录启动项登记与命令重放、detached 接管验收已通过；当前最明确的阻塞项是 Windows 真实系统登录/重启、安装器/更新器升级与安装包卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
 
 ### 20.1 功能验收
 
