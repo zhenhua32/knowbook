@@ -14,7 +14,7 @@ import {
   type SystemPluginNativeModuleProbeResult,
   type SystemPluginDependencyTask
 } from './dependency-runner'
-import type { SystemPluginPackageManager } from '@shared/system-plugin'
+import type { SystemPluginDependencyPlan, SystemPluginPackageManager } from '@shared/system-plugin'
 import { createSystemPluginLogWriter, redactSystemPluginLog } from './log-writer'
 import { prepareSystemPluginRuntimeLinks } from './runtime-links'
 
@@ -59,7 +59,17 @@ export function createSystemPluginPackagePreparer(
             electron: requireRuntimeVersion(hostProcess.versions.electron, 'Electron'),
             arch: hostProcess.arch,
             platform: hostProcess.platform
-          })
+          }, plan.yarnMode),
+          environment: {
+            ...createSystemPluginElectronRebuildEnvironment({
+              electron: requireRuntimeVersion(hostProcess.versions.electron, 'Electron'),
+              arch: hostProcess.arch,
+              platform: hostProcess.platform
+            }),
+            ...(plan.packageManager === 'yarn' && plan.yarnMode === 'modern'
+              ? { YARN_ENABLE_SCRIPTS: 'true', YARN_ENABLE_INLINE_BUILDS: 'true' }
+              : {})
+          }
         }
       : undefined
     const tasks = plan
@@ -79,6 +89,18 @@ export function createSystemPluginPackagePreparer(
     )
     assertInside(logPath, logRoot, 'dependency log')
     const logWriter = createSystemPluginLogWriter(logPath)
+
+    const previousFingerprint = packageRecord.runtimeFingerprint
+    options.repository.updateSystemPluginPackage(packageRecord.id, {
+      runtimeFingerprint: {
+        ...(previousFingerprint && typeof previousFingerprint === 'object' && !Array.isArray(previousFingerprint)
+          ? previousFingerprint : {}),
+        installPreparation: {
+          schemaVersion: 1, packageId: packageRecord.id, contentHash: artifact.artifactSha256,
+          requestId: request.id, temporaryRoot, startedAt: new Date().toISOString()
+        }
+      }
+    })
 
     await mkdir(pluginRuntimeRoot, { recursive: true })
     await mkdir(dirname(logPath), { recursive: true })
@@ -156,7 +178,9 @@ export function createSystemPluginPackagePreparer(
         })
       }
       await logWriter.flush().catch(() => undefined)
-      await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined)
+      await rm(temporaryRoot, { recursive: true, force: true }).then(() => {
+        options.repository.updateSystemPluginPackage(packageRecord.id, { runtimeFingerprint: previousFingerprint })
+      }).catch(() => undefined)
       throw error
     }
   }
@@ -169,7 +193,8 @@ export function createSystemPluginPackagePreparer(
  */
 export function createSystemPluginElectronRebuildCommand(
   packageManager: SystemPluginPackageManager,
-  target: SystemPluginElectronRebuildTarget
+  target: SystemPluginElectronRebuildTarget,
+  yarnMode: SystemPluginDependencyPlan['yarnMode'] = 'classic'
 ): readonly string[] {
   if (packageManager !== 'npm' && packageManager !== 'pnpm' && packageManager !== 'yarn') {
     throw new Error('System plugin native rebuild package manager is invalid.')
@@ -177,6 +202,12 @@ export function createSystemPluginElectronRebuildCommand(
   const electron = normalizeCommandValue(target.electron, 'Electron target')
   const arch = normalizeCommandValue(target.arch, 'architecture')
   const platform = normalizeCommandValue(target.platform, 'platform')
+  // pnpm rejects npm's target CLI flags, and Yarn Classic has no `rebuild`.
+  // Both receive the pinned Electron target through the task environment.
+  if (packageManager === 'pnpm') return Object.freeze(['pnpm', 'rebuild'])
+  if (packageManager === 'yarn') return Object.freeze(yarnMode === 'modern'
+    ? ['yarn', 'rebuild']
+    : ['yarn', 'install', '--force', '--frozen-lockfile'])
   return Object.freeze([
     packageManager,
     'rebuild',
@@ -189,6 +220,28 @@ export function createSystemPluginElectronRebuildCommand(
     `--platform=${platform}`,
     '--dist-url=https://electronjs.org/headers'
   ])
+}
+
+export function createSystemPluginElectronRebuildEnvironment(
+  target: SystemPluginElectronRebuildTarget
+): Readonly<Record<string, string>> {
+  const values = {
+    runtime: 'electron',
+    target: normalizeCommandValue(target.electron, 'Electron target'),
+    arch: normalizeCommandValue(target.arch, 'architecture'),
+    platform: normalizeCommandValue(target.platform, 'platform'),
+    dist_url: 'https://electronjs.org/headers'
+  }
+  // Older prebuild tools use npm_config_*, newer node-gyp also accepts the
+  // package-config prefix. Set both to avoid inheriting a system-Node target.
+  return Object.freeze({
+    ...Object.fromEntries(Object.entries(values).flatMap(([key, value]) => [
+      [`npm_config_${key}`, value], [`npm_package_config_node_gyp_${key}`, value]
+    ])),
+    npm_config_disturl: values.dist_url,
+    npm_config_ignore_scripts: 'false',
+    pnpm_config_ignore_scripts: 'false'
+  })
 }
 
 async function replaceRuntimeDirectory(
@@ -223,7 +276,8 @@ function describeTask(task: SystemPluginDependencyTask): Record<string, unknown>
   return {
     kind: task.kind,
     packageManager: task.packageManager,
-    command: [...task.command]
+    command: [...task.command],
+    ...(task.execution === 'process' && task.environment ? { environment: { ...task.environment } } : {})
   }
 }
 

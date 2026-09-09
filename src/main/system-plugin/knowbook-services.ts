@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type electron from 'electron'
 import { spawn as spawnChildProcess, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { AsyncResource } from 'node:async_hooks'
 import type {
   AiConfig,
   CreateDatabaseEntityInput,
@@ -35,6 +36,7 @@ import type {
   SystemPluginServiceRpcJson,
   SystemPluginServiceRpcMethodMap
 } from './service-rpc'
+import { disposeSystemPluginWindow, type SystemPluginDesktopResourceRegistration } from './managed-resources'
 
 type ElectronModule = typeof electron
 type SqliteDatabase = Database.Database
@@ -114,6 +116,7 @@ export interface KnowbookFullTrustServiceOptions {
   notifyWorkspaceMutation: () => void
   cancelDocumentSummaryGeneration?: (documentId: string) => void
   registerDisposable?: (disposable: () => void | Promise<void>, label?: string) => void
+  desktopResources?: SystemPluginDesktopResourceRegistration
   requestOsPersistence?: () => SystemPluginOsPersistenceRecord
   renderer?: FullTrustRendererController
   workspaceEventContext?: FullTrustWorkspaceEventContext
@@ -184,7 +187,9 @@ export function createKnowbookFullTrustServices(
     settings: createSettingsApi(options, notify),
     secrets: createSecretsApi(options.getAiCredentials, environment),
     events: {
-      subscribe: options.workspaceEventBus.subscribe.bind(options.workspaceEventBus),
+      // The emitter may be another plugin or a normal host action. Preserve
+      // the subscriber's registration context for its output and async work.
+      subscribe: (handler) => options.workspaceEventBus.subscribe(AsyncResource.bind(handler)),
       emit: (event) => options.workspaceEventBus.emit(attributeWorkspaceEvent(event))
     },
     desktop: createDesktopApi(options),
@@ -419,25 +424,31 @@ function createDesktopApi(
     getMainWindow: options.getMainWindow,
     createWindow(windowOptions = {}) {
       const window = new electron.BrowserWindow(windowOptions)
+      const unregister = options.desktopResources?.window(window)
       registerDisposable?.(() => {
-        if (!window.isDestroyed()) window.close()
+        disposeSystemPluginWindow(window)
+        unregister?.()
       }, 'Electron BrowserWindow')
       return window
     },
     createMenu(template) {
       const menu = electron.Menu.buildFromTemplate(template)
+      const unregister = options.desktopResources?.menu(menu)
       registerDisposable?.(() => {
         menu.closePopup()
         if (electron.Menu.getApplicationMenu() === menu) {
           electron.Menu.setApplicationMenu(null)
         }
+        unregister?.()
       }, 'Electron Menu')
       return menu
     },
     createTray(image) {
       const tray = new electron.Tray(image)
+      const unregister = options.desktopResources?.tray(tray)
       registerDisposable?.(() => {
         if (!tray.isDestroyed()) tray.destroy()
+        unregister?.()
       }, 'Electron Tray')
       return tray
     }

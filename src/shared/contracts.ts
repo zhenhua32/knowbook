@@ -28,6 +28,7 @@ import type {
   RollbackSystemPluginInput,
   ResolveSystemPluginOsPersistenceInput,
   SystemPluginMutationInput,
+  UninstallSystemPluginInput,
   SystemPluginOsPersistenceRecord,
   SystemPluginSummary
 } from './system-plugin-state'
@@ -56,7 +57,9 @@ export type {
   RollbackSystemPluginInput,
   ResolveSystemPluginOsPersistenceInput,
   SystemPluginMutationInput,
+  UninstallSystemPluginInput,
   SystemPluginOsPersistenceRecord,
+  SystemPluginManagedResourceSummary,
   SystemPluginSummary
 } from './system-plugin-state'
 export type {
@@ -941,7 +944,7 @@ export interface ElectronApi {
   resolveSystemPluginInstallRequest: (input: ResolveSystemPluginInstallRequestInput) => Promise<SystemPluginInstallRequest>
   listSystemPlugins: () => Promise<SystemPluginSummary[]>
   setSystemPluginEnabled: (input: SetSystemPluginEnabledInput) => Promise<SystemPluginSummary>
-  uninstallSystemPlugin: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
+  uninstallSystemPlugin: (input: UninstallSystemPluginInput) => Promise<SystemPluginSummary>
   recoverSystemPlugin: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>
   rollbackSystemPlugin: (input: RollbackSystemPluginInput) => Promise<SystemPluginSummary>
   startSystemPluginService: (input: SystemPluginMutationInput) => Promise<SystemPluginSummary>

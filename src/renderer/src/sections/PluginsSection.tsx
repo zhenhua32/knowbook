@@ -11,6 +11,9 @@ import type {
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
 import { PluginV2TechnicalDetails } from '../components/PluginV2TechnicalDetails'
+import { SystemPluginResources } from '../components/SystemPluginResources'
+import { SystemPluginRuntimeStatus } from '../components/SystemPluginRuntimeStatus'
+import { getSystemPluginFailureStages } from '@shared/system-plugin-state'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import './plugins-section.css'
 
@@ -46,7 +49,7 @@ type PluginsSectionProps = {
   onRecoverPluginV2Installation: (pluginId: string) => void
   onSetSystemPluginEnabled: (plugin: SystemPluginSummary, enabled: boolean) => void
   onRecoverSystemPlugin: (plugin: SystemPluginSummary) => void
-  onUninstallSystemPlugin: (plugin: SystemPluginSummary) => void
+  onUninstallSystemPlugin: (plugin: SystemPluginSummary, preserveData: boolean) => void
   onRollbackSystemPlugin: (plugin: SystemPluginSummary, packageId: string) => void
   onStartSystemPluginService: (plugin: SystemPluginSummary) => void
   onStopSystemPluginService: (plugin: SystemPluginSummary) => void
@@ -178,6 +181,10 @@ export function PluginsSection({
   const [filter, setFilter] = useState<PluginFilter>('all')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [customizingPlugin, setCustomizingPlugin] = useState<PluginV2InstallationSummary | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<SystemPluginSummary | null>(null)
+  const [preserveUninstallData, setPreserveUninstallData] = useState(true)
+  const uninstallDialogRef = useRef<HTMLElement>(null)
+  const uninstallReturnFocusRef = useRef<HTMLElement | null>(null)
   const [customizerDrafts, setCustomizerDrafts] = useState<Record<string, string>>({})
   const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
   const [systemPluginIdConfirmations, setSystemPluginIdConfirmations] = useState<Record<string, string>>({})
@@ -291,6 +298,23 @@ export function PluginsSection({
       : null
     setCustomizingPlugin(plugin)
   }
+
+  useEffect(() => {
+    if (!uninstallTarget) return undefined
+    const dialog = uninstallDialogRef.current
+    if (!dialog) return undefined
+    const returnFocus = uninstallReturnFocusRef.current
+    dialog.querySelector<HTMLElement>('[data-uninstall-cancel]')?.focus()
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); setUninstallTarget(null); return }
+      trapFocusWithinDialog(event, dialog)
+    }
+    window.addEventListener('keydown', keydown)
+    return () => {
+      window.removeEventListener('keydown', keydown)
+      if (returnFocus?.isConnected) returnFocus.focus()
+    }
+  }, [uninstallTarget])
 
   return (
     <section className="plugins-page">
@@ -544,9 +568,12 @@ export function PluginsSection({
           <div className="system-plugin-request-list">
             {systemPlugins.map((plugin) => {
               const busy = pluginBusyId === plugin.pluginId || pluginInventoryBusy
+              const failureStages = getSystemPluginFailureStages(plugin.lastError)
               const serviceRun = plugin.recentRuns.find((run) => (
                 run.component === 'service' || run.component === 'detached'
               ))
+              const mainRun = plugin.recentRuns.find((run) => run.component === 'main')
+              const mainRunPackage = plugin.availablePackages.find((candidate) => candidate.packageId === mainRun?.packageId)
               const serviceRunning = serviceRun?.status === 'starting'
                 || serviceRun?.status === 'ready'
                 || serviceRun?.status === 'stopping'
@@ -578,7 +605,19 @@ export function PluginsSection({
                   {plugin.pendingVersion ? <code>{isZh ? '待生效' : 'Pending'}: {plugin.pendingVersion} · {plugin.pendingArtifactSha256}</code> : null}
                   <code>{plugin.riskDeclarations.join(' · ')}</code>
                   {plugin.backupPath ? <code>{isZh ? '安全备份' : 'Safety backup'}: {plugin.backupPath}</code> : null}
+                  {plugin.status === 'uninstall-pending' ? <p>{plugin.preserveDataOnUninstall
+                    ? (isZh ? '重启后卸载，保留插件专属数据。' : 'Uninstall after restart; private data will be retained.')
+                    : (isZh ? '重启后卸载并删除插件专属数据。' : 'Uninstall after restart and delete private data.')}</p> : null}
                   {plugin.lastRun ? <code>{isZh ? '最近运行' : 'Last run'}: {plugin.lastRun.component} · {plugin.lastRun.status} · PID {plugin.lastRun.pid ?? '—'}</code> : null}
+                  <SystemPluginRuntimeStatus plugin={plugin} isZh={isZh} />
+                  {mainRun?.logPath ? (
+                    <div className="plugin-inspector-note" data-testid="system-plugin-main-log">
+                      <strong>{isZh ? '主进程运行日志' : 'Main process run log'}</strong>
+                      <code>{isZh ? '日志所属修订' : 'Log revision'}: {mainRunPackage ? `sha256:${mainRunPackage.artifactSha256}` : mainRun.packageId}</code>
+                      <code>{mainRun.logPath}</code>
+                    </div>
+                  ) : null}
+                  <SystemPluginResources resources={plugin.managedResources} isZh={isZh} />
                   {serviceRun ? (
                     <div className="plugin-inspector-note">
                       <strong>{serviceRun.component === 'detached' ? 'Detached service' : 'App-lifetime service'} · {serviceRun.status}</strong>
@@ -667,6 +706,7 @@ export function PluginsSection({
                   ))}
                   {plugin.restartRequired ? <p className="plugin-inspector-note">{isZh ? '需要重启 KnowBook 才能完成此状态变更。' : 'Restart KnowBook to complete this state change.'}</p> : null}
                   {plugin.lastError ? <p className="plugin-error">{errorDetail(plugin.lastError)}</p> : null}
+                  {failureStages.length > 0 ? <code>{isZh ? '失败阶段' : 'Failure stage'}: {failureStages.join(' · ')}</code> : null}
                   <div className="plugin-item-actions">
                     {serviceRun && plugin.status === 'active' ? (
                       serviceRunning
@@ -685,7 +725,11 @@ export function PluginsSection({
                     </button>
                     {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => onRecoverSystemPlugin(plugin)} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
                     {rollbackTarget ? <button className="secondary-button" disabled={busy} onClick={() => onRollbackSystemPlugin(plugin, rollbackTarget.packageId)} type="button">{isZh ? `回滚到 ${rollbackTarget.version}` : `Roll back to ${rollbackTarget.version}`}</button> : null}
-                    <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onUninstallSystemPlugin(plugin)} type="button">{isZh ? '卸载' : 'Uninstall'}</button>
+                    <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => {
+                      uninstallReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+                      setPreserveUninstallData(true)
+                      setUninstallTarget(plugin)
+                    }} type="button">{isZh ? '卸载' : 'Uninstall'}</button>
                   </div>
                 </div>
               )
@@ -754,6 +798,29 @@ export function PluginsSection({
             {pluginRoots.map((root) => <code className="plugin-root-path" key={root}>{root}</code>)}
           </div>
         </details>
+      ) : null}
+
+      {uninstallTarget ? (
+        <div className="plugin-customizer-backdrop" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setUninstallTarget(null)
+        }}>
+          <aside className="plugin-customizer system-plugin-request system-plugin-uninstall-dialog" role="dialog" aria-modal="true"
+            aria-labelledby="system-plugin-uninstall-title" ref={uninstallDialogRef} tabIndex={-1}>
+            <h3 id="system-plugin-uninstall-title">{isZh ? `卸载“${uninstallTarget.name}”` : `Uninstall "${uninstallTarget.name}"`}</h3>
+            <p>{isZh ? '插件将立即停用，代码和日志在重启后清理。请选择如何处理插件专属数据。' : 'The plugin stops immediately; code and logs are removed after restart. Choose what happens to its private data.'}</p>
+            <code>{uninstallTarget.dataPath}</code>
+            <label><input type="radio" name="system-plugin-uninstall-data" checked={preserveUninstallData} onChange={() => setPreserveUninstallData(true)} />{isZh ? '保留数据，重新安装时继续使用' : 'Keep data for a future reinstall'}</label>
+            <label><input type="radio" name="system-plugin-uninstall-data" checked={!preserveUninstallData} onChange={() => setPreserveUninstallData(false)} />{isZh ? '同时删除插件专属数据' : 'Also delete plugin data'}</label>
+            <p>{isZh ? '知识库文档、任意设置及插件写到其他目录的文件不会自动撤销；数据库安全备份会保留。' : 'Workspace documents, arbitrary settings and files written elsewhere are not reverted. Database safety backups are retained.'}</p>
+            <div className="plugin-toolbar">
+              <button className="secondary-button" data-uninstall-cancel onClick={() => setUninstallTarget(null)} type="button">{isZh ? '取消' : 'Cancel'}</button>
+              <button className="danger-button" onClick={() => {
+                onUninstallSystemPlugin(uninstallTarget, preserveUninstallData)
+                setUninstallTarget(null)
+              }} type="button">{isZh ? '确认卸载' : 'Confirm uninstall'}</button>
+            </div>
+          </aside>
+        </div>
       ) : null}
 
       {customizingPlugin ? (

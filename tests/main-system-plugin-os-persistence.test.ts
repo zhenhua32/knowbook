@@ -85,7 +85,7 @@ test('Windows Electron login item records, queries, and removes one exact comman
     openAtLogin: true,
     enabled: true,
     name: 'knowbook.plugin.weather',
-    path: input.command.executable,
+    path: quoteWindowsLoginArgument(input.command.executable),
     args: input.command.args.map(quoteWindowsLoginArgument)
   })
   assert.deepEqual(JSON.parse(JSON.stringify(descriptor)), descriptor)
@@ -110,7 +110,34 @@ test('Windows Electron login item records, queries, and removes one exact comman
   assert.equal(removed.removed, true)
   assert.equal(removed.before.status, 'registered')
   assert.equal(removed.after.status, 'absent')
-  assert.deepEqual(app.calls[1], { ...descriptor.cleanup.settings, args: input.command.args.map(quoteWindowsLoginArgument) })
+  assert.deepEqual(app.calls[1], { ...descriptor.cleanup.settings, path: quoteWindowsLoginArgument(input.command.executable), args: input.command.args.map(quoteWindowsLoginArgument) })
+})
+
+test('Windows registration and query encode the executable path as well as arguments', async () => {
+  const input = registrationInput({ command: { executable: 'C:\\应用 空格\\KnowBook.exe', args: ['--profile=C:\\用户 数据', '--mode=service'] } })
+  const encodedPath = quoteWindowsLoginArgument(input.command.executable)
+  let runValue: string | null = null
+  const queries: FullTrustElectronLoginItemQuery[] = []
+  const app: FullTrustElectronLoginItemApplication = {
+    setLoginItemSettings(settings) {
+      assert.equal(settings.path, encodedPath)
+      // Electron concatenates path and already-encoded arguments verbatim.
+      runValue = settings.openAtLogin ? [settings.path, ...(settings.args ?? [])].join(' ') : null
+    },
+    getLoginItemSettings(query = {}) {
+      queries.push(query)
+      assert.equal(query.path, encodedPath)
+      return { openAtLogin: false, launchItems: runValue ? [{ name: input.serviceId, path: input.command.executable, args: [], scope: 'user', enabled: true }] : [] }
+    }
+  }
+  const adapter = createFullTrustElectronLoginItemAdapter({ platform: 'win32', app, readWindowsRunValues: async () => ({ user: runValue, machine: null }) })
+  const descriptor = await adapter.register(input)
+  assert.equal(runValue, formatWindowsLoginCommand(input.command))
+  assert.equal(descriptor.command.executable, input.command.executable, 'persist the raw executable identity')
+  assert.equal((await adapter.query(descriptor)).status, 'registered')
+  assert.equal((await adapter.remove(descriptor)).removed, true)
+  assert.equal(runValue, null)
+  assert.ok(queries.length >= 4)
 })
 
 test('Windows adapter refuses to overwrite or remove a same-id login item with another command', async () => {
@@ -333,7 +360,7 @@ class FakeWindowsLoginItems implements FullTrustElectronLoginItemApplication {
     }
     this.entries.set(name, {
       name,
-      path: settings.path ?? '',
+      path: (settings.path ?? '').replace(/^"(.*)"$/, '$1'),
       args: [...(settings.args ?? [])],
       scope: 'user',
       enabled: settings.enabled !== false

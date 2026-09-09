@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -24,6 +24,9 @@ import {
   SYSTEM_PLUGIN_SERVICE_RPC_REQUEST
 } from '../src/main/system-plugin/service-rpc'
 import type { SystemPluginRuntimeStatus } from '../src/main/system-plugin/types'
+import { SystemPluginHost } from '../src/main/system-plugin/host'
+import { getSystemPluginFailureStages } from '../src/shared/system-plugin-state'
+import { formatWindowsLoginCommand } from '../src/main/system-plugin/windows-login-command'
 import {
   createFullTrustElectronLoginItemAdapter,
   type FullTrustElectronLoginItemApplication,
@@ -32,6 +35,31 @@ import {
   type FullTrustElectronLoginItemState,
   type FullTrustOsPersistenceAdapter
 } from '../src/main/system-plugin/os-persistence'
+
+test('a failed reviewed install script still has a database backup from before its side effects', async () => {
+  await withManagerFixture(async ({ source, store, createManager }) => {
+    store.saveSetting('fixture.before-install', 'original')
+    let backupPath = ''
+    const manager = createManager({ preparePublishedPackage: async ({ packageRecord }) => {
+      const backup = store.pluginPlatform.listSystemPluginAudit(packageRecord.pluginId)
+        .find(entry => entry.action === 'install.safety-backup')
+      backupPath = (backup?.details as { backupPath: string }).backupPath
+      assert.equal(existsSync(backupPath), true)
+      store.saveSetting('fixture.before-install', 'changed-by-failing-install')
+      throw new Error('controlled dependency failure after mutation')
+    } })
+    try {
+      await assert.rejects(installForRestart(manager, source), /controlled dependency failure/)
+      assert.equal(store.getSettingPublic('fixture.before-install'), 'changed-by-failing-install')
+      const backupStore = new KnowbookStore(backupPath)
+      try {
+        assert.equal(backupStore.getSettingPublic('fixture.before-install'), 'original')
+      } finally { backupStore.destroy() }
+      const request = store.pluginPlatform.listSystemPluginInstallRequests()[0]
+      assert.equal((request.error as { backupPath: string }).backupPath, backupPath)
+    } finally { await manager.destroy() }
+  })
+})
 
 test('native runtime compatibility is bound to platform, architecture and Electron ABI', () => {
   const fingerprint = {
@@ -187,6 +215,47 @@ test('SystemPluginManager binds confirmation to exact bytes and activates only a
   })
 })
 
+test('SystemPluginManager persists keep-data uninstall, reuses the directory on reinstall and can later delete it', async () => {
+  await withManagerFixture(async ({ root, source, store, createManager }) => {
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    const id = installed.packageRecord!.pluginId
+    const artifactPath = installed.packageRecord!.artifactPath
+    const backupPath = installed.installation!.backupPath!
+    const dataPath = join(root, 'data', id)
+    await installer.destroy()
+    const active = createManager()
+    await active.startup()
+    writeFileSync(join(dataPath, 'private-state.json'), '{"items":[42]}')
+    await assert.rejects(active.requestUninstall(id, 'true' as unknown as boolean), /must be a boolean/)
+    assert.equal(active.get(id)?.installation.status, 'active')
+    const pending = await active.requestUninstall(id, true)
+    assert.equal(pending.installation.preserveDataOnUninstall, true)
+    assert.equal(store.pluginPlatform.getSystemPluginInstallationByPlugin(id)?.preserveDataOnUninstall, true)
+    await active.destroy()
+    const cleanup = createManager()
+    assert.deepEqual(await cleanup.startup(), [])
+    assert.equal(existsSync(artifactPath), false)
+    assert.equal(existsSync(backupPath), true)
+    assert.equal(readFileSync(join(dataPath, 'private-state.json'), 'utf8'), '{"items":[42]}')
+    assert.equal(store.pluginPlatform.getSystemPluginInstallationByPlugin(id), null)
+    assert.equal(store.pluginPlatform.listSystemPluginAudit(id).some((entry) =>
+      entry.action === 'installation.uninstalled' && JSON.stringify(entry.details).includes(dataPath.replaceAll('\\', '\\\\'))), true)
+    await installForRestart(cleanup, source)
+    await cleanup.destroy()
+    const reinstalled = createManager()
+    await reinstalled.startup()
+    assert.equal(reinstalled.get(id)?.installation.status, 'active')
+    assert.equal(readFileSync(join(dataPath, 'private-state.json'), 'utf8'), '{"items":[42]}')
+    await reinstalled.requestUninstall(id, false)
+    await reinstalled.destroy()
+    const deleteData = createManager()
+    assert.deepEqual(await deleteData.startup(), [])
+    assert.equal(existsSync(dataPath), false)
+    await deleteData.destroy()
+  })
+})
+
 test('SystemPluginManager passes the current version only when activating a pending upgrade', async () => {
   await withManagerFixture(async ({ root, source, createManager, activations }) => {
     const hostCalls: Array<{ version: string; fromVersion: string | null }> = []
@@ -327,6 +396,10 @@ test(`SystemPluginManager commits Renderer activation atomically and falls back 
         assert.equal(prepared.currentPackage?.id, installed.packageRecord?.id)
         assert.equal(revisionHash, `sha256:${prepared.currentPackage?.contentHash}`)
         assert.equal(store.pluginPlatform.listActiveSystemPluginCrashMarkers().length, 1)
+        const rendererRuns = prepared.recentRuns.filter((run) => run.component === 'renderer')
+        assert.equal(rendererRuns.length, 1)
+        assert.equal(rendererRuns[0].status, 'starting')
+        assert.equal(rendererRuns[0].readyAt, null)
       },
       deactivateRenderer: async () => undefined
     })
@@ -334,6 +407,7 @@ test(`SystemPluginManager commits Renderer activation atomically and falls back 
     assert.equal(firstSummary.installation.status, 'active')
     assert.equal(firstSummary.currentPackage?.version, '1.0.0')
     assert.deepEqual(firstActivations, ['1.0.0'])
+    assert.deepEqual(firstSummary.recentRuns.map((run) => [run.component, run.status]), [['renderer', 'ready']])
 
     const rendererV2 = join(root, 'renderer-v2')
     writeRendererPlugin(rendererV2, '2.0.0')
@@ -387,6 +461,11 @@ test(`SystemPluginManager commits Renderer activation atomically and falls back 
     assert.deepEqual(deactivations, ['system.renderer.fixture'])
     assert.equal(store.pluginPlatform.getSystemPluginPackage(update.packageRecord!.id)?.status, 'failed')
     assert.equal(JSON.stringify(summary).includes('renderer-upgrade-secret'), false)
+    const failedRenderer = summary.recentRuns.find((run) => run.packageId === update.packageRecord!.id)!
+    assert.equal(failedRenderer.component, 'renderer')
+    assert.equal(failedRenderer.status, 'failed')
+    assert.equal(failedRenderer.readyAt, null)
+    assert.deepEqual(getSystemPluginFailureStages(failedRenderer.error), [failurePhase === 'commit' ? 'renderer-commit' : 'activate'])
     assert.equal(store.pluginPlatform.listSystemPluginAudit(request.pluginId).some(
       (entry) => entry.action === 'activation.rollback'
         && JSON.stringify(entry.details).includes('Renderer upgrade rejected')
@@ -424,6 +503,43 @@ test('SystemPluginManager does not publish Renderer contributions when the ready
       assert.equal(deactivations, 1)
     } finally {
       repository.commitSystemPluginActivationReady = originalCommit
+      await manager.destroy()
+    }
+  })
+})
+
+test('Renderer ready record rolls back with the completion marker if its SQLite transaction fails', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'renderer-atomic-ready')
+    writeRendererPlugin(source, '1.0.0')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    const repository = store.pluginPlatform
+    const appendAudit = repository.appendSystemPluginAudit
+    let sawReadyInsideTransaction = false
+    repository.appendSystemPluginAudit = function (input) {
+      if (input.action === 'activation.ready') {
+        const renderer = repository.listSystemPluginRuns(installed.installation!.id)[0]
+        sawReadyInsideTransaction = renderer.status === 'ready'
+        throw new Error('completion audit rejected')
+      }
+      return appendAudit.call(this, input)
+    }
+    const manager = createManager({
+      activateRenderer: async () => undefined, commitRenderer: async () => undefined, deactivateRenderer: async () => undefined
+    })
+    try {
+      const [summary] = await manager.startup()
+      assert.equal(sawReadyInsideTransaction, true)
+      assert.equal(summary.installation.status, 'safe-mode-disabled')
+      const renderer = summary.recentRuns[0]
+      assert.equal(renderer.component, 'renderer')
+      assert.equal(renderer.status, 'failed')
+      assert.equal(renderer.readyAt, null)
+      assert.equal(repository.listSystemPluginAudit(summary.pluginId).some((audit) => audit.action === 'activation.ready'), false)
+    } finally {
+      repository.appendSystemPluginAudit = appendAudit
       await manager.destroy()
     }
   })
@@ -1100,6 +1216,106 @@ test('one-boot safe mode stops a verified detached service without loading plugi
   })
 })
 
+test('application uninstall maintenance removes owned startup and detached processes without loading code or deleting data', async () => {
+  await withManagerFixture(async ({ root, source, store, createManager, activations }) => {
+    writePlugin(source, '1.0.0', 'detached')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    let alive = true
+    const signals: NodeJS.Signals[] = []
+    const hostProcess = Object.create(process) as NodeJS.Process
+    Object.defineProperty(hostProcess, 'kill', { value: (_pid: number, signal: NodeJS.Signals) => {
+      signals.push(signal); alive = false; return true
+    } })
+    const loginItems = new FakeManagerLoginItems()
+    const osPersistenceAdapter = createFullTrustElectronLoginItemAdapter({
+      platform: 'win32', app: loginItems,
+      readWindowsRunValues: async (id) => {
+        const item = loginItems.getLoginItemSettings().launchItems?.find((entry) => entry.name === id)
+        return { user: item ? formatWindowsLoginCommand({ executable: item.path, args: item.args }) : null, machine: null }
+      }
+    })
+    const options = { osPersistenceAdapter, process: hostProcess,
+      inspectDetachedProcess: async (pid: number) => alive ? { pid, executable: process.execPath, startToken: 'uninstall-start' } : null }
+    const boot = createManager(options)
+    await boot.startup()
+    const review = boot.requestOsPersistence(installed.request.pluginId)
+    await boot.resolveOsPersistence({ recordId: review.id, pluginId: review.pluginId, revisionHash: review.revisionHash,
+      decision: 'confirm', acknowledgeSystemStartup: true, actor: 'user' })
+    await assert.rejects(boot.cleanupForApplicationUninstall(), /fresh, inactive/)
+    await boot.destroy()
+    const count = activations.count
+    const dataPath = join(root, 'data', installed.request.pluginId, 'retained.txt')
+    writeFileSync(dataPath, 'retained user state')
+    const cleanup = createManager({ ...options,
+      createHost: () => { throw new Error('Uninstaller loaded plugin host') },
+      createServiceSupervisor: () => { throw new Error('Uninstaller loaded service') } })
+    await cleanup.cleanupForApplicationUninstall()
+    assert.equal(activations.count, count)
+    assert.deepEqual(signals, ['SIGTERM'])
+    assert.equal(loginItems.getLoginItemSettings().openAtLogin, false)
+    assert.equal(existsSync(installed.packageRecord!.artifactPath), true)
+    assert.equal(existsSync(dataPath), true)
+    const installation = store.pluginPlatform.getSystemPluginInstallation(installed.installation!.id)!
+    assert.equal(installation.enabled, false)
+    assert.equal(installation.autoStart, false)
+    assert.equal(installation.status, 'disabled')
+    await cleanup.cleanupForApplicationUninstall()
+    assert.deepEqual(signals, ['SIGTERM'])
+    await cleanup.destroy()
+  })
+})
+
+test('application uninstall refuses to terminate a reused detached PID and records failure', async () => {
+  await withManagerFixture(async ({ source, store, createManager, activations }) => {
+    writePlugin(source, '1.0.0', 'detached')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    const boot = createManager()
+    await boot.startup()
+    await boot.destroy()
+    const count = activations.count
+    const hostProcess = Object.create(process) as NodeJS.Process
+    Object.defineProperty(hostProcess, 'kill', { value: () => { throw new Error('Must never kill reused PID') } })
+    const cleanup = createManager({ process: hostProcess,
+      inspectDetachedProcess: async (pid) => ({ pid, executable: process.execPath, startToken: 'reused-pid' }) })
+    await assert.rejects(cleanup.cleanupForApplicationUninstall(), /uninstall cleanup failed/)
+    assert.equal(activations.count, count)
+    assert.equal(store.pluginPlatform.listSystemPluginAudit(installed.request.pluginId).some(
+      (entry) => entry.action === 'application.uninstall-cleanup' && entry.outcome === 'failure'), true)
+    assert.equal(store.pluginPlatform.listSystemPluginRuns(installed.installation!.id).find((run) => run.component === 'detached')?.status, 'failed')
+    await cleanup.destroy()
+  })
+})
+
+test('application uninstall fails closed when process identity inspection times out', async () => {
+  await withManagerFixture(async ({ source, store, createManager }) => {
+    writePlugin(source, '1.0.0', 'detached')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    const boot = createManager()
+    await boot.startup()
+    await boot.destroy()
+    const signals: unknown[] = []
+    const hostProcess = Object.create(process) as NodeJS.Process
+    Object.defineProperty(hostProcess, 'kill', { value: (...args: unknown[]) => { signals.push(args); return true } })
+    const cleanup = createManager({ process: hostProcess, inspectDetachedProcess: async () => {
+      throw Object.assign(new Error('PowerShell identity inspection timed out'), { code: 'ETIMEDOUT', killed: true })
+    } })
+    await assert.rejects(cleanup.cleanupForApplicationUninstall(), /uninstall cleanup failed/)
+    assert.deepEqual(signals, [])
+    assert.equal(existsSync(installed.packageRecord!.artifactPath), true)
+    const run = store.pluginPlatform.listSystemPluginRuns(installed.installation!.id).find((item) => item.component === 'detached')!
+    assert.equal(run.status, 'failed')
+    assert.equal(run.pid, process.pid)
+    assert.match(JSON.stringify(run.error), /timed out/)
+    await cleanup.destroy()
+  })
+})
+
 test('activating a new revision stops the verified detached service from the old revision', async () => {
   await withManagerFixture(async ({ source, store, createManager, activations }) => {
     writePlugin(source, '1.0.0', 'detached')
@@ -1597,6 +1813,7 @@ async function withManagerFixture(run: (input: {
     activateRenderer?: SystemPluginRendererActivator
     commitRenderer?: SystemPluginRendererCommitter
     deactivateRenderer?: SystemPluginRendererDeactivator
+    getRendererProcessId?: () => number | null
     rendererActivationTimeoutMs?: number
     rendererDeactivationTimeoutMs?: number
     createServiceSupervisor?: SystemPluginServiceFactory
@@ -1724,6 +1941,184 @@ function fakeService(
   }
 }
 
+test('safe startup retires old host runs without touching live PIDs or losing failure and revision diagnostics', async () => {
+  await withManagerFixture(async ({ source, store, createManager }) => {
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    const logPath = 'C:\\diagnostics\\retained-main.log'
+    const runs = (['main', 'renderer', 'main'] as const).map((component, index) => {
+      const run = store.pluginPlatform.createSystemPluginRun({
+        installationId: installed.installation!.id, packageId: installed.packageRecord!.id,
+        component, pid: process.pid, logPath
+      })
+      return store.pluginPlatform.updateSystemPluginRun(run.id, index === 2
+        ? { status: 'failed', error: { stage: 'activate', message: 'retained failure' } }
+        : { status: 'ready' })
+    })
+    const manager = createManager({ createHost: () => { throw new Error('Safe mode must not load a plugin') } })
+    await manager.startup({ safeMode: true })
+    for (const [index, previous] of runs.entries()) {
+      const current = store.pluginPlatform.getSystemPluginRun(previous.id)!
+      assert.equal(current.status, index === 2 ? 'failed' : 'stopped')
+      assert.equal(current.pid, null)
+      assert.equal(current.packageId, previous.packageId)
+      assert.equal(current.logPath, logPath)
+      assert.equal(current.readyAt, previous.readyAt)
+      assert.deepEqual(current.error, previous.error)
+    }
+    assert.doesNotThrow(() => process.kill(process.pid, 0))
+    const detached = store.pluginPlatform.createSystemPluginRun({
+      installationId: installed.installation!.id, packageId: installed.packageRecord!.id,
+      component: 'detached', pid: process.pid
+    })
+    store.pluginPlatform.updateSystemPluginRun(detached.id, { status: 'ready' })
+    assert.equal(store.pluginPlatform.retireSystemPluginHostRuns(installed.installation!.id), 0)
+    assert.equal(store.pluginPlatform.getSystemPluginRun(detached.id)?.status, 'ready')
+    assert.equal(store.pluginPlatform.getSystemPluginRun(detached.id)?.pid, process.pid)
+    await manager.destroy()
+  })
+})
+
+test('Main and Renderer keep distinct revision runs through atomic publication, reload and stop', async () => {
+  await withManagerFixture(async ({ root, store, createManager }) => {
+    const source = join(root, 'both-components')
+    writeRendererPlugin(source, '1.0.0')
+    const manifest = JSON.parse(readFileSync(join(source, 'plugin.json'), 'utf8'))
+    manifest.entries.main = 'dist/main.cjs'
+    writeFileSync(join(source, 'plugin.json'), JSON.stringify(manifest))
+    writeFileSync(join(source, 'dist/main.cjs'), 'module.exports = { activate() {} }')
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    let rendererPid = 12345
+    const manager = createManager({
+      getRendererProcessId: () => rendererPid,
+      activateRenderer: async () => undefined,
+      commitRenderer: async (id, revision) => {
+        const summary = manager.get(id)!
+        assert.equal(summary.recentRuns.length, 2)
+        assert.equal(summary.recentRuns.find((run) => run.component === 'main')?.status, 'ready')
+        const renderer = summary.recentRuns.find((run) => run.component === 'renderer')!
+        assert.equal(renderer.status, 'starting')
+        assert.equal(renderer.readyAt, null)
+        manager.rendererReady(id, revision)
+        assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.status, 'starting')
+      },
+      deactivateRenderer: async () => undefined
+    })
+    const [summary] = await manager.startup()
+    const renderer = summary.recentRuns.find((run) => run.component === 'renderer')!
+    assert.ok(summary.recentRuns.every((run) => run.status === 'ready' && run.packageId === installed.packageRecord!.id))
+    assert.equal(renderer.pid, 12345)
+    assert.equal(summary.recentRuns.find((run) => run.component === 'main')?.pid, process.pid)
+    for (let index = 0; index < 30; index += 1) {
+      const historical = store.pluginPlatform.createSystemPluginRun({
+        installationId: installed.installation!.id, packageId: installed.packageRecord!.id, component: 'service'
+      })
+      store.pluginPlatform.updateSystemPluginRun(historical.id, { status: 'stopped' })
+    }
+    assert.ok(manager.get(summary.pluginId)!.recentRuns.some((run) => run.id === renderer.id))
+    assert.ok(manager.get(summary.pluginId)!.recentRuns.some((run) => run.component === 'main' && run.status === 'ready'))
+    manager.rendererUnavailable(new Error('crashed token=private-renderer-token'))
+    assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.status, 'failed')
+    assert.deepEqual(getSystemPluginFailureStages(store.pluginPlatform.getSystemPluginRun(renderer.id)?.error), ['renderer-disconnected'])
+    assert.equal(manager.get(summary.pluginId)?.recentRuns.find((run) => run.component === 'main')?.status, 'ready')
+    assert.doesNotMatch(JSON.stringify(manager.get(summary.pluginId)), /private-renderer-token/)
+    manager.rendererReady(summary.pluginId, 'sha256:old-revision')
+    assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.status, 'failed')
+    manager.rendererUnavailable()
+    rendererPid = 54321
+    manager.rendererReady(summary.pluginId, `sha256:${summary.currentPackage!.contentHash}`)
+    assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.pid, rendererPid)
+    assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.status, 'ready')
+    await manager.disable(summary.pluginId)
+    assert.ok(manager.get(summary.pluginId)!.recentRuns.every((run) => run.status === 'stopped'))
+    manager.rendererReady(summary.pluginId, `sha256:${summary.currentPackage!.contentHash}`)
+    assert.equal(store.pluginPlatform.getSystemPluginRun(renderer.id)?.status, 'stopped')
+    await manager.destroy()
+  })
+})
+
+for (const stage of ['load', 'context', 'activate', 'health-check', 'migrate'] as const) {
+test(`real Main ${stage} exception persists its stage with bounded redacted diagnostics`, async () => {
+  await withManagerFixture(async ({ root, source, store, createManager }) => {
+    const createHost: SystemPluginHostFactory<Record<never, never>> = (options) => new SystemPluginHost({
+      ...options, ...(stage === 'context' ? { services: undefined, createServices: () => { throw new Error('boom token=private-stage-token') } } : {})
+    })
+    const installer = createManager({ createHost })
+    if (stage === 'migrate') {
+      await installForRestart(installer, source)
+      await installer.destroy()
+      const first = createManager({ createHost })
+      await first.startup()
+      await first.destroy()
+      writePlugin(source, '2.0.0')
+    }
+    const failure = "throw new Error('boom token=private-stage-token ' + 'x'.repeat(20000))"
+    const code = stage === 'load' ? failure
+      : `module.exports = { activate() { ${stage === 'activate' ? failure : ''} }, ${stage === 'health-check' ? 'healthCheck' : 'migrate'}() { ${failure} } }`
+    writeFileSync(join(source, 'dist/main.cjs'), code)
+    const installing = stage === 'migrate' ? createManager({ createHost }) : installer
+    const installed = await installForRestart(installing, source)
+    await installing.destroy()
+    const manager = createManager({ createHost })
+    await manager.startup()
+    const failed = store.pluginPlatform.getSystemPluginPackage(installed.packageRecord!.id)!
+    assert.equal(failed.status, 'failed')
+    assert.deepEqual(getSystemPluginFailureStages(failed.error), [stage])
+    assert.match(JSON.stringify(failed.error), /boom/)
+    assert.doesNotMatch(JSON.stringify(failed.error), /private-stage-token/)
+    assert.ok(JSON.stringify(failed.error).length < 22_000)
+    if (stage !== 'context') {
+      assert.match((failed.error as { stack: string }).stack, /dist[\\/]main\.cjs/)
+    }
+    const run = store.pluginPlatform.listSystemPluginRuns(installed.installation!.id)
+      .find((candidate) => candidate.packageId === failed.id && candidate.component === 'main')!
+    assert.deepEqual(getSystemPluginFailureStages(run.error), [stage])
+    assert.ok(store.pluginPlatform.listSystemPluginAudit(installed.request.pluginId).some((audit) => (
+      audit.action === 'activation.failed' && getSystemPluginFailureStages(audit.details).includes(stage)
+    )))
+    await manager.destroy()
+  })
+})
+}
+
+for (const action of ['disable', 'quit'] as const) {
+test(`combined Main and Renderer ${action} preserves ordinary cleanup stages`, async () => {
+  await withManagerFixture(async ({ root, createManager }) => {
+    const source = join(root, 'cleanup-stages')
+    writeRendererPlugin(source, '1.0.0')
+    const manifest = JSON.parse(readFileSync(join(source, 'plugin.json'), 'utf8'))
+    manifest.entries.main = 'dist/main.cjs'
+    writeFileSync(join(source, 'plugin.json'), JSON.stringify(manifest))
+    writeFileSync(join(source, 'dist/main.cjs'), `module.exports = {
+      activate(context) { context.registerDisposable(() => { throw new Error('dispose token=private-cleanup-token') }) },
+      beforeQuit() { throw new Error('beforeQuit failed') },
+      deactivate() { throw new Error('deactivate password=private-password') }
+    }`)
+    const installer = createManager()
+    const installed = await installForRestart(installer, source)
+    await installer.destroy()
+    const manager = createManager({
+      createHost: (options) => new SystemPluginHost(options),
+      activateRenderer: async () => undefined, commitRenderer: async () => undefined, deactivateRenderer: async () => undefined
+    })
+    await manager.startup()
+    await assert.rejects(action === 'disable' ? manager.disable(installed.request.pluginId) : manager.destroy(), /failed/)
+    const summary = manager.get(installed.request.pluginId)!
+    assert.deepEqual(getSystemPluginFailureStages(summary.installation.lastError).sort(),
+      action === 'quit' ? ['before-quit', 'deactivate', 'dispose'] : ['deactivate', 'dispose'])
+    assert.equal(summary.recentRuns.find((run) => run.component === 'renderer')?.status, 'stopped')
+    const main = summary.recentRuns.find((run) => run.component === 'main')!
+    assert.equal(main.status, 'failed')
+    assert.deepEqual(getSystemPluginFailureStages(main.error).sort(), ['deactivate', 'dispose'])
+    assert.doesNotMatch(JSON.stringify(summary), /private-cleanup-token|private-password/)
+    if (action === 'disable') await manager.destroy()
+  })
+})
+}
+
 function writePlugin(
   root: string,
   version = '1.0.0',
@@ -1789,7 +2184,7 @@ class FakeManagerLoginItems implements FullTrustElectronLoginItemApplication {
       launchItems: current
         ? [{
             name: current.name ?? '',
-            path: current.path ?? '',
+            path: (current.path ?? '').replace(/^"(.*)"$/, '$1'),
             args: [...(current.args ?? [])],
             scope: 'user',
             enabled: current.enabled !== false

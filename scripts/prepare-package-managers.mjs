@@ -15,7 +15,9 @@ const { dependencies } = JSON.parse(await readFile(join(source, 'package.json'),
 for (const [manager, version] of Object.entries(dependencies)) {
   const installed = JSON.parse(await readFile(join(target, 'node_modules', manager, 'package.json'), 'utf8'))
   if (installed.version !== version) throw new Error(`Unexpected ${manager} version: ${installed.version}`)
-  await run(join(target, 'node_modules', manager, manager === 'pnpm' ? 'bin/pnpm.mjs' : 'bin/yarn.js'), ['--version'])
+  const cli = { pnpm: 'bin/pnpm.mjs', yarn: 'bin/yarn.js', 'node-gyp': 'bin/node-gyp.js' }[manager]
+  if (!cli) throw new Error(`Unknown acceptance tool: ${manager}`)
+  await run(join(target, 'node_modules', manager, cli), ['--version'])
 }
 
 function run(script, args) {

@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>KnowBook capability preload</title>
+<pre id="preload-result">pending</pre>
+<script>
+window.capabilityReady = (async () => {
+  const reply = await window.capabilityPreload.ping('renderer-to-dedicated-preload-to-main')
+  const result = {
+    proof: window.capabilityPreload.proof.trim(),
+    node: window.capabilityPreload.node,
+    isolated: typeof require === 'undefined' && typeof process === 'undefined',
+    reply
+  }
+  document.querySelector('#preload-result').textContent = JSON.stringify(result)
+  return result
+})()
+</script>

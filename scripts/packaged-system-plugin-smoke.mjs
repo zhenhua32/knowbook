@@ -13,7 +13,8 @@ console.log(`Running native System Plugin acceptance against ${executable}`)
 process.exitCode = await new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [
     join(root, 'node_modules', '@playwright', 'test', 'cli.js'),
-    'test', 'system-plugins-native.spec.ts', 'system-plugins-native-rebuild.spec.ts', '--reporter=list'
+    'test', 'system-plugins-native.spec.ts', 'system-plugins-native-rebuild.spec.ts', '--reporter=list',
+    '--output=test-results/native-system-plugins'
   ], { cwd: root, env, stdio: 'inherit', windowsHide: true })
   child.once('error', reject)
   child.once('close', (code) => resolve(code ?? 1))

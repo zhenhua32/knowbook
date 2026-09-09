@@ -20,7 +20,8 @@ import type {
   SystemPluginRuntimeTimeouts,
   SystemPluginStatusEvent
 } from './types'
-import { SystemPluginUnhealthyError } from './types'
+import { SystemPluginRuntimeError, SystemPluginUnhealthyError } from './types'
+import { SystemPluginOutputLog } from './output-log'
 
 const DEFAULT_TIMEOUTS: SystemPluginRuntimeTimeouts = Object.freeze({
   migrateMs: 30_000,
@@ -42,10 +43,12 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
   private healthOperation: Promise<SystemPluginHealthCheckResult> | null = null
   private beforeQuitOperation: Promise<void> | null = null
   private deactivation: Promise<void> | null = null
+  private readonly outputLog: SystemPluginOutputLog | null
 
   constructor(private readonly options: SystemPluginHostOptions<TServices>) {
     validateOptions(options)
     this.timeouts = normalizeTimeouts(options.timeouts)
+    this.outputLog = options.logPath ? new SystemPluginOutputLog(options.logPath) : null
   }
 
   get status(): SystemPluginRuntimeStatus {
@@ -64,7 +67,10 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
         `System plugin "${this.options.plugin.id}" cannot activate from ${this.currentStatus} status.`
       ))
     }
-    this.activation = this.runActivation()
+    this.activation = this.withOutput(() => this.runActivation()).catch(async error => {
+      await this.outputLog?.close().catch(() => undefined)
+      throw error
+    })
     return this.activation
   }
 
@@ -75,7 +81,7 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
         `System plugin "${this.options.plugin.id}" health check requires active status.`
       ))
     }
-    this.healthOperation = this.runHealthCheck(false).finally(() => {
+    this.healthOperation = this.withOutput(() => this.runHealthCheck(false)).finally(() => {
       this.healthOperation = null
     })
     return this.healthOperation
@@ -91,15 +97,22 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
         `System plugin "${this.options.plugin.id}" cannot run beforeQuit from ${this.currentStatus} status.`
       ))
     }
-    this.beforeQuitOperation = this.runBeforeQuit()
+    this.beforeQuitOperation = this.withOutput(() => this.runBeforeQuit())
     return this.beforeQuitOperation
   }
 
   deactivate(): Promise<void> {
     if (this.deactivation) return this.deactivation
     if (this.currentStatus === 'stopped') return Promise.resolve()
-    this.deactivation = this.runDeactivation()
+    this.deactivation = this.withOutput(() => this.runDeactivation()).finally(async () => {
+      // OutputLog handles I/O errors and enforces its own bounded flush budget.
+      await this.outputLog?.close()
+    })
     return this.deactivation
+  }
+
+  private withOutput<T>(operation: () => T): T {
+    return this.outputLog ? this.outputLog.run(operation) : operation()
   }
 
   private async runActivation(): Promise<SystemPluginActivationResult> {
@@ -327,7 +340,11 @@ export class SystemPluginHost<TServices extends object = Record<never, never>> {
     fatal: boolean,
     label?: string
   ): Error {
-    const error = normalizeError(rawError)
+    const normalized = normalizeError(rawError)
+    const error = normalized instanceof SystemPluginRuntimeError
+      ? normalized
+      : new SystemPluginRuntimeError(normalized.message, stage, { cause: normalized })
+    if (error !== normalized) error.stack = normalized.stack
     const event: SystemPluginErrorEvent = Object.freeze({
       pluginId: this.options.plugin.id,
       revisionHash: this.options.plugin.revisionHash,

@@ -87,8 +87,8 @@ export function usePluginsDomain({
     onRecoverSystemPlugin: (plugin) => {
       void pluginState.recoverSystemPlugin(plugin)
     },
-    onUninstallSystemPlugin: (plugin) => {
-      void pluginState.uninstallSystemPlugin(plugin)
+    onUninstallSystemPlugin: (plugin, preserveData) => {
+      void pluginState.uninstallSystemPlugin(plugin, preserveData)
     },
     onRollbackSystemPlugin: (plugin, packageId) => {
       void pluginState.rollbackSystemPlugin(plugin, packageId)

@@ -209,6 +209,8 @@ export interface CommitSystemPluginActivationReadyInput {
   auditId?: string
   /** Renderer publication must acknowledge before its crash marker is cleared. */
   rendererCommitPhase?: 'prepare' | 'complete'
+  /** The exact renderer run becomes ready in the same transaction as the final marker. */
+  rendererRunId?: string
 }
 
 export interface SystemPluginActivationReadyCommitResult {
@@ -358,6 +360,7 @@ type SystemPluginInstallationRow = {
   enabled: number
   auto_start: number
   safe_mode_disabled: number
+  preserve_data_on_uninstall: number
   status: SystemPluginInstallationRecord['status']
   current_package_id: string | null
   pending_package_id: string | null
@@ -1674,6 +1677,20 @@ export class SqlitePluginPlatformRepository {
     return (rows as SystemPluginPackageRow[]).map(mapSystemPluginPackage)
   }
 
+  listSystemPluginPackagesAwaitingInstallRecovery(): SystemPluginPackageRecord[] {
+    return (this.db.prepare(`
+      SELECT package.* FROM system_plugin_packages AS package
+      WHERE package.status = 'installing'
+        OR json_extract(package.error_json, '$.name') = 'SystemPluginInstallInterruptedError'
+        OR json_extract(package.runtime_fingerprint_json, '$.installPreparation') IS NOT NULL
+        OR EXISTS (
+          SELECT 1 FROM system_plugin_dependency_jobs AS job
+          WHERE job.package_id = package.id AND job.status IN ('pending', 'running')
+        )
+      ORDER BY package.created_at ASC, package.id ASC
+    `).all() as SystemPluginPackageRow[]).map(mapSystemPluginPackage)
+  }
+
   updateSystemPluginPackage(
     packageId: string,
     input: UpdateSystemPluginPackageInput
@@ -1737,15 +1754,16 @@ export class SqlitePluginPlatformRepository {
       'System plugin pending package id'
     )
     const backupPath = normalizeNullablePath(input.backupPath, 'System plugin backup path')
+    const preserveData = normalizeBoolean(input.preserveDataOnUninstall ?? false, 'System plugin uninstall data flag')
     this.assertSystemPackageOwnership(pluginId, currentPackageId)
     this.assertSystemPackageOwnership(pluginId, pendingPackageId)
     const now = this.now().toISOString()
     this.db.prepare(`
       INSERT INTO system_plugin_installations (
         id, plugin_id, enabled, auto_start, safe_mode_disabled, status,
-        current_package_id, pending_package_id, last_error_json, backup_path,
+        current_package_id, pending_package_id, last_error_json, backup_path, preserve_data_on_uninstall,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
     `).run(
       id,
       pluginId,
@@ -1756,6 +1774,7 @@ export class SqlitePluginPlatformRepository {
       currentPackageId,
       pendingPackageId,
       backupPath,
+      preserveData ? 1 : 0,
       now,
       now
     )
@@ -1812,6 +1831,9 @@ export class SqlitePluginPlatformRepository {
     const safeModeDisabled = input.safeModeDisabled === undefined
       ? record.safeModeDisabled
       : normalizeBoolean(input.safeModeDisabled, 'System plugin safe-mode flag')
+    const preserveData = input.preserveDataOnUninstall === undefined
+      ? record.preserveDataOnUninstall
+      : normalizeBoolean(input.preserveDataOnUninstall, 'System plugin uninstall data flag')
     const status = input.status === undefined
       ? record.status
       : normalizeSystemPluginInstallationStatus(input.status)
@@ -1833,7 +1855,7 @@ export class SqlitePluginPlatformRepository {
       UPDATE system_plugin_installations
       SET enabled = ?, auto_start = ?, safe_mode_disabled = ?, status = ?,
           current_package_id = ?, pending_package_id = ?, last_error_json = ?,
-          backup_path = ?, updated_at = ?
+          backup_path = ?, preserve_data_on_uninstall = ?, updated_at = ?
       WHERE id = ?
     `).run(
       enabled ? 1 : 0,
@@ -1844,6 +1866,7 @@ export class SqlitePluginPlatformRepository {
       pendingPackageId,
       lastError === null ? null : stringifyJson(lastError, 'System plugin installation error'),
       backupPath,
+      preserveData ? 1 : 0,
       this.now().toISOString(),
       record.id
     )
@@ -1921,6 +1944,22 @@ export class SqlitePluginPlatformRepository {
       WHERE installation_id = ?
       ORDER BY started_at DESC, id ASC LIMIT ?
     `).all(id, normalizedLimit) as SystemPluginRunRow[]).map(mapSystemPluginRun)
+  }
+
+  retireSystemPluginHostRuns(installationId: string, liveRunIds: readonly string[] = []): number {
+    const installation = this.requireSystemPluginInstallation(installationId)
+    const retainedIds = liveRunIds.map((id) => normalizeId(id, 'System plugin live run id', 500))
+    const now = this.now().toISOString()
+    // A newly locked host owns no previous Main/Renderer processes. This only
+    // retires database observations; it never inspects or kills a recorded PID.
+    return this.db.prepare(`
+      UPDATE system_plugin_runs SET
+        status = CASE WHEN status IN ('starting', 'ready', 'stopping') THEN 'stopped' ELSE status END,
+        pid = NULL, stopped_at = COALESCE(stopped_at, ?), updated_at = ?
+      WHERE installation_id = ? AND component IN ('main', 'renderer')
+        AND (pid IS NOT NULL OR status IN ('starting', 'ready', 'stopping'))
+        ${retainedIds.length > 0 ? `AND id NOT IN (${retainedIds.map(() => '?').join(', ')})` : ''}
+    `).run(now, now, installation.id, ...retainedIds).changes
   }
 
   updateSystemPluginRun(runId: string, input: UpdateSystemPluginRunInput): SystemPluginRunRecord {
@@ -2107,6 +2146,18 @@ export class SqlitePluginPlatformRepository {
       .map(mapSystemPluginDependencyJob)
   }
 
+  listSystemPluginDependencyJobsAwaitingRecovery(packageId: string): SystemPluginDependencyJobRecord[] {
+    const id = normalizeId(packageId, 'System plugin package id', 500)
+    return (this.db.prepare(`
+      SELECT * FROM system_plugin_dependency_jobs
+      WHERE package_id = ? AND (
+        status IN ('pending', 'running') OR
+        (json_extract(error_json, '$.name') = 'SystemPluginInstallInterruptedError'
+          AND (pid IS NOT NULL OR json_extract(error_json, '$.unidentifiedProcess') = 1))
+      ) ORDER BY created_at ASC, id ASC
+    `).all(id) as SystemPluginDependencyJobRow[]).map(mapSystemPluginDependencyJob)
+  }
+
   updateSystemPluginDependencyJob(
     jobId: string,
     input: UpdateSystemPluginDependencyJobInput
@@ -2291,6 +2342,16 @@ export class SqlitePluginPlatformRepository {
       const installation = this.requireSystemPluginInstallation(installationId)
       const packageRecord = this.requireSystemPluginPackage(packageId)
       const run = this.requireSystemPluginRun(runId)
+      const rendererRun = input.rendererRunId === undefined
+        ? null
+        : this.requireSystemPluginRun(normalizeId(input.rendererRunId, 'System plugin renderer run id', 500))
+      if (rendererRun && (
+        !rendererCommitPhase || rendererRun.component !== 'renderer'
+        || rendererRun.installationId !== installation.id || rendererRun.packageId !== packageRecord.id
+        || rendererRun.status !== 'starting'
+      )) {
+        throw new Error('System plugin renderer run does not match the pending renderer lifecycle.')
+      }
 
       if (marker.state !== 'armed' || marker.clearedAt !== null) {
         throw new Error(`System plugin crash marker "${marker.id}" is not armed.`)
@@ -2332,7 +2393,7 @@ export class SqlitePluginPlatformRepository {
         && isRecord(packageRecord.manifestSnapshot)
         && isRecord(packageRecord.manifestSnapshot.background)
         && packageRecord.manifestSnapshot.background.autoStart === false
-      if (run.status !== 'ready' && !manualService) {
+      if (run.status !== 'ready' && !manualService && run.id !== rendererRun?.id) {
         throw new Error(
           `System plugin run "${run.id}" cannot commit activation from ${run.status} status.`
         )
@@ -2347,6 +2408,11 @@ export class SqlitePluginPlatformRepository {
         throw new Error('System plugin pending package pointer changed before renderer commit.')
       }
 
+      if (rendererRun && rendererCommitPhase === 'complete') {
+        this.updateSystemPluginRun(rendererRun.id, {
+          status: 'ready', readyAt, lastHeartbeatAt: readyAt, health: { ok: true }, error: null
+        })
+      }
       const committedMarker = rendererCommitPhase === 'prepare'
         ? marker
         : this.updateSystemPluginCrashMarker(marker.id, {
@@ -2923,6 +2989,7 @@ function mapSystemPluginInstallation(
     (row.enabled !== 0 && row.enabled !== 1)
     || (row.auto_start !== 0 && row.auto_start !== 1)
     || (row.safe_mode_disabled !== 0 && row.safe_mode_disabled !== 1)
+    || (row.preserve_data_on_uninstall !== 0 && row.preserve_data_on_uninstall !== 1)
   ) {
     throw new Error('Stored system plugin installation flags are corrupt.')
   }
@@ -2933,6 +3000,7 @@ function mapSystemPluginInstallation(
     enabled: row.enabled === 1,
     autoStart: row.auto_start === 1,
     safeModeDisabled: row.safe_mode_disabled === 1,
+    preserveDataOnUninstall: row.preserve_data_on_uninstall === 1,
     status: row.status,
     currentPackageId: row.current_package_id,
     pendingPackageId: row.pending_package_id,

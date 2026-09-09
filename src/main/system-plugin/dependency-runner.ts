@@ -52,6 +52,8 @@ export interface SystemPluginDependencyProcessTask {
   packageManager: SystemPluginPackageManager | 'none'
   /** Exact executable followed by its argument vector. */
   command: readonly string[]
+  /** Host-selected overrides; recorded in dependency logs alongside the command. */
+  environment?: Readonly<Record<string, string>>
 }
 
 export interface SystemPluginDependencyNativeRunnerContext {
@@ -77,6 +79,7 @@ export type SystemPluginNativeRebuildStrategy =
   | {
     type: 'command'
     command: readonly string[]
+    environment?: Readonly<Record<string, string>>
   }
   | {
     type: 'runner'
@@ -279,11 +282,13 @@ export function createSystemPluginDependencyTasks(
     throw new Error('System plugin native rebuild requires an explicit host-provided command or runner.')
   }
 
+  const environment = createDependencyEnvironment(plan)
   const tasks: SystemPluginDependencyTask[] = [freezeProcessTask({
     execution: 'process',
     kind: 'install',
     packageManager: plan.packageManager,
-    command: createInstallCommand(plan)
+    command: createInstallCommand(plan),
+    ...(environment ? { environment } : {})
   })]
 
   if (plan.buildCommand) {
@@ -291,7 +296,8 @@ export function createSystemPluginDependencyTasks(
       execution: 'process',
       kind: 'build',
       packageManager: plan.packageManager,
-      command: createBuildCommand(plan.buildCommand)
+      command: createBuildCommand(plan.buildCommand),
+      ...(environment ? { environment } : {})
     }))
   }
 
@@ -305,7 +311,10 @@ export function createSystemPluginDependencyTasks(
         execution: 'process',
         kind: 'native-rebuild',
         packageManager: plan.packageManager,
-        command
+        command,
+        ...((environment || options.nativeRebuild.environment) ? {
+          environment: { ...environment, ...options.nativeRebuild.environment }
+        } : {})
       })
       : Object.freeze({
         execution: 'native-runner' as const,
@@ -462,6 +471,10 @@ export async function probeSystemPluginNativeModules(
 }
 
 function createInstallCommand(plan: SystemPluginDependencyPlan): readonly string[] {
+  if (plan.packageManager === 'yarn' && plan.yarnMode === 'modern') {
+    return Object.freeze(['yarn', 'install', ...(plan.install === 'ci' ? ['--immutable'] : []),
+      '--inline-builds', ...(!plan.allowScripts ? ['--mode=skip-build'] : [])])
+  }
   const command = plan.packageManager === 'npm'
     ? ['npm', plan.install]
     : plan.packageManager === 'pnpm'
@@ -469,6 +482,21 @@ function createInstallCommand(plan: SystemPluginDependencyPlan): readonly string
       : ['yarn', 'install', ...(plan.install === 'ci' ? ['--frozen-lockfile'] : [])]
   if (!plan.allowScripts) command.push('--ignore-scripts')
   return Object.freeze(command)
+}
+
+function createDependencyEnvironment(plan: SystemPluginDependencyPlan): Readonly<Record<string, string>> | undefined {
+  if (plan.packageManager !== 'yarn' || plan.yarnMode !== 'modern') return undefined
+  // A plugin-local PnP loader must not patch the shared Electron Main resolver.
+  // Environment settings take precedence over the package's .yarnrc.yml.
+  return Object.freeze({
+    YARN_NODE_LINKER: 'node-modules',
+    YARN_NM_MODE: 'classic',
+    YARN_ENABLE_GLOBAL_CACHE: 'false',
+    YARN_ENABLE_MIRROR: 'false',
+    YARN_GLOBAL_FOLDER: '.yarn/global',
+    YARN_ENABLE_SCRIPTS: String(plan.allowScripts),
+    YARN_ENABLE_IMMUTABLE_INSTALLS: String(plan.install === 'ci')
+  })
 }
 
 function createBuildCommand(input: readonly string[]): readonly string[] {
@@ -800,8 +828,12 @@ function executeProcessTask(input: ProcessExecutionInput): Promise<number> {
   const [executable, ...args] = input.task.command
   let child: ChildProcess
   try {
+    if (input.task.environment) {
+      emitLog(input, 'stdout', `Host dependency environment: ${JSON.stringify(input.task.environment)}\n`)
+    }
     child = input.spawn(executable, args, {
       cwd: input.cwd,
+      ...(input.task.environment ? { env: mergeDependencyEnvironment(input.task.environment) } : {}),
       shell: false,
       windowsHide: true,
       // POSIX needs a dedicated process group for group signals. Windows uses
@@ -943,6 +975,15 @@ function executeProcessTask(input: ProcessExecutionInput): Promise<number> {
   })
 }
 
+function mergeDependencyEnvironment(overrides: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  const keys = new Set(Object.keys(overrides).map((key) => key.toUpperCase()))
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!keys.has(key.toUpperCase())) env[key] = value
+  }
+  return { ...env, ...overrides }
+}
+
 type NativeRunnerExecutionInput = {
   cwd: string
   task: SystemPluginDependencyNativeRunnerTask
@@ -1023,6 +1064,10 @@ function validateDependencyPlan(plan: SystemPluginDependencyPlan): void {
   if (plan.install !== 'ci' && plan.install !== 'install') {
     throw new Error('System plugin dependency install mode must be ci or install.')
   }
+  if (plan.yarnMode !== undefined && (plan.packageManager !== 'yarn'
+    || (plan.yarnMode !== 'classic' && plan.yarnMode !== 'modern'))) {
+    throw new Error('System plugin dependencies yarnMode must be classic or modern and requires packageManager yarn.')
+  }
   if (typeof plan.allowScripts !== 'boolean' || typeof plan.rebuildNativeModules !== 'boolean') {
     throw new Error('System plugin dependency script and native rebuild flags must be booleans.')
   }
@@ -1036,6 +1081,13 @@ function validateTask(task: SystemPluginDependencyTask): void {
     throw new TypeError('System plugin dependency task must be an object.')
   }
   normalizeCommand(task.command, 'System plugin dependency task command')
+  if (task.execution === 'process' && task.environment) {
+    for (const [key, value] of Object.entries(task.environment)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== 'string' || value.includes('\0')) {
+        throw new Error('System plugin dependency task environment is invalid.')
+      }
+    }
+  }
   if (task.execution !== 'process' && task.execution !== 'native-runner') {
     throw new Error('System plugin dependency task execution type is invalid.')
   }
@@ -1063,7 +1115,8 @@ function normalizeCommand(command: readonly string[], label: string): readonly s
 function freezeProcessTask(
   task: Omit<SystemPluginDependencyProcessTask, 'command'> & { command: readonly string[] }
 ): SystemPluginDependencyProcessTask {
-  return Object.freeze({ ...task, command: Object.freeze([...task.command]) })
+  return Object.freeze({ ...task, command: Object.freeze([...task.command]),
+    ...(task.environment ? { environment: Object.freeze({ ...task.environment }) } : {}) })
 }
 
 function normalizeRootDirectory(value: string): string {

@@ -105,6 +105,14 @@ test('v3 manifest normalization rejects privilege ambiguity and unsafe entry pat
   }
 })
 
+test('Yarn dialect is explicit manifest metadata and cannot be used for other managers', () => {
+  const dependencies = { ...dependencyPlan(), packageManager: 'yarn', yarnMode: 'modern' }
+  assert.equal(normalizeSystemPluginV3Manifest({ ...validManifest(), dependencies }).dependencies?.yarnMode, 'modern')
+  for (const invalid of [{ ...dependencies, yarnMode: 'berry' }, { ...dependencies, packageManager: 'npm' }]) {
+    assert.throws(() => normalizeSystemPluginV3Manifest({ ...validManifest(), dependencies: invalid }), /yarnMode/)
+  }
+})
+
 test('artifact inspection produces deterministic path-framed SHA-256 and sorted file manifests', async () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-system-artifact-'))
   try {

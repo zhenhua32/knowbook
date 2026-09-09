@@ -133,8 +133,8 @@ test('main window guards reloads via same-origin check and hardens asset respons
   )
   assert.match(
     mainIndexSource,
-    /removeSystemPluginFramePolicies\([\s\S]*?fullTrustPopupWindows[\s\S]*?popup\.window\.close\(\)/,
-    'deactivation must close popups owned by removed Full Trust frame policies'
+    /function removeSystemPluginFramePolicies[\s\S]*?removeSystemPluginFramePolicy\(frameName\)[\s\S]*?removeSystemPluginFrameResources\(frameName, fullTrustFramePolicies, fullTrustPopupWindows\)/,
+    'deactivation must invoke managed cleanup for popups owned by removed Full Trust frame policies'
   )
   assert.match(
     mainIndexSource,

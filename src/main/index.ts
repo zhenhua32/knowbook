@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
 import { rm as removePath } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
@@ -65,6 +65,7 @@ import type {
   SystemPluginFramePolicyInput,
   RemoveSystemPluginFramePolicyInput,
   SystemPluginMutationInput,
+  UninstallSystemPluginInput,
   SystemPluginSummary,
   UpdatePluginSettingInput,
   UpdateAiConfigInput,
@@ -136,7 +137,10 @@ import {
   type SystemPluginManagerSummary
 } from './system-plugin'
 import { normalizeSystemPluginV3Manifest } from './system-plugin-artifact'
+import { disposeSystemPluginWindow, removeSystemPluginFrameResources, snapshotSystemPluginFrameResources, SystemPluginManagedResources } from './system-plugin/managed-resources'
 import { createSystemPluginStartupCommand, resolveKnowbookUserDataOverride } from './system-plugin/startup-command'
+import { cleanupSystemPluginsForApplicationUninstall, isSystemPluginUninstallCleanup } from './system-plugin/uninstall-cleanup'
+import { consumeDatabaseRestoreSafeMode, parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from './database/restore-maintenance'
 import { extractSystemPluginArchive } from './system-plugin-archive'
 import {
   createEphemeralCredentialStorage,
@@ -184,6 +188,7 @@ const fullTrustPopupWindows = new Map<number, {
   frameName: string
   window: ElectronBrowserWindow
 }>()
+const systemPluginManagedResources = new SystemPluginManagedResources(() => pluginMutationNotifier.notify())
 
 function recordPackagedRuntimeSmoke(status: 'started' | 'passed' | 'failed', error?: unknown): void {
   if (!PACKAGED_RUNTIME_SMOKE_RESULT_PATH) return
@@ -231,8 +236,11 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
-app.on('render-process-gone', (_event, _webContents, details) => {
+app.on('render-process-gone', (_event, webContents, details) => {
   console.error('Renderer process exited unexpectedly.', details)
+  if (servicesInitialized && mainWindow?.webContents === webContents) {
+    systemPluginManager.rendererUnavailable(new Error(`Renderer process exited: ${details.reason}`))
+  }
 })
 
 app.on('child-process-gone', (_event, details) => {
@@ -310,11 +318,26 @@ if (userDataOverride) {
   app.setPath('userData', resolve(userDataOverride))
 }
 
+let maintenanceArgumentError: unknown
+let databaseRestorePath: string | null = null
+let uninstallCleanupRequested = false
+try {
+  databaseRestorePath = parseDatabaseRestoreArgument(process.argv)
+  uninstallCleanupRequested = isSystemPluginUninstallCleanup(process.argv)
+} catch (error) { maintenanceArgumentError = error }
+const databaseRestoreRequested = process.argv.some((argument) => argument.startsWith('--knowbook-restore-database'))
+const maintenanceRequested = uninstallCleanupRequested || databaseRestoreRequested || Boolean(maintenanceArgumentError)
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
-  app.quit()
+  if (maintenanceRequested) {
+    if (databaseRestoreRequested) dialog.showErrorBox('KnowBook 数据库恢复未执行', '该工作区仍有 KnowBook 实例运行。请完全退出应用后重试，数据库未替换。')
+    app.exit(23)
+  }
+  else app.quit()
 }
-const earlyWebClipExtractionWorker = hasSingleInstanceLock
+const earlyWebClipExtractionWorker = hasSingleInstanceLock && !maintenanceRequested
+  && !existsSync(join(app.getPath('userData'), 'database-restore-pending.json'))
+  && !existsSync(join(app.getPath('userData'), 'database-restore-safe-mode.json'))
   ? new WebClipExtractionWorkerRunner()
   : null
 
@@ -636,6 +659,7 @@ function initializeServices(): void {
       notifyWorkspaceMutation,
       cancelDocumentSummaryGeneration,
       registerDisposable: bindings.registerDisposable,
+      desktopResources: systemPluginManagedResources.forPlugin(bindings.plugin),
       requestOsPersistence: () => systemPluginManager.requestOsPersistence(
         bindings.plugin.id,
         'plugin'
@@ -696,6 +720,8 @@ function initializeServices(): void {
     activateRenderer: activateFullTrustRenderer,
     commitRenderer: commitFullTrustRenderer,
     deactivateRenderer: deactivateFullTrustRenderer,
+    getRendererProcessId: () => mainWindow && !mainWindow.webContents.isDestroyed()
+      ? mainWindow.webContents.getOSProcessId() || null : null,
     createServices: createFullTrustPluginServices,
     createServiceRpcMethods: ({ plugin }) => createKnowbookFullTrustServiceRpcMethods(
       createFullTrustPluginServices({
@@ -932,8 +958,10 @@ async function synchronizeFullTrustRendererPlugins(): Promise<void> {
         source: readFileSync(entryPath, 'utf8')
       })
       await commitFullTrustRenderer(manifest.id, `sha256:${packageRecord.contentHash}`)
+      systemPluginManager.rendererReady(manifest.id, `sha256:${packageRecord.contentHash}`)
     } catch (error) {
       console.error(`Full Trust renderer activation failed for ${manifest.id}.`, error)
+      systemPluginManager.rendererFailed(manifest.id, `sha256:${packageRecord.contentHash}`, error)
       await systemPluginManager.disable(manifest.id).catch(() => undefined)
     }
   }
@@ -980,7 +1008,12 @@ function createWindow(): ElectronBrowserWindow {
       })
       const webContentsId = popup.webContents.id
       fullTrustPopupWindows.set(webContentsId, { frameName, window: popup })
-      popup.once('closed', () => fullTrustPopupWindows.delete(webContentsId))
+      pluginMutationNotifier.notify()
+      popup.once('closed', () => {
+        fullTrustPopupWindows.delete(webContentsId)
+        pluginMutationNotifier.notify()
+      })
+      popup.on('page-title-updated', () => pluginMutationNotifier.notify())
       popup.webContents.on('will-navigate', (event, url) => {
         const livePolicy = fullTrustFramePolicies.get(frameName)
         if (
@@ -1075,7 +1108,7 @@ function createWindow(): ElectronBrowserWindow {
     rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled because the renderer closed.')
     mainWindow = null
     for (const popup of fullTrustPopupWindows.values()) {
-      if (!popup.window.isDestroyed()) popup.window.close()
+      disposeSystemPluginWindow(popup.window)
     }
     fullTrustPopupWindows.clear()
     fullTrustFramePolicies.clear()
@@ -1085,6 +1118,9 @@ function createWindow(): ElectronBrowserWindow {
     void synchronizeFullTrustRendererPlugins().catch((error) => {
       console.error('Full Trust renderer synchronization failed.', error)
     })
+  })
+  mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (servicesInitialized && isMainFrame && !isInPlace) systemPluginManager.rendererUnavailable()
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -1211,6 +1247,7 @@ function toSystemPluginSummary(summary: SystemPluginManagerSummary): SystemPlugi
     publisher: manifest?.publisher ?? '—',
     enabled: summary.installation.enabled,
     safeModeDisabled: summary.installation.safeModeDisabled,
+    preserveDataOnUninstall: summary.installation.preserveDataOnUninstall,
     status: summary.installation.status,
     currentVersion: summary.currentPackage?.version ?? null,
     currentArtifactSha256: summary.currentPackage?.contentHash ?? null,
@@ -1236,6 +1273,10 @@ function toSystemPluginSummary(summary: SystemPluginManagerSummary): SystemPlugi
       : [],
     lastRun: summary.lastRun,
     recentRuns: summary.recentRuns,
+    managedResources: [
+      ...systemPluginManagedResources.snapshot(summary.pluginId),
+      ...snapshotSystemPluginFrameResources(summary.pluginId, fullTrustFramePolicies, fullTrustPopupWindows)
+    ],
     osPersistence: summary.osPersistence,
     dataPath: join(systemPluginDataRoot, summary.pluginId),
     logPath: join(systemPluginLogRoot, summary.pluginId)
@@ -1310,26 +1351,15 @@ function isAllowedFullTrustFrameUrl(url: string, allowedOrigins: string[]): bool
 }
 
 function removeSystemPluginFramePolicies(pluginId: string): void {
-  const removedFrameNames = new Set<string>()
   for (const [frameName, policy] of fullTrustFramePolicies) {
     if (policy.pluginId !== pluginId) continue
-    removedFrameNames.add(frameName)
-    fullTrustFramePolicies.delete(frameName)
-  }
-  for (const [webContentsId, popup] of fullTrustPopupWindows) {
-    if (!removedFrameNames.has(popup.frameName)) continue
-    fullTrustPopupWindows.delete(webContentsId)
-    if (!popup.window.isDestroyed()) popup.window.close()
+    removeSystemPluginFramePolicy(frameName)
   }
 }
 
 function removeSystemPluginFramePolicy(frameName: string): void {
-  fullTrustFramePolicies.delete(frameName)
-  for (const [webContentsId, popup] of fullTrustPopupWindows) {
-    if (popup.frameName !== frameName) continue
-    fullTrustPopupWindows.delete(webContentsId)
-    if (!popup.window.isDestroyed()) popup.window.close()
-  }
+  removeSystemPluginFrameResources(frameName, fullTrustFramePolicies, fullTrustPopupWindows)
+  pluginMutationNotifier.notify()
 }
 
 function findFullTrustPermissionPolicy(
@@ -1961,10 +1991,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:uninstall-system-plugin', async (
     _event,
-    input: SystemPluginMutationInput
+    input: UninstallSystemPluginInput
   ): Promise<SystemPluginSummary> => {
     removeSystemPluginFramePolicies(input.pluginId)
-    const summary = await systemPluginManager.requestUninstall(input.pluginId)
+    const summary = await systemPluginManager.requestUninstall(input.pluginId, input.preserveData)
     pluginMutationNotifier.notify()
     return toSystemPluginSummary(summary)
   })
@@ -2080,6 +2110,7 @@ function registerIpcHandlers(): void {
       throw new Error('Full Trust frame policy token is already owned by another plugin revision.')
     }
     fullTrustFramePolicies.set(policy.frameName, policy)
+    pluginMutationNotifier.notify()
   })
 
   ipcMain.handle('knowbook:remove-system-plugin-frame-policy', (
@@ -2828,7 +2859,32 @@ function getAssetContentType(filePath: string): string {
   }
 }
 
-if (hasSingleInstanceLock) {
+if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentError)) {
+  void app.whenReady().then(async () => {
+    if (maintenanceArgumentError) throw maintenanceArgumentError
+    if (!databaseRestorePath) throw new Error('数据库恢复备份路径缺失。')
+    const result = await restoreKnowbookDatabase({ userDataRoot, backupPath: databaseRestorePath })
+    writeFileSync(join(userDataRoot, 'database-restore-result.json'), JSON.stringify({ status: 'restored', ...result }, null, 2))
+    console.log(`KnowBook 数据库已恢复，下次启动将进入安全模式。原始文件：${result.recoveryDirectory}`)
+    app.exit(0)
+  }).catch((error) => {
+    const message = error instanceof AggregateError ? [error.message, ...error.errors.map(String)].join('\n') : String(error)
+    console.error('KnowBook 数据库恢复失败。', message)
+    try { writeFileSync(join(userDataRoot, 'database-restore-result.json'), JSON.stringify({ status: 'failed', error: message }, null, 2)) } catch { /* Native dialog still exposes the failure. */ }
+    dialog.showErrorBox('KnowBook 数据库恢复未完成', message)
+    app.exit(25)
+  })
+} else if (hasSingleInstanceLock && uninstallCleanupRequested) {
+  // The NSIS maintenance process must never activate a plugin or initialize
+  // renderer, AI, updater, worker, or third-party uninstall hooks.
+  void app.whenReady().then(() => cleanupSystemPluginsForApplicationUninstall({
+    userDataRoot, executable: process.execPath, app,
+    ...(userDataOverride ? { discoverProfiles: async () => [] } : {})
+  })).then(() => app.exit(0), (error) => {
+    console.error('KnowBook application uninstall cleanup failed.', error)
+    app.exit(24)
+  })
+} else if (hasSingleInstanceLock) {
   app.on('second-instance', () => {
     if (!mainWindow) {
       return
@@ -2840,7 +2896,8 @@ if (hasSingleInstanceLock) {
     mainWindow.focus()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
+    const restoredDatabaseSafeMode = await recoverInterruptedDatabaseRestore(userDataRoot)
     initializeServices()
     registerAssetPreviewProtocol()
     registerPluginUiProtocol()
@@ -2848,7 +2905,7 @@ if (hasSingleInstanceLock) {
     registerWorkspaceEventHandlers()
     registerIpcHandlers()
     pluginHost.discoverAll()
-    if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1') {
+    if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1' && !restoredDatabaseSafeMode) {
       void pluginPlatformV2.activateBuiltinPlugins().then(() => {
         recordPackagedRuntimeSmoke('passed')
         console.log('KnowBook packaged Plugin Platform runtime smoke passed.')
@@ -2889,10 +2946,10 @@ if (hasSingleInstanceLock) {
         const safeModeNextBoot = store.getSettingPublic(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY) === '1'
         if (safeModeNextBoot) store.deleteSetting(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY)
         void Promise.allSettled([
-          pluginHost.activateAll(),
-          pluginPlatformV2.activateBuiltinPlugins(),
+          restoredDatabaseSafeMode ? Promise.resolve() : pluginHost.activateAll(),
+          restoredDatabaseSafeMode ? Promise.resolve() : pluginPlatformV2.activateBuiltinPlugins(),
           systemPluginManager.startup({
-            safeMode: safeModeNextBoot || process.env['KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE'] === '1'
+            safeMode: restoredDatabaseSafeMode || safeModeNextBoot || process.env['KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE'] === '1'
           })
         ]).then((results) => {
           for (const result of results) {
@@ -2904,6 +2961,7 @@ if (hasSingleInstanceLock) {
           console.error('Plugin startup coordination failed.', error)
         }).finally(() => {
           pluginMutationNotifier.notify()
+          if (restoredDatabaseSafeMode) void consumeDatabaseRestoreSafeMode(userDataRoot).catch(console.error)
         })
       })
     }
@@ -2923,6 +2981,10 @@ if (hasSingleInstanceLock) {
         createWindow()
       }
     })
+  }).catch((error) => {
+    console.error('KnowBook 启动前数据库检查失败。', error)
+    dialog.showErrorBox('KnowBook 无法安全打开数据库', String(error))
+    app.exit(26)
   })
 
   app.on('window-all-closed', () => {

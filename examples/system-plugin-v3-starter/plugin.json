@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 3,
+  "trust": "full",
+  "id": "system.example.starter",
+  "name": "系统插件开发示例",
+  "version": "1.0.0",
+  "description": "创建一篇示例文档，显示首页卡片，并运行应用内后台服务。",
+  "publisher": "KnowBook Examples",
+  "fullAccess": true,
+  "entries": { "main": "main.cjs", "renderer": "renderer.cjs", "service": "service.cjs" },
+  "background": { "mode": "app-lifetime", "autoStart": true },
+  "riskDeclarations": ["node", "filesystem", "documents", "settings", "renderer", "background-service"]
+}

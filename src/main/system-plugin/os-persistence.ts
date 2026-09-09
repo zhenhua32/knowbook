@@ -910,6 +910,7 @@ function cloneLoginItemSettings(
 ): FullTrustElectronLoginItemSettings {
   return {
     ...settings,
+    ...(settings.path && platform === 'win32' ? { path: quoteWindowsLoginArgument(settings.path) } : {}),
     ...(settings.args ? { args: platform === 'win32' ? settings.args.map(quoteWindowsLoginArgument) : [...settings.args] } : {})
   }
 }
@@ -920,6 +921,7 @@ function cloneLoginItemQuery(
 ): FullTrustElectronLoginItemQuery {
   return {
     ...query,
+    ...(query.path && platform === 'win32' ? { path: quoteWindowsLoginArgument(query.path) } : {}),
     ...(query.args ? { args: platform === 'win32' ? query.args.map(quoteWindowsLoginArgument) : [...query.args] } : {})
   }
 }

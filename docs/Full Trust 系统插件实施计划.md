@@ -30,7 +30,7 @@ Full Trust 不是对 v2 capability 的简单扩容，也不使用沙箱或细粒
 1. Plugin Platform v2：使用 QuickJS/WASM、不可变 revision、Grant Set、Capability Broker、声明式 ViewSpec 和 sandboxed iframe。
 2. Legacy v1：使用现有 `PluginHost` 和 utility process，提供首页卡片、文档动作、设置、事件监听、文档读取和摘要更新等兼容能力。
 3. System Plugin v3 核心链路：已加入 v3 manifest 与 artifact 校验、精确 SHA-256 确认、不可变发布、持久化状态、重启激活、Main 生命周期、版本化 service RPC、宿主服务、Renderer registry、插件中心入口、回滚/卸载和启动恢复的首轮实现及自动化测试；受控 Windows Electron E2E 已验证精确确认、离线 npm 依赖准备，以及重启后的 Main、任意 AI 请求、app-lifetime service RPC、Renderer、HTTP/WebSocket Full Trust frame、主进程创建的 Node 特权窗口和最终 `active` 状态。
-4. 发布验收缺口：十二类能力的代码入口、后台监督、可跨宿主重连的 service RPC、native probe 和宿主管理的登录启动均已有首轮实现；Windows x64 unpacked 应用已通过真实 SQLite `.node` 加载、插件升级/回滚、C++ 源码针对 Electron ABI 重编译及编译失败保护、卸载清理验收；同一插件在 Electron 35.7.5（ABI 133）→ 36.0.0（ABI 135）→ 35.7.5 的真实宿主切换中已自动重建、保持数据并复用原确认。Windows 登录启动项登记与命令重放、detached 接管，以及安装生命周期/build 脚本和失败保护均已有打包态证据；pnpm 11.19.0 与 Yarn Classic 1.22.22 的离线安装、脚本开关、构建及重启加载也已通过；真实系统登录/重启、安装包卸载无残留矩阵及第 9 节十二项能力的统一验收证据仍待完成。
+4. 发布验收进展：同一受控插件十二项能力、各包管理器原生重编译、安装中断/数据库恢复、日志/资源/独立进程状态、数据保留卸载，以及真实 NSIS/更新器升级、回退和卸载均已取得 Windows 证据。目前仅真实 Windows 登录/系统重启尚缺隔离测试机；macOS/Linux 实测按用户要求不作为门槛。
 
 v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、Store、SQLite、用户目录、API Key 或宿主 Renderer，这一边界是有意设计，不能为实现 Full Trust 而拆除。
 
@@ -48,32 +48,31 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 
 ### 2.3 实施进度矩阵
 
-本节记录截至 2026-09-08 的仓库实现快照。“已落地”只表示相应代码及针对性自动化测试已经存在，不等于第 20 节最终验收完成，也不表示 ADR-0007 已达到 `Implemented`。凡缺少 Windows 打包态或完整 E2E 证据的项目，均保留在“仍待完成”列。
+截至 2026-09-09，阶段 0–5 的主要实现已落地。下表区分代码、已取得的 Windows 证据与尚未完成的发布验收；ADR-0007 仍为 Accepted。按用户要求，macOS/Linux 实测不作为本轮门槛，已有跨平台实现和单测保留。
 
-| 阶段 | 当前状态 | 已完成（当前代码范围） | 仍待完成与验收 |
-| --- | --- | --- | --- |
-| 阶段 0：ADR、契约与防回归 | 大部分完成 | ADR-0007、v3 manifest/风险目录/共享状态类型和受控验收插件工程已经建立；v2 iframe 默认拒绝与 v3 精确 token 例外已有防回归测试；Windows Electron 已跑通受控安装/重启、远程 frame 与特权窗口验收链路 | 固化 Windows 打包态完整能力与故障恢复验证矩阵 |
-| 阶段 1：安装、持久化与插件中心 | 大部分完成 | 目录/ZIP artifact 检查与 staging、ZIP 路径/大小/链接防护、文件清单和 SHA-256、精确 artifact 用户确认、schema v11、installation/package/run/audit/job/crash marker/OS persistence repository、重启待激活、回滚与卸载状态机、插件中心管理操作已经接线；启动时会清扫已结束请求遗留的 staging；artifact 发布使用排他目录占用、排他复制和发布后重算 hash，竞争发布不会覆盖已有 revision；Windows Electron E2E 已覆盖选择、确认、重启待处理、插件升级、回滚及重启后卸载清理 | 补齐更多失败 UI 状态的 Electron E2E；验证真实打包应用与异常中断下的原子性 |
-| 阶段 2：Main Runtime 与基础系统能力 | 大部分完成（代码、单测与 Windows E2E） | `SystemPluginHost`、CJS/ESM 加载、Context/disposable、Node/Electron/`process`/`require`、Store/raw SQLite/路径/事件、重启激活、crash marker 恢复与一次性安全模式已经实现；升级 revision 会在 `activate` 前有界执行 `migrate(context, fromVersion)`，迁移失败复用 last-known-good 自动回滚；同步启动失败会回滚/安全停用，失败的启动 Promise 会从缓存清除以允许受控重试；ABI 指纹不匹配会触发重新准备或失败阻断；Windows Electron E2E 已验证重启后 Main 使用 Node/文件系统、raw Store/SQLite、Electron、环境变量、HTTP 和托管子进程 | 完成坏插件、死循环、`process.exit()` 和原生崩溃场景的 Electron 集成验证，并在 Windows 打包态复验 |
-| 阶段 3：数据、AI 与桌面 API | 部分完成 | 文档移动/删除和数据库 CRUD 包装、raw Store/SQLite、AI complete/stream/raw request、AI Key 与环境变量、任意 settings、剪贴板/shell/窗口/菜单/托盘 helper、启用/升级前备份路径已经实现；Full Trust Documents API 与显式事件会写入宿主控制的 `originPluginId`、运行期 `correlationId` 和逐操作 `causationId`；Windows Electron E2E 已验证文档创建/移动/删除、数据库/列/实体 CRUD、任意设置读写删除、Electron 窗口访问，以及向本地 OpenAI-compatible mock 发送任意 messages、tools、seed 并使用宿主 API Key 认证 | 以真实 Renderer 验证全部 mutation event/刷新和回滚恢复；补齐 AI 流式/取消/错误、剪贴板、菜单、托盘、外部程序及密钥日志脱敏的打包态 E2E；核对所有稳定 API 的版本化契约 |
-| 阶段 4：Renderer、React 与 Full Trust Frame | 大部分完成（代码、单测与 Windows E2E） | Renderer entry 注入、React singleton/slot/root/portal、command/page/route/shortcut、DOM/CSS/theme/disposable registry、无 sandbox frame、精确 revision/origin/popup/navigation/download/permission 策略、停用清理和 v2 默认拒绝已经实现并有针对性测试；Renderer 激活现在参与 Main 的原子 activation commit，失败或超时会清理部分注册并让 pending revision 走 last-known-good 回滚；Windows Electron E2E 已验证同一精确 revision 的 React/DOM/CSS、升级与回滚后的精确 Renderer revision 切换、远程 HTTP/WebSocket frame、权限请求、导航、下载、主进程独立创建的 Node 特权窗口及停用/卸载时 UI 清理 | 补齐专属 preload 和 Windows 打包态窗口行为验证 |
-| 阶段 5：npm、Native Module 与后台服务 | 大部分完成（含 Windows unpacked native E2E） | 确认后的 npm/pnpm/yarn 任务执行、build、Electron target native rebuild、原生模块隔离 probe、依赖 job/log；所有包（包括无依赖包）先复制到可变 runtime，确认 artifact 保持不可变；native scan 覆盖整个 runtime，并支持取消和总预算；依赖命令与 native probe 在 timeout/cancel 后等待进程树退出；Windows 对 npm/pnpm/yarn `.cmd` shim 使用受限参数的 `cmd.exe` 适配；受控 Electron E2E 已真实运行离线 `npm ci --ignore-scripts`、实体化本地 `file:` 依赖并在重启后从可变 runtime 成功 `require()`；supervisor 已接入 manager/run/插件中心/退出和卸载，支持 app-lifetime、detached adoption、心跳、日志、有界重启与停止；service RPC v1 以闭合 JSON 协议、精确 plugin/revision、白名单方法、超时/并发/大小/深度限制和元数据审计接入 Documents、Databases、Settings、AI、Secrets、事件、路径、剪贴板与 shell，受控 Windows Electron E2E 已验证真实子进程往返；本机命名管道/Unix socket 以精确 revision 与 launch nonce 认证，真实子进程测试已验证宿主端点关闭、重建后原 PID 恢复 RPC；detached 身份以 PID、可执行文件、OS start token、revision、service entry 和 launch nonce 校验，支持手动启动身份落盘、adoption 后停止再启动、安全模式停服及升级旧 revision 清理；macOS `mainAppService` 按全局单例协调；Windows/macOS Electron login item 和 Linux XDG autostart 具备独立精确确认、持久记录、状态核验与卸载清理；Windows x64 unpacked（Electron 35.7.5、ABI 133）已通过真实 SQLite .node 探测/加载、坏二进制拒绝、插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、数据保持及正常/失败 revision 卸载清理；ABI 不匹配时 manager 先核验并停止 detached 进程，再准备 runtime，停止失败则阻断；模拟旧指纹刷新及真实 Node ABI 127 → Electron ABI 133 源码重编译均已通过，编译失败保留当前 active 版本和编译日志；Windows 真实宿主 ABI 133 → 135 → 133 升级/回退已通过，保持原确认与数据，相同宿主重启不重复编译；pnpm 11.19.0 与 Yarn Classic 1.22.22 已通过离线安装、脚本开关、build、重启加载、锁文件失败保护及卸载 | 补齐新版 Yarn 与 pnpm/Yarn 原生模块实测、真实系统登录/重启及安装包卸载无残留验证 |
-
-十二类能力的当前证据和缺口如下。这里的“可用”指首轮代码入口存在；在第 20 节验收全部通过前，产品和文档不得将整个 Full Trust v3 标记为 `Implemented`。
-
-| 能力编号 | 当前证据 | 仍待完成 |
+| 阶段 | 当前实现与已验证行为 | 剩余验收 |
 | --- | --- | --- |
-| 1–2 | Main Context 已暴露文件/路径、Store、raw SQLite、Node、Electron、`process`、`require`、shell 和子进程入口；受控 Windows Electron E2E 已验证精确 revision 读写 `dataRoot`、读取用户数据路径、查询 raw Store/SQLite、读取 Node/Electron 版本、访问主窗口并运行托管 Electron-Node 子进程 | 继续完成用户选择目录、shell 与异常子进程 E2E，并在 Windows 打包态复验 |
-| 3 | Main 可使用 Node 网络；Windows Electron E2E 已验证 Main HTTP fetch，以及远程 v3 frame 的 HTTP 和 WebSocket 往返 | 取消、TLS/错误及 Windows 打包态验证 |
-| 4 | 依赖 runner/package preparer 已覆盖 npm/pnpm/yarn、脚本、build、Electron target rebuild、ABI 指纹和隔离 native module probe；Windows Electron E2E 已真实运行离线 `npm ci --ignore-scripts` 并加载本地 `file:` 纯 JS 包；Windows x64 unpacked（Electron 35.7.5、ABI 133）已探测并加载真实 SQLite `.node`、拒绝坏二进制、完成插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、保持数据并在卸载时清除正常及失败 revision；模拟旧持久化 ABI 指纹刷新，以及真实 C++ addon 从 Node ABI 127 重编译为 Electron ABI 133 均已通过；错误 ABI 拒绝、成功/失败编译日志、失败升级保留旧 active 版本和不可变 artifact 已验收；同一确认 revision 的真实 Electron 35.7.5 → 36.0.0 → 35.7.5 重编译、确认复用、数据保持、兼容重启及卸载已通过；pnpm/Yarn Classic 的纯 JS 依赖安装与构建打包态验收已通过 | 验证新版 Yarn、pnpm/Yarn native rebuild 和安装器/更新器驱动的应用升级 |
-| 5 | AI complete、stream、raw request、配置和 API Key 入口已实现；本地 HTTP 集成测试覆盖完整响应、流式读取、调用方取消、插件停用取消、HTTP/JSON/传输错误、错误体有界读取以及原始响应；Windows Electron E2E 已验证 SSE/UTF-8、取消、停用断连、HTTP/JSON 错误及非 JSON 原始响应 | Windows 打包态复验流式、取消、错误和原始响应 |
-| 6–7 | Documents/Databases 稳定包装及 raw SQLite 已实现，并有针对性服务测试；Windows Electron E2E 已验证文档创建/移动/删除，以及数据库、select 列、实体创建/更新/删除 | 完整验证递归删除、链接、视图/实体批量 CRUD、事件和 Renderer 一致性 |
-| 8–9 | Electron desktop helper、环境/Secrets 与任意 settings API 已实现；Windows Electron E2E 已验证环境变量、任意设置 round-trip、主窗口访问和停用关闭特权窗口 | 在真实打包应用中验证剪贴板、菜单、托盘、外部程序、资源自动清理和 UI 更新 |
-| 10 | Renderer registry 与 entry 注入已实现，覆盖 React/DOM/CSS/preload 访问入口和清理；受控 Windows Electron E2E 已验证重启后精确 revision 的可见 React contribution、全局 CSS、frame DOM 以及停用清理 | 继续完成自定义路由/命令、专属 preload 和升级 revision 切换 E2E |
-| 11 | v3 无 sandbox frame 与精确 revision/origin token 已接入，v2 默认拒绝测试仍保留；Windows Electron E2E 已验证远程联网、权限请求、popup、导航、下载、主进程独立创建的 Node 特权窗口以及停用关窗 | 补齐升级撤销及 Windows 打包态端到端策略验证 |
-| 12 | supervisor 已接入生命周期和持久化，支持 app-lifetime/detached、ready/heartbeat、日志、重启上限、强制停止和重启 adoption；service RPC v1 已有协议、真实子进程和 Windows Electron E2E，本机 transport 测试已验证 detached 跨宿主重连且 PID 不变；detached 身份校验、手动启动、adoption 后重启、安全模式停服、旧 revision 清理和 macOS `mainAppService` 单例已有单测；OS startup 已有独立确认、三平台适配、插件中心控制和卸载清理 | 完成真实系统登录/应用升级/系统重启后的 Windows 打包态无残留验证 |
+| 0：契约与防回归 | v3 manifest、精确 artifact 确认、独立安装/运行通道；同一打包宿主中真实 v2 QuickJS 与 iframe 默认拒绝控制组 | 673 项完整测试、安全测试及 83 项桌面用例通过；其中两项启动时序问题修复后定向复验通过 |
+| 1：安装与插件中心 | schema v12、不可变 artifact、可变 runtime、依赖任务/审计、升级/回滚、保留或删除私有数据、重新安装复用；真实安装中断后保留旧 active、失败任务和日志，同 hash 需再次选择与确认方可重试 | 已通过独立 NSIS/更新器闭环（含两种数据卸载选项） |
+| 2：Main 与恢复 | CJS/ESM、生命周期、Context/disposable、crash marker、安全模式、last-known-good；新增 Main stdout/stderr 按 revision 归档，SDK 事件回调保持日志归属 | 已补齐分进程状态、实际 PID、失败阶段与原堆栈；安全启动会退休历史运行记录 |
+| 3：数据、AI、桌面 | Documents/Databases/Store/raw SQLite、事件与真实 Renderer 刷新、AI 流式/取消/错误、Settings/Secrets；剪贴板、shell、菜单、托盘、专属 preload 窗口；安装脚本执行前备份、SQLite 恢复维护入口、托管资源摘要 | 已通过独立运行状态/真实 PID 与数据库恢复；最终包 1280/900 宽度排版已无注入实测，字段清楚且无裁切 |
+| 4：Renderer 与可信 frame | React 单例、页面/命令/快捷键、DOM/CSS/theme、任意 preload API；远程 HTTP/WebSocket frame、权限/导航/下载与独立 Node 特权窗口；停用清理及阻止关闭时销毁窗口 | 已取得资源摘要、日志和实际 beforeunload 清理证据 |
+| 5：依赖与后台服务 | npm、pnpm 11.19.0、Yarn Classic 1.22.22、Yarn 4.9.4；四种管理器的 Electron native rebuild；真实 ABI 133→135→133 重建；RPC、心跳、有限重启、detached 同 PID 接管与显式停止；Windows Run 独立确认及维护卸载 | 真实 Windows 注销/登录和系统重启（需隔离测试机或 VM） |
 
-当前受控 Windows Electron E2E 的已通过链路为：用户选择插件目录 → 插件中心展示主进程计算的精确 SHA-256、风险声明和 npm 依赖计划 → 用户勾选完整风险确认 → 输入完整插件 ID → 确认后真实执行离线 `npm ci --ignore-scripts` 并进入 `pending-restart` → 使用同一隔离 userData 重启 → Main entry 从可变 runtime 加载纯 JS 依赖，并使用 Node/文件系统、raw Store/SQLite、用户数据路径、环境变量、Electron、托管子进程和 HTTP，完成任意 AI 请求、文档移动/删除、数据库 CRUD 与任意设置 round-trip → Main 通过 Electron 向 Renderer 传递受控测试地址 → app-lifetime service 通过 `globalThis.knowbookService` 调用 `system.ping` 与 `paths.get` 并写入精确 revision/路径标记 → Renderer entry 注入可见 React contribution 与 CSS → 无 sandbox 远程 frame 完成 HTTP、WebSocket、权限、导航与下载 → 精确 popup token 触发主进程创建独立 Node 特权窗口 → 停用插件后 frame、CSS 与特权窗口一并清理。该证据只覆盖当前 Windows Electron 构建中的这条受控链路，不替代 Windows 打包态或十二项能力的最终验收。
+同一个受控插件的十二项核心能力已在 Windows unpacked 完成八阶段统一验收，证据为 `test-results/system-capabilities/**/capabilities-evidence.json`，十二行均 passed 且清理错误为空。新增资源摘要、日志归属与脱敏、宿主事件回调、实际 beforeunload 拦截及停用销毁断言也已通过。可长期保留的证据归档在 `release/acceptance/system-capabilities`。
+
+| 能力 | 已取得的统一验收证据 |
+| --- | --- |
+| 1–2：文件、系统与进程 | 用户选择目录、私有数据、Node/process/require、环境、真实外部 URI helper 与进程退出 |
+| 3：网络 | HTTP、WebSocket、可信本地 TLS、拒绝非可信 TLS、取消及错误 |
+| 4：依赖与原生模块 | 同一插件离线 npm 本地依赖与真实 SQLite .node；独立管理器矩阵另验证安装脚本、构建与 C++ ABI 重编译 |
+| 5：AI | 宿主配置与密钥、任意消息、SSE/UTF-8、取消、停用断连、HTTP/JSON 错误及原始响应 |
+| 6–7：文档与数据库 | 树操作、链接、数据库/列/视图/批量实体、raw SQLite、事件及真实 Renderer 刷新 |
+| 8–9：桌面与设置 | 剪贴板所有权、菜单、托盘、外部程序、专属 preload/Node 窗口、设置与主题持久化 |
+| 10–11：Renderer 与可信 UI | React/DOM/CSS/页面/命令/快捷键、远程 frame、popup/导航/下载/权限、精确 revision 策略及 v2 拒绝控制组 |
+| 12：后台 | app-lifetime、六次受控服务崩溃达到五次重启上限后安全停用、用户恢复、detached 宿主退出仍心跳、原 PID 接管/RPC 重连、显式停止与卸载 |
+
+Windows Run 命令重放、真实 Electron ABI 切换和统一插件验收是不同证据；它们不能代替真实系统登录/重启，也不等于 NSIS 安装器/更新器验收。当前进度以第 19.4 节为准。
 
 ## 3. 目标与非目标
 
@@ -231,7 +230,7 @@ README.md                    # 推荐
 4. 插件中心展示插件 ID、版本、发布者、精确 hash、entry、依赖命令、安装脚本、风险类别和是否包含 native module。
 5. 用户勾选完整系统访问确认，并确认精确插件 ID；只有用户发起的 IPC 可以完成确认。
 6. 确认后将已复核的 staging 内容原子发布到 `userData/system-plugins/artifacts/<pluginId>/<contentHash>`；发布过程排他占用目标、排他复制并重新计算 hash，不替换已经存在的 revision。
-7. 将不可变 artifact 复制到 `userData/system-plugins/runtime/<pluginId>/<contentHash>`；包括无依赖包在内的所有代码都从可变 runtime 执行，依赖安装、生命周期脚本、构建、native rebuild 与 probe 也只修改该副本，并保存完整输出。
+7. 在任何依赖安装、脚本、build、native rebuild 或 probe 之前创建 SQLite 安全备份；随后将不可变 artifact 复制到 `userData/system-plugins/runtime/<pluginId>/<contentHash>`；包括无依赖包在内的所有代码都从可变 runtime 执行，依赖安装、生命周期脚本、构建、native rebuild 与 probe 也只修改该副本，并保存完整输出。
 8. runtime 准备成功后，installation 指向 pending revision，状态变为 `confirmed-restart-required`。
 9. 重启后启动协调器激活 pending revision；健康检查通过后提交为 current revision。
 10. 激活失败时清理失败的启动任务，恢复上一个已知可用 revision 或安全停用，并在插件中心显示错误。
@@ -533,7 +532,7 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 - 推荐 SDK 写操作复用 Store，确保路径、链接、字段约束、FTS、事件和 UI 刷新一致。
 - raw SQLite 写入不保证领域不变量。执行后插件必须主动调用 `notifyWorkspaceMutation`，必要时补发事件。
-- Full Trust 插件首次启用和升级前自动创建数据库安全备份，并在 installation 中记录备份路径。
+- Full Trust 插件在任何依赖脚本/build/native 运行前、首次启用、升级/回滚及 ABI 重新准备前创建数据库安全备份，并在 installation 或失败请求中记录备份路径。
 - raw SQL 破坏 schema、外键、FTS 或应用设置时，恢复方案是停用插件并还原备份；权限系统不能阻止此类破坏。
 - 插件状态保存在独立 `data/<pluginId>` 目录；代码 revision 回滚默认不删除数据。
 
@@ -652,7 +651,7 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 完成标准：验收插件通过能力 4 和 12，纯 JS/native 依赖及两类后台服务在打包应用中可安装、运行和移除。
 
-当前证据：2026-09-06 已完成 Windows x64 unpacked（Electron 35.7.5、ABI 133）的 native 专用夹具验收，覆盖真实 SQLite `.node` 探测/加载、坏二进制拒绝、插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚、数据保持，以及卸载时正常/失败 revision 的 artifact/runtime 和插件 data/log 清理。SQLite 夹具的 ABI 刷新场景只修改旧持久化指纹，再重新复制当前 ABI 的预编译文件并探测。新增 C++ 源码夹具已真实编译 Node ABI 127 二进制，验证 Electron 拒绝不同 ABI，再经确认后由宿主针对 Electron ABI 133 重编译、重启加载；编译失败时保留当前可用版本并记录编译器日志。2026-09-07 新增的独立双宿主验收已通过实际 Electron 35.7.5（ABI 133）→ 36.0.0（ABI 135）→ 35.7.5 切换、同一 revision 自动重编译和数据保持；此证据不包含自动更新器或 NSIS 安装。manager 在 ABI 不匹配时会先核验并停止持久化 detached 进程，确认停止后才准备 runtime，失败则阻断。这些证据不表示能力 12 或十二项能力的统一验收已完成；命令和其余门槛见第 19.4 节。
+当前证据：Windows unpacked 的纯 JS、四种包管理器 native rebuild、真实 SQLite、宿主 ABI 133→135→133、app-lifetime/detached、Run 注册/命令重放和统一十二项核心能力均已有实测。NSIS/更新器闭环亦已通过；真实 OS 登录/重启待独立 Windows 测试环境。命令与精确结果见第 19.4 节。
 
 ## 19. 测试计划
 
@@ -689,61 +688,65 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 ### 19.4 当前自动化证据与剩余门槛
 
-- 受控验收工程与 [Windows Electron E2E](../e2e-tests/system-plugins.spec.ts) 已覆盖：选择目录、展示主进程计算的精确 SHA-256、风险声明和依赖计划、确认复选框、完整插件 ID 匹配、用户确认；真实离线 `npm ci --ignore-scripts`、锁文件、本地 `file:` 纯 JS 依赖实体化、可变 runtime 加载、`pending-restart`、复用隔离 userData 重启；Main Node/文件系统/用户数据路径/raw Store/SQLite/环境变量/Electron/子进程/HTTP、Documents/Databases/Settings，以及使用宿主 API Key 向本地 OpenAI-compatible mock 发送任意 messages/tools/seed；app-lifetime service 的真实 Main RPC 往返；Renderer React/DOM/CSS、远程 HTTP/WebSocket frame、权限请求、导航、下载、独立 Node 特权窗口、停用清理，以及最终 `active` 状态。
-- 独立的 Windows Electron 生命周期验收已覆盖：首次安装不执行迁移、1.0.0 → 2.0.0 升级前执行 `migrate`、重启后切换到精确 Renderer revision、从 2.0.0 回滚到 1.0.0、3.0.0 Renderer 初始化失败后回退 1.0.0 并清理 Main 资源、卸载时立即清理 Renderer/CSS，以及下一次启动清除正常和失败 revision 的 artifact/runtime 与插件 data/log。
-- [native 专用 E2E](../e2e-tests/system-plugins-native.spec.ts) 于 2026-09-06 在 Windows x64 unpacked 应用中通过（本轮复跑 37.3 秒）；实际进程为 Electron 35.7.5、`process.versions.modules = 133`、`app.isPackaged = true`。夹具从当前 Electron ABI 的 `better_sqlite3.node` 制作精确 artifact，确认后隔离探测 `.node`，重启后在插件可变 runtime 加载该二进制并执行真实 SQLite 查询；错误二进制被 native probe 拒绝，当前可用版本继续保持 active；插件 1.0.0 → 2.0.0 → 1.0.0 升级/回滚保留 SQLite 数据；卸载重启后清除两个正常 revision、一个失败 revision 的 artifact/runtime，以及插件 data/log。原始 artifact 的二进制 hash 保持不变，Windows packaged utility-process runtime smoke 也已通过。
-- 上述 native E2E 的 ABI 刷新使用 `simulated-stale-fingerprint`：将数据库中持久化的 ABI 元数据改为旧值，触发重新复制当前 ABI 的预编译 `.node`、删除旧 runtime 标记并再次探测，验证新指纹及 `runtime.compatibility-rebuilt` 审计。它没有更换 Electron 版本、使用不同 ABI 的二进制或执行 native 编译 rebuild；插件版本升级/回滚也不代表宿主应用或操作系统升级验收。
-- [源码重编译 E2E](../e2e-tests/system-plugins-native-rebuild.spec.ts) 与 [C++ 夹具](../e2e-tests/fixtures/native-rebuild/README.md) 已在 Windows x64 unpacked 通过：先用 Node 22.14.0（ABI 127）编译并加载真实 addon，关闭 rebuild 的精确 artifact 被 Electron native probe 拒绝；确认启用 rebuild 的新 artifact 后执行离线 `npm ci --ignore-scripts` 与当前 Electron target 的 `npm rebuild`，原始 ABI 127 文件 hash 不变，重启后从可变 runtime 加载 ABI 133 文件并读取 addon 导出值；受控 C++ 编译错误会留下失败 job/log，当前 1.0.0 继续 active，卸载后清除成功和失败 revision。此处没有更换 KnowBook/Electron 宿主版本。
-- [真实宿主升级/回退 E2E](../e2e-tests/system-plugins-host-upgrade.spec.ts) 于 2026-09-07 在 Windows x64 unpacked 通过（1.9 分钟）：基线与目标均为真实打包可执行文件，Electron 35.7.5/ABI 133 → 36.0.0/ABI 135 → 35.7.5/ABI 133；同一临时 userData、插件 ID、版本和 artifact hash 保持一致。包含首次安装，共三组成功 install/rebuild（六项 job）、两次 `runtime.compatibility-rebuilt` 审计，只有原来一条确认请求；插件导出的编译 ABI 匹配每个真实宿主，二进制 hash 随 ABI 改变，激活历史数据保留。兼容宿主再次启动不增加编译 job，回退后卸载清除 artifact/runtime/data。证据和编译日志写入 `test-results/host-upgrade/**/host-upgrade-evidence.json`、`host-upgrade-compiler.log`，清理错误为空。宿主应用版本号仍为 0.1.2，未执行自动更新器、数据 schema 升级或 NSIS 安装。
-- 针对性单元/集成测试已覆盖：macOS `mainAppService` 单例冲突；detached PID 复用拒绝、复合身份校验、停止升级、手动启动身份落盘、adoption 后停止再启动、安全模式停服和升级旧 revision 清理；同步服务启动失败回滚；rejected 启动 Promise 清理；已结束请求的 staging sweep；并发 artifact 发布排他占用且不覆盖竞争目标。
-- 依赖与 native 测试已覆盖：timeout/cancel 后等待进程树关闭、native runner 协作取消、全 runtime `.node` 扫描、扫描取消、单模块 timeout、总预算、ABI 变化后的重新探测，以及无依赖包也从可变 runtime 激活。
-- 实际打包应用暴露并修复了依赖日志问题：Windows GUI 宿主使用 detached `cmd.exe` 会丢失 npm/编译器输出，依赖命令和 native probe 现在仅在 POSIX 创建独立进程组，Windows 仍使用 `taskkill /T` 清理进程树；npm rebuild 显式使用 `--foreground-scripts --loglevel=notice`，成功编译与编译失败的诊断都已在真实 job 日志中验证。
-- Electron 36 Windows 实测发现 `lstat.dev` 与打开句柄的 `fstat.dev` 分别返回 64 位和 32 位卷序列号，旧比较会把未修改的 `.npmrc` 判为篡改并安全停用。文件身份校验现使用 BigInt 保存完整 inode/纳秒时间，仅跨路径/句柄比较时归一化 Windows 设备编号；路径前后比较保留完整设备编号，大小、时间、符号链接和内容 hash 检查保持有效。新增回归覆盖该实际数据、不同卷/文件替换和 Number 无法区分的大 inode；卷编号来源可参照 [libuv Windows 实现](https://github.com/libuv/libuv/blob/v1.49.2/src/win/fs.c#L1643-L1655)。
-- manager 的 ABI 不匹配恢复现在先核验 detached 的复合进程身份并等待停止，再替换可变 runtime，避免旧进程仍持有同 revision 的原生二进制；停止失败会阻断准备和激活，并记录失败。回归测试覆盖执行顺序、旧进程记录结束，以及停止失败时不调用 runtime preparer。
-- service RPC 测试已覆盖：闭合协议、危险原型键/大小/深度限制、并发、timeout、生命周期取消、未知方法、精确 revision、响应过滤、错误 launch token、本机端点隔离、真实 Electron Node 子进程 bootstrap、宿主端点关闭与重建后的同 PID 重连、Documents/Databases/Settings/AI 映射，以及不包含参数/返回值的 manager 审计。
-- Windows Electron 受控验收已验证 AI 流式 UTF-8/SSE、调用方取消、停用时取消未完成响应体、HTTP 429、无效 JSON 和非 JSON/raw response；从服务端观察到取消和停用后连接关闭。
-- Renderer 生命周期回归覆盖暂存资源不可见、发布时精确 runtime 就绪、提交确认前 crash marker 保持 armed、失败时先撤销 runtime 再异步清理，以及停用/卸载/销毁与激活并发。发布后的新注册立即生效；多个 UI 快照同步切换，异步用户清理不会阻塞其他插件的快照发布。
-- 2026-09-06 类型检查、生产构建及完整 596 项测试已通过；标准打包入口的两项 native E2E 一起通过（1.8 分钟），包含打包 smoke 对退出码与最终 JSON 结果联合判定的回归：退出码为 0 但结果缺失、损坏、started 或 failed 时不能判成功；超时终止后等待进程关闭再清理隔离 profile。此前开发态的原生插件、Full Trust 完整链路、升级回滚及 v2 iframe 共四项 E2E 已通过；其中离线 npm 用例在沙箱内遇到 EPERM，单独在沙箱外复跑通过。
-- 2026-09-07 文件身份修复后的类型检查、生产构建和完整 599 项测试均通过，真实双宿主 E2E 通过。修复前曾有一次全量测试中的 QuickJS 25 毫秒初始化超时，随后复跑 596 项全部通过；加入三个文件身份回归后的 599 项全量也全部通过，未放宽 QuickJS 执行预算。
-- 打包 utility-process smoke 曾在功能通过后于退出阶段触发 V8 模块加载崩溃。网页剪藏 worker 现在先接收关闭请求，等待模块加载结束和真实 exit 确认，超时才强制终止；旧 worker 的延迟事件不会影响替代 worker，重复销毁共享同一退出 Promise。新增协作关闭/超时兜底回归后，Windows unpacked smoke 连续三次以退出码 0 和最终 passed JSON 通过。
-- [Windows CI](../.github/workflows/ci.yml) 已接入 SQLite、源码重编译及宿主 ABI 升级/回退的 packaged native 专用验收，并配置 Python 3.12；按当前验收范围，插件打包 job 仅运行 Windows。native spec 在成功或失败的 `finally` 中将 JSON 写入 `test-results/**/native-acceptance-evidence.json` 并作为文件附件保存，内容包括进程平台/架构/Electron/ABI、binary hash、SQLite 数据、完成阶段、失败阶段和清理错误；源码 spec 另写入 `native-rebuild-evidence.json` 和 `native-compiler.log`，记录真实编译 ABI/hash、成功及失败 job、完成阶段和清理错误。双宿主 spec 另在 `test-results/host-upgrade` 保存 ABI 切换、确认记录、任务、审计、激活历史和编译日志。CI 以 `native-system-plugin-windows` 上传 `test-results/**`。这些是独立 native 专用夹具，不能作为同一个受控验收插件已完成十二项能力的证据。
-- [Windows 登录启动与 detached E2E](../e2e-tests/system-plugins-windows-startup.spec.ts) 于 2026-09-08 在 Windows x64 unpacked（Electron 35.7.5）通过，耗时 1.3 分钟。七个阶段覆盖受控插件安装、登录启动的独立确认/拒绝未勾选请求/取消、真实 HKCU Run 注册、宿主退出后 detached 服务继续运行、重放注册表命令后同 PID/同 run id 接管及 RPC 重连、接管后的停止与重新启动、移除和重复申请、卸载与重启清理。含中文和空格的临时 userData 在移除环境变量后仍被正确恢复；同页再次申请必须重新勾选并输入完整插件 ID。最终 Run 和 StartupApproved 值、服务进程、各 artifact/runtime revision、data/log 均已清理；artifact/runtime 的空分组目录允许保留。JSON 证据的失败阶段和错误为 null，cleanupErrors 为空。Windows CI 已接入该独立入口；此测试未执行真实系统注销、登录或重启。
-- 实测修复：启动命令通过 `--knowbook-user-data-dir` 保存绝对工作区路径，并在单实例锁建立前恢复；开发态还保留绝对应用入口。Windows 参数在 Electron API 边界按 argv 规则转义，保存的待确认命令保持原始参数。Electron 35.7.5 的 `launchItems.args` 会省略这里的 `--...` 开关，`openAtLogin` 也会返回 false，旧比较不能验证完整命令；现在读取精确 service id 的 HKCU/HKLM Run 值并结合 per-user enabled 状态核验，遇到同名其他命令或无法读取时拒绝覆盖/移除。参数编码经 Windows `CommandLineToArgvW` 独立解码核验；Electron 对调用方转义的要求见 [官方 login-item 文档](https://www.electronjs.org/docs/latest/api/app#appsetloginitemsettingssettings-macos-windows)。新增回归覆盖空参数、引号/反斜杠、被 Electron 过滤的开关、同名其他可执行文件和读取失败。
-- 2026-09-08 登录启动修复完成时，类型检查、生产构建和打包态登录启动 E2E 通过，完整 605 项测试以 `--test-concurrency=4` 通过（75.8 秒）。默认并发下曾出现既有 packaged smoke 子进程退出超出功能测试 10 秒预算；后续预算调整和默认并发复验结果见下文。
-- [安装生命周期与 build E2E](../e2e-tests/system-plugins-dependency-scripts.spec.ts) 于 2026-09-08 在 Windows x64 unpacked（Electron 35.7.5）通过，耗时 31.9 秒。六个阶段覆盖确认前取消且不执行脚本；`npm ci --ignore-scripts` 跳过安装钩子但执行单独确认的 `node build.cjs`；允许脚本时依次执行 preinstall/install/postinstall/prebuild/build/postbuild；生成模块只写入可变 runtime，原始 artifact 不变，重启后 Main 实际加载生成模块；受控安装退出码 17 或构建退出码 23 均保留当前 2.0.0 和数据；失败后重启继续加载 2.0.0；卸载清理成功和失败 revision、data/log。共八项 job：五项成功、两项失败、一项未执行而取消，日志保留真实阶段顺序及错误标记。证据为 `test-results/dependency-scripts/**/dependency-scripts-evidence.json` 和 `dependency-scripts.log`，失败阶段和清理错误为空，Windows CI 已接入独立入口。
-- 依赖任务状态修复：此前前序任务失败后，后续 build/native-rebuild 会停留在 pending；现在失败、执行中取消或执行前取消都会把未执行的后续任务标记为 cancelled，并保留已完成任务的结果和原始失败原因。单元回归和上述真实 npm 安装失败均验证后续命令未启动。
-- smoke 功能测试已移除额外的 10 秒执行预算，使用实际 runner 的默认 90 秒预算，继续同时要求退出码 0 和最终 passed JSON；专门的挂起测试仍在 4 秒后验证终止、等待退出和 profile 清理。超时报错新增 PID、是否已观察到 exit，以及 stdout/stderr 是否关闭的快照，便于区分进程迟滞与输出管道未结束。
-- 2026-09-08 最终类型检查、生产构建、默认并发完整 606 项测试（30.6 秒）、Windows 打包态脚本验收和 packaged runtime smoke 全部通过。没有调整项目默认测试并发数。
-- [pnpm/Yarn Classic E2E](../e2e-tests/system-plugins-package-managers.spec.ts) 于 2026-09-09 在 Windows x64 unpacked（Electron 35.7.5）通过，两项用例合计 1.3 分钟，固定 pnpm 11.19.0、Yarn Classic 1.22.22。各五阶段覆盖确认前取消、离线 frozen-lockfile 安装本地 `file:` 依赖、禁止/允许根包及依赖包安装脚本、显式 build、生成模块与真实依赖在重启后加载、锁文件与 manifest 不一致时 install 失败且 build 取消并保留旧 active 版本及数据、卸载清理全部成功/失败 revision 和 data/log。每种包管理器记录六项 job（四成功、一失败、一取消），原始 artifact 与锁文件不变，失败阶段为空且 cleanupErrors 为空；JSON/日志在 `test-results/package-managers/**`。Windows CI 已接入固定工具链准备和独立验收入口。
-- pnpm 实测修复：`pnpm run` 默认可能自动再次安装，使先前 `--ignore-scripts` 安装跳过的生命周期脚本重新执行；宿主现在为直接调用 pnpm 的 build 命令加入 `--config.verify-deps-before-run=false`，实际参数数组仍写入 job，防止自动安装混入 build。该行为见 [pnpm verifyDepsBeforeRun](https://pnpm.io/settings/build#verifydepsbeforerun)。夹具仅对受控本地依赖的精确 `file:` 标识配置 allowBuilds，宿主不放开包管理器自身的依赖脚本许可。
-- Windows runtime 迁移修复：pnpm 的目录联接使用准备目录的绝对路径，直接改名会导致 `require()` 失败。发布前现解析并检查内部链接，调整绝对链接的目标，发布后再验证仍指向原先的内部文件；验证失败会恢复原 runtime。遍历不跟随目录链接，保留条目/深度上限，覆盖依赖循环、外部目标拒绝、迁移后目标变化和同 revision runtime 替换；真实 pnpm 用例验证迁移后链接、Main 加载、重启和卸载。
-- 2026-09-09 最终类型检查、生产构建、默认并发完整 610 项测试（37.4 秒）、两项 pnpm/Yarn Classic 打包态用例（1.3 分钟）、原有 npm 脚本回归（46.8 秒）和 packaged runtime smoke 全部通过。
-- 当前 Windows E2E 尚未覆盖新版 Yarn、pnpm/Yarn native rebuild、剪贴板/菜单/托盘/外部程序或专属 preload；unpacked 验收不替代 NSIS 安装/卸载；macOS/Linux 实测不在当前验收范围。
-- 发布前仍必须完成：真实系统登录/重启、安装器/更新器驱动的应用升级/回滚和安装包卸载残留验证；第 9 节十二项能力的统一验收矩阵。ADR-0007 继续保持 `Accepted`。
+下表记录实际执行结果；脚本存在、CI 已接线或代码通过单测不等同于打包态验收通过。完整证据位于各 runner 的 `test-results/<场景>`，包含阶段、版本/ABI、失败原因和清理结果。
 
-源码验收需要 Python、C++ 工具链和对应 Node/Electron 头文件；首次构建可能下载官方头文件，npm 安装自身没有远程包依赖。Python 不在 PATH 时设置 `PYTHON` 或 `NODE_GYP_FORCE_PYTHON` 的绝对路径。新增用例标记为 `@native-build`，由打包入口显式执行，普通 `@electron` 回归不要求额外编译器。
+| 验收 | 当前结果 | 入口或证据 |
+| --- | --- | --- |
+| 同一插件十二项核心能力 | 已通过，八阶段、十二行 passed、cleanupErrors 为空；含资源/UI、日志归属/脱敏与真实 beforeunload 清理 | `test:packaged-system-capabilities`；`capabilities-evidence.json` |
+| npm 与 SQLite native | 已通过；真实 .node 查询、坏二进制拒绝、插件升级/回滚、私有数据保持与卸载 | `test:packaged-system-plugins` |
+| 安装脚本与显式 build | 已通过；确认前不执行，allowScripts 开关、阶段顺序、失败后续任务 cancelled、旧 active 保留 | `test:packaged-dependency-scripts` |
+| pnpm / Yarn Classic 纯 JS | 已通过，两项合计 1.3 分钟；离线锁文件、脚本/build、重启加载、失败保护与卸载 | `test:packaged-package-managers` |
+| Yarn 4.9.4 纯 JS | 已通过，41.9 秒；immutable、node_modules 布局、脚本/build 与重启加载 | `test:packaged-modern-yarn` |
+| pnpm / Classic / Modern 原生重编译 | 全部通过，分别约 1.5 / 1.1 / 1.5 分钟；真实 Node ABI 127→Electron ABI 133、不可变 artifact、编译失败保护与卸载 | `test:packaged-native-package-managers`；`native-rebuild-evidence.json` |
+| 真实宿主 ABI 升级/回退 | 最终源复验通过，3.8 分钟；Electron 35.7.5/133→36.0.0/135→35.7.5/133；相同确认、数据保持、兼容重启不重复编译 | `test:packaged-host-upgrade`；`host-upgrade-evidence.json` |
+| Windows Run 与 detached | 已通过，1.3 分钟；独立确认、真实注册/移除、命令重放、同 PID 接管及 RPC、停止重启和卸载 | `test:packaged-windows-startup`；不含真实注销或重启 |
+| 卸载私有数据选择与重装 | 已通过，44.2 秒；真实 UI 默认保留、取消、删除、重启后选择持久化、同 ID 复用数据 | `test:packaged-data-retention`；`data-retention-evidence.json` |
+| 安装中断与同 hash 重试 | 已通过，58.5 秒；真实 npm/build 中断、旧 active 保留、任务失败/取消、精确临时目录清理、再次用户确认 | `test:packaged-install-interruption`；`install-interruption-evidence.json` |
+| 应用卸载维护 CLI | 已通过，55.4 秒；精确托管 Run/StartupApproved/服务清理、无关同 exe 项保留、幂等、保留 DB 且插件不激活 | `test:packaged-uninstall-cleanup` |
+| Main 异常退出与启动恢复 | 五场景全部通过，3.1 分钟；throw、process.exit、同步死循环、process.crash、首次激活失败 | `test:packaged-activation-recovery` |
+| SQLite 备份恢复维护入口 | 已通过，最终 1.4 分钟；含损坏 DB、真实服务停止、源 hash 不变、安全停用、Main/Renderer 历史状态退休及失败诊断保留 | `test:packaged-database-restore`；[恢复指南](system-plugin-database-recovery.md) |
+| 独立 NSIS / electron-updater | 全部通过，4.7 分钟；真实 0.1.2→0.1.3→0.1.2、旧服务退出/新 PID、Run 与数据保留、两种卸载及无残留 | `prepare:windows-installer`、`test:packaged-windows-installer` |
+| 真实 Windows 登录 / 重启 | 未执行；需要可用的隔离 Windows 测试机或 VM | [会话验收说明](system-plugin-windows-session-acceptance.md) |
+| 类型、完整测试、安全、构建与 smoke | 673 项完整测试、类型/示例检查、构建、18 项安全测试及 smoke 通过；83 项桌面用例首次 81 通过（11.8 分钟），另两项修复测试 PID 读取时序后复验通过（19 秒） | `typecheck`、`test`、`test:plugin-security`、`build`、`test:packaged-runtime-smoke` |
 
-标准打包态验收入口如下；`KNOWBOOK_E2E_EXECUTABLE` 可指定已打包可执行文件，未指定时根据当前平台和架构查找 `release` 下的 unpacked 产物。显式路径缺失会报错，已打包启动不会追加仓库入口 `.`；每次测试使用隔离 userData，只有重启场景复用同一隔离目录。
+实施中发现并修复的问题包括：Windows GUI 依赖进程输出丢失；Electron 35/36 文件设备编号表示差异；pnpm build 隐式重装和可变 runtime 迁移后的内部链接；不同管理器的 rebuild 命令与 node-gyp Electron target 传递；安装任务中断遗留状态；Windows MSIX 路径重定向；中文可执行文件路径经 PowerShell 非 UTF-8 管道损坏、Electron 登录启动 setter/query 边界未给含空格 exe 路径加引号。相应修复均有定向回归。
+
+恢复与可观测性新增覆盖：任意依赖代码执行前备份；按 revision 的 Main/service/dependency 日志、分片凭据脱敏与有界写入；SDK 事件回调的日志归属；托管窗口/菜单/托盘与 frame 策略摘要；beforeunload 不能阻止停用清理；SQLite 损坏备份拒绝、原始 DB/WAL/SHM 保留、替换失败/中断回退、候选数据库损坏时回退、后台进程身份核验与首次安全启动。
+
+[Windows CI](../.github/workflows/ci.yml) 已接入所有独立 runner 并上传 `test-results/**` 与 `release/acceptance/**`；真实系统登录/重启仍需独立会话验收，不由 CI 中的命令重放替代。固定工具链只安装在 release 下的测试目录，详见 [Yarn 与原生重建说明](system-plugin-yarn.md)。
+
+最终界面验收使用真实 Windows 包，不注入 CSS；1280/900 两个宽度的字段、hash、日志路径均无溢出，状态字段间距为 6px。证据与原始截图在 `release/acceptance/plugin-ui-layout-final`。
+
+推荐执行顺序：
 
 ```sh
+npm run build
 npm run pack
 npm run test:packaged-runtime-smoke
 npm run test:packaged-system-plugins
-npm run test:packaged-windows-startup
 npm run test:packaged-dependency-scripts
 npm run prepare:package-managers
+npm run prepare:modern-yarn
+npm run prepare:native-package-managers
 npm run test:packaged-package-managers
+npm run test:packaged-modern-yarn
+npm run test:packaged-native-package-managers
+npm run test:packaged-system-capabilities
+npm run test:packaged-activation-recovery
+npm run test:packaged-data-retention
+npm run test:packaged-database-restore
+npm run test:packaged-install-interruption
+npm run test:packaged-windows-startup
+npm run test:packaged-uninstall-cleanup
 npm run prepare:host-upgrade
 npm run test:packaged-host-upgrade
+npm run prepare:windows-installer
+npm run test:packaged-windows-installer
 ```
 
-宿主升级准备脚本默认生成独立 Electron 36.0.0 unpacked 包，并只在临时目录安装/重建应用依赖；当前项目依赖和基线包不会被修改。可用 `KNOWBOOK_E2E_UPGRADE_ELECTRON_VERSION` 指定完整版本，或用 `KNOWBOOK_E2E_UPGRADE_EXECUTABLE` 提供第二个真实宿主。新宿主必须有更高 Electron 主版本及不同 ABI；相同版本标签或修改数据库指纹不能满足此验收。默认从官方来源获取 Electron 并校验 checksum；本机 GitHub 资产连接出现 TLS 错误后，仅在准备命令中设置 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 完成同版本下载，发行配置未改变。准备结果保存在 `release/host-upgrade/fixture.json`，升级/回退证据保存在 `test-results/host-upgrade`。
+所有 E2E 使用隔离 userData；独立 NSIS 夹具另随机化 appId、GUID、产品/包名及可执行文件，使用本地更新服务，不发布安装包。源码 native 验收需要 Python、C++ 工具链、对应 Node/Electron headers；首次准备工具链可能访问 registry。显式 `KNOWBOOK_E2E_EXECUTABLE` 必须指向存在的真实打包文件。
 
-Windows 登录启动验收入口为 `npm run test:packaged-windows-startup`，标记 `@windows-startup`，普通 `@electron` 回归不会修改登录启动项。该测试使用随机唯一 service id 和含中文、空格的临时 userData；注册表命令经真实 Windows `CommandLineToArgvW` 解码后用于重启，启动时移除数据目录环境变量。测试只执行登记命令，不触发整机注销或重启；成功或失败均清理测试启动项、后台服务与临时目录，JSON 证据写入 `test-results/windows-startup/**/windows-startup-evidence.json`。
-
-包管理器验收先运行 `prepare:package-managers`，根据仓库独立 lockfile 将固定版本工具安装到 `release/package-manager-toolchain`（Node.js 需至少 22.13），不做全局安装。`test:packaged-package-managers` 检查版本并只为测试进程设置工具 PATH；标记为 `@package-managers`，普通 `@electron` 回归不依赖这套工具。工具链首次准备需要访问 npm registry，插件本身使用本地依赖、提交的锁文件和临时目录中的独立离线缓存。
-
-本机 Windows 打包时，electron-builder 签名工具解压所需的符号链接权限不足，因此在已通过构建的基础上，最终用以下命令生成本地 unpacked 包后执行上述验收。该参数只用于本次命令，未修改发行配置；此次结果不包含正式签名工具链或 NSIS 安装验收。
+本机签名工具解压需要的符号链接权限不可用，因此本地 unpacked 验收使用下述命令；它仅影响当前打包命令。独立 NSIS 夹具亦不作为正式发行签名证据。
 
 ```powershell
 npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=false'
@@ -751,7 +754,7 @@ npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=f
 
 ## 20. 最终验收标准
 
-截至 2026-09-09，本节尚未全部满足，ADR-0007 保持 `Accepted`，不得改为 `Implemented`。Windows unpacked SQLite、源码重编译、真实宿主 ABI 升级/回退、真实登录启动项登记与命令重放、detached 接管验收已通过；当前最明确的阻塞项是 Windows 真实系统登录/重启、安装器/更新器升级与安装包卸载无残留矩阵，以及第 9 节十二项能力的统一验收证据。
+截至 2026-09-09，实际功能、恢复、依赖、分进程状态和 NSIS/更新器的 Windows 验收均已取得通过证据，类型/构建/673 项测试通过；83 项桌面用例均取得通过结果（含两项时序修复后的复验）；排版收尾结果见第 19.4 节。尚未满足的是隔离 Windows 环境下的真实注销/登录和系统重启，ADR-0007 继续保持 Accepted。
 
 ### 20.1 功能验收
 

@@ -409,7 +409,7 @@ function normalizeDependencies(raw: unknown): SystemPluginDependencyPlan | undef
   const candidate = requirePlainObject(raw, 'System plugin dependencies')
   assertOnlyKeys(
     candidate,
-    new Set(['packageManager', 'install', 'allowScripts', 'buildCommand', 'rebuildNativeModules']),
+    new Set(['packageManager', 'yarnMode', 'install', 'allowScripts', 'buildCommand', 'rebuildNativeModules']),
     'System plugin dependencies'
   )
 
@@ -418,6 +418,10 @@ function normalizeDependencies(raw: unknown): SystemPluginDependencyPlan | undef
   }
   if (candidate.install !== 'ci' && candidate.install !== 'install') {
     throw new Error('System plugin dependency install mode must be ci or install.')
+  }
+  if (candidate.yarnMode !== undefined && (candidate.packageManager !== 'yarn'
+    || (candidate.yarnMode !== 'classic' && candidate.yarnMode !== 'modern'))) {
+    throw new Error('System plugin dependencies yarnMode must be classic or modern and requires packageManager yarn.')
   }
   if (typeof candidate.allowScripts !== 'boolean') {
     throw new Error('System plugin dependencies allowScripts must be a boolean.')
@@ -441,6 +445,7 @@ function normalizeDependencies(raw: unknown): SystemPluginDependencyPlan | undef
 
   return {
     packageManager: candidate.packageManager,
+    ...(candidate.yarnMode !== undefined ? { yarnMode: candidate.yarnMode as 'classic' | 'modern' } : {}),
     install: candidate.install,
     allowScripts: candidate.allowScripts,
     ...(buildCommand ? { buildCommand } : {}),

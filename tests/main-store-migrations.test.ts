@@ -41,13 +41,13 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v11-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v12-')),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 11)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 12)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
@@ -166,6 +166,30 @@ test('KnowbookStore v10 migration extends legacy system plugin requests without 
   }
 })
 
+test('KnowbookStore v12 migration preserves pending uninstall and persists the data retention choice', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-v12-system-plugin-migration-'))
+  const databasePath = join(tempRoot, 'v11.sqlite')
+  const original = new KnowbookStore(databasePath)
+  original.pluginPlatform.createSystemPluginInstallation({ pluginId: 'system.retention', status: 'uninstall-pending' })
+  original.destroy()
+  const legacy = new Database(databasePath)
+  legacy.exec('ALTER TABLE system_plugin_installations DROP COLUMN preserve_data_on_uninstall')
+  legacy.pragma('user_version = 11')
+  legacy.close()
+  const migrated = new KnowbookStore(databasePath)
+  try {
+    const record = migrated.pluginPlatform.getSystemPluginInstallationByPlugin('system.retention')!
+    assert.equal(record.status, 'uninstall-pending')
+    assert.equal(record.preserveDataOnUninstall, false)
+    migrated.pluginPlatform.updateSystemPluginInstallation(record.id, { preserveDataOnUninstall: true })
+    assert.equal(migrated.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), 12)
+    assert.equal(readdirSync(tempRoot).some((entry) => entry.startsWith('v11.sqlite.pre-migration-v11-to-v12-')), true)
+  } finally { migrated.destroy() }
+  const reopened = new KnowbookStore(databasePath)
+  try { assert.equal(reopened.pluginPlatform.getSystemPluginInstallationByPlugin('system.retention')?.preserveDataOnUninstall, true) }
+  finally { reopened.destroy(); rmSync(tempRoot, { recursive: true, force: true }) }
+})
+
 test('KnowbookStore v4 migration backfills full view config and readable record titles', () => {
   const tempRoot = mkdtempSync(join(tmpdir(), 'knowbook-v4-migration-test-'))
   const databasePath = join(tempRoot, 'v3.sqlite')
@@ -211,7 +235,7 @@ test('KnowbookStore v4 migration backfills full view config and readable record 
     assert.deepEqual(migratedView?.config.sorts, [{ fieldId: '__created_at__', direction: 'asc' }])
     assert.equal(migratedEntity?.title, document.title)
     assert.equal(
-      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v11-')),
+      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v12-')),
       true
     )
   } finally {

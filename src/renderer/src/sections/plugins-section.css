@@ -39,7 +39,6 @@
   display: block;
   margin-bottom: 6px;
   color: var(--kb-accent);
-  font-size: 11px;
   font-weight: 750;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -48,15 +47,12 @@
 .plugin-page-heading h3 {
   margin: 0;
   color: var(--kb-text);
-  font-size: clamp(25px, 2.5vw, 34px);
-  line-height: 1.15;
 }
 
 .plugin-page-heading p {
   max-width: 680px;
   margin: 10px 0 0;
   color: var(--kb-text-soft);
-  font-size: 14px;
 }
 
 .plugin-page-hero .plugin-toolbar {
@@ -103,22 +99,18 @@
 .plugin-overview-card > span {
   align-self: start;
   color: var(--kb-text-muted);
-  font-size: 11px;
   font-weight: 650;
 }
 
 .plugin-overview-card strong {
   grid-row: span 2;
   color: var(--kb-text);
-  font-size: 29px;
-  line-height: 1;
 }
 
 .plugin-overview-card small {
   margin-top: 7px;
   overflow: hidden;
   color: #8a92a4;
-  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -160,13 +152,11 @@
 .plugin-section-title h4 {
   margin: 0;
   color: var(--kb-text);
-  font-size: 16px;
 }
 
 .plugin-inventory-head p {
   margin: 3px 0 0;
   color: var(--kb-text-muted);
-  font-size: 11px;
 }
 
 .plugin-search {
@@ -190,7 +180,6 @@
   outline: 0;
   background: transparent;
   color: var(--kb-text);
-  font-size: 12px;
 }
 
 .plugin-search input::-webkit-search-cancel-button {
@@ -211,7 +200,6 @@
   background: transparent;
   color: var(--kb-text-muted);
   cursor: pointer;
-  font-size: 11px;
   font-weight: 650;
 }
 
@@ -276,7 +264,6 @@
   border-radius: 12px;
   background: linear-gradient(145deg, #eef0ff, #e5e8ff);
   color: #5158ca;
-  font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.04em;
 }
@@ -301,7 +288,6 @@
 .plugin-card-title-row > strong {
   overflow: hidden;
   color: var(--kb-text);
-  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -313,7 +299,6 @@
   border-radius: 5px;
   background: #f1efff;
   color: #6557cf;
-  font-size: 8px;
   font-weight: 750;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -329,7 +314,6 @@
   margin: 4px 0 0;
   overflow: hidden;
   color: var(--kb-text-soft);
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -339,7 +323,6 @@
   gap: 5px;
   margin-top: 5px;
   color: #9299a9;
-  font-size: 9px;
 }
 
 .plugin-card-state {
@@ -352,7 +335,6 @@
 .plugin-card-state .plugin-status {
   gap: 5px;
   padding: 4px 7px;
-  font-size: 8px;
   font-weight: 750;
   letter-spacing: 0.05em;
 }
@@ -440,7 +422,6 @@
   background: transparent;
   color: var(--kb-accent-strong);
   cursor: pointer;
-  font-size: 10px;
   font-weight: 700;
 }
 
@@ -475,7 +456,6 @@
   align-items: center;
   justify-content: space-between;
   color: var(--kb-text-soft);
-  font-size: 10px;
 }
 
 .plugin-settings-heading > span {
@@ -507,7 +487,6 @@
 .plugin-inventory-item .plugin-setting-actions .secondary-button {
   min-height: 28px;
   padding: 5px 8px;
-  font-size: 9px;
 }
 
 .plugin-inventory-item > .plugin-error {
@@ -515,7 +494,6 @@
   padding: 8px 10px;
   border-radius: 8px;
   background: #fff2f4;
-  font-size: 10px;
 }
 
 .plugin-inspector {
@@ -541,7 +519,6 @@
 
 .plugin-inspector-head > div > span {
   color: var(--kb-accent);
-  font-size: 9px;
   font-weight: 750;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -550,7 +527,6 @@
 .plugin-inspector-head h4 {
   margin-top: 2px;
   overflow: hidden;
-  font-size: 17px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -560,7 +536,6 @@
   margin-top: 2px;
   overflow: hidden;
   color: #8b92a2;
-  font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -568,8 +543,6 @@
 .plugin-inspector-description {
   margin: -4px 0 0;
   color: var(--kb-text-soft);
-  font-size: 11px;
-  line-height: 1.55;
 }
 
 .plugin-inspector-ai {
@@ -580,7 +553,6 @@
   width: 100%;
   min-height: 38px;
   background: linear-gradient(135deg, #5b63e8 0%, #7553d9 100%);
-  font-size: 11px;
 }
 
 .plugin-detail-grid {
@@ -606,13 +578,11 @@
 
 .plugin-detail-grid span {
   color: var(--kb-text-muted);
-  font-size: 9px;
 }
 
 .plugin-detail-grid strong {
   overflow: hidden;
   color: var(--kb-text);
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -633,12 +603,10 @@
 
 .plugin-lifecycle-head strong {
   color: var(--kb-text);
-  font-size: 11px;
 }
 
 .plugin-lifecycle-head span {
   color: var(--kb-text-muted);
-  font-size: 9px;
 }
 
 .plugin-lifecycle-card ol {
@@ -701,14 +669,12 @@
 
 .plugin-lifecycle-card li strong {
   color: var(--kb-text-soft);
-  font-size: 10px;
 }
 
 .plugin-lifecycle-card li span,
 .plugin-lifecycle-card li code {
   overflow: hidden;
   color: #9299a8;
-  font-size: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -720,7 +686,6 @@
   border-radius: 9px;
   background: #fff4f6;
   color: #a7384b;
-  font-size: 9px;
 }
 
 .plugin-inspector-actions {
@@ -733,7 +698,6 @@
 .plugin-inspector-actions button {
   min-height: 32px;
   padding: 6px 10px;
-  font-size: 10px;
 }
 
 .plugin-inspector-note {
@@ -741,8 +705,6 @@
   padding-top: 10px;
   border-top: 1px solid var(--kb-line);
   color: #9399a7;
-  font-size: 9px;
-  line-height: 1.5;
 }
 
 .plugin-technical-loading,
@@ -955,8 +917,8 @@
   opacity: 0.45;
 }
 
-.plugin-empty-state strong { color: var(--kb-text-soft); font-size: 12px; }
-.plugin-empty-state p { margin: 5px 0 0; font-size: 10px; }
+.plugin-empty-state strong { color: var(--kb-text-soft); }
+.plugin-empty-state p { margin: 5px 0 0; }
 
 .plugin-security-requests {
   padding: 18px;
@@ -971,7 +933,6 @@
 
 .plugin-section-title span {
   color: var(--kb-text-muted);
-  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -986,7 +947,6 @@
   border-radius: 50%;
   background: #fff0f2;
   color: #bd4457;
-  font-size: 11px;
 }
 
 .system-plugin-request-list {
@@ -1005,16 +965,26 @@
   border-radius: 12px;
   background: #fafbfc;
   color: var(--kb-text-soft);
-  font-size: 10px;
+}
+
+
+.system-plugin-request .plugin-inspector-note {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.system-plugin-request .plugin-inspector-note code {
+  display: block;
 }
 
 .system-plugin-request p { margin: 0; }
-.system-plugin-request code { overflow: auto; font-size: 9px; }
+.system-plugin-request code { min-width: 0; overflow-wrap: anywhere; }
 
 .plugin-roots-disclosure {
   padding: 4px 2px;
   color: var(--kb-text-muted);
-  font-size: 10px;
 }
 
 .plugin-roots-disclosure summary {
@@ -1036,7 +1006,6 @@
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.65);
   color: var(--kb-text-muted);
-  font-size: 9px;
 }
 
 .plugin-customizer-backdrop {
@@ -1082,7 +1051,7 @@
 }
 
 .plugin-customizer-title > div { min-width: 0; }
-.plugin-customizer-title span:not(.plugin-avatar) { color: #6758d2; font-size: 9px; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
+.plugin-customizer-title span:not(.plugin-avatar) { color: #6758d2; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; }
 .plugin-customizer-title h3 { margin: 2px 0 0; overflow: hidden; color: var(--kb-text); font-size: 20px; text-overflow: ellipsis; white-space: nowrap; }
 
 .plugin-customizer-close {
@@ -1114,13 +1083,11 @@
   border-radius: 6px;
   background: #f0f1fb;
   color: #697087;
-  font-size: 9px;
 }
 
 .plugin-customizer-intro {
   margin: 10px 0 14px;
   color: var(--kb-text-soft);
-  font-size: 11px;
 }
 
 .plugin-customizer .assistant-workbench {
@@ -1538,3 +1505,4 @@
   .plugin-management-layout { grid-template-columns: 1fr; }
   .plugin-inspector { position: static; }
 }
+.system-plugin-uninstall-dialog { overflow: auto; }

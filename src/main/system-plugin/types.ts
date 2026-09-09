@@ -59,15 +59,7 @@ export type SystemPluginRuntimeStatus =
   | 'stopped'
   | 'failed'
 
-export type SystemPluginErrorStage =
-  | 'load'
-  | 'context'
-  | 'migrate'
-  | 'activate'
-  | 'health-check'
-  | 'before-quit'
-  | 'deactivate'
-  | 'dispose'
+export type SystemPluginErrorStage = import('@shared/system-plugin-state').SystemPluginFailureStage
 
 export interface SystemPluginStatusEvent {
   pluginId: string
@@ -117,6 +109,8 @@ export interface SystemPluginHostOptions<TServices extends object = Record<never
   services?: TServices
   createServices?(bindings: FullTrustPluginContextFactoryBindings): TServices
   process?: NodeJS.Process
+  /** Main stdout/stderr log, scoped by the host to this exact revision. */
+  logPath?: string
   timeouts?: Partial<SystemPluginRuntimeTimeouts>
   onStatus?(event: SystemPluginStatusEvent): void
   onError?(event: SystemPluginErrorEvent): void

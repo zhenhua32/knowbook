@@ -15,6 +15,7 @@ import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
 import {
   createSystemPluginElectronRebuildCommand,
+  createSystemPluginElectronRebuildEnvironment,
   createSystemPluginPackagePreparer
 } from '../src/main/system-plugin/package-preparer'
 import type { PublishedSystemPluginArtifact } from '../src/main/system-plugin-artifact'
@@ -302,10 +303,9 @@ test('native rebuild command uses the manifest package manager and pins the Elec
       arch: 'arm64',
       platform: 'darwin'
     })
-    assert.deepEqual(command, [packageManager, suffix[0],
-      ...(packageManager === 'npm' ? ['--foreground-scripts', '--loglevel=notice'] : []),
-      ...suffix.slice(1)
-    ])
+    assert.deepEqual(command, packageManager === 'npm'
+      ? [packageManager, suffix[0], '--foreground-scripts', '--loglevel=notice', ...suffix.slice(1)]
+      : packageManager === 'pnpm' ? ['pnpm', 'rebuild'] : ['yarn', 'install', '--force', '--frozen-lockfile'])
     assert.equal(Object.isFrozen(command), true)
   }
 
@@ -314,4 +314,13 @@ test('native rebuild command uses the manifest package manager and pins the Elec
     arch: 'x64',
     platform: 'win32'
   }), /Electron target is invalid/)
+  const target = { electron: '35.1.5', arch: 'arm64', platform: 'darwin' as const }
+  assert.deepEqual(createSystemPluginElectronRebuildCommand('yarn', target, 'modern'), ['yarn', 'rebuild'])
+  const environment = createSystemPluginElectronRebuildEnvironment(target)
+  assert.equal(environment.npm_config_runtime, 'electron')
+  assert.equal(environment.npm_package_config_node_gyp_target, target.electron)
+  assert.equal(environment.npm_config_arch, target.arch)
+  assert.equal(environment.npm_package_config_node_gyp_dist_url, 'https://electronjs.org/headers')
+  assert.equal(environment.npm_config_ignore_scripts, 'false')
+  assert.equal(Object.isFrozen(environment), true)
 })

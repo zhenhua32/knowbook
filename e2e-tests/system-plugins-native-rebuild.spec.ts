@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -15,6 +15,10 @@ const require = createRequire(import.meta.url)
 const nodeGyp = createRequire(require.resolve('app-builder-lib/package.json')).resolve('node-gyp/bin/node-gyp.js')
 const pluginId = 'system.e2e.native-rebuild'
 const binaryRelativePath = join('build', 'Release', 'abi_probe.node')
+const variant = process.env.KNOWBOOK_NATIVE_PACKAGE_MANAGER ?? 'npm'
+if (!['npm', 'pnpm', 'yarn-classic', 'yarn-modern'].includes(variant)) throw new Error(`Unsupported native acceptance manager: ${variant}`)
+const packageManager = variant === 'pnpm' ? 'pnpm' : variant.startsWith('yarn-') ? 'yarn' : 'npm'
+const yarnMode = variant === 'yarn-modern' ? 'modern' : 'classic'
 
 interface CompiledEvidence {
   compiledAbi: number
@@ -36,7 +40,7 @@ test('native source rebuild rejects a foreign ABI, compiles for Electron and pre
   test.setTimeout(300_000)
   const source = mkdtempSync(join(tmpdir(), 'knowbook-native-source-'))
   const completedStages: string[] = []
-  const evidence: Record<string, unknown> = { completedStages, scenario: 'node-to-electron-source-rebuild' }
+  const evidence: Record<string, unknown> = { completedStages, scenario: 'node-to-electron-source-rebuild', packageManager: variant }
   const compilerLogs: string[] = []
   let current: ElectronAppContext | null = null
   let profile: string | undefined
@@ -67,6 +71,18 @@ test('native source rebuild rejects a foreign ABI, compiles for Electron and pre
     mkdirSync(join(source, 'build', 'Release'), { recursive: true })
     writeFileSync(join(source, binaryRelativePath), originalBinary)
     writeFileSync(join(source, '.npmrc'), 'offline=true\naudit=false\nfund=false\nforeground-scripts=true\n')
+    if (packageManager !== 'npm') {
+      rmSync(join(source, 'package-lock.json'))
+      if (yarnMode === 'modern') {
+        cpSync(join(repoRoot, 'e2e-tests/fixtures/native-rebuild-yarn-modern'), source, { recursive: true })
+        cpSync(join(repoRoot, 'release/native-yarn-dependencies/.yarn/cache'), join(source, '.yarn/cache'), { recursive: true })
+      } else {
+        const lock = packageManager === 'pnpm' ? 'pnpm-lock.yaml' : 'yarn-classic.lock'
+        cpSync(join(repoRoot, 'e2e-tests/fixtures/native-rebuild-locks', lock), join(source, packageManager === 'pnpm' ? lock : 'yarn.lock'))
+        if (packageManager === 'pnpm') writeFileSync(join(source, 'pnpm-workspace.yaml'), 'offline: true\nstoreDir: .pnpm-store\nupdateNotifier: false\n')
+        else writeFileSync(join(source, '.yarnrc'), '--install.offline true\n--cache-folder .yarn-cache\ndisable-self-update-check true\n')
+      }
+    }
     completedStages.push(stage)
 
     stage = 'reject-foreign-abi'
@@ -101,11 +117,19 @@ test('native source rebuild rejects a foreign ABI, compiles for Electron and pre
     expect(jobs.map((job) => job.kind).sort()).toEqual(['install', 'native-rebuild'])
     expect(jobs.every((job) => job.status === 'succeeded')).toBe(true)
     const rebuild = jobs.find((job) => job.kind === 'native-rebuild')!
-    expect(rebuild.command).toContain(`--target=${await current.app.evaluate(() => process.versions.electron)}`)
+    const targetVersion = await current.app.evaluate(() => process.versions.electron)
     const compilerLog = readFileSync(rebuild.logPath!, 'utf8')
     compilerLogs.push(compilerLog)
     evidence.jobs = jobs
-    expect(rebuild.command).toContain('--foreground-scripts')
+    if (packageManager === 'npm') {
+      expect(rebuild.command).toContain(`--target=${targetVersion}`)
+      expect(rebuild.command).toContain('--foreground-scripts')
+    } else {
+      expect(rebuild.command).toEqual(packageManager === 'pnpm' ? ['pnpm', 'rebuild']
+        : yarnMode === 'modern' ? ['yarn', 'rebuild'] : ['yarn', 'install', '--force', '--frozen-lockfile'])
+    }
+    expect(compilerLog).toContain(`"npm_config_target":"${targetVersion}"`)
+    expect(compilerLog).toContain('"npm_config_runtime":"electron"')
     expect(compilerLog).toMatch(/abi-probe\.(?:cc|o)\b/)
     const artifactPath = join(profile, 'system-plugins', 'artifacts', pluginId, accepted.artifactSha256)
     expect(sha256(readFileSync(join(artifactPath, binaryRelativePath)))).toBe(originalHash)
@@ -172,6 +196,10 @@ test('native source rebuild rejects a foreign ABI, compiles for Electron and pre
     throw error
   } finally {
     const cleanupErrors: unknown[] = []
+    const dependencyLogs = profile && join(profile, 'system-plugins', 'logs', pluginId)
+    if (dependencyLogs && existsSync(dependencyLogs)) for (const name of readdirSync(dependencyLogs)) {
+      if (name.endsWith('-dependencies.log')) compilerLogs.push(readFileSync(join(dependencyLogs, name), 'utf8'))
+    }
     try {
       if (current) await closeElectronApp(current)
       else if (profile) rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -195,7 +223,7 @@ function writeManifest(root: string, version: string, rebuildNativeModules: bool
     schemaVersion: 3, trust: 'full', id: pluginId, name: 'Native source rebuild', version,
     publisher: 'KnowBook E2E', entries: { main: 'main.cjs' }, fullAccess: true,
     riskDeclarations: ['node', 'npm', 'filesystem'],
-    dependencies: { packageManager: 'npm', install: 'ci', allowScripts: false, rebuildNativeModules }
+    dependencies: { packageManager, ...(packageManager === 'yarn' ? { yarnMode } : {}), install: 'ci', allowScripts: false, rebuildNativeModules }
   } satisfies SystemPluginV3Manifest, null, 2))
 }
 

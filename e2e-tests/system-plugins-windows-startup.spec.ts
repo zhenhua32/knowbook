@@ -45,7 +45,7 @@ test('restores a detached service through a real Windows login item and cleans u
     expect(await context.app.evaluate(({ app }) => app.getPath('userData'))).toBe(profile)
   }
   const close = async () => {
-    await closeElectronApp(context, { preserveUserData: true })
+    await closeElectronApp(context, { preserveUserData: true, preserveDetachedChildren: true })
     context = null
   }
   const ready = async () => {

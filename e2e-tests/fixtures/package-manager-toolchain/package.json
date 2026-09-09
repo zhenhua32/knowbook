@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "node-gyp": "12.3.0",
     "pnpm": "11.19.0",
     "yarn": "1.22.22"
   }

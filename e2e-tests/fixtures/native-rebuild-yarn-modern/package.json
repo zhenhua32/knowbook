@@ -1,0 +1,8 @@
+{
+  "name": "knowbook-native-rebuild-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "gypfile": true,
+  "scripts": { "install": "node-gyp rebuild" },
+  "devDependencies": { "node-gyp": "12.3.0" }
+}

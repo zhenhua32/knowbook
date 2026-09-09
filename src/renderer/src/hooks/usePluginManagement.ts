@@ -269,16 +269,14 @@ export function usePluginManagement({
     }
   }, [onMessage, refreshPluginHomeData, ui.language])
 
-  const uninstallSystemPlugin = useCallback(async (plugin: SystemPluginSummary) => {
-    const accepted = window.confirm(ui.language === 'zh-CN'
-      ? `确定卸载 Full Trust 插件“${plugin.name}”吗？原生模块可能仍驻留于当前进程，因此清理将在重启后完成。`
-      : `Uninstall Full Trust plugin "${plugin.name}"? Native modules may remain loaded, so cleanup completes after restart.`)
-    if (!accepted) return
+  const uninstallSystemPlugin = useCallback(async (plugin: SystemPluginSummary, preserveData: boolean) => {
     setPluginBusyId(plugin.pluginId)
     try {
-      await window.knowbook.uninstallSystemPlugin({ pluginId: plugin.pluginId })
+      await window.knowbook.uninstallSystemPlugin({ pluginId: plugin.pluginId, preserveData })
       await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '已停用并标记为重启后卸载。' : 'Disabled and scheduled for uninstall after restart.')
+      onMessage(ui.language === 'zh-CN'
+        ? `已停用并标记为重启后卸载；${preserveData ? '插件数据将保留供重新安装使用。' : '插件专属数据将一并删除。'}`
+        : `Disabled and scheduled for uninstall after restart; plugin data will be ${preserveData ? 'retained for reinstall' : 'deleted'}.`)
     } catch (error) {
       onMessage(error instanceof Error ? error.message : 'System plugin uninstall failed.')
     } finally {

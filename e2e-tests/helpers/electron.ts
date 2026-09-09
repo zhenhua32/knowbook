@@ -1,5 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import { _electron as electron, type ElectronApplication } from 'playwright'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -21,10 +22,13 @@ export type ElectronLaunchOptions = {
 export type ElectronCloseOptions = {
   /** Keep the isolated user-data root for a deliberate relaunch in the same test. */
   preserveUserData?: boolean
+  /** A detached-service acceptance must keep intentional children alive across host exit. */
+  preserveDetachedChildren?: boolean
 }
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
+const electronHostPids = new WeakMap<ElectronApplication, number>()
 
 export function hasBuiltElectronApp(): boolean {
   // An explicitly requested packaged app must fail loudly if missing, rather
@@ -85,21 +89,49 @@ export async function launchElectronApp(
     delete env.KNOWBOOK_USER_DATA_DIR
   }
   let app: ElectronApplication | undefined
+  let startupOutput = ''
+  const captureStartupOutput = (chunk: Buffer | string) => {
+    startupOutput = (startupOutput + String(chunk)).slice(-16_000)
+  }
   try {
     app = await electron.launch({ ...target, env })
+    electronHostPids.set(app, await readElectronHostPid(app))
+    app.process().stdout?.on('data', captureStartupOutput)
+    app.process().stderr?.on('data', captureStartupOutput)
 
     const page = await app.firstWindow()
     page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')
     await expect(page.locator('[data-testid="shell"]')).toBeVisible()
+    app.process().stdout?.off('data', captureStartupOutput)
+    app.process().stderr?.off('data', captureStartupOutput)
 
     return { app, page, tempRoot }
   } catch (error) {
+    const processState = app ? {
+      pid: app.process().pid, exitCode: app.process().exitCode, signalCode: app.process().signalCode
+    } : null
+    let appState: unknown = null
+    if (app) {
+      let timer: NodeJS.Timeout | undefined
+      appState = await Promise.race([
+        app.evaluate(({ app, BrowserWindow }) => ({
+          ready: app.isReady(), pid: process.pid, userData: app.getPath('userData'), argv: process.argv,
+          runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,
+          windows: BrowserWindow.getAllWindows().map(window => ({ id: window.id, url: window.webContents.getURL() }))
+        })).catch(cause => ({ error: String(cause) })),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ timeout: true }), 2_000) })
+      ])
+      if (timer) clearTimeout(timer)
+    }
     if (app) {
       await closeElectronApp({ app, tempRoot }, { preserveUserData: Boolean(options.userDataRoot) })
     } else if (!options.userDataRoot) {
       rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+    if (error instanceof Error && app) {
+      throw new Error(`${error.message}\nElectron startup state: ${JSON.stringify(processState)}\nElectron app state: ${JSON.stringify(appState)}\n${startupOutput}`, { cause: error })
     }
     throw error
   }
@@ -114,6 +146,10 @@ export async function closeElectronApp(
   }
 
   const childProcess = context.app.process()
+  // On Windows Playwright launches Electron through a cmd wrapper. In the
+  // explicit detached case, killing that wrapper alone leaves the real host.
+  const hostPid = electronHostPids.get(context.app)
+    ?? await context.app.evaluate(() => process.pid).catch(() => undefined)
   let closeTimer: NodeJS.Timeout | undefined
   const closedGracefully = await Promise.race([
     context.app.close().then(() => true, () => false),
@@ -125,30 +161,74 @@ export async function closeElectronApp(
     clearTimeout(closeTimer)
   }
 
-  if (!closedGracefully && childProcess.exitCode === null && childProcess.signalCode === null) {
-    const processExited = new Promise<void>((resolve) => {
-      childProcess.once('exit', () => resolve())
-    })
-    childProcess.kill('SIGKILL')
-    let killTimer: NodeJS.Timeout | undefined
-    await Promise.race([
-      processExited,
-      new Promise<void>((resolve) => {
-        killTimer = setTimeout(resolve, 5_000)
+  if (hostPid && closedGracefully) await waitForProcessExit(hostPid, 1_000)
+  const hostStillAlive = hostPid ? processIsAlive(hostPid)
+    : childProcess.exitCode === null && childProcess.signalCode === null
+  if (hostStillAlive) {
+    console.warn(`Electron E2E host ${String(hostPid ?? childProcess.pid)} exceeded graceful close; forcing ${options.preserveDetachedChildren ? 'host only' : 'owned process tree'}.`)
+    if (process.platform === 'win32') {
+      // Limit forced cleanup to this exact launched host and its children. Never
+      // select by executable name: other isolated E2Es may use the same build.
+      if (!hostPid) {
+        throw new Error('Cannot identify the launched Electron host for exact process cleanup; keeping its profile.')
+      }
+      const killArgs = options.preserveDetachedChildren
+        ? ['/pid', String(hostPid), '/F']
+        : ['/pid', String(hostPid), '/T', '/F']
+      spawnSync('taskkill.exe', killArgs, {
+        windowsHide: true, stdio: 'ignore', timeout: 10_000
       })
-    ])
-    if (killTimer) {
-      clearTimeout(killTimer)
+    } else {
+      if (hostPid) process.kill(hostPid, 'SIGKILL')
+      else childProcess.kill('SIGKILL')
     }
+    if (hostPid) await waitForProcessExit(hostPid, 10_000)
   }
+
+  if (hostPid && processIsAlive(hostPid)) {
+    throw new Error(`Electron E2E host ${String(hostPid)} did not exit; keeping its profile for diagnosis.`)
+  }
+  // A cmd wrapper exit is not evidence of Electron exit. Once the actual host
+  // is gone, release a surviving wrapper without selecting any child process.
+  if (childProcess.exitCode === null && childProcess.signalCode === null) childProcess.kill('SIGKILL')
+  electronHostPids.delete(context.app)
 
   if (context.tempRoot && !options.preserveUserData) {
     rmSync(context.tempRoot, {
       recursive: true,
       force: true,
-      maxRetries: 5,
+      // Chromium can release DIPS/SQLite handles shortly after the host exits.
+      maxRetries: 20,
       retryDelay: 100
     })
+  }
+}
+
+async function readElectronHostPid(app: ElectronApplication): Promise<number> {
+  const child = app.process()
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await app.evaluate(() => process.pid)
+    } catch (error) {
+      // The inspector can replace its initial execution context during startup.
+      // Retry only that exact transient failure, never a closed/crashed host or
+      // an unrelated evaluation error. The wrapper PID is still not a host PID.
+      if (!(error instanceof Error)
+        || error.message !== 'electronApplication.evaluate: Execution context was destroyed, most likely because of a navigation.'
+        || attempt >= 4 || child.exitCode !== null || child.signalCode !== null) throw error
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (processIsAlive(pid) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
 }
 

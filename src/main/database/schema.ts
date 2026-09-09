@@ -382,6 +382,7 @@ CREATE TABLE IF NOT EXISTS system_plugin_installations (
   enabled INTEGER NOT NULL DEFAULT 0,
   auto_start INTEGER NOT NULL DEFAULT 0,
   safe_mode_disabled INTEGER NOT NULL DEFAULT 0,
+  preserve_data_on_uninstall INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL,
   current_package_id TEXT REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,
   pending_package_id TEXT REFERENCES system_plugin_packages(id) ON DELETE RESTRICT,

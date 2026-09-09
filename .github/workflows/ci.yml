@@ -29,6 +29,9 @@ jobs:
       - name: Run typecheck
         run: npm run typecheck
 
+      - name: Typecheck System Plugin v3 starter examples
+        run: npm run typecheck:system-plugin-examples
+
       - name: Run unit and integration tests
         run: npm test
 
@@ -39,9 +42,9 @@ jobs:
         run: xvfb-run --auto-servernum npx playwright test --grep @electron
 
   plugin-runtime-security:
-    name: Plugin runtime security (Windows)
+    name: System Plugin v3 acceptance (Windows)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -81,8 +84,38 @@ jobs:
       - name: Prepare pinned pnpm and Yarn Classic toolchain
         run: npm run prepare:package-managers
 
+      - name: Prepare pinned modern Yarn toolchain
+        run: npm run prepare:modern-yarn
+
+      - name: Prepare locked modern Yarn native dependency cache
+        run: npm run prepare:native-package-managers
+
       - name: Run packaged pnpm and Yarn Classic acceptance
         run: npm run test:packaged-package-managers
+
+      - name: Run packaged modern Yarn acceptance
+        run: npm run test:packaged-modern-yarn
+
+      - name: Run native pnpm and Yarn rebuild matrix
+        run: npm run test:packaged-native-package-managers
+
+      - name: Run unified System Plugin capability acceptance
+        run: npm run test:packaged-system-capabilities
+
+      - name: Run packaged activation failure and recovery acceptance
+        run: npm run test:packaged-activation-recovery
+
+      - name: Run plugin data retention and reinstall acceptance
+        run: npm run test:packaged-data-retention
+
+      - name: Run database backup restore and safe startup acceptance
+        run: npm run test:packaged-database-restore
+
+      - name: Run interrupted install and exact artifact retry acceptance
+        run: npm run test:packaged-install-interruption
+
+      - name: Run packaged application uninstall maintenance acceptance
+        run: npm run test:packaged-uninstall-cleanup
 
       - name: Prepare isolated Electron host upgrade fixture
         run: npm run prepare:host-upgrade
@@ -90,10 +123,20 @@ jobs:
       - name: Run real host ABI upgrade and rollback acceptance
         run: npm run test:packaged-host-upgrade
 
-      - name: Upload native System Plugin acceptance evidence
+      - name: Prepare independent NSIS upgrade and rollback installers
+        run: npm run prepare:windows-installer
+
+      - name: Run NSIS and updater upgrade rollback and uninstall acceptance
+        run: npm run test:packaged-windows-installer
+
+      - name: Upload System Plugin acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-system-plugin-windows
-          path: test-results/**
+          path: |
+            test-results/**
+            release/acceptance/**
+            release/host-upgrade/fixture.json
+            release/windows-installer/fixture.json
           if-no-files-found: ignore

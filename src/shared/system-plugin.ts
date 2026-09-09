@@ -44,6 +44,8 @@ export type SystemPluginDependencyInstallMode = 'ci' | 'install'
 
 export interface SystemPluginDependencyPlan {
   packageManager: SystemPluginPackageManager
+  /** Yarn Classic is the backwards-compatible default; modern uses node_modules, not a global PnP loader. */
+  yarnMode?: 'classic' | 'modern'
   install: SystemPluginDependencyInstallMode
   allowScripts: boolean
   buildCommand?: string[]

@@ -59,6 +59,7 @@ export interface SystemPluginInstallationRecord {
   enabled: boolean
   autoStart: boolean
   safeModeDisabled: boolean
+  preserveDataOnUninstall: boolean
   status: SystemPluginInstallationStatus
   currentPackageId: string | null
   pendingPackageId: string | null
@@ -74,6 +75,7 @@ export interface CreateSystemPluginInstallationInput {
   enabled?: boolean
   autoStart?: boolean
   safeModeDisabled?: boolean
+  preserveDataOnUninstall?: boolean
   status?: SystemPluginInstallationStatus
   currentPackageId?: string | null
   pendingPackageId?: string | null
@@ -84,6 +86,7 @@ export interface UpdateSystemPluginInstallationInput {
   enabled?: boolean
   autoStart?: boolean
   safeModeDisabled?: boolean
+  preserveDataOnUninstall?: boolean
   status?: SystemPluginInstallationStatus
   currentPackageId?: string | null
   pendingPackageId?: string | null
@@ -93,6 +96,27 @@ export interface UpdateSystemPluginInstallationInput {
 
 export type SystemPluginRunComponent = 'main' | 'renderer' | 'service' | 'detached'
 export type SystemPluginRunStatus = 'starting' | 'ready' | 'stopping' | 'stopped' | 'failed'
+
+export const SYSTEM_PLUGIN_FAILURE_STAGES = [
+  'load', 'context', 'migrate', 'activate', 'health-check', 'before-quit',
+  'deactivate', 'dispose', 'renderer-commit', 'renderer-disconnected'
+] as const
+export type SystemPluginFailureStage = typeof SYSTEM_PLUGIN_FAILURE_STAGES[number]
+
+/** Error JSON may contain bounded nested aggregate failures from cleanup. */
+export function getSystemPluginFailureStages(error: unknown): SystemPluginFailureStage[] {
+  const stages = new Set<SystemPluginFailureStage>()
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 3 || !value || typeof value !== 'object' || Array.isArray(value)) return
+    const record = value as Record<string, unknown>
+    if (SYSTEM_PLUGIN_FAILURE_STAGES.includes(record.stage as SystemPluginFailureStage)) {
+      stages.add(record.stage as SystemPluginFailureStage)
+    }
+    if (Array.isArray(record.errors)) record.errors.slice(0, 8).forEach((child) => visit(child, depth + 1))
+  }
+  visit(error, 0)
+  return [...stages]
+}
 
 export interface SystemPluginRunRecord {
   id: string
@@ -315,6 +339,25 @@ export interface UpdateSystemPluginInstallRequestStateInput {
   error?: unknown | null
 }
 
+/** Host-registered resources only; raw Electron resources are not inventoried. */
+export interface SystemPluginManagedResourceSummary {
+  id: string
+  kind: 'window' | 'menu' | 'tray' | 'frame'
+  source: 'desktop-sdk' | 'renderer-frame'
+  label: string
+  revisionHash: string
+  windowId?: number
+  webContentsId?: number
+  frameName?: string
+  allowedOrigins?: string[]
+  framePolicy?: {
+    allowPopups: boolean
+    allowNavigation: boolean
+    allowDownloads: boolean
+    allowPermissions: boolean
+  }
+}
+
 export interface SystemPluginSummary {
   pluginId: string
   name: string
@@ -322,6 +365,7 @@ export interface SystemPluginSummary {
   publisher: string
   enabled: boolean
   safeModeDisabled: boolean
+  preserveDataOnUninstall?: boolean
   status: SystemPluginInstallationStatus
   currentVersion: string | null
   currentArtifactSha256: string | null
@@ -343,6 +387,7 @@ export interface SystemPluginSummary {
   dependencyJobs: SystemPluginDependencyJobRecord[]
   lastRun: SystemPluginRunRecord | null
   recentRuns: SystemPluginRunRecord[]
+  managedResources: SystemPluginManagedResourceSummary[]
   osPersistence: SystemPluginOsPersistenceRecord | null
   dataPath: string
   logPath: string
@@ -355,6 +400,11 @@ export interface SetSystemPluginEnabledInput {
 
 export interface SystemPluginMutationInput {
   pluginId: string
+}
+
+export interface UninstallSystemPluginInput extends SystemPluginMutationInput {
+  /** Omission preserves older callers' delete-data behavior; the UI always supplies a choice. */
+  preserveData?: boolean
 }
 
 export interface RollbackSystemPluginInput {

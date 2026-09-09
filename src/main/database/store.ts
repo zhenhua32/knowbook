@@ -56,6 +56,7 @@ import type {
   SemanticSearchResult
 } from '@shared/contracts'
 import { appSchema } from './schema'
+import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
 import {
@@ -67,7 +68,6 @@ export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'
-const CURRENT_DATABASE_SCHEMA_VERSION = 11
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 
@@ -412,6 +412,13 @@ export class KnowbookStore {
       if (schemaVersion < 11) {
         this.migrateToSchemaVersion11()
         this.db.pragma('user_version = 11')
+      }
+      if (schemaVersion < 12) {
+        const columns = this.db.pragma('table_info(system_plugin_installations)') as Array<{ name: string }>
+        if (!columns.some((column) => column.name === 'preserve_data_on_uninstall')) {
+          this.db.exec('ALTER TABLE system_plugin_installations ADD COLUMN preserve_data_on_uninstall INTEGER NOT NULL DEFAULT 0')
+        }
+        this.db.pragma('user_version = 12')
       }
     })
   }

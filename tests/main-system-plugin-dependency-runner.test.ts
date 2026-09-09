@@ -91,6 +91,41 @@ test('dependency planning includes explicit build and native rebuild commands in
   }), /rebuildNativeModules is false/)
 })
 
+test('modern Yarn uses immutable installation and skips the complete lifecycle build stage', async () => {
+  for (const allowScripts of [false, true]) {
+    const spawnCalls: SpawnCall[] = []
+    const logs: SystemPluginDependencyLogEvent[] = []
+    const tasks = createSystemPluginDependencyTasks({
+      packageManager: 'yarn', yarnMode: 'modern', install: 'ci', allowScripts,
+      rebuildNativeModules: true, buildCommand: ['yarn', 'run', 'build']
+    }, { nativeRebuild: { type: 'command', command: ['yarn', 'rebuild'], environment: { npm_config_runtime: 'electron' } } })
+    await executeSystemPluginDependencyTasks({
+      rootDirectory: './runtime/confirmed', tasks,
+      spawn: createFakeSpawn(spawnCalls, () => succeedingChild(851)), onLog: (event) => logs.push(event)
+    })
+    assert.deepEqual(spawnCalls.map(({ executable, args }) => [executable, ...args]), [
+      ['yarn', 'install', '--immutable', '--inline-builds', ...(!allowScripts ? ['--mode=skip-build'] : [])],
+      ['yarn', 'run', 'build'], ['yarn', 'rebuild']
+    ])
+    for (const { options } of spawnCalls) {
+      assert.equal(options.env?.YARN_NODE_LINKER, 'node-modules')
+      assert.equal(options.env?.YARN_ENABLE_SCRIPTS, String(allowScripts))
+      assert.equal(options.env?.YARN_ENABLE_IMMUTABLE_INSTALLS, 'true')
+    }
+    assert.equal(spawnCalls[2].options.env?.npm_config_runtime, 'electron')
+    assert.match(logs[0].text, /Host dependency environment.*YARN_NODE_LINKER/)
+  }
+  const task = createSystemPluginDependencyTasks({
+    packageManager: 'yarn', yarnMode: 'modern', install: 'install', allowScripts: true, rebuildNativeModules: false
+  })[0]
+  assert.deepEqual(task.command, ['yarn', 'install', '--inline-builds'])
+  assert.ok(task.execution === 'process')
+  assert.equal(task.environment?.YARN_ENABLE_IMMUTABLE_INSTALLS, 'false')
+  assert.throws(() => createSystemPluginDependencyTasks({
+    packageManager: 'npm', yarnMode: 'modern', install: 'ci', allowScripts: true, rebuildNativeModules: false
+  }), /yarnMode/)
+})
+
 test('pnpm build commands disable automatic reinstallation after the reviewed install job', async () => {
   for (const executable of ['pnpm', 'pnpm.cmd']) {
     const spawnCalls: SpawnCall[] = []
