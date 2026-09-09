@@ -1,0 +1,6 @@
+allowBuilds:
+  'knowbook-manager-value@file:vendor/value': true
+enableGlobalVirtualStore: false
+storeDir: .pnpm-store
+offline: true
+updateNotifier: false

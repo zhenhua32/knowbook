@@ -78,6 +78,12 @@ jobs:
       - name: Run reviewed dependency lifecycle and build acceptance
         run: npm run test:packaged-dependency-scripts
 
+      - name: Prepare pinned pnpm and Yarn Classic toolchain
+        run: npm run prepare:package-managers
+
+      - name: Run packaged pnpm and Yarn Classic acceptance
+        run: npm run test:packaged-package-managers
+
       - name: Prepare isolated Electron host upgrade fixture
         run: npm run prepare:host-upgrade
 

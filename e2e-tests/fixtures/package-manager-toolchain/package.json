@@ -1,0 +1,9 @@
+{
+  "name": "knowbook-package-manager-acceptance-tools",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "pnpm": "11.19.0",
+    "yarn": "1.22.22"
+  }
+}

@@ -16,6 +16,7 @@ import {
 } from './dependency-runner'
 import type { SystemPluginPackageManager } from '@shared/system-plugin'
 import { createSystemPluginLogWriter, redactSystemPluginLog } from './log-writer'
+import { prepareSystemPluginRuntimeLinks } from './runtime-links'
 
 export interface SystemPluginPackagePreparerOptions {
   repository: SqlitePluginPlatformRepository
@@ -99,7 +100,6 @@ export function createSystemPluginPackagePreparer(
         }))
       : []
     let dependencyTasksCompleted = false
-    let nativeProbeCompleted = false
 
     try {
       if (tasks.length > 0) {
@@ -138,7 +138,6 @@ export function createSystemPluginPackagePreparer(
           void logWriter.append(`${prefix}${event.text}`).catch(() => undefined)
         }
       })
-      nativeProbeCompleted = true
       await logWriter.flush()
       await replaceRuntimeDirectory(temporaryRoot, targetRoot, pluginRuntimeRoot)
       return {
@@ -150,7 +149,7 @@ export function createSystemPluginPackagePreparer(
         }
       } satisfies PreparedPublishedSystemPluginPackage
     } catch (error) {
-      if (dependencyTasksCompleted && !nativeProbeCompleted && jobs.length > 0) {
+      if (dependencyTasksCompleted && jobs.length > 0) {
         options.repository.updateSystemPluginDependencyJob(jobs[jobs.length - 1].id, {
           status: 'failed',
           error: serializeError(error)
@@ -197,25 +196,27 @@ async function replaceRuntimeDirectory(
   targetRoot: string,
   pluginRuntimeRoot: string
 ): Promise<void> {
+  const verifyLinks = await prepareSystemPluginRuntimeLinks(temporaryRoot, targetRoot)
   const previousRoot = resolve(pluginRuntimeRoot, `.replaced-${randomUUID()}`)
   assertInside(previousRoot, pluginRuntimeRoot, 'previous runtime root')
   const targetExists = await lstat(targetRoot).then(() => true, (error: unknown) => {
     if (isNodeError(error) && error.code === 'ENOENT') return false
     throw error
   })
-  if (!targetExists) {
-    await rename(temporaryRoot, targetRoot)
-    return
-  }
-
-  await rename(targetRoot, previousRoot)
+  if (targetExists) await rename(targetRoot, previousRoot)
+  let published = false
   try {
     await rename(temporaryRoot, targetRoot)
+    published = true
+    await verifyLinks()
   } catch (error) {
-    await rename(previousRoot, targetRoot).catch(() => undefined)
+    // Move the rejected candidate back before restoring the previous runtime.
+    // Its links need not remain usable: the caller removes the temporary tree.
+    if (published) await rename(targetRoot, temporaryRoot)
+    if (targetExists) await rename(previousRoot, targetRoot)
     throw error
   }
-  await rm(previousRoot, { recursive: true, force: true })
+  if (targetExists) await rm(previousRoot, { recursive: true, force: true })
 }
 
 function describeTask(task: SystemPluginDependencyTask): Record<string, unknown> {

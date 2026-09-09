@@ -1,0 +1,6 @@
+{
+  "name": "knowbook-manager-value",
+  "version": "1.0.0",
+  "main": "index.cjs",
+  "scripts": { "postinstall": "node install.cjs" }
+}

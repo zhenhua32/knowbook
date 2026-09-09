@@ -291,7 +291,7 @@ export function createSystemPluginDependencyTasks(
       execution: 'process',
       kind: 'build',
       packageManager: plan.packageManager,
-      command: normalizeCommand(plan.buildCommand, 'System plugin build command')
+      command: createBuildCommand(plan.buildCommand)
     }))
   }
 
@@ -469,6 +469,17 @@ function createInstallCommand(plan: SystemPluginDependencyPlan): readonly string
       : ['yarn', 'install', ...(plan.install === 'ci' ? ['--frozen-lockfile'] : [])]
   if (!plan.allowScripts) command.push('--ignore-scripts')
   return Object.freeze(command)
+}
+
+function createBuildCommand(input: readonly string[]): readonly string[] {
+  const command = normalizeCommand(input, 'System plugin build command')
+  // pnpm can automatically reinstall before `run`/`exec`, losing the reviewed
+  // install's --ignore-scripts and frozen-lockfile policy. Installation already
+  // completed in its own job. Record the override in the actual command vector.
+  if (/^pnpm(?:\.cmd)?$/i.test(command[0])) {
+    return Object.freeze([command[0], '--config.verify-deps-before-run=false', ...command.slice(1)])
+  }
+  return command
 }
 
 type DiscoveredNativeModule = {

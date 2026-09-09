@@ -91,6 +91,24 @@ test('dependency planning includes explicit build and native rebuild commands in
   }), /rebuildNativeModules is false/)
 })
 
+test('pnpm build commands disable automatic reinstallation after the reviewed install job', async () => {
+  for (const executable of ['pnpm', 'pnpm.cmd']) {
+    const spawnCalls: SpawnCall[] = []
+    const tasks = createSystemPluginDependencyTasks({
+      packageManager: 'pnpm', install: 'ci', allowScripts: false,
+      rebuildNativeModules: false, buildCommand: [executable, 'run', 'build']
+    })
+    await executeSystemPluginDependencyTasks({
+      rootDirectory: './runtime/confirmed', tasks,
+      spawn: createFakeSpawn(spawnCalls, () => succeedingChild(850))
+    })
+    assert.deepEqual(spawnCalls.map(({ executable, args }) => [executable, ...args]), [
+      ['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'],
+      [executable, '--config.verify-deps-before-run=false', 'run', 'build']
+    ])
+  }
+})
+
 test('execution uses the exact artifact root, no shell, streams logs, and reports status and process lifecycle', async () => {
   const spawnCalls: SpawnCall[] = []
   const logs: SystemPluginDependencyLogEvent[] = []

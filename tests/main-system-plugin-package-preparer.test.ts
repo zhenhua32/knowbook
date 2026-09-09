@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -85,6 +86,11 @@ test('package preparation installs into a runtime copy and persists dependency j
         mkdirSync(join(options.rootDirectory, 'node_modules', 'fixture'), { recursive: true })
         writeFileSync(join(options.rootDirectory, 'node_modules', 'fixture', 'index.js'), 'module.exports = 1')
         writeFileSync(join(options.rootDirectory, 'node_modules', 'fixture', 'binding.node'), 'fake native binary')
+        symlinkSync(
+          join(options.rootDirectory, 'node_modules', 'fixture'),
+          join(options.rootDirectory, 'node_modules', 'fixture-link'),
+          process.platform === 'win32' ? 'junction' : 'dir'
+        )
         options.tasks.forEach((task, taskIndex) => {
           options.onLog?.({
             taskIndex,
@@ -142,6 +148,7 @@ test('package preparation installs into a runtime copy and persists dependency j
     const fingerprint = prepared?.runtimeFingerprint as Record<string, unknown>
     const runtimePath = fingerprint.runtimeRoot as string
     assert.equal(existsSync(join(runtimePath, 'node_modules', 'fixture', 'index.js')), true)
+    assert.equal(readFileSync(join(runtimePath, 'node_modules', 'fixture-link', 'index.js'), 'utf8'), 'module.exports = 1')
     assert.equal(existsSync(join(artifactRoot, 'node_modules')), false)
     assert.equal(fingerprint.modules, process.versions.modules ?? null)
     assert.equal(fingerprint.napi, process.versions.napi ?? null)
@@ -163,6 +170,7 @@ test('package preparation installs into a runtime copy and persists dependency j
       runtimePath
     )
     assert.equal(existsSync(join(runtimePath, 'obsolete-runtime-file')), false)
+    assert.equal(readFileSync(join(runtimePath, 'node_modules', 'fixture-link', 'index.js'), 'utf8'), 'module.exports = 1')
     assert.equal(existsSync(join(runtimePath, 'node_modules', 'fixture', 'index.js')), true)
     writeFileSync(join(runtimePath, 'preserved-after-probe-failure'), 'last known good runtime')
     probeShouldFail = true

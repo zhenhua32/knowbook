@@ -1,0 +1,14 @@
+{
+  "name": "knowbook-package-manager-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "preinstall": "node lifecycle.cjs preinstall",
+    "install": "node lifecycle.cjs install",
+    "postinstall": "node lifecycle.cjs postinstall",
+    "build": "node build.cjs"
+  },
+  "dependencies": {
+    "knowbook-manager-value": "file:vendor/value"
+  }
+}

@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      knowbook-manager-value:
+        specifier: file:vendor/value
+        version: file:vendor/value
+
+packages:
+
+  knowbook-manager-value@file:vendor/value:
+    resolution: {directory: vendor/value, type: directory}
+
+snapshots:
+
+  knowbook-manager-value@file:vendor/value: {}

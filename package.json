@@ -35,6 +35,8 @@
     "test:packaged-host-upgrade": "node scripts/packaged-host-upgrade.mjs",
     "test:packaged-windows-startup": "node scripts/packaged-windows-startup.mjs",
     "test:packaged-dependency-scripts": "node scripts/packaged-dependency-scripts.mjs",
+    "prepare:package-managers": "node scripts/prepare-package-managers.mjs",
+    "test:packaged-package-managers": "node scripts/packaged-package-managers.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "postinstall": "electron-builder install-app-deps"
   },
