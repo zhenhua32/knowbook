@@ -65,6 +65,11 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
     plugins: [katexWoff2OnlyPlugin(), react()],
+    server: {
+      host: '127.0.0.1',
+      port: 5273,
+      strictPort: true
+    },
     build: {
       minify: 'esbuild'
     },
