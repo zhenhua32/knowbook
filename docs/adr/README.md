@@ -20,7 +20,7 @@
 | [ADR-0004](0004-plugin-ui-extension-isolation.md) | 声明式 UI 优先，隔离 iframe 承载高级 UI | Implemented |
 | [ADR-0005](0005-assistant-session-event-model.md) | AI 助手采用 append-only 会话事件模型 | Implemented |
 | [ADR-0006](0006-workspace-first-dynamic-plugins.md) | 动态插件采用工作区优先、立即激活模型 | Implemented |
-| [ADR-0007](0007-full-trust-system-plugins.md) | Full Trust 系统插件使用独立 v3 通道 | Accepted |
+| [ADR-0007](0007-full-trust-system-plugins.md) | Full Trust 系统插件使用独立 v3 通道 | Implemented |
 
 ## 决策依赖
 
@@ -28,4 +28,4 @@ ADR-0001 是信任和权限基础。ADR-0002 与 ADR-0004 分别落实逻辑代�
 
 ADR-0001 至 ADR-0006 共同约束 Plugin Platform v2。ADR-0007 在其旁建立独立的 Full Trust / System Plugin v3 通道：它允许用户明确接受完整本机代码执行风险，但不放宽或取代 ADR-0002、ADR-0004 的 v2 隔离边界。现有 v1 插件宿主在迁移期作为兼容层保留，不因这些决策自动获得 v2 或 v3 的安全声明。
 
-逐项实现证据和发布验证入口见 [Plugin Platform v2 ADR 实现审计](IMPLEMENTATION-AUDIT.md)。
+v2 的逐项实现证据和发布验证入口见 [Plugin Platform v2 ADR 实现审计](IMPLEMENTATION-AUDIT.md)。v3 的完成范围、验收证据与后续手测安排见 [Full Trust 系统插件实施计划](<../Full Trust 系统插件实施计划.md>) 第 19.4、22 节。

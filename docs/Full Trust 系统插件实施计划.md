@@ -1,14 +1,14 @@
 # KnowBook Full Trust 系统插件实施计划
 
-> 文档状态：实施中
+> 文档状态：已完成（按用户确认的本次验收范围）
 > 适用版本：KnowBook 0.2.x+
-> 最后更新：2026-09-09
-> 当前验收范围：Windows；按 2026-09-07 用户要求，macOS/Linux 实测不列为本轮或发布阻塞项。已有跨平台实现与单元测试继续保留。
+> 最后更新：2026-09-10
+> 当前验收范围：Windows；按 2026-09-07 用户要求，macOS/Linux 实测不列为本轮或发布阻塞项。按 2026-09-10 用户要求，真实 Windows 登录和系统重启暂不执行，由用户后续手测，不阻塞本次目标完成。已有跨平台实现与单元测试继续保留；暂缓项目不记为测试通过。
 > 目标读者：产品、Main/Preload/Renderer 开发、插件作者、安全评审与测试
 
 ## 1. 执行摘要
 
-KnowBook 将在现有 Plugin Platform v2 之外新增 **Full Trust / System Plugin v3** 通道。v3 面向用户明确选择并完全信任的本地插件，允许直接使用 Node.js、Electron、文件系统、环境变量、密钥、网络、npm、KnowBook Store、原始 SQLite、宿主 Renderer 和长期后台服务。
+KnowBook 已在现有 Plugin Platform v2 之外新增 **Full Trust / System Plugin v3** 通道。v3 面向用户明确选择并完全信任的本地插件，允许直接使用 Node.js、Electron、文件系统、环境变量、密钥、网络、npm、KnowBook Store、原始 SQLite、宿主 Renderer 和长期后台服务。
 
 Full Trust 不是对 v2 capability 的简单扩容，也不使用沙箱或细粒度权限开关制造虚假的安全承诺。插件一旦在主进程或具有 Node 权限的上下文运行，就能够绕过宿主包装，因此 manifest 中的风险声明只承担告知、确认、审计和变更比较职责，不是可强制执行的权限边界。
 
@@ -30,7 +30,7 @@ Full Trust 不是对 v2 capability 的简单扩容，也不使用沙箱或细粒
 1. Plugin Platform v2：使用 QuickJS/WASM、不可变 revision、Grant Set、Capability Broker、声明式 ViewSpec 和 sandboxed iframe。
 2. Legacy v1：使用现有 `PluginHost` 和 utility process，提供首页卡片、文档动作、设置、事件监听、文档读取和摘要更新等兼容能力。
 3. System Plugin v3 核心链路：已加入 v3 manifest 与 artifact 校验、精确 SHA-256 确认、不可变发布、持久化状态、重启激活、Main 生命周期、版本化 service RPC、宿主服务、Renderer registry、插件中心入口、回滚/卸载和启动恢复的首轮实现及自动化测试；受控 Windows Electron E2E 已验证精确确认、离线 npm 依赖准备，以及重启后的 Main、任意 AI 请求、app-lifetime service RPC、Renderer、HTTP/WebSocket Full Trust frame、主进程创建的 Node 特权窗口和最终 `active` 状态。
-4. 发布验收进展：同一受控插件十二项能力、各包管理器原生重编译、安装中断/数据库恢复、日志/资源/独立进程状态、数据保留卸载，以及真实 NSIS/更新器升级、回退和卸载均已取得 Windows 证据。目前仅真实 Windows 登录/系统重启尚缺隔离测试机；macOS/Linux 实测按用户要求不作为门槛。
+4. 发布验收进展：同一受控插件十二项能力、各包管理器原生重编译、安装中断/数据库恢复、日志/资源/独立进程状态、数据保留卸载，以及真实 NSIS/更新器升级、回退和卸载均已取得 Windows 证据。本次确认范围内的实现和验收已完成；真实 Windows 登录/系统重启由用户后续手测，macOS/Linux 实测按用户要求不作为门槛。
 
 v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、Store、SQLite、用户目录、API Key 或宿主 Renderer，这一边界是有意设计，不能为实现 Full Trust 而拆除。
 
@@ -48,16 +48,16 @@ v2 当前只适合受控的知识库自动化。它不会向插件暴露 Node、
 
 ### 2.3 实施进度矩阵
 
-截至 2026-09-09，阶段 0–5 的主要实现已落地。下表区分代码、已取得的 Windows 证据与尚未完成的发布验收；ADR-0007 仍为 Accepted。按用户要求，macOS/Linux 实测不作为本轮门槛，已有跨平台实现和单测保留。
+截至 2026-09-10，阶段 0–5 的实现与本次确认范围内的验收已完成，ADR-0007 更新为 Implemented。下表记录实现、已取得的 Windows 证据与后续手测安排。按用户要求，macOS/Linux 实测不作为本轮门槛，真实 Windows 登录/系统重启由用户后续手测；已有跨平台实现和单测保留。
 
-| 阶段 | 当前实现与已验证行为 | 剩余验收 |
+| 阶段 | 当前实现与已验证行为 | 验收结论与后续安排 |
 | --- | --- | --- |
 | 0：契约与防回归 | v3 manifest、精确 artifact 确认、独立安装/运行通道；同一打包宿主中真实 v2 QuickJS 与 iframe 默认拒绝控制组 | 673 项完整测试、安全测试及 83 项桌面用例通过；其中两项启动时序问题修复后定向复验通过 |
 | 1：安装与插件中心 | schema v12、不可变 artifact、可变 runtime、依赖任务/审计、升级/回滚、保留或删除私有数据、重新安装复用；真实安装中断后保留旧 active、失败任务和日志，同 hash 需再次选择与确认方可重试 | 已通过独立 NSIS/更新器闭环（含两种数据卸载选项） |
 | 2：Main 与恢复 | CJS/ESM、生命周期、Context/disposable、crash marker、安全模式、last-known-good；新增 Main stdout/stderr 按 revision 归档，SDK 事件回调保持日志归属 | 已补齐分进程状态、实际 PID、失败阶段与原堆栈；安全启动会退休历史运行记录 |
 | 3：数据、AI、桌面 | Documents/Databases/Store/raw SQLite、事件与真实 Renderer 刷新、AI 流式/取消/错误、Settings/Secrets；剪贴板、shell、菜单、托盘、专属 preload 窗口；安装脚本执行前备份、SQLite 恢复维护入口、托管资源摘要 | 已通过独立运行状态/真实 PID 与数据库恢复；最终包 1280/900 宽度排版已无注入实测，字段清楚且无裁切 |
 | 4：Renderer 与可信 frame | React 单例、页面/命令/快捷键、DOM/CSS/theme、任意 preload API；远程 HTTP/WebSocket frame、权限/导航/下载与独立 Node 特权窗口；停用清理及阻止关闭时销毁窗口 | 已取得资源摘要、日志和实际 beforeunload 清理证据 |
-| 5：依赖与后台服务 | npm、pnpm 11.19.0、Yarn Classic 1.22.22、Yarn 4.9.4；四种管理器的 Electron native rebuild；真实 ABI 133→135→133 重建；RPC、心跳、有限重启、detached 同 PID 接管与显式停止；Windows Run 独立确认及维护卸载 | 真实 Windows 注销/登录和系统重启（需隔离测试机或 VM） |
+| 5：依赖与后台服务 | npm、pnpm 11.19.0、Yarn Classic 1.22.22、Yarn 4.9.4；四种管理器的 Electron native rebuild；真实 ABI 133→135→133 重建；RPC、心跳、有限重启、detached 同 PID 接管与显式停止；Windows Run 独立确认及维护卸载 | 本次范围内已通过；真实 Windows 注销/登录和系统重启未执行，由用户后续手测 |
 
 同一个受控插件的十二项核心能力已在 Windows unpacked 完成八阶段统一验收，证据为 `test-results/system-capabilities/**/capabilities-evidence.json`，十二行均 passed 且清理错误为空。新增资源摘要、日志归属与脱敏、宿主事件回调、实际 beforeunload 拦截及停用销毁断言也已通过。可长期保留的证据归档在 `release/acceptance/system-capabilities`。
 
@@ -450,7 +450,7 @@ v1 白名单覆盖：
 ### 11.1 包管理器
 
 - 支持 npm、pnpm 和 yarn；默认按锁文件选择，并允许 manifest 显式指定。
-- 当前打包态依赖安装/build 证据覆盖 npm、pnpm 11.19.0 和 Yarn Classic 1.22.22。Yarn 2+ 的参数、PnP/加载方式，以及 pnpm/Yarn 的 native rebuild 仍待适配与实测，不能由纯 JS 用例推定已支持。Yarn Classic 的 `--ignore-scripts` 与新版 Yarn 的安装模式不同，参见 [Classic 安装参数](https://classic.yarnpkg.com/lang/en/docs/cli/install/) 和 [新版 Yarn 安装参数](https://yarnpkg.com/cli/install)。
+- 当前 Windows 打包态依赖安装/build 与 native rebuild 均已覆盖 npm、pnpm 11.19.0、Yarn Classic 1.22.22 和现代 Yarn 4.9.4。现代 Yarn 通过 `yarnMode: "modern"` 显式选择，宿主强制使用 `node_modules` 布局，不在共享 Main 中注册全局 PnP loader；省略该字段仍使用 Classic 行为。各管理器的安装、脚本策略、重编译命令和真实 ABI 验收说明见 [Yarn 与原生重建说明](system-plugin-yarn.md)。
 - `install: ci` 要求锁文件，`install: install` 允许更新依赖解析结果并在确认页突出显示。
 - 逻辑命令始终以可审计的参数数组保存并执行；常规命令保持 `shell: false`。Windows 的 npm/pnpm/yarn 是 `.cmd` shim，宿主仅对这三类已知入口通过 `%ComSpec% /d /s /c` 适配，并拒绝含空白或 shell 元字符的参数，避免把 manifest 变成自由格式命令行。
 - 包管理器不可用、网络失败或脚本失败时保留安装日志，artifact 不进入 active 目录。
@@ -651,7 +651,7 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 
 完成标准：验收插件通过能力 4 和 12，纯 JS/native 依赖及两类后台服务在打包应用中可安装、运行和移除。
 
-当前证据：Windows unpacked 的纯 JS、四种包管理器 native rebuild、真实 SQLite、宿主 ABI 133→135→133、app-lifetime/detached、Run 注册/命令重放和统一十二项核心能力均已有实测。NSIS/更新器闭环亦已通过；真实 OS 登录/重启待独立 Windows 测试环境。命令与精确结果见第 19.4 节。
+当前证据：Windows unpacked 的纯 JS、四种包管理器 native rebuild、真实 SQLite、宿主 ABI 133→135→133、app-lifetime/detached、Run 注册/命令重放和统一十二项核心能力均已有实测。NSIS/更新器闭环亦已通过；真实 OS 登录/重启按 2026-09-10 用户要求留待其后续手测，不阻塞本次完成。命令与精确结果见第 19.4 节。
 
 ## 19. 测试计划
 
@@ -686,9 +686,9 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 - Windows 打包应用执行 runtime smoke。
 - 安全模式能在坏插件或主进程启动失败后进入应用。
 
-### 19.4 当前自动化证据与剩余门槛
+### 19.4 自动化验收证据与后续手测
 
-下表记录实际执行结果；脚本存在、CI 已接线或代码通过单测不等同于打包态验收通过。完整证据位于各 runner 的 `test-results/<场景>`，包含阶段、版本/ABI、失败原因和清理结果。
+下表记录实际执行结果；脚本存在、CI 已接线或代码通过单测不等同于打包态验收通过。各 runner 将证据写入 `test-results/<场景>`，包含阶段、版本/ABI、失败原因和清理结果；收尾证据归档在 `release/acceptance`，避免后续运行覆盖。真实 Windows 登录/重启仍记为未执行，按用户要求由其后续手测，不属于本次完成门槛。
 
 | 验收 | 当前结果 | 入口或证据 |
 | --- | --- | --- |
@@ -706,7 +706,7 @@ v3 不复用 v2 Grant Set 作为权限依据。新增独立记录：
 | Main 异常退出与启动恢复 | 五场景全部通过，3.1 分钟；throw、process.exit、同步死循环、process.crash、首次激活失败 | `test:packaged-activation-recovery` |
 | SQLite 备份恢复维护入口 | 已通过，最终 1.4 分钟；含损坏 DB、真实服务停止、源 hash 不变、安全停用、Main/Renderer 历史状态退休及失败诊断保留 | `test:packaged-database-restore`；[恢复指南](system-plugin-database-recovery.md) |
 | 独立 NSIS / electron-updater | 全部通过，4.7 分钟；真实 0.1.2→0.1.3→0.1.2、旧服务退出/新 PID、Run 与数据保留、两种卸载及无残留 | `prepare:windows-installer`、`test:packaged-windows-installer` |
-| 真实 Windows 登录 / 重启 | 未执行；需要可用的隔离 Windows 测试机或 VM | [会话验收说明](system-plugin-windows-session-acceptance.md) |
+| 真实 Windows 登录 / 重启 | 未执行；2026-09-10 用户明确暂缓，由其后续手测，不阻塞本次完成 | [会话验收说明](system-plugin-windows-session-acceptance.md) |
 | 类型、完整测试、安全、构建与 smoke | 673 项完整测试、类型/示例检查、构建、18 项安全测试及 smoke 通过；83 项桌面用例首次 81 通过（11.8 分钟），另两项修复测试 PID 读取时序后复验通过（19 秒） | `typecheck`、`test`、`test:plugin-security`、`build`、`test:packaged-runtime-smoke` |
 
 实施中发现并修复的问题包括：Windows GUI 依赖进程输出丢失；Electron 35/36 文件设备编号表示差异；pnpm build 隐式重装和可变 runtime 迁移后的内部链接；不同管理器的 rebuild 命令与 node-gyp Electron target 传递；安装任务中断遗留状态；Windows MSIX 路径重定向；中文可执行文件路径经 PowerShell 非 UTF-8 管道损坏、Electron 登录启动 setter/query 边界未给含空格 exe 路径加引号。相应修复均有定向回归。
@@ -754,7 +754,7 @@ npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=f
 
 ## 20. 最终验收标准
 
-截至 2026-09-09，实际功能、恢复、依赖、分进程状态和 NSIS/更新器的 Windows 验收均已取得通过证据，类型/构建/673 项测试通过；83 项桌面用例均取得通过结果（含两项时序修复后的复验）；排版收尾结果见第 19.4 节。尚未满足的是隔离 Windows 环境下的真实注销/登录和系统重启，ADR-0007 继续保持 Accepted。
+截至 2026-09-10，本次确认范围内的最终验收已完成，ADR-0007 更新为 Implemented。实际功能、恢复、依赖、分进程状态和 NSIS/更新器的 Windows 验收均已取得通过证据，类型/构建/673 项测试通过；83 项桌面用例均取得通过结果（含两项时序修复后的复验）；排版收尾结果见第 19.4 节。真实 Windows 注销/登录和系统重启未执行，由用户后续手测；macOS/Linux 实测亦按此前要求不列为本次门槛。
 
 ### 20.1 功能验收
 
@@ -803,6 +803,8 @@ npx electron-builder --dir --publish never '--config.win.signAndEditExecutable=f
 4. 用户始终在任何代码执行前确认精确 artifact；AI 始终不能代替确认。
 5. 错误插件可以通过自动回滚、安全停用或安全模式恢复。
 6. 文档、SDK 类型、示例插件和 Windows 测试能够支持第三方开发者独立实现插件。
+
+完成结论（2026-09-10）：上述六项已在本次确认范围内满足。实现与自动化证据见第 2.3、19.4 节；第三方开发入口为 [开发指南](system-plugin-v3-development.md)、[SDK 类型](../src/shared/system-plugin-sdk.ts) 与 [示例插件](../examples/system-plugin-v3-starter)。真实 Windows 登录/重启保留为用户后续手测，macOS/Linux 实测按用户要求排除；这些范围调整不改变测试记录，不表示相关真实系统场景已经通过，也不改变下列架构决策。
 
 已经确定且实现时不得重新解释的决策：
 

@@ -1,7 +1,8 @@
 # ADR-0007：Full Trust 系统插件使用独立 v3 通道
 
-- 状态：Accepted
+- 状态：Implemented
 - 日期：2026-09-01
+- 实施验收日期：2026-09-10（按用户确认的本次范围）
 - 决策范围：System Plugin v3
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)
 - 相关决策：[ADR-0002](0002-plugin-runtime-isolation.md)、[ADR-0004](0004-plugin-ui-extension-isolation.md)
@@ -25,6 +26,12 @@ KnowBook 新增独立的 `Full Trust / System Plugin v3` 通道，同时保留�
 7. Full Trust 运行时必须提供安全模式和启动崩溃保护；这些机制用于恢复可用性，不能阻止已运行插件读取、修改或泄露数据。
 
 完整接口、安装流程、实施阶段和验收标准见 [Full Trust 系统插件实施计划](<../Full Trust 系统插件实施计划.md>)。
+
+## 实施验收
+
+阶段 0–5 已实现，并在本次确认的 Windows 范围内完成验收：同一受控插件十二项能力、依赖与原生重编译、宿主 ABI 升级/回退、启动与数据库恢复、Main/Renderer/后台服务、插件中心和独立 NSIS/更新器闭环均已有证据。673 项完整测试、18 项安全测试、类型/示例检查、构建和打包 smoke 通过；83 项桌面用例取得通过结果，其中两项启动时序问题在修复后定向复验通过。详细结果及证据归档见实施计划第 19.4 节；作者入口见 [开发指南](../system-plugin-v3-development.md)。
+
+按用户 2026-09-07 的要求，macOS/Linux 实测不列为本轮或发布阻塞项。按用户 2026-09-10 的要求，真实 Windows 登录和系统重启暂不执行，由用户后续手测，不阻塞本次目标完成；它们仍记录为未执行，步骤见 [会话验收说明](../system-plugin-windows-session-acceptance.md)。本次状态更新依据已完成的实现、自动化证据和明确调整后的验收范围，不以 Run 命令重放代替真实会话验收。
 
 ## 后果
 
