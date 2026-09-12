@@ -92,6 +92,8 @@ Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话�
 
 `activity-pulse-v2` 是 v2 内置参考插件。需要 Node、Electron、npm、宿主 React 或后台服务的扩展使用独立的 System Plugin v3 通道，见 [v3 开发指南](docs/system-plugin-v3-development.md)。仓库的 [Activity Pulse](plugins/activity-pulse/README.md) 已迁为 v3，可通过插件中心选择目录，确认精确 artifact 后重启启用。
 
+仓库还提供 v3 [主题切换插件](plugins/theme-switcher/README.md)，内置云白、暖纸、青苔、海湾、午夜、紫夜六款配色。在配置中心即时切换并保存，停用后恢复应用原有外观。
+
 v1 插件系统已完全移除：不再扫描工作区或 userData 的旧 `plugins/` 目录，也不提供旧版安装、重载和 SDK。已有自定义 v1 插件需改写成 v3 后重新安装；旧文件和历史设置保留，不会自动执行或获得 Full Trust。架构决策见 [ADR-0008](docs/adr/0008-remove-v1-plugins.md)，使用说明见 [使用文档](docs/使用文档.md#插件开发)。
 
 ## 网页剪藏

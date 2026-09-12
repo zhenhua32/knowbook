@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 3,
+  "trust": "full",
+  "id": "theme-switcher",
+  "name": "主题切换",
+  "version": "1.0.0",
+  "description": "六款内置主题，配色预览、即时切换与持久化选择；可随时恢复 KnowBook 默认外观。",
+  "publisher": "KnowBook",
+  "fullAccess": true,
+  "entries": { "main": "main.cjs", "renderer": "renderer.cjs" },
+  "riskDeclarations": ["node", "settings", "renderer"]
+}

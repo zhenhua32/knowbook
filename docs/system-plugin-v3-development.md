@@ -6,6 +6,8 @@
 
 [`examples/system-plugin-v3-starter`](../examples/system-plugin-v3-starter) 可直接作为插件目录安装，无需下载依赖或构建。插件会创建一篇示例文档、显示首页 React 卡片，并启动只在应用存活期间运行的后台服务。其 README 说明具体副作用和清理范围。
 
+[主题切换](../plugins/theme-switcher/README.md) 提供另一种完整示例：Main 校验并持久化主题选择，Renderer 使用消息接口、设置插槽和可清理的 CSS 注册实现六款主题，不改写宿主浅色 / 深色设置。
+
 1. 在插件中心选择示例目录，核对来源、插件 ID、SHA-256、系统访问与依赖计划。
 2. 由用户勾选完整风险确认并输入完整插件 ID。AI 生成工程或提出请求不能替代这一步。
 3. 确认后宿主才发布 artifact、安装依赖及构建。状态变为 `pending-restart` 时重启应用。
