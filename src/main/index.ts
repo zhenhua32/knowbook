@@ -133,6 +133,7 @@ import {
   type SystemPluginManagerSummary
 } from './system-plugin'
 import { normalizeSystemPluginV3Manifest } from './system-plugin-artifact'
+import { BUILTIN_SYSTEM_PLUGINS } from './system-plugin/builtin-catalog'
 import { SystemPluginRendererBridge } from './system-plugin/renderer-bridge'
 import { disposeSystemPluginWindow, removeSystemPluginFrameResources, snapshotSystemPluginFrameResources, SystemPluginManagedResources } from './system-plugin/managed-resources'
 import { createSystemPluginStartupCommand, resolveKnowbookUserDataOverride } from './system-plugin/startup-command'
@@ -685,6 +686,7 @@ function initializeServices(): void {
   }
   systemPluginManager = new SystemPluginManager({
     repository: store.pluginPlatform,
+    builtinPlugins: BUILTIN_SYSTEM_PLUGINS,
     stagingRoot: systemPluginStagingRoot,
     artifactRoot: systemPluginArtifactRoot,
     dataRoot: systemPluginDataRoot,
@@ -1227,6 +1229,7 @@ function toSystemPluginSummary(summary: SystemPluginManagerSummary): SystemPlugi
     : null
   return {
     pluginId: summary.pluginId,
+    source: systemPluginManager.isBuiltin(summary.pluginId) ? 'builtin' : 'installed',
     name: manifest?.name ?? summary.pluginId,
     description: manifest?.description ?? '',
     publisher: manifest?.publisher ?? '—',

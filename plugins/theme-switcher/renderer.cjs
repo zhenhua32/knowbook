@@ -91,7 +91,7 @@ module.exports = async (api) => {
     .theme-switcher-settings .theme-switcher-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
     .theme-switcher-settings h3 { margin: 0; font-size: 20px; letter-spacing: -.4px; }
     .theme-switcher-settings p { margin: 8px 0 0; color: var(--kb-text-soft, #596174); font-size: 13px; line-height: 1.6; }
-    .theme-switcher-settings .theme-switcher-kicker { display: block; margin-bottom: 8px; color: var(--kb-accent, #5b63e8); font-size: 11px; font-weight: 700; letter-spacing: 1.6px; }
+    .theme-switcher-settings .theme-switcher-kicker { display: block; margin-bottom: 8px; color: var(--kb-accent, #5b63e8); font-size: 12px; font-weight: 700; letter-spacing: 1.6px; }
     .theme-switcher-settings .theme-switcher-current { padding: 6px 10px; border-radius: 20px; color: var(--kb-accent-strong, #444bc7); background: var(--kb-accent-soft, #eef0ff); font-size: 12px; white-space: nowrap; }
     .theme-switcher-settings .theme-switcher-group { margin-top: 24px; }
     .theme-switcher-settings h4 { margin: 0 0 12px; font-size: 12px; color: var(--kb-text-soft, #596174); font-weight: 600; }
@@ -111,7 +111,7 @@ module.exports = async (api) => {
     .theme-switcher-settings .theme-switcher-preview-card { height: 24px; border-radius: 4px; border: 1px solid var(--preview-line); background: var(--preview-surface); padding: 7px; }
     .theme-switcher-settings .theme-switcher-preview-card b { display: block; height: 8px; width: 25px; border-radius: 3px; background: var(--preview-accent); }
     .theme-switcher-settings .theme-switcher-option-title { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 11px 4px 4px; font-size: 14px; font-weight: 600; }
-    .theme-switcher-settings .theme-switcher-selected { font-size: 11px; color: var(--kb-accent, #5b63e8); }
+    .theme-switcher-settings .theme-switcher-selected { font-size: 12px; color: var(--kb-accent, #5b63e8); }
     .theme-switcher-settings .theme-switcher-description { display: block; margin: 0 4px 5px; color: var(--kb-text-soft, #596174); font-size: 12px; line-height: 1.5; }
     .theme-switcher-settings .theme-switcher-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--kb-line, #d9dee8); }
     .theme-switcher-settings button.theme-switcher-default { padding: 8px 12px; border: 1px solid var(--kb-line-strong, #d9dee8); border-radius: 8px; color: inherit; background: transparent; cursor: pointer; font-size: 12px; }

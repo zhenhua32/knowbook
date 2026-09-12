@@ -60,6 +60,7 @@ import type {
 } from './types'
 import { runWithTimeout } from './runtime'
 import { isSystemPluginManagedPath } from './managed-paths'
+import { publishBuiltinSystemPlugin, snapshotBuiltinSystemPlugins, type BuiltinSystemPlugin } from './builtin'
 import { canRetryInterruptedSystemPluginPackage, isInterruptedSystemPluginPackage, recoverInterruptedSystemPluginInstalls } from './install-recovery'
 import {
   createSystemPluginLogWriter,
@@ -181,6 +182,7 @@ export type SystemPluginDetachedProcessInspector = (
 
 export interface SystemPluginManagerOptions<TServices extends object = Record<never, never>> {
   repository: SqlitePluginPlatformRepository
+  builtinPlugins?: readonly BuiltinSystemPlugin[]
   stagingRoot: string
   artifactRoot: string
   dataRoot: string
@@ -291,6 +293,8 @@ type AdoptableDetachedRun = {
  */
 export class SystemPluginManager<TServices extends object = Record<never, never>> {
   private readonly repository: SqlitePluginPlatformRepository
+  private readonly builtinPlugins: ReadonlyMap<string, BuiltinSystemPlugin>
+  private readonly builtinArtifacts = new Map<string, PublishedSystemPluginArtifact>()
   private readonly stagingRoot: string
   private readonly artifactRoot: string
   private readonly dataRoot: string
@@ -339,6 +343,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       )
     }
     this.repository = options.repository
+    this.builtinPlugins = snapshotBuiltinSystemPlugins(options.builtinPlugins ?? [])
     this.stagingRoot = resolveRequiredPath(options.stagingRoot, 'stagingRoot')
     this.artifactRoot = resolveRequiredPath(options.artifactRoot, 'artifactRoot')
     this.dataRoot = resolveRequiredPath(options.dataRoot, 'dataRoot')
@@ -396,6 +401,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   ): Promise<SystemPluginInstallRequest> {
     this.assertUsable()
     const inspected = await inspectSystemPluginArtifact(input.sourceDirectory)
+    this.assertExternalPlugin(inspected.manifest.id)
     const request = this.repository.createSystemPluginInstallRequest({
       pluginId: inspected.manifest.id,
       name: inspected.manifest.name,
@@ -499,6 +505,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       }
     }
 
+    this.assertExternalPlugin(request.pluginId)
     let packageRecord: SystemPluginPackageRecord | null = null
     let safetyBackupPath: string | null = null
     let resolved = request
@@ -776,6 +783,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   }
 
   async requestUninstall(pluginId: string, preserveData = false): Promise<SystemPluginManagerSummary> {
+    this.assertExternalPlugin(pluginId)
     this.assertUsable()
     if (typeof preserveData !== 'boolean') throw new Error('System plugin uninstall data choice must be a boolean.')
     const installation = this.requireInstallation(pluginId)
@@ -830,6 +838,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
   }
 
   async rollback(pluginId: string, packageId?: string): Promise<SystemPluginManagerSummary> {
+    this.assertExternalPlugin(pluginId)
     this.assertUsable()
     const installation = this.requireInstallation(pluginId)
     const candidates = this.repository.listSystemPluginPackages(pluginId, 1_000)
@@ -1284,6 +1293,7 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     await this.reconcileOsPersistence()
     await this.finalizePendingUninstalls()
     await this.recoverInterruptedActivations()
+    await this.reconcileBuiltinPlugins()
     for (const installation of this.repository.listSystemPluginInstallations()) {
       const runtime = this.active.get(installation.pluginId)
       const liveRunIds = [runtime?.hostRunId, runtime?.rendererRunId]
@@ -1316,6 +1326,52 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
       await this.startInstallation(installation)
     }
     return this.list()
+  }
+
+  isBuiltin(pluginId: string): boolean {
+    return this.builtinPlugins.has(pluginId)
+  }
+
+  private assertExternalPlugin(pluginId: string): void {
+    if (this.isBuiltin(pluginId)) {
+      throw new Error('内置插件随应用提供和更新，可以停用，不能单独安装、替换、卸载或回滚。')
+    }
+  }
+
+  private async reconcileBuiltinPlugins(): Promise<void> {
+    for (const plugin of this.builtinPlugins.values()) {
+      let installation = this.repository.getSystemPluginInstallationByPlugin(plugin.id)
+      try {
+        const artifact = await publishBuiltinSystemPlugin(plugin, this.stagingRoot, this.artifactRoot)
+        this.builtinArtifacts.set(plugin.id, artifact)
+        const existing = this.repository.findSystemPluginPackage(plugin.id, artifact.artifactSha256)
+        const packageRecord = existing
+          ? this.repository.updateSystemPluginPackage(existing.id, {
+              artifactPath: artifact.artifactDirectory, runtimeFingerprint: null, status: 'ready', error: null
+            })
+          : this.repository.createSystemPluginPackage({
+              pluginId: plugin.id, version: artifact.manifest.version, publisher: artifact.manifest.publisher,
+              contentHash: artifact.artifactSha256, artifactPath: artifact.artifactDirectory,
+              manifestSnapshot: artifact.manifest, fileManifest: artifact.files, status: 'ready'
+            })
+        if ((installation?.pendingPackageId ?? installation?.currentPackageId) === packageRecord.id) continue
+        const backupPath = await this.createSafetyBackup(packageRecord)
+        installation ??= this.repository.ensureSystemPluginInstallation({ pluginId: plugin.id, enabled: true })
+        this.repository.updateSystemPluginInstallation(installation.id, {
+          pendingPackageId: packageRecord.id,
+          status: installation.safeModeDisabled ? 'safe-mode-disabled' : installation.enabled ? 'pending-restart' : 'disabled',
+          backupPath
+        })
+        this.repository.appendSystemPluginAudit({
+          pluginId: plugin.id, installationId: installation.id, packageId: packageRecord.id,
+          actor: 'system', action: 'builtin.registered', outcome: 'success',
+          details: { artifactSha256: artifact.artifactSha256, backupPath }
+        })
+      } catch (error) {
+        installation ??= this.repository.ensureSystemPluginInstallation({ pluginId: plugin.id, enabled: false })
+        await this.safeDisable(installation, normalizeError(error))
+      }
+    }
   }
 
   private async cleanupResolvedInstallStaging(): Promise<void> {
@@ -1507,6 +1563,11 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     const pending = this.repository.listSystemPluginInstallations()
       .filter((installation) => installation.status === 'uninstall-pending')
     for (const installation of pending) {
+      // An uninstall requested before this plugin shipped with the app becomes a preserved opt-out.
+      if (this.isBuiltin(installation.pluginId)) {
+        this.repository.updateSystemPluginInstallation(installation.id, { enabled: false, status: 'disabled' })
+        continue
+      }
       const packages = this.repository.listSystemPluginPackages(installation.pluginId, 1_000)
       try {
         await this.stopPersistedDetachedRuns(installation, null, 'uninstall')
@@ -1723,6 +1784,14 @@ export class SystemPluginManager<TServices extends object = Record<never, never>
     commitPending: boolean
   ): Promise<void> {
     this.assertActivationCanCommit(installation.id, packageRecord.id, commitPending, false)
+    if (this.isBuiltin(installation.pluginId)) {
+      const artifact = this.builtinArtifacts.get(installation.pluginId)
+      if (!artifact || packageRecord.contentHash !== artifact.artifactSha256
+        || resolve(packageRecord.artifactPath) !== artifact.artifactDirectory
+        || packageRecord.runtimeFingerprint !== null) {
+        throw new Error('Built-in plugin activation must use the exact application-bundled artifact.')
+      }
+    }
     if (packageRecord.status !== 'ready') {
       throw new Error(
         `System plugin package ${packageRecord.id} cannot activate from ${packageRecord.status} status.`

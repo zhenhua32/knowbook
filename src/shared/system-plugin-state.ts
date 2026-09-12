@@ -359,6 +359,8 @@ export interface SystemPluginManagedResourceSummary {
 }
 
 export interface SystemPluginSummary {
+  /** Determined by the host's compiled catalog, never by the plugin manifest. */
+  source: 'builtin' | 'installed'
   pluginId: string
   name: string
   description: string

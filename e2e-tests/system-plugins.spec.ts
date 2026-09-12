@@ -569,6 +569,9 @@ test.describe('System Plugin v3 @electron', () => {
 
       await openPluginsPage(current.page)
       const recoveredCard = installedSystemPluginCard(current, 'Full Trust Lifecycle')
+      if (await recoveredCard.locator('.system-plugin-details').getAttribute('open') === null) {
+        await recoveredCard.locator('.system-plugin-details > summary').click()
+      }
       await expect(recoveredCard.getByTestId('system-plugin-runtime-component').filter({ hasText: 'Main' }))
         .toHaveAttribute('data-run-status', 'ready')
       await expect(recoveredCard.getByTestId('system-plugin-runtime-component').filter({ hasText: 'Renderer' }))

@@ -1,6 +1,5 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { rmSync } from 'node:fs'
-import { resolve } from 'node:path'
 import {
   closeElectronApp, hasBuiltElectronApp, launchElectronApp, uiText,
   type ElectronAppContext
@@ -30,7 +29,7 @@ async function waitForActivePlugin(page: Page): Promise<void> {
     return plugin?.status === 'active' && plugin.runtimeStatus === 'active'
       ? 'active'
       : JSON.stringify({ status: plugin?.status, runtimeStatus: plugin?.runtimeStatus, error: plugin?.lastError, run: plugin?.lastRun })
-  }, { message: 'Theme Switcher Main and Renderer must activate after the reviewed restart' }).toBe('active')
+  }, { message: 'Built-in Theme Switcher Main and Renderer must activate' }).toBe('active')
 }
 
 async function invokeMain(page: Page, method: string, input?: { themeId: string }): Promise<unknown> {
@@ -156,7 +155,7 @@ async function verifyLazyPagePalettes(page: Page, themeId: 'paper' | 'midnight',
   await expect(page.getByTestId('theme-switcher-settings')).toBeVisible()
 }
 
-test('v3 Theme Switcher applies six palettes, preserves selection, and restores host appearance on disable @electron', async ({}, testInfo) => {
+test('built-in v3 Theme Switcher activates automatically, preserves palettes and opt-out across restarts @electron', async ({}, testInfo) => {
   test.setTimeout(180_000)
   test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
   let context: ElectronAppContext | null = null
@@ -164,35 +163,20 @@ test('v3 Theme Switcher applies six palettes, preserves selection, and restores 
   try {
     context = await launchElectronApp()
     retainedRoot = context.tempRoot
+    await waitForActivePlugin(context.page)
     await openPage(context.page, 'Settings', '配置中心')
-    await expect(context.page.getByTestId('theme-switcher-settings')).toHaveCount(0)
+    await expect(context.page.getByTestId('theme-switcher-settings')).toBeVisible()
     await expect(context.page.locator('html')).toHaveAttribute('data-theme', 'light')
     const originalLight = await readSurfaces(context.page)
 
-    await context.app.evaluate(({ dialog }, directory) => {
-      Object.defineProperty(dialog, 'showMessageBox', { configurable: true, value: async () => ({ response: 0, checkboxChecked: false }) })
-      Object.defineProperty(dialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [directory] }) })
-    }, resolve('plugins/theme-switcher'))
-    const prepared = await context.page.evaluate(() => window.knowbook.chooseAndPrepareSystemPluginInstall())
-    expect(prepared?.pluginId).toBe(pluginId)
-    expect(prepared?.status).toBe('awaiting-confirmation')
+    expect((await context.page.evaluate(() => window.knowbook.listSystemPlugins()))
+      .find(plugin => plugin.pluginId === pluginId)?.source).toBe('builtin')
+    expect(await context.page.evaluate(() => window.knowbook.listSystemPluginInstallRequests())).toEqual([])
     await openPage(context.page, 'Plugins', '插件中心')
-    const request = context.page.locator('.system-plugin-request').filter({ hasText: '主题切换' }).first()
-    await expect(request).toContainText(`SHA-256: ${prepared!.artifactSha256}`)
-    const confirm = request.getByRole('button', { name: uiText('Confirm system install', '确认系统安装') })
-    await expect(confirm).toBeDisabled()
-    await request.locator('input[type="checkbox"]').check()
-    await request.locator('.plugin-field input').fill('incorrect-plugin-id')
-    await expect(confirm).toBeDisabled()
-    await request.locator('.plugin-field input').fill(pluginId)
-    await confirm.click()
-    await expect(request.locator('.plugin-status')).toHaveText('pending-restart')
-    await expect(context.page.locator('html')).not.toHaveAttribute(themeAttribute)
-    await closeElectronApp(context, { preserveUserData: true })
-    context = null
-
-    context = await launchElectronApp({}, { userDataRoot: retainedRoot })
-    await waitForActivePlugin(context.page)
+    const card = context.page.locator('.system-plugin-request').filter({ hasText: '主题切换' }).first()
+    await expect(card).toContainText(/Source: Built-in|来源：内置/)
+    await expect(card.getByRole('button', { name: uiText('Uninstall', '卸载'), exact: true })).toHaveCount(0)
+    await expect(card.getByRole('button', { name: uiText('Disable', '停用'), exact: true })).toBeEnabled()
     await openPage(context.page, 'Settings', '配置中心')
     const settings = context.page.getByTestId('theme-switcher-settings')
     await expect(settings).toBeVisible()
@@ -264,6 +248,22 @@ test('v3 Theme Switcher applies six palettes, preserves selection, and restores 
     await expect.poll(() => readSurfaces(context!.page)).toEqual(originalLight)
     await expect(invokeMain(context.page, 'get-state')).rejects.toThrow(/active|disposed|registered/i)
     expect((await context.page.evaluate(() => window.knowbook.getHomeData())).appearanceTheme).toBe('light')
+    await closeElectronApp(context, { preserveUserData: true })
+    context = null
+    context = await launchElectronApp({}, { userDataRoot: retainedRoot })
+    await openPage(context.page, 'Settings', '配置中心')
+    await expect(context.page.getByTestId('theme-switcher-settings')).toHaveCount(0)
+    await expect(context.page.locator('html')).not.toHaveAttribute(themeAttribute)
+    expect((await context.page.evaluate(() => window.knowbook.listSystemPlugins()))
+      .find(plugin => plugin.pluginId === pluginId)?.enabled).toBe(false)
+    await context.page.evaluate(() => window.knowbook.setSystemPluginEnabled({ pluginId: 'theme-switcher', enabled: true }))
+    await closeElectronApp(context, { preserveUserData: true })
+    context = null
+    context = await launchElectronApp({}, { userDataRoot: retainedRoot })
+    await waitForActivePlugin(context.page)
+    await openPage(context.page, 'Settings', '配置中心')
+    await expect(context.page.getByTestId('theme-option-midnight')).toHaveAttribute('aria-pressed', 'true')
+    await expect(context.page.locator('html')).toHaveAttribute(themeAttribute, 'midnight')
   } finally {
     if (context) await closeElectronApp(context)
     if (retainedRoot) rmSync(retainedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

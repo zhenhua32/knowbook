@@ -277,14 +277,18 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
         expect(readFileSync(dependencyLog, 'utf8')).not.toContain('CONTROLLED_CAPABILITY_MAIN_')
       }
       await current.page.locator('button.nav-icon-btn').and(current.page.getByTitle(uiText('Plugins', '插件中心'))).first().click()
-      const resourcePanel = current.page.getByTestId('system-plugin-managed-resources')
+      const activeCard = current.page.locator('.system-plugin-installation').filter({ hasText: pluginId })
+      if (await activeCard.locator('.system-plugin-details').getAttribute('open') === null) {
+        await activeCard.locator('.system-plugin-details > summary').click()
+      }
+      const resourcePanel = activeCard.getByTestId('system-plugin-managed-resources')
       await expect(resourcePanel.locator('[data-resource-kind]')).toHaveCount(5)
       await expect(resourcePanel.locator('[data-resource-source="desktop-sdk"]')).toHaveCount(3)
       await expect(resourcePanel.locator('[data-resource-source="renderer-frame"]')).toHaveCount(2)
-      await expect(current.page.getByTestId('system-plugin-main-log')).toContainText(mainLogPath!)
-      await expect(current.page.getByTestId('system-plugin-main-log')).toContainText(revision)
+      await expect(activeCard.getByTestId('system-plugin-main-log')).toContainText(mainLogPath!)
+      await expect(activeCard.getByTestId('system-plugin-main-log')).toContainText(revision)
       for (const component of ['main', 'renderer']) {
-        const componentPanel = current.page.locator(`[data-testid="system-plugin-runtime-component"][data-component="${component}"]`)
+        const componentPanel = activeCard.locator(`[data-testid="system-plugin-runtime-component"][data-component="${component}"]`)
         await expect(componentPanel).toHaveCount(1)
         await expect(componentPanel).toHaveAttribute('data-run-status', 'ready')
         await expect(componentPanel).toContainText(revision)
@@ -532,9 +536,13 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     cpSync(join(profile, 'system-plugins', 'logs', pluginId), testInfo.outputPath('verified-plugin-logs'), { recursive: true })
     for (const helper of externalCalls) await expect.poll(() => processIsAlive(helper.pid)).toBe(false)
     await current.page.locator('button.nav-icon-btn').and(current.page.getByTitle(uiText('Plugins', '插件中心'))).first().click()
-    await expect(current.page.getByTestId('system-plugin-managed-resources').locator('[data-resource-kind]')).toHaveCount(0)
+    const disabledCard = current.page.locator('.system-plugin-installation').filter({ hasText: pluginId })
+    if (await disabledCard.locator('.system-plugin-details').getAttribute('open') === null) {
+      await disabledCard.locator('.system-plugin-details > summary').click()
+    }
+    await expect(disabledCard.getByTestId('system-plugin-managed-resources').locator('[data-resource-kind]')).toHaveCount(0)
     for (const component of ['main', 'renderer']) {
-      const componentPanel = current.page.locator(`[data-testid="system-plugin-runtime-component"][data-component="${component}"]`)
+      const componentPanel = disabledCard.locator(`[data-testid="system-plugin-runtime-component"][data-component="${component}"]`)
       await expect(componentPanel).toHaveAttribute('data-run-status', 'stopped')
       await componentPanel.screenshot({ path: testInfo.outputPath(`component-${component}-disabled.png`) })
     }

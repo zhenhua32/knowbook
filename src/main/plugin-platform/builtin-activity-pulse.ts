@@ -10,7 +10,7 @@ export const ACTIVITY_PULSE_V2_PACKAGE: PluginRevisionPackageInput = {
     version: '1.0.0',
     apiVersion: '2',
     worker: 'worker.js',
-    description: 'QuickJS/WASM reference plugin with a dashboard card, event listener, and document action.',
+    description: '记录文档活动，提供首页状态卡片和一键更新文档摘要功能。',
     author: 'KnowBook',
     stateSchemaVersion: 1,
     permissions: [

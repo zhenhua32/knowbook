@@ -32,6 +32,30 @@ test.describe('Plugin systems @electron', () => {
       const toggle = item.locator('button.plugin-details-toggle')
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
       await expect(item.locator('.plugin-card-meta')).toContainText(/Source: Built in|来源：内置/)
+      const systemCard = page.locator('.system-plugin-installation').filter({ hasText: 'theme-switcher' })
+      await expect(systemCard).toBeVisible()
+      const diagnostics = systemCard.locator('details.system-plugin-details')
+      await expect(diagnostics).not.toHaveAttribute('open')
+      await expect(systemCard.getByRole('button', { name: uiText('Disable', '停用'), exact: true })).toBeVisible()
+      const compactBounds = await systemCard.evaluate(card => ({
+        width: card.getBoundingClientRect().width,
+        available: card.parentElement!.getBoundingClientRect().width,
+        height: card.getBoundingClientRect().height
+      }))
+      expect(compactBounds.width).toBeGreaterThanOrEqual(compactBounds.available - 2)
+      expect(compactBounds.height).toBeLessThan(240)
+      await systemCard.screenshot({ path: testInfo.outputPath('system-plugin-compact-wide.png') })
+      await diagnostics.locator('summary').focus()
+      await page.keyboard.press('Enter')
+      await expect(systemCard.getByTestId('system-plugin-main-log')).toBeVisible()
+      await expect(systemCard.getByRole('button', { name: uiText('Open logs', '打开日志目录'), exact: true })).toBeVisible()
+      const diagnosticColumns = await systemCard.locator('.system-plugin-details-grid').evaluate(grid => (
+        new Set([...grid.children].map(panel => Math.round(panel.getBoundingClientRect().left))).size
+      ))
+      expect(diagnosticColumns).toBeGreaterThan(1)
+      await systemCard.screenshot({ path: testInfo.outputPath('system-plugin-details-wide.png') })
+      await diagnostics.locator('summary').click()
+      await expect(diagnostics).not.toHaveAttribute('open')
       await page.screenshot({ path: testInfo.outputPath('plugins-list-wide.png'), fullPage: true })
       await toggle.click()
       await expect(toggle).toHaveAttribute('aria-expanded', 'true')
@@ -72,6 +96,9 @@ test.describe('Plugin systems @electron', () => {
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
       await expect(page.locator('.plugin-inspector')).toHaveCount(0)
       await page.setViewportSize({ width: 820, height: 1100 })
+      await diagnostics.locator('summary').click()
+      await expect(systemCard.getByTestId('system-plugin-main-log')).toBeVisible()
+      await systemCard.screenshot({ path: testInfo.outputPath('system-plugin-details-narrow.png') })
       await toggle.click()
       await expect(item.locator('.plugin-inline-details')).toBeVisible()
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -107,7 +134,7 @@ test.describe('Plugin systems @electron', () => {
       })
       expect(error).toMatch(/schemaVersion|System Plugin|system plugin|version 3|schema version/i)
       expect(existsSync(marker)).toBe(false)
-      expect(await context.page.evaluate(() => window.knowbook.listSystemPlugins())).toEqual([])
+      expect(await context.page.evaluate(async () => (await window.knowbook.listSystemPlugins()).filter(plugin => plugin.source !== 'builtin'))).toEqual([])
     } finally {
       if (context) await closeElectronApp(context)
       rmSync(userDataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -123,7 +150,7 @@ test.describe('Plugin systems @electron', () => {
       context = await launchElectronApp()
       retainedRoot = context.tempRoot
       await expect(context.page.getByTestId('activity-pulse-dashboard')).toHaveCount(0)
-      expect(await context.page.evaluate(() => window.knowbook.listSystemPlugins())).toEqual([])
+      expect(await context.page.evaluate(async () => (await window.knowbook.listSystemPlugins()).filter(plugin => plugin.source !== 'builtin'))).toEqual([])
       await selectInstallDirectory(context, resolve('plugins/activity-pulse'))
       const prepared = await context.page.evaluate(() => window.knowbook.chooseAndPrepareSystemPluginInstall())
       expect(prepared?.pluginId).toBe('activity-pulse')

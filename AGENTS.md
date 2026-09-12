@@ -61,6 +61,7 @@
 ## Plugin Development Notes
 - v2 packages declare `schemaVersion: 2`, `worker: "worker.js"`, permissions and exact standard modules; all host operations pass through the capability broker.
 - v3 packages declare `schemaVersion: 3`, `trust: "full"`, `fullAccess: true` and explicit `entries.main/renderer/service`. They may use full Node/Electron capabilities after user confirmation of the exact artifact. Do not add a v1 compatibility loader or silently promote old plugins to Full Trust.
+- `theme-switcher` is an app-bundled v3 plugin, embedded by `src/main/system-plugin/builtin-catalog.ts` and enabled on first boot. The host catalog reserves its ID; updates preserve opt-out and safe-mode state. External packages cannot declare themselves built-in or overwrite catalog IDs.
 - To add v3 APIs, extend `system-plugin/knowbook-services.ts`, the type-only `system-plugin-sdk.ts` exports, and IPC contracts where needed. Renderer contributions use the shared slot registry. Run `npm run typecheck:system-plugin-examples` when changing SDK types or source examples.
 
 ## Common Gotchas

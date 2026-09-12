@@ -26,6 +26,7 @@ const dynamicPlugin: PluginV2InstallationSummary = {
 
 function systemPlugin(overrides: Partial<SystemPluginSummary> = {}): SystemPluginSummary {
   return {
+    source: 'installed',
     pluginId: 'activity-pulse', name: 'Activity Pulse', description: 'Workspace activity',
     publisher: 'KnowBook', enabled: true, safeModeDisabled: false, status: 'active',
     currentVersion: '3.0.0', currentArtifactSha256: 'artifact-1', pendingVersion: null,
@@ -78,6 +79,23 @@ test('plugin overview counts v3 installations and failures alongside dynamic plu
   } finally {
     dom.window.close()
   }
+})
+
+test('built-in v3 displays its source and disable control without uninstall or rollback', () => {
+  const dom = new JSDOM(renderToStaticMarkup(<PluginsSection {...props({
+    ui: getUiText('zh-CN'), systemPlugins: [systemPlugin({ source: 'builtin',
+      pluginId: 'theme-switcher', name: '主题切换', availablePackages: [{
+        packageId: 'older', version: '0.9.0', artifactSha256: 'old-hash', status: 'ready', createdAt: '2026-01-01'
+      }] })]
+  })} />))
+  try {
+    const card = dom.window.document.querySelector('.system-plugin-request')!
+    assert.match(card.textContent!, /来源：内置/)
+    assert.match(card.textContent!, /随 KnowBook 提供和更新/)
+    const buttons = [...card.querySelectorAll('button')].map(button => button.textContent)
+    assert.ok(buttons.includes('停用'))
+    assert.ok(buttons.every(label => !/卸载|回滚/.test(label ?? '')))
+  } finally { dom.window.close() }
 })
 
 test('v3-only installation does not display a misleading empty workspace message', () => {

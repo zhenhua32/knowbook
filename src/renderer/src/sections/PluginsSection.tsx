@@ -327,7 +327,7 @@ export function PluginsSection({
           <div className="plugin-inventory-head">
             <div>
               <h4>{isZh ? '工作区插件' : 'Workspace plugins'}</h4>
-              <p>{isZh ? '内置与 AI 创建的插件统一显示，展开查看详情。' : 'Built-in and AI-created plugins share this list. Expand a plugin to view its details.'}</p>
+              <p>{isZh ? '展开查看插件功能、权限和运行详情。' : 'Expand a plugin to view its features, permissions, and runtime details.'}</p>
             </div>
             <label className="plugin-search">
               <span aria-hidden="true">⌕</span>
@@ -340,6 +340,15 @@ export function PluginsSection({
               />
             </label>
           </div>
+          <aside className="plugin-kind-note" aria-label={isZh ? '工作区插件说明' : 'About workspace plugins'}>
+            <strong>{isZh ? '沙箱运行 · 按权限访问' : 'Sandboxed · Permission-based access'}</strong>
+            <p>{isZh
+              ? '在隔离环境中运行，只能通过已授权接口使用应用功能，适合文档整理、摘要和活动统计。'
+              : 'Runs in an isolated environment and uses application features through authorized APIs. Suited to document organization, summaries, and activity tracking.'}</p>
+            <p>{isZh
+              ? '“内置”表示插件来源；沙箱插件和完全信任插件都可以随应用内置。'
+              : '“Built-in” describes the source. Both sandboxed and Full Trust plugins can be included with the app.'}</p>
+          </aside>
           <div className="plugin-filter-tabs" role="tablist" aria-label={isZh ? '插件筛选' : 'Plugin filters'}>
             {(['all', 'running', 'disabled', 'attention'] as const).map((item) => {
               const labels: Record<PluginFilter, string> = {
@@ -485,8 +494,18 @@ export function PluginsSection({
               <strong>{systemPlugins.length}</strong>
             </div>
           </div>
+          <aside className="plugin-kind-note" aria-label={isZh ? 'Full Trust 插件说明' : 'About Full Trust plugins'}>
+            <strong>{isZh ? '完全信任 · 完整本机访问' : 'Full Trust · Full local access'}</strong>
+            <p>{isZh
+              ? '直接在应用和本机环境中运行，可访问文件、数据库和网络，并修改应用界面，适合全局主题、系统集成和后台服务。'
+              : 'Runs directly in the application and local environment, with access to files, databases, the network, and the app interface. Suited to global themes, system integrations, and background services.'}</p>
+            <p>{isZh
+              ? '仅安装你信任的外部插件；风险声明用于告知，不会像沙箱权限一样限制插件能力。'
+              : 'Only install external plugins you trust. Risk declarations describe access; they do not restrict capabilities like sandbox permissions.'}</p>
+          </aside>
           <div className="system-plugin-request-list">
             {systemPlugins.map((plugin) => {
+              const builtin = plugin.source === 'builtin'
               const busy = pluginBusyId === plugin.pluginId || pluginInventoryBusy
               const failureStages = getSystemPluginFailureStages(plugin.lastError)
               const serviceRun = plugin.recentRuns.find((run) => (
@@ -515,37 +534,86 @@ export function PluginsSection({
                 && candidate.artifactSha256 !== plugin.pendingArtifactSha256
               ))
               return (
-                <div className="system-plugin-request" key={`full-trust:${plugin.pluginId}`}>
-                  <div className="plugin-item-head">
-                    <div><strong>{plugin.name}</strong><p>{plugin.publisher} · {plugin.pluginId}</p></div>
-                    <span className={`plugin-status ${plugin.safeModeDisabled || plugin.lastError ? 'plugin-status-error' : plugin.enabled ? 'plugin-status-running' : 'plugin-status-disabled'}`}>{plugin.status}</span>
+                <div className="system-plugin-request system-plugin-installation" key={`full-trust:${plugin.pluginId}`}>
+                  <div className="system-plugin-summary">
+                    <div className="system-plugin-summary-main">
+                      <div className="plugin-item-head">
+                        <div><strong>{plugin.name}</strong><p>{plugin.publisher} · {plugin.pluginId} · {isZh ? '来源：' : 'Source: '}{builtin ? (isZh ? '内置' : 'Built-in') : (isZh ? '用户安装' : 'Installed')} · {isZh ? '版本：' : 'Version: '}{plugin.currentVersion ?? plugin.pendingVersion ?? '—'}</p></div>
+                        <span className={`plugin-status ${plugin.safeModeDisabled || plugin.lastError ? 'plugin-status-error' : plugin.enabled ? 'plugin-status-running' : 'plugin-status-disabled'}`}>{plugin.status}</span>
+                      </div>
+                      {plugin.description ? <p>{plugin.description}</p> : null}
+                      {builtin ? <p className="system-plugin-source-note">{isZh ? '随 KnowBook 提供和更新，可停用。' : 'Included and updated with KnowBook. Can be disabled.'}</p> : null}
+                    </div>
+                    <div className="plugin-item-actions system-plugin-primary-actions">
+                      {serviceRun && plugin.status === 'active' ? (
+                        serviceRunning
+                          ? <button className="secondary-button" disabled={busy} onClick={() => onStopSystemPluginService(plugin)} type="button">{isZh ? '停止后台服务' : 'Stop service'}</button>
+                          : <button className="secondary-button" disabled={busy} onClick={() => onStartSystemPluginService(plugin)} type="button">{isZh ? '启动后台服务' : 'Start service'}</button>
+                      ) : null}
+                      {canRequestOsPersistence ? (
+                        <button className="secondary-button" disabled={busy} onClick={() => onRequestSystemPluginOsPersistence(plugin)} type="button">
+                          {isZh ? '申请登录启动' : 'Request login startup'}
+                        </button>
+                      ) : null}
+                      <button className="secondary-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onSetSystemPluginEnabled(plugin, !plugin.enabled)} type="button">
+                        {plugin.enabled ? (isZh ? '停用' : 'Disable') : (isZh ? '启用（重启后）' : 'Enable after restart')}
+                      </button>
+                      {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => onRecoverSystemPlugin(plugin)} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
+                      {!builtin && rollbackTarget ? <button className="secondary-button" disabled={busy} onClick={() => onRollbackSystemPlugin(plugin, rollbackTarget.packageId)} type="button">{isZh ? `回滚到 ${rollbackTarget.version}` : `Roll back to ${rollbackTarget.version}`}</button> : null}
+                      {!builtin ? <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => {
+                        uninstallReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+                        setPreserveUninstallData(true)
+                        setUninstallTarget(plugin)
+                      }} type="button">{isZh ? '卸载' : 'Uninstall'}</button> : null}
+                    </div>
                   </div>
-                  {plugin.description ? <p>{plugin.description}</p> : null}
-                  <code>{isZh ? '当前' : 'Current'}: {plugin.currentVersion ?? '—'} · {plugin.currentArtifactSha256 ?? '—'}</code>
-                  {plugin.pendingVersion ? <code>{isZh ? '待生效' : 'Pending'}: {plugin.pendingVersion} · {plugin.pendingArtifactSha256}</code> : null}
-                  <code>{plugin.riskDeclarations.join(' · ')}</code>
-                  {plugin.backupPath ? <code>{isZh ? '安全备份' : 'Safety backup'}: {plugin.backupPath}</code> : null}
                   {plugin.status === 'uninstall-pending' ? <p>{plugin.preserveDataOnUninstall
                     ? (isZh ? '重启后卸载，保留插件专属数据。' : 'Uninstall after restart; private data will be retained.')
                     : (isZh ? '重启后卸载并删除插件专属数据。' : 'Uninstall after restart and delete private data.')}</p> : null}
-                  {plugin.lastRun ? <code>{isZh ? '最近运行' : 'Last run'}: {plugin.lastRun.component} · {plugin.lastRun.status} · PID {plugin.lastRun.pid ?? '—'}</code> : null}
-                  <SystemPluginRuntimeStatus plugin={plugin} isZh={isZh} />
-                  {mainRun?.logPath ? (
-                    <div className="plugin-inspector-note" data-testid="system-plugin-main-log">
-                      <strong>{isZh ? '主进程运行日志' : 'Main process run log'}</strong>
-                      <code>{isZh ? '日志所属修订' : 'Log revision'}: {mainRunPackage ? `sha256:${mainRunPackage.artifactSha256}` : mainRun.packageId}</code>
-                      <code>{mainRun.logPath}</code>
+                  {plugin.restartRequired ? <p className="system-plugin-state-notice">{isZh ? '需要重启 KnowBook 才能完成此状态变更。' : 'Restart KnowBook to complete this state change.'}</p> : null}
+                  {plugin.lastError ? <p className="plugin-error">{errorDetail(plugin.lastError)}</p> : null}
+                  {failureStages.length > 0 ? <code>{isZh ? '失败阶段' : 'Failure stage'}: {failureStages.join(' · ')}</code> : null}
+                  <details className="system-plugin-details">
+                    <summary>{isZh ? '技术详情与运行日志' : 'Technical details and runtime logs'}</summary>
+                    <div className="system-plugin-details-grid">
+                      <div className="plugin-inspector-note">
+                        <strong>{isZh ? '版本与访问声明' : 'Versions and access declarations'}</strong>
+                        <code>{isZh ? '当前' : 'Current'}: {plugin.currentVersion ?? '—'} · {plugin.currentArtifactSha256 ?? '—'}</code>
+                        {plugin.pendingVersion ? <code>{isZh ? '待生效' : 'Pending'}: {plugin.pendingVersion} · {plugin.pendingArtifactSha256}</code> : null}
+                        <code>{plugin.riskDeclarations.join(' · ')}</code>
+                        {plugin.lastRun ? <code>{isZh ? '最近运行' : 'Last run'}: {plugin.lastRun.component} · {plugin.lastRun.status} · PID {plugin.lastRun.pid ?? '—'}</code> : null}
+                      </div>
+                      <SystemPluginRuntimeStatus plugin={plugin} isZh={isZh} />
+                      <div className="plugin-inspector-note" data-testid="system-plugin-main-log">
+                        <strong>{isZh ? '日志与备份' : 'Logs and backups'}</strong>
+                        {mainRun?.logPath ? <>
+                          <code>{isZh ? '日志所属修订' : 'Log revision'}: {mainRunPackage ? `sha256:${mainRunPackage.artifactSha256}` : mainRun.packageId}</code>
+                          <code>{mainRun.logPath}</code>
+                        </> : null}
+                        {plugin.backupPath ? <code>{isZh ? '安全备份' : 'Safety backup'}: {plugin.backupPath}</code> : null}
+                        <div className="plugin-item-actions">
+                          <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'data')} type="button">{isZh ? '打开数据目录' : 'Open data'}</button>
+                          <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'logs')} type="button">{isZh ? '打开日志目录' : 'Open logs'}</button>
+                        </div>
+                      </div>
+                      <SystemPluginResources resources={plugin.managedResources} isZh={isZh} />
+                      {serviceRun ? (
+                        <div className="plugin-inspector-note">
+                          <strong>{serviceRun.component === 'detached' ? 'Detached service' : 'App-lifetime service'} · {serviceRun.status}</strong>
+                          <code>PID {serviceRun.pid ?? '—'} · {isZh ? '重启' : 'restarts'} {serviceRun.restartCount}</code>
+                          <code>{isZh ? '心跳' : 'heartbeat'}: {serviceRun.lastHeartbeatAt ?? '—'} · {isZh ? '退出' : 'exit'}: {serviceRun.exitCode ?? serviceRun.exitSignal ?? '—'}</code>
+                          {serviceRun.logPath ? <code>{serviceRun.logPath}</code> : null}
+                        </div>
+                      ) : null}
+                      {plugin.dependencyJobs.map((job) => (
+                        <div className="plugin-inspector-note" key={job.id}>
+                          <strong>{job.kind} · {job.status}</strong>
+                          <code>{job.command.join(' ')}</code>
+                          {job.logPath ? <code>{job.logPath}</code> : null}
+                        </div>
+                      ))}
                     </div>
-                  ) : null}
-                  <SystemPluginResources resources={plugin.managedResources} isZh={isZh} />
-                  {serviceRun ? (
-                    <div className="plugin-inspector-note">
-                      <strong>{serviceRun.component === 'detached' ? 'Detached service' : 'App-lifetime service'} · {serviceRun.status}</strong>
-                      <code>PID {serviceRun.pid ?? '—'} · {isZh ? '重启' : 'restarts'} {serviceRun.restartCount}</code>
-                      <code>{isZh ? '心跳' : 'heartbeat'}: {serviceRun.lastHeartbeatAt ?? '—'} · {isZh ? '退出' : 'exit'}: {serviceRun.exitCode ?? serviceRun.exitSignal ?? '—'}</code>
-                      {serviceRun.logPath ? <code>{serviceRun.logPath}</code> : null}
-                    </div>
-                  ) : null}
+                  </details>
                   {osPersistence ? (
                     <div className="plugin-inspector-note">
                       <strong>{isZh ? '系统登录启动' : 'OS login startup'} · {osPersistence.status}</strong>
@@ -617,40 +685,6 @@ export function PluginsSection({
                       )}
                     </div>
                   ) : null}
-                  {plugin.dependencyJobs.map((job) => (
-                    <div className="plugin-inspector-note" key={job.id}>
-                      <strong>{job.kind} · {job.status}</strong>
-                      <code>{job.command.join(' ')}</code>
-                      {job.logPath ? <code>{job.logPath}</code> : null}
-                    </div>
-                  ))}
-                  {plugin.restartRequired ? <p className="plugin-inspector-note">{isZh ? '需要重启 KnowBook 才能完成此状态变更。' : 'Restart KnowBook to complete this state change.'}</p> : null}
-                  {plugin.lastError ? <p className="plugin-error">{errorDetail(plugin.lastError)}</p> : null}
-                  {failureStages.length > 0 ? <code>{isZh ? '失败阶段' : 'Failure stage'}: {failureStages.join(' · ')}</code> : null}
-                  <div className="plugin-item-actions">
-                    {serviceRun && plugin.status === 'active' ? (
-                      serviceRunning
-                        ? <button className="secondary-button" disabled={busy} onClick={() => onStopSystemPluginService(plugin)} type="button">{isZh ? '停止后台服务' : 'Stop service'}</button>
-                        : <button className="secondary-button" disabled={busy} onClick={() => onStartSystemPluginService(plugin)} type="button">{isZh ? '启动后台服务' : 'Start service'}</button>
-                    ) : null}
-                    {canRequestOsPersistence ? (
-                      <button className="secondary-button" disabled={busy} onClick={() => onRequestSystemPluginOsPersistence(plugin)} type="button">
-                        {isZh ? '申请登录启动' : 'Request login startup'}
-                      </button>
-                    ) : null}
-                    <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'data')} type="button">{isZh ? '打开数据目录' : 'Open data'}</button>
-                    <button className="secondary-button" disabled={busy} onClick={() => onOpenSystemPluginDirectory(plugin, 'logs')} type="button">{isZh ? '打开日志目录' : 'Open logs'}</button>
-                    <button className="secondary-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onSetSystemPluginEnabled(plugin, !plugin.enabled)} type="button">
-                      {plugin.enabled ? (isZh ? '停用' : 'Disable') : (isZh ? '启用（重启后）' : 'Enable after restart')}
-                    </button>
-                    {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => onRecoverSystemPlugin(plugin)} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
-                    {rollbackTarget ? <button className="secondary-button" disabled={busy} onClick={() => onRollbackSystemPlugin(plugin, rollbackTarget.packageId)} type="button">{isZh ? `回滚到 ${rollbackTarget.version}` : `Roll back to ${rollbackTarget.version}`}</button> : null}
-                    <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => {
-                      uninstallReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-                      setPreserveUninstallData(true)
-                      setUninstallTarget(plugin)
-                    }} type="button">{isZh ? '卸载' : 'Uninstall'}</button>
-                  </div>
                 </div>
               )
             })}
