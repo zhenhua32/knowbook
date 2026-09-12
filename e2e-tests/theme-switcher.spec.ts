@@ -112,6 +112,10 @@ async function verifyLazyPagePalettes(page: Page, themeId: 'paper' | 'midnight',
   ]
   for (const item of pages) {
     await openPage(page, item.en, item.zh)
+    if (item.name === 'plugins') {
+      const toggle = page.locator('.plugin-item button.plugin-details-toggle').first()
+      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+    }
     await expect(page.locator('html')).toHaveAttribute(themeAttribute, themeId)
     for (const selector of item.surfaces) {
       await expect(page.locator(selector).first()).toBeVisible()

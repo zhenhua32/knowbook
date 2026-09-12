@@ -80,15 +80,20 @@ test('management layouts use the available minimum-window space without compress
     expect(emptyTranscriptHeight).toBeLessThanOrEqual(180)
 
     await openManagementPage(page, 'Plugins', '插件中心', '.plugins-page')
+    await expect(page.locator('.plugin-inspector')).toHaveCount(0)
+    await page.locator('button.plugin-details-toggle').first().click()
+    await expect(page.locator('.plugin-inline-details')).toBeVisible()
     const pluginLayout = await page.locator('.plugin-management-layout').evaluate((layout) => {
       const inventory = layout.querySelector<HTMLElement>('.plugin-inventory-panel')?.getBoundingClientRect()
+      const summary = layout.querySelector<HTMLElement>('.plugin-card-main')?.getBoundingClientRect()
       const inspector = layout.querySelector<HTMLElement>('.plugin-inspector')?.getBoundingClientRect()
       return {
-        columns: getComputedStyle(layout).gridTemplateColumns.split(' ').filter(Boolean).length,
-        inspectorFollowsInventory: Boolean(inventory && inspector && inspector.top >= inventory.bottom - 1)
+        inventoryUsesFullWidth: Boolean(inventory && Math.abs(inventory.width - layout.getBoundingClientRect().width) <= 1),
+        inspectorFollowsSummary: Boolean(summary && inspector && inspector.top >= summary.bottom - 1),
+        inspectorInsideItem: Boolean(layout.querySelector('.plugin-item > .plugin-inline-details'))
       }
     })
-    expect(pluginLayout).toEqual({ columns: 1, inspectorFollowsInventory: true })
+    expect(pluginLayout).toEqual({ inventoryUsesFullWidth: true, inspectorFollowsSummary: true, inspectorInsideItem: true })
 
     await openManagementPage(page, 'Database', '数据库', '[data-testid="database-grid"]')
     const tableOverflow = await page.locator('.dbw-table-scroll').evaluate((element) => element.scrollWidth - element.clientWidth)
@@ -114,6 +119,10 @@ test('dark management surfaces keep primary text readable and use one coherent d
 
     for (const item of samples) {
       await openManagementPage(page, item.en, item.zh, item.ready)
+      if (item.en === 'Plugins') {
+        await page.locator('button.plugin-details-toggle').first().click()
+        await expect(page.locator('.plugin-inline-details')).toBeVisible()
+      }
       for (const selector of item.selectors) {
         const ratio = await page.locator(selector).first().evaluate((element) => {
           const rgb = (value: string): [number, number, number, number] => {

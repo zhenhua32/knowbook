@@ -21,17 +21,61 @@ async function selectInstallDirectory(context: ElectronAppContext, sourceDirecto
 }
 
 test.describe('Plugin systems @electron', () => {
-  test('retains v2 permissions, revision history, and runtime logs', async () => {
+  test('shows workspace plugins in one column with inline permissions, revision history, and runtime logs', async ({}, testInfo) => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
     await withElectronApp(async ({ page }) => {
+      await page.setViewportSize({ width: 1600, height: 1100 })
       await openPage(page, 'Plugins', '插件中心')
-      await page.locator('.plugin-item').filter({ hasText: 'Activity Pulse v2' }).first().click()
+      await expect(page.locator('.plugin-inventory-head h4')).toHaveText(uiText('Workspace plugins', '工作区插件'))
+      await expect(page.locator('.plugin-inspector')).toHaveCount(0)
+      const item = page.locator('.plugin-item').filter({ hasText: 'Activity Pulse v2' }).first()
+      const toggle = item.locator('button.plugin-details-toggle')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(item.locator('.plugin-card-meta')).toContainText(/Source: Built in|来源：内置/)
+      await page.screenshot({ path: testInfo.outputPath('plugins-list-wide.png'), fullPage: true })
+      await toggle.click()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      await expect(item.locator('section.plugin-inspector.plugin-inline-details')).toBeVisible()
       const details = page.locator('.plugin-technical-details')
       await expect(details.getByText(uiText('Current permissions', '当前权限'))).toBeVisible()
       await expect(details).toContainText('documents.read@1')
       await expect(details.getByText(uiText('Revision history', '版本历史'))).toBeVisible()
       await expect(details).toContainText('1.0.0')
       await expect(details.getByText(uiText('Recent runtime logs', '最近运行日志'))).toBeVisible()
+      const layout = await page.evaluate(() => {
+        const bounds = (selector: string) => document.querySelector(selector)!.getBoundingClientRect()
+        const management = bounds('.plugin-management-layout')
+        const inventory = bounds('.plugin-inventory-panel')
+        const item = bounds('.plugin-item')
+        const summary = bounds('.plugin-card-main')
+        const details = bounds('.plugin-inline-details')
+        return {
+          availableWidth: management.width, inventoryWidth: inventory.width,
+          itemLeft: item.left, itemRight: item.right, summaryBottom: summary.bottom,
+          detailsTop: details.top, detailsLeft: details.left, detailsRight: details.right,
+          viewportWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth
+        }
+      })
+      expect(layout.inventoryWidth).toBeGreaterThanOrEqual(layout.availableWidth - 2)
+      expect(layout.detailsTop).toBeGreaterThanOrEqual(layout.summaryBottom)
+      expect(layout.detailsLeft).toBeGreaterThanOrEqual(layout.itemLeft)
+      expect(layout.detailsRight).toBeLessThanOrEqual(layout.itemRight)
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.viewportWidth)
+      await page.screenshot({ path: testInfo.outputPath('plugins-inline-details-wide.png'), fullPage: true })
+      await toggle.click()
+      await expect(page.locator('.plugin-inspector')).toHaveCount(0)
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await toggle.click()
+      await page.getByRole('searchbox', { name: uiText('Search plugins', '搜索插件') }).fill('unmatched-plugin')
+      await expect(page.locator('.plugin-inspector')).toHaveCount(0)
+      await page.getByRole('searchbox', { name: uiText('Search plugins', '搜索插件') }).clear()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(page.locator('.plugin-inspector')).toHaveCount(0)
+      await page.setViewportSize({ width: 820, height: 1100 })
+      await toggle.click()
+      await expect(item.locator('.plugin-inline-details')).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      await page.screenshot({ path: testInfo.outputPath('plugins-inline-details-narrow.png'), fullPage: true })
     })
   })
 

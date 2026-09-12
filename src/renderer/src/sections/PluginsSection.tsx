@@ -165,7 +165,6 @@ export function PluginsSection({
     plugin
   })), [pluginV2Installations])
 
-  const selected = inventory.find((item) => item.key === selectedKey) ?? inventory[0] ?? null
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filteredInventory = inventory.filter((item) => {
     const status = getInventoryStatus(item)
@@ -176,6 +175,7 @@ export function PluginsSection({
     const description = item.plugin.description.toLocaleLowerCase()
     return matchesFilter && (!normalizedQuery || `${name} ${id} ${description}`.includes(normalizedQuery))
   })
+  const selected = filteredInventory.find((item) => item.key === selectedKey) ?? null
   const runningCount = inventory.filter((item) => getInventoryStatus(item) === 'running').length
     + systemPlugins.filter((plugin) => plugin.status === 'active' && !plugin.safeModeDisabled && !plugin.lastError).length
   const attentionCount = inventory.filter((item) => getInventoryStatus(item) === 'attention').length
@@ -183,8 +183,8 @@ export function PluginsSection({
   const aiCreatedCount = pluginV2Installations.filter((plugin) => plugin.source === 'dynamic').length
 
   useEffect(() => {
-    if (selectedKey && !inventory.some((item) => item.key === selectedKey)) setSelectedKey(null)
-  }, [inventory, selectedKey])
+    if (selectedKey && !selected) setSelectedKey(null)
+  }, [selected, selectedKey])
 
   const selectedV2DetailsKey = selected
     ? [
@@ -326,8 +326,8 @@ export function PluginsSection({
         <article className="panel plugin-inventory-panel">
           <div className="plugin-inventory-head">
             <div>
-              <h4>{isZh ? '动态插件' : 'Dynamic plugins'}</h4>
-              <p>{isZh ? '选择插件查看详情和生命周期操作' : 'Select a plugin to inspect and manage it'}</p>
+              <h4>{isZh ? '工作区插件' : 'Workspace plugins'}</h4>
+              <p>{isZh ? '内置与 AI 创建的插件统一显示，展开查看详情。' : 'Built-in and AI-created plugins share this list. Expand a plugin to view its details.'}</p>
             </div>
             <label className="plugin-search">
               <span aria-hidden="true">⌕</span>
@@ -369,22 +369,13 @@ export function PluginsSection({
                 const isSelected = selected?.key === item.key
                 const status = getInventoryStatus(item)
                 const pluginId = item.plugin.pluginId
+                const detailsId = `plugin-details-${encodeURIComponent(pluginId)}`
                 const busy = pluginBusyId === pluginId || pluginInventoryBusy
                 const canCustomize = item.plugin.source !== 'builtin' && item.plugin.source !== 'system'
                 return (
                   <div
-                    aria-selected={isSelected}
                     className={`plugin-item plugin-inventory-item${isSelected ? ' selected' : ''}`}
                     key={item.key}
-                    onClick={() => setSelectedKey(item.key)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        setSelectedKey(item.key)
-                      }
-                    }}
-                    role="option"
-                    tabIndex={0}
                   >
                     <div className="plugin-card-main">
                       <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(item.plugin.name)}</span>
@@ -399,7 +390,7 @@ export function PluginsSection({
                         <div className="plugin-card-meta">
                           <span>{item.plugin.version}</span>
                           <span>·</span>
-                          <span>{sourceLabel(item.plugin.source, isZh)}</span>
+                          <span>{isZh ? '来源：' : 'Source: '}{sourceLabel(item.plugin.source, isZh)}</span>
                           <span>·</span><span>{item.plugin.revisionCount} revisions</span>
                         </div>
                       </div>
@@ -407,7 +398,7 @@ export function PluginsSection({
                         <span className={`plugin-status plugin-status-${status === 'attention' ? 'error' : status}`}>
                           <i aria-hidden="true" />{statusLabel(status, isZh)}
                         </span>
-                        <label className="plugin-switch plugin-toggle-row" onClick={(event) => event.stopPropagation()}>
+                        <label className="plugin-switch plugin-toggle-row">
                           <input
                             aria-label={isZh ? `启用 ${item.plugin.name}` : `Enable ${item.plugin.name}`}
                             checked={item.plugin.enabled}
@@ -417,10 +408,23 @@ export function PluginsSection({
                           />
                           <span aria-hidden="true" />
                         </label>
+                        <button
+                          aria-controls={detailsId}
+                          aria-expanded={isSelected}
+                          aria-label={isZh
+                            ? `${isSelected ? '收起' : '查看'} ${item.plugin.name} 详情`
+                            : `${isSelected ? 'Hide' : 'View'} details for ${item.plugin.name}`}
+                          className="plugin-details-toggle"
+                          onClick={() => setSelectedKey(isSelected ? null : item.key)}
+                          type="button"
+                        >
+                          {isZh ? (isSelected ? '收起' : '详情') : (isSelected ? 'Hide' : 'Details')}
+                          <span className="plugin-details-chevron" aria-hidden="true" />
+                        </button>
                       </div>
                     </div>
 
-                    <div className="plugin-item-actions" onClick={(event) => event.stopPropagation()}>
+                    <div className="plugin-item-actions">
                       {canCustomize ? (
                         <button className="plugin-ai-action" disabled={busy} onClick={() => openPluginCustomizer(item.plugin)} type="button">
                           <span aria-hidden="true">✦</span>{isZh ? '通过 AI 继续定制' : 'Customize with AI'}
@@ -441,6 +445,23 @@ export function PluginsSection({
                     {status === 'attention' ? (
                       <p className="plugin-error">{errorDetail(item.plugin.quarantineReason ?? item.plugin.lastError)}</p>
                     ) : null}
+                    {isSelected ? (
+                      <section className="plugin-inspector plugin-inline-details" id={detailsId} aria-label={isZh ? `${item.plugin.name} 详情` : `Details for ${item.plugin.name}`}>
+                        <V2PluginInspector
+                          busy={busy}
+                          details={pluginV2Details?.pluginId === pluginId ? pluginV2Details : null}
+                          detailsError={pluginV2DetailsError}
+                          detailsLoading={pluginV2DetailsLoading}
+                          isZh={isZh}
+                          onCustomize={() => openPluginCustomizer(item.plugin)}
+                          onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
+                          onRecover={() => onRecoverPluginV2Installation(pluginId)}
+                          onRemove={() => onRemovePluginV2(item.plugin)}
+                          onSetEnabled={(enabled) => onSetPluginV2Enabled(item.plugin, enabled)}
+                          plugin={item.plugin}
+                        />
+                      </section>
+                    ) : null}
                   </div>
                 )
               })}
@@ -448,34 +469,11 @@ export function PluginsSection({
           ) : (
             <div className="plugin-empty-state">
               <span aria-hidden="true">⌕</span>
-              <strong>{isZh ? '没有匹配的插件' : 'No matching plugins'}</strong>
-              <p>{isZh ? '试试其他关键词或筛选条件。' : 'Try another keyword or filter.'}</p>
+              <strong>{inventory.length === 0 ? ui.noDynamicPlugins : (isZh ? '没有匹配的插件' : 'No matching plugins')}</strong>
+              {inventory.length > 0 ? <p>{isZh ? '试试其他关键词或筛选条件。' : 'Try another keyword or filter.'}</p> : null}
             </div>
           )}
         </article>
-
-        <aside className="panel plugin-inspector">
-          {selected ? (
-            <V2PluginInspector
-              busy={pluginBusyId === selected.plugin.pluginId || pluginInventoryBusy}
-              details={pluginV2Details?.pluginId === selected.plugin.pluginId ? pluginV2Details : null}
-              detailsError={pluginV2DetailsError}
-              detailsLoading={pluginV2DetailsLoading}
-              isZh={isZh}
-              onCustomize={() => openPluginCustomizer(selected.plugin)}
-              onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
-              onRecover={() => onRecoverPluginV2Installation(selected.plugin.pluginId)}
-              onRemove={() => onRemovePluginV2(selected.plugin)}
-              onSetEnabled={(enabled) => onSetPluginV2Enabled(selected.plugin, enabled)}
-              plugin={selected.plugin}
-            />
-          ) : (
-            <div className="plugin-empty-state">
-              <span aria-hidden="true">◇</span>
-              <strong>{ui.noDynamicPlugins}</strong>
-            </div>
-          )}
-        </aside>
       </div>
 
       {systemPlugins.length > 0 ? (
@@ -821,7 +819,7 @@ function V2PluginInspector({
     <>
       <div className="plugin-inspector-head">
         <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(plugin.name)}</span>
-        <div><span>{sourceLabel(plugin.source, isZh)}</span><h4>{plugin.name}</h4><code>{plugin.pluginId}</code></div>
+        <div><span>{isZh ? '插件详情 · 来源：' : 'Plugin details · Source: '}{sourceLabel(plugin.source, isZh)}</span><h4>{plugin.name}</h4><code>{plugin.pluginId}</code></div>
       </div>
       <p className="plugin-inspector-description">{plugin.description || (isZh ? '暂无插件说明。' : 'No description provided.')}</p>
       {canCustomize ? (

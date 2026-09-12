@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import test from 'node:test'
 import React, { act, type ComponentProps } from 'react'
-import { createRoot } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { JSDOM } from 'jsdom'
 import type { PluginV2InstallationSummary, SystemPluginSummary } from '../src/shared/contracts.ts'
@@ -70,8 +69,10 @@ test('plugin overview counts v3 installations and failures alongside dynamic plu
     assert.deepEqual(counts, ['3', '2', '1', '1'])
     assert.equal(document.querySelectorAll('.plugin-toolbar button').length, 1)
     assert.equal(document.querySelector('.plugin-toolbar button')?.textContent, '⚠Install Full Trust')
-    assert.match(document.querySelector('.plugin-inventory-head')!.textContent!, /Dynamic plugins/)
-    assert.match(document.querySelector('.plugin-inspector')!.textContent!, /Continue with AI/)
+    assert.match(document.querySelector('.plugin-inventory-head')!.textContent!, /Workspace plugins/)
+    assert.equal(document.querySelector('.plugin-inspector'), null)
+    assert.equal(document.querySelector('.plugin-details-toggle')?.getAttribute('aria-expanded'), 'false')
+    assert.match(document.querySelector('.plugin-card-meta')!.textContent!, /Source: AI created/)
     assert.match(document.body.textContent!, /Installed Full Trust plugins.*Activity Pulse/)
     assert.doesNotMatch(document.body.textContent!, /Legacy v1|Install Folder|Plugin roots/)
   } finally {
@@ -83,16 +84,17 @@ test('v3-only installation does not display a misleading empty workspace message
   const dom = new JSDOM(renderToStaticMarkup(<PluginsSection {...props({ systemPlugins: [systemPlugin()] })} />))
   try {
     assert.equal(dom.window.document.querySelector('.plugin-overview-card strong')?.textContent, '1')
-    assert.match(dom.window.document.querySelector('.plugin-inspector')!.textContent!, /No dynamic plugins installed yet/)
+    assert.equal(dom.window.document.querySelector('.plugin-inspector'), null)
+    assert.match(dom.window.document.querySelector('.plugin-inventory-panel .plugin-empty-state')!.textContent!, /No dynamic plugins installed yet/)
     assert.match(dom.window.document.body.textContent!, /Activity Pulse/)
   } finally {
     dom.window.close()
   }
 })
 
-test('installation uses the v3 entry while dynamic plugin lifecycle controls stay usable', async () => {
+test('workspace plugins expand one inline detail at a time and retain independent lifecycle controls', async () => {
   const dom = new JSDOM('<div id="root"></div>', { pretendToBeVisual: true })
-  const globalKeys = ['window', 'document', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT'] as const
+  const globalKeys = ['window', 'document', 'navigator', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT'] as const
   const previous = new Map(globalKeys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   for (const key of globalKeys) Object.defineProperty(globalThis, key, {
     configurable: true, writable: true, value: key === 'IS_REACT_ACT_ENVIRONMENT' ? true : dom.window[key]
@@ -101,17 +103,69 @@ test('installation uses the v3 entry while dynamic plugin lifecycle controls sta
     value: { getPluginV2Details: async () => null }, configurable: true
   })
   const calls: unknown[] = []
+  const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('root')!)
   try {
     await act(async () => root.render(<PluginsSection {...props({
-      pluginV2Installations: [dynamicPlugin],
+      pluginV2Installations: [dynamicPlugin, {
+        ...dynamicPlugin, pluginId: 'builtin-notes', name: 'Built-in notes', source: 'builtin',
+        enabled: false, activeRunId: null
+      }],
       onInstallSystemPluginFromFolder: () => { calls.push('install-system') },
       onSetPluginV2Enabled: (plugin, enabled) => { calls.push([plugin.pluginId, enabled]) },
       onRemovePluginV2: (plugin) => { calls.push(['remove', plugin.pluginId]) }
     })} />))
     const button = (label: string) => [...dom.window.document.querySelectorAll('button')]
       .find((element) => element.textContent?.includes(label))!
+    const document = dom.window.document
+    const toggle = (name: string) => [...document.querySelectorAll<HTMLButtonElement>('button.plugin-details-toggle')]
+      .find((element) => element.getAttribute('aria-label')?.includes(name))!
+    const inspector = () => document.querySelector('.plugin-inspector')
+    const setQuery = async (value: string) => act(async () => {
+      const input = document.querySelector<HTMLInputElement>('input[type="search"]')!
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }))
+    })
+
+    assert.equal(inspector(), null)
+    assert.equal(toggle('Dynamic notes').getAttribute('aria-expanded'), 'false')
+    await act(async () => document.querySelector<HTMLInputElement>('input[aria-label="Enable Dynamic notes"]')!.click())
+    assert.equal(inspector(), null, 'The enable switch must not open details')
+    assert.deepEqual(calls, [['dynamic-notes', false]])
+    calls.length = 0
+
+    await act(async () => toggle('Dynamic notes').click())
+    assert.equal(toggle('Dynamic notes').getAttribute('aria-expanded'), 'true')
+    assert.equal(toggle('Dynamic notes').getAttribute('aria-label'), 'Hide details for Dynamic notes')
+    assert.equal(inspector()?.id, toggle('Dynamic notes').getAttribute('aria-controls'))
+    assert.equal(inspector()?.tagName, 'SECTION')
+    assert.ok(inspector()?.matches('.plugin-item .plugin-inline-details'))
+    assert.match(inspector()!.textContent!, /Continue with AI/)
+
+    await act(async () => toggle('Built-in notes').click())
+    assert.equal(document.querySelectorAll('.plugin-inspector').length, 1)
+    assert.equal(toggle('Dynamic notes').getAttribute('aria-expanded'), 'false')
+    assert.match(inspector()!.textContent!, /Plugin details · Source: Built in/)
+    assert.match(inspector()!.closest('.plugin-item')!.textContent!, /Built-in notes/)
+    await act(async () => toggle('Built-in notes').click())
+    assert.equal(inspector(), null)
+
+    await act(async () => toggle('Dynamic notes').click())
+    await act(async () => button('Disabled').click())
+    assert.equal(inspector(), null, 'Filtering out an expanded plugin must close its details')
+    assert.equal(document.querySelectorAll('.plugin-item').length, 1)
+    await act(async () => button('All').click())
+    assert.equal(inspector(), null, 'Clearing a filter must not reopen stale details')
+    await act(async () => toggle('Dynamic notes').click())
+    await setQuery('Built-in notes')
+    assert.equal(inspector(), null, 'Searching out an expanded plugin must close its details')
+    assert.equal(document.querySelectorAll('.plugin-item').length, 1)
+    await setQuery('')
+    assert.equal(inspector(), null, 'Clearing search must not reopen stale details')
+    assert.equal(document.querySelectorAll('.plugin-item').length, 2)
+
     await act(async () => button('Install Full Trust').click())
+    await act(async () => toggle('Dynamic notes').click())
     await act(async () => button('Disable plugin').click())
     await act(async () => button('Uninstall plugin').click())
     assert.deepEqual(calls, ['install-system', ['dynamic-notes', false], ['remove', 'dynamic-notes']])
