@@ -200,35 +200,8 @@ function createUiText(language: UiLanguage) {
     automationFeedLabel: zh ? '自动化事件流' : 'Automation feed',
     recentEventsTitle: zh ? '最近事件' : 'Recent events',
     noAutomationEvents: zh ? '还没有自动化事件。' : 'No automation events yet.',
-    pluginsLabel: zh ? '插件' : 'Plugins',
     pluginsTitle: zh ? '工作区扩展' : 'Workspace extensions',
-    installFolder: zh ? '安装文件夹' : 'Install Folder',
-    pluginSettingsLabel: zh ? '插件设置' : 'Plugin settings',
-    noPluginSettings: zh ? '这个插件当前没有暴露可编辑设置。' : 'This plugin does not expose editable settings right now.',
-    savePluginSetting: (label: string) => zh ? `保存“${label}”` : `Save ${label}`,
-    pluginSettingDefault: (value: string | boolean) => zh ? `默认值：${String(value)}` : `Default: ${String(value)}`,
-    pluginRootsHint: zh
-      ? '使用“重载”可在不重启的情况下重新扫描插件根目录；“安装文件夹”会把本地插件复制到用户数据可写目录，并可替换同 id 的用户级插件。'
-      : 'Use Reload to rescan plugin roots without restarting. Install Folder copies a local plugin into the writable user-data root and can replace an existing user-data plugin with the same id.',
-    pluginRecoverHint: zh
-      ? '每个插件条目也支持单独重载；若插件处于错误状态，会显示 Recover。'
-      : 'Each plugin row also supports Reload, and error-state plugins expose the same action as Recover.',
-    writableInstallRoot: (root: string) => zh ? `可写安装目录：${root}` : `Writable install root: ${root}`,
-    noPluginsDiscovered: zh ? '暂未发现任何插件。' : 'No plugins discovered yet.',
-    pluginStatusLabel: (status: 'loading' | 'running' | 'error' | 'disabled') => {
-      if (status === 'loading') return zh ? '加载中' : 'Loading'
-      if (status === 'running') return zh ? '运行中' : 'Running'
-      if (status === 'error') return zh ? '错误' : 'Error'
-      return zh ? '已禁用' : 'Disabled'
-    },
-    pluginSourceLabel: (source: 'workspace' | 'user-data') => source === 'workspace'
-      ? (zh ? '工作区' : 'workspace')
-      : (zh ? '用户数据' : 'user-data'),
-    pluginToggleLabel: (busy: boolean, enabled: boolean) => {
-      if (busy) return zh ? '更新中...' : 'Updating...'
-      return enabled ? (zh ? '已启用' : 'Enabled') : (zh ? '已禁用' : 'Disabled')
-    },
-    recover: zh ? '恢复' : 'Recover',
+    noDynamicPlugins: zh ? '暂未安装动态插件。' : 'No dynamic plugins installed yet.',
     workspaceStatusEyebrow: zh ? '工作区状态' : 'Workspace status',
     workspaceStatusTitle: zh ? '工作区导航已打通' : 'Workspace navigation is alive',
     workspaceStatusBody: zh
@@ -601,28 +574,6 @@ function createUiText(language: UiLanguage) {
     webClipBridgeEndpointCopied: zh ? '网页剪藏提交地址已复制。' : 'Web clip bridge endpoint copied.',
     webClipBridgeTokenCopied: zh ? '网页剪藏令牌已复制。' : 'Web clip bridge token copied.',
     aiSettingsSaved: zh ? 'AI 设置已保存。' : 'AI settings saved.',
-    pluginStatusUpdated: (name: string, enabled: boolean) => zh
-      ? `${enabled ? '已启用' : '已禁用'}插件“${name}”。`
-      : `${enabled ? 'Enabled' : 'Disabled'} plugin "${name}".`,
-    pluginStatusUpdateFailed: zh ? '更新插件状态失败。' : 'Failed to update plugin status.',
-    pluginsReloaded: zh ? '插件已重载。' : 'Plugins reloaded.',
-    pluginsReloadFailed: zh ? '重载插件失败。' : 'Failed to reload plugins.',
-    pluginUpdated: (name: string, previousVersion: string, nextVersion: string) => zh
-      ? `插件“${name}”已从 ${previousVersion} 更新到 ${nextVersion}。`
-      : `Updated plugin "${name}" from ${previousVersion} to ${nextVersion}.`,
-    pluginReloadedFromFolder: (name: string) => zh ? `已从安装目录重新加载插件“${name}”。` : `Reloaded plugin "${name}" from its installed folder.`,
-    pluginInstalled: (name: string) => zh ? `已安装插件“${name}”。` : `Installed plugin "${name}".`,
-    pluginInstallFailed: zh ? '安装插件失败。' : 'Failed to install plugin.',
-    confirmRemovePlugin: (name: string) => zh ? `确定从本地用户数据插件目录中移除“${name}”吗？` : `Remove plugin "${name}" from the local user-data plugin root?`,
-    pluginRemoved: (name: string) => zh ? `已移除插件“${name}”。` : `Removed plugin "${name}".`,
-    pluginRemoveFailed: zh ? '移除插件失败。' : 'Failed to remove plugin.',
-    pluginSettingSaved: (pluginName: string, settingLabel: string) => zh ? `已保存插件“${pluginName}”的设置“${settingLabel}”。` : `Saved ${settingLabel} for plugin "${pluginName}".`,
-    pluginSettingUpdateFailed: zh ? '保存插件设置失败。' : 'Failed to save plugin setting.',
-    pluginMissingAfterReload: (name: string) => zh ? `插件“${name}”已重载，但列表中已找不到它。` : `Plugin "${name}" was reloaded, but it is no longer listed.`,
-    pluginStillHasErrorsAfterReload: (name: string, error: string) => zh ? `插件“${name}”重载后仍有错误：${error}` : `Plugin "${name}" still has errors after reload: ${error}`,
-    disabledPluginMetadataReloaded: (name: string) => zh ? `已刷新已禁用插件“${name}”的元数据。` : `Reloaded metadata for disabled plugin "${name}".`,
-    pluginReloadedSingle: (name: string) => zh ? `已重载插件“${name}”。` : `Reloaded plugin "${name}".`,
-    pluginReloadFailed: zh ? '重载单个插件失败。' : 'Failed to reload plugin.',
     databaseColumnAdded: (name: string) => zh ? `已新增数据库列“${name}”。` : `Added database column "${name}".`,
     databaseColumnCreateFailed: zh ? '创建数据库列失败。' : 'Failed to create database column.',
     databaseCreated: (name: string) => zh ? `已创建数据库“${name}”。` : `Database "${name}" created successfully.`,

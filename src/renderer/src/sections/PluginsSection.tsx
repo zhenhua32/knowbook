@@ -1,8 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
-  PluginDescriptor,
-  PluginSettingDescriptor,
-  PluginSettingValue,
   PluginV2Details,
   PluginV2InstallationSummary,
   SystemPluginInstallRequest,
@@ -19,33 +16,20 @@ import './plugins-section.css'
 
 type PluginFilter = 'all' | 'running' | 'disabled' | 'attention'
 
-type InventoryPlugin =
-  | { key: string; kind: 'legacy'; plugin: PluginDescriptor }
-  | { key: string; kind: 'v2'; plugin: PluginV2InstallationSummary }
+type InventoryPlugin = { key: string; plugin: PluginV2InstallationSummary }
 
 type PluginsSectionProps = {
   ui: UiText
   aiEnabled: boolean
   hasApiKey: boolean
-  pluginRoots: string[]
-  plugins: PluginDescriptor[]
   pluginV2Installations: PluginV2InstallationSummary[]
   systemPluginInstallRequests: SystemPluginInstallRequest[]
   systemPlugins: SystemPluginSummary[]
   pluginBusyId: string | null
-  pluginSettingBusyKey: string | null
-  pluginSettingDrafts: Record<string, PluginSettingValue>
   pluginInventoryBusy: boolean
-  onReloadPlugins: () => void
-  onInstallPluginFromFolder: () => void
   onInstallSystemPluginFromFolder: () => void
-  onReloadPlugin: (plugin: PluginDescriptor) => void
-  onSetPluginEnabled: (plugin: PluginDescriptor, enabled: boolean) => void
-  onRemovePlugin: (plugin: PluginDescriptor) => void
   onSetPluginV2Enabled: (plugin: PluginV2InstallationSummary, enabled: boolean) => void
   onRemovePluginV2: (plugin: PluginV2InstallationSummary) => void
-  onUpdatePluginSettingDraft: (pluginId: string, settingId: string, value: PluginSettingValue) => void
-  onUpdatePluginSetting: (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => void
   onRecoverPluginV2Installation: (pluginId: string) => void
   onSetSystemPluginEnabled: (plugin: SystemPluginSummary, enabled: boolean) => void
   onRecoverSystemPlugin: (plugin: SystemPluginSummary) => void
@@ -71,16 +55,7 @@ type PluginsSectionProps = {
   ) => void
 }
 
-function getPluginSettingDraftKey(pluginId: string, settingId: string): string {
-  return `${pluginId}:${settingId}`
-}
-
-function getInventoryStatus(item: InventoryPlugin): 'running' | 'disabled' | 'attention' | 'stopped' | 'loading' {
-  if (item.kind === 'legacy') {
-    if (item.plugin.status === 'error') return 'attention'
-    if (item.plugin.status === 'disabled') return 'disabled'
-    return item.plugin.status
-  }
+function getInventoryStatus(item: InventoryPlugin): 'running' | 'disabled' | 'attention' | 'stopped' {
   if (item.plugin.quarantined || item.plugin.lastError) return 'attention'
   if (!item.plugin.enabled) return 'disabled'
   return item.plugin.activeRunId ? 'running' : 'stopped'
@@ -89,7 +64,6 @@ function getInventoryStatus(item: InventoryPlugin): 'running' | 'disabled' | 'at
 function statusLabel(status: ReturnType<typeof getInventoryStatus>, isZh: boolean): string {
   const labels = {
     running: isZh ? '运行中' : 'Running',
-    loading: isZh ? '启动中' : 'Starting',
     disabled: isZh ? '已停用' : 'Disabled',
     attention: isZh ? '需要处理' : 'Needs attention',
     stopped: isZh ? '已停止' : 'Stopped'
@@ -143,25 +117,14 @@ export function PluginsSection({
   ui,
   aiEnabled,
   hasApiKey,
-  pluginRoots,
-  plugins,
   pluginV2Installations,
   systemPluginInstallRequests,
   systemPlugins,
   pluginBusyId,
-  pluginSettingBusyKey,
-  pluginSettingDrafts,
   pluginInventoryBusy,
-  onReloadPlugins,
-  onInstallPluginFromFolder,
   onInstallSystemPluginFromFolder,
-  onReloadPlugin,
-  onSetPluginEnabled,
-  onRemovePlugin,
   onSetPluginV2Enabled,
   onRemovePluginV2,
-  onUpdatePluginSettingDraft,
-  onUpdatePluginSetting,
   onRecoverPluginV2Installation,
   onSetSystemPluginEnabled,
   onRecoverSystemPlugin,
@@ -197,10 +160,10 @@ export function PluginsSection({
   const customizerDialogRef = useRef<HTMLElement>(null)
   const customizerReturnFocusRef = useRef<HTMLElement | null>(null)
 
-  const inventory = useMemo<InventoryPlugin[]>(() => [
-    ...plugins.map((plugin) => ({ key: `legacy:${plugin.id}`, kind: 'legacy' as const, plugin })),
-    ...pluginV2Installations.map((plugin) => ({ key: `v2:${plugin.pluginId}`, kind: 'v2' as const, plugin }))
-  ], [pluginV2Installations, plugins])
+  const inventory = useMemo<InventoryPlugin[]>(() => pluginV2Installations.map((plugin) => ({
+    key: plugin.pluginId,
+    plugin
+  })), [pluginV2Installations])
 
   const selected = inventory.find((item) => item.key === selectedKey) ?? inventory[0] ?? null
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -209,19 +172,21 @@ export function PluginsSection({
     const matchesFilter = filter === 'all'
       || (filter === 'attention' ? status === 'attention' : status === filter)
     const name = item.plugin.name.toLocaleLowerCase()
-    const id = (item.kind === 'legacy' ? item.plugin.id : item.plugin.pluginId).toLocaleLowerCase()
+    const id = item.plugin.pluginId.toLocaleLowerCase()
     const description = item.plugin.description.toLocaleLowerCase()
     return matchesFilter && (!normalizedQuery || `${name} ${id} ${description}`.includes(normalizedQuery))
   })
   const runningCount = inventory.filter((item) => getInventoryStatus(item) === 'running').length
+    + systemPlugins.filter((plugin) => plugin.status === 'active' && !plugin.safeModeDisabled && !plugin.lastError).length
   const attentionCount = inventory.filter((item) => getInventoryStatus(item) === 'attention').length
+    + systemPlugins.filter((plugin) => plugin.safeModeDisabled || plugin.lastError || plugin.status === 'failed').length
   const aiCreatedCount = pluginV2Installations.filter((plugin) => plugin.source === 'dynamic').length
 
   useEffect(() => {
     if (selectedKey && !inventory.some((item) => item.key === selectedKey)) setSelectedKey(null)
   }, [inventory, selectedKey])
 
-  const selectedV2DetailsKey = selected?.kind === 'v2'
+  const selectedV2DetailsKey = selected
     ? [
         selected.plugin.pluginId,
         selected.plugin.updatedAt,
@@ -232,7 +197,7 @@ export function PluginsSection({
     : null
 
   useEffect(() => {
-    if (!selectedV2DetailsKey || selected?.kind !== 'v2') {
+    if (!selectedV2DetailsKey || !selected) {
       setPluginV2Details(null)
       setPluginV2DetailsError(null)
       setPluginV2DetailsLoading(false)
@@ -327,14 +292,6 @@ export function PluginsSection({
             : 'Manage runtime status, versions, and permissions, then keep iterating on existing plugins with AI.'}</p>
         </div>
         <div className="plugin-toolbar">
-          <button className="secondary-button" disabled={pluginInventoryBusy} onClick={onReloadPlugins} type="button">
-            <span aria-hidden="true">↻</span>
-            {pluginInventoryBusy ? ui.common.reloading : ui.common.reload}
-          </button>
-          <button className="primary-button" disabled={pluginInventoryBusy} onClick={onInstallPluginFromFolder} type="button">
-            <span aria-hidden="true">＋</span>
-            {pluginInventoryBusy ? ui.common.working : ui.installFolder}
-          </button>
           <button className="danger-button" disabled={pluginInventoryBusy} onClick={onInstallSystemPluginFromFolder} type="button">
             <span aria-hidden="true">⚠</span>
             {isZh ? '安装 Full Trust' : 'Install Full Trust'}
@@ -345,7 +302,7 @@ export function PluginsSection({
       <div className="plugin-overview-grid" aria-label={isZh ? '插件概览' : 'Plugin overview'}>
         <div className="plugin-overview-card">
           <span>{isZh ? '已安装' : 'Installed'}</span>
-          <strong>{inventory.length}</strong>
+          <strong>{inventory.length + systemPlugins.length}</strong>
           <small>{isZh ? '工作区扩展' : 'workspace extensions'}</small>
         </div>
         <div className="plugin-overview-card plugin-overview-running">
@@ -369,7 +326,7 @@ export function PluginsSection({
         <article className="panel plugin-inventory-panel">
           <div className="plugin-inventory-head">
             <div>
-              <h4>{isZh ? '我的插件' : 'My plugins'}</h4>
+              <h4>{isZh ? '动态插件' : 'Dynamic plugins'}</h4>
               <p>{isZh ? '选择插件查看详情和生命周期操作' : 'Select a plugin to inspect and manage it'}</p>
             </div>
             <label className="plugin-search">
@@ -411,9 +368,9 @@ export function PluginsSection({
               {filteredInventory.map((item) => {
                 const isSelected = selected?.key === item.key
                 const status = getInventoryStatus(item)
-                const pluginId = item.kind === 'legacy' ? item.plugin.id : item.plugin.pluginId
+                const pluginId = item.plugin.pluginId
                 const busy = pluginBusyId === pluginId || pluginInventoryBusy
-                const canCustomize = item.kind === 'v2' && item.plugin.source !== 'builtin' && item.plugin.source !== 'system'
+                const canCustomize = item.plugin.source !== 'builtin' && item.plugin.source !== 'system'
                 return (
                   <div
                     aria-selected={isSelected}
@@ -430,13 +387,11 @@ export function PluginsSection({
                     tabIndex={0}
                   >
                     <div className="plugin-card-main">
-                      <span className={`plugin-avatar plugin-avatar-${item.kind}`}>{pluginInitials(item.plugin.name)}</span>
+                      <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(item.plugin.name)}</span>
                       <div className="plugin-card-copy">
                         <div className="plugin-card-title-row">
                           <strong>{item.plugin.name}</strong>
-                          {item.kind === 'legacy' ? (
-                            <span className="plugin-status plugin-status-legacy">Legacy v1</span>
-                          ) : item.plugin.source === 'dynamic' ? (
+                          {item.plugin.source === 'dynamic' ? (
                             <span className="plugin-ai-badge">✦ {isZh ? 'AI 创建' : 'AI created'}</span>
                           ) : null}
                         </div>
@@ -444,8 +399,8 @@ export function PluginsSection({
                         <div className="plugin-card-meta">
                           <span>{item.plugin.version}</span>
                           <span>·</span>
-                          <span>{item.kind === 'legacy' ? ui.pluginSourceLabel(item.plugin.source) : sourceLabel(item.plugin.source, isZh)}</span>
-                          {item.kind === 'v2' ? <><span>·</span><span>{item.plugin.revisionCount} revisions</span></> : null}
+                          <span>{sourceLabel(item.plugin.source, isZh)}</span>
+                          <span>·</span><span>{item.plugin.revisionCount} revisions</span>
                         </div>
                       </div>
                       <div className="plugin-card-state">
@@ -456,11 +411,8 @@ export function PluginsSection({
                           <input
                             aria-label={isZh ? `启用 ${item.plugin.name}` : `Enable ${item.plugin.name}`}
                             checked={item.plugin.enabled}
-                            disabled={busy || (item.kind === 'v2' && item.plugin.quarantined)}
-                            onChange={(event) => {
-                              if (item.kind === 'legacy') onSetPluginEnabled(item.plugin, event.target.checked)
-                              else onSetPluginV2Enabled(item.plugin, event.target.checked)
-                            }}
+                            disabled={busy || item.plugin.quarantined}
+                            onChange={(event) => onSetPluginV2Enabled(item.plugin, event.target.checked)}
                             type="checkbox"
                           />
                           <span aria-hidden="true" />
@@ -469,44 +421,25 @@ export function PluginsSection({
                     </div>
 
                     <div className="plugin-item-actions" onClick={(event) => event.stopPropagation()}>
-                      {canCustomize && item.kind === 'v2' ? (
+                      {canCustomize ? (
                         <button className="plugin-ai-action" disabled={busy} onClick={() => openPluginCustomizer(item.plugin)} type="button">
                           <span aria-hidden="true">✦</span>{isZh ? '通过 AI 继续定制' : 'Customize with AI'}
                         </button>
                       ) : null}
-                      {item.kind === 'legacy' ? (
-                        <button className="plugin-text-action plugin-reload-button" disabled={busy} onClick={() => onReloadPlugin(item.plugin)} type="button">
-                          {busy ? ui.common.working : item.plugin.status === 'error' ? ui.recover : ui.common.reload}
-                        </button>
-                      ) : null}
-                      {item.kind === 'v2' && item.plugin.quarantined ? (
+                      {item.plugin.quarantined ? (
                         <button className="plugin-text-action" disabled={busy} onClick={() => onRecoverPluginV2Installation(item.plugin.pluginId)} type="button">
                           {isZh ? '解除隔离' : 'Clear quarantine'}
                         </button>
                       ) : null}
-                      {item.kind === 'v2' && item.plugin.enabled && !item.plugin.activeRunId && !item.plugin.quarantined ? (
+                      {item.plugin.enabled && !item.plugin.activeRunId && !item.plugin.quarantined ? (
                         <button className="plugin-text-action" disabled={busy} onClick={() => onSetPluginV2Enabled(item.plugin, true)} type="button">
                           {isZh ? '重新启动' : 'Restart'}
                         </button>
                       ) : null}
                     </div>
 
-                    {item.kind === 'legacy' && isSelected && item.plugin.settings.length > 0 ? (
-                      <PluginSettings
-                        plugin={item.plugin}
-                        pluginBusyId={pluginBusyId}
-                        pluginInventoryBusy={pluginInventoryBusy}
-                        pluginSettingBusyKey={pluginSettingBusyKey}
-                        pluginSettingDrafts={pluginSettingDrafts}
-                        ui={ui}
-                        onUpdatePluginSetting={onUpdatePluginSetting}
-                        onUpdatePluginSettingDraft={onUpdatePluginSettingDraft}
-                      />
-                    ) : null}
                     {status === 'attention' ? (
-                      <p className="plugin-error">{item.kind === 'legacy'
-                        ? item.plugin.error
-                        : errorDetail(item.plugin.quarantineReason ?? item.plugin.lastError)}</p>
+                      <p className="plugin-error">{errorDetail(item.plugin.quarantineReason ?? item.plugin.lastError)}</p>
                     ) : null}
                   </div>
                 )
@@ -523,34 +456,23 @@ export function PluginsSection({
 
         <aside className="panel plugin-inspector">
           {selected ? (
-            selected.kind === 'v2' ? (
-              <V2PluginInspector
-                busy={pluginBusyId === selected.plugin.pluginId || pluginInventoryBusy}
-                details={pluginV2Details?.pluginId === selected.plugin.pluginId ? pluginV2Details : null}
-                detailsError={pluginV2DetailsError}
-                detailsLoading={pluginV2DetailsLoading}
-                isZh={isZh}
-                onCustomize={() => openPluginCustomizer(selected.plugin)}
-                onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
-                onRecover={() => onRecoverPluginV2Installation(selected.plugin.pluginId)}
-                onRemove={() => onRemovePluginV2(selected.plugin)}
-                onSetEnabled={(enabled) => onSetPluginV2Enabled(selected.plugin, enabled)}
-                plugin={selected.plugin}
-              />
-            ) : (
-              <LegacyPluginInspector
-                busy={pluginBusyId === selected.plugin.id || pluginInventoryBusy}
-                isZh={isZh}
-                onReload={() => onReloadPlugin(selected.plugin)}
-                onRemove={() => onRemovePlugin(selected.plugin)}
-                plugin={selected.plugin}
-                source={ui.pluginSourceLabel(selected.plugin.source)}
-              />
-            )
+            <V2PluginInspector
+              busy={pluginBusyId === selected.plugin.pluginId || pluginInventoryBusy}
+              details={pluginV2Details?.pluginId === selected.plugin.pluginId ? pluginV2Details : null}
+              detailsError={pluginV2DetailsError}
+              detailsLoading={pluginV2DetailsLoading}
+              isZh={isZh}
+              onCustomize={() => openPluginCustomizer(selected.plugin)}
+              onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
+              onRecover={() => onRecoverPluginV2Installation(selected.plugin.pluginId)}
+              onRemove={() => onRemovePluginV2(selected.plugin)}
+              onSetEnabled={(enabled) => onSetPluginV2Enabled(selected.plugin, enabled)}
+              plugin={selected.plugin}
+            />
           ) : (
             <div className="plugin-empty-state">
               <span aria-hidden="true">◇</span>
-              <strong>{ui.noPluginsDiscovered}</strong>
+              <strong>{ui.noDynamicPlugins}</strong>
             </div>
           )}
         </aside>
@@ -791,15 +713,6 @@ export function PluginsSection({
         </section>
       ) : null}
 
-      {pluginRoots.length > 0 ? (
-        <details className="plugin-roots-disclosure">
-          <summary>{isZh ? '插件目录与开发者选项' : 'Plugin roots and developer options'}</summary>
-          <div className="plugin-roots">
-            {pluginRoots.map((root) => <code className="plugin-root-path" key={root}>{root}</code>)}
-          </div>
-        </details>
-      ) : null}
-
       {uninstallTarget ? (
         <div className="plugin-customizer-backdrop" onMouseDown={(event) => {
           if (event.currentTarget === event.target) setUninstallTarget(null)
@@ -877,71 +790,6 @@ function pluginCustomizationDraft(plugin: PluginV2InstallationSummary, isZh: boo
     : `Inspect and continue customizing plugin "${plugin.name}" (ID: ${plugin.pluginId}). Use plugins.inspect to review the current revision and diagnostics, preserve behavior I do not explicitly change, then create and validate a new revision. Show the change and permission diff before activation. My customization request is: `
 }
 
-type PluginSettingsProps = {
-  plugin: PluginDescriptor
-  pluginBusyId: string | null
-  pluginInventoryBusy: boolean
-  pluginSettingBusyKey: string | null
-  pluginSettingDrafts: Record<string, PluginSettingValue>
-  ui: UiText
-  onUpdatePluginSettingDraft: (pluginId: string, settingId: string, value: PluginSettingValue) => void
-  onUpdatePluginSetting: (plugin: PluginDescriptor, setting: PluginSettingDescriptor, value: PluginSettingValue) => void
-}
-
-function PluginSettings({
-  plugin,
-  pluginBusyId,
-  pluginInventoryBusy,
-  pluginSettingBusyKey,
-  pluginSettingDrafts,
-  ui,
-  onUpdatePluginSettingDraft,
-  onUpdatePluginSetting
-}: PluginSettingsProps) {
-  return (
-    <div className="plugin-settings-panel" onClick={(event) => event.stopPropagation()}>
-      <div className="plugin-settings-heading"><strong>{ui.pluginSettingsLabel}</strong><span>{plugin.settings.length}</span></div>
-      <div className="plugin-settings-list">
-        {plugin.settings.map((setting) => {
-          const draftKey = getPluginSettingDraftKey(plugin.id, setting.id)
-          const draftValue = pluginSettingDrafts[draftKey] ?? setting.value
-          const hasPendingChanges = draftValue !== setting.value
-          const isSettingBusy = pluginSettingBusyKey === draftKey
-          const disabled = pluginInventoryBusy || pluginBusyId === plugin.id || isSettingBusy
-          return (
-            <div className="plugin-setting-item" key={draftKey}>
-              {setting.type === 'checkbox' ? (
-                <label className="toggle-row plugin-setting-toggle">
-                  <span>{setting.label}</span>
-                  <input checked={Boolean(draftValue)} disabled={disabled} onChange={(event) => onUpdatePluginSettingDraft(plugin.id, setting.id, event.target.checked)} type="checkbox" />
-                </label>
-              ) : (
-                <label className="editor-label plugin-setting-field">
-                  {setting.label}
-                  {setting.type === 'select' ? (
-                    <select aria-label={setting.label} className="editor-input" disabled={disabled} onChange={(event) => onUpdatePluginSettingDraft(plugin.id, setting.id, event.target.value)} value={String(draftValue)}>
-                      {(setting.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                    </select>
-                  ) : (
-                    <input aria-label={setting.label} className="editor-input" disabled={disabled} onChange={(event) => onUpdatePluginSettingDraft(plugin.id, setting.id, event.target.value)} type="text" value={String(draftValue)} />
-                  )}
-                </label>
-              )}
-              {setting.description ? <p className="mini-hint plugin-setting-description">{setting.description}</p> : null}
-              <div className="plugin-setting-actions">
-                <span className="mini-hint plugin-setting-default">{ui.pluginSettingDefault(setting.defaultValue)}</span>
-                <button className="secondary-button" disabled={disabled || !hasPendingChanges} onClick={() => onUpdatePluginSetting(plugin, setting, draftValue)} type="button">
-                  {isSettingBusy ? ui.common.working : ui.savePluginSetting(setting.label)}
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
 function V2PluginInspector({
   plugin,
   busy,
@@ -1009,43 +857,6 @@ function V2PluginInspector({
         {canRemove ? <button className="danger-button" disabled={busy} onClick={onRemove} type="button">{isZh ? '卸载插件' : 'Uninstall plugin'}</button> : null}
       </div>
       {!canRemove ? <p className="plugin-inspector-note">{isZh ? '内置或系统插件可以停用，但不能在这里卸载。' : 'Built-in and system plugins can be disabled, but not uninstalled here.'}</p> : null}
-    </>
-  )
-}
-
-function LegacyPluginInspector({
-  plugin,
-  busy,
-  isZh,
-  source,
-  onReload,
-  onRemove
-}: {
-  plugin: PluginDescriptor
-  busy: boolean
-  isZh: boolean
-  source: string
-  onReload: () => void
-  onRemove: () => void
-}) {
-  return (
-    <>
-      <div className="plugin-inspector-head">
-        <span className="plugin-avatar plugin-avatar-legacy">{pluginInitials(plugin.name)}</span>
-        <div><span>Legacy v1 · {source}</span><h4>{plugin.name}</h4><code>{plugin.id}</code></div>
-      </div>
-      <p className="plugin-inspector-description">{plugin.description}</p>
-      <div className="plugin-detail-grid">
-        <div><span>{isZh ? '版本' : 'Version'}</span><strong>{plugin.version}</strong></div>
-        <div><span>{isZh ? '配置项' : 'Settings'}</span><strong>{plugin.settings.length}</strong></div>
-        <div><span>{isZh ? '作者' : 'Author'}</span><strong>{plugin.author ?? '—'}</strong></div>
-        <div><span>{isZh ? '状态' : 'Status'}</span><strong>{statusLabel(getInventoryStatus({ key: '', kind: 'legacy', plugin }), isZh)}</strong></div>
-      </div>
-      <div className="plugin-inspector-actions">
-        <button className="secondary-button" disabled={busy} onClick={onReload} type="button">{plugin.status === 'error' ? (isZh ? '尝试恢复' : 'Try recovery') : (isZh ? '重载插件' : 'Reload plugin')}</button>
-        {plugin.source === 'user-data' ? <button className="danger-button plugin-remove-button" disabled={busy} onClick={onRemove} type="button">{isZh ? '卸载插件' : 'Uninstall plugin'}</button> : null}
-      </div>
-      <p className="plugin-inspector-note">{isZh ? 'Legacy v1 插件由本地文件夹加载；AI 对话定制仅适用于 Plugin Platform v2。' : 'Legacy v1 plugins load from local folders. AI customization is available for Plugin Platform v2.'}</p>
     </>
   )
 }

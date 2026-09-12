@@ -41,9 +41,9 @@ test('core workspace modules exist', () => {
     'src/shared/contracts.ts',
     'src/main/database/store.ts',
     'src/main/database/schema.ts',
-    'src/main/plugin-host.ts',
-    'src/main/plugin-sdk.ts',
-    'src/main/plugin-version.ts',
+    'src/main/plugin-platform/platform-service.ts',
+    'src/main/system-plugin/manager.ts',
+    'src/shared/system-plugin-sdk.ts',
     'src/renderer/src/i18n.ts',
     'src/shared/board.ts',
     'src/shared/markdown.ts',
@@ -72,4 +72,40 @@ test('stable Electron E2E specs exist', () => {
   for (const file of e2eSpecs) {
     assert.equal(existsSync(join(projectRoot, file)), true, `${file} should exist`)
   }
+})
+
+test('retired v1 plugin runtime and management APIs are absent', () => {
+  for (const filename of [
+    'plugin-host.ts',
+    'plugin-sdk.ts',
+    'plugin-market.ts',
+    'plugin-manifest-rules.ts',
+    'plugin-version.ts',
+    'plugin-runtime-client.ts',
+    'plugin-runtime-process.ts',
+    'plugin-runtime-protocol.ts'
+  ]) {
+    assert.equal(existsSync(join(projectRoot, 'src/main', filename)), false, filename)
+  }
+
+  const main = readFileSync(join(projectRoot, 'src/main/index.ts'), 'utf8')
+  const preload = readFileSync(join(projectRoot, 'src/preload/index.ts'), 'utf8')
+  const contracts = readFileSync(join(projectRoot, 'src/shared/contracts.ts'), 'utf8')
+  const management = readFileSync(join(projectRoot, 'src/renderer/src/hooks/usePluginManagement.ts'), 'utf8')
+  for (const method of [
+    'setPluginEnabled', 'reloadPlugins', 'reloadPlugin', 'installPluginFromFolder',
+    'removePlugin', 'updatePluginSetting'
+  ]) {
+    const exactMethod = new RegExp(`\\b${method}\\b`)
+    for (const source of [main, preload, contracts, management]) {
+      assert.doesNotMatch(source, exactMethod, `${method} must not remain callable`)
+    }
+  }
+  assert.doesNotMatch(main, /pluginHost|ElectronPluginRuntime/)
+  assert.doesNotMatch(contracts, /\b(?:PluginManifest|PluginDescriptor|PluginHostInfo|PluginSettingValue)\b/)
+  assert.equal(existsSync(join(projectRoot, 'plugins/activity-pulse/index.js')), false)
+  const manifest = readJson('plugins/activity-pulse/plugin.json')
+  assert.equal(manifest.schemaVersion, 3)
+  assert.equal(manifest.trust, 'full')
+  assert.equal(manifest.fullAccess, true)
 })

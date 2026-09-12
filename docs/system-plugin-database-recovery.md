@@ -19,7 +19,7 @@ $backup = 'C:\Users\你的用户名\AppData\Roaming\KnowBook\backups\system-plug
 & $appExe "--knowbook-user-data-dir=$workspace"
 ```
 
-首次打开跳过 Legacy v1、v2 与 Full Trust v3 自动激活；恢复出的 v3 installation 还会持久设置为安全停用，后续也不会自动激活。先检查知识库与插件错误，再从插件中心逐一启用可信版本。Legacy/v2 的暂停仅针对恢复后的首次启动，后续采用其已有配置。
+首次打开跳过 v2 与 Full Trust v3 自动激活；恢复出的 v3 installation 还会持久设置为安全停用，后续也不会自动激活。先检查知识库与插件错误，再从插件中心逐一启用可信版本。v2 的暂停仅针对恢复后的首次启动，后续采用其已有配置。v1 插件系统已移除，旧插件目录不会被执行。
 
 ## 恢复时会发生什么
 

@@ -1,133 +1,32 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
-import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { expect, test, type Page } from '@playwright/test'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import {
+  closeElectronApp, ensureDocumentMetadataEditor, hasBuiltElectronApp, launchElectronApp,
+  uiText, withElectronApp, type ElectronAppContext
+} from './helpers/electron'
 
-function getLegacyPluginList(page: Page): Locator {
-  return page.locator('.plugin-list').filter({ has: page.locator('.plugin-status-legacy') })
+async function openPage(page: Page, en: string, zh: string): Promise<void> {
+  const button = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText(en, zh))).first()
+  await button.click()
+  await expect(button).toHaveClass(/active/)
 }
 
-function getPluginItem(page: Page): Locator {
-  return getLegacyPluginList(page).locator('.plugin-item').filter({ hasText: 'Activity Pulse' }).first()
+async function selectInstallDirectory(context: ElectronAppContext, sourceDirectory: string): Promise<void> {
+  await context.app.evaluate(({ dialog }, path) => {
+    Object.defineProperty(dialog, 'showMessageBox', { configurable: true, value: async () => ({ response: 0, checkboxChecked: false }) })
+    Object.defineProperty(dialog, 'showOpenDialog', { configurable: true, value: async () => ({ canceled: false, filePaths: [path] }) })
+  }, sourceDirectory)
 }
 
-function getV2PluginItem(page: Page): Locator {
-  return page.locator('.plugin-item').filter({ hasText: 'Activity Pulse v2' }).first()
-}
-
-function getLegacyDashboardCard(page: Page): Locator {
-  return page.locator('.plugin-dashboard-card').filter({
-    has: page.locator('.pill').filter({ hasText: /^activity-pulse$/ })
-  })
-}
-
-function getLegacyDocumentAction(page: Page): Locator {
-  return page.getByRole('button', { name: 'Summary from first block', exact: true })
-}
-
-function getTitleInput(page: Page): Locator {
-  return page.locator('.document-summary-card .editor-input').first()
-}
-
-function getSummaryInput(page: Page): Locator {
-  return page.locator('.document-summary-card .editor-textarea').first()
-}
-
-function getBodyEditor(page: Page): Locator {
-  return page.locator('textarea.block-inline-textarea').nth(1)
-}
-
-function getPreviewTitle(page: Page): Locator {
-  return page.locator('.preview-panel .panel-head h3')
-}
-
-function getTreeButton(page: Page, title: string): Locator {
-  return page.locator('.tree-button', { hasText: title }).first()
-}
-
-async function openPluginsPage(page: Page): Promise<void> {
-  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Plugins', '插件中心'))).first()
-  await navigationButton.click()
-  await expect(navigationButton).toHaveClass(/active/)
-  await expect(getLegacyPluginList(page)).toBeVisible()
-}
-
-async function openDashboardPage(page: Page): Promise<void> {
-  const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Dashboard', '总览'))).first()
-  await navigationButton.click()
-  await expect(navigationButton).toHaveClass(/active/)
-}
-
-async function openDocumentsPage(page: Page): Promise<void> {
-  await page.getByTitle(uiText('Documents', '文档')).first().click()
-  await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
-}
-
-async function createRootDocument(page: Page, title: string, body: string): Promise<string> {
-  await page.getByTitle(uiText('New root', '新建根文档')).click()
-  await ensureDocumentMetadataEditor(page)
-  await expect(getTitleInput(page)).toHaveValue(/Untitled/i)
-  const initialTitle = await getTitleInput(page).inputValue()
-  await getTitleInput(page).fill(title)
-  await getBodyEditor(page).fill(body)
-  await page.getByRole('button', { name: uiText('Save', '保存') }).click()
-  await expect(getPreviewTitle(page)).toHaveText(title)
-  return initialTitle
-}
-
-async function ensureAuxPanelVisible(page: Page): Promise<void> {
-  const actionButton = getLegacyDocumentAction(page)
-
-  if (await actionButton.isVisible().catch(() => false)) {
-    return
-  }
-
-  const showAuxButton = page.getByRole('button', { name: uiText('Show auxiliary', '展开辅助区') })
-  if (await showAuxButton.isVisible().catch(() => false)) {
-    await showAuxButton.click()
-  }
-
-  await expect(actionButton).toBeVisible()
-}
-
-async function enableActivityPulse(page: Page): Promise<void> {
-  await openPluginsPage(page)
-
-  const pluginItem = getPluginItem(page)
-  const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
-  if (await toggle.isChecked()) {
-    await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
-    return
-  }
-
-  await pluginItem.locator('.plugin-toggle-row').click()
-  await expect(toggle).toBeChecked()
-  await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
-}
-
-async function disableActivityPulse(page: Page): Promise<void> {
-  await openPluginsPage(page)
-
-  const pluginItem = getPluginItem(page)
-  const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
-  if (!(await toggle.isChecked())) {
-    await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
-    return
-  }
-
-  await pluginItem.locator('.plugin-toggle-row').click()
-  await expect(toggle).not.toBeChecked()
-  await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
-}
-
-test.describe('Plugin System @electron', () => {
-  test('inspects v2 permissions, revision history, and runtime logs on demand', async () => {
+test.describe('Plugin systems @electron', () => {
+  test('retains v2 permissions, revision history, and runtime logs', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
     await withElectronApp(async ({ page }) => {
-      await openPluginsPage(page)
-      await getV2PluginItem(page).click()
-
+      await openPage(page, 'Plugins', '插件中心')
+      await page.locator('.plugin-item').filter({ hasText: 'Activity Pulse v2' }).first().click()
       const details = page.locator('.plugin-technical-details')
-      await expect(details).toBeVisible()
       await expect(details.getByText(uiText('Current permissions', '当前权限'))).toBeVisible()
       await expect(details).toContainText('documents.read@1')
       await expect(details.getByText(uiText('Revision history', '版本历史'))).toBeVisible()
@@ -136,170 +35,129 @@ test.describe('Plugin System @electron', () => {
     })
   })
 
-  test('loads the workspace plugin inventory entry and keeps dashboard state consistent', async () => {
+  test('does not execute or expose v1 plugins and rejects their manifests during v3 install', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    await withElectronApp(async ({ page }) => {
-      await openPluginsPage(page)
-
-      const pluginItem = getPluginItem(page)
-      const toggle = pluginItem.locator('.plugin-toggle-row input[type="checkbox"]')
-      const isEnabled = await toggle.isChecked()
-      await expect(pluginItem).toBeVisible()
-
-      if (isEnabled) {
-        await expect(pluginItem.locator('.plugin-status-running')).toBeVisible()
-      } else {
-        await expect(pluginItem.locator('.plugin-status-disabled')).toBeVisible()
-      }
-
-      await openDashboardPage(page)
-      const dashboardCard = getLegacyDashboardCard(page)
-
-      if (isEnabled) {
-        await expect(dashboardCard.first()).toBeVisible()
-      } else {
-        await expect(dashboardCard).toHaveCount(0)
-      }
-    })
-  })
-
-  test('enables and disables the workspace plugin', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    await withElectronApp(async ({ page }) => {
-      await enableActivityPulse(page)
-
-      await openDashboardPage(page)
-      await expect(getLegacyDashboardCard(page)).toBeVisible()
-
-      await disableActivityPulse(page)
-
-      await openDashboardPage(page)
-      await expect(getLegacyDashboardCard(page)).toHaveCount(0)
-    })
-  })
-
-  test('reloads plugin inventory without losing the workspace plugin', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    await withElectronApp(async ({ page }) => {
-      await enableActivityPulse(page)
-
-      await page.locator('.plugin-toolbar button').first().click()
-
-      await expect(page.locator('.flash-message')).toContainText(/Plugins reloaded\.|插件已重载。/)
-      await expect(getPluginItem(page)).toBeVisible()
-
-      await openDashboardPage(page)
-      await expect(getLegacyDashboardCard(page)).toBeVisible()
-    })
-  })
-
-  test('updates a plugin setting and uses it in the document action', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    const suffix = Date.now().toString(36)
-    const title = `Plugin Setting Doc ${suffix}`
-    const prefix = `Configured ${suffix}: `
-
-    await withElectronApp(async ({ page }) => {
-      await enableActivityPulse(page)
-      await openPluginsPage(page)
-
-      const pluginItem = getPluginItem(page)
-      const settingRow = pluginItem.locator('.plugin-setting-item').filter({ hasText: 'Summary prefix' }).first()
-      await settingRow.getByLabel('Summary prefix').fill(prefix)
-      await settingRow.getByRole('button', { name: /Save Summary prefix|保存“Summary prefix”/ }).click()
-
-      await expect(page.locator('.flash-message')).toContainText(/Summary prefix|插件“Activity Pulse”/)
-
-      await openDocumentsPage(page)
-      const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the configured summary action.')
-      await ensureAuxPanelVisible(page)
-
-      await getLegacyDocumentAction(page).click()
-
-      await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
-      await expect(getSummaryInput(page)).toHaveValue(`${prefix}${initialSeedTitle}`)
-    })
-  })
-
-  test('runs the plugin document action and refreshes the saved summary', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    const suffix = Date.now().toString(36)
-    const title = `Plugin Doc ${suffix}`
-
-    await withElectronApp(async ({ page }) => {
-      await enableActivityPulse(page)
-      await openPluginsPage(page)
-
-      const pluginItem = getPluginItem(page)
-      const settingRow = pluginItem.locator('.plugin-setting-item').filter({ hasText: 'Summary prefix' }).first()
-      await expect(settingRow.getByLabel('Summary prefix')).toHaveValue('')
-
-      await openDocumentsPage(page)
-      const initialSeedTitle = await createRootDocument(page, title, 'Plugin body content for the summary action.')
-      await ensureAuxPanelVisible(page)
-
-      await getLegacyDocumentAction(page).click()
-
-      await expect(page.locator('.flash-message')).toContainText('Summary refreshed from the first non-empty block.')
-
-      await page.locator('.tree-button:not(.tree-button-active)').first().click()
-      await expect(getPreviewTitle(page)).not.toHaveText(title)
-
-      await getTreeButton(page, title).click()
-      await expect(getPreviewTitle(page)).toHaveText(title)
-      await ensureDocumentMetadataEditor(page)
-      await expect(getSummaryInput(page)).toHaveValue(initialSeedTitle)
-    })
-  })
-
-  test('runs plugins in a dedicated utility process and contains process failure', async () => {
-    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
-
-    await withElectronApp(async ({ app, page }) => {
-      await enableActivityPulse(page)
-
-      await expect.poll(async () => app.evaluate(({ app: electronApp }) => {
-        const pluginProcess = electronApp.getAppMetrics().find(
-          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
-            || metric.name === 'KnowBook Plugin: activity-pulse'
-        )
-        return Boolean(pluginProcess)
-      })).toBe(true)
-
-      const isolatedProcess = await app.evaluate(({ app: electronApp }) => {
-        const browserProcess = electronApp.getAppMetrics().find((metric) => metric.type === 'Browser')
-        const pluginProcess = electronApp.getAppMetrics().find(
-          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
-            || metric.name === 'KnowBook Plugin: activity-pulse'
-        )
-        return pluginProcess && browserProcess
-          ? { pluginPid: pluginProcess.pid, browserPid: browserProcess.pid }
-          : null
+    const userDataRoot = mkdtempSync(join(tmpdir(), 'knowbook-no-v1-'))
+    const source = join(userDataRoot, 'plugins', 'retired-v1')
+    const marker = join(userDataRoot, 'v1-must-not-run.txt')
+    mkdirSync(source, { recursive: true })
+    writeFileSync(join(source, 'plugin.json'), JSON.stringify({ id: 'retired-v1', name: 'Retired V1 Fixture', version: '1.0.0', entry: 'index.js', enabledByDefault: true }))
+    writeFileSync(join(source, 'index.js'), `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'executed'); module.exports.activate = function () { throw new Error('v1 must never load'); };`)
+    let context: ElectronAppContext | null = null
+    try {
+      context = await launchElectronApp({}, { userDataRoot })
+      await openPage(context.page, 'Plugins', '插件中心')
+      await expect(context.page.getByText('Retired V1 Fixture', { exact: true })).toHaveCount(0)
+      await expect(context.page.getByText(/Legacy v1|旧版插件目录/)).toHaveCount(0)
+      await expect(context.page.getByRole('button', { name: /Reload plugins|重载插件|重新扫描/ })).toHaveCount(0)
+      const exposed = await context.page.evaluate(() => {
+        const api = window.knowbook as unknown as Record<string, unknown>
+        return ['installPluginFromFolder', 'reloadPlugins', 'reloadPlugin', 'setPluginEnabled', 'updatePluginSetting', 'removePlugin'].filter((name) => name in api)
       })
-      expect(isolatedProcess).not.toBeNull()
-      expect(isolatedProcess?.pluginPid).not.toBe(isolatedProcess?.browserPid)
-
-      await app.evaluate(({ app: electronApp }) => {
-        const pluginProcess = electronApp.getAppMetrics().find(
-          (metric) => metric.serviceName === 'KnowBook Plugin: activity-pulse'
-            || metric.name === 'KnowBook Plugin: activity-pulse'
-        )
-        if (!pluginProcess) {
-          throw new Error('Plugin utility process was not found.')
-        }
-        process.kill(pluginProcess.pid)
+      expect(exposed).toEqual([])
+      expect(existsSync(marker)).toBe(false)
+      await selectInstallDirectory(context, source)
+      const error = await context.page.evaluate(async () => {
+        try { await window.knowbook.chooseAndPrepareSystemPluginInstall(); return null }
+        catch (cause) { return String(cause) }
       })
+      expect(error).toMatch(/schemaVersion|System Plugin|system plugin|version 3|schema version/i)
+      expect(existsSync(marker)).toBe(false)
+      expect(await context.page.evaluate(() => window.knowbook.listSystemPlugins())).toEqual([])
+    } finally {
+      if (context) await closeElectronApp(context)
+      rmSync(userDataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
+  })
 
-      await expect(getPluginItem(page).locator('.plugin-status-error')).toBeVisible()
-      await openDashboardPage(page)
-      await expect(getLegacyDashboardCard(page)).toHaveCount(0)
-      await openDocumentsPage(page)
-      await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()
-    })
+  test('installs Activity Pulse with exact Full Trust consent, preserves settings, and runs v3 document actions after restart', async () => {
+    test.setTimeout(120_000)
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+    let context: ElectronAppContext | null = null
+    let retainedRoot: string | null = null
+    try {
+      context = await launchElectronApp()
+      retainedRoot = context.tempRoot
+      await expect(context.page.getByTestId('activity-pulse-dashboard')).toHaveCount(0)
+      expect(await context.page.evaluate(() => window.knowbook.listSystemPlugins())).toEqual([])
+      await selectInstallDirectory(context, resolve('plugins/activity-pulse'))
+      const prepared = await context.page.evaluate(() => window.knowbook.chooseAndPrepareSystemPluginInstall())
+      expect(prepared?.pluginId).toBe('activity-pulse')
+      expect(prepared?.status).toBe('awaiting-confirmation')
+      await openPage(context.page, 'Plugins', '插件中心')
+      const request = context.page.locator('.system-plugin-request').filter({ hasText: 'Activity Pulse' }).first()
+      await expect(request).toContainText(`SHA-256: ${prepared!.artifactSha256}`)
+      const confirm = request.getByRole('button', { name: uiText('Confirm system install', '确认系统安装') })
+      await expect(confirm).toBeDisabled()
+      await request.locator('input[type="checkbox"]').check()
+      await request.locator('.plugin-field input').fill('wrong-id')
+      await expect(confirm).toBeDisabled()
+      await request.locator('.plugin-field input').fill('activity-pulse')
+      await confirm.click()
+      await expect(request.locator('.plugin-status')).toHaveText('pending-restart')
+      await openPage(context.page, 'Dashboard', '总览')
+      await expect(context.page.getByTestId('activity-pulse-dashboard')).toHaveCount(0)
+      await closeElectronApp(context, { preserveUserData: true })
+      context = null
+      context = await launchElectronApp({}, { userDataRoot: retainedRoot })
+      await expect.poll(async () => {
+        const plugin = (await context!.page.evaluate(() => window.knowbook.listSystemPlugins()))
+          .find((candidate) => candidate.pluginId === 'activity-pulse')
+        return plugin?.status === 'active' && plugin.runtimeStatus === 'active'
+          ? 'active' : JSON.stringify({ status: plugin?.status, runtimeStatus: plugin?.runtimeStatus, error: plugin?.lastError, run: plugin?.lastRun })
+      }, { message: 'Activity Pulse Main and Renderer must activate after the confirmed restart' }).toBe('active')
+      await openPage(context.page, 'Dashboard', '总览')
+      await expect(context.page.getByTestId('activity-pulse-dashboard')).toBeVisible()
+      await openPage(context.page, 'Settings', '配置中心')
+      const settings = context.page.getByTestId('activity-pulse-settings')
+      await settings.getByLabel('摘要前缀').fill('E2E 前缀：')
+      await settings.getByRole('button', { name: '保存摘要前缀' }).click()
+      await expect(settings.getByRole('status')).toHaveText('摘要前缀已保存。')
+      const documentId = await context.page.evaluate(async () => {
+        const created = await window.knowbook.createDocument(null)
+        await window.knowbook.updateDocument(created.id, {
+          title: 'Activity Pulse v3 验收', summary: '原摘要',
+          blocks: [{ type: 'text', content: '  第一段\n 正文  ', checked: false, depth: 0 }]
+        })
+        return created.id
+      })
+      await openPage(context.page, 'Dashboard', '总览')
+      await expect(context.page.getByTestId('activity-pulse-dashboard')).toContainText('Activity Pulse v3 验收')
+      await openPage(context.page, 'Documents', '文档')
+      await context.page.locator('.tree-button', { hasText: 'Activity Pulse v3 验收' }).first().click()
+      await context.page.getByTestId('activity-pulse-action').getByRole('button', { name: '从首个内容块生成摘要' }).click()
+      await expect(context.page.getByTestId('activity-pulse-action').getByRole('status')).toHaveText('已从首个非空内容块更新摘要。')
+      await ensureDocumentMetadataEditor(context.page)
+      await expect(context.page.locator('.document-summary-card .editor-textarea').first()).toHaveValue('E2E 前缀：第一段 正文')
+      expect(await context.page.evaluate(async (id) => (await window.knowbook.getDocumentDetail(id))?.summary, documentId)).toBe('E2E 前缀：第一段 正文')
+      await closeElectronApp(context, { preserveUserData: true })
+      context = null
+      context = await launchElectronApp({}, { userDataRoot: retainedRoot })
+      await openPage(context.page, 'Settings', '配置中心')
+      await expect(context.page.getByTestId('activity-pulse-settings').getByLabel('摘要前缀')).toHaveValue('E2E 前缀：')
+      const activeRevision = await context.page.evaluate(async () => {
+        const plugin = (await window.knowbook.listSystemPlugins()).find((item) => item.pluginId === 'activity-pulse')
+        return `sha256:${plugin!.currentArtifactSha256}`
+      })
+      await context.page.evaluate(() => window.knowbook.setSystemPluginEnabled({ pluginId: 'activity-pulse', enabled: false }))
+      await expect(context.page.getByTestId('activity-pulse-settings')).toHaveCount(0)
+      const inactiveCall = await context.page.evaluate(async (revisionHash) => {
+        try {
+          await window.knowbook.invokeSystemPluginMain({ pluginId: 'activity-pulse', revisionHash, method: 'get-state' })
+          return null
+        } catch (error) { return String(error) }
+      }, activeRevision)
+      expect(inactiveCall).toMatch(/active|disposed|registered/i)
+      await closeElectronApp(context, { preserveUserData: true })
+      context = null
+      context = await launchElectronApp({}, { userDataRoot: retainedRoot })
+      await openPage(context.page, 'Dashboard', '总览')
+      await expect(context.page.getByTestId('activity-pulse-dashboard')).toHaveCount(0)
+      await openPage(context.page, 'Settings', '配置中心')
+      await expect(context.page.getByTestId('activity-pulse-settings')).toHaveCount(0)
+    } finally {
+      if (context) await closeElectronApp(context)
+      if (retainedRoot) rmSync(retainedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    }
   })
 })

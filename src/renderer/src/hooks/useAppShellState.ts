@@ -36,16 +36,11 @@ const emptyState: HomeData = {
    },
   documentTree: [],
   initialDocumentId: null,
-  plugins: [],
   pluginDashboardCards: [],
   pluginDocumentActions: [],
   pluginUiContributions: [],
   pluginV2Installations: [],
-  systemPluginInstallRequests: [],
-  pluginHost: {
-    roots: [],
-    writableRoot: null
-  }
+  systemPluginInstallRequests: []
 }
 
 export type PageId = 'dashboard' | 'documents' | 'database' | 'ai' | 'plugins' | 'settings'

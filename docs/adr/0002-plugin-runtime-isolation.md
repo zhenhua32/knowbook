@@ -6,6 +6,8 @@
 - 决策范围：Plugin Platform v2 动态逻辑代码
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)
 
+> 后续变更：本文中 v1 兼容运行时及其测试已由 [ADR-0008](0008-remove-v1-plugins.md) 移除，v2 隔离运行时继续保留。
+
 ## 背景
 
 现有插件在 Electron `utilityProcess` 中运行，并由 `node:vm` 创建不同的 JavaScript context。该设计能把插件崩溃、同步死循环和内存占用从主进程移开，也能通过结构化消息限制正常 API 使用。

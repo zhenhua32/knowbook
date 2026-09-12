@@ -35,11 +35,11 @@ import type {
   GetPluginV2DetailsInput,
   HomeData,
   HomeDataIpcPayload,
+  InvokeSystemPluginMainInput,
   PluginHomeData,
   PluginV2Details,
   MarketplacePluginInstallResult,
   MarketplacePluginPackage,
-  InstallPluginResult,
   MoveDocumentDatabaseColumnInput,
   PreviewDocumentBlockAiEditInput,
   PreviewDocumentBlockAiEditResult,
@@ -55,7 +55,6 @@ import type {
   RunDocumentAiAutomationsResult,
   SearchSemanticNotesInput,
   SemanticSearchResult,
-  SetPluginEnabledInput,
   SetPluginV2EnabledInput,
   SetSystemPluginEnabledInput,
   RollbackSystemPluginInput,
@@ -67,7 +66,6 @@ import type {
   SystemPluginMutationInput,
   UninstallSystemPluginInput,
   SystemPluginSummary,
-  UpdatePluginSettingInput,
   UpdateAiConfigInput,
   UpdateWebClipBridgeSettingsInput,
   UpdateDatabaseSavedViewInput,
@@ -114,8 +112,6 @@ import { MarkdownRestoreService } from './backup/importer'
 import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
-import { PluginHost } from './plugin-host'
-import { ElectronPluginRuntime } from './plugin-runtime-client'
 import { PluginPlatformV2Service } from './plugin-platform/platform-service'
 import { QuickJsWasiPluginRuntimeFactory } from './plugin-platform/quickjs-runtime-client'
 import { PLUGIN_IFRAME_CSP } from './plugin-platform/ui-materializer'
@@ -137,6 +133,7 @@ import {
   type SystemPluginManagerSummary
 } from './system-plugin'
 import { normalizeSystemPluginV3Manifest } from './system-plugin-artifact'
+import { SystemPluginRendererBridge } from './system-plugin/renderer-bridge'
 import { disposeSystemPluginWindow, removeSystemPluginFrameResources, snapshotSystemPluginFrameResources, SystemPluginManagedResources } from './system-plugin/managed-resources'
 import { createSystemPluginStartupCommand, resolveKnowbookUserDataOverride } from './system-plugin/startup-command'
 import { cleanupSystemPluginsForApplicationUninstall, isSystemPluginUninstallCleanup } from './system-plugin/uninstall-cleanup'
@@ -189,6 +186,9 @@ const fullTrustPopupWindows = new Map<number, {
   window: ElectronBrowserWindow
 }>()
 const systemPluginManagedResources = new SystemPluginManagedResources(() => pluginMutationNotifier.notify())
+const systemPluginRendererBridge = new SystemPluginRendererBridge({
+  isRevisionActive: ({ pluginId, revisionHash }) => canRegisterSystemPluginRevision(pluginId, revisionHash)
+})
 
 function recordPackagedRuntimeSmoke(status: 'started' | 'passed' | 'failed', error?: unknown): void {
   if (!PACKAGED_RUNTIME_SMOKE_RESULT_PATH) return
@@ -360,7 +360,6 @@ let workspaceEventBus: WorkspaceEventBus
 let webClipper: WebClipperService
 let webClipExtractionWorker: WebClipExtractionWorkerRunner
 let webClipBridge: WebClipBridgeService
-let pluginHost: PluginHost
 let pluginPlatformV2: PluginPlatformV2Service
 let systemPluginManager: SystemPluginManager<ReturnType<typeof createKnowbookFullTrustServices>>
 let assistantAgent: AssistantAgentService
@@ -665,6 +664,10 @@ function initializeServices(): void {
         'plugin'
       ),
       renderer: {
+        ...systemPluginRendererBridge.forPlugin({
+          pluginId: bindings.plugin.id,
+          revisionHash: bindings.plugin.revisionHash
+        }),
         activate: async (input) => {
           await activateFullTrustRenderer(input)
           await commitFullTrustRenderer(input.pluginId, input.revisionHash)
@@ -766,13 +769,6 @@ function initializeServices(): void {
       notifyWorkspaceMutation()
       return result
     }
-  })
-  pluginHost = new PluginHost(store, [
-    { path: join(process.cwd(), 'plugins'), source: 'workspace' },
-    { path: join(userDataRoot, 'plugins'), source: 'user-data' }
-  ], app.getVersion(), () => notifyWorkspaceMutation(), {
-    runtimeFactory: (pluginId) => new ElectronPluginRuntime(pluginId),
-    onStateChanged: () => pluginMutationNotifier.notify()
   })
   appUpdateManager = new AppUpdateManager()
   servicesInitialized = true
@@ -1143,14 +1139,6 @@ function registerWorkspaceEventHandlers(): void {
 
   workspaceEventBus.subscribe((event) => {
     setImmediate(() => {
-      void pluginHost.handleWorkspaceEvent(event).catch((error) => {
-        console.warn('Plugin workspace event handling failed.', error)
-      })
-    })
-  })
-
-  workspaceEventBus.subscribe((event) => {
-    setImmediate(() => {
       void pluginPlatformV2.handleWorkspaceEvent(event).catch((error) => {
         console.warn('Plugin Platform v2 workspace event handling failed.', error)
       })
@@ -1159,7 +1147,6 @@ function registerWorkspaceEventHandlers(): void {
 }
 
 function getPluginHomeData(): PluginHomeData {
-  const pluginData = pluginHost.getHomeDataSnapshot()
   const v2DashboardCards = pluginPlatformV2
     .listExperienceContributions<Record<string, import('@shared/plugin-platform').PluginJsonValue>>('dashboard.card')
     .flatMap((contribution) => {
@@ -1193,9 +1180,8 @@ function getPluginHomeData(): PluginHomeData {
       }
     })
   return {
-    plugins: pluginData.plugins,
-    pluginDashboardCards: [...pluginData.dashboardCards, ...v2DashboardCards],
-    pluginDocumentActions: [...pluginData.documentActions, ...v2DocumentActions],
+    pluginDashboardCards: v2DashboardCards,
+    pluginDocumentActions: v2DocumentActions,
     pluginUiContributions: exposePluginUiContributions(pluginPlatformV2.listUiContributions()),
     pluginV2Installations: store.pluginPlatform
       .listWorkspaceInstallations(LOCAL_WORKSPACE_ID)
@@ -1226,8 +1212,7 @@ function getPluginHomeData(): PluginHomeData {
         }
       }),
     systemPluginInstallRequests: store.pluginPlatform.listSystemPluginInstallRequests(),
-    systemPlugins: getSystemPluginSummaries(),
-    pluginHost: pluginData.host
+    systemPlugins: getSystemPluginSummaries()
   }
 }
 
@@ -1429,12 +1414,12 @@ function requireV2ContributionText(value: unknown, label: string, maxLength: num
   return normalized
 }
 
-async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise<RunPluginDocumentActionResult | null> {
+async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise<RunPluginDocumentActionResult> {
   const contribution = pluginPlatformV2
     .listExperienceContributions<Record<string, import('@shared/plugin-platform').PluginJsonValue>>('document.action')
     .find((candidate) => candidate.owner.pluginId === input.pluginId && candidate.id === input.actionId)
   if (!contribution) {
-    return null
+    throw new Error('Plugin document action is unavailable.')
   }
   const action = parseV2DocumentAction(contribution.value)
   const rawResult = await pluginPlatformV2.invokeHandler(
@@ -1773,86 +1758,8 @@ function registerIpcHandlers(): void {
     return result
   })
 
-  ipcMain.handle('knowbook:set-plugin-enabled', async (_event, input: SetPluginEnabledInput) => {
-    await pluginHost.setPluginEnabled(input.pluginId, input.enabled)
-  })
-
-  ipcMain.handle('knowbook:reload-plugins', async () => {
-    await pluginHost.reloadAll()
-    store.recordWorkspaceEvent({
-      type: 'plugin.reloaded',
-      title: 'Plugins reloaded',
-      description: 'Rescanned plugin roots and refreshed active plugin contributions.'
-    })
-  })
-
-  ipcMain.handle('knowbook:reload-plugin', async (_event, pluginId: string) => {
-    await pluginHost.reloadPlugin(pluginId)
-  })
-
-  ipcMain.handle('knowbook:install-plugin-from-folder', async (event): Promise<InstallPluginResult | null> => {
-    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
-    const openDialogOptions: OpenDialogOptions = {
-      title: '选择插件文件夹',
-      buttonLabel: '安装插件',
-      properties: ['openDirectory']
-    }
-    const result = targetWindow
-      ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
-      : await dialog.showOpenDialog(openDialogOptions)
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return null
-    }
-
-    const preview = await pluginHost.previewInstallFromDirectory(result.filePaths[0])
-    if (preview.existingPlugin?.source === 'workspace') {
-      throw new Error(`Plugin id "${preview.manifest.id}" is already provided by the workspace plugin "${preview.existingPlugin.name}".`)
-    }
-
-    let replaceExisting = false
-    if (preview.canReplace && preview.existingPlugin) {
-      const replaceResult = targetWindow
-        ? await dialog.showMessageBox(targetWindow, {
-            type: 'question',
-            title: 'Replace installed plugin?',
-            message: `Replace plugin "${preview.existingPlugin.name}"?`,
-            detail: `Installed version: ${preview.existingPlugin.version}\nNew version: ${preview.manifest.version}\n\nThis will replace the existing user-data plugin with the selected folder contents.`,
-            buttons: ['Replace', 'Cancel'],
-            defaultId: 0,
-            cancelId: 1
-          })
-        : await dialog.showMessageBox({
-            type: 'question',
-            title: 'Replace installed plugin?',
-            message: `Replace plugin "${preview.existingPlugin.name}"?`,
-            detail: `Installed version: ${preview.existingPlugin.version}\nNew version: ${preview.manifest.version}\n\nThis will replace the existing user-data plugin with the selected folder contents.`,
-            buttons: ['Replace', 'Cancel'],
-            defaultId: 0,
-            cancelId: 1
-          })
-
-      if (replaceResult.response !== 0) {
-        return null
-      }
-
-      replaceExisting = true
-    }
-
-    return pluginHost.installPluginFromDirectory(result.filePaths[0], { replaceExisting })
-  })
-
-  ipcMain.handle('knowbook:remove-plugin', async (_event, pluginId: string) => {
-    await pluginHost.removePlugin(pluginId)
-  })
-
-  ipcMain.handle('knowbook:update-plugin-setting', async (_event, input: UpdatePluginSettingInput) => {
-    await pluginHost.updatePluginSetting(input.pluginId, input.settingId, input.value)
-  })
-
   ipcMain.handle('knowbook:run-plugin-document-action', async (_event, input: RunPluginDocumentActionInput) => {
     const result: RunPluginDocumentActionResult = await runV2DocumentAction(input)
-      ?? await pluginHost.runDocumentAction(input)
     return result
   })
 
@@ -1974,6 +1881,11 @@ function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('knowbook:list-system-plugins', (): SystemPluginSummary[] => getSystemPluginSummaries())
+
+  ipcMain.handle('knowbook:invoke-system-plugin-main', (
+    _event,
+    input: InvokeSystemPluginMainInput
+  ) => systemPluginRendererBridge.invoke(input))
 
   ipcMain.handle('knowbook:set-system-plugin-enabled', async (
     _event,
@@ -2746,7 +2658,6 @@ async function shutdownServices(): Promise<void> {
   const results = await Promise.allSettled([
     webClipBridge.destroy(),
     webClipExtractionWorker.destroy(),
-    pluginHost.destroy(),
     pluginPlatformV2.destroy()
   ])
   for (const result of results) {
@@ -2904,7 +2815,6 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     appUpdateManager.initialize()
     registerWorkspaceEventHandlers()
     registerIpcHandlers()
-    pluginHost.discoverAll()
     if (process.env['KNOWBOOK_PACKAGED_PLUGIN_RUNTIME_SMOKE'] === '1' && !restoredDatabaseSafeMode) {
       void pluginPlatformV2.activateBuiltinPlugins().then(() => {
         recordPackagedRuntimeSmoke('passed')
@@ -2946,7 +2856,6 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
         const safeModeNextBoot = store.getSettingPublic(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY) === '1'
         if (safeModeNextBoot) store.deleteSetting(SYSTEM_PLUGIN_SAFE_MODE_NEXT_BOOT_KEY)
         void Promise.allSettled([
-          restoredDatabaseSafeMode ? Promise.resolve() : pluginHost.activateAll(),
           restoredDatabaseSafeMode ? Promise.resolve() : pluginPlatformV2.activateBuiltinPlugins(),
           systemPluginManager.startup({
             safeMode: restoredDatabaseSafeMode || safeModeNextBoot || process.env['KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE'] === '1'

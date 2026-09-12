@@ -37,6 +37,7 @@ import type {
   SystemPluginServiceRpcMethodMap
 } from './service-rpc'
 import { disposeSystemPluginWindow, type SystemPluginDesktopResourceRegistration } from './managed-resources'
+import type { SystemPluginRendererHandler } from './renderer-bridge'
 
 type ElectronModule = typeof electron
 type SqliteDatabase = Database.Database
@@ -75,6 +76,7 @@ export interface FullTrustDocumentCreateInput {
 }
 
 export interface FullTrustRendererController {
+  handle?(method: string, handler: SystemPluginRendererHandler): () => void
   activate?(input: {
     pluginId: string
     version: string
@@ -163,7 +165,9 @@ export interface KnowbookFullTrustServices {
     /** Creates a review request; only the host UI can confirm registration. */
     request(): SystemPluginOsPersistenceRecord
   }
-  renderer: FullTrustRendererController
+  renderer: FullTrustRendererController & {
+    handle(method: string, handler: SystemPluginRendererHandler): () => void
+  }
   notifyWorkspaceMutation(): void
 }
 
@@ -202,8 +206,31 @@ export function createKnowbookFullTrustServices(
         return options.requestOsPersistence()
       }
     },
-    renderer: options.renderer ?? {},
+    renderer: createRendererApi(options),
     notifyWorkspaceMutation: notify
+  }
+}
+
+function createRendererApi(options: KnowbookFullTrustServiceOptions): KnowbookFullTrustServices['renderer'] {
+  return {
+    ...options.renderer,
+    handle(method, handler) {
+      if (!options.renderer?.handle) throw new Error('Renderer Main handlers are unavailable in this runtime.')
+      const unregister = options.renderer.handle(method, AsyncResource.bind(handler))
+      let disposed = false
+      const dispose = (): void => {
+        if (disposed) return
+        disposed = true
+        unregister()
+      }
+      try {
+        options.registerDisposable?.(dispose, `Renderer Main handler ${method}`)
+      } catch (error) {
+        dispose()
+        throw error
+      }
+      return dispose
+    }
   }
 }
 

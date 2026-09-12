@@ -6,6 +6,8 @@
 > 当前验收范围：Windows；按 2026-09-07 用户要求，macOS/Linux 实测不列为本轮或发布阻塞项。按 2026-09-10 用户要求，真实 Windows 登录和系统重启暂不执行，由用户后续手测，不阻塞本次目标完成。已有跨平台实现与单元测试继续保留；暂缓项目不记为测试通过。
 > 目标读者：产品、Main/Preload/Renderer 开发、插件作者、安全评审与测试
 
+> 后续架构变更（2026-09-12）：[ADR-0008](adr/0008-remove-v1-plugins.md) 移除 v1 兼容宿主，并将 Activity Pulse 迁为 v3。本文保留原实施与验收记录，其中关于继续保留 v1 的描述已被该决策取代。
+
 ## 1. 执行摘要
 
 KnowBook 已在现有 Plugin Platform v2 之外新增 **Full Trust / System Plugin v3** 通道。v3 面向用户明确选择并完全信任的本地插件，允许直接使用 Node.js、Electron、文件系统、环境变量、密钥、网络、npm、KnowBook Store、原始 SQLite、宿主 Renderer 和长期后台服务。

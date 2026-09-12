@@ -64,6 +64,10 @@ Settings 的任意值是字符串，复杂值自行 JSON 编码并给 key 加插
 
 Renderer `.cjs` 导出 `(api) => ...` 初始化函数。使用 `api.React/ReactDOM/ReactDOMClient` 的宿主单例，避免随插件打包另一份 React。`registerSlotContribution`、`registerCommand`、`registerPage`、`injectCss`、DOM/theme helper 和注册的 disposable 随 revision 激活/撤销；自建副作用仍须自行登记。
 
+Main 可用 `context.renderer.handle(method, handler)` 注册插件自己的 JSON 方法，Renderer 用 `await api.invokeMain(method, input)` 调用。例如 Main 注册 `get-state` 返回插件设置，Renderer 挂载时读取，保存表单时调用另一个写入方法。宿主绑定插件 ID 和精确 revision，支持 Main 已就绪后的 Renderer 初始化调用，停用时自动撤销方法并拒绝未完成请求；旧 revision 的调用和返回值不再交付。参数及结果必须为纯 JSON（省略输入时为 `null`），默认每次请求上限 1 MiB、32 个并发请求、15 秒超时。超时不能中止 Full Trust 代码已开始的副作用，耗时任务需由插件自行取消。不要通过此桥返回函数、Store、Electron 对象或流。
+
+从 v1 迁移的完整例子见 [Activity Pulse](../plugins/activity-pulse/README.md)。v1 宿主和 SDK 已删除；需要将旧回调改为上述 Main 服务和 Renderer 插槽，再通过 v3 安装流程确认新 artifact。
+
 `createUnsandboxedFrame` 接收 URL、允许 origin 及导航/popup/下载/permission 策略；`openPrivilegedPopup` 用于宿主管理的窗口。Main 也可用 `desktop.createWindow({ webPreferences: { preload: ... } })` 创建带专属 preload 的窗口。不要把 Main 的 Node Context 当作 Renderer 全局变量使用；Renderer 的宿主桥是 `window.knowbook`，独立 preload 应显式设计自己的通信契约。
 
 ## Service SDK 与登录启动

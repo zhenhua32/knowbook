@@ -33,7 +33,8 @@
 ## Core Module Responsibilities
 - `src/main/database/store.ts` — SQLite schema, document/tree operations, database entities, related-note search candidates, workspace events.
 - `src/main/backup/exporter.ts` — Markdown export/backup of all documents.
-- `src/main/plugin-host.ts` (and related plugin SDK files) — Workspace plugin system, plugin lifecycle, plugin actions/dashboard cards.
+- `src/main/plugin-platform/` — Isolated Plugin Platform v2: immutable revisions, capability broker, QuickJS runtime, activation and UI contributions.
+- `src/main/system-plugin/` + `src/shared/system-plugin-sdk.ts` — Full Trust System Plugin v3: Main/Renderer/service lifecycle, installation, dependencies and recovery.
 - `src/main/event-bus.ts` — Internal workspace event bus; plugins and features subscribe to document/AI/plugin events.
 - `src/renderer/src/App.tsx` + `components/` — React UI; state is primarily fetched via `window.knowbook.*` IPC calls.
 - `src/shared/contracts.ts` — All IPC method signatures and data types. If you change an API shape, update here and both sides.
@@ -41,7 +42,7 @@
 ## Important Conventions & Quirks
 - **Database file location**: `app.getPath('userData')/storage/knowbook.db` (created by main). Tests create isolated temp DBs.
 - **AI & related notes**: Optional OpenAI-compatible endpoints. Related-note retrieval uses local keyword matching over document title, summary, and block content. Auto-summary runs via an event-bus subscriber on document update when AI is enabled.
-- **Plugins**: Two plugin roots — workspace `plugins/` (dev) and user-data `plugins/`. Workspace plugins can't be replaced by user install (error); user-data plugins can be replaced. Plugin manifest fields: id, name, version, entry (optional), enabledByDefault, engines.knowbook (optional).
+- **Plugins**: Only v2 and v3 are supported; the v1 host, SDK, directory scanner and management IPC have been removed. `plugins/activity-pulse/` is a v3 source package installed through the plugin center with exact artifact confirmation and restart. v2 revisions live in `userData/storage/plugin-revisions-v2`; v3 artifacts/runtime/data/logs live in `userData/system-plugins/`. Old `userData/plugins/` directories are never scanned or executed.
 - **Document tree**: Hierarchical by `parentId`. Path is materialized (e.g., `Home/Product/Specs`). Renaming/moving rewrites descendant paths automatically. Path normalization uses title; siblings get `Untitled`, `Untitled 1`, ... on conflict.
 - **Block references & linking**: Stored as `blockId` references. When a document title changes, link labels are updated; outgoing/incoming links are computed via markdown link parsing.
 - **Database columns**: Types include `text`/`select`/`multi-select`/`checkbox`/`date`. Select/multi-select validation and option pruning occur when options change (invalid values become undefined).
@@ -58,9 +59,9 @@
 - Related-note retrieval is computed on demand from SQLite-backed document candidates. AI config changes do not trigger any background embedding sync or vector backfill.
 
 ## Plugin Development Notes
-- Plugin host loads manifests and entry modules. If entry is omitted, host may auto-resolve common entry names.
-- Plugin can contribute: dashboard cards, document actions, settings, and listen to workspace events via the exposed plugin API (see plugin-sdk.ts/plugin-host.ts).
-- To add plugin APIs: extend plugin-host/plugin-sdk and contracts, keep renderer calls via `window.knowbook`.
+- v2 packages declare `schemaVersion: 2`, `worker: "worker.js"`, permissions and exact standard modules; all host operations pass through the capability broker.
+- v3 packages declare `schemaVersion: 3`, `trust: "full"`, `fullAccess: true` and explicit `entries.main/renderer/service`. They may use full Node/Electron capabilities after user confirmation of the exact artifact. Do not add a v1 compatibility loader or silently promote old plugins to Full Trust.
+- To add v3 APIs, extend `system-plugin/knowbook-services.ts`, the type-only `system-plugin-sdk.ts` exports, and IPC contracts where needed. Renderer contributions use the shared slot registry. Run `npm run typecheck:system-plugin-examples` when changing SDK types or source examples.
 
 ## Common Gotchas
 - `better-sqlite3` is native — after `npm install`, `postinstall` rebuilds it. CI/test environments must provide build tools or skip native modules.
@@ -77,6 +78,6 @@
 - Type definitions: `src/shared/contracts.ts`
 - Main entry: `src/main/index.ts`
 - Store (SQLite): `src/main/database/store.ts`
-- Plugin system: `src/main/plugin-host.ts`, `src/main/plugin-sdk.ts`
+- Plugin systems: `src/main/plugin-platform/platform-service.ts`, `src/main/system-plugin/manager.ts`, `src/shared/system-plugin-sdk.ts`
 - UI root: `src/renderer/src/App.tsx`
 - Event bus: `src/main/event-bus.ts`

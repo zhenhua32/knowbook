@@ -268,12 +268,6 @@
   letter-spacing: 0.04em;
 }
 
-.plugin-avatar-legacy {
-  border-color: #e8ded1;
-  background: linear-gradient(145deg, #faf6ef, #efe7dc);
-  color: #82684e;
-}
-
 .plugin-card-copy {
   min-width: 0;
 }
@@ -292,8 +286,7 @@
   white-space: nowrap;
 }
 
-.plugin-ai-badge,
-.plugin-status-legacy {
+.plugin-ai-badge {
   flex: 0 0 auto;
   padding: 2px 6px;
   border-radius: 5px;
@@ -302,12 +295,6 @@
   font-weight: 750;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.plugin-status-legacy {
-  display: inline-flex;
-  background: #f3f0eb;
-  color: #766756;
 }
 
 .plugin-card-copy > p {
@@ -442,51 +429,6 @@
 .plugin-text-action:disabled {
   cursor: not-allowed;
   opacity: 0.45;
-}
-
-.plugin-inventory-item .plugin-settings-panel {
-  gap: 9px;
-  margin: 14px 0 0 54px;
-  padding: 13px 0 0;
-  border-top: 1px dashed #dfe3eb;
-}
-
-.plugin-settings-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--kb-text-soft);
-}
-
-.plugin-settings-heading > span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  border-radius: 99px;
-  background: #eceff5;
-  color: #6f7789;
-}
-
-.plugin-inventory-item .plugin-settings-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.plugin-inventory-item .plugin-setting-item {
-  gap: 5px;
-  padding: 10px;
-  border: 1px solid var(--kb-line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: none;
-}
-
-.plugin-inventory-item .plugin-setting-actions .secondary-button {
-  min-height: 28px;
-  padding: 5px 8px;
 }
 
 .plugin-inventory-item > .plugin-error {
@@ -967,7 +909,6 @@
   color: var(--kb-text-soft);
 }
 
-
 .system-plugin-request .plugin-inspector-note {
   display: flex;
   flex-direction: column;
@@ -981,32 +922,6 @@
 
 .system-plugin-request p { margin: 0; }
 .system-plugin-request code { min-width: 0; overflow-wrap: anywhere; }
-
-.plugin-roots-disclosure {
-  padding: 4px 2px;
-  color: var(--kb-text-muted);
-}
-
-.plugin-roots-disclosure summary {
-  width: max-content;
-  cursor: pointer;
-  font-weight: 650;
-}
-
-.plugin-roots-disclosure .plugin-roots {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 10px 0 0;
-}
-
-.plugin-roots-disclosure .plugin-root-path {
-  padding: 8px 10px;
-  border: 1px solid var(--kb-line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.65);
-  color: var(--kb-text-muted);
-}
 
 .plugin-customizer-backdrop {
   position: fixed;
@@ -1121,7 +1036,6 @@
   .plugin-search { width: 100%; }
   .plugin-card-main { grid-template-columns: 38px minmax(0, 1fr) auto; }
   .plugin-card-state .plugin-status { display: none; }
-  .plugin-inventory-item .plugin-settings-list { grid-template-columns: 1fr; }
   .plugin-customizer { width: 100vw; padding: 16px; }
 }
 
@@ -1154,7 +1068,6 @@
 :root[data-theme='dark'] :is(
   .plugin-overview-card,
   .plugin-inventory-panel .plugin-item,
-  .plugin-inventory-item .plugin-setting-item,
   .plugin-lifecycle-card,
   .system-plugin-request,
   .plugin-customizer
@@ -1179,7 +1092,6 @@
 :root[data-theme='dark'] .content.page-plugins :is(.plugin-status-disabled, .plugin-status-stopped) { background: rgba(159, 172, 191, 0.16); color: #c5cfdb; }
 :root[data-theme='dark'] .content.page-plugins .plugin-status-error { background: rgba(225, 93, 115, 0.18); color: #ffb0bd; }
 :root[data-theme='dark'] .plugin-switch > span { background: #596274; }
-:root[data-theme='dark'] .plugin-roots-disclosure .plugin-root-path { border-color: rgba(190, 205, 225, 0.14); background: #202631; color: #aeb8c7; }
 :root[data-theme='dark'] .plugin-customizer-close { border-color: rgba(190, 205, 225, 0.18); background: #252c38; color: #dce3ee; }
 :root[data-theme='dark'] .plugin-customizer-context span { border-color: rgba(144, 151, 242, 0.18); background: #2b3044; color: #b5bdd0; }
 :root[data-theme='dark'] .plugin-inspector-error,
@@ -1293,7 +1205,6 @@
 }
 
 .plugin-ai-badge,
-.plugin-status-legacy,
 .plugin-card-state .plugin-status {
   padding: 3px 8px;
   font-size: var(--kb-type-caption);
@@ -1336,7 +1247,6 @@
 }
 
 .plugin-inventory-item > .plugin-item-actions,
-.plugin-inventory-item .plugin-settings-panel,
 .plugin-inventory-item > .plugin-error {
   margin-left: 60px;
 }
@@ -1346,23 +1256,6 @@
   min-height: 28px;
   font-size: var(--kb-type-label);
   line-height: 20px;
-}
-
-.plugin-settings-heading {
-  font-size: var(--kb-type-label);
-  line-height: 20px;
-}
-
-.plugin-inventory-item .plugin-setting-item {
-  gap: 8px;
-  padding: 12px;
-}
-
-.plugin-inventory-item .plugin-setting-actions .secondary-button {
-  min-height: var(--kb-control-height-compact);
-  padding: 7px 10px;
-  font-size: var(--kb-type-caption);
-  line-height: 18px;
 }
 
 .plugin-inventory-item > .plugin-error {
@@ -1472,9 +1365,7 @@
 }
 
 .plugin-section-title span,
-.system-plugin-request code,
-.plugin-roots-disclosure,
-.plugin-roots-disclosure .plugin-root-path {
+.system-plugin-request code {
   font-size: var(--kb-type-caption);
   line-height: 18px;
 }

@@ -16,6 +16,23 @@ import {
   SystemPluginServiceRpcHost,
   type SystemPluginServiceRpcJson
 } from '../src/main/system-plugin/service-rpc'
+import { SystemPluginRendererBridge } from '../src/main/system-plugin/renderer-bridge'
+
+test('Full Trust renderer handlers are registered for automatic host lifecycle cleanup', async () => {
+  const bridge = new SystemPluginRendererBridge({ isRevisionActive: () => true })
+  const identity = { pluginId: 'activity-pulse', revisionHash: 'sha256:services' }
+  const disposables: Array<() => void | Promise<void>> = []
+  await withServices(async ({ services }) => {
+    const dispose = services.renderer.handle('snapshot', () => ({ active: true }))
+    assert.deepEqual(await bridge.invoke({ ...identity, method: 'snapshot' }), { active: true })
+    for (const cleanup of disposables) await cleanup()
+    dispose()
+    await assert.rejects(bridge.invoke({ ...identity, method: 'snapshot' }), /not registered/)
+  }, fetch, {
+    renderer: bridge.forPlugin(identity),
+    registerDisposable: (dispose) => { disposables.push(dispose) }
+  })
+})
 
 test('Full Trust services expose Store/SQLite and keep document mutations observable', async () => {
   await withServices(async ({ services, events, notifications }) => {
@@ -370,6 +387,7 @@ async function withServices(
     environment?: NodeJS.ProcessEnv
     registerDisposable?: KnowbookFullTrustServiceOptions['registerDisposable']
     workspaceEventContext?: KnowbookFullTrustServiceOptions['workspaceEventContext']
+    renderer?: KnowbookFullTrustServiceOptions['renderer']
   } = {}
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'knowbook-system-plugin-services-'))
@@ -397,6 +415,7 @@ async function withServices(
       fetchImplementation,
       environment: overrides.environment,
       registerDisposable: overrides.registerDisposable,
+      renderer: overrides.renderer,
       notifyWorkspaceMutation: () => {
         notifications.count += 1
       },

@@ -4,6 +4,7 @@ import * as ReactDOMClient from 'react-dom/client'
 import { useSyncExternalStore, type ComponentType, type ReactNode } from 'react'
 import type { RunPluginUiActionInput, PluginUiSlot } from '@shared/plugin-ui'
 import { PLUGIN_UI_SLOT_CATALOG } from '@shared/plugin-ui'
+import type { SystemPluginServiceRpcJson } from '../../main/system-plugin/service-rpc'
 
 export type FullTrustRendererDisposable = () => void | Promise<void>
 
@@ -144,6 +145,7 @@ export interface FullTrustRendererPluginApi {
   readonly React: typeof React
   readonly ReactDOM: typeof ReactDOM
   readonly ReactDOMClient: typeof ReactDOMClient
+  invokeMain(method: string, input?: SystemPluginServiceRpcJson): Promise<SystemPluginServiceRpcJson>
   registerSlotContribution(input: FullTrustReactSlotContributionInput): FullTrustRendererDisposable
   createRoot(container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions): ReactDOMClient.Root
   createPortal(children: ReactNode, container: Element | DocumentFragment, key?: string | null): React.ReactPortal
@@ -477,6 +479,17 @@ export class FullTrustPluginRegistry {
       React,
       ReactDOM,
       ReactDOMClient,
+      invokeMain: async (method: string, input?: SystemPluginServiceRpcJson) => {
+        this.assertActiveRecord(record)
+        const result = await window.knowbook.invokeSystemPluginMain({
+          pluginId: record.identity.id,
+          revisionHash: record.identity.revisionHash,
+          method,
+          ...(input === undefined ? {} : { input })
+        })
+        this.assertActiveRecord(record)
+        return result
+      },
       registerSlotContribution: (input: FullTrustReactSlotContributionInput) =>
         this.registerSlotContribution(record, input),
       createRoot: (container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions) =>

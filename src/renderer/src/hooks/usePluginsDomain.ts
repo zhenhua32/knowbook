@@ -27,16 +27,13 @@ export function usePluginsDomain({
   selectedDocumentId,
   ui
 }: UsePluginsDomainParams) {
-  const plugins = homeData.plugins ?? []
   const pluginDashboardCards = homeData.pluginDashboardCards ?? []
   const pluginDocumentActions = homeData.pluginDocumentActions ?? []
-  const pluginRoots = homeData.pluginHost?.roots ?? []
   const pluginV2Installations = homeData.pluginV2Installations ?? []
   const systemPluginInstallRequests = homeData.systemPluginInstallRequests ?? []
   const systemPlugins = homeData.systemPlugins ?? []
 
   const pluginState = usePluginManagement({
-    plugins,
     selectedDocumentId,
     selectedDocument,
     ui,
@@ -47,34 +44,14 @@ export function usePluginsDomain({
   })
 
   const sectionProps: PluginsSectionProps = {
-    onInstallPluginFromFolder: () => {
-      void pluginState.installPluginFromFolder()
-    },
-    onReloadPlugin: (plugin) => {
-      void pluginState.reloadPlugin(plugin)
-    },
-    onReloadPlugins: () => {
-      void pluginState.reloadPlugins()
-    },
-    onRemovePlugin: (plugin) => {
-      void pluginState.removePlugin(plugin)
-    },
     onRemovePluginV2: (plugin) => {
       void pluginState.removePluginV2(plugin)
-    },
-    onSetPluginEnabled: (plugin, enabled) => {
-      void pluginState.setPluginEnabled(plugin, enabled)
     },
     onSetPluginV2Enabled: (plugin, enabled) => {
       void pluginState.setPluginV2Enabled(plugin, enabled)
     },
-    onUpdatePluginSetting: (plugin, setting, value) => {
-      void pluginState.updatePluginSetting(plugin, setting, value)
-    },
-    onUpdatePluginSettingDraft: pluginState.updatePluginSettingDraft,
     pluginBusyId: pluginState.pluginBusyId,
     pluginInventoryBusy: pluginState.pluginInventoryBusy,
-    pluginRoots,
     pluginV2Installations,
     systemPluginInstallRequests,
     systemPlugins,
@@ -144,9 +121,6 @@ export function usePluginsDomain({
         onMessage(error instanceof Error ? error.message : 'System plugin confirmation failed.')
       })
     },
-    pluginSettingBusyKey: pluginState.pluginSettingBusyKey,
-    pluginSettingDrafts: pluginState.pluginSettingDrafts,
-    plugins,
     aiEnabled: homeData.aiConfig.enabled,
     hasApiKey: homeData.aiConfig.hasApiKey,
     ui
@@ -156,7 +130,6 @@ export function usePluginsDomain({
     ...pluginState,
     pluginDashboardCards,
     pluginDocumentActions,
-    plugins,
     sectionProps
   }
 }

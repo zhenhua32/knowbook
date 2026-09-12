@@ -36,6 +36,7 @@ import type {
   RemoveSystemPluginFramePolicyInput,
   SystemPluginFramePolicyInput
 } from './system-plugin'
+import type { SystemPluginServiceRpcJson } from '../main/system-plugin/service-rpc'
 
 export type {
   PluginUiContribution,
@@ -457,36 +458,6 @@ export interface WorkspaceEventRecord {
   createdAt: string
 }
 
-export type PluginSource = 'workspace' | 'user-data'
-
-export type PluginStatus = 'loading' | 'running' | 'disabled' | 'error'
-
-export interface PluginManifest {
-  id: string
-  name: string
-  version: string
-  description?: string
-  author?: string
-  entry?: string
-  enabledByDefault?: boolean
-  engines?: {
-    knowbook?: string
-  }
-}
-
-export interface PluginDescriptor {
-  id: string
-  name: string
-  version: string
-  description: string
-  author?: string
-  source: PluginSource
-  enabled: boolean
-  status: PluginStatus
-  error?: string
-  settings: PluginSettingDescriptor[]
-}
-
 export interface PluginDashboardCard {
   pluginId: string
   id: string
@@ -499,37 +470,6 @@ export interface PluginDocumentAction {
   id: string
   label: string
   description?: string
-}
-
-export type PluginSettingType = 'text' | 'checkbox' | 'select'
-
-export type PluginSettingValue = string | boolean
-
-export interface PluginSettingOption {
-  value: string
-  label: string
-}
-
-export interface PluginSettingDescriptor {
-  pluginId: string
-  id: string
-  label: string
-  description?: string
-  type: PluginSettingType
-  value: PluginSettingValue
-  defaultValue: PluginSettingValue
-  options?: PluginSettingOption[]
-}
-
-export interface PluginHostInfo {
-  roots: string[]
-  writableRoot: string | null
-}
-
-export interface InstallPluginResult {
-  plugin: PluginDescriptor
-  operation: 'installed' | 'updated' | 'reloaded'
-  previousVersion: string | null
 }
 
 export type AppUpdateStatus =
@@ -567,14 +507,12 @@ export interface HomeData {
   aiConfig: AiConfig
   documentTree: DocumentTreeNode[]
   initialDocumentId: string | null
-  plugins?: PluginDescriptor[]
   pluginDashboardCards?: PluginDashboardCard[]
   pluginDocumentActions?: PluginDocumentAction[]
   pluginUiContributions?: PluginUiContribution[]
   pluginV2Installations?: PluginV2InstallationSummary[]
   systemPluginInstallRequests?: SystemPluginInstallRequest[]
   systemPlugins?: SystemPluginSummary[]
-  pluginHost?: PluginHostInfo
 }
 
 export type AppearanceTheme = 'light' | 'dark'
@@ -628,14 +566,12 @@ export type HomeDataIpcPayload = Omit<HomeDataPayload, 'documentCatalog'> & {
 }
 
 export interface PluginHomeData {
-  plugins: PluginDescriptor[]
   pluginDashboardCards: PluginDashboardCard[]
   pluginDocumentActions: PluginDocumentAction[]
   pluginUiContributions: PluginUiContribution[]
   pluginV2Installations: PluginV2InstallationSummary[]
   systemPluginInstallRequests: SystemPluginInstallRequest[]
   systemPlugins: SystemPluginSummary[]
-  pluginHost: PluginHostInfo
 }
 
 export interface PluginV2InstallationSummary {
@@ -859,11 +795,6 @@ export interface RunDocumentAiAutomationsResult {
   summaryGenerated: boolean
 }
 
-export interface SetPluginEnabledInput {
-  pluginId: string
-  enabled: boolean
-}
-
 export interface RunPluginDocumentActionInput {
   pluginId: string
   actionId: string
@@ -875,10 +806,11 @@ export interface RunPluginDocumentActionResult {
   refreshDocument: boolean
 }
 
-export interface UpdatePluginSettingInput {
+export interface InvokeSystemPluginMainInput {
   pluginId: string
-  settingId: string
-  value: PluginSettingValue
+  revisionHash: string
+  method: string
+  input?: SystemPluginServiceRpcJson
 }
 
 export interface ElectronApi {
@@ -925,12 +857,6 @@ export interface ElectronApi {
   askAiAboutDocument: (input: AskAiInput) => Promise<AskAiResult>
   previewDocumentBlockAiEdit: (input: PreviewDocumentBlockAiEditInput) => Promise<PreviewDocumentBlockAiEditResult>
   runDocumentAiAutomations: (documentId: string) => Promise<RunDocumentAiAutomationsResult>
-  setPluginEnabled: (input: SetPluginEnabledInput) => Promise<void>
-  reloadPlugins: () => Promise<void>
-  reloadPlugin: (pluginId: string) => Promise<void>
-  installPluginFromFolder: () => Promise<InstallPluginResult | null>
-  removePlugin: (pluginId: string) => Promise<void>
-  updatePluginSetting: (input: UpdatePluginSettingInput) => Promise<void>
   runPluginDocumentAction: (input: RunPluginDocumentActionInput) => Promise<RunPluginDocumentActionResult>
   runPluginUiAction: (input: RunPluginUiActionInput) => Promise<RunPluginUiActionResult>
   getPluginV2Details: (input: GetPluginV2DetailsInput) => Promise<PluginV2Details>
@@ -957,6 +883,7 @@ export interface ElectronApi {
   restartInSystemPluginSafeMode: () => Promise<void>
   registerSystemPluginFramePolicy: (input: SystemPluginFramePolicyInput) => Promise<void>
   removeSystemPluginFramePolicy: (input: RemoveSystemPluginFramePolicyInput) => Promise<void>
+  invokeSystemPluginMain: (input: InvokeSystemPluginMainInput) => Promise<SystemPluginServiceRpcJson>
   triggerBackup: () => Promise<BackupResult>
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>

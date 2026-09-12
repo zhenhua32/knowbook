@@ -286,11 +286,6 @@ async function main(): Promise<void> {
       }, 2)
     )
     metrics.push(
-      await measure('plugin workspace snapshot', 5, () => {
-        retainedResultCount += store.getPluginWorkspaceDocuments().length
-      }, 1)
-    )
-    metrics.push(
       await measure('home data projection', 7, () => {
         const homeData = store.getHomeData(join(benchmarkRoot, 'backup'))
         retainedResultCount += homeData.documentCatalog.length

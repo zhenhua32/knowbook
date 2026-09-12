@@ -7,6 +7,8 @@
 - 依赖：[ADR-0001](0001-plugin-trust-and-dependency-policy.md)
 - 相关决策：[ADR-0002](0002-plugin-runtime-isolation.md)、[ADR-0004](0004-plugin-ui-extension-isolation.md)
 
+> 后续变更：[ADR-0008](0008-remove-v1-plugins.md) 已取代保留 v1 的兼容条款，仓库旧插件迁为 v3；本决策的 Full Trust 确认和运行边界继续有效。
+
 ## 背景
 
 部分插件需要文件系统、原始数据库、Node.js、Electron、网络、任意 npm 依赖、宿主 Renderer 和常驻后台服务等完整本机能力。这些能力无法在 Plugin Platform v2 的 QuickJS/WASM、Capability Broker 和隔离 UI 边界内完整提供，也无法在授予后继续声称插件受到细粒度权限强制。

@@ -108,7 +108,7 @@ test('applyIncrementalDocumentUpdate replaces only the saved document projection
       }]
     }],
     initialDocumentId: 'parent',
-    plugins: []
+    pluginUiContributions: []
   } satisfies HomeData
   const update = {
     requiresFullRefresh: false,
@@ -164,6 +164,6 @@ test('applyIncrementalDocumentUpdate replaces only the saved document projection
   assert.deepEqual(result.recentDocuments, update.recentDocuments)
   assert.deepEqual(result.recentEvents, update.recentEvents)
   assert.strictEqual(result.databaseColumns, homeData.databaseColumns)
-  assert.strictEqual(result.plugins, homeData.plugins)
+  assert.strictEqual(result.pluginUiContributions, homeData.pluginUiContributions)
   assert.equal(homeData.documentCatalog[1]?.updatedAt, 'before')
 })

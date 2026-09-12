@@ -5,6 +5,8 @@
 - 日期：2026-08-25
 - 决策范围：Plugin Platform v2
 
+> 后续变更：保留 v1 兼容宿主的条款已由 [ADR-0008](0008-remove-v1-plugins.md) 取代；v2 的其余信任边界继续有效。
+
 ## 背景
 
 KnowBook 希望把插件作为一级能力：用户可以在 AI 对话中生成插件，实时改变文档、数据库、AI 工作流和界面。同时，插件生态需要继续使用 npm 中成熟的纯 JavaScript/TypeScript 库。

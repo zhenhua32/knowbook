@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict'
+import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -796,17 +796,6 @@ test('moveDocument rebuilds path references without touching unrelated sources',
       ['Roadmap']
     )
     assert.equal(unrelatedSource.outgoingLinks.some((item) => item.id === home.id), true)
-  })
-})
-
-test('plugin workspace snapshot matches individual document detail reads', () => {
-  withStore((store) => {
-    const snapshot = store.getPluginWorkspaceDocuments()
-    assert.ok(snapshot.length > 1)
-
-    for (const document of snapshot) {
-      assert.deepEqual(document, store.getDocumentDetail(document.id))
-    }
   })
 })
 

@@ -227,18 +227,6 @@ interface LinkedDocumentRow {
   context_snippet?: string
 }
 
-interface PluginWorkspaceBlockRow extends ExportBlockRow {
-  document_id: string
-}
-
-interface PluginWorkspaceLinkedDocumentRow extends LinkedDocumentRow {
-  owner_document_id: string
-}
-
-interface PluginWorkspaceChildRow extends DocumentChildRow {
-  owner_document_id: string
-}
-
 interface DocumentChildRow {
   id: string
   title: string
@@ -2260,113 +2248,6 @@ export class KnowbookStore {
     `).all(prefix.length, prefix) as Array<{ key: string; value: string }>
 
     return Object.fromEntries(rows.map((row) => [row.key, row.value]))
-  }
-
-  getPluginWorkspaceDocuments(): DocumentDetail[] {
-    const documents = this.db.prepare(`
-      SELECT id, title, path, summary, updated_at
-      FROM documents
-      ORDER BY sort_order ASC, created_at ASC
-    `).all() as DocumentDetailRow[]
-    if (documents.length === 0) {
-      return []
-    }
-
-    const detailsById = new Map<string, DocumentDetail>()
-    for (const document of documents) {
-      detailsById.set(document.id, {
-        id: document.id,
-        title: document.title,
-        path: document.path,
-        summary: document.summary,
-        updatedAt: document.updated_at,
-        blocks: [],
-        children: [],
-        outgoingLinks: [],
-        backlinks: []
-      })
-    }
-
-    const blockContentsByDocumentId = new Map<string, string[]>()
-    const blocks = this.db.prepare(`
-      SELECT document_id, id, type, content, checked, depth, tags_json,
-        parent_block_id, sort_order, language, highlight
-      FROM blocks
-      ORDER BY document_id ASC, sort_order ASC
-    `).all() as PluginWorkspaceBlockRow[]
-    for (const block of blocks) {
-      detailsById.get(block.document_id)?.blocks.push({
-        id: block.id,
-        type: block.type,
-        content: block.content,
-        checked: Boolean(block.checked),
-        depth: Math.max(0, block.depth ?? 0),
-        tags: this.parseBlockTags(block.tags_json),
-        parentBlockId: block.parent_block_id ?? null,
-        sortOrder: block.sort_order,
-        language: block.language ?? undefined,
-        highlight: block.highlight ?? undefined
-      })
-
-      const contents = blockContentsByDocumentId.get(block.document_id)
-      if (contents) {
-        contents.push(block.content)
-      } else {
-        blockContentsByDocumentId.set(block.document_id, [block.content])
-      }
-    }
-
-    const outgoingLinks = this.db.prepare(`
-      SELECT links.source_document_id AS owner_document_id,
-        target.id, target.title, target.path, links.label
-      FROM links
-      INNER JOIN documents AS target ON target.id = links.target_document_id
-      ORDER BY links.source_document_id ASC, target.path ASC
-    `).all() as PluginWorkspaceLinkedDocumentRow[]
-    for (const link of outgoingLinks) {
-      detailsById.get(link.owner_document_id)?.outgoingLinks.push({
-        id: link.id,
-        title: link.title,
-        path: link.path,
-        label: link.label
-      })
-    }
-
-    const backlinks = this.db.prepare(`
-      SELECT links.target_document_id AS owner_document_id,
-        source.id, source.title, source.path, links.label,
-        links.source_document_id AS context_source_document_id
-      FROM links
-      INNER JOIN documents AS source ON source.id = links.source_document_id
-      ORDER BY links.target_document_id ASC, source.path ASC
-    `).all() as Array<PluginWorkspaceLinkedDocumentRow & { context_source_document_id: string }>
-    for (const link of backlinks) {
-      const sourceContents = blockContentsByDocumentId.get(link.context_source_document_id)
-      const contextContent = sourceContents?.find((content) => content.includes(link.label))
-      detailsById.get(link.owner_document_id)?.backlinks.push({
-        id: link.id,
-        title: link.title,
-        path: link.path,
-        label: link.label,
-        contextSnippet: contextContent !== undefined ? contextContent.slice(0, 200) : undefined
-      })
-    }
-
-    const children = this.db.prepare(`
-      SELECT parent_id AS owner_document_id, id, title, path
-      FROM documents
-      WHERE parent_id IS NOT NULL
-      ORDER BY parent_id ASC, path ASC
-    `).all() as PluginWorkspaceChildRow[]
-    for (const child of children) {
-      detailsById.get(child.owner_document_id)?.children.push({
-        id: child.id,
-        title: child.title,
-        path: child.path
-      })
-    }
-
-    return documents.map((document) => detailsById.get(document.id)!)
   }
 
   findDocumentIdsByDatabaseValue(columnId: string, value: DocumentDatabaseFieldValue): string[] {

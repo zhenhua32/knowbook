@@ -12,7 +12,7 @@ KnowBook 是一款本地优先的知识管理桌面应用，使用 Electron、Re
 - AI：OpenAI-compatible Chat Completions、文档问答、选区改写、自动摘要和本地关键词相关笔记检索。
 - 备份恢复：SQLite 为主存储，Markdown 快照用于备份、审阅和恢复。
 - 网页剪藏：应用内 URL 剪藏，以及通过本机桥接接收浏览器扩展内容。
-- 插件：本地 JavaScript 插件、工作区事件、Dashboard 卡片、文档操作和持久化设置。
+- 插件：隔离的 v2 动态插件与 Full Trust v3 系统插件，支持工作区事件、界面扩展、文档操作和持久化设置。
 - 发布：electron-builder 跨平台打包、GitHub Releases 和应用内更新检查。
 
 > “相关笔记”当前使用本地关键词匹配，不包含 Embedding、向量数据库或后台向量回填。
@@ -90,7 +90,9 @@ Markdown 备份是完整快照，不是增量同步。只有目录包含标准�
 
 Plugin Platform v2 已作为一级运行平台接入：AI 助手可以在对话中检查 capability/标准模块目录、定义并验证不可变 revision，然后把精确 revision 直接激活为工作区插件。动态插件运行在独立 Electron utility process 内的 QuickJS/WASM realm；没有 Node.js、Electron、文件系统、网络、shell 或运行时 `npm install`，所有副作用必须走带权限、配额和审计的 host capability。
 
-`activity-pulse-v2` 是首个 v2 内置参考插件。工作区 `plugins/` 和 Electron userData `plugins/` 的旧插件宿主仍保留为兼容层，其中仓库内的 `plugins/activity-pulse/` 是旧格式示例。架构决策见 [ADR 目录](docs/adr/)，使用说明见 [使用文档](docs/使用文档.md#插件开发)。
+`activity-pulse-v2` 是 v2 内置参考插件。需要 Node、Electron、npm、宿主 React 或后台服务的扩展使用独立的 System Plugin v3 通道，见 [v3 开发指南](docs/system-plugin-v3-development.md)。仓库的 [Activity Pulse](plugins/activity-pulse/README.md) 已迁为 v3，可通过插件中心选择目录，确认精确 artifact 后重启启用。
+
+v1 插件系统已完全移除：不再扫描工作区或 userData 的旧 `plugins/` 目录，也不提供旧版安装、重载和 SDK。已有自定义 v1 插件需改写成 v3 后重新安装；旧文件和历史设置保留，不会自动执行或获得 Full Trust。架构决策见 [ADR-0008](docs/adr/0008-remove-v1-plugins.md)，使用说明见 [使用文档](docs/使用文档.md#插件开发)。
 
 ## 网页剪藏
 
