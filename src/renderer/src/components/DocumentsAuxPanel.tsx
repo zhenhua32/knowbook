@@ -142,7 +142,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
               onClick={onRunEnabledAutomations}
               type="button"
             >
-              {aiAutomationsRunning ? ui.runningAutomations : ui.runEnabledAutomations}
+              {aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}
             </button>
             <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={onFindRelatedNotes} type="button">
               {aiContextSearching ? ui.searching : ui.findRelatedNotes}

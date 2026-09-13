@@ -237,7 +237,7 @@ test.describe('AI Settings @electron', () => {
       await createRootDocument(page, `AI Config Doc ${suffix}`, 'Testing AI configuration gating in the document assistant.')
 
       await openAiPage(page)
-      const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
+      const runAutomationsButton = page.getByRole('button', { name: uiText('Fill empty summary', '补全空白摘要') })
       await expect(runAutomationsButton).toBeDisabled()
 
       await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini')
@@ -275,7 +275,7 @@ test.describe('AI Settings @electron', () => {
         await expect(getSummaryInput(page)).toHaveValue('New knowledge node ready for editing.')
 
         await openAiPage(page)
-        const runAutomationsButton = page.getByRole('button', { name: uiText('Run enabled automations', '运行已启用自动化') })
+        const runAutomationsButton = page.getByRole('button', { name: uiText('Fill empty summary', '补全空白摘要') })
         await expect(runAutomationsButton).toBeEnabled()
         const summaryRequestCountBeforeRun = mockAiServer.requests.filter((request) => request.url === '/chat/completions').length
         await runAutomationsButton.click()

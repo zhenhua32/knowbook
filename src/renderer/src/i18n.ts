@@ -437,12 +437,15 @@ function createUiText(language: UiLanguage) {
     aiSelectionHint: (actionCount: number) => zh
       ? `预览会基于当前草稿选区生成；确认应用后，会用结果替换这 ${actionCount} 个块。`
       : `The preview uses the current draft selection. Applying it will replace these ${actionCount} block${actionCount === 1 ? '' : 's'}.`,
-    runEnabledAutomations: zh ? '运行已启用自动化' : 'Run enabled automations',
+    runEnabledAutomations: zh ? '补全空白摘要' : 'Fill empty summary',
+    generatingSummary: zh ? '正在生成摘要...' : 'Generating summary...',
     runningAutomations: zh ? '正在运行自动化...' : 'Running automations...',
     findRelatedNotes: zh ? '查找相关笔记' : 'Find related notes',
     searching: zh ? '搜索中...' : 'Searching...',
     thinking: zh ? '思考中...' : 'Thinking...',
-    manualAiHint: zh ? '手动执行会立刻复用当前已启用的摘要自动化。' : 'Manual run reuses the currently enabled summary automation for this document immediately.',
+    manualAiHint: zh
+      ? '使用已保存的正文补全摘要，并自动保存；已有摘要时跳过。需开启“摘要为空时自动生成摘要”，且正文至少 40 个字符。'
+      : 'Generate and save a summary from the saved document content; skip existing summaries. Requires “Auto-generate summary when summary is empty” to be enabled and at least 40 characters of content.',
     matchPercent: (score: number) => zh ? `${score}% 匹配` : `${score}% match`,
     semanticHint: zh ? '相关笔记检索会基于标题、摘要与正文关键词在工作区内查找上下文。' : 'Related-note retrieval searches workspace titles, summaries, and block content with local keyword matching.',
     emptyDocumentState: zh ? '从左侧树或最近文档列表中选择一个文档，以查看它的块内容和关联关系。' : 'Select a document from the tree or recent list to inspect its blocks and relationships.',
