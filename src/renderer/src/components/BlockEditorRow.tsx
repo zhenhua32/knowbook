@@ -454,14 +454,26 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               )
             )}
 
-            <div className="block-editor-input-column">
+            <div
+              className="block-editor-input-column"
+              onBlur={(event) => {
+                // Keep the state intact when focus moves from the editor to its toggle.
+                if (hasRichMedia && !event.currentTarget.contains(event.relatedTarget)) {
+                  setIsMediaSourceExpanded(false)
+                }
+              }}
+            >
               {hasRichMedia ? (
                 <button
                   aria-expanded={isMediaSourceExpanded}
                   className="block-media-source-toggle"
-                  onClick={() => {
-                    setIsMediaSourceExpanded(true)
-                    requestAnimationFrame(() => textareaRef.current?.focus())
+                  onClick={(event) => {
+                    setIsMediaSourceExpanded(!isMediaSourceExpanded)
+                    if (isMediaSourceExpanded) {
+                      event.currentTarget.focus()
+                    } else {
+                      requestAnimationFrame(() => textareaRef.current?.focus())
+                    }
                   }}
                   type="button"
                 >
@@ -483,7 +495,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                       ].filter(Boolean).join(' · ')}
                     </small>
                   </span>
-                  <span className="block-media-source-toggle-action">{isZh ? '编辑源内容' : 'Edit source'}</span>
+                  <span className="block-media-source-toggle-action">
+                    {isMediaSourceExpanded
+                      ? (isZh ? '收起源内容' : 'Collapse source')
+                      : (isZh ? '编辑源内容' : 'Edit source')}
+                  </span>
                 </button>
               ) : null}
 
@@ -605,11 +621,6 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 }
                 resizeBlockTextarea(event.currentTarget)
                 captureBlockCursor(index, event.currentTarget)
-              }}
-              onBlur={() => {
-                if (hasRichMedia) {
-                  setIsMediaSourceExpanded(false)
-                }
               }}
               onKeyDown={(event) => {
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected

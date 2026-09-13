@@ -123,6 +123,60 @@ async function reopenDocument(page: Page, title: string): Promise<void> {
 }
 
 test.describe('Editor Common Operations Durability @electron', () => {
+  test('toggles media source editing with repeated clicks and keyboard activation', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+
+    const title = `Media source toggle ${Date.now().toString(36)}`
+    const source = 'See [Example](https://example.com/article).'
+    const editedSource = 'Updated [Example](https://example.com/article).'
+
+    await withElectronApp(async ({ page }) => {
+      const documentId = await createSavedRootDocument(page, title, source)
+      const row = page.locator('.block-editor-row').nth(1)
+      const toggle = row.locator('.block-media-source-toggle')
+      const action = toggle.locator('.block-media-source-toggle-action')
+      const editor = getBodyEditor(page, 0)
+      const preview = row.locator('.block-rich-media-link')
+
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(editor).toHaveCSS('max-height', '0px')
+      await expect(preview).toBeVisible()
+
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        await toggle.click()
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        await expect(editor).toBeFocused()
+        await editor.fill(editedSource)
+
+        await toggle.click()
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        await expect(editor).toHaveCSS('max-height', '0px')
+        await expect(editor).not.toBeFocused()
+        await expect(action).toHaveText(uiText('Edit source', '编辑源内容'))
+        await expect(preview).toBeVisible()
+      }
+
+      await toggle.press('Enter')
+      await expect(editor).toBeFocused()
+      await expect(action).toHaveText(uiText('Collapse source', '收起源内容'))
+      await toggle.focus()
+      await expect(toggle).toBeFocused()
+      await toggle.press('Space')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(editor).toHaveCSS('max-height', '0px')
+
+      await toggle.click()
+      await expect(editor).toBeFocused()
+      await getTitleInput(page).click()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(editor).toHaveCSS('max-height', '0px')
+      await expect(editor).toHaveValue(editedSource)
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([
+        { type: 'paragraph', content: editedSource, checked: false, depth: 0, parentIndex: null }
+      ])
+    })
+  })
+
   test('auto-saves text edits and keeps a footer-added empty block after reload', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
