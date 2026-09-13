@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import '../document-experience.css'
 import type { ClipWebPageInput, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
@@ -139,10 +140,7 @@ export function DocumentsPage({
     moveSelectedBlocks: documents.moveSelectedBlocks,
     navigateInlineReferenceAtCursor: documents.navigateInlineReferenceAtCursor,
     notifyBlockMouseDown: documents.notifyBlockMouseDown,
-    onSelectOutlineBlock: (blockIndex) => {
-      documents.setActiveBlockIndex(blockIndex)
-      documents.setPendingFocusBlockIndex(blockIndex)
-    },
+    onSelectOutlineBlock: documents.navigateToBlock,
     removeSelectedBlockRange: documents.removeSelectedBlockRange,
     selectAllBlocks: documents.selectAllBlocks,
     selectBlockRange: documents.selectBlockRange,
@@ -288,16 +286,27 @@ export function DocumentsPage({
   return (
     <>
       <DocumentsSection
+        isReadingMode={documents.isReadingMode}
+        navigationRequest={documents.blockNavigationRequest}
+        highlightedBlockId={documents.highlightedBlockId}
+        onToggleReadingMode={() => {
+          documents.clearBlockSelection()
+          documents.dismissSlashCommand()
+          documents.setPendingFocusBlockIndex(null)
+          documents.setIsReadingMode(!documents.isReadingMode)
+        }}
+        onOpenBlockSearch={documents.openBlockSearch}
         addBlockLabel={ui.addBlock}
         auxPanelWidth={documents.documentsAuxPanelWidth}
         blockEditorRowSharedProps={blockEditorRowSharedProps}
         blockSearchPanelProps={{
+          isZh,
           isOpen: documents.isBlockSearchOpen,
           items: documents.blockSearchItems,
           noMatchText: ui.noBlocksMatchSearch,
           onClose: documents.closeBlockSearch,
           onQueryChange: documents.setBlockSearchQuery,
-          onSelect: documents.handleBlockSearchSelect,
+          onSelect: documents.navigateToBlock,
           placeholder: ui.searchBlocksPlaceholder,
           query: documents.blockSearchQuery
         }}

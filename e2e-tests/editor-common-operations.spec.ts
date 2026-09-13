@@ -479,9 +479,11 @@ test.describe('Editor Common Operations Durability @electron', () => {
       ])
 
       const outlineItem = page.locator('.document-outline-panel .toc-item', { hasText: 'Section' })
+      await page.locator('.document-outline-control > button').click()
       await expect(outlineItem).toBeVisible()
       await outlineItem.click()
-      await expect(getBodyEditor(page, 0)).toBeFocused()
+      await expect(page.locator('.document-outline-control > button')).toBeFocused()
+      await getBodyEditor(page, 0).click()
       await getBodyEditor(page, 0).evaluate((element) => {
         const textarea = element as HTMLTextAreaElement
         textarea.setSelectionRange(textarea.value.length, textarea.value.length)

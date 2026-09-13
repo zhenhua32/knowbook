@@ -23,7 +23,7 @@ test('block textarea ref registry clears slots only for the detached element', (
   const refIndex = source.indexOf('const slots = blockTextareaRefs.current')
   assert.ok(refIndex !== -1, 'the textarea ref must keep writing into the shared slot array')
 
-  const refCallback = source.slice(source.lastIndexOf('ref={(element)', refIndex), refIndex + 260)
+  const refCallback = source.slice(source.lastIndexOf('const registerTextarea', refIndex), refIndex + 260)
   assert.match(
     refCallback,
     /const previousElement = textareaRef\.current/,

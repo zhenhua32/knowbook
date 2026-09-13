@@ -316,7 +316,8 @@ test.describe('Editor Common Workflows @electron', () => {
       await blockSearch.fill(uniqueNeedle)
       await expect(page.locator('.block-find-result')).toHaveCount(1)
       await blockSearch.press('Enter')
-      await expect(getBodyEditor(page, 0)).toBeFocused()
+      await expect(blockSearch).toBeFocused()
+      await expect(getBodyEditor(page, 0)).toBeInViewport()
       await page.keyboard.press('Escape')
 
       await page.keyboard.press('Control+k')

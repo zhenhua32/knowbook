@@ -60,6 +60,10 @@ export function useDocumentsDomainState({
   }), [])
 
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
+  const [isReadingMode, setIsReadingMode] = useState(false)
+  const [blockNavigationRequest, setBlockNavigationRequest] = useState<{
+    index: number; documentId: string; sequence: number
+  } | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const flushPendingDocumentChangesRef = useRef<() => Promise<boolean>>(async () => true)
@@ -451,13 +455,19 @@ export function useDocumentsDomainState({
     openBlockSearch,
     setBlockSearchQuery
   } = useBlockSearchState({
-    activeBlockIndex,
     draftBlocks,
     onSelectBlock: (blockIndex) => {
       setActiveBlockIndex(blockIndex)
       setPendingFocusBlockIndex(blockIndex)
     }
   })
+  const navigateToBlock = useCallback((index: number) => {
+    if (!selectedDocumentId || !draftBlocks[index]) return
+    const blockId = draftBlocks[index].id
+    if (blockId) revealBlockAncestors(blockId)
+    clearBlockSelection()
+    setBlockNavigationRequest((previous) => ({ index, documentId: selectedDocumentId, sequence: (previous?.sequence ?? 0) + 1 }))
+  }, [clearBlockSelection, draftBlocks, revealBlockAncestors, selectedDocumentId])
   const {
     handleBlockContentChange,
     handleBlockPaste
@@ -507,21 +517,6 @@ export function useDocumentsDomainState({
       window.removeEventListener('blur', handleMouseUp)
     }
   }, [endBlockRangeSelection])
-
-  useEffect(() => {
-    if (!isEditing) {
-      return
-    }
-
-    const textareas = blockTextareaRefs.current
-    for (const textarea of textareas) {
-      if (!textarea) {
-        continue
-      }
-      textarea.style.height = 'auto'
-      textarea.style.height = `${textarea.scrollHeight}px`
-    }
-  }, [draftBlocks, isEditing])
 
   return {
     activeBlockIndex,
@@ -600,6 +595,10 @@ export function useDocumentsDomainState({
     isBlockSearchOpen,
     isBlockSelected,
     isEditing,
+    isReadingMode,
+    setIsReadingMode,
+    blockNavigationRequest,
+    navigateToBlock,
     isGlobalSearchOpen,
     isSaving,
     isSelectionCoherent,

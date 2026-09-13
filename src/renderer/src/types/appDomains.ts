@@ -32,6 +32,7 @@ export type DocumentsKeyboardState = Pick<DocumentsDomainState,
   | 'closeGlobalSearch'
   | 'isBlockSearchOpen'
   | 'isEditing'
+  | 'isReadingMode'
   | 'isGlobalSearchOpen'
   | 'navBack'
   | 'navForward'

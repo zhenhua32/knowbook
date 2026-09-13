@@ -10,6 +10,9 @@ import { DocumentStatsBar } from '../components/DocumentStatsBar'
 import { DocumentSummaryCard } from '../components/DocumentSummaryCard'
 import { FloatingSlashCommandPanel } from '../components/FloatingSlashCommandPanel'
 import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
+import { BlockReadingRow } from '../components/BlockReadingRow'
+import { DocumentNavigationBar } from '../components/DocumentNavigationBar'
+import { useDocumentViewport } from '../hooks/useDocumentViewport'
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
@@ -20,6 +23,11 @@ type RelationGroup = {
 }
 
 type DocumentsSectionProps = {
+  isReadingMode: boolean
+  navigationRequest: { index: number; documentId: string; sequence: number } | null
+  highlightedBlockId: string | null
+  onToggleReadingMode: () => void
+  onOpenBlockSearch: () => void
   auxPanelWidth: number
   isWideMode: boolean
   selectedDocument: DocumentDetail | null
@@ -81,6 +89,11 @@ function RelationList({
 }
 
 export function DocumentsSection({
+  isReadingMode,
+  navigationRequest,
+  highlightedBlockId,
+  onToggleReadingMode,
+  onOpenBlockSearch,
   auxPanelWidth,
   isWideMode,
   selectedDocument,
@@ -110,6 +123,12 @@ export function DocumentsSection({
   const documentReady = Boolean(selectedDocument && !previewHeaderProps.detailLoading)
   const auxPanelProps = documentsAuxPanelProps?.isOpen && documentReady ? documentsAuxPanelProps : null
   const showAuxPanel = Boolean(auxPanelProps)
+  const viewport = useDocumentViewport({
+    documentId: documentReady ? selectedDocument?.id ?? null : null,
+    reading: isReadingMode,
+    navigation: navigationRequest,
+    highlightedBlockId
+  })
 
   const clampAuxPanelWidth = useCallback((candidateWidth: number) => {
     const containerWidth = workspaceGridRef.current?.getBoundingClientRect().width ?? 0
@@ -215,24 +234,44 @@ export function DocumentsSection({
       style={workspaceGridStyle}
     >
       <article
-        className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}`}
+        className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}${isReadingMode ? ' preview-panel-reading' : ''}`}
         data-testid="document-scroll-region"
+        ref={viewport.scrollRef}
       >
-        <DocumentPreviewHeader {...previewHeaderProps} />
+        <div className="document-sticky-header" ref={viewport.headerRef}>
+          <DocumentPreviewHeader {...previewHeaderProps} canUndo={!isReadingMode && previewHeaderProps.canUndo} canRedo={!isReadingMode && previewHeaderProps.canRedo} />
+          {documentReady ? <DocumentNavigationBar key={selectedDocument?.id}
+            outline={outlinePanelProps} search={blockSearchPanelProps}
+            activeIndex={viewport.activeHeadingIndex} progress={viewport.progress}
+            reading={isReadingMode} isZh={previewHeaderProps.isZh}
+            onOpenSearch={onOpenBlockSearch}
+            onToggleReading={() => {
+              viewport.capturePosition()
+              onToggleReadingMode()
+            }} /> : null}
+        </div>
 
         {selectedDocument && documentReady ? (
           <>
-            {summaryCardProps ? <DocumentSummaryCard {...summaryCardProps} /> : null}
-            {outlinePanelProps ? <DocumentOutlinePanel {...outlinePanelProps} /> : null}
+            {summaryCardProps ? isReadingMode
+              ? <div className="document-reading-summary"><h1>{summaryCardProps.title}</h1><p>{summaryCardProps.summary}</p></div>
+              : <DocumentSummaryCard {...summaryCardProps} /> : null}
 
-              <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`}>
-                <BlockSearchPanel {...blockSearchPanelProps} />
-                <p className="panel-label">{blocksPanelLabel}</p>
+              <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} ref={viewport.contentRef}>
+                {!isReadingMode ? <p className="panel-label">{blocksPanelLabel}</p> : null}
                <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
-                {selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
+                {!isReadingMode && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {blockEditorRowSharedProps
                   ? visibleEditorRows.map((row) => (
-                     <BlockEditorRow
+                     isReadingMode ? <BlockReadingRow
+                       key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`}
+                       {...row}
+                       collapsed={Boolean(row.block.id && blockEditorRowSharedProps.collapsedBlockIds.has(row.block.id))}
+                       onToggleCollapse={blockEditorRowSharedProps.toggleBlockCollapse}
+                       onNavigateReference={blockEditorRowSharedProps.navigateInlineReferenceAtCursor}
+                       ui={previewHeaderProps.ui}
+                       isZh={previewHeaderProps.isZh}
+                     /> : <BlockEditorRow
                        key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`}
                        {...blockEditorRowSharedProps}
                        block={row.block}
@@ -247,11 +286,11 @@ export function DocumentsSection({
                      />
                   ))
                   : null}
-                <button className="secondary-button add-block-button" onClick={onAddBlock} type="button">
+                {!isReadingMode ? <button className="secondary-button add-block-button" onClick={onAddBlock} type="button">
                   <span aria-hidden="true">＋</span>
                   {addBlockLabel}
-                </button>
-                {linkSuggestionPanelProps ? (
+                </button> : null}
+                {isReadingMode ? null : linkSuggestionPanelProps ? (
                   <LinkSuggestionPanel {...linkSuggestionPanelProps} />
                 ) : (
                   <p className="mini-hint">{editorHelpText}</p>
@@ -259,7 +298,7 @@ export function DocumentsSection({
               </div>
             </div>
 
-            {floatingSlashCommandPanelProps ? <FloatingSlashCommandPanel {...floatingSlashCommandPanelProps} /> : null}
+            {!isReadingMode && floatingSlashCommandPanelProps ? <FloatingSlashCommandPanel {...floatingSlashCommandPanelProps} /> : null}
 
             {documentStatsBarProps ? <DocumentStatsBar {...documentStatsBarProps} /> : null}
           </>

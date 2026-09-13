@@ -63,14 +63,14 @@ export function useAppKeyboardShortcuts({
       }
 
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
-        if (documents.isEditing && shell.activePage === 'documents') {
+        if (documents.isEditing && !documents.isReadingMode && shell.activePage === 'documents') {
           event.preventDefault()
           documents.undoEdit()
         }
       }
 
       if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
-        if (documents.isEditing && shell.activePage === 'documents') {
+        if (documents.isEditing && !documents.isReadingMode && shell.activePage === 'documents') {
           event.preventDefault()
           documents.redoEdit()
         }

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
@@ -8,6 +8,7 @@ import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
+import { scheduleTextareaResize as resizeBlockTextarea } from '../utils/textareaLayout'
 
 const CodeBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
@@ -122,26 +123,6 @@ export type BlockEditorRowProps = {
   isZh: boolean
 }
 
-function resizeBlockTextarea(textarea: HTMLTextAreaElement | null): void {
-  if (!textarea) {
-    return
-  }
-
-  // Preserve scroll positions to prevent the document from jumping 
-  // when we temporarily shrink the textarea to measure its true scrollHeight.
-  const scrollContainer = textarea.closest('.content') || document.documentElement
-  const scrollTop = scrollContainer.scrollTop
-
-  textarea.style.height = '0px'
-  const newHeight = `${textarea.scrollHeight}px`
-  textarea.style.height = newHeight
-
-  // If the layout thrashing caused the browser to clamp scroll position, restore it
-  if (scrollContainer.scrollTop !== scrollTop) {
-    scrollContainer.scrollTop = scrollTop
-  }
-}
-
 function isNestableBlockType(type: DocumentBlock['type']): boolean {
   return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
 }
@@ -227,6 +208,17 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const registerTextarea = useCallback((element: HTMLTextAreaElement | null) => {
+    const previousElement = textareaRef.current
+    textareaRef.current = element
+    const slots = blockTextareaRefs.current
+    if (element) {
+      slots[index] = element
+      resizeBlockTextarea(element)
+    } else if (slots[index] === previousElement) {
+      slots[index] = null
+    }
+  }, [blockTextareaRefs, index])
 
   // 点击外部关闭工具栏
   useEffect(() => {
@@ -248,8 +240,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
       return
     }
 
-    const frame = requestAnimationFrame(() => resizeBlockTextarea(textarea))
-    return () => cancelAnimationFrame(frame)
+    resizeBlockTextarea(textarea)
   }, [block.content, block.type])
 
   const handleBlockTypeChange = (newType: string) => {
@@ -277,6 +268,9 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
   return (
     <div
+      data-block-index={index}
+      data-block-id={block.id}
+      data-heading-level={block.type === 'heading-1' ? 1 : block.type === 'heading-2' ? 2 : undefined}
       className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
@@ -507,17 +501,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               <textarea
               className={`block-inline-textarea type-${block.type}${hasRichMedia ? ' block-rich-media-source-input' : ''}${isMediaSourceExpanded ? ' expanded' : ''}`}
               spellCheck={false}
-              ref={(element) => {
-                const previousElement = textareaRef.current
-                textareaRef.current = element
-                const slots = blockTextareaRefs.current
-                if (element) {
-                  slots[index] = element
-                  resizeBlockTextarea(element)
-                } else if (slots[index] === previousElement) {
-                  slots[index] = null
-                }
-              }}
+              ref={registerTextarea}
               placeholder={
                 block.type === 'heading-1'
                   ? isZh

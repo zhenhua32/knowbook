@@ -183,8 +183,8 @@ export function useDocumentsBlockEditorPresentation({
         isSelected,
         isHighlighted,
         isSearchMatch: blockSearchQuery.trim().length > 0 && (
-          block.content.toLowerCase().includes(blockSearchQuery.toLowerCase()) ||
-          block.type.toLowerCase().includes(blockSearchQuery.toLowerCase())
+          block.content.toLocaleLowerCase().includes(blockSearchQuery.trim().toLocaleLowerCase()) ||
+          block.type.toLocaleLowerCase().includes(blockSearchQuery.trim().toLocaleLowerCase())
         ),
         numberLabel
       }
@@ -199,6 +199,7 @@ export function useDocumentsBlockEditorPresentation({
     getVisibleBlockEntries,
     blockSearchQuery,
     isBlockSelected,
+    highlightedBlockId,
     isNestableBlock,
     selectedDocument
   ])
@@ -218,6 +219,8 @@ export function useDocumentsBlockEditorPresentation({
     ? {
         emptyHeadingTitleLevel1: isZh ? '标题 1' : 'Heading 1',
         emptyHeadingTitleLevel2: isZh ? '标题 2' : 'Heading 2',
+        filterPlaceholder: isZh ? '筛选章节…' : 'Filter headings…',
+        noMatchText: isZh ? '没有匹配的章节' : 'No matching headings',
         items: outlineItems,
         onSelect: onSelectOutlineBlock,
         title: isZh ? '大纲' : 'Outline'
