@@ -331,6 +331,8 @@ function createUiText(language: UiLanguage) {
     forward: zh ? '前进' : 'Forward',
     globalSearch: zh ? '全局搜索' : 'Global search',
     rootsCount: (count: number) => zh ? `${count} 个根文档` : `${count} roots`,
+    expandDocumentChildren: (title: string) => zh ? `展开子文档：${title}` : `Expand children: ${title}`,
+    collapseDocumentChildren: (title: string) => zh ? `折叠子文档：${title}` : `Collapse children: ${title}`,
     newRoot: zh ? '新建根文档' : 'New root',
     dropToRoot: zh ? '拖到这里可把文档移到根目录' : 'Drop here to move document to root',
     pinnedSectionLabel: zh ? '★ 收藏' : '★ Pinned',

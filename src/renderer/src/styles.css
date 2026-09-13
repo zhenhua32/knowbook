@@ -4436,6 +4436,52 @@ select:focus-visible {
   left: 0;
   height: 36px;
   box-sizing: border-box;
+  flex-direction: row;
+  align-items: center;
+}
+
+.tree-node-virtual > .tree-button {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.tree-expand-toggle,
+.tree-expand-placeholder {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 28px;
+}
+
+.tree-expand-toggle {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--kb-sidebar-muted);
+  cursor: pointer;
+}
+
+.tree-expand-toggle:hover {
+  background: var(--kb-sidebar-raised);
+  color: var(--kb-sidebar-text);
+}
+
+.tree-expand-toggle:focus-visible {
+  outline: 2px solid var(--kb-sidebar-text);
+  outline-offset: -2px;
+}
+
+.tree-expand-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
 }
 
 .tree-list {
