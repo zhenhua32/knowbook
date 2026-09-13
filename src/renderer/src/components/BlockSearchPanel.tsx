@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type BlockSearchItem = { index: number; type: string; contentPreview: string }
 type BlockSearchPanelProps = {
@@ -16,6 +17,7 @@ type BlockSearchPanelProps = {
 export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText, items, onQueryChange, onClose, onSelect }: BlockSearchPanelProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const composingRef = useRef(false)
   const resultsRef = useRef<HTMLDivElement>(null)
   const hasNavigated = useRef(false)
   const safeIndex = Math.min(activeIndex, Math.max(0, items.length - 1))
@@ -53,7 +55,10 @@ export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText
 
   if (!isOpen) return null
   return <div className="block-find-panel" onKeyDown={(event) => {
-    if (event.nativeEvent.isComposing) return
+    if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
+      event.stopPropagation()
+      return
+    }
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
@@ -69,6 +74,9 @@ export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText
   }}>
     <div className="block-find-input-row">
       <input ref={inputRef} className="block-find-input" aria-label={placeholder}
+        onCompositionStart={() => { composingRef.current = true }}
+        onCompositionEnd={() => { composingRef.current = false }}
+        onBlur={() => { composingRef.current = false }}
         onChange={(event) => onQueryChange(event.target.value)} placeholder={placeholder} type="text" value={query} />
       {query ? <span className="block-find-count" role="status">{items.length ? `${safeIndex + 1} / ${items.length}` : noMatchText}</span> : null}
       <button className="block-find-nav-btn" disabled={!items.length} type="button"

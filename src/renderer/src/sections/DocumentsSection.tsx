@@ -27,6 +27,7 @@ type DocumentsSectionProps = {
   navigationRequest: { index: number; documentId: string; sequence: number } | null
   highlightedBlockId: string | null
   onToggleReadingMode: () => void
+  onRevealBlock: (blockId: string) => void
   onOpenBlockSearch: () => void
   auxPanelWidth: number
   isWideMode: boolean
@@ -93,6 +94,7 @@ export function DocumentsSection({
   navigationRequest,
   highlightedBlockId,
   onToggleReadingMode,
+  onRevealBlock,
   onOpenBlockSearch,
   auxPanelWidth,
   isWideMode,
@@ -127,7 +129,8 @@ export function DocumentsSection({
     documentId: documentReady ? selectedDocument?.id ?? null : null,
     reading: isReadingMode,
     navigation: navigationRequest,
-    highlightedBlockId
+    highlightedBlockId,
+    onRevealBlock
   })
 
   const clampAuxPanelWidth = useCallback((candidateWidth: number) => {

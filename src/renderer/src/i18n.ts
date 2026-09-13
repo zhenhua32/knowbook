@@ -559,6 +559,8 @@ function createUiText(language: UiLanguage) {
     backupSafetyCopyCreated: (path: string) => zh ? `恢复前安全副本：${path}` : `Pre-restore safety copy: ${path}`,
     backupRestoreFailed: zh ? '恢复备份失败。' : 'Failed to restore backup.',
     documentSaveFailed: zh ? '保存文档失败。' : 'Failed to save document.',
+    markdownCopyFailed: zh ? '复制 Markdown 失败。' : 'Failed to copy Markdown.',
+    markdownExportFailed: zh ? '导出 Markdown 失败。' : 'Failed to export Markdown.',
     cannotSaveInvalidBlockTree: (errors: string[]) => zh
       ? `无法保存：块树结构无效。${errors.join('；')}`
       : `Cannot save: invalid block tree structure. ${errors.join('; ')}`,

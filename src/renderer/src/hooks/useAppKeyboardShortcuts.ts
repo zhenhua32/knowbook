@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { PAGE_ORDER } from './useAppShellState'
 import type { DocumentsKeyboardState } from '../types/appDomains'
 import type { ShellPageState } from '../types/appShell'
@@ -14,8 +15,10 @@ export function useAppKeyboardShortcuts({
   onClearBlockRangeSelection,
   shell
 }: UseAppKeyboardShortcutsParams) {
+  const composingTargetRef = useRef<EventTarget | null>(null)
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
         const pageIndex = Number(event.key) - 1
         const targetPage = PAGE_ORDER[pageIndex]
@@ -91,8 +94,18 @@ export function useAppKeyboardShortcuts({
       }
     }
 
+    const startComposition = (event: CompositionEvent) => { composingTargetRef.current = event.target }
+    const endComposition = () => { composingTargetRef.current = null }
+    window.addEventListener('compositionstart', startComposition, true)
+    window.addEventListener('compositionend', endComposition, true)
+    window.addEventListener('blur', endComposition, true)
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('compositionstart', startComposition, true)
+      window.removeEventListener('compositionend', endComposition, true)
+      window.removeEventListener('blur', endComposition, true)
+      window.removeEventListener('keydown', handleKeyDown)
+    }
   }, [
     documents,
     onClearBlockRangeSelection,

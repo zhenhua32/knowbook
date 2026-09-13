@@ -43,6 +43,7 @@ export function useWorkspaceOperations({
     moveTargetId: documents.moveTargetId,
     onCancelPendingAutoSave: documents.cancelPendingAutoSave,
     onFlushPendingDocumentChanges: documents.flushPendingChanges,
+    getDraftMarkdownExport: documents.getDraftMarkdownExport,
     onClearEditorSession: documents.clearEditorSession,
     onDetailLoadingChange: documents.setDetailLoading,
     onHomeDataChange: shell.setHomeData,

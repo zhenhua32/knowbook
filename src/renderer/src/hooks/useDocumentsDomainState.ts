@@ -123,6 +123,11 @@ export function useDocumentsDomainState({
   })
 
   useEffect(() => {
+    // A directory/search jump belongs to the current visit, not a later page mount.
+    setBlockNavigationRequest(null)
+  }, [activePage, selectedDocumentId])
+
+  useEffect(() => {
     if (!initialDocumentId) {
       return
     }
@@ -142,6 +147,7 @@ export function useDocumentsDomainState({
     flushPendingChanges,
     getDraftBlocks,
     hasPendingDraftChanges,
+    getDraftMarkdownExport,
     isEditing,
     isSaving,
     loadDocumentIntoEditor,
@@ -150,6 +156,7 @@ export function useDocumentsDomainState({
     redoEdit,
     saveDocument,
     saveDocumentAsMarkdown,
+    saveStatus,
     setDraftBlocks,
     setDraftSummary,
     setDraftTitle,
@@ -567,6 +574,8 @@ export function useDocumentsDomainState({
     flushPendingChanges,
     getDraftBlocks,
     draggingBlockIndex,
+    getDraftMarkdownExport,
+    revealBlockAncestors,
     dropBlockAt,
     duplicateDraftBlock,
     duplicateSelectedBlocks,
@@ -623,6 +632,7 @@ export function useDocumentsDomainState({
     removeSelectedBlockRange,
     saveDocument,
     saveDocumentAsMarkdown,
+    saveStatus,
     selectAllBlocks,
     selectBlockRange,
     selectedBlockActionCount,

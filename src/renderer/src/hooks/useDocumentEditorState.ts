@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
-import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
+import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
@@ -44,6 +44,10 @@ export function useDocumentEditorState({
 }: UseDocumentEditorStateParams) {
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isComposingDraft, setIsComposingDraft] = useState(false)
+  const [failedSave, setFailedSave] = useState<{
+    documentId: string; title: string; summary: string; blocks: DocumentBlockDraft[]
+  } | null>(null)
   const [draftTitle, setDraftTitle] = useState('')
   const [draftSummary, setDraftSummary] = useState('')
   const [draftBlocksState, setDraftBlocksState] = useState<DocumentBlockDraft[]>([])
@@ -94,6 +98,29 @@ export function useDocumentEditorState({
     pendingHistorySnapshotRef.current = null
   }, [])
 
+  useEffect(() => {
+    let composingTarget: EventTarget | null = null
+    const start = (event: CompositionEvent) => {
+      if (!(event.target instanceof HTMLElement) || !event.target.closest('.block-editor-list, .document-summary-card')) return
+      composingTarget = event.target
+      clearAutoSaveTimer()
+      setIsComposingDraft(true)
+    }
+    const end = (event: Event) => {
+      if (event.target !== composingTarget) return
+      composingTarget = null
+      setIsComposingDraft(false)
+    }
+    document.addEventListener('compositionstart', start, true)
+    document.addEventListener('compositionend', end, true)
+    document.addEventListener('blur', end, true)
+    return () => {
+      document.removeEventListener('compositionstart', start, true)
+      document.removeEventListener('compositionend', end, true)
+      document.removeEventListener('blur', end, true)
+    }
+  }, [clearAutoSaveTimer])
+
   const triggerTransientFlash = useCallback((setter: (value: boolean) => void) => {
     setter(true)
     setTimeout(() => setter(false), 2000)
@@ -120,6 +147,11 @@ export function useDocumentEditorState({
         || !areDocumentDraftBlocksEqual(draftBlocksState, selectedDocumentDraft.blocks)
       )
   ), [draftBlocksState, draftSummary, draftTitle, selectedDocumentDraft, selectedDocumentId])
+
+  const hasSaveError = failedSave?.documentId === selectedDocumentId
+    && failedSave?.title === draftTitle && failedSave?.summary === draftSummary && failedSave?.blocks === draftBlocksState
+  const saveStatus: 'saved' | 'pending' | 'saving' | 'error' = isSaving
+    ? 'saving' : hasPendingDraftChanges ? (hasSaveError ? 'error' : 'pending') : 'saved'
 
   const setDraftBlocks = useCallback((next: DraftBlockUpdater) => {
     setDraftBlocksState((previous) => {
@@ -163,6 +195,8 @@ export function useDocumentEditorState({
     setDraftSummary(detail?.summary ?? '')
     setDraftBlocksState(initialBlocks)
     setIsEditing(editing)
+    setIsComposingDraft(false)
+    setFailedSave(null)
 
     if (detail && editing) {
       initializeHistoryState(initialBlocks)
@@ -278,10 +312,12 @@ export function useDocumentEditorState({
 
     const persistedDocumentId = selectedDocumentId
     const saveSequence = ++saveSequenceRef.current
+    const failedSnapshot = { documentId: persistedDocumentId, title: draftTitle, summary: draftSummary, blocks: draftBlocksState }
 
     const normalizedDraftBlocks = normalizeDraftBlocks(draftBlocksState)
     const validation = validateBlockTreeStructure(normalizedDraftBlocks)
     if (!validation.valid) {
+      setFailedSave(failedSnapshot)
       if (!silentValidationFailure) {
         console.error('Tree structure validation failed:', validation.errors)
         onMessage(ui.cannotSaveInvalidBlockTree(validation.errors))
@@ -291,6 +327,7 @@ export function useDocumentEditorState({
     }
 
     setIsSaving(true)
+    setFailedSave(null)
 
     try {
       const updateResult = await window.knowbook.updateDocument(persistedDocumentId, {
@@ -328,6 +365,7 @@ export function useDocumentEditorState({
       }
       return true
     } catch (error) {
+      if (saveSequence === saveSequenceRef.current) setFailedSave(failedSnapshot)
       if (error instanceof Error && error.message === 'Document not found') {
         return false
       }
@@ -357,13 +395,13 @@ export function useDocumentEditorState({
   }, [clearAutoSaveTimer, hasPendingDraftChanges, persistDraft])
 
   useEffect(() => {
-    if (isEditing && !isRestoringHistoryRef.current) {
+    if (isEditing && !isComposingDraft && !isRestoringHistoryRef.current) {
       scheduleHistorySnapshot(draftBlocksState)
     }
-  }, [draftBlocksState, isEditing, scheduleHistorySnapshot])
+  }, [draftBlocksState, isComposingDraft, isEditing, scheduleHistorySnapshot])
 
   useEffect(() => {
-    if (!isEditing || isSaving || !hasPendingDraftChanges || !selectedDocumentId || !selectedDocument) {
+    if (!isEditing || isComposingDraft || isSaving || hasSaveError || !hasPendingDraftChanges || !selectedDocumentId || !selectedDocument) {
       return
     }
 
@@ -378,7 +416,7 @@ export function useDocumentEditorState({
     return () => {
       clearAutoSaveTimer()
     }
-  }, [clearAutoSaveTimer, hasPendingDraftChanges, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
+  }, [clearAutoSaveTimer, hasPendingDraftChanges, hasSaveError, isComposingDraft, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
 
   useEffect(() => {
     return () => {
@@ -389,27 +427,32 @@ export function useDocumentEditorState({
     }
   }, [clearAutoSaveTimer])
 
-  const copyDocumentAsMarkdown = useCallback(async () => {
-    if (!selectedDocument) {
-      return
-    }
+  const getDraftMarkdownExport = useCallback((documentId: string) => {
+    if (selectedDocument?.id !== documentId || selectedDocumentIdRef.current !== documentId) return null
+    return buildDraftMarkdownExport({ title: draftTitleRef.current, blocks: draftBlocksRef.current })
+  }, [selectedDocument?.id])
 
-    const markdown = buildDocumentMarkdown(selectedDocument)
-    await window.knowbook.writeClipboardText(markdown)
-    triggerTransientFlash(setMdCopyFlash)
-  }, [buildDocumentMarkdown, selectedDocument, triggerTransientFlash])
+  const copyDocumentAsMarkdown = useCallback(async () => {
+    const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
+    if (!snapshot) return
+    try {
+      await window.knowbook.writeClipboardText(snapshot.markdown)
+      triggerTransientFlash(setMdCopyFlash)
+    } catch (error) {
+      onMessage(getErrorMessage(error, ui.markdownCopyFailed))
+    }
+  }, [getDraftMarkdownExport, onMessage, selectedDocumentId, triggerTransientFlash, ui.markdownCopyFailed])
 
   const saveDocumentAsMarkdown = useCallback(async () => {
-    if (!selectedDocument) {
-      return
+    const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
+    if (!snapshot) return
+    try {
+      const savedPath = await window.knowbook.saveMarkdownFile(snapshot.fileName, snapshot.markdown)
+      if (savedPath) onMessage(ui.markdownExportedPath(savedPath))
+    } catch (error) {
+      onMessage(getErrorMessage(error, ui.markdownExportFailed))
     }
-
-    const savedPath = await window.knowbook.saveMarkdownFile(getDocumentMarkdownFileName(selectedDocument), buildDocumentMarkdown(selectedDocument))
-
-    if (savedPath) {
-      onMessage(ui.markdownExportedPath(savedPath))
-    }
-  }, [onMessage, selectedDocument, ui])
+  }, [getDraftMarkdownExport, onMessage, selectedDocumentId, ui])
 
   return {
     canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
@@ -422,6 +465,7 @@ export function useDocumentEditorState({
     draftTitle,
     flushPendingChanges,
     getDraftBlocks,
+    getDraftMarkdownExport,
     hasPendingDraftChanges,
     isEditing,
     isSaving,
@@ -431,6 +475,7 @@ export function useDocumentEditorState({
     redoEdit,
     saveDocument,
     saveDocumentAsMarkdown,
+    saveStatus,
     setDraftBlocks,
     setDraftSummary,
     setDraftTitle,

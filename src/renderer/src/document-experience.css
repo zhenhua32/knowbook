@@ -129,3 +129,6 @@
   .document-navigation-button { padding-inline: 6px; }
   .document-navigation .block-find-count { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
 }
+.document-save-status { margin-left: 12px; font-weight: 400; letter-spacing: normal; text-transform: none; }
+.document-save-status.status-error { color: var(--danger, #b42318); }
+.document-save-status.status-pending { color: var(--text-secondary, #667085); }

@@ -23,6 +23,7 @@ type DocumentPreviewHeaderProps = {
   onUndo: () => void
   onRedo: () => void
   isSaving: boolean
+  saveStatus?: 'saved' | 'pending' | 'saving' | 'error'
   onSave: () => void
   onDelete: () => void
   moveTargetId: string
@@ -53,6 +54,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     onUndo,
     onRedo,
     isSaving,
+    saveStatus,
     onSave,
     onDelete,
     moveTargetId,
@@ -95,7 +97,17 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
             </div>
           </div>
         ) : null}
-        <span className="document-header-kicker">{isZh ? '当前文档' : 'Current document'}</span>
+        <span className="document-header-kicker">
+          {isZh ? '当前文档' : 'Current document'}
+          {hasDocument && !detailLoading && saveStatus ? (
+            <span className={`document-save-status status-${saveStatus}`} role="status"
+              title={saveStatus === 'error' ? (isZh ? '草稿仍在，可点击保存重试或导出 Markdown。' : 'Your draft is available. Retry Save or export Markdown.') : undefined}>
+              {saveStatus === 'saving' ? ui.common.saving : saveStatus === 'pending'
+                ? (isZh ? '待保存' : 'Unsaved changes') : saveStatus === 'error'
+                  ? (isZh ? '保存失败 · 可重试' : 'Save failed · Retry') : (isZh ? '已保存' : 'Saved')}
+            </span>
+          ) : null}
+        </span>
         <div className="document-header-title-row">
           {hasDocument ? (
             <DocumentHeaderIconButton
@@ -131,9 +143,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
             label={saveButtonLabel}
             onClick={onSave}
             showLabel
-          >
-            <SaveIcon />
-          </DocumentHeaderIconButton>
+          />
           <DocumentHeaderIconButton
             className="document-header-more-button"
             label={ui.moreActions}
@@ -175,7 +185,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
 type DocumentHeaderIconButtonProps = {
   active?: boolean
   ariaPressed?: boolean
-  children: ReactNode
+  children?: ReactNode
   className?: string
   danger?: boolean
   disabled?: boolean
@@ -225,16 +235,6 @@ function AddChildIcon() {
     <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
       <path d="M10 5v10" />
       <path d="M5 10h10" />
-    </svg>
-  )
-}
-
-function SaveIcon() {
-  return (
-    <svg aria-hidden="true" className="document-header-icon-svg" viewBox="0 0 20 20">
-      <path d="M10 4v8" />
-      <path d="M6.5 9.5 10 13l3.5-3.5" />
-      <path d="M4 15h12" />
     </svg>
   )
 }

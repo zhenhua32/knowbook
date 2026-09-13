@@ -45,6 +45,7 @@ export type DocumentsKeyboardState = Pick<DocumentsDomainState,
 
 export type DocumentsWorkspaceState = Pick<DocumentsDomainState,
   'cancelPendingAutoSave'
+  | 'getDraftMarkdownExport'
   | 'clearEditorSession'
   | 'flushPendingChanges'
   | 'moveTargetId'

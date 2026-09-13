@@ -9,6 +9,7 @@ import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { scheduleTextareaResize as resizeBlockTextarea } from '../utils/textareaLayout'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 const CodeBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
@@ -208,6 +209,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const composingRef = useRef(false)
   const registerTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     const previousElement = textareaRef.current
     textareaRef.current = element
@@ -545,9 +547,21 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               }
               onChange={(event) => {
                 resizeBlockTextarea(event.currentTarget)
-                handleBlockContentChange(index, event.target.value)
+                if (composingRef.current || (event.nativeEvent as InputEvent).isComposing) {
+                  updateDraftBlock(index, { content: event.target.value })
+                } else {
+                  handleBlockContentChange(index, event.target.value)
+                }
                 captureBlockCursor(index, event.target)
               }}
+              onCompositionStart={() => { composingRef.current = true }}
+              onCompositionEnd={(event) => {
+                composingRef.current = false
+                updateDraftBlock(index, { content: event.currentTarget.value })
+                resizeBlockTextarea(event.currentTarget)
+                captureBlockCursor(index, event.currentTarget)
+              }}
+              onBlur={() => { composingRef.current = false }}
               onPaste={(event) => {
                 if (
                   handleBlockPaste(
@@ -607,6 +621,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 captureBlockCursor(index, event.currentTarget)
               }}
               onKeyDown={(event) => {
+                if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
+                  // Leave candidate selection to the IME, including the final Enter.
+                  event.stopPropagation()
+                  return
+                }
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
                   const el = event.currentTarget

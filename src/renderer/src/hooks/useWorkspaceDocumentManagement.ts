@@ -10,7 +10,7 @@ import type {
   HomeData
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
-import { buildDocumentMarkdown, getDocumentMarkdownFileName } from '../utils/documentMarkdown'
+import { buildDocumentMarkdown, getDocumentMarkdownFileName, type DocumentMarkdownExport } from '../utils/documentMarkdown'
 
 type UseWorkspaceDocumentManagementParams = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -22,6 +22,7 @@ type UseWorkspaceDocumentManagementParams = {
   ui: UiText
   onCancelPendingAutoSave: () => void
   onFlushPendingDocumentChanges: () => Promise<boolean>
+  getDraftMarkdownExport: (documentId: string) => DocumentMarkdownExport | null
   onClearEditorSession: () => void
   onDetailLoadingChange: (loading: boolean) => void
   onHomeDataChange: (homeData: HomeData) => void
@@ -42,6 +43,7 @@ export function useWorkspaceDocumentManagement({
   ui,
   onCancelPendingAutoSave,
   onFlushPendingDocumentChanges,
+  getDraftMarkdownExport,
   onClearEditorSession,
   onDetailLoadingChange,
   onHomeDataChange,
@@ -55,14 +57,16 @@ export function useWorkspaceDocumentManagement({
   const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
 
-  const getDocumentDetailForAction = useCallback(async (documentId: string) => {
+  const getMarkdownExport = useCallback(async (documentId: string): Promise<DocumentMarkdownExport> => {
+    const draft = getDraftMarkdownExport(documentId)
+    if (draft) return draft
     const detail = await window.knowbook.getDocumentDetail(documentId)
     if (!detail) {
       throw new Error(ui.documentNotFoundMessage)
     }
 
-    return detail
-  }, [])
+    return { fileName: getDocumentMarkdownFileName(detail), markdown: buildDocumentMarkdown(detail) }
+  }, [getDraftMarkdownExport, ui.documentNotFoundMessage])
 
   const refreshSelectionAfterDocumentMutation = useCallback(async (refreshedHome: HomeData, deletedDocumentId?: string) => {
     if (selectedDocumentId && selectedDocumentId !== deletedDocumentId) {
@@ -183,21 +187,21 @@ export function useWorkspaceDocumentManagement({
 
   const copyDocumentMarkdown = useCallback(async (documentId: string) => {
     try {
-      const detail = await getDocumentDetailForAction(documentId)
-      await window.knowbook.writeClipboardText(buildDocumentMarkdown(detail))
+      const snapshot = await getMarkdownExport(documentId)
+      await window.knowbook.writeClipboardText(snapshot.markdown)
       onMessage(ui.markdownCopied)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
       onMessage(message)
     }
-  }, [getDocumentDetailForAction, onMessage, ui.markdownCopied])
+  }, [getMarkdownExport, onMessage, ui.markdownCopied])
 
   const exportDocumentMarkdown = useCallback(async (documentId: string) => {
     try {
-      const detail = await getDocumentDetailForAction(documentId)
+      const snapshot = await getMarkdownExport(documentId)
       const savedPath = await window.knowbook.saveMarkdownFile(
-        getDocumentMarkdownFileName(detail),
-        buildDocumentMarkdown(detail)
+        snapshot.fileName,
+        snapshot.markdown
       )
 
       if (savedPath) {
@@ -207,7 +211,7 @@ export function useWorkspaceDocumentManagement({
       const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
       onMessage(message)
     }
-  }, [getDocumentDetailForAction, onMessage, ui])
+  }, [getMarkdownExport, onMessage, ui])
 
   const moveSelectedDocument = useCallback(async () => {
     if (!selectedDocument || !moveTargetId) {

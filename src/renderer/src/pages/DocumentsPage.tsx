@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import '../document-experience.css'
 import type { ClipWebPageInput, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -38,6 +39,7 @@ export function DocumentsPage({
   plugins,
   ui
 }: DocumentsPageProps) {
+  const searchComposingRef = useRef(false)
   const [webClipBusy, setWebClipBusy] = useState(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
 
@@ -192,6 +194,7 @@ export function DocumentsPage({
     hasApiKey: aiConfig.hasApiKey,
     isZh,
     isSaving: documents.isSaving,
+    saveStatus: documents.saveStatus,
     mdCopyFlash: documents.mdCopyFlash,
     moveTargetId: documents.moveTargetId,
     onClipWebPage: () => {
@@ -288,6 +291,7 @@ export function DocumentsPage({
       <DocumentsSection
         isReadingMode={documents.isReadingMode}
         navigationRequest={documents.blockNavigationRequest}
+        onRevealBlock={documents.revealBlockAncestors}
         highlightedBlockId={documents.highlightedBlockId}
         onToggleReadingMode={() => {
           documents.clearBlockSelection()
@@ -345,10 +349,17 @@ export function DocumentsPage({
                   void documents.updateGlobalSearchQuery(event.target.value)
                 }}
                 onKeyDown={(event) => {
+                  if (isImeKeyboardEvent(event.nativeEvent, searchComposingRef.current)) {
+                    event.stopPropagation()
+                    return
+                  }
                   if (event.key === 'Escape') {
                     documents.closeGlobalSearch()
                   }
                 }}
+                onCompositionStart={() => { searchComposingRef.current = true }}
+                onCompositionEnd={() => { searchComposingRef.current = false }}
+                onBlur={() => { searchComposingRef.current = false }}
               />
               <button className="secondary-button" onClick={documents.closeGlobalSearch} type="button">✕</button>
             </div>

@@ -38,6 +38,7 @@ type UseDocumentsDetailPresentationParams = {
   hasApiKey: boolean
   isZh: boolean
   isSaving: boolean
+  saveStatus?: DocumentPreviewHeaderProps['saveStatus']
   mdCopyFlash: boolean
   moveTargetId: string
   onClipWebPage: DocumentsAuxPanelProps['onClipWebPage']
@@ -93,6 +94,7 @@ export function useDocumentsDetailPresentation({
   hasApiKey,
   isZh,
   isSaving,
+  saveStatus,
   mdCopyFlash,
   moveTargetId,
   onClipWebPage,
@@ -244,6 +246,7 @@ export function useDocumentsDetailPresentation({
     documentsWideMode,
     isPinned: selectedDocument ? pinnedDocumentIds.has(selectedDocument.id) : false,
     isSaving,
+    saveStatus,
     isZh,
     mdCopyFlash,
     moveOptions,
