@@ -43,7 +43,8 @@ jobs:
 
   plugin-runtime-security:
     name: System Plugin v3 acceptance (Windows)
-    runs-on: windows-latest
+    # npm's bundled node-gyp does not recognize the VS 2026 toolchain on windows-latest.
+    runs-on: windows-2022
     timeout-minutes: 75
     steps:
       - name: Checkout
@@ -59,6 +60,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Pin Python for native dependency builds
+        shell: pwsh
+        run: |
+          "NODE_GYP_FORCE_PYTHON=$env:pythonLocation\python.exe" >> $env:GITHUB_ENV
 
       - name: Install dependencies
         run: npm ci

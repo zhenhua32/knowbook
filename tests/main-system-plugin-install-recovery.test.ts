@@ -12,7 +12,9 @@ import { createSystemPluginPackagePreparer } from '../src/main/system-plugin/pac
 
 const pluginId = 'system.install-recovery.fixture'
 
-test('startup terminates interrupted job metadata, retains active revision and logs, and requires fresh same-hash confirmation', async () => {
+test('startup terminates interrupted job metadata, retains active revision and logs, and requires fresh same-hash confirmation', async (t) => {
+  // Exercise equal creation timestamps: job UUID order is not execution order.
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-01-01T00:00:00.000Z') })
   const root = mkdtempSync(join(tmpdir(), 'knowbook-install-recovery-'))
   const store = new KnowbookStore(join(root, 'database.db'))
   const source = join(root, 'source')
@@ -72,8 +74,12 @@ test('startup terminates interrupted job metadata, retains active revision and l
     assert.equal(existsSync(temporary), false, 'legacy exact .preparing directory should be cleaned')
     const recovered = store.pluginPlatform.getSystemPluginPackage(newPackageId)!
     assert.equal(canRetryInterruptedSystemPluginPackage(recovered), true)
-    assert.deepEqual(store.pluginPlatform.listSystemPluginDependencyJobs(newPackageId).map((job) => [job.status, job.pid, job.exitCode]), [
-      ['succeeded', null, 0], ['failed', null, null], ['cancelled', null, null]
+    const recoveredJobs = store.pluginPlatform.listSystemPluginDependencyJobs(newPackageId)
+    assert.deepEqual(recoveredJobs.sort((left, right) => left.kind.localeCompare(right.kind))
+      .map((job) => [job.kind, job.status, job.pid, job.exitCode]), [
+      ['build', 'failed', null, null],
+      ['install', 'succeeded', null, 0],
+      ['native-rebuild', 'cancelled', null, null]
     ])
     assert.equal(readFileSync(join(root, 'interrupted-build.log'), 'utf8'), 'compiler output before host termination')
     const auditCount = store.pluginPlatform.listSystemPluginAudit(pluginId).length
