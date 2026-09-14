@@ -136,7 +136,7 @@ module.exports.activate = (context) => {
     await closeElectronApp(context, { preserveUserData: true })
     context = null
     context = await launchElectronApp({ KNOWBOOK_E2E_EXECUTABLE: baseline! }, { userDataRoot: profile })
-    expect(await state(context)).toBeNull()
+    await expect.poll(() => state(context!), { timeout: 30_000 }).toBeNull()
     expect(existsSync(artifact)).toBe(false)
     expect(existsSync(join(profile, 'system-plugins', 'runtime', pluginId, request.artifactSha256))).toBe(false)
     expect(existsSync(join(profile, 'system-plugins', 'data', pluginId))).toBe(false)

@@ -145,11 +145,11 @@ for (const manager of ['pnpm', 'yarn'] as const) {
 
       stage = 'restart-and-uninstall'
       await boot()
-      expect(await state()).toMatchObject({ status: 'active', currentVersion: '2.0.0' })
+      await expect.poll(state).toMatchObject({ status: 'active', currentVersion: '2.0.0' })
       expect(history().map((item) => item.label)).toEqual(['1.0.0', '2.0.0', '2.0.0'])
       await context!.page.evaluate((id) => window.knowbook.uninstallSystemPlugin({ pluginId: id }), pluginId)
       await boot()
-      expect(await state()).toBeNull()
+      await expect.poll(state, { timeout: 30_000 }).toBeNull()
       for (const hash of hashes) for (const directory of ['artifacts', 'runtime']) expect(existsSync(join(profile, 'system-plugins', directory, pluginId, hash))).toBe(false)
       for (const directory of ['data', 'logs']) expect(existsSync(join(profile, 'system-plugins', directory, pluginId))).toBe(false)
       stages.push(stage)

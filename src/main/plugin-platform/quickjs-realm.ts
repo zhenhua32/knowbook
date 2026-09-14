@@ -477,7 +477,10 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
       call = parseCapabilityCall(args[0].toString())
       owner = this.requireCurrentOwner()
     } catch (error) {
-      this.rejectDeferred(deferred, error)
+      // QuickJS borrows the returned handle and duplicates it after this host
+      // callback returns. Rejecting now would dispose it before that copy and
+      // re-enter the guest job queue while the bridge is still on the stack.
+      queueMicrotask(() => this.rejectDeferred(deferred, error))
       return deferred.handle
     }
 

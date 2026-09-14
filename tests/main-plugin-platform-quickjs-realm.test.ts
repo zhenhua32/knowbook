@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { QuickJS, type HostFunction } from 'quickjs-wasi'
 import type {
   PluginActivationIdentity,
   PluginActiveOwner,
@@ -123,7 +124,16 @@ test('QuickJS standard module bridges async calls only through the committed own
   }
 })
 
-test('QuickJS rejects capability use during staging before atomic commit', async () => {
+test('QuickJS rejects capability use during staging before atomic commit', async (t) => {
+  const newFunction = QuickJS.prototype.newFunction
+  t.mock.method(QuickJS.prototype, 'newFunction', function (this: QuickJS, name: string, callback: HostFunction) {
+    return newFunction.call(this, name, function (...args) {
+      const result = callback.apply(this, args)
+      // The WASM trampoline duplicates this value only after the callback returns.
+      assert.equal(result.disposed, false, 'Capability bridge returned a freed QuickJS handle.')
+      return result
+    })
+  })
   const package_ = buildPluginRevisionPackage({
     manifest: manifest({
       permissions: [{ capability: 'documents.read', version: 1 }],

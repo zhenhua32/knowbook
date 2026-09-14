@@ -182,7 +182,8 @@ test('native source rebuild rejects a foreign ABI, compiles for Electron and pre
     await closeElectronApp(current, { preserveUserData: true })
     current = null
     current = await launchElectronApp({}, { userDataRoot: profile })
-    expect(await state(current)).toBeNull()
+    // The shell is ready before background plugin startup finishes removing files.
+    await expect.poll(() => state(current!), { timeout: 30_000 }).toBeNull()
     for (const root of ['artifacts', 'runtime']) {
       for (const hash of [foreign.artifactSha256, accepted.artifactSha256, broken.artifactSha256]) {
         expect(existsSync(join(profile, 'system-plugins', root, pluginId, hash))).toBe(false)

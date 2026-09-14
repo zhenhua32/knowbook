@@ -195,7 +195,7 @@ test('restores a detached service through a real Windows login item and cleans u
     await expect.poll(() => isAlive(finalPid)).toBe(false)
     await close()
     await launch(registration!.command.args)
-    expect(await state()).toBeNull()
+    await expect.poll(state, { timeout: 30_000 }).toBeNull()
     for (const directory of ['artifacts', 'runtime']) {
       const parent = join(profile, 'system-plugins', directory, pluginId)
       // The manager removes owned revisions; their empty grouping folder may remain.

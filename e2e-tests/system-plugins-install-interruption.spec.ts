@@ -128,7 +128,7 @@ test('recovers after killing only the isolated host tree during a reviewed build
     stage = 'uninstall-and-clean-controlled-revisions'
     await context!.page.evaluate((id) => window.knowbook.uninstallSystemPlugin({ pluginId: id }), pluginId)
     await close(); await launch()
-    expect(await state()).toBeUndefined()
+    await expect.poll(state, { timeout: 30_000 }).toBeUndefined()
     expect(existsSync(join(profile, 'system-plugins', 'artifacts', pluginId, originalHash!))).toBe(false)
     expect(existsSync(join(profile, 'system-plugins', 'artifacts', pluginId, reviewed.artifactSha256))).toBe(false)
     expect(existsSync(join(profile, 'system-plugins', 'data', pluginId))).toBe(false)
