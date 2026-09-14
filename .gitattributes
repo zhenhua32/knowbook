@@ -1,0 +1,2 @@
+# Yarn file: dependency hashes require identical fixture bytes on every platform.
+e2e-tests/fixtures/modern-yarn/** text eol=lf

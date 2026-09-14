@@ -71,7 +71,7 @@ for (const scenario of [
         await install('good', '1.0.0')
         expect(attempts()).toEqual([])
         await boot()
-        expect(await state()).toMatchObject({ status: 'active', currentVersion: '1.0.0' })
+        await expect.poll(state, { timeout: 30_000 }).toMatchObject({ status: 'active', currentVersion: '1.0.0' })
         expect(await readDatabaseEvidence(context!)).toMatchObject({ sentinel: 'before-failure' })
       }
       const beforeInstall = attempts()
@@ -88,14 +88,17 @@ for (const scenario of [
         snapshots.push(await runCrashingHost(profile, marker, scenario.mode))
         await boot()
       }
+      // The window is ready before background activation and recovery finish.
+      await expect.poll(state, { timeout: 30_000 }).toMatchObject({
+        ...(scenario.mode === 'throw' && scenario.baseline
+          ? { status: 'active', currentVersion: '1.0.0' }
+          : { status: 'safe-mode-disabled', enabled: false, safeModeDisabled: true }),
+        availablePackages: expect.arrayContaining([
+          expect.objectContaining({ artifactSha256: candidate.artifactSha256, status: 'failed' })
+        ])
+      })
       const recovered = (await state())!
       expect(attempts().filter((entry) => entry.mode === scenario.mode)).toHaveLength(1)
-      expect(recovered.availablePackages).toEqual(expect.arrayContaining([
-        expect.objectContaining({ artifactSha256: candidate.artifactSha256, status: 'failed' })
-      ]))
-      if (scenario.mode === 'throw' && scenario.baseline) {
-        expect(recovered).toMatchObject({ status: 'active', currentVersion: '1.0.0' })
-      } else expect(recovered).toMatchObject({ status: 'safe-mode-disabled', enabled: false, safeModeDisabled: true })
       const recovery = await readDatabaseEvidence(context!)
       expect(recovery.sentinel).toBe(`mutated-by-${scenario.mode}`)
       expect(recovery.armedMarkers).toBe(0)
@@ -116,7 +119,7 @@ for (const scenario of [
         stage = 'resume-known-good'
         if (scenario.mode !== 'throw') await context!.page.evaluate((id) => window.knowbook.setSystemPluginEnabled({ pluginId: id, enabled: true }), pluginId)
         await boot()
-        expect(await state()).toMatchObject({ status: 'active', currentVersion: '1.0.0' })
+        await expect.poll(state, { timeout: 30_000 }).toMatchObject({ status: 'active', currentVersion: '1.0.0' })
         expect(attempts().filter((entry) => entry.mode === scenario.mode)).toHaveLength(1)
         expect(await readDatabaseEvidence(context!)).toMatchObject({ sentinel: `mutated-by-${scenario.mode}` })
         stages.push(stage)

@@ -47,6 +47,8 @@ jobs:
     # npm's bundled node-gyp does not recognize the VS 2026 toolchain on windows-latest.
     runs-on: windows-2022
     timeout-minutes: 75
+    env:
+      electron_config_cache: ${{ runner.temp }}/electron-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,8 +69,41 @@ jobs:
         run: |
           "NODE_GYP_FORCE_PYTHON=$env:pythonLocation\python.exe" >> $env:GITHUB_ENV
 
+      - name: Restore Electron download cache
+        id: electron-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.electron_config_cache }}
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-v1-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-electron-v1-
+
       - name: Install dependencies
-        run: npm ci
+        shell: pwsh
+        timeout-minutes: 15
+        run: |
+          # Electron downloads outside npm's registry, so npm's fetch retries do not cover it.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ciInstallAttempts = 3
+          $ciTransientFailure = 'HTTPError: Response code (408|429|5\d{2})\b|\bE(408|429|5\d{2}|CONNRESET|CONNREFUSED|TIMEDOUT|AI_AGAIN|HOSTUNREACH|NETUNREACH|SOCKETTIMEDOUT)\b|socket hang up'
+          for ($ciInstallAttempt = 1; $ciInstallAttempt -le $ciInstallAttempts; $ciInstallAttempt++) {
+            npm ci 2>&1 | Tee-Object -Variable ciInstallOutput
+            $ciInstallExitCode = $LASTEXITCODE
+            if ($ciInstallExitCode -eq 0) { exit 0 }
+            if ($ciInstallAttempt -eq $ciInstallAttempts -or ($ciInstallOutput -join "`n") -notmatch $ciTransientFailure) {
+              exit $ciInstallExitCode
+            }
+            Write-Warning "Dependency download failed temporarily; retrying npm ci ($ciInstallAttempt/$ciInstallAttempts)."
+            Start-Sleep -Seconds (10 * $ciInstallAttempt)
+          }
+
+      # Save before acceptance tests so a later test failure does not discard the download.
+      - name: Save Electron download cache
+        if: steps.electron-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.electron_config_cache }}
+          key: ${{ steps.electron-cache.outputs.cache-primary-key }}
 
       - name: Run isolated-realm security tests
         run: npm run test:plugin-security

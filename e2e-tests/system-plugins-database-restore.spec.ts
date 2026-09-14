@@ -59,13 +59,13 @@ test('SQLite maintenance stops verified detached service, restores damaged DB, a
     expect(await context!.page.evaluate(() => document.documentElement.getAttribute('data-restore-renderer'))).toBe('loaded')
     await expect.poll(() => existsSync(servicePath) ? JSON.parse(readFileSync(servicePath, 'utf8')).successes : 0).toBeGreaterThan(0)
     pid = JSON.parse(readFileSync(servicePath, 'utf8')).pid
-    const backupRuns = await context!.app.evaluate(async ({ app }, destination) => {
+    const backupRuns = await context!.app.evaluate(async ({ app }, { destination, pluginId }) => {
       const { createRequire } = process.getBuiltinModule('node:module')
       const { join } = process.getBuiltinModule('node:path')
       const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
       const db = new Database(join(app.getPath('userData'), 'storage', 'knowbook.db'))
       try {
-        const main = db.prepare("SELECT * FROM system_plugin_runs WHERE component='main' AND status='ready' LIMIT 1").get()
+        const main = db.prepare("SELECT * FROM system_plugin_runs WHERE plugin_id=? AND component='main' AND status='ready' LIMIT 1").get(pluginId)
         if (!main) throw new Error('Main ready run was not recorded.')
         db.prepare(`INSERT INTO system_plugin_runs (
           id, plugin_id, installation_id, package_id, component, status, pid, restart_count,
@@ -75,13 +75,13 @@ test('SQLite maintenance stops verified detached service, restores damaged DB, a
           JSON.stringify({ stage: 'activate', message: '旧候选失败诊断（已脱敏）' }), main.log_path,
           main.started_at, main.started_at, main.started_at
         )
-        const runs = db.prepare("SELECT id, package_id AS packageId, component, status, pid, error_json AS errorJson, log_path AS logPath FROM system_plugin_runs WHERE component IN ('main','renderer')").all()
+        const runs = db.prepare("SELECT id, package_id AS packageId, component, status, pid, error_json AS errorJson, log_path AS logPath FROM system_plugin_runs WHERE plugin_id=? AND component IN ('main','renderer')").all(pluginId)
         db.prepare('INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('restore.e2e.sentinel', 'healthy backup', new Date().toISOString())
         await db.backup(destination)
         db.prepare('UPDATE app_settings SET value=? WHERE key=?').run('changed after backup', 'restore.e2e.sentinel')
         return runs as Array<{ id: string; packageId: string; component: string; status: string; pid: number | null; errorJson: string | null; logPath: string | null }>
       } finally { db.close() }
-    }, backup)
+    }, { destination: backup, pluginId })
     expect(backupRuns.filter((run) => run.status === 'ready').map((run) => run.component).sort()).toEqual(['main', 'renderer'])
     const assertRetiredHostRuns = async () => {
       const plugin = await state()

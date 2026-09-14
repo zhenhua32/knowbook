@@ -142,7 +142,7 @@ test('main window guards reloads via same-origin check and hardens asset respons
     'a verified staging revision may register a policy before Renderer commit'
   )
   const activeRevisionGate = mainIndexSource.match(
-    /function isActiveSystemPluginRevision[\s\S]*?\n}\n/
+    /function isActiveSystemPluginRevision[\s\S]*?\r?\n}\r?\n/
   )?.[0] ?? ''
   assert.ok(activeRevisionGate.length > 0, 'expected an exact active revision gate')
   assert.equal(
