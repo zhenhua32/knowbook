@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { existsSync } from 'node:fs'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function openRailPage(page: Page, en: string, zh: string): Promise<void> {
@@ -6,6 +7,17 @@ async function openRailPage(page: Page, en: string, zh: string): Promise<void> {
 }
 
 test.describe('Application Shell Smoke @electron', () => {
+  test('cleans an application that already exited before helper teardown', async () => {
+    test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+    let profile = ''
+    await withElectronApp(async ({ app, page, tempRoot }) => {
+      profile = tempRoot
+      await app.close()
+      expect(page.isClosed()).toBe(true)
+    })
+    expect(existsSync(profile)).toBe(false)
+  })
+
   test('opens the core workspace pages from the rail', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
     test.slow()

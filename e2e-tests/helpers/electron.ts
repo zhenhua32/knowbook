@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import { _electron as electron, type ElectronApplication } from 'playwright'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -29,6 +29,9 @@ export type ElectronCloseOptions = {
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
 const electronHostPids = new WeakMap<ElectronApplication, number>()
+// Playwright disposes its application channel after exit, so app.process()
+// cannot be used later to retrieve the launcher for teardown or diagnostics.
+const electronChildProcesses = new WeakMap<ElectronApplication, ChildProcess>()
 
 export function hasBuiltElectronApp(): boolean {
   // An explicitly requested packaged app must fail loudly if missing, rather
@@ -89,28 +92,31 @@ export async function launchElectronApp(
     delete env.KNOWBOOK_USER_DATA_DIR
   }
   let app: ElectronApplication | undefined
+  let childProcess: ChildProcess | undefined
   let startupOutput = ''
   const captureStartupOutput = (chunk: Buffer | string) => {
     startupOutput = (startupOutput + String(chunk)).slice(-16_000)
   }
   try {
     app = await electron.launch({ ...target, env })
-    electronHostPids.set(app, await readElectronHostPid(app))
-    app.process().stdout?.on('data', captureStartupOutput)
-    app.process().stderr?.on('data', captureStartupOutput)
+    childProcess = app.process()
+    electronChildProcesses.set(app, childProcess)
+    electronHostPids.set(app, await readElectronHostPid(app, childProcess))
+    childProcess.stdout?.on('data', captureStartupOutput)
+    childProcess.stderr?.on('data', captureStartupOutput)
 
     const page = await app.firstWindow()
     page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')
     await expect(page.locator('[data-testid="shell"]')).toBeVisible()
-    app.process().stdout?.off('data', captureStartupOutput)
-    app.process().stderr?.off('data', captureStartupOutput)
+    childProcess.stdout?.off('data', captureStartupOutput)
+    childProcess.stderr?.off('data', captureStartupOutput)
 
     return { app, page, tempRoot }
   } catch (error) {
-    const processState = app ? {
-      pid: app.process().pid, exitCode: app.process().exitCode, signalCode: app.process().signalCode
+    const processState = childProcess ? {
+      pid: childProcess.pid, exitCode: childProcess.exitCode, signalCode: childProcess.signalCode
     } : null
     let appState: unknown = null
     if (app) {
@@ -145,7 +151,7 @@ export async function closeElectronApp(
     return
   }
 
-  const childProcess = context.app.process()
+  const childProcess = electronChildProcesses.get(context.app) ?? context.app.process()
   // On Windows Playwright launches Electron through a cmd wrapper. In the
   // explicit detached case, killing that wrapper alone leaves the real host.
   const hostPid = electronHostPids.get(context.app)
@@ -204,8 +210,7 @@ export async function closeElectronApp(
   }
 }
 
-async function readElectronHostPid(app: ElectronApplication): Promise<number> {
-  const child = app.process()
+async function readElectronHostPid(app: ElectronApplication, child: ChildProcess): Promise<number> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await app.evaluate(() => process.pid)
