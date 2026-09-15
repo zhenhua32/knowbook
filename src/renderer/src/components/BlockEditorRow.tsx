@@ -210,6 +210,12 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
+  const getAdjacentVisibleIndex = (delta: -1 | 1) => {
+    for (let next = index + delta; next >= 0 && next < draftBlockCount; next += delta) {
+      if (blockTextareaRefs.current[next]) return next
+    }
+    return null
+  }
   const registerTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     const previousElement = textareaRef.current
     textareaRef.current = element
@@ -313,6 +319,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
       }}
     >
+      {block.id && hasChildren && (block.type === 'heading-1' || block.type === 'heading-2') ? (
+        <button type="button" className="block-collapse-toggle section-collapse-toggle"
+          aria-expanded={!collapsedBlockIds.has(block.id)}
+          aria-label={`${collapsedBlockIds.has(block.id) ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`}
+          onMouseDown={(event) => event.preventDefault()} onClick={() => toggleBlockCollapse(block.id!)}>
+          {collapsedBlockIds.has(block.id) ? '▸' : '▾'}
+        </button>
+      ) : null}
       {/* ── Left gutter: hover controls ── */}
       <div className="block-hover-controls">
         <button
@@ -337,10 +351,12 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         >
           ⋮⋮
         </button>
-        {block.id && hasChildren ? (
+        {block.id && hasChildren && block.type !== 'heading-1' && block.type !== 'heading-2' ? (
           <button
             aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
             className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
+            aria-expanded={!collapsedBlockIds.has(block.id)}
+            onMouseDown={(event) => event.preventDefault()}
             onClick={() => block.id && toggleBlockCollapse(block.id)}
             type="button"
           >
@@ -634,6 +650,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   if (isEmpty || allSelected) {
                     event.preventDefault()
                     selectAllBlocks()
+                    // The second Select All switches from text to block selection.
+                    el.setSelectionRange(el.value.length, el.value.length)
                     return
                   }
                 }
@@ -651,7 +669,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   const atBottom = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
                   if (event.key === 'ArrowUp' && atTop && index > 0) {
                     event.preventDefault()
-                    const prev = blockTextareaRefs.current[index - 1]
+                    const previousIndex = getAdjacentVisibleIndex(-1)
+                    const prev = previousIndex === null ? null : blockTextareaRefs.current[previousIndex]
                     if (prev) {
                       prev.focus()
                       prev.setSelectionRange(prev.value.length, prev.value.length)
@@ -659,7 +678,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     return
                   } else if (event.key === 'ArrowDown' && atBottom && index < draftBlockCount - 1) {
                     event.preventDefault()
-                    const next = blockTextareaRefs.current[index + 1]
+                    const nextIndex = getAdjacentVisibleIndex(1)
+                    const next = nextIndex === null ? null : blockTextareaRefs.current[nextIndex]
                     if (next) {
                       next.focus()
                       next.setSelectionRange(0, 0)
@@ -677,8 +697,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   const wouldLeaveBounds = (event.key === 'ArrowUp' && atTop) || (event.key === 'ArrowDown' && atBottom)
                   if (wouldLeaveBounds || (selectedBlockRange && selectedBlockRange.start !== selectedBlockRange.end)) {
                     event.preventDefault()
-                    const targetIndex = event.key === 'ArrowUp' ? index - 1 : index + 1
-                    if (targetIndex >= 0 && targetIndex < draftBlockCount) {
+                    const targetIndex = getAdjacentVisibleIndex(event.key === 'ArrowUp' ? -1 : 1)
+                    if (targetIndex !== null) {
                       selectBlockRange(targetIndex, true)
                     }
                     return
@@ -813,7 +833,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   event.preventDefault()
                   if (['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
                     downgradeBlockAt(index)
-                  } else if (index > 0) {
+                  } else if (index > 0 && blockTextareaRefs.current[index - 1]) {
                     mergeWithPreviousBlock(index)
                   }
                   return

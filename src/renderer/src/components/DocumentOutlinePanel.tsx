@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
 
 type DocumentOutlineItem = {
+  id?: string
+  collapsed?: boolean
+  hasChildren?: boolean
   index: number
   level: 1 | 2
   title: string
@@ -15,6 +18,13 @@ type DocumentOutlinePanelProps = {
   activeIndex?: number | null
   filterPlaceholder?: string
   noMatchText?: string
+  isZh?: boolean
+  focusedHeadingId?: string | null
+  onToggleFold?: (index: number) => void
+  onCollapseAll?: () => void
+  onExpandAll?: () => void
+  onFocusSection?: (index: number) => void
+  onExitFocus?: () => void
 }
 
 type DocumentOutlineGroup = {
@@ -24,6 +34,7 @@ type DocumentOutlineGroup = {
 
 export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
   const { title, items, emptyHeadingTitleLevel1, emptyHeadingTitleLevel2, onSelect, activeIndex, filterPlaceholder, noMatchText } = props
+  const isZh = props.isZh ?? true
   const [query, setQuery] = useState('')
   const filteredItems = useMemo(() => {
     const term = query.trim().toLocaleLowerCase()
@@ -59,6 +70,10 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
   }, [])
 
   const renderOutlineButton = (item: DocumentOutlineItem) => (
+    <div className="toc-item-row">
+      {props.onToggleFold ? <button className="toc-fold-button" type="button" disabled={!item.hasChildren}
+        aria-expanded={!item.collapsed} aria-label={`${item.collapsed ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${item.title}`}
+        onMouseDown={(event) => event.preventDefault()} onClick={() => props.onToggleFold?.(item.index)}>{item.collapsed ? '▸' : '▾'}</button> : null}
     <button
       className={`toc-item toc-item-h${item.level}${activeIndex === item.index ? ' toc-item-active' : ''}`}
       aria-current={activeIndex === item.index ? 'location' : undefined}
@@ -68,11 +83,21 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
     >
       {item.title || (item.level === 1 ? emptyHeadingTitleLevel1 : emptyHeadingTitleLevel2)}
     </button>
+      {props.onFocusSection ? <button className="toc-focus-button" type="button"
+        aria-label={`${isZh ? '只看本章' : 'Focus section'}：${item.title}`}
+        aria-pressed={props.focusedHeadingId === item.id}
+        onClick={() => props.onFocusSection?.(item.index)}>{isZh ? '只看' : 'Focus'}</button> : null}
+    </div>
   )
 
   return (
     <div className="document-outline-panel toc-panel">
       <p className="panel-label">{title}</p>
+      {props.onCollapseAll ? <div className="outline-fold-actions">
+        <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={props.onCollapseAll}>{isZh ? '全部折叠' : 'Fold all'}</button>
+        <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={props.onExpandAll}>{isZh ? '全部展开' : 'Expand all'}</button>
+        <button type="button" disabled={activeIndex == null} onClick={() => { if (activeIndex != null) props.onFocusSection?.(activeIndex) }}>{isZh ? '只看本章' : 'Focus current'}</button>
+      </div> : null}
       {filterPlaceholder ? <input className="outline-filter" type="search" value={query}
         aria-label={filterPlaceholder} placeholder={filterPlaceholder} onChange={(event) => setQuery(event.target.value)} /> : null}
       {filteredItems.length === 0 ? <p className="empty-text">{noMatchText}</p> : null}

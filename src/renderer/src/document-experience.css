@@ -119,7 +119,12 @@
 .document-reading-content pre { max-width: 100%; overflow-x: auto; white-space: pre; }
 .document-reading-row > input, .reading-list-marker { flex-shrink: 0; margin-top: 7px; }
 .document-reading-row > input { width: 16px; height: 16px; }
-.reading-collapse { position: absolute; right: calc(100% + 4px); top: 10px; color: var(--kb-text-muted); background: transparent; }
+.reading-collapse { position: absolute; right: calc(100% + 4px); top: 10px; width: 22px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 4px; padding: 0;
+  font-size: 16px; cursor: pointer; color: var(--kb-text-muted); background: transparent; }
+.document-reading-row.type-heading-1 .reading-collapse { top: 34px; }
+.document-reading-row.type-heading-2 .reading-collapse { top: 28px; }
+.reading-collapse:hover { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
 .document-reading-row.type-paragraph:has(.document-reading-text:empty) { min-height: 24px; }
 
 @container document-canvas (max-width: 460px) {
@@ -132,3 +137,28 @@
 .document-save-status { margin-left: 12px; font-weight: 400; letter-spacing: normal; text-transform: none; }
 .document-save-status.status-error { color: var(--danger, #b42318); }
 .document-save-status.status-pending { color: var(--text-secondary, #667085); }
+.section-collapse-toggle { position: absolute; left: 24px; top: 18px; z-index: 2; color: var(--kb-text-muted); }
+.block-editor-row[data-heading-level="1"] .section-collapse-toggle { top: calc(6px + clamp(25px, 2.2vw, 34px) * .64); }
+.block-editor-row[data-heading-level] .block-hover-controls { position: relative; left: -22px; }
+.block-editor-row[data-heading-level] .block-collapse-toggle { font-size: 16px; }
+.toc-item-row { display: flex; align-items: center; gap: 3px; }
+.toc-item-row .toc-item { flex: 1; min-width: 0; }
+.toc-fold-button, .toc-focus-button, .outline-fold-actions button, .document-section-focus button {
+  border: 0; border-radius: 5px; background: transparent; color: var(--kb-text-soft); font: inherit; cursor: pointer;
+}
+.toc-fold-button { flex: 0 0 24px; min-height: 28px; }
+.toc-fold-button:disabled { visibility: hidden; }
+.toc-focus-button { flex-shrink: 0; padding: 5px; font-size: 11px; }
+.toc-focus-button[aria-pressed="true"], .toc-focus-button:hover, .toc-fold-button:hover,
+.outline-fold-actions button:hover { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
+.outline-fold-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-block: 8px; }
+.outline-fold-actions button { padding: 6px 7px; font-size: 12px; }
+.outline-fold-actions button:disabled { opacity: .4; cursor: default; }
+.document-section-focus { display: flex; align-items: center; gap: 12px; padding: 7px 9px; margin-block: 4px;
+  background: var(--kb-accent-soft); border-radius: 6px; font-size: 12px; color: var(--kb-accent-strong); }
+.document-section-focus span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-section-focus button { color: inherit; padding: 4px; flex-shrink: 0; }
+.toc-fold-button:focus-visible, .toc-focus-button:focus-visible, .outline-fold-actions button:focus-visible,
+.document-section-focus button:focus-visible, .section-collapse-toggle:focus-visible, .reading-collapse:focus-visible {
+  outline: 2px solid var(--kb-accent); outline-offset: 1px;
+}

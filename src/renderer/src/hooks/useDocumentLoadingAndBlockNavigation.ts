@@ -85,7 +85,9 @@ export function useDocumentLoadingAndBlockNavigation({
       return
     }
 
-    if (!selectedDocument) {
+    // A document switch first renders the new ID with the previous document's draft.
+    // Keep the target queued until its own document has loaded.
+    if (!selectedDocument || selectedDocument.id !== selectedDocumentId) {
       return
     }
 

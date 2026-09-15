@@ -83,6 +83,12 @@ export function DocumentsPage({
     selectionToolbarProps,
     visibleEditorRows
   } = useDocumentsBlockEditorPresentation({
+    blockHasChildren: documents.blockHasChildren,
+    focusedHeadingId: documents.focusedHeadingId,
+    collapseAllSections: documents.collapseAllSections,
+    expandAllSections: documents.expandAllSections,
+    focusSection: documents.focusSection,
+    exitSectionFocus: documents.exitSectionFocus,
     activeBlockIndex: documents.activeBlockIndex,
     activeLinkContext: documents.activeLinkContext,
     activeSlashCommand: documents.activeSlashCommand,
@@ -322,7 +328,11 @@ export function DocumentsPage({
         floatingSlashCommandPanelProps={floatingSlashCommandPanelProps}
         isWideMode={documents.documentsWideMode}
         linkSuggestionPanelProps={linkSuggestionPanelProps}
-        onAddBlock={documents.addDraftBlock}
+        onAddBlock={() => {
+          const section = documents.focusedSection
+          if (section) documents.insertDraftBlockAt(section.end)
+          else documents.addDraftBlock()
+        }}
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}

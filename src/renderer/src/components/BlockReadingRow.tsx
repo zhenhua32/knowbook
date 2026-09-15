@@ -83,7 +83,9 @@ export const BlockReadingRow = memo(function BlockReadingRow({
     style={{ marginInlineStart: indentPx, ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : {}) }}
   >
     {hasChildren && block.id ? <button className="reading-collapse" type="button" aria-expanded={!collapsed}
-      aria-label={collapsed ? ui.expandBlock : ui.collapseBlock}
+      aria-label={block.type === 'heading-1' || block.type === 'heading-2'
+        ? `${collapsed ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`
+        : collapsed ? ui.expandBlock : ui.collapseBlock}
       onClick={() => onToggleCollapse(block.id!)}>{collapsed ? '▸' : '▾'}</button> : null}
     {block.type === 'todo' ? <input type="checkbox" checked={block.checked} disabled aria-label={isZh ? '待办状态' : 'Todo status'} />
       : block.type === 'bulleted-list' ? <span className="reading-list-marker" aria-hidden="true">•</span>

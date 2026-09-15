@@ -44,6 +44,12 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   isBlockSelected: (index: number) => boolean
   linkSuggestions: LinkSuggestionPanelProps['linkSuggestions']
   onSelectOutlineBlock: (blockIndex: number) => void
+  blockHasChildren: (index: number) => boolean
+  focusedHeadingId: string | null
+  collapseAllSections: () => void
+  expandAllSections: () => void
+  focusSection: (index: number) => void
+  exitSectionFocus: () => void
   selectedDocument: SharedBlockEditorRowProps['selectedDocument'] | null
   selectedBlockActionCount: number
   selectedBlockConversionType: DocumentBlock['type']
@@ -56,6 +62,12 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
 }
 
 export function useDocumentsBlockEditorPresentation({
+  blockHasChildren,
+  focusedHeadingId,
+  collapseAllSections,
+  expandAllSections,
+  focusSection,
+  exitSectionFocus,
   activeBlockIndex,
   activeLinkContext,
   activeSlashCommand,
@@ -144,11 +156,6 @@ export function useDocumentsBlockEditorPresentation({
       return []
     }
 
-    const childParentIds = new Set(
-      draftBlocks
-        .map((block) => block.parentBlockId?.trim())
-        .filter((parentBlockId): parentBlockId is string => Boolean(parentBlockId))
-    )
     const numberedCountsByDepth = new Map<number, number>()
 
     return getVisibleBlockEntries(draftBlocks).map(({ block, index }) => {
@@ -177,7 +184,7 @@ export function useDocumentsBlockEditorPresentation({
       return {
         block,
         dropPreview,
-        hasChildren: Boolean(block.id && childParentIds.has(block.id)),
+        hasChildren: blockHasChildren(index),
         indentPx,
         index,
         isSelected,
@@ -191,6 +198,7 @@ export function useDocumentsBlockEditorPresentation({
     })
   }, [
     BLOCK_INDENT_SIZE,
+    blockHasChildren,
     dragOverBlockDepth,
     dragOverBlockIndex,
     draggingBlockIndex,
@@ -209,14 +217,24 @@ export function useDocumentsBlockEditorPresentation({
       .map((block, index) => ({ block, index }))
       .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
       .map(({ block, index }) => ({
+        id: block.id,
         index,
+        collapsed: Boolean(block.id && collapsedBlockIds.has(block.id)),
+        hasChildren: blockHasChildren(index),
         level: block.type === 'heading-1' ? 1 as const : 2 as const,
         title: block.content
       }))
-  }, [draftBlocks])
+  }, [draftBlocks, collapsedBlockIds, blockHasChildren])
 
   const outlinePanelProps: OutlinePanelProps | null = selectedDocument
     ? {
+        isZh,
+        focusedHeadingId,
+        onToggleFold: (index) => { const id = draftBlocks[index]?.id; if (id) toggleBlockCollapse(id) },
+        onCollapseAll: collapseAllSections,
+        onExpandAll: expandAllSections,
+        onFocusSection: focusSection,
+        onExitFocus: exitSectionFocus,
         emptyHeadingTitleLevel1: isZh ? '标题 1' : 'Heading 1',
         emptyHeadingTitleLevel2: isZh ? '标题 2' : 'Heading 2',
         filterPlaceholder: isZh ? '筛选章节…' : 'Filter headings…',

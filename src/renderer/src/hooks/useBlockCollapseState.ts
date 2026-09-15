@@ -1,76 +1,34 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { getBlockSubtreeEndIndex, getNormalizedBlockId, getNormalizedParentBlockId } from '../utils/draftTreeMove'
+import { buildDocumentSections, readDocumentFoldView, revealDocumentBlock, saveDocumentFoldView, type DocumentFoldView } from '../utils/documentSections'
 
-function buildBlockIndexById(blocks: DocumentBlockDraft[]): Map<string, number> {
-  const indexById = new Map<string, number>()
-  for (let index = 0; index < blocks.length; index += 1) {
-    const blockId = getNormalizedBlockId(blocks[index])
-    if (blockId) {
-      indexById.set(blockId, index)
-    }
-  }
-  return indexById
-}
+export function useBlockCollapseState({ draftBlocks, documentId }: { draftBlocks: DocumentBlockDraft[]; documentId: string | null }) {
+  const [session, setSession] = useState<{ documentId: string | null; view: DocumentFoldView } | null>(null)
+  const structure = useMemo(() => JSON.stringify(draftBlocks.map(({ id, type, parentBlockId, depth }) => [id, type, parentBlockId, depth])), [draftBlocks])
+  // Text edits must not replace the shared collapse Set and rerender every row.
+  const sections = useMemo(() => buildDocumentSections(draftBlocks), [structure])
+  const storedView = useMemo(() => session?.documentId === documentId ? session.view
+    : readDocumentFoldView(documentId ?? ''), [documentId, session])
+  const foldableIds = useMemo(() => new Set([
+    ...sections.filter((section) => section.end > section.index + 1).map((section) => section.id),
+    ...draftBlocks.flatMap((block) => block.parentBlockId ? [block.parentBlockId] : [])
+  ]), [structure, sections])
+  const view = useMemo<DocumentFoldView>(() => ({
+    collapsedIds: new Set([...storedView.collapsedIds].filter((id) => foldableIds.has(id))),
+    focusedHeadingId: sections.some((section) => section.id === storedView.focusedHeadingId) ? storedView.focusedHeadingId : null
+  }), [foldableIds, sections, storedView])
+  const setFoldView = useCallback((next: DocumentFoldView) => {
+    if (!documentId) return
+    setSession({ documentId, view: next })
+    saveDocumentFoldView(documentId, next)
+  }, [documentId])
+  const blockHasChildren = useCallback((index: number) => foldableIds.has(draftBlocks[index]?.id ?? ''), [draftBlocks, foldableIds])
+  const revealBlockAncestors = useCallback((id: string) => {
+    const next = revealDocumentBlock(draftBlocks, view, id, sections)
+    if (next.focusedHeadingId !== view.focusedHeadingId || next.collapsedIds.size !== view.collapsedIds.size) setFoldView(next)
+  }, [draftBlocks, sections, setFoldView, view])
 
-type UseBlockCollapseStateParams = {
-  draftBlocks: DocumentBlockDraft[]
-}
-
-export function useBlockCollapseState({ draftBlocks }: UseBlockCollapseStateParams) {
-  const [collapsedBlockIds, setCollapsedBlockIds] = useState<Set<string>>(new Set())
-
-  const blockHasChildren = useCallback((blockIndex: number): boolean => {
-    return getBlockSubtreeEndIndex(draftBlocks, blockIndex) > blockIndex
-  }, [draftBlocks, getBlockSubtreeEndIndex])
-
-  const toggleBlockCollapse = useCallback((blockId: string) => {
-    setCollapsedBlockIds((previous) => {
-      const nextCollapsed = new Set(previous)
-      if (nextCollapsed.has(blockId)) {
-        nextCollapsed.delete(blockId)
-      } else {
-        nextCollapsed.add(blockId)
-      }
-      return nextCollapsed
-    })
-  }, [])
-
-  const revealBlockAncestors = useCallback((targetBlockId: string) => {
-    setCollapsedBlockIds((previous) => {
-      const nextCollapsedBlockIds = new Set(previous)
-      const indexById = buildBlockIndexById(draftBlocks)
-      const visitedParentIds = new Set<string>()
-      let currentBlockId: string | null = targetBlockId
-
-      while (currentBlockId) {
-        if (visitedParentIds.has(currentBlockId)) {
-          break
-        }
-
-        visitedParentIds.add(currentBlockId)
-        const currentIndex = indexById.get(currentBlockId)
-        if (currentIndex === undefined) {
-          break
-        }
-
-        const parentBlockId = getNormalizedParentBlockId(draftBlocks[currentIndex])
-        if (!parentBlockId) {
-          break
-        }
-
-        nextCollapsedBlockIds.delete(parentBlockId)
-        currentBlockId = parentBlockId
-      }
-
-      return nextCollapsedBlockIds
-    })
-  }, [draftBlocks])
-
-  return {
-    blockHasChildren,
-    collapsedBlockIds,
-    revealBlockAncestors,
-    toggleBlockCollapse
-  }
+  return { blockHasChildren, collapsedBlockIds: view.collapsedIds, focusedHeadingId: view.focusedHeadingId,
+    focusedSection: sections.find((section) => section.id === view.focusedHeadingId) ?? null,
+    sections, foldView: view, setFoldView, revealBlockAncestors }
 }

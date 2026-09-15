@@ -15,7 +15,9 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
   const [outlineOpen, setOutlineOpen] = useState(false)
   const outlineRef = useRef<HTMLDivElement>(null)
   const outlineButtonRef = useRef<HTMLButtonElement>(null)
-  const activeHeading = outline?.items.find((item) => item.index === activeIndex)
+  const focusedHeading = outline?.items.find((item) => item.id === outline.focusedHeadingId)
+  const effectiveActiveIndex = activeIndex ?? focusedHeading?.index ?? null
+  const activeHeading = outline?.items.find((item) => item.index === effectiveActiveIndex)
   const outlineTitle = activeHeading?.title || (isZh ? '文档开头' : 'Document start')
 
   useEffect(() => {
@@ -43,7 +45,11 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
           {outline?.items.length ? <small>{outline.items.length}</small> : null}
         </button>
         {outlineOpen && outline ? <div id="document-outline-popover" className="document-outline-popover">
-          <DocumentOutlinePanel {...outline} activeIndex={activeIndex} onSelect={(index) => {
+          <DocumentOutlinePanel {...outline} activeIndex={effectiveActiveIndex} onFocusSection={outline.onFocusSection ? (index) => {
+            outline.onFocusSection?.(index)
+            setOutlineOpen(false)
+            outlineButtonRef.current?.focus({ preventScroll: true })
+          } : undefined} onSelect={(index) => {
             outline.onSelect(index)
             setOutlineOpen(false)
             outlineButtonRef.current?.focus({ preventScroll: true })
@@ -57,6 +63,10 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
       <button className="document-navigation-button document-view-toggle" type="button" aria-pressed={reading}
         onClick={onToggleReading}>{reading ? (isZh ? '编辑' : 'Edit') : (isZh ? '阅读' : 'Read')}</button>
     </div>
+    {focusedHeading ? <div className="document-section-focus" role="status">
+      <span>{isZh ? '只看本章：' : 'Focused section: '}{focusedHeading.title || (isZh ? '未命名章节' : 'Untitled section')}</span>
+      <button type="button" onClick={outline?.onExitFocus}>{isZh ? '显示全文' : 'Show full document'}</button>
+    </div> : null}
     <div className="document-progress-track" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
     <BlockSearchPanel {...search} />
   </div>

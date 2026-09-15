@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import { buildDocumentSections, getVisibleDocumentEntries } from '../utils/documentSections'
 import {
   getBlockSubtreeEndIndex,
   getNextSiblingSubtreeStartIndex,
@@ -26,6 +27,7 @@ type VisibleSelectionSlice = {
 type UseBlockSelectionStateParams = {
   activeBlockIndex: number | null
   collapsedBlockIds: Set<string>
+  focusedHeadingId?: string | null
   draftBlocks: DocumentBlockDraft[]
   onActiveBlockChange: (index: number) => void
   visibleSliceCrossParentGuard: string
@@ -35,6 +37,7 @@ type UseBlockSelectionStateParams = {
 export function useBlockSelectionState({
   activeBlockIndex,
   collapsedBlockIds,
+  focusedHeadingId = null,
   draftBlocks,
   onActiveBlockChange,
   visibleSliceCrossParentGuard,
@@ -47,26 +50,8 @@ export function useBlockSelectionState({
   const blockMouseDownOrigin = useRef<number | null>(null)
 
   const getVisibleBlockEntries = useCallback((blocks: DocumentBlockDraft[]): VisibleBlockEntry[] => {
-    const entries: VisibleBlockEntry[] = []
-
-    for (let index = 0; index < blocks.length; index += 1) {
-      const block = blocks[index]
-      if (!block) {
-        continue
-      }
-
-      entries.push({ block, index })
-
-      const blockId = getNormalizedBlockId(block)
-      if (blockId && collapsedBlockIds.has(blockId)) {
-        while (index + 1 < blocks.length && blocks[index + 1].depth > block.depth) {
-          index += 1
-        }
-      }
-    }
-
-    return entries
-  }, [collapsedBlockIds, getNormalizedBlockId])
+    return getVisibleDocumentEntries(blocks, { collapsedIds: collapsedBlockIds, focusedHeadingId })
+  }, [collapsedBlockIds, focusedHeadingId])
 
   const getVisibleBlocks = useCallback((blocks: DocumentBlockDraft[]) => {
     return getVisibleBlockEntries(blocks).map(({ block }) => block)
@@ -272,11 +257,14 @@ export function useBlockSelectionState({
       return
     }
 
-    const firstBlockId = getNormalizedBlockId(draftBlocks[0])
+    const section = focusedHeadingId ? buildDocumentSections(draftBlocks).find((item) => item.id === focusedHeadingId) : null
+    const start = section?.index ?? 0
+    const end = (section?.end ?? draftBlocks.length) - 1
+    const firstBlockId = getNormalizedBlockId(draftBlocks[start])
     setSelectionAnchorBlockId(firstBlockId)
-    setSelectedBlockRange({ start: 0, end: draftBlocks.length - 1 })
-    onActiveBlockChange(0)
-  }, [draftBlocks, getNormalizedBlockId, onActiveBlockChange])
+    setSelectedBlockRange({ start, end })
+    onActiveBlockChange(start)
+  }, [draftBlocks, focusedHeadingId, getNormalizedBlockId, onActiveBlockChange])
 
   const getMultiBlockOperationRange = useCallback((range: BlockSelectionRange): BlockSelectionRange => {
     if (range.start === range.end) {

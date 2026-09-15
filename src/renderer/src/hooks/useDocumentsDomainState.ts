@@ -7,6 +7,7 @@ import { useBlockSearchState } from './useBlockSearchState'
 import { useBlockSelectionState } from './useBlockSelectionState'
 import { useBlockInputActions } from './useBlockInputActions'
 import { useBlockCollapseState } from './useBlockCollapseState'
+import { useDocumentFoldingActions } from './useDocumentFoldingActions'
 import { useBlockFocusState } from './useBlockFocusState'
 import { useBlockDragState } from './useBlockDragState'
 import { useDocumentsLoadingOrchestration } from './useDocumentsLoadingOrchestration'
@@ -212,9 +213,14 @@ export function useDocumentsDomainState({
     blockHasChildren,
     collapsedBlockIds,
     revealBlockAncestors,
-    toggleBlockCollapse
+    focusedHeadingId,
+    focusedSection,
+    sections,
+    foldView,
+    setFoldView
   } = useBlockCollapseState({
-    draftBlocks
+    draftBlocks,
+    documentId: !detailLoading && selectedDocument?.id === selectedDocumentId ? selectedDocumentId : null
   })
   const {
     activeLinkContext,
@@ -245,6 +251,7 @@ export function useDocumentsDomainState({
   const {
     setPendingFocusBlockIndex
   } = useBlockFocusState({
+    onRevealBlock: revealBlockAncestors,
     activeCursorPosition,
     blockTextareaRefs,
     captureBlockCursor,
@@ -297,10 +304,21 @@ export function useDocumentsDomainState({
   } = useBlockSelectionState({
     activeBlockIndex,
     collapsedBlockIds,
+    focusedHeadingId,
     draftBlocks,
     onActiveBlockChange: setActiveBlockIndex,
     visibleSliceCrossParentGuard: ui.visibleSliceCrossParentGuard,
     selectionStaleGuard: ui.selectionStaleGuard
+  })
+
+  const { toggleBlockCollapse, collapseAllSections, expandAllSections, focusSection, exitSectionFocus } = useDocumentFoldingActions({
+    documentId: selectedDocumentId, draftBlocks, sections, foldView, setFoldView,
+    activeBlockIndex, selectedBlockRange, blockTextareaRefs, clearBlockSelection,
+    setActiveBlockIndex, setActiveCursorPosition, setSelectedBlockRange, setSelectionAnchorBlockId,
+    setPendingFocusBlockIndex, clearEditorAssistSuggestions, endBlockDrag,
+    onScrollToBlock: (index) => {
+      if (selectedDocumentId) setBlockNavigationRequest((previous) => ({ index, documentId: selectedDocumentId, sequence: (previous?.sequence ?? 0) + 1 }))
+    }
   })
 
   useDocumentsLoadingOrchestration({
@@ -538,6 +556,12 @@ export function useDocumentsDomainState({
     beginBlockDrag,
     blockHasChildren,
     blockSearchItems,
+    focusedHeadingId,
+    focusedSection,
+    collapseAllSections,
+    expandAllSections,
+    focusSection,
+    exitSectionFocus,
     blockSearchQuery,
     blockSuggestions,
     blockTextareaRefs,

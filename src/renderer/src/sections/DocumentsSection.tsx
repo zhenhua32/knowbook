@@ -256,7 +256,7 @@ export function DocumentsSection({
 
         {selectedDocument && documentReady ? (
           <>
-            {summaryCardProps ? isReadingMode
+            {summaryCardProps && !outlinePanelProps?.focusedHeadingId ? isReadingMode
               ? <div className="document-reading-summary"><h1>{summaryCardProps.title}</h1><p>{summaryCardProps.summary}</p></div>
               : <DocumentSummaryCard {...summaryCardProps} /> : null}
 
