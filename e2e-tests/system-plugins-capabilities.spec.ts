@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cp } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
 import type { AddressInfo } from 'node:net'
@@ -86,9 +87,10 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
     const env = { KNOWBOOK_E2E_FULL_TRUST_FRAME_TARGET: `${origin}/frame` }
     mkdirSync(selected)
-    cpSync(fixtureRoot, source, { recursive: true })
+    // Async cp preserves Unicode paths on Node 22 Windows runners where cpSync can omit files.
+    await cp(fixtureRoot, source, { recursive: true })
     copyFileSync(join(baselineRoot, 'main.cjs'), join(source, 'baseline-main.cjs'))
-    cpSync(join(baselineRoot, 'vendor'), join(source, 'vendor'), { recursive: true })
+    await cp(join(baselineRoot, 'vendor'), join(source, 'vendor'), { recursive: true })
     for (const name of ['package.json', 'package-lock.json']) copyFileSync(join(baselineRoot, name), join(source, name))
     const lock = JSON.parse(readFileSync(join(source, 'package-lock.json'), 'utf8'))
     lock.packages['node_modules/full-trust-local-dependency'] = { resolved: 'vendor/full-trust-local-dependency', link: true }
@@ -533,7 +535,7 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     const finalMainLog = readFileSync(finalMainLogPath, 'utf8')
     expect(finalMainLog).toContain('CONTROLLED_CAPABILITY_MAIN_DISPOSE api_key=[REDACTED]')
     expect(finalMainLog).not.toContain('capability-fake')
-    cpSync(join(profile, 'system-plugins', 'logs', pluginId), testInfo.outputPath('verified-plugin-logs'), { recursive: true })
+    await cp(join(profile, 'system-plugins', 'logs', pluginId), testInfo.outputPath('verified-plugin-logs'), { recursive: true })
     for (const helper of externalCalls) await expect.poll(() => processIsAlive(helper.pid)).toBe(false)
     await current.page.locator('button.nav-icon-btn').and(current.page.getByTitle(uiText('Plugins', '插件中心'))).first().click()
     const disabledCard = current.page.locator('.system-plugin-installation').filter({ hasText: pluginId })
@@ -585,7 +587,7 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     }
     if (profile) {
       const logRoot = join(profile, 'system-plugins', 'logs', pluginId)
-      if (existsSync(logRoot)) cpSync(logRoot, testInfo.outputPath('plugin-logs'), { recursive: true })
+      if (existsSync(logRoot)) await cp(logRoot, testInfo.outputPath('plugin-logs'), { recursive: true })
     }
     if (current) {
       try {

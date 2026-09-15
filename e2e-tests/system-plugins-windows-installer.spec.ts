@@ -2,7 +2,8 @@ import { expect, test } from '@playwright/test'
 import { spawn, execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -90,7 +91,8 @@ test('updater upgrade, NSIS rollback and application uninstall clean managed plu
     stages.push(stage)
 
     stage = 'install-and-register-controlled-plugin'
-    cpSync(join(root, 'e2e-tests', 'fixtures', 'windows-startup'), source, { recursive: true })
+    // Async cp preserves the deliberately Unicode installer path on Node 22 Windows runners.
+    await cp(join(root, 'e2e-tests', 'fixtures', 'windows-startup'), source, { recursive: true })
     writeFileSync(join(source, 'plugin.json'), JSON.stringify({
       schemaVersion: 3, trust: 'full', id: pluginId, name: 'Installer acceptance', version: '1.0.0', publisher: 'KnowBook E2E',
       entries: { service: 'service.cjs' }, background: { mode: 'detached', autoStart: true }, fullAccess: true,
