@@ -190,11 +190,15 @@ test('Windows process guard observes real creation token and waits for an owned 
   writeFileSync(serviceEntry, 'setInterval(() => {}, 1000)')
   const child = spawn(process.execPath, [serviceEntry], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, stdio: 'ignore' })
   const ended = new Promise<void>((resolvePromise, reject) => { child.once('exit', () => resolvePromise()); child.once('error', reject) })
+  // Other test files run in Electron processes that can be exiting concurrently.
+  // Keep this real Windows query/termination probe scoped to its own child;
+  // the surrounding tests cover unrelated and unreadable process identities.
+  const list = async () => (await listWindowsRestoreProcesses()).filter((item) => item.pid === child.pid)
   try {
-    const observed = (await listWindowsRestoreProcesses()).find((item) => item.pid === child.pid)
+    const observed = (await list())[0]
     assert.ok(observed?.executable)
     assert.ok(observed.argv?.includes(serviceEntry))
-    const result = await stopDatabaseRestoreProcesses({ userDataRoot: profile, identities: [{
+    const result = await stopDatabaseRestoreProcesses({ userDataRoot: profile, list, identities: [{
       pid: child.pid!, executable: observed.executable, startToken: observed.startToken, serviceEntry
     }] })
     assert.deepEqual(result, [child.pid])

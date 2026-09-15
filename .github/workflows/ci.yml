@@ -47,8 +47,6 @@ jobs:
     # npm's bundled node-gyp does not recognize the VS 2026 toolchain on windows-latest.
     runs-on: windows-2022
     timeout-minutes: 75
-    env:
-      electron_config_cache: ${{ runner.temp }}/electron-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -64,10 +62,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Pin Python for native dependency builds
+      - name: Configure native builds and Electron download cache
         shell: pwsh
         run: |
           "NODE_GYP_FORCE_PYTHON=$env:pythonLocation\python.exe" >> $env:GITHUB_ENV
+          "electron_config_cache=$env:RUNNER_TEMP\electron-cache" >> $env:GITHUB_ENV
 
       - name: Restore Electron download cache
         id: electron-cache
