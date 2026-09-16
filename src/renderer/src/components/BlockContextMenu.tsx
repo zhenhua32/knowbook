@@ -44,6 +44,7 @@ export function BlockContextMenu(props: BlockContextMenuProps) {
                { type: 'heading-2', label: typeOptions['heading-2'] },
                ...[3, 4, 5, 6].map((level) => ({ type: 'heading-' + level, label: typeOptions['heading-' + level] })),
                { type: 'todo', label: typeOptions.todo },
+               { type: 'numbered-todo', label: typeOptions['numbered-todo'] },
                { type: 'code', label: typeOptions.code },
                { type: 'math', label: typeOptions.math },
                { type: 'quote', label: typeOptions.quote },

@@ -1,3 +1,4 @@
+import { isTaskBlockType } from '@shared/blockTypes'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -326,7 +327,7 @@ export function useMultiBlockActions({
           return block
         }
 
-        return buildBlockTypePatch(nextType, block.content, nextType === 'todo' ? block.checked : false, block.depth, block.parentBlockId ?? null)
+        return buildBlockTypePatch(nextType, block.content, isTaskBlockType(nextType) ? block.checked : false, block.depth, block.parentBlockId ?? null)
       })
     )
     setActiveBlockIndex(focusIndex)
@@ -506,7 +507,7 @@ export function useMultiBlockActions({
 }
 
 function renderDraftBlockAsPlainText(block: DocumentBlockDraft): string {
-  if (block.type === 'todo') {
+  if (isTaskBlockType(block.type)) {
     return `${block.checked ? '[x]' : '[ ]'} ${block.content}`.trim()
   }
 

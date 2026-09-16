@@ -1,3 +1,4 @@
+import { isTaskBlockType } from '@shared/blockTypes'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock, normalizeBlockDepth } from './draftBlockShape'
 import { getNormalizedBlockId } from './draftTreeMove'
@@ -33,7 +34,7 @@ export function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParen
     return {
       ...block,
       id,
-      checked: block.type === 'todo' ? Boolean(block.checked) : false,
+      checked: isTaskBlockType(block.type) ? Boolean(block.checked) : false,
       depth,
       parentBlockId
     }

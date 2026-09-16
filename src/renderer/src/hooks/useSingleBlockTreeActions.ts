@@ -108,7 +108,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    const exitsToParagraph = ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list']
+    const exitsToParagraph = ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list']
     if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
       if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
         adjustBlockDepth(index, -1, 0)
@@ -122,7 +122,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+    if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
       const nextType = getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type
       splitDraftBlock(index, selectionStart, selectionEnd, nextType)
     }
@@ -134,7 +134,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (!['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+    if (!['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
       return
     }
 

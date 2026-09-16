@@ -93,6 +93,7 @@ function createUiText(language: UiLanguage) {
     'heading-5': zh ? '标题5' : 'H5',
     'heading-6': zh ? '标题6' : 'H6',
     todo: zh ? '待办' : 'Todo',
+    'numbered-todo': zh ? '编号待办' : 'Numbered todo',
     code: zh ? '代码' : 'Code',
     math: zh ? '公式' : 'Math',
     quote: zh ? '引用' : 'Quote',
@@ -111,6 +112,7 @@ function createUiText(language: UiLanguage) {
     'heading-5': zh ? '五级标题' : 'Heading 5',
     'heading-6': zh ? '六级标题' : 'Heading 6',
     todo: zh ? '待办事项' : 'Todo',
+    'numbered-todo': zh ? '编号待办事项' : 'Numbered todo',
     code: zh ? '代码块' : 'Code',
     math: zh ? '数学公式' : 'Math Formula',
     quote: zh ? '引用块' : 'Quote',
@@ -123,6 +125,7 @@ function createUiText(language: UiLanguage) {
   const conversionOptions: Record<string, string> = {
     paragraph: zh ? '转为文本' : 'As Text',
     todo: zh ? '转为待办' : 'As Todo',
+    'numbered-todo': zh ? '转为编号待办' : 'As Numbered Todo',
     quote: zh ? '转为引用' : 'As Quote',
     'bulleted-list': zh ? '转为无序列表' : 'As Bullet',
     'numbered-list': zh ? '转为有序列表' : 'As Numbered',

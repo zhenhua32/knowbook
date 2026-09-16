@@ -1,4 +1,6 @@
 import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode } from './markdownEngine'
+import { isTaskBlockType, isOrderedListBlockType } from './blockTypes'
+import { parseTaskListMarker } from './markdownExtensions'
 
 export type MarkdownRenderableBlock = {
   id?: string
@@ -34,7 +36,7 @@ const MARKDOWN_BLOCK_METADATA_PREFIX = '<!-- knowbook:block '
 const MARKDOWN_BLOCK_METADATA_SUFFIX = ' -->'
 
 function isNestableMarkdownBlock(type: string) {
-  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
 }
 
 function normalizeMarkdownDepth(type: string, depth: number) {
@@ -130,11 +132,13 @@ function renderMarkdownBlock(
   const type = block.type.trim() || 'paragraph'
   const heading = getHeadingLevel(type)
   if (heading) return '#'.repeat(heading) + ' ' + block.content
-  const listItem = (marker: string) => indent + marker + block.content.split('\n').map((line, index) => index === 0 ? line : '\n' + indent + ' '.repeat(marker.startsWith('-') ? 2 : marker.length) + line).join('')
+  const listItem = (marker: string, content = block.content) => indent + marker + content.split('\n').map((line, index) => index === 0 ? line : '\n' + indent + ' '.repeat(marker.length) + line).join('')
 
   switch (type) {
     case 'todo':
-      return listItem(`- [${block.checked ? 'x' : ' '}] `)
+      return listItem('- ', `[${block.checked ? 'x' : ' '}] ${block.content}`)
+    case 'numbered-todo':
+      return listItem(`${block.listStart ?? 1}${orderedDelimiter} `, `[${block.checked ? 'x' : ' '}] ${block.content}`)
     case 'quote':
       return block.content
         .split('\n')
@@ -341,10 +345,10 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
           && item.children.slice(1).every((child) => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type))
           && depth < 6 && !/^\s*\[[^\]]+\]:/m.test(raw(item))
         let content = simple ? item.children[0].children[0]?.token.content ?? '' : stripListMarker(raw(item))
-        const task = !ordered && content.match(/^\[([ xX])\](?:[ \t]+|$)/)
-        if (task) content = content.slice(task[0].length)
-        const block = make(task ? 'todo' : ordered ? 'numbered-list' : 'bulleted-list', content, depth)
-        block.checked = task ? task[1].toLowerCase() === 'x' : false
+        const task = item.children[0]?.token.type === 'paragraph_open' ? parseTaskListMarker(content) : null
+        if (task) content = content.slice(task.length)
+        const block = make(task ? ordered ? 'numbered-todo' : 'todo' : ordered ? 'numbered-list' : 'bulleted-list', content, depth)
+        block.checked = task?.checked ?? false
         if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
         blocks.push(block)
         if (simple) item.children.slice(1).forEach((child) => append(child, depth + 1))
@@ -388,11 +392,11 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
         if (['paragraph', 'table'].includes(pending.type)) parsed = make(pending.type, body)
         else if (isNestableMarkdownBlock(pending.type)) {
           let content = stripListMarker(body)
-          if (pending.type === 'todo') content = content.replace(/^\[[ xX]\](?:[ \t]+|$)/, '')
+          if (isTaskBlockType(pending.type)) content = content.slice(parseTaskListMarker(content)?.length ?? 0)
           parsed = { ...parsed, type: pending.type, content }
         }
         if (getHeadingLevel(pending.type)) parsed.content = body.replace(/^ {0,3}#{1,6}[ \t]?/, '')
-        if (pending.type === 'numbered-list') {
+        if (isOrderedListBlockType(pending.type)) {
           delete parsed.listStart
           if (pending.listStart !== undefined) parsed.listStart = normalizeListStart(pending.listStart)
         }
@@ -434,15 +438,15 @@ export function serializeBlocksToMarkdown(
       const indent = depth > 0 ? (indents[depth - 1] ?? '') + ' '.repeat(markers[depth - 1] ?? 2) : ''
       indents[depth] = indent
       const number = numbers[index]
-      markers[depth] = block.type === 'numbered-list' ? String(number).length + 2 : 2
+      markers[depth] = isOrderedListBlockType(block.type) ? String(number).length + 2 : 2
       for (const key of orderedDelimiters.keys()) if (key > depth) orderedDelimiters.delete(key)
       const previousDelimiter = orderedDelimiters.get(depth)
       // Changing delimiter starts a separate CommonMark list. Blank lines alone
       // cannot preserve an explicit numbering restart between adjacent lists.
       const delimiter = previousDelimiter && block.listStart !== undefined ? previousDelimiter === '.' ? ')' : '.' : previousDelimiter ?? '.'
-      if (block.type === 'numbered-list') orderedDelimiters.set(depth, delimiter)
+      if (isOrderedListBlockType(block.type)) orderedDelimiters.set(depth, delimiter)
       else orderedDelimiters.delete(depth)
-      const renderedBlock = renderMarkdownBlock(block.type === 'numbered-list' ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
+      const renderedBlock = renderMarkdownBlock(isOrderedListBlockType(block.type) ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
       if (!options.includeBlockMetadata) {
         return renderedBlock
       }
@@ -478,7 +482,7 @@ export function getMarkdownListNumbers(blocks: MarkdownRenderableBlock[]): numbe
   return blocks.map((block) => {
     const depth = block.depth ?? 0
     for (const key of counts.keys()) if (key > depth) counts.delete(key)
-    if (block.type !== 'numbered-list') { counts.delete(depth); return 0 }
+    if (!isOrderedListBlockType(block.type)) { counts.delete(depth); return 0 }
     const value = normalizeListStart(block.listStart) ?? (counts.get(depth) ?? 0) + 1
     counts.set(depth, value)
     return value

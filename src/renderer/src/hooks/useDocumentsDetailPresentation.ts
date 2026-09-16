@@ -1,3 +1,4 @@
+import { isTaskBlockType } from '@shared/blockTypes'
 import { useMemo } from 'react'
 import type { ComponentProps } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, DocumentTreeNode, LinkedDocument, PluginDocumentAction } from '@shared/contracts'
@@ -169,7 +170,7 @@ export function useDocumentsDetailPresentation({
     const wordCount = allText.trim() === '' ? 0 : allText.trim().split(/\s+/).length
     const charCount = allText.length
     const codeBlockCount = draftBlocks.filter((block) => block.type === 'code').length
-    const todoCount = draftBlocks.filter((block) => block.type === 'todo').length
+    const todoCount = draftBlocks.filter((block) => isTaskBlockType(block.type)).length
 
     return {
       blockCount,

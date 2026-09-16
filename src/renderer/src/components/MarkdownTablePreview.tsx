@@ -1,47 +1,14 @@
-import { MarkdownInline } from './MarkdownContent'
-import { parseMarkdownTable } from '../utils/markdownTable'
+import { useContext } from 'react'
+import { parseMarkdownTableNode } from '@shared/markdownTable'
+import { MarkdownReferencesContext, renderMarkdownNodes } from './MarkdownContent'
 
-type MarkdownTablePreviewProps = {
-  content: string
-  label: string
-}
+type MarkdownTablePreviewProps = { content: string; label: string }
 
 export function MarkdownTablePreview({ content, label }: MarkdownTablePreviewProps) {
-  const parsedTable = parseMarkdownTable(content)
-  if (!parsedTable) {
-    return null
-  }
-
-  return (
-    <div aria-label={label} className="block-table-content" role="region">
-      <table className="block-markdown-table">
-        <thead>
-          <tr>
-            {parsedTable.headers.map((header, columnIndex) => (
-              <th
-                key={`header-${columnIndex}`}
-                style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
-              >
-                <MarkdownInline content={header} />
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {parsedTable.rows.map((row, rowIndex) => (
-            <tr key={`row-${rowIndex}`}>
-              {row.map((cell, columnIndex) => (
-                <td
-                  key={`cell-${rowIndex}-${columnIndex}`}
-                  style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
-                >
-                  <MarkdownInline content={cell} />
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
+  const references = useContext(MarkdownReferencesContext)
+  const table = parseMarkdownTableNode(content, { references: { ...references } })
+  if (!table) return null
+  return <div aria-label={label} className="block-table-content" role="region">
+    {renderMarkdownNodes([table])}
+  </div>
 }

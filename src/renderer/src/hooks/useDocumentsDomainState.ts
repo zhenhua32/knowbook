@@ -1,3 +1,4 @@
+import { isTaskBlockType } from '@shared/blockTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -55,7 +56,7 @@ export function useDocumentsDomainState({
   const buildBlockTypePatch: BuildBlockTypePatch = useCallback((type, content, checked = false, depth = 0, parentBlockId) => ({
     type,
     content: type === 'divider' ? '' : content,
-    checked: type === 'todo' ? checked : false,
+    checked: isTaskBlockType(type) ? checked : false,
     depth: normalizeBlockDepth(type, depth),
     parentBlockId: isNestableBlock(type) ? (parentBlockId?.trim() ? parentBlockId : null) : null
   }), [])

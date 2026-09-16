@@ -62,6 +62,7 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
         <option value="heading-2">{typeOptions['heading-2']}</option>
         {[3, 4, 5, 6].map((level) => <option key={level} value={'heading-' + level}>{typeOptions['heading-' + level]}</option>)}
         <option value="todo">{typeOptions.todo}</option>
+        <option value="numbered-todo">{typeOptions['numbered-todo']}</option>
         <option value="code">{typeOptions.code}</option>
         <option value="math">{typeOptions.math}</option>
         <option value="quote">{typeOptions.quote}</option>

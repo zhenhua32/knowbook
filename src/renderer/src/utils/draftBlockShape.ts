@@ -1,7 +1,7 @@
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 
 export function isNestableBlock(type: string) {
-  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
 }
 
 export function normalizeBlockDepth(type: string, depth: number) {

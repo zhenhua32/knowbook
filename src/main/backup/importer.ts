@@ -490,6 +490,15 @@ export class MarkdownRestoreService {
 
     const pathSegments = normalizedDocumentPath.split('/')
     const title = pathSegments[pathSegments.length - 1] ?? 'Untitled'
+    // Ordinary single-document exports prepend the filename's title as H1.
+    // Treat that matching heading as the document title on import, otherwise
+    // each export/import cycle adds another copy to the editable body. Backup
+    // documents carry metadata and must retain every original block verbatim.
+    const hasMetadata = Object.keys(parsed.frontmatter).length > 0 || parsed.blocks.some((block) => block.id)
+    const first = parsed.blocks[0]
+    const blocks = !hasMetadata && first?.type === 'heading-1' && first.content.trim() === title
+      ? parsed.blocks.slice(1) : parsed.blocks
+    if (!blocks.length) blocks.push({ type: 'paragraph', content: '', checked: false, depth: 0 })
 
     return {
       kind: 'document',
@@ -505,7 +514,7 @@ export class MarkdownRestoreService {
         documentDatabaseColumns,
         filePath
       ),
-      blocks: parsed.blocks.map((block) => ({
+      blocks: blocks.map((block) => ({
         id: block.id,
         type: block.type,
         content: block.content,

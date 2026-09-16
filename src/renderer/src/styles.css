@@ -1207,7 +1207,7 @@ dt,
 }
 
 .block-inline-textarea.type-paragraph,
-.block-inline-textarea.type-todo,
+.block-inline-textarea:is(.type-todo, .type-numbered-todo),
 .block-inline-textarea.type-bulleted-list,
 .block-inline-textarea.type-numbered-list,
 .block-inline-textarea.type-quote {
@@ -1275,7 +1275,7 @@ dt,
   background: rgba(246, 240, 228, 0.55);
 }
 
-.block-inline-textarea.type-todo {
+.block-inline-textarea:is(.type-todo, .type-numbered-todo) {
   padding-left: 4px;
 }
 
@@ -5089,7 +5089,7 @@ select:focus-visible {
 }
 
 .block-inline-textarea.type-paragraph,
-.block-inline-textarea.type-todo,
+.block-inline-textarea:is(.type-todo, .type-numbered-todo),
 .block-inline-textarea.type-bulleted-list,
 .block-inline-textarea.type-numbered-list,
 .block-inline-textarea.type-quote {

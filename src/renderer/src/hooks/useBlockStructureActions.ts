@@ -1,3 +1,4 @@
+import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
@@ -200,7 +201,7 @@ export function useBlockStructureActions({
       next.splice(
         index + 1,
         0,
-        buildBlockTypePatch(nextType, rightContent, nextType === 'todo' ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null)
+        buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null)
       )
       return next
     })
@@ -229,11 +230,11 @@ export function useBlockStructureActions({
 }
 
 function getDefaultChildBlockType(type: DocumentBlock['type']): DocumentBlock['type'] {
-  if (type === 'todo') {
-    return 'todo'
+  if (isTaskBlockType(type)) {
+    return type
   }
 
-  if (type === 'numbered-list') {
+  if (isOrderedListBlockType(type)) {
     return 'numbered-list'
   }
 

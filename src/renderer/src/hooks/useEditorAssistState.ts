@@ -261,6 +261,11 @@ function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
       type: 'todo'
     },
     {
+      id: 'numbered-todo', label: ui.blockTypeOptions['numbered-todo'],
+      description: language === 'zh-CN' ? '转换为带编号的待办事项。' : 'Convert to a numbered task.',
+      keywords: ['ordered', 'task', 'checkbox', '编号', '待办'], kind: 'type', type: 'numbered-todo'
+    },
+    {
       id: 'code',
       label: ui.blockTypeOptions.code,
       description: language === 'zh-CN' ? '把当前块切换成代码块。' : 'Switch this block into a code block.',

@@ -1,3 +1,4 @@
+import { isTaskBlockType } from '@shared/blockTypes'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -142,7 +143,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
           index === activeBlockIndex
             ? {
                 ...block,
-                ...buildBlockTypePatch(command.type, nextContent, command.type === 'todo' ? currentBlock.checked : false, currentBlock.depth, currentBlock.parentBlockId ?? null)
+                ...buildBlockTypePatch(command.type, nextContent, isTaskBlockType(command.type) ? currentBlock.checked : false, currentBlock.depth, currentBlock.parentBlockId ?? null)
               }
             : block
         )

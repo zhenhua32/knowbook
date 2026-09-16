@@ -1,3 +1,4 @@
+import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
@@ -888,7 +889,7 @@ export class KnowbookStore {
     let changed = false
 
     const healed = blocks.map((block) => {
-      const isNestable = block.type === 'todo' || block.type === 'bulleted-list' || block.type === 'numbered-list'
+      const isNestable = isTaskBlockType(block.type) || block.type === 'bulleted-list' || isOrderedListBlockType(block.type)
       let depth = isNestable ? Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0))) : 0
       if (depth !== (block.depth ?? 0)) {
         changed = true
@@ -3049,12 +3050,12 @@ export class KnowbookStore {
         id: block.id,
         type,
         content: block.content,
-        checked: type === 'todo' ? Boolean(block.checked) : false,
+        checked: isTaskBlockType(type) ? Boolean(block.checked) : false,
         depth: this.normalizeNestableDepth(type, block.depth ?? 0),
         parentBlockId: block.parentBlockId ?? null,
         tags: this.normalizeBlockTags(block.tags),
         language: normalizedLanguage,
-        listStart: type === 'numbered-list' ? normalizeListStart(block.listStart) : undefined,
+        listStart: isOrderedListBlockType(type) ? normalizeListStart(block.listStart) : undefined,
         highlight: this.normalizeBlockHighlight(block.highlight)
       }
     })
@@ -3121,7 +3122,7 @@ export class KnowbookStore {
   }
 
   private normalizeNestableDepth(type: string, depth: number): number {
-    return ['todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
+    return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
   }
 
   private resolveBlockRelationship(

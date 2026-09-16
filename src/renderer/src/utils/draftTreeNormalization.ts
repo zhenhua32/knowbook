@@ -1,3 +1,4 @@
+import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -17,7 +18,7 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
     seenIds.add(id)
 
     const type = block.type.trim() || 'paragraph'
-    const checked = type === 'todo' ? Boolean(block.checked) : false
+    const checked = isTaskBlockType(type) ? Boolean(block.checked) : false
 
     const { depth, parentBlockId } = resolveDraftBlockRelationship(
       type,
@@ -37,7 +38,7 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
       id,
       type,
       checked,
-      listStart: type === 'numbered-list' ? normalizeListStart(block.listStart) : undefined,
+      listStart: isOrderedListBlockType(type) ? normalizeListStart(block.listStart) : undefined,
       language: type === 'code' ? (detectCodeLanguage(block.content, block.language) ?? undefined) : undefined,
       depth,
       parentBlockId

@@ -1,3 +1,4 @@
+import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { createElement, lazy, memo, Suspense, type ReactNode } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -63,9 +64,9 @@ export const BlockReadingRow = memo(function BlockReadingRow({
         ? `${collapsed ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`
         : collapsed ? ui.expandBlock : ui.collapseBlock}
       onClick={() => onToggleCollapse(block.id!)}>{collapsed ? '▸' : '▾'}</button> : null}
-    {block.type === 'todo' ? <input type="checkbox" checked={block.checked} disabled aria-label={isZh ? '待办状态' : 'Todo status'} />
-      : block.type === 'bulleted-list' ? <span className="reading-list-marker" aria-hidden="true">•</span>
-      : block.type === 'numbered-list' ? <span className="reading-list-marker" aria-hidden="true">{numberLabel}</span> : null}
+    {isOrderedListBlockType(block.type) ? <span className="reading-list-marker" aria-hidden="true">{numberLabel}</span>
+      : block.type === 'bulleted-list' ? <span className="reading-list-marker" aria-hidden="true">•</span> : null}
+    {isTaskBlockType(block.type) ? <input type="checkbox" checked={block.checked} disabled aria-label={isZh ? '待办状态' : 'Todo status'} /> : null}
     <div className="document-reading-content">{content}
       {!structured ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
     </div>

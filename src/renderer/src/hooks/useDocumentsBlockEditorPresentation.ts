@@ -1,3 +1,4 @@
+import { isOrderedListBlockType } from '@shared/blockTypes'
 import { collectMarkdownReferences, getHeadingLevel } from '@shared/markdownEngine'
 import { getMarkdownListNumbers, serializeBlocksToMarkdown } from '@shared/markdown'
 import { useMemo, useRef } from 'react'
@@ -169,7 +170,7 @@ export function useDocumentsBlockEditorPresentation({
       const isHighlighted = Boolean(block.id) && block.id === highlightedBlockId
       const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
 
-      const numberLabel = block.type === 'numbered-list' ? `${numbers[index]}.` : ''
+      const numberLabel = isOrderedListBlockType(block.type) ? `${numbers[index]}.` : ''
 
       return {
         block,
@@ -243,6 +244,7 @@ export function useDocumentsBlockEditorPresentation({
          conversionOptions: {
            paragraph: getBlockConversionLabel('paragraph'),
            todo: getBlockConversionLabel('todo'),
+           'numbered-todo': getBlockConversionLabel('numbered-todo'),
            quote: getBlockConversionLabel('quote'),
            'bulleted-list': getBlockConversionLabel('bulleted-list'),
            'numbered-list': getBlockConversionLabel('numbered-list'),

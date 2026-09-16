@@ -1,4 +1,4 @@
-import { createContext, createElement, lazy, Suspense, useContext, type ReactNode } from 'react'
+import { createContext, createElement, Fragment, lazy, Suspense, useContext, type ReactNode } from 'react'
 import {
   markdownEngine, markdownTokenTree, parseMarkdownInline, normalizeMarkdownExternalUrl,
   type MarkdownEnvironment, type MarkdownNode
@@ -21,30 +21,19 @@ function openLink(url: string) {
   void window.knowbook.openExternalUrl(url).catch((error) => console.warn('Failed to open Markdown link.', error))
 }
 
-function withoutTaskMarker(nodes: MarkdownNode[], length: number): MarkdownNode[] {
-  return nodes.map((node, index) => index !== 0 ? node : node.token.type === 'text'
-    ? { ...node, token: Object.assign(Object.create(Object.getPrototypeOf(node.token)), node.token, { content: node.token.content.slice(length) }) }
-    : { ...node, children: withoutTaskMarker(node.children, length) })
-}
-
 export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}): ReactNode[] {
   return nodes.map(({ token, children }, index) => {
     const nested = () => renderMarkdownNodes(children, options)
     switch (token.type) {
       case 'text': return token.content
-      case 'inline': return <span key={index}>{nested()}</span>
+      case 'inline': return <Fragment key={index}>{nested()}</Fragment>
       case 'softbreak': return '\n'
       case 'hardbreak': return <br key={index} />
       case 'code_inline': return <code className="inline-code" key={index}>{token.content}</code>
       case 'fence':
       case 'code_block': return <pre key={index}><code>{token.content}</code></pre>
       case 'hr': return <hr key={index} />
-      case 'list_item_open': {
-        const first = children[0]?.children[0]?.children[0]?.token
-        const task = first?.type === 'text' && first.content.match(/^\[([ xX])\](?:[ \t]+|$)/)
-        if (!task) return <li key={index}>{nested()}</li>
-        return <li key={index}><input type="checkbox" disabled checked={task[1].toLowerCase() === 'x'} aria-label="Task" /> {renderMarkdownNodes(withoutTaskMarker(children, task[0].length), options)}</li>
-      }
+      case 'task_checkbox': return <Fragment key={index}><input type="checkbox" disabled checked={Boolean(token.meta?.checked)} aria-label="Task" />{' '}</Fragment>
       case 'math_block': return <Suspense key={index} fallback={<pre>{token.content}</pre>}>
         <MathPreview expression={token.content} label="Math" />
       </Suspense>
@@ -67,11 +56,12 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}
       }
       default: {
         // Only parser-generated, allowlisted elements and attributes reach React.
-        if (!['p', 'strong', 'em', 's', 'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(token.tag)) return token.content
-        if (token.hidden) return <span key={index}>{nested()}</span>
+        if (!['p', 'strong', 'em', 's', 'del', 'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(token.tag)) return token.content
+        if (token.hidden) return <Fragment key={index}>{nested()}</Fragment>
         const alignment = String(token.attrGet('style') ?? '').match(/^text-align:(left|center|right)$/)?.[1] as 'left' | 'center' | 'right' | undefined
         return createElement(token.tag === 's' ? 'del' : token.tag, {
           key: index,
+          ...(token.tag === 'table' ? { className: 'block-markdown-table' } : {}),
           ...(token.tag === 'ol' && token.attrGet('start') !== null ? { start: Number(token.attrGet('start')) } : {}),
           ...(alignment ? { style: { textAlign: alignment } } : {})
         }, nested())

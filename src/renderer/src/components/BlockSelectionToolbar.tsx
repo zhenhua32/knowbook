@@ -93,6 +93,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
         >
           <option value="paragraph">{conversionOptions.paragraph}</option>
           <option value="todo">{conversionOptions.todo}</option>
+          <option value="numbered-todo">{conversionOptions['numbered-todo']}</option>
           <option value="quote">{conversionOptions.quote}</option>
            <option value="bulleted-list">{conversionOptions['bulleted-list']}</option>
            <option value="numbered-list">{conversionOptions['numbered-list']}</option>

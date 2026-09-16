@@ -1,3 +1,4 @@
+import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { detectCodeLanguage } from '@shared/code'
@@ -127,7 +128,7 @@ export type BlockEditorRowProps = {
 }
 
 function isNestableBlockType(type: DocumentBlock['type']): boolean {
-  return ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
 }
 
 export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRowProps) {
@@ -197,7 +198,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
      isZh
    } = props
 
-  const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
+  const isNestableBlock = (type: string) => ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
   const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
@@ -387,6 +388,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
               ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
               todo: ui.blockTypeOptions?.todo || 'Todo',
+              'numbered-todo': ui.blockTypeOptions?.['numbered-todo'] || 'Numbered todo',
               code: ui.blockTypeOptions?.code || 'Code',
               math: ui.blockTypeOptions?.math || 'Math',
               quote: ui.blockTypeOptions?.quote || 'Quote',
@@ -416,6 +418,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
              'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
               ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
              todo: ui.blockTypeOptions?.todo || 'Todo',
+             'numbered-todo': ui.blockTypeOptions?.['numbered-todo'] || 'Numbered todo',
              code: ui.blockTypeOptions?.code || 'Code',
              math: ui.blockTypeOptions?.math || 'Math',
              quote: ui.blockTypeOptions?.quote || 'Quote',
@@ -436,16 +439,17 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         ) : (
           <div className={`block-editor-input-row${hasRichMedia ? ' block-editor-input-row-media' : ''}`}>
             {/* Type-specific prefix */}
-            {block.type === 'todo' && (
+            {isOrderedListBlockType(block.type) && <span className="block-number-label">{numberLabel}</span>}
+            {isTaskBlockType(block.type) && (
               <input
                 className="block-todo-checkbox"
                 type="checkbox"
                 checked={block.checked}
+                aria-label={isZh ? '待办状态' : 'Todo status'}
                 onChange={(event) => updateDraftBlock(index, { checked: event.target.checked })}
               />
             )}
             {block.type === 'bulleted-list' && <span className="block-bullet-dot" />}
-            {block.type === 'numbered-list' && <span className="block-number-label">{numberLabel}</span>}
             {block.type === 'code' && (
               editingLanguage ? (
                 <CodeBlockLanguageSelector
@@ -527,7 +531,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               placeholder={
                 getHeadingLevel(block.type)
                   ? (isZh ? '标题 ' : 'Heading ') + getHeadingLevel(block.type)
-                    : block.type === 'todo'
+                    : isTaskBlockType(block.type)
                       ? isZh
                         ? '待办事项'
                         : 'Todo'
@@ -551,7 +555,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                               ? isZh
                                 ? '列表项'
                                 : 'List item'
-                              : block.type === 'numbered-list'
+                              : isOrderedListBlockType(block.type)
                                 ? isZh
                                   ? '列表项'
                                   : 'List item'
@@ -807,7 +811,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   !event.altKey &&
                   !event.metaKey &&
                   !event.ctrlKey &&
-                  ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)
+                  ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(block.type)
                 ) {
                   event.preventDefault()
                   continueBlockAt(
@@ -829,7 +833,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   (event.currentTarget.selectionEnd ?? 0) === 0
                 ) {
                   event.preventDefault()
-                  if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                  if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
                     downgradeBlockAt(index)
                   } else if (index > 0 && blockTextareaRefs.current[index - 1]) {
                     mergeWithPreviousBlock(index)
