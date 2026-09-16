@@ -1,0 +1,99 @@
+import MarkdownIt, { type Env, type Token } from 'markdown-it'
+
+export type MarkdownEnvironment = Env
+export type MarkdownToken = Token
+export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6
+export const HEADING_LEVELS: HeadingLevel[] = [1, 2, 3, 4, 5, 6]
+
+export function getHeadingLevel(type: string): HeadingLevel | null {
+  return /^heading-[1-6]$/.test(type) ? Number(type.at(-1)) as HeadingLevel : null
+}
+
+// One grammar for clipboard/import, reading, table cells and media extraction.
+// HTML stays text. Rendering tokens as React elements never enables raw HTML.
+export const markdownEngine = new MarkdownIt({ html: false, linkify: true, breaks: false })
+markdownEngine.linkify.add('file:', { validate: (text, pos) => text.slice(pos).match(/^\/\/[^\s<>()\]]+/)?.[0].replace(/[.,;!?]+$/, '').length ?? 0 })
+const defaultValidateLink = markdownEngine.validateLink.bind(markdownEngine)
+markdownEngine.validateLink = (url) => /^file:\/\//i.test(url) || defaultValidateLink(url)
+
+markdownEngine.block.ruler.before('fence', 'knowbook_metadata', (state, start, _end, silent) => {
+  if (state.sCount[start] - state.blkIndent >= 4) return false
+  const line = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start])
+  if (!/^<!-- knowbook:block \{.*\} -->$/.test(line)) return false
+  if (silent) return true
+  const token = state.push('knowbook_metadata', '', 0)
+  token.content = line
+  token.map = [start, start + 1]
+  state.line = start + 1
+  return true
+}, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
+
+markdownEngine.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
+  if (state.sCount[start] - state.blkIndent >= 4) return false
+  const line = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]).trim()
+  if (line !== '$$') return false
+  let closing = start + 1
+  while (closing < end) {
+    if (state.src.slice(state.bMarks[closing] + state.tShift[closing], state.eMarks[closing]).trim() === '$$') break
+    closing++
+  }
+  if (closing === end) return false
+  if (silent) return true
+  const token = state.push('math_block', 'math', 0)
+  token.content = state.getLines(start + 1, closing, state.blkIndent, false)
+  token.map = [start, closing + 1]
+  state.line = closing + 1
+  return true
+}, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
+
+// Register wiki links before normal links, so escapes and code spans are handled
+// by the parser instead of a second regex pass over already-rendered content.
+markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
+  if (!state.src.startsWith('[[', state.pos) || state.linkLevel > 0) return false
+  const end = state.src.indexOf(']]', state.pos + 2)
+  if (end < 0) return false
+  const label = state.src.slice(state.pos + 2, end)
+  if (!label.trim() || /[\n\[\]]/.test(label)) return false
+  if (!silent) {
+    const token = state.push('wiki_link', '', 0)
+    token.content = label.trim()
+  }
+  state.pos = end + 2
+  return true
+})
+
+markdownEngine.renderer.rules.wiki_link = (tokens, index) => markdownEngine.utils.escapeHtml(`[[${tokens[index].content}]]`)
+markdownEngine.renderer.rules.knowbook_metadata = () => ''
+markdownEngine.renderer.rules.math_block = (tokens, index) => `<pre>${markdownEngine.utils.escapeHtml(tokens[index].content)}</pre>\n`
+
+export type MarkdownNode = { token: Token; children: MarkdownNode[] }
+
+export function markdownTokenTree(tokens: Token[]): MarkdownNode[] {
+  const root: MarkdownNode[] = []
+  const stack = [root]
+  for (const token of tokens) {
+    if (token.nesting === -1) { stack.pop(); continue }
+    const node = { token, children: token.children ? markdownTokenTree(token.children) : [] }
+    stack.at(-1)!.push(node)
+    if (token.nesting === 1) stack.push(node.children)
+  }
+  return root
+}
+
+export function parseMarkdownInline(content: string, env: Env = {}): MarkdownNode[] {
+  return markdownTokenTree(markdownEngine.parseInline(content, env)[0]?.children ?? [])
+}
+
+export function collectMarkdownReferences(content: string): Env['references'] {
+  const env: Env = {}
+  // Inline rendering is unnecessary when collecting document-wide definitions.
+  markdownEngine.block.parse(content, markdownEngine, env, [])
+  return env.references
+}
+
+export function normalizeMarkdownExternalUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    return ['https:', 'http:', 'file:', 'mailto:'].includes(url.protocol) ? url.toString() : null
+  } catch { return null }
+}

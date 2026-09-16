@@ -1,3 +1,4 @@
+import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -188,7 +189,7 @@ export function useBlockStructureActions({
     const safeEnd = Math.max(safeStart, Math.min(selectionEnd, currentBlock.content.length))
     const leftContent = currentBlock.content.slice(0, safeStart)
     const rightContent = currentBlock.content.slice(safeEnd)
-    const nextType = nextTypeOverride ?? (currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type)
+    const nextType = nextTypeOverride ?? (getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type)
 
     setDraftBlocks((previous) => {
       const next = [...previous]

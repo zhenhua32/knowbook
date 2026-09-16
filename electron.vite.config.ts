@@ -71,7 +71,13 @@ export default defineConfig({
       strictPort: true
     },
     build: {
-      minify: 'esbuild'
+      minify: 'esbuild',
+      rollupOptions: {
+        output: {
+          // Share and cache the parser independently of the app entry and pages.
+          manualChunks: { 'markdown-engine': ['markdown-it'] }
+        }
+      }
     },
     resolve: {
       alias: {

@@ -877,6 +877,7 @@ function toDocumentDraftBlocks(blocks: ReturnType<typeof parseMarkdownBackupDocu
     parentBlockId: block.parentBlockId ?? null,
     tags: block.tags,
     language: block.language ?? undefined,
+        listStart: block.listStart,
     highlight: block.highlight
   }))
 }

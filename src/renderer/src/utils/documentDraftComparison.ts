@@ -40,6 +40,7 @@ export function areDocumentDraftBlocksEqual(
       || Boolean(leftBlock.checked) !== Boolean(rightBlock.checked)
       || leftBlock.depth !== rightBlock.depth
       || (leftBlock.parentBlockId ?? null) !== (rightBlock.parentBlockId ?? null)
+      || (leftBlock.listStart ?? null) !== (rightBlock.listStart ?? null)
       || (leftBlock.language ?? null) !== (rightBlock.language ?? null)
       || (leftBlock.highlight ?? null) !== (rightBlock.highlight ?? null)
       || !areTagsEqual(leftBlock.tags, rightBlock.tags)

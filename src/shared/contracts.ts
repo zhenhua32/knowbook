@@ -352,6 +352,8 @@ export interface DocumentBlock {
   sortOrder: number
   tags?: string[]
   language?: string
+  /** Explicit starting number on the first item of an ordered list. */
+  listStart?: number
   highlight?: string
 }
 
@@ -364,6 +366,8 @@ export interface DocumentBlockDraft {
   parentBlockId?: string | null
   tags?: string[]
   language?: string
+  /** Explicit starting number on the first item of an ordered list. */
+  listStart?: number
   highlight?: string
 }
 

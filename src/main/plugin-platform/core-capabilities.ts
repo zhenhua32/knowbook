@@ -321,7 +321,7 @@ function parseBlocks(value: PluginJsonValue): DocumentBlockDraft[] {
   return value.map((raw, index) => {
     const block = objectInput(raw, `Document block ${index}`)
     onlyKeys(block, [
-      'id', 'type', 'content', 'checked', 'depth', 'parentBlockId', 'tags', 'language', 'highlight'
+      'id', 'type', 'content', 'checked', 'depth', 'parentBlockId', 'tags', 'language', 'highlight', 'listStart'
     ], `Document block ${index}`)
     const tags = block.tags === undefined ? undefined : stringArray(block.tags, `Document block ${index} tags`, 100, 200)
     return {
@@ -339,6 +339,7 @@ function parseBlocks(value: PluginJsonValue): DocumentBlockDraft[] {
       ...(block.language === undefined ? {} : {
         language: requiredString(block.language, `Document block ${index} language`, 100)
       }),
+      ...(block.listStart === undefined ? {} : { listStart: integer(block.listStart, `Document block ${index} listStart`, 0, 999999999) }),
       ...(block.highlight === undefined ? {} : {
         highlight: requiredString(block.highlight, `Document block ${index} highlight`, 100)
       })

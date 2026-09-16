@@ -162,3 +162,16 @@
 .document-section-focus button:focus-visible, .section-collapse-toggle:focus-visible, .reading-collapse:focus-visible {
   outline: 2px solid var(--kb-accent); outline-offset: 1px;
 }
+
+/* Markdown source and reading share all six heading levels. */
+.block-inline-textarea.type-heading-3, .document-reading-content h3 { font-size: 20px; font-weight: 650; line-height: 1.5; }
+.block-inline-textarea.type-heading-4, .document-reading-content h4 { font-size: 18px; font-weight: 650; line-height: 1.5; }
+.block-inline-textarea.type-heading-5, .document-reading-content h5 { font-size: 16px; font-weight: 650; line-height: 1.6; }
+.block-inline-textarea.type-heading-6, .document-reading-content h6 { font-size: 15px; font-weight: 650; line-height: 1.6; color: var(--kb-text-soft); }
+.document-reading-content :is(h3, h4, h5, h6) { margin: 14px 0 6px; }
+.document-reading-text, .document-reading-content blockquote, .document-reading-content :is(h1, h2, h3, h4, h5, h6) { white-space: normal; }
+.document-reading-content p { margin: 0 0 0.65em; }
+.document-reading-content p:last-child { margin-bottom: 0; }
+.document-reading-content :is(ul, ol) { padding-inline-start: 1.7em; }
+.markdown-inline-image { max-width: 100%; max-height: 480px; object-fit: contain; }
+.toc-children .toc-children { margin-inline-start: 12px; }

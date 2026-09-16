@@ -2566,7 +2566,7 @@ function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
 
 async function openManagedExternalUrl(url: string): Promise<void> {
   const parsed = new URL(url)
-  if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+  if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:') {
     await shell.openExternal(parsed.toString())
     return
   }

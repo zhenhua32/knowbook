@@ -1,3 +1,4 @@
+import { MarkdownInline } from './MarkdownContent'
 import { parseMarkdownTable } from '../utils/markdownTable'
 
 type MarkdownTablePreviewProps = {
@@ -21,7 +22,7 @@ export function MarkdownTablePreview({ content, label }: MarkdownTablePreviewPro
                 key={`header-${columnIndex}`}
                 style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
               >
-                {header}
+                <MarkdownInline content={header} />
               </th>
             ))}
           </tr>
@@ -34,7 +35,7 @@ export function MarkdownTablePreview({ content, label }: MarkdownTablePreviewPro
                   key={`cell-${rowIndex}-${columnIndex}`}
                   style={parsedTable.alignments[columnIndex] ? { textAlign: parsedTable.alignments[columnIndex] ?? undefined } : undefined}
                 >
-                  {cell}
+                  <MarkdownInline content={cell} />
                 </td>
               ))}
             </tr>

@@ -12,6 +12,23 @@ async function createFreshDocumentEditor(page: Page): Promise<Locator> {
 }
 
 test.describe('Editor Markdown Shortcuts @electron', () => {
+  test('waits for a space while typing heading and list markers', async () => {
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('')
+      await editor.pressSequentially('######')
+      await expect(editor).toHaveClass(/type-paragraph/)
+      await editor.pressSequentially(' Typed heading')
+      await expect(editor).toHaveClass(/type-heading-6/)
+      await expect(editor).toHaveValue('Typed heading')
+      await editor.press('Enter')
+      const next = page.locator('textarea.block-inline-textarea').nth(2)
+      await next.pressSequentially('-')
+      await expect(next).toHaveClass(/type-paragraph/)
+      await next.pressSequentially('--')
+      await expect(page.locator('.block-divider-line')).toBeVisible()
+    })
+  })
   test('should convert # to heading 1', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 

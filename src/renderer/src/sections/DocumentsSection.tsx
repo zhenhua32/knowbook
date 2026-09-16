@@ -1,3 +1,4 @@
+import { MarkdownReferencesContext } from '../components/MarkdownContent'
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
@@ -262,6 +263,7 @@ export function DocumentsSection({
 
               <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} ref={viewport.contentRef}>
                 {!isReadingMode ? <p className="panel-label">{blocksPanelLabel}</p> : null}
+               <MarkdownReferencesContext.Provider value={blockEditorRowSharedProps?.markdownReferences}>
                <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
                 {!isReadingMode && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {blockEditorRowSharedProps
@@ -299,6 +301,7 @@ export function DocumentsSection({
                   <p className="mini-hint">{editorHelpText}</p>
                 )}
               </div>
+              </MarkdownReferencesContext.Provider>
             </div>
 
             {!isReadingMode && floatingSlashCommandPanelProps ? <FloatingSlashCommandPanel {...floatingSlashCommandPanelProps} /> : null}

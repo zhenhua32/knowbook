@@ -1,13 +1,14 @@
+import { getHeadingLevel, type HeadingLevel } from '@shared/markdownEngine'
 import type { DocumentBlockDraft } from '@shared/contracts'
 
-export type DocumentSection = { id: string; index: number; end: number; level: 1 | 2; parentId: string | null }
+export type DocumentSection = { id: string; index: number; end: number; level: HeadingLevel; parentId: string | null }
 export type DocumentFoldView = { collapsedIds: Set<string>; focusedHeadingId: string | null }
 
 export function buildDocumentSections(blocks: DocumentBlockDraft[]): DocumentSection[] {
   const sections: DocumentSection[] = []
   const stack: DocumentSection[] = []
   blocks.forEach((block, index) => {
-    const level = block.type === 'heading-1' ? 1 : block.type === 'heading-2' ? 2 : null
+    const level = getHeadingLevel(block.type)
     if (!level || !block.id) return
     while (stack.length && stack.at(-1)!.level >= level) stack.pop()!.end = index
     const section: DocumentSection = { id: block.id, index, end: blocks.length, level, parentId: stack.at(-1)?.id ?? null }

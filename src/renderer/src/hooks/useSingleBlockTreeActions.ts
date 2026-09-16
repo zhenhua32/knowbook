@@ -1,3 +1,4 @@
+import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -107,7 +108,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    const exitsToParagraph = ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list']
+    const exitsToParagraph = ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list']
     if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
       if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
         adjustBlockDepth(index, -1, 0)
@@ -121,8 +122,8 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
-      const nextType = currentBlock.type === 'heading-1' || currentBlock.type === 'heading-2' ? 'paragraph' : currentBlock.type
+    if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+      const nextType = getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type
       splitDraftBlock(index, selectionStart, selectionEnd, nextType)
     }
   }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, splitDraftBlock, updateDraftBlock])
@@ -133,7 +134,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (!['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+    if (!['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
       return
     }
 

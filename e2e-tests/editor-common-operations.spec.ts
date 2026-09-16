@@ -351,7 +351,7 @@ test.describe('Editor Common Operations Durability @electron', () => {
         { type: 'numbered-list', content: 'Numbered item', language: null, highlight: null },
         { type: 'todo', content: 'Completed item', language: null, highlight: null },
         { type: 'math', content: 'x^2 + y^2', language: null, highlight: null },
-        { type: 'code', content: 'const answer = 42;\n```', language: 'javascript', highlight: null },
+        { type: 'code', content: 'const answer = 42;', language: 'javascript', highlight: null },
         { type: 'divider', content: '', language: null, highlight: null }
       ])
 
@@ -405,7 +405,7 @@ test.describe('Editor Common Operations Durability @electron', () => {
     })
   })
 
-  test('pastes multiline plain text and structured markdown as separate persisted blocks', async () => {
+  test('preserves soft line breaks and splits structured Markdown into persisted blocks', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
     const title = `Common paste ${Date.now().toString(36)}`
@@ -423,9 +423,9 @@ test.describe('Editor Common Operations Durability @electron', () => {
         data.setData('text/plain', 'First\nSecond\nThird')
         element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
       })
-      await expect.poll(() => getBodyBlockValues(page)).toEqual(['StartFirst', 'Second', 'ThirdEnd'])
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['StartFirst\nSecond\nThirdEnd'])
 
-      const third = getBodyEditor(page, 2)
+      const third = getBodyEditor(page, 0)
       await third.press('End')
       await third.evaluate((element) => {
         const data = new DataTransfer()
@@ -433,11 +433,9 @@ test.describe('Editor Common Operations Durability @electron', () => {
         element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }))
       })
 
-      await expect.poll(() => getBodyBlockTypes(page)).toEqual(['paragraph', 'paragraph', 'paragraph', 'heading-1', 'todo'])
+      await expect.poll(() => getBodyBlockTypes(page)).toEqual(['paragraph', 'heading-1', 'todo'])
       await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([
-        { type: 'paragraph', content: 'StartFirst', checked: false, depth: 0, parentIndex: null },
-        { type: 'paragraph', content: 'Second', checked: false, depth: 0, parentIndex: null },
-        { type: 'paragraph', content: 'ThirdEnd', checked: false, depth: 0, parentIndex: null },
+        { type: 'paragraph', content: 'StartFirst\nSecond\nThirdEnd', checked: false, depth: 0, parentIndex: null },
         { type: 'heading-1', content: 'Pasted heading', checked: false, depth: 0, parentIndex: null },
         { type: 'todo', content: 'Pasted todo', checked: false, depth: 0, parentIndex: null }
       ])

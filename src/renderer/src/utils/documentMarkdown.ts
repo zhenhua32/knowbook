@@ -7,7 +7,7 @@ export type DocumentMarkdownExport = { fileName: string; markdown: string }
 type MarkdownDocumentShape = {
   title: string
   path?: string
-  blocks: Array<Pick<DocumentBlockDraft, 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'language'>>
+  blocks: Array<Pick<DocumentBlockDraft, 'type' | 'content' | 'checked' | 'depth' | 'id' | 'parentBlockId' | 'language' | 'listStart'>>
 }
 
 export function buildDocumentMarkdown(document: MarkdownDocumentShape): string {

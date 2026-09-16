@@ -33,6 +33,7 @@ function cloneDraftBlock(block: DocumentBlockDraft): DocumentBlockDraft {
     parentBlockId: block.parentBlockId ?? null,
     tags: block.tags ? [...block.tags] : undefined,
     language: block.language,
+    listStart: block.listStart,
     highlight: block.highlight
   }
 }

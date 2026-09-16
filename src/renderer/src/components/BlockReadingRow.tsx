@@ -1,11 +1,11 @@
-import { lazy, memo, Suspense, type ReactNode } from 'react'
+import { createElement, lazy, memo, Suspense, type ReactNode } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { UiText } from '../i18n'
-import { parseMarkdownStyles, renderStyledContent } from './InlineContentRenderer'
+import { getHeadingLevel } from '@shared/markdownEngine'
+import { MarkdownContent, MarkdownInline } from './MarkdownContent'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { parseMarkdownTable } from '../utils/markdownTable'
-import { extractBlockRichMedia } from '../utils/blockRichMedia'
 
 const CodePreview = lazy(async () => {
   const [module] = await Promise.all([import('./CodeBlockPreview'), import('highlight.js/styles/github-dark.css')])
@@ -46,44 +46,20 @@ export const BlockReadingRow = memo(function BlockReadingRow({
     ? <MarkdownTablePreview content={block.content} label={isZh ? '表格' : 'Table'} />
     : <pre>{block.content}</pre>
   else {
-    const inline: ReactNode[] = []
-    let end = 0
-    // Keep reference navigation on the same resolver as the editor. React escapes
-    // all text; document contents are never inserted as HTML.
-    for (const match of block.content.matchAll(/`[^`\n]+`|\[\[([^\]\n]+)\]\]|!?\[[^\]\n]*\]\([^)\n]+\)/g)) {
-      inline.push(<span key={`text-${end}`}>{renderStyledContent(parseMarkdownStyles(block.content.slice(end, match.index)))}</span>)
-      if (match[1]) {
-        inline.push(<button className="inline-link" key={`ref-${match.index}`} type="button"
-          onClick={() => { void onNavigateReference(block.content, match.index + 2) }}>{match[1]}</button>)
-      } else if (match[0].startsWith('`')) {
-        inline.push(<span key={`code-${match.index}`}>{renderStyledContent(parseMarkdownStyles(match[0]))}</span>)
-      } else {
-        const media = extractBlockRichMedia(match[0])
-        const link = media.links[0]
-        if (link) inline.push(<button className="inline-link" key={`link-${match.index}`} type="button"
-          title={link.url} onClick={() => {
-            void window.knowbook.openExternalUrl(link.url).catch((error) => console.warn('Failed to open reading link.', error))
-          }}>{link.label}</button>)
-        // Valid images are rendered by the existing media preview below. Keep
-        // unsupported markup as text so malformed content never disappears.
-        else if (!media.images.length) inline.push(<span key={`raw-${match.index}`}>{match[0]}</span>)
-      }
-      end = match.index + match[0].length
-    }
-    inline.push(<span key={`text-${end}`}>{renderStyledContent(parseMarkdownStyles(block.content.slice(end)))}</span>)
-    content = block.type === 'heading-1' ? <h1>{inline}</h1>
-      : block.type === 'heading-2' ? <h2>{inline}</h2>
-      : block.type === 'quote' ? <blockquote>{inline}</blockquote>
-      : <div className="document-reading-text">{inline}</div>
+    const heading = getHeadingLevel(block.type)
+    const onReference = (label: string) => { void onNavigateReference('[[' + label + ']]', 2) }
+    content = heading ? createElement('h' + heading, null, <MarkdownInline content={block.content} onReference={onReference} hideImages />)
+      : block.type === 'quote' ? <blockquote><MarkdownContent content={block.content} onReference={onReference} hideImages /></blockquote>
+      : <div className="document-reading-text"><MarkdownContent content={block.content} onReference={onReference} hideImages /></div>
   }
   return <div
     className={`document-reading-row type-${block.type}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
     data-block-index={index} data-block-id={block.id}
-    data-heading-level={block.type === 'heading-1' ? 1 : block.type === 'heading-2' ? 2 : undefined}
+    data-heading-level={getHeadingLevel(block.type) ?? undefined}
     style={{ marginInlineStart: indentPx, ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : {}) }}
   >
     {hasChildren && block.id ? <button className="reading-collapse" type="button" aria-expanded={!collapsed}
-      aria-label={block.type === 'heading-1' || block.type === 'heading-2'
+      aria-label={getHeadingLevel(block.type)
         ? `${collapsed ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`
         : collapsed ? ui.expandBlock : ui.collapseBlock}
       onClick={() => onToggleCollapse(block.id!)}>{collapsed ? '▸' : '▾'}</button> : null}

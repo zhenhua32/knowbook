@@ -1,4 +1,5 @@
-import { memo, useState } from 'react'
+import { memo, useState, useContext } from 'react'
+import { MarkdownReferencesContext } from './MarkdownContent'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 
 type BlockRichMediaPreviewProps = {
@@ -13,7 +14,8 @@ type BlockRichMediaPreviewProps = {
 }
 
 export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
-  const richMedia = extractBlockRichMedia(content)
+  const references = useContext(MarkdownReferencesContext)
+  const richMedia = extractBlockRichMedia(content, references)
 
   if (richMedia.images.length === 0 && richMedia.links.length === 0) {
     return null

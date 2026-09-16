@@ -1,3 +1,4 @@
+import { normalizeListStart } from '@shared/markdown'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from './draftBlockShape'
@@ -36,6 +37,7 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
       id,
       type,
       checked,
+      listStart: type === 'numbered-list' ? normalizeListStart(block.listStart) : undefined,
       language: type === 'code' ? (detectCodeLanguage(block.content, block.language) ?? undefined) : undefined,
       depth,
       parentBlockId

@@ -216,7 +216,7 @@ test('serializeDraftBlockRange covers structured clipboard formats and requested
   ], { start: 1, end: 3 })
 
   assert.equal(text, [
-    '  - [x] Done',
+    '- [x] Done',
     '',
     '```typescript',
     'const ok = true',

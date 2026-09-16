@@ -246,6 +246,12 @@ function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
       kind: 'type',
       type: 'heading-2'
     },
+    ...[3, 4, 5, 6].map((level): BlockSlashCommand => ({
+      id: 'h' + level, label: ui.blockTypeOptions['heading-' + level],
+      description: language === 'zh-CN' ? '转换为标题 ' + level : 'Convert to heading ' + level,
+      keywords: ['heading', 'heading-' + level, '标题', level + '级'],
+      kind: 'type', type: 'heading-' + level
+    })),
     {
       id: 'todo',
       label: ui.blockTypeOptions.todo,

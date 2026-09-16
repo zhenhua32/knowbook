@@ -87,19 +87,11 @@ test('undo history is only pushed when an operation will actually mutate', () =>
   const inputActions = readSource('src/renderer/src/hooks/useBlockInputActions.ts')
   const paste = extractUseCallback(inputActions, 'handleBlockPaste')
   const firstPush = paste.indexOf('pushToHistory(draftBlocks)')
-  const emptyParseGuard = paste.indexOf('nextBlocks.length === 0')
-  const singleLineGuard = paste.indexOf("if (!normalizedText.includes('\\n'))")
+  const emptyParseGuard = paste.indexOf('if (!parsed.length)')
+  const singleLineGuard = paste.indexOf("if (!activeRange && !text.includes('\\n'))")
   assert.ok(emptyParseGuard !== -1 && singleLineGuard !== -1, 'paste guards must exist')
-  assert.ok(
-    firstPush > emptyParseGuard,
-    'the structured-paste path must push history only after its empty-parse guard'
-  )
-  const pushAfterSingleLineGuard = paste.indexOf('pushToHistory(draftBlocks)', singleLineGuard)
-  assert.ok(
-    pushAfterSingleLineGuard > singleLineGuard,
-    'the plain multiline paste path must push history after the single-line guard'
-  )
-  assert.ok(paste.split('pushToHistory(draftBlocks)').length - 1 >= 2, 'each accepted paste mutation path must push history once')
+  assert.ok(firstPush > emptyParseGuard && firstPush > singleLineGuard, 'history follows all no-op guards')
+  assert.equal(paste.split('pushToHistory(draftBlocks)').length - 1, 1, 'the shared paste mutation records history once')
 })
 
 test('background value refresh does not clobber an open catalog cell editor', () => {

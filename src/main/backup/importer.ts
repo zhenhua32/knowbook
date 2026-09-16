@@ -514,6 +514,7 @@ export class MarkdownRestoreService {
         parentBlockId: block.parentBlockId ?? null,
         tags: block.tags,
         language: block.language ?? undefined,
+        listStart: block.listStart,
         highlight: block.highlight
       }))
     }

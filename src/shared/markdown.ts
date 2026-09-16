@@ -1,3 +1,5 @@
+import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode } from './markdownEngine'
+
 export type MarkdownRenderableBlock = {
   id?: string
   type: string
@@ -6,6 +8,7 @@ export type MarkdownRenderableBlock = {
   depth?: number
   parentBlockId?: string | null
   language?: string | null
+  listStart?: number
   tags?: string[]
   highlight?: string
 }
@@ -18,13 +21,14 @@ export interface ParsedMarkdownDocument {
 }
 
 type MarkdownBlockMetadata = {
+  type?: string
+  depth?: number
+  listStart?: number
   id?: string
   parentBlockId?: string | null
   tags?: string[]
   highlight?: string
 }
-
-import { isMarkdownTable } from './markdownTable'
 
 const MARKDOWN_BLOCK_METADATA_PREFIX = '<!-- knowbook:block '
 const MARKDOWN_BLOCK_METADATA_SUFFIX = ' -->'
@@ -51,9 +55,10 @@ function resolveMarkdownBlockDepths(blocks: MarkdownRenderableBlock[]): number[]
   const resolvedDepthById = new Map<string, number>()
   const depthStack: Array<string | null> = []
 
-  return blocks.map((block) => {
+  return blocks.map((block, index) => {
     const type = block.type.trim() || 'paragraph'
-    const blockId = block.id?.trim() && !seenIds.has(block.id) ? block.id : null
+    const blockId = block.id?.trim() && !seenIds.has(block.id) ? block.id
+      : !block.id && isNestableMarkdownBlock(type) ? `\0anonymous:${index}` : null
     if (blockId) {
       seenIds.add(blockId)
     }
@@ -73,6 +78,7 @@ function resolveMarkdownBlockDepths(blocks: MarkdownRenderableBlock[]): number[]
     }
 
     let effectiveDepth = normalizeMarkdownDepth(type, block.depth ?? 0)
+    if (!block.id && effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) effectiveDepth = 0
     while (effectiveDepth > 0 && !depthStack[effectiveDepth - 1]) {
       effectiveDepth -= 1
     }
@@ -93,7 +99,7 @@ function buildMarkdownBlockMetadata(block: MarkdownRenderableBlock): MarkdownBlo
   const tags = normalizeMarkdownTags(block.tags)
   const highlight = block.highlight?.trim().toLowerCase()
 
-  const metadata: MarkdownBlockMetadata = {}
+  const metadata: MarkdownBlockMetadata = { type: block.type, depth: block.depth ?? 0, listStart: block.listStart }
   if (id) {
     metadata.id = id
   }
@@ -117,34 +123,38 @@ function renderMarkdownBlockMetadata(block: MarkdownRenderableBlock): string | n
 
 function renderMarkdownBlock(
   block: MarkdownRenderableBlock,
-  effectiveDepth: number,
-  fallbackCodeLanguage = ''
+  indent: string,
+  fallbackCodeLanguage = '',
+  orderedDelimiter = '.'
 ): string {
   const type = block.type.trim() || 'paragraph'
-  const indent = '  '.repeat(Math.max(0, effectiveDepth))
+  const heading = getHeadingLevel(type)
+  if (heading) return '#'.repeat(heading) + ' ' + block.content
+  const listItem = (marker: string) => indent + marker + block.content.split('\n').map((line, index) => index === 0 ? line : '\n' + indent + ' '.repeat(marker.startsWith('-') ? 2 : marker.length) + line).join('')
 
   switch (type) {
-    case 'heading-1':
-      return `# ${block.content}`
-    case 'heading-2':
-      return `## ${block.content}`
     case 'todo':
-      return `${indent}- [${block.checked ? 'x' : ' '}] ${block.content}`
+      return listItem(`- [${block.checked ? 'x' : ' '}] `)
     case 'quote':
       return block.content
         .split('\n')
         .map((line) => `> ${line}`)
         .join('\n')
     case 'bulleted-list':
-      return `${indent}- ${block.content}`
+      return listItem('- ')
     case 'numbered-list':
-      return `${indent}1. ${block.content}`
+      return listItem(`${block.listStart ?? 1}${orderedDelimiter} `)
     case 'divider':
       return '---'
     case 'math':
       return ['$$', block.content, '$$'].join('\n')
-    case 'code':
-      return ['```' + (block.language ?? fallbackCodeLanguage), block.content, '```'].join('\n')
+    case 'code': {
+      const language = block.language ?? fallbackCodeLanguage
+      const marker = language.includes('`') ? '~' : '`'
+      const runs = block.content.match(marker === '`' ? /`+/g : /~+/g) ?? []
+      const fence = marker.repeat(Math.max(3, ...runs.map((run) => run.length + 1)))
+      return [fence + language, block.content, fence].join('\n')
+    }
     case 'table':
       return block.content
     default:
@@ -175,7 +185,7 @@ function parseMarkdownFrontmatter(markdown: string): { frontmatter: MarkdownDocu
     }
   }
 
-  const closingIndex = normalizedMarkdown.indexOf('\n---\n', 4)
+  const closingIndex = normalizedMarkdown.search(/\n---(?:\n|$)/)
   if (closingIndex === -1) {
     return {
       frontmatter: {},
@@ -184,6 +194,7 @@ function parseMarkdownFrontmatter(markdown: string): { frontmatter: MarkdownDocu
   }
 
   const frontmatterLines = normalizedMarkdown.slice(4, closingIndex).split('\n')
+  if (!frontmatterLines.some((line) => /^[A-Za-z][\w-]*:/.test(line))) return { frontmatter: {}, body: normalizedMarkdown }
   const frontmatter: MarkdownDocumentFrontmatter = {}
 
   for (const line of frontmatterLines) {
@@ -235,6 +246,9 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
       : undefined
 
     return {
+      type: typeof candidate.type === 'string' ? candidate.type : undefined,
+      depth: typeof candidate.depth === 'number' ? candidate.depth : undefined,
+      listStart: typeof candidate.listStart === 'number' ? candidate.listStart : undefined,
       id,
       parentBlockId,
       tags,
@@ -252,6 +266,8 @@ function applyMarkdownBlockMetadata(block: MarkdownRenderableBlock, metadata: Ma
 
   const nextBlock: MarkdownRenderableBlock = {
     ...block,
+    depth: metadata.depth ?? block.depth,
+    ...(metadata.listStart !== undefined ? { listStart: metadata.listStart } : {}),
     id: metadata.id ?? block.id,
     parentBlockId: metadata.parentBlockId ?? block.parentBlockId ?? null
   }
@@ -271,196 +287,131 @@ function applyMarkdownBlockMetadata(block: MarkdownRenderableBlock, metadata: Ma
 
 function finalizeParsedMarkdownBlocks(blocks: MarkdownRenderableBlock[]): MarkdownRenderableBlock[] {
   const depthStack: Array<string | undefined> = []
-
+  const depthById = new Map<string, number>()
   return blocks.map((block) => {
-    const type = block.type.trim() || 'paragraph'
     const id = block.id?.trim() || undefined
-    const depth = normalizeMarkdownDepth(type, block.depth ?? 0)
-    const parentBlockId = block.parentBlockId?.trim()
-      ? block.parentBlockId.trim()
-      : (depth > 0 ? depthStack[depth - 1] ?? null : null)
-
+    const explicitParent = block.parentBlockId?.trim() || null
+    const parentDepth = explicitParent ? depthById.get(explicitParent) : undefined
+    const depth = normalizeMarkdownDepth(block.type, parentDepth === undefined ? block.depth ?? 0 : parentDepth + 1)
+    const parentBlockId = explicitParent ?? (depth > 0 ? depthStack[depth - 1] ?? null : null)
     depthStack.length = depth + 1
     depthStack[depth] = id
-
-    return {
-      ...block,
-      id,
-      depth,
-      parentBlockId
-    }
+    if (id) depthById.set(id, depth)
+    return { ...block, id, depth, parentBlockId }
   })
 }
 
-function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlock[] {
-  const normalizedBody = markdownBody.replace(/\r\n/g, '\n').trim()
-  if (!normalizedBody) {
-    return []
+function trimBlankLines(source: string): string {
+  return source.replace(/^(?:[ \t]*\n)+|(?:\n[ \t]*)+$/g, '')
+}
+
+function stripListMarker(source: string): string {
+  const lines = source.split('\n')
+  const prefix = lines[0].match(/^[ \t]*(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)/)?.[0] ?? ''
+  const indent = prefix.replace(/\t/g, '    ').length
+  lines[0] = lines[0].slice(prefix.length)
+  return trimBlankLines([lines[0], ...lines.slice(1).map((line) => {
+    let removed = 0
+    return line.replace(/^[ \t]*/, (space) => {
+      let index = 0
+      while (index < space.length && removed < indent) {
+        removed += space[index++] === '\t' ? 4 - removed % 4 : 1
+      }
+      return ' '.repeat(Math.max(0, removed - indent)) + space.slice(index)
+    })
+  })].join('\n'))
+}
+
+/** Parse source into editable blocks. Complex list bodies remain Markdown in the
+ * item; simple nested lists become the existing flat parent/depth structure. */
+export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlock[] {
+  const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
+  if (!source.trim()) return []
+  const lines = source.split('\n')
+  const nodes = markdownTokenTree(markdownEngine.parse(source, {}))
+  const blocks: MarkdownRenderableBlock[] = []
+  const raw = (node: MarkdownNode) => trimBlankLines(lines.slice(...node.token.map!).join('\n'))
+  const make = (type: string, content: string, depth = 0): MarkdownRenderableBlock => ({ type, content, checked: false, depth })
+  const append = (node: MarkdownNode, depth = 0) => {
+    const { token, children } = node
+    if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
+      const ordered = token.type === 'ordered_list_open'
+      children.forEach((item, index) => {
+        const simple = item.children[0]?.token.type === 'paragraph_open'
+          && item.children.slice(1).every((child) => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type))
+          && depth < 6 && !/^\s*\[[^\]]+\]:/m.test(raw(item))
+        let content = simple ? item.children[0].children[0]?.token.content ?? '' : stripListMarker(raw(item))
+        const task = !ordered && content.match(/^\[([ xX])\](?:[ \t]+|$)/)
+        if (task) content = content.slice(task[0].length)
+        const block = make(task ? 'todo' : ordered ? 'numbered-list' : 'bulleted-list', content, depth)
+        block.checked = task ? task[1].toLowerCase() === 'x' : false
+        if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
+        blocks.push(block)
+        if (simple) item.children.slice(1).forEach((child) => append(child, depth + 1))
+      })
+    } else if (token.type === 'heading_open') {
+      blocks.push(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''))
+    } else if (token.type === 'fence' || token.type === 'code_block') {
+      blocks.push({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined })
+    } else if (token.type === 'math_block') {
+      blocks.push(make('math', token.content))
+    } else if (token.type === 'hr') {
+      blocks.push(make('divider', ''))
+    } else if (token.type === 'table_open') {
+      blocks.push(make('table', raw(node)))
+    } else if (token.type === 'blockquote_open') {
+      blocks.push(make('quote', raw(node).split('\n').map((line) => line.replace(/^ {0,3}>[ \t]?/, '')).join('\n')))
+    } else {
+      blocks.push(make('paragraph', raw(node)))
+    }
   }
 
-  const lines = normalizedBody.split('\n')
-  const blocks: MarkdownRenderableBlock[] = []
-  let pendingMetadata: MarkdownBlockMetadata | null = null
-
-  for (let index = 0; index < lines.length;) {
-    while (index < lines.length && lines[index]?.trim() === '') {
-      index += 1
-    }
-
-    if (index >= lines.length) {
-      break
-    }
-
-    const metadata = parseMarkdownBlockMetadata(lines[index] ?? '')
-    if (metadata) {
-      pendingMetadata = metadata
-      index += 1
+  let cursor = 0
+  let pending: MarkdownBlockMetadata | null = null
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index]
+    if (!node.token.map) continue
+    const gap = trimBlankLines(lines.slice(cursor, node.token.map[0]).join('\n'))
+    // Reference definitions produce no Markdown tokens. Keep their source so
+    // definitions stay editable, survive export, and can resolve across blocks.
+    if (gap.trim()) blocks.push(make('paragraph', gap))
+    cursor = node.token.map[1]
+    if (node.token.type === 'knowbook_metadata') {
+      pending = parseMarkdownBlockMetadata(node.token.content)
+      if (!pending) blocks.push(make('paragraph', node.token.content))
+      else if (pending.type) {
+        let next = index + 1
+        while (next < nodes.length && nodes[next].token.type !== 'knowbook_metadata') next++
+        const end = nodes[next]?.token.map?.[0] ?? lines.length
+        const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
+        let parsed = parseMarkdownBlocks(body)[0] ?? make(pending.type, '')
+        if (['paragraph', 'table'].includes(pending.type)) parsed = make(pending.type, body)
+        else if (isNestableMarkdownBlock(pending.type)) {
+          let content = stripListMarker(body)
+          if (pending.type === 'todo') content = content.replace(/^\[[ xX]\](?:[ \t]+|$)/, '')
+          parsed = { ...parsed, type: pending.type, content }
+        }
+        if (getHeadingLevel(pending.type)) parsed.content = body.replace(/^ {0,3}#{1,6}[ \t]?/, '')
+        if (pending.type === 'numbered-list') {
+          delete parsed.listStart
+          if (pending.listStart !== undefined) parsed.listStart = normalizeListStart(pending.listStart)
+        }
+        blocks.push(applyMarkdownBlockMetadata({ ...parsed, type: pending.type }, pending))
+        pending = null
+        cursor = end
+        index = next - 1
+      }
       continue
     }
-
-    const line = lines[index] ?? ''
-    let block: MarkdownRenderableBlock
-
-    if (line.startsWith('```')) {
-      const language = line.slice(3).trim() || undefined
-      const contentLines: string[] = []
-      index += 1
-      while (index < lines.length && !(lines[index] ?? '').startsWith('```')) {
-        contentLines.push(lines[index] ?? '')
-        index += 1
-      }
-      if (index < lines.length) {
-        index += 1
-      }
-
-      block = {
-        type: 'code',
-        content: contentLines.join('\n'),
-        checked: false,
-        depth: 0,
-        language
-      }
-    } else if (line === '$$') {
-      const contentLines: string[] = []
-      index += 1
-      while (index < lines.length && (lines[index] ?? '') !== '$$') {
-        contentLines.push(lines[index] ?? '')
-        index += 1
-      }
-      if (index < lines.length) {
-        index += 1
-      }
-
-      block = {
-        type: 'math',
-        content: contentLines.join('\n'),
-        checked: false,
-        depth: 0
-      }
-    } else if (/^##\s+/.test(line)) {
-      block = {
-        type: 'heading-2',
-        content: line.replace(/^##\s+/, ''),
-        checked: false,
-        depth: 0
-      }
-      index += 1
-    } else if (/^#\s+/.test(line)) {
-      block = {
-        type: 'heading-1',
-        content: line.replace(/^#\s+/, ''),
-        checked: false,
-        depth: 0
-      }
-      index += 1
-    } else if (/^> ?/.test(line)) {
-      const quoteLines: string[] = []
-      while (index < lines.length && /^> ?/.test(lines[index] ?? '')) {
-        quoteLines.push((lines[index] ?? '').replace(/^> ?/, ''))
-        index += 1
-      }
-
-      block = {
-        type: 'quote',
-        content: quoteLines.join('\n'),
-        checked: false,
-        depth: 0
-      }
-    } else if (line === '---') {
-      block = {
-        type: 'divider',
-        content: '',
-        checked: false,
-        depth: 0
-      }
-      index += 1
-    } else if (line.includes('|') && index + 1 < lines.length && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(lines[index + 1]?.trim() ?? '')) {
-      const tableLines: string[] = [line]
-      index += 1
-      while (index < lines.length && (lines[index] ?? '').trim() !== '') {
-        tableLines.push(lines[index] ?? '')
-        index += 1
-      }
-
-      block = {
-        type: 'table',
-        content: tableLines.join('\n'),
-        checked: false,
-        depth: 0
-      }
-    } else {
-      const todoMatch = line.match(/^(\s*)-\s\[([xX ])\]\s+(.*)$/)
-      const bulletMatch = line.match(/^(\s*)-\s+(.*)$/)
-      const numberedMatch = line.match(/^(\s*)1\.\s+(.*)$/)
-
-      if (todoMatch) {
-        block = {
-          type: 'todo',
-          content: todoMatch[3] ?? '',
-          checked: (todoMatch[2] ?? '').toLowerCase() === 'x',
-          depth: Math.floor((todoMatch[1] ?? '').length / 2)
-        }
-        index += 1
-      } else if (bulletMatch) {
-        block = {
-          type: 'bulleted-list',
-          content: bulletMatch[2] ?? '',
-          checked: false,
-          depth: Math.floor((bulletMatch[1] ?? '').length / 2)
-        }
-        index += 1
-      } else if (numberedMatch) {
-        block = {
-          type: 'numbered-list',
-          content: numberedMatch[2] ?? '',
-          checked: false,
-          depth: Math.floor((numberedMatch[1] ?? '').length / 2)
-        }
-        index += 1
-      } else {
-        const paragraphLines = [line]
-        index += 1
-        while (index < lines.length && (lines[index] ?? '').trim() !== '') {
-          if (parseMarkdownBlockMetadata(lines[index] ?? '')) {
-            break
-          }
-          paragraphLines.push(lines[index] ?? '')
-          index += 1
-        }
-
-        block = {
-          type: 'paragraph',
-          content: paragraphLines.join('\n'),
-          checked: false,
-          depth: 0
-        }
-      }
+    const before = blocks.length
+    append(node)
+    if (pending && blocks[before]) {
+      blocks[before] = applyMarkdownBlockMetadata(blocks[before], pending)
+      pending = null
     }
-
-    blocks.push(applyMarkdownBlockMetadata(block, pendingMetadata))
-    pendingMetadata = null
   }
-
+  const remaining = trimBlankLines(lines.slice(cursor).join('\n'))
+  if (remaining.trim()) blocks.push(applyMarkdownBlockMetadata(make('paragraph', remaining), pending))
   return finalizeParsedMarkdownBlocks(blocks)
 }
 
@@ -472,10 +423,26 @@ export function serializeBlocksToMarkdown(
   } = {}
 ): string {
   const effectiveDepths = resolveMarkdownBlockDepths(blocks)
+  const indents: string[] = []
+  const markers: number[] = []
+  const orderedDelimiters = new Map<number, string>()
+  const numbers = getMarkdownListNumbers(blocks)
 
   return blocks
     .map((block, index) => {
-      const renderedBlock = renderMarkdownBlock(block, effectiveDepths[index] ?? 0, options.fallbackCodeLanguage ?? '')
+      const depth = effectiveDepths[index] ?? 0
+      const indent = depth > 0 ? (indents[depth - 1] ?? '') + ' '.repeat(markers[depth - 1] ?? 2) : ''
+      indents[depth] = indent
+      const number = numbers[index]
+      markers[depth] = block.type === 'numbered-list' ? String(number).length + 2 : 2
+      for (const key of orderedDelimiters.keys()) if (key > depth) orderedDelimiters.delete(key)
+      const previousDelimiter = orderedDelimiters.get(depth)
+      // Changing delimiter starts a separate CommonMark list. Blank lines alone
+      // cannot preserve an explicit numbering restart between adjacent lists.
+      const delimiter = previousDelimiter && block.listStart !== undefined ? previousDelimiter === '.' ? ')' : '.' : previousDelimiter ?? '.'
+      if (block.type === 'numbered-list') orderedDelimiters.set(depth, delimiter)
+      else orderedDelimiters.delete(depth)
+      const renderedBlock = renderMarkdownBlock(block.type === 'numbered-list' ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
       if (!options.includeBlockMetadata) {
         return renderedBlock
       }
@@ -503,4 +470,21 @@ export function parseMarkdownBackupDocument(markdown: string): ParsedMarkdownDoc
     frontmatter,
     blocks: parseMarkdownBlocks(body)
   }
+}
+/** Number the complete document before hiding folded rows. Child lists must not
+ * reset their parent's sequence. Explicit starts are retained on the first item. */
+export function getMarkdownListNumbers(blocks: MarkdownRenderableBlock[]): number[] {
+  const counts = new Map<number, number>()
+  return blocks.map((block) => {
+    const depth = block.depth ?? 0
+    for (const key of counts.keys()) if (key > depth) counts.delete(key)
+    if (block.type !== 'numbered-list') { counts.delete(depth); return 0 }
+    const value = normalizeListStart(block.listStart) ?? (counts.get(depth) ?? 0) + 1
+    counts.set(depth, value)
+    return value
+  })
+}
+
+export function normalizeListStart(value: number | undefined): number | undefined {
+  return Number.isInteger(value) && value! >= 0 && value! <= 999999999 ? value : undefined
 }

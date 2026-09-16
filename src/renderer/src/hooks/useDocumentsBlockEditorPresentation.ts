@@ -1,3 +1,5 @@
+import { collectMarkdownReferences, getHeadingLevel } from '@shared/markdownEngine'
+import { getMarkdownListNumbers, serializeBlocksToMarkdown } from '@shared/markdown'
 import { useMemo, useRef } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -156,7 +158,7 @@ export function useDocumentsBlockEditorPresentation({
       return []
     }
 
-    const numberedCountsByDepth = new Map<number, number>()
+    const numbers = getMarkdownListNumbers(draftBlocks)
 
     return getVisibleBlockEntries(draftBlocks).map(({ block, index }) => {
       const dropPreview =
@@ -167,19 +169,7 @@ export function useDocumentsBlockEditorPresentation({
       const isHighlighted = Boolean(block.id) && block.id === highlightedBlockId
       const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
 
-      let numberLabel = ''
-      if (block.type === 'numbered-list') {
-        for (const depth of numberedCountsByDepth.keys()) {
-          if (depth > block.depth) {
-            numberedCountsByDepth.delete(depth)
-          }
-        }
-        const count = (numberedCountsByDepth.get(block.depth) ?? 0) + 1
-        numberedCountsByDepth.set(block.depth, count)
-        numberLabel = `${count}.`
-      } else {
-        numberedCountsByDepth.clear()
-      }
+      const numberLabel = block.type === 'numbered-list' ? `${numbers[index]}.` : ''
 
       return {
         block,
@@ -215,13 +205,13 @@ export function useDocumentsBlockEditorPresentation({
   const outlineItems = useMemo<OutlinePanelProps['items']>(() => {
     return draftBlocks
       .map((block, index) => ({ block, index }))
-      .filter(({ block }) => block.type === 'heading-1' || block.type === 'heading-2')
+      .filter(({ block }) => getHeadingLevel(block.type))
       .map(({ block, index }) => ({
         id: block.id,
         index,
         collapsed: Boolean(block.id && collapsedBlockIds.has(block.id)),
         hasChildren: blockHasChildren(index),
-        level: block.type === 'heading-1' ? 1 as const : 2 as const,
+        level: getHeadingLevel(block.type)!,
         title: block.content
       }))
   }, [draftBlocks, collapsedBlockIds, blockHasChildren])
@@ -345,6 +335,8 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
+  const markdownReferences = useMemo(() => collectMarkdownReferences(serializeBlocksToMarkdown(draftBlocks)), [draftBlocks])
+
   const rowActions = useStableCallbackProps({
     adjustBlockDepth,
     adjustSelectedBlocksDepth,
@@ -390,6 +382,7 @@ export function useDocumentsBlockEditorPresentation({
   const blockEditorRowSharedProps: SharedBlockEditorRowProps | null = selectedDocument
     ? {
         ...rowActions,
+        markdownReferences,
         activeBlockIndex,
         activeSlashCommand,
         activeSlashContext,

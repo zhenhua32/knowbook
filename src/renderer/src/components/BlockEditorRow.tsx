@@ -1,3 +1,4 @@
+import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
@@ -34,6 +35,7 @@ export type BlockDropPreview = {
 }
 
 export type BlockEditorRowProps = {
+  markdownReferences?: MarkdownEnvironment['references']
   // Block data
   block: DocumentBlockDraft
   index: number
@@ -198,7 +200,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const isNestableBlock = (type: string) => ['todo', 'bulleted-list', 'numbered-list'].includes(type)
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
-  const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content) : { images: [], links: [] }
+  const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
   const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
 
   // 状态管理
@@ -278,7 +280,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     <div
       data-block-index={index}
       data-block-id={block.id}
-      data-heading-level={block.type === 'heading-1' ? 1 : block.type === 'heading-2' ? 2 : undefined}
+      data-heading-level={getHeadingLevel(block.type) ?? undefined}
       className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
@@ -319,7 +321,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
       }}
     >
-      {block.id && hasChildren && (block.type === 'heading-1' || block.type === 'heading-2') ? (
+      {block.id && hasChildren && (getHeadingLevel(block.type)) ? (
         <button type="button" className="block-collapse-toggle section-collapse-toggle"
           aria-expanded={!collapsedBlockIds.has(block.id)}
           aria-label={`${collapsedBlockIds.has(block.id) ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`}
@@ -351,7 +353,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         >
           ⋮⋮
         </button>
-        {block.id && hasChildren && block.type !== 'heading-1' && block.type !== 'heading-2' ? (
+        {block.id && hasChildren && !getHeadingLevel(block.type) ? (
           <button
             aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
             className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
@@ -383,6 +385,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
               'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
               'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+              ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
               todo: ui.blockTypeOptions?.todo || 'Todo',
               code: ui.blockTypeOptions?.code || 'Code',
               math: ui.blockTypeOptions?.math || 'Math',
@@ -411,6 +414,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
              paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
              'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
              'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
+              ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
              todo: ui.blockTypeOptions?.todo || 'Todo',
              code: ui.blockTypeOptions?.code || 'Code',
              math: ui.blockTypeOptions?.math || 'Math',
@@ -521,14 +525,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               spellCheck={false}
               ref={registerTextarea}
               placeholder={
-                block.type === 'heading-1'
-                  ? isZh
-                    ? '标题 1'
-                    : 'Heading 1'
-                  : block.type === 'heading-2'
-                    ? isZh
-                      ? '标题 2'
-                      : 'Heading 2'
+                getHeadingLevel(block.type)
+                  ? (isZh ? '标题 ' : 'Heading ') + getHeadingLevel(block.type)
                     : block.type === 'todo'
                       ? isZh
                         ? '待办事项'
@@ -809,7 +807,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   !event.altKey &&
                   !event.metaKey &&
                   !event.ctrlKey &&
-                  ['heading-1', 'heading-2', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)
+                  ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'bulleted-list', 'numbered-list'].includes(block.type)
                 ) {
                   event.preventDefault()
                   continueBlockAt(
@@ -831,7 +829,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   (event.currentTarget.selectionEnd ?? 0) === 0
                 ) {
                   event.preventDefault()
-                  if (['heading-1', 'heading-2', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                  if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
                     downgradeBlockAt(index)
                   } else if (index > 0 && blockTextareaRefs.current[index - 1]) {
                     mergeWithPreviousBlock(index)

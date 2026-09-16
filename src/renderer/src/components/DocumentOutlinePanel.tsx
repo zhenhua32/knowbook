@@ -1,3 +1,4 @@
+import type { HeadingLevel } from '@shared/markdownEngine'
 import { useMemo, useState } from 'react'
 
 type DocumentOutlineItem = {
@@ -5,7 +6,7 @@ type DocumentOutlineItem = {
   collapsed?: boolean
   hasChildren?: boolean
   index: number
-  level: 1 | 2
+  level: HeadingLevel
   title: string
 }
 
@@ -29,7 +30,7 @@ type DocumentOutlinePanelProps = {
 
 type DocumentOutlineGroup = {
   heading: DocumentOutlineItem
-  children: DocumentOutlineItem[]
+  children: DocumentOutlineGroup[]
 }
 
 export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
@@ -42,13 +43,14 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
     // Preserve the parent heading of each match to keep similarly named
     // subsections distinguishable in a large outline.
     const matched = new Set<number>()
-    let parent: number | null = null
+    const ancestors: DocumentOutlineItem[] = []
     for (const item of items) {
-      if (item.level === 1) parent = item.index
+      while (ancestors.length && ancestors.at(-1)!.level >= item.level) ancestors.pop()
       if (item.title.toLocaleLowerCase().includes(term)) {
         matched.add(item.index)
-        if (parent !== null) matched.add(parent)
+        ancestors.forEach((parent) => matched.add(parent.index))
       }
+      ancestors.push(item)
     }
     return items.filter((item) => matched.has(item.index))
   }, [items, query])
@@ -57,17 +59,16 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
     return null
   }
 
-  const groups = filteredItems.reduce<DocumentOutlineGroup[]>((result, item) => {
-    const currentGroup = result.at(-1)
-
-    if (item.level === 2 && currentGroup?.heading.level === 1) {
-      currentGroup.children.push(item)
-      return result
-    }
-
-    result.push({ heading: item, children: [] })
-    return result
-  }, [])
+  const groups: DocumentOutlineGroup[] = []
+  const stack: DocumentOutlineGroup[] = []
+  for (const item of filteredItems) {
+    while (stack.length && stack.at(-1)!.heading.level >= item.level) stack.pop()
+    const group = { heading: item, children: [] }
+    ;(stack.at(-1)?.children ?? groups).push(group)
+    stack.push(group)
+  }
+  const headingTitle = (item: DocumentOutlineItem) => item.title || (item.level === 1 ? emptyHeadingTitleLevel1
+    : item.level === 2 ? emptyHeadingTitleLevel2 : (isZh ? '标题 ' : 'Heading ') + item.level)
 
   const renderOutlineButton = (item: DocumentOutlineItem) => (
     <div className="toc-item-row">
@@ -77,11 +78,11 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
     <button
       className={`toc-item toc-item-h${item.level}${activeIndex === item.index ? ' toc-item-active' : ''}`}
       aria-current={activeIndex === item.index ? 'location' : undefined}
-      title={item.title || (item.level === 1 ? emptyHeadingTitleLevel1 : emptyHeadingTitleLevel2)}
+      title={headingTitle(item)}
       onClick={() => onSelect(item.index)}
       type="button"
     >
-      {item.title || (item.level === 1 ? emptyHeadingTitleLevel1 : emptyHeadingTitleLevel2)}
+      {headingTitle(item)}
     </button>
       {props.onFocusSection ? <button className="toc-focus-button" type="button"
         aria-label={`${isZh ? '只看本章' : 'Focus section'}：${item.title}`}
@@ -89,6 +90,13 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
         onClick={() => props.onFocusSection?.(item.index)}>{isZh ? '只看' : 'Focus'}</button> : null}
     </div>
   )
+
+  const renderGroups = (entries: DocumentOutlineGroup[]): React.ReactNode => entries.map(({ heading, children }) => (
+    <li className={'toc-entry toc-entry-h' + heading.level} key={heading.index}>
+      {renderOutlineButton(heading)}
+      {children.length > 0 ? <ol className="toc-children">{renderGroups(children)}</ol> : null}
+    </li>
+  ))
 
   return (
     <div className="document-outline-panel toc-panel">
@@ -103,23 +111,7 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
       {filteredItems.length === 0 ? <p className="empty-text">{noMatchText}</p> : null}
       <nav aria-label={title}>
         <ol className="toc-list">
-          {groups.map(({ heading, children }) => (
-            <li
-              className={`toc-entry toc-entry-h${heading.level}`}
-              key={`${heading.index}-${heading.level}`}
-            >
-              {renderOutlineButton(heading)}
-              {children.length > 0 ? (
-                <ol className="toc-children">
-                  {children.map((child) => (
-                    <li className="toc-entry toc-entry-h2" key={`${child.index}-${child.level}`}>
-                      {renderOutlineButton(child)}
-                    </li>
-                  ))}
-                </ol>
-              ) : null}
-            </li>
-          ))}
+          {renderGroups(groups)}
         </ol>
       </nav>
     </div>
