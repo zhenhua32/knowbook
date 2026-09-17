@@ -98,7 +98,9 @@ export async function launchElectronApp(
     startupOutput = (startupOutput + String(chunk)).slice(-16_000)
   }
   try {
-    app = await electron.launch({ ...target, env })
+    // Keep CI and local runs independent of the operating system language.
+    // Override explicitly when checking the other supported UI language.
+    app = await electron.launch({ ...target, env, locale: process.env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
     childProcess = app.process()
     electronChildProcesses.set(app, childProcess)
     electronHostPids.set(app, await readElectronHostPid(app, childProcess))

@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { withElectronApp } from './helpers/electron'
+import { uiText, withElectronApp } from './helpers/electron'
 
 async function seedLongDocument(page: Page) {
   const id = await page.evaluate(async () => {
@@ -122,10 +122,10 @@ test('a long document can fold all chapters and edit one chapter while retaining
   await withElectronApp(async ({ page, app }) => {
     const id = await seedLongDocument(page)
     await page.locator('.document-outline-control > button').click()
-    await page.locator('.outline-fold-actions').getByRole('button', { name: '全部折叠' }).click()
+    await page.locator('.outline-fold-actions').getByRole('button', { name: uiText('Fold all', '全部折叠') }).click()
     await expect(page.locator('[data-block-index]')).toHaveCount(40)
     await page.locator('.outline-filter').fill('第 30 章')
-    await page.getByRole('button', { name: '只看本章：第 30 章 · 长文档体验', exact: true }).click()
+    await page.getByRole('button', { name: uiText('Focus section：第 30 章 · 长文档体验', '只看本章：第 30 章 · 长文档体验'), exact: true }).click()
     await expect(page.locator('[data-block-index]')).toHaveCount(16)
     const editor = page.locator('[data-block-index="466"] textarea')
     await editor.click()
@@ -137,7 +137,7 @@ test('a long document can fold all chapters and edit one chapter while retaining
     await page.screenshot({ path: 'test-results/long-document-focus.png' })
     await page.locator('.document-section-focus button').click()
     await page.locator('.document-outline-control > button').click()
-    await page.locator('.outline-fold-actions').getByRole('button', { name: '全部展开' }).click()
+    await page.locator('.outline-fold-actions').getByRole('button', { name: uiText('Expand all', '全部展开') }).click()
     await expect(page.locator('[data-block-index]')).toHaveCount(642)
     await expect.poll(async () => (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))?.blocks[466]?.content).toMatch(/本章编辑验证$/)
     expect((await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))?.blocks).toHaveLength(642)

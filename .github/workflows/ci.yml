@@ -42,6 +42,17 @@ jobs:
       - name: Run Electron E2E tests
         run: xvfb-run --auto-servernum npx playwright test --grep @electron
 
+      - name: Upload Electron E2E failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-e2e-failure
+          path: |
+            playwright-report/**
+            test-results/electron/**
+          if-no-files-found: ignore
+          retention-days: 7
+
   plugin-runtime-security:
     name: System Plugin v3 acceptance (Windows)
     # npm's bundled node-gyp does not recognize the VS 2026 toolchain on windows-latest.
