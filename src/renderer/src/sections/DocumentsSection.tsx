@@ -25,7 +25,7 @@ type RelationGroup = {
 
 type DocumentsSectionProps = {
   isReadingMode: boolean
-  navigationRequest: { index: number; documentId: string; sequence: number } | null
+  navigationRequest: { index: number; documentId: string; sequence: number; headingIndex?: number } | null
   highlightedBlockId: string | null
   onToggleReadingMode: () => void
   onRevealBlock: (blockId: string) => void

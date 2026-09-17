@@ -1,6 +1,7 @@
 import { copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { createHash } from 'node:crypto'
+import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type {
   BackupRestorePreview,
@@ -17,6 +18,7 @@ import type {
 } from '@shared/contracts'
 import { createLegacyDatabaseViewConfig, normalizeDatabaseViewConfig } from '@shared/database-workspace'
 import { parseMarkdownBackupDocument } from '@shared/markdown'
+import { collectMarkdownDestinations, parseLocalMarkdownUrl, relativeMarkdownPath, rewriteMarkdownDestinations } from '@shared/markdownLinks'
 import { KnowbookStore } from '../database/store'
 
 type RestoreSourceDocument = {
@@ -342,7 +344,7 @@ export class MarkdownRestoreService {
         .replace(/\\/g, '/')
         .replace(/\.md$/i, '')
       const sourceMarkdown = this.readMarkdownFileStrictUtf8(filePath)
-      const markdown = await this.restorePortableAssetReferences(
+      let markdown = await this.restorePortableAssetReferences(
         root,
         filePath,
         sourceMarkdown,
@@ -350,6 +352,7 @@ export class MarkdownRestoreService {
         budget,
         assetsByDestination
       )
+      markdown = await this.restoreRelativeAssetReferences(root, filePath, markdown, collectAssets, budget, assetsByDestination)
       sourceInputs.push({ filePath, relativePath, markdown })
     }
 
@@ -381,6 +384,23 @@ export class MarkdownRestoreService {
       )
     )
     this.assertNoDuplicateRestoreSources(sourceDocuments, discoveredStandaloneDatabases)
+
+    // Backup filenames may be escaped while metadata retains the logical path.
+    // Resolve against actual source files before translating to workspace paths.
+    const fileKey = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+    const documentsByFile = new Map(sourceDocuments.map((source) => [fileKey(source.sourceFilePath), source]))
+    for (const source of sourceDocuments) {
+      for (const block of source.blocks) {
+        if (['code', 'math'].includes(block.type)) continue
+        block.content = rewriteMarkdownDestinations(block.content, ({ url, kind }) => {
+          const local = parseLocalMarkdownUrl(url)
+          if (kind === 'image' || !local?.path || !/\.md$/i.test(local.path)) return null
+          const file = local.path.startsWith('/') ? resolve(root, local.path.slice(1)) : resolve(dirname(source.sourceFilePath), local.path)
+          const target = documentsByFile.get(fileKey(file))
+          return target ? relativeMarkdownPath(`${source.documentPath}.md`, `${target.documentPath}.md`) + local.suffix : null
+        })
+      }
+    }
 
     const manifestDatabaseIds = sourceStandaloneDatabaseManifest
       ? new Set(sourceStandaloneDatabaseManifest.sourceDatabaseIds)
@@ -668,6 +688,41 @@ export class MarkdownRestoreService {
       PORTABLE_ASSET_REFERENCE_PATTERN,
       (portableReference) => replacements.get(portableReference) ?? portableReference
     )
+  }
+
+  private async restoreRelativeAssetReferences(
+    root: string, markdownFilePath: string, markdown: string, collectAssets: boolean,
+    budget: RestoreReadBudget, assetsByDestination: Map<string, RestoreAssetCopy>
+  ): Promise<string> {
+    if (!this.assetRoot) return markdown
+    const realRoot = await realpath(root)
+    const replacements = new Map<string, string>()
+    for (const { url } of collectMarkdownDestinations(markdown)) {
+      if (replacements.has(url)) continue
+      const local = parseLocalMarkdownUrl(url)
+      if (!local?.path || /\.md$/i.test(local.path)) continue
+      const sourcePath = local.path.startsWith('/') ? resolve(root, local.path.slice(1)) : resolve(dirname(markdownFilePath), local.path)
+      if (!this.isPathInsideRoot(sourcePath, root)) continue
+      const info = await lstat(sourcePath).catch(() => null)
+      // Missing/out-of-root destinations retain their source, never read arbitrary files.
+      if (!info?.isFile() || info.isSymbolicLink()) continue
+      const realSourcePath = await realpath(sourcePath)
+      if (!this.isPathInsideRoot(realSourcePath, realRoot)) continue
+      if (info.size > this.limits.maxAssetFileBytes) throw new Error(`Markdown asset exceeds the ${this.limits.maxAssetFileBytes}-byte limit: ${url}`)
+      if (!budget.assetPaths.has(realSourcePath)) {
+        budget.assetPaths.add(realSourcePath)
+        budget.assetBytes += info.size
+        if (budget.assetPaths.size > this.limits.maxAssetFiles || budget.assetBytes > this.limits.maxAssetTotalBytes) {
+          throw new Error('Markdown assets exceed the restore file count or total byte limit.')
+        }
+      }
+      const hash = createHash('sha256').update(readFileSync(realSourcePath)).digest('hex')
+      const extension = extname(realSourcePath).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 16)
+      const destinationPath = join(this.assetRoot, 'markdown', hash.slice(0, 2), `${hash}${extension}`)
+      if (collectAssets) assetsByDestination.set(destinationPath, { sourcePath: realSourcePath, destinationPath })
+      replacements.set(url, pathToFileURL(destinationPath).toString() + local.suffix)
+    }
+    return rewriteMarkdownDestinations(markdown, ({ url }) => replacements.get(url))
   }
 
   private async stageRestoreAssets(assets: RestoreAssetCopy[]): Promise<StagedRestoreAssets | null> {

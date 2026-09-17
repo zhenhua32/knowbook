@@ -4,6 +4,8 @@ import {
   type MarkdownEnvironment, type MarkdownNode
 } from '@shared/markdownEngine'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
+import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 
 export const MarkdownReferencesContext = createContext<MarkdownEnvironment['references']>(undefined)
 const MathPreview = lazy(async () => {
@@ -15,6 +17,7 @@ type Options = {
   onReference?: (label: string) => void
   renderReference?: (label: string, index: number) => ReactNode
   hideImages?: boolean
+  onNavigateLink?: (url: string) => void
 }
 
 function openLink(url: string) {
@@ -44,8 +47,9 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}
       case 'link_open': {
         const href = String(token.attrGet('href') ?? '')
         const url = normalizeMarkdownExternalUrl(href)
-        return url ? <button key={index} className="inline-link" type="button" title={String(token.attrGet('title') || url)}
-          onClick={() => openLink(url)}>{nested()}</button> : <span key={index} title={href}>{nested()}</span>
+        const local = parseLocalMarkdownUrl(href)
+        return url || (local && options.onNavigateLink) ? <button key={index} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
+          onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{nested()}</button> : <span key={index} title={href}>{nested()}</span>
       }
       case 'image': {
         const src = normalizeMarkdownExternalUrl(String(token.attrGet('src') ?? ''))
@@ -72,11 +76,13 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}
 
 export function MarkdownInline({ content, ...options }: { content: string } & Options) {
   const references = useContext(MarkdownReferencesContext)
-  return <>{renderMarkdownNodes(parseMarkdownInline(content, { references }), options)}</>
+  const onNavigateLink = useContext(MarkdownNavigationContext)
+  return <>{renderMarkdownNodes(parseMarkdownInline(content, { references }), { onNavigateLink, ...options })}</>
 }
 
 export function MarkdownContent({ content, ...options }: { content: string } & Options) {
   const references = useContext(MarkdownReferencesContext)
+  const onNavigateLink = useContext(MarkdownNavigationContext)
   const env = { references: { ...references } }
-  return <>{renderMarkdownNodes(markdownTokenTree(markdownEngine.parse(content, env)), options)}</>
+  return <>{renderMarkdownNodes(markdownTokenTree(markdownEngine.parse(content, env)), { onNavigateLink, ...options })}</>
 }

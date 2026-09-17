@@ -19,6 +19,7 @@ import { useEditorAssistState } from './useEditorAssistState'
 import { useBlockDragDropActions } from './useBlockDragDropActions'
 import { useGlobalDocumentSearch } from './useGlobalDocumentSearch'
 import { useInlineReferenceNavigation } from './useInlineReferenceNavigation'
+import { useMarkdownNavigation } from './useMarkdownNavigation'
 import { useMultiBlockActions } from './useMultiBlockActions'
 import { useSlashCommandActions } from './useSlashCommandActions'
 import { useBlockStructureActions } from './useBlockStructureActions'
@@ -64,7 +65,7 @@ export function useDocumentsDomainState({
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
   const [isReadingMode, setIsReadingMode] = useState(false)
   const [blockNavigationRequest, setBlockNavigationRequest] = useState<{
-    index: number; documentId: string; sequence: number
+    index: number; documentId: string; sequence: number; headingIndex?: number
   } | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
@@ -109,6 +110,7 @@ export function useDocumentsDomainState({
     navCanGoForward,
     navForward,
     openDocumentBlockInDocumentsPage,
+    openDocumentAnchorInDocumentsPage,
     openDocumentInDocumentsPage,
     pendingBlockNavigationTarget,
     pinnedDocumentIds,
@@ -327,6 +329,11 @@ export function useDocumentsDomainState({
     clearEditorSession,
     clearMoveTarget,
     draftBlocks,
+    draftTitle,
+    onNavigateMarkdownHeading: (index, headingIndex) => {
+      if (index < 0) exitSectionFocus()
+      if (selectedDocumentId) setBlockNavigationRequest((previous) => ({ index, headingIndex, documentId: selectedDocumentId, sequence: (previous?.sequence ?? 0) + 1 }))
+    },
     endBlockDrag,
     flashHighlightedBlock,
     loadDocumentIntoEditor,
@@ -524,6 +531,11 @@ export function useDocumentsDomainState({
     uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
 
+  const navigateMarkdownLink = useMarkdownNavigation({
+    documentTree, selectedDocument, onOpenDocument: openDocumentInDocumentsPage,
+    onOpenAnchor: openDocumentAnchorInDocumentsPage, onMessage: onBackupMessage, isZh: uiLanguage === 'zh-CN'
+  })
+
   useEffect(() => {
     if (activePage !== 'documents') {
       closeGlobalSearch()
@@ -647,6 +659,7 @@ export function useDocumentsDomainState({
     navCanGoForward,
     navForward,
     navigateInlineReferenceAtCursor,
+    navigateMarkdownLink,
     notifyBlockMouseDown,
     openBlockSearch,
     openDocumentBlockInDocumentsPage,

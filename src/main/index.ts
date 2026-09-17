@@ -107,6 +107,7 @@ import {
 } from './ai-service'
 import { normalizeAiApiKey } from './ai-auth'
 import { MarkdownBackupService } from './backup/exporter'
+import { writeMarkdownFile } from './backup/markdown-file'
 import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
 import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
@@ -2124,8 +2125,7 @@ function registerIpcHandlers(): void {
       return null
     }
 
-    mkdirSync(dirname(result.filePath), { recursive: true })
-    writeFileSync(result.filePath, content, 'utf8')
+    writeMarkdownFile(result.filePath, content, webClipAssetRoot)
     return result.filePath
   })
 

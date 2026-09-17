@@ -3,7 +3,8 @@ import type { DocumentDetail } from '@shared/contracts'
 
 export type PendingBlockNavigationTarget = {
   documentId: string
-  blockId: string
+  blockId?: string
+  anchor?: string
 }
 
 type UseDocumentNavigationStateParams = {
@@ -53,6 +54,15 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
         return
       }
       setPendingBlockNavigationTarget({ documentId, blockId })
+      setSelectedDocumentId(documentId)
+      onActivePageChange('documents')
+    })
+  }, [onActivePageChange, prepareNavigation])
+
+  const openDocumentAnchorInDocumentsPage = useCallback((documentId: string, anchor: string) => {
+    void prepareNavigation(documentId).then((allowed) => {
+      if (!allowed) return
+      setPendingBlockNavigationTarget({ documentId, anchor })
       setSelectedDocumentId(documentId)
       onActivePageChange('documents')
     })
@@ -160,6 +170,7 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     navCanGoForward,
     navForward,
     openDocumentBlockInDocumentsPage,
+    openDocumentAnchorInDocumentsPage,
     openDocumentInDocumentsPage,
     pendingBlockNavigationTarget,
     pinnedDocumentIds,

@@ -15,6 +15,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
+import { parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, rewriteMarkdownDestinations } from '@shared/markdownLinks'
 import { KnowbookStore } from '../database/store'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 
@@ -157,6 +158,7 @@ export class MarkdownBackupService {
 class MarkdownBackupWriter {
   private readonly ensuredDirectories = new Set<string>()
   private readonly copiedAssets = new Set<string>()
+  private readonly documentFiles = new Map<string, string>()
 
   constructor(
     private readonly backupRoot: string,
@@ -171,6 +173,9 @@ class MarkdownBackupWriter {
     this.ensuredDirectories.add(stagingRoot)
 
     try {
+      for (const document of documents) {
+        this.documentFiles.set(document.path, document.path.split('/').map((segment, index) => this.toSafeDocumentPathSegment(segment, index)).join('/') + '.md')
+      }
       for (const document of documents) {
         this.writeDocument(stagingRoot, document)
       }
@@ -220,7 +225,13 @@ class MarkdownBackupWriter {
     this.ensureDirectory(dirname(filePath))
     writeFileSync(
       filePath,
-      this.rewriteManagedAssetReferences(root, filePath, this.renderMarkdown(document)),
+      this.rewriteManagedAssetReferences(root, filePath, rewriteMarkdownDestinations(this.renderMarkdown(document), ({ url, kind }) => {
+        if (kind === 'image') return null
+        const target = resolveMarkdownDocumentPath(document.path, url)
+        const local = parseLocalMarkdownUrl(url)
+        const targetFile = target && this.documentFiles.get(target.path)
+        return targetFile && local?.path ? relativeMarkdownPath(this.documentFiles.get(document.path)!, targetFile) + local.suffix : null
+      })),
       'utf8'
     )
   }
@@ -326,7 +337,8 @@ class MarkdownBackupWriter {
       }
 
       const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).replace(/\\/g, '/')
-      return portableReference.startsWith('.') ? portableReference : `./${portableReference}`
+      const parsedUrl = new URL(assetUrl)
+      return (portableReference.startsWith('.') ? portableReference : `./${portableReference}`) + parsedUrl.search + parsedUrl.hash
     })
   }
 

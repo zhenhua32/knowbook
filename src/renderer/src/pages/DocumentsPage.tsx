@@ -6,6 +6,7 @@ import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
 import { useDocumentSelectionAiState } from '../hooks/useDocumentSelectionAiState'
 import { useDocumentsBlockEditorPresentation } from '../hooks/useDocumentsBlockEditorPresentation'
+import { MarkdownNavigationContext } from '../components/MarkdownNavigationContext'
 import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPresentation'
 import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
 import { DocumentsSection } from '../sections/DocumentsSection'
@@ -294,6 +295,7 @@ export function DocumentsPage({
 
   return (
     <>
+      <MarkdownNavigationContext.Provider value={documents.navigateMarkdownLink}>
       <DocumentsSection
         isReadingMode={documents.isReadingMode}
         navigationRequest={documents.blockNavigationRequest}
@@ -344,6 +346,7 @@ export function DocumentsPage({
         summaryCardProps={summaryCardProps}
         visibleEditorRows={visibleEditorRows}
       />
+      </MarkdownNavigationContext.Provider>
 
       {documents.isGlobalSearchOpen && (
         <div className="global-search-overlay" onClick={documents.closeGlobalSearch}>

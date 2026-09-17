@@ -1,0 +1,32 @@
+import { useCallback, useMemo } from 'react'
+import type { DocumentDetail, DocumentTreeNode } from '@shared/contracts'
+import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
+
+export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDocument, onOpenAnchor, onMessage, isZh }: {
+  documentTree: DocumentTreeNode[]
+  selectedDocument: DocumentDetail | null
+  onOpenDocument: (documentId: string) => void
+  onOpenAnchor: (documentId: string, anchor: string) => void
+  onMessage: (message: string) => void
+  isZh: boolean
+}) {
+  const documentIds = useMemo(() => {
+    const ids = new Map<string, string>()
+    const visit = (nodes: DocumentTreeNode[]) => nodes.forEach((node) => { ids.set(node.path, node.id); visit(node.children) })
+    visit(documentTree)
+    return ids
+  }, [documentTree])
+  return useCallback((url: string) => {
+    if (!selectedDocument) return
+    const target = resolveMarkdownDocumentPath(selectedDocument.path, url)
+    const id = target?.path === selectedDocument.path ? selectedDocument.id : target && documentIds.get(target.path)
+    if (!target || !id) {
+      let label = url
+      try { label = decodeURIComponent(url) } catch { /* Preserve malformed input for the message. */ }
+      onMessage(isZh ? `找不到链接目标：${label}` : `Link target not found: ${label}`)
+      return
+    }
+    if (url.includes('#')) onOpenAnchor(id, target.fragment)
+    else onOpenDocument(id)
+  }, [documentIds, isZh, onMessage, onOpenAnchor, onOpenDocument, selectedDocument])
+}

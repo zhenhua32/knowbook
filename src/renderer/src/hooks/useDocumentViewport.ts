@@ -11,7 +11,7 @@ type ViewportSession = {
 export function useDocumentViewport({ documentId, reading, navigation, highlightedBlockId, onRevealBlock }: {
   documentId: string | null
   reading: boolean
-  navigation: { index: number; documentId: string; sequence: number } | null
+  navigation: { index: number; documentId: string; sequence: number; headingIndex?: number } | null
   highlightedBlockId?: string | null
   onRevealBlock: (blockId: string) => void
 }) {
@@ -98,8 +98,13 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
     if (sessionRef.current) sessionRef.current.restoring = null
     const frame = requestAnimationFrame(() => {
       consumedNavigationRef.current = navigation
+      if (navigation.index < 0) {
+        if (scrollRef.current) scrollRef.current.scrollTop = 0
+        return
+      }
       const row = scrollRef.current?.querySelector<HTMLElement>(`[data-block-index="${navigation.index}"]`)
-      if (row) scrollToElement(row)
+      const heading = navigation.headingIndex !== undefined ? row?.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')[navigation.headingIndex] : null
+      if (row) scrollToElement(heading ?? row)
     })
     return () => cancelAnimationFrame(frame)
   }, [documentId, navigation, scrollToElement])

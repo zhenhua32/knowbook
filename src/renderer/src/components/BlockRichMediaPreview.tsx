@@ -1,5 +1,7 @@
 import { memo, useState, useContext } from 'react'
 import { MarkdownReferencesContext } from './MarkdownContent'
+import { MarkdownNavigationContext } from './MarkdownNavigationContext'
+import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 
 type BlockRichMediaPreviewProps = {
@@ -15,13 +17,15 @@ type BlockRichMediaPreviewProps = {
 
 export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
   const references = useContext(MarkdownReferencesContext)
-  const richMedia = extractBlockRichMedia(content, references)
+  const navigateLink = useContext(MarkdownNavigationContext)
+  const richMedia = extractBlockRichMedia(content, references, Boolean(navigateLink))
 
   if (richMedia.images.length === 0 && richMedia.links.length === 0) {
     return null
   }
 
   const openUrl = (url: string) => {
+    if (navigateLink && parseLocalMarkdownUrl(url)) { navigateLink(url); return }
     void window.knowbook.openExternalUrl(url).catch((error) => {
       console.warn('Failed to open external preview URL.', error)
     })
@@ -66,7 +70,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
                   <small>{getLinkDisplayUrl(link.url)}</small>
                 </span>
                 <span className="block-rich-media-link-action" aria-hidden="true">
-                  <ExternalIcon />
+                  {parseLocalMarkdownUrl(link.url) ? '→' : <ExternalIcon />}
                 </span>
               </button>
             ))}
@@ -129,7 +133,7 @@ function getLinkDisplayLabel(label: string, url: string): string {
     const parsed = new URL(url)
     return parsed.protocol === 'file:' ? decodeURIComponent(parsed.pathname.split('/').pop() || label) : parsed.hostname
   } catch {
-    return label
+    try { return decodeURIComponent(label) } catch { return label }
   }
 }
 
@@ -141,7 +145,7 @@ function getLinkDisplayUrl(url: string): string {
     }
     return `${parsed.hostname}${parsed.pathname === '/' ? '' : parsed.pathname}`
   } catch {
-    return url
+    try { return decodeURIComponent(url) } catch { return url }
   }
 }
 

@@ -1,4 +1,5 @@
 import { markdownEngine, markdownTokenTree, normalizeMarkdownExternalUrl, type MarkdownEnvironment, type MarkdownNode } from '@shared/markdownEngine'
+import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 export type BlockRichMediaImage = {
   alt: string
   url: string
@@ -16,7 +17,7 @@ export type BlockRichMedia = {
 
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
 
-export function extractBlockRichMedia(content: string, references?: MarkdownEnvironment['references']): BlockRichMedia {
+export function extractBlockRichMedia(content: string, references?: MarkdownEnvironment['references'], includeLocalLinks = false): BlockRichMedia {
   const images: BlockRichMediaImage[] = []
   const links: BlockRichMediaLink[] = []
   const imageUrls = new Set<string>()
@@ -31,7 +32,8 @@ export function extractBlockRichMedia(content: string, references?: MarkdownEnvi
           images.push({ alt: label(children) || token.content, url })
         }
       } else if (token.type === 'link_open') {
-        const url = normalizeMarkdownExternalUrl(String(token.attrGet('href') ?? ''))
+        const href = String(token.attrGet('href') ?? '')
+        const url = normalizeMarkdownExternalUrl(href) ?? (includeLocalLinks && parseLocalMarkdownUrl(href) ? href : null)
         if (url && !linkUrls.has(url)) {
           linkUrls.add(url)
           links.push({ label: label(children) || url, url })

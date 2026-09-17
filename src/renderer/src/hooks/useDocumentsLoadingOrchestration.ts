@@ -13,6 +13,8 @@ type UseDocumentsLoadingOrchestrationParams = {
   clearEditorSession: () => void
   clearMoveTarget: () => void
   draftBlocks: DocumentBlockDraft[]
+  draftTitle: string
+  onNavigateMarkdownHeading: (index: number, headingIndex: number) => void
   endBlockDrag: () => void
   flashHighlightedBlock: (blockId: string) => void
   loadDocumentIntoEditor: (detail: DocumentDetail, editing?: boolean) => void
@@ -39,6 +41,8 @@ export function useDocumentsLoadingOrchestration({
   clearEditorSession,
   clearMoveTarget,
   draftBlocks,
+  draftTitle,
+  onNavigateMarkdownHeading,
   endBlockDrag,
   flashHighlightedBlock,
   loadDocumentIntoEditor,
@@ -105,15 +109,23 @@ export function useDocumentsLoadingOrchestration({
     setSelectionAnchorBlockId
   ])
 
-  const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string) => {
-    revealBlockAncestors(blockId)
+  const handlePendingTargetResolved = useCallback((targetIndex: number, blockId: string, headingIndex?: number) => {
+    if (blockId) revealBlockAncestors(blockId)
     setSelectedBlockRange(null)
+    if (headingIndex !== undefined) {
+      setHighlightedBlockId(null)
+      setPendingFocusBlockIndex(null)
+      onNavigateMarkdownHeading(targetIndex, headingIndex)
+      return
+    }
     setSelectionAnchorBlockId(blockId)
     setActiveBlockIndex(targetIndex)
     setPendingFocusBlockIndex(targetIndex)
     flashHighlightedBlock(blockId)
   }, [
     flashHighlightedBlock,
+    onNavigateMarkdownHeading,
+    setHighlightedBlockId,
     revealBlockAncestors,
     setActiveBlockIndex,
     setPendingFocusBlockIndex,
@@ -128,6 +140,7 @@ export function useDocumentsLoadingOrchestration({
   useDocumentLoadingAndBlockNavigation({
     clearPendingTarget,
     draftBlocks,
+    draftTitle,
     onDocumentLoaded: handleDocumentLoaded,
     onNoDocumentSelected: handleNoDocumentSelected,
     onPendingTargetMissing: handlePendingTargetMissing,
