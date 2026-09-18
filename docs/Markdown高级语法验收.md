@@ -26,6 +26,7 @@
 ## 本地验证
 
 - `npm run build`：包含三个 TypeScript 配置的检查、生产构建和入口包体积检查。
+- `npm run typecheck:system-plugin-examples`：独立的插件示例配置包含共享类型声明，检查通过。
 - `npm test`：714 个用例通过，无跳过。Windows 进程身份测试需要能查询本机进程列表的运行权限。
 - `npm run test:markdown-spec`：1329 条官方样本全部完成三轮往返；原有产品差异不变，无新增失败，详见 [规范验证报告](Markdown规范验证报告.md)。
 - 完整 Electron 回归：104 个用例通过，覆盖编辑器、Markdown、长文档、链接、插件与重启持久化。
