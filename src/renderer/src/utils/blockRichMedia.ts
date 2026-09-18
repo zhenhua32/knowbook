@@ -25,6 +25,7 @@ export function extractBlockRichMedia(content: string, references?: MarkdownEnvi
   const label = (nodes: MarkdownNode[]): string => nodes.map((node) => node.children.length ? label(node.children) : node.token.content).join('')
   const visit = (nodes: MarkdownNode[]) => {
     for (const { token, children } of nodes) {
+      if (token.type === 'footnote_block_open') continue
       if (token.type === 'image') {
         const url = normalizeMarkdownExternalUrl(String(token.attrGet('src') ?? ''))
         if (url && !url.startsWith('mailto:') && !imageUrls.has(url)) {

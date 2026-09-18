@@ -7,7 +7,7 @@ export interface ParsedMarkdownTable {
 }
 
 export function parseMarkdownTableNode(content: string, env: MarkdownEnvironment = {}) {
-  const nodes = markdownTokenTree(markdownEngine.parse(content, env))
+  const nodes = markdownTokenTree(markdownEngine.parse(content, env)).filter((node) => node.token.type !== 'footnote_block_open')
   if (nodes.length !== 1 || nodes[0].token.type !== 'table_open') return null
   return nodes[0]
 }

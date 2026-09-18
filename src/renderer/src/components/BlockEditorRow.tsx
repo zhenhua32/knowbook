@@ -1,6 +1,9 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { hasAdvancedMarkdown, type MarkdownDocumentModel } from '@shared/markdownDocument'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { MarkdownBlockContent, MarkdownMermaidPreview } from './MarkdownContent'
+import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
@@ -24,7 +27,7 @@ const CodeBlockPreview = lazy(async () => {
 const MathBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
     import('./MathBlockPreview'),
-    import('katex/dist/katex.min.css')
+    import('katex/dist/katex.min.css'), import('../styles/markdown-advanced.css')
   ])
   return { default: module.MathBlockPreview }
 })
@@ -36,6 +39,7 @@ export type BlockDropPreview = {
 }
 
 export type BlockEditorRowProps = {
+  markdownDocument?: MarkdownDocumentModel
   markdownReferences?: MarkdownEnvironment['references']
   // Block data
   block: DocumentBlockDraft
@@ -200,7 +204,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
   const isNestableBlock = (type: string) => ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
-  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type)
+  const nodes = useContext(MarkdownBlockNodesContext)
+  const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
+  const showAdvancedPreview = !['code', 'math', 'divider', 'table'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
+  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type) && !showAdvancedPreview
   const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
   const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
 
@@ -887,11 +894,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         ) : null}
 
         {shouldShowRichMediaPreview ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
+        {showAdvancedPreview ? <div className="markdown-advanced-preview" aria-label={isZh ? 'Markdown 预览' : 'Markdown preview'}>
+          <MarkdownBlockContent onReference={(label) => { void navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} />
+        </div> : null}
         {block.type === 'table' ? (
           <MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />
         ) : null}
         {block.type === 'code' && block.content.trim() ? (
-          <Suspense fallback={<div className="block-structured-preview-loading">{ui.common.loading}</div>}>
+          isMermaid ? <MarkdownMermaidPreview source={block.content} label={isZh ? 'Mermaid 图表' : 'Mermaid diagram'} /> : <Suspense fallback={<div className="block-structured-preview-loading">{ui.common.loading}</div>}>
             <CodeBlockPreview
               code={block.content}
               label={isZh ? '代码预览' : 'Code preview'}

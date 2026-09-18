@@ -482,13 +482,18 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
   return finalizeParsedMarkdownBlocks(blocks)
 }
 
-export function serializeBlocksToMarkdown(
+type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
+export type MarkdownBlockSourceRange = { index: number; startLine: number; endLine: number }
+
+export function serializeBlocksToMarkdown(blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}): string {
+  return serializeMarkdownWithBlockRanges(blocks, options).markdown
+}
+
+/** Source ranges use the exact same separators and indentation as file export. */
+export function serializeMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[],
-  options: {
-    fallbackCodeLanguage?: string
-    includeBlockMetadata?: boolean
-  } = {}
-): string {
+  options: MarkdownSerializationOptions = {}
+): { markdown: string; ranges: MarkdownBlockSourceRange[] } {
   const effectiveDepths = resolveMarkdownBlockDepths(blocks)
   const indents: string[] = []
   const markers: number[] = []
@@ -520,20 +525,27 @@ export function serializeBlocksToMarkdown(
       const metadata = renderMarkdownBlockMetadata(block)
       return metadata ? `${metadata}\n${renderedBlock}` : renderedBlock
     })
-  return rendered.map((text, index) => {
-    if (index === 0) return text
+  const ranges: MarkdownBlockSourceRange[] = []
+  let line = 0
+  const markdown = rendered.map((text, index) => {
+    let separator = index === 0 ? '' : '\n\n'
     const previous = blocks[index - 1]
     const current = blocks[index]
-    if (!options.includeBlockMetadata && isNestableMarkdownBlock(previous.type) && isNestableMarkdownBlock(current.type)) {
+    if (previous && !options.includeBlockMetadata && isNestableMarkdownBlock(previous.type) && isNestableMarkdownBlock(current.type)) {
       const depth = effectiveDepths[index]
       const previousDepth = effectiveDepths[index - 1]
       // Spacing belongs to the containing list, not the deepest child that
       // happened to precede the next sibling in the flattened editor model.
       const loose = depth > previousDepth ? previous.markdownFormat?.listLoose : current.markdownFormat?.listLoose
-      return (loose === false ? '\n' : '\n\n') + text
+      separator = loose === false ? '\n' : '\n\n'
     }
-    return '\n\n' + text
+    line += separator.length
+    const newlines = text.match(/\n/g)?.length ?? 0
+    ranges.push({ index, startLine: line, endLine: line + newlines + (text && !text.endsWith('\n') ? 1 : 0) })
+    line += newlines
+    return separator + text
   }).join('')
+  return { markdown, ranges }
 }
 
 export function renderMarkdownFrontmatter(frontmatter: MarkdownDocumentFrontmatter): string {

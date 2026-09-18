@@ -1,9 +1,11 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
-import { createElement, lazy, memo, Suspense, type ReactNode } from 'react'
+import { createElement, lazy, memo, Suspense, useContext, type ReactNode } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getHeadingLevel } from '@shared/markdownEngine'
-import { MarkdownContent, MarkdownInline } from './MarkdownContent'
+import { hasAdvancedMarkdown } from '@shared/markdownDocument'
+import { MarkdownBlockContent, MarkdownContent, MarkdownInline, MarkdownMermaidPreview } from './MarkdownContent'
+import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { parseMarkdownTable } from '../utils/markdownTable'
@@ -13,7 +15,7 @@ const CodePreview = lazy(async () => {
   return { default: module.CodeBlockPreview }
 })
 const MathPreview = lazy(async () => {
-  const [module] = await Promise.all([import('./MathBlockPreview'), import('katex/dist/katex.min.css')])
+  const [module] = await Promise.all([import('./MathBlockPreview'), import('katex/dist/katex.min.css'), import('../styles/markdown-advanced.css')])
   return { default: module.MathBlockPreview }
 })
 
@@ -34,9 +36,13 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   ui: UiText
   isZh: boolean
 }) {
+  const nodes = useContext(MarkdownBlockNodesContext)
+  const advanced = Boolean(nodes && hasAdvancedMarkdown(nodes))
   const structured = ['code', 'math', 'table', 'divider'].includes(block.type)
+  const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   let content: ReactNode
   if (block.type === 'divider') content = <hr />
+  else if (isMermaid) content = <MarkdownMermaidPreview source={block.content} label={isZh ? 'Mermaid 图表' : 'Mermaid diagram'} />
   else if (block.type === 'code') content = <Suspense fallback={<pre>{block.content}</pre>}>
     <CodePreview code={block.content} language={block.language ?? null} label={isZh ? '代码' : 'Code'} />
   </Suspense>
@@ -49,7 +55,8 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   else {
     const heading = getHeadingLevel(block.type)
     const onReference = (label: string) => { void onNavigateReference('[[' + label + ']]', 2) }
-    content = heading ? createElement('h' + heading, null, <MarkdownInline content={block.content} onReference={onReference} hideImages />)
+    content = nodes ? <div className="document-reading-text"><MarkdownBlockContent onReference={onReference} hideImages={!advanced} /></div>
+      : heading ? createElement('h' + heading, null, <MarkdownInline content={block.content} onReference={onReference} hideImages />)
       : block.type === 'quote' ? <blockquote><MarkdownContent content={block.content} onReference={onReference} hideImages /></blockquote>
       : <div className="document-reading-text"><MarkdownContent content={block.content} onReference={onReference} hideImages /></div>
   }
@@ -68,7 +75,7 @@ export const BlockReadingRow = memo(function BlockReadingRow({
       : block.type === 'bulleted-list' ? <span className="reading-list-marker" aria-hidden="true">•</span> : null}
     {isTaskBlockType(block.type) ? <input type="checkbox" checked={block.checked} disabled aria-label={isZh ? '待办状态' : 'Todo status'} /> : null}
     <div className="document-reading-content">{content}
-      {!structured ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
+      {!structured && !advanced ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
     </div>
   </div>
 })

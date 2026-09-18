@@ -1,0 +1,30 @@
+.markdown-callout { --callout-color: #547fdb; border-inline-start: 3px solid var(--callout-color); border-radius: 6px; background: color-mix(in srgb, var(--callout-color) 9%, transparent); margin: 0.65em 0; padding: 0.75em 1em; }
+.markdown-callout[data-callout="warning"], .markdown-callout[data-callout="caution"] { --callout-color: #b77e17; }
+.markdown-callout[data-callout="danger"], .markdown-callout[data-callout="error"], .markdown-callout[data-callout="failure"] { --callout-color: #d35757; }
+.markdown-callout[data-callout="success"], .markdown-callout[data-callout="tip"] { --callout-color: #399474; }
+.markdown-callout-title, .markdown-callout > summary { color: var(--callout-color); font-weight: 650; }
+.markdown-callout > summary { cursor: pointer; }
+.markdown-callout-body > :last-child { margin-bottom: 0; }
+.markdown-callout-body > :first-child { margin-top: 0.6em; }
+.markdown-footnotes { font-size: 0.9em; margin-block: 1.5em; overflow-wrap: anywhere; }
+.markdown-footnotes ol { padding-inline-start: 1.8em; }
+.markdown-footnotes li { padding-inline-start: 0.3em; scroll-margin-block: 6em; }
+.markdown-footnote-reference { line-height: 0; }
+.markdown-footnote-reference button, .markdown-footnote-backref { border: 0; padding: 0 0.15em; background: transparent; color: var(--accent, #547fdb); cursor: pointer; font: inherit; }
+.markdown-footnote-reference button { line-height: 1.2; padding-block: 0.1em; min-width: 1.4em; }
+.markdown-footnote-backref { margin-inline-start: 0.35em; }
+.markdown-footnote-missing { text-decoration: underline wavy #b77e17; text-underline-offset: 3px; }
+.markdown-toc { margin-block: 0.7em; padding: 0.9em 1em; border: 1px solid var(--border, #aaa5); border-radius: 8px; }
+.markdown-toc ul { list-style: none; margin: 0.5em 0 0; padding: 0; }
+.markdown-toc li { margin-block: 0.3em; }
+.markdown-advanced-preview { padding: 0.7em 0.9em; border-inline-start: 2px solid var(--border, #aaa5); margin-block: 0.5em; overflow-wrap: anywhere; }
+.markdown-advanced-preview > :first-child { margin-top: 0; }
+.markdown-advanced-preview > :last-child { margin-bottom: 0; }
+.markdown-render-error { color: #b34b44; white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-render-error code { color: inherit; }
+.markdown-inline-math { display: inline; }
+.markdown-mermaid { margin: 0.75em 0; overflow: auto; }
+.markdown-mermaid img { display: block; max-width: 100%; height: auto; margin-inline: auto; background: white; border-radius: 6px; }
+.markdown-mermaid figcaption { font-size: 0.85em; opacity: 0.75; margin-top: 0.4em; }
+.markdown-mermaid pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-advanced-preview mark, .document-reading-content mark, .markdown-footnotes mark, .block-table-content mark { background: #ffdb6680; color: inherit; border-radius: 2px; padding-inline: 0.1em; }

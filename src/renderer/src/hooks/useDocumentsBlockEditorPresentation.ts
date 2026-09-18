@@ -1,6 +1,7 @@
 import { isOrderedListBlockType } from '@shared/blockTypes'
-import { collectMarkdownReferences, getHeadingLevel } from '@shared/markdownEngine'
-import { getMarkdownListNumbers, serializeBlocksToMarkdown } from '@shared/markdown'
+import { getHeadingLevel } from '@shared/markdownEngine'
+import { getMarkdownListNumbers } from '@shared/markdown'
+import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
 import { useMemo, useRef } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -337,7 +338,8 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
-  const markdownReferences = useMemo(() => collectMarkdownReferences(serializeBlocksToMarkdown(draftBlocks)), [draftBlocks])
+  const markdownDocument = useMemo(() => parseMarkdownDocumentBlocks(draftBlocks, selectedDocument?.title), [draftBlocks, selectedDocument?.title])
+  const markdownReferences = markdownDocument.environment.references
 
   const rowActions = useStableCallbackProps({
     adjustBlockDepth,
@@ -385,6 +387,7 @@ export function useDocumentsBlockEditorPresentation({
     ? {
         ...rowActions,
         markdownReferences,
+        markdownDocument,
         activeBlockIndex,
         activeSlashCommand,
         activeSlashContext,

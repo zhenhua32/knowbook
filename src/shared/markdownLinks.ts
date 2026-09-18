@@ -7,10 +7,11 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
   if (!source.includes('[')) return []
   const header = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   const headerEnd = header && /^[A-Za-z][\w-]*:/m.test(header[1]) ? header[0].length : 0
-  const env: MarkdownEnvironment = {}
+  const env: MarkdownEnvironment = { captureFootnoteSource: true }
   // Metadata values are not Markdown content. Keep line offsets while masking
   // the header so links/definitions in YAML cannot affect body rewriting.
-  const tokens = markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
+  const renderedTokens = markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
+  const tokens = [...renderedTokens, ...(env.footnoteSourceTokens as MarkdownToken[] | undefined ?? [])]
   const allowed = new Set<string>()
   const visit = (items: MarkdownToken[]) => {
     for (const token of items) {

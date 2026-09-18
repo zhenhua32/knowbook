@@ -8,7 +8,7 @@ export function parseTaskListMarker(content: string): { length: number; checked:
 
 /** GFM extensions shared by HTML output, React previews and block import. */
 export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): void {
-  md.core.ruler.after('inline', 'tasklist', (state) => {
+  md.core.ruler.before('inline', 'tasklist_prepare', (state) => {
     for (let index = 2; index < state.tokens.length; index++) {
       const inline = state.tokens[index]
       if (inline.type !== 'inline' || state.tokens[index - 1].type !== 'paragraph_open'
@@ -17,12 +17,18 @@ export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): 
       // are ordinary text, and code/links must never become task markers.
       const task = parseTaskListMarker(inline.content)
       if (!task) continue
-      inline.meta = { ...inline.meta, task }
-      inline.children = []
-      state.md.inline.parse(inline.content.slice(task.length), state.md, state.env, inline.children)
+      inline.meta = { ...inline.meta, task, taskSource: inline.content }
+      inline.content = inline.content.slice(task.length)
+    }
+  })
+  md.core.ruler.after('inline', 'tasklist', (state) => {
+    for (const inline of state.tokens) {
+      const task = inline.meta?.task as ReturnType<typeof parseTaskListMarker>
+      if (inline.type !== 'inline' || !task || typeof inline.meta?.taskSource !== 'string') continue
+      inline.content = inline.meta.taskSource
       const checkbox = new state.Token('task_checkbox', 'input', 0)
       checkbox.meta = { checked: task.checked }
-      inline.children.unshift(checkbox)
+      inline.children?.unshift(checkbox)
     }
   })
   md.renderer.rules.task_checkbox = (tokens, index) => `<input type="checkbox" disabled=""${tokens[index].meta?.checked ? ' checked=""' : ''}> `

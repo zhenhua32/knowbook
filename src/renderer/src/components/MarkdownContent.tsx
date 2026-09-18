@@ -6,14 +6,24 @@ import {
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
+import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 
 export const MarkdownReferencesContext = createContext<MarkdownEnvironment['references']>(undefined)
 const MathPreview = lazy(async () => {
-  const [module] = await Promise.all([import('./MathBlockPreview'), import('katex/dist/katex.min.css')])
+  const [module] = await Promise.all([import('./MathBlockPreview'), import('katex/dist/katex.min.css'), import('../styles/markdown-advanced.css')])
   return { default: module.MathBlockPreview }
 })
 
-type Options = {
+const AdvancedNode = lazy(async () => {
+  const [module] = await Promise.all([import('./AdvancedMarkdownNode'), import('../styles/markdown-advanced.css')])
+  return { default: module.AdvancedMarkdownNode }
+})
+const MermaidPreview = lazy(async () => {
+  const [module] = await Promise.all([import('./MermaidPreview'), import('../styles/markdown-advanced.css')])
+  return { default: module.MermaidPreview }
+})
+
+export type MarkdownRenderOptions = {
   onReference?: (label: string) => void
   renderReference?: (label: string, index: number) => ReactNode
   hideImages?: boolean
@@ -24,22 +34,58 @@ function openLink(url: string) {
   void window.knowbook.openExternalUrl(url).catch((error) => console.warn('Failed to open Markdown link.', error))
 }
 
-export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}): ReactNode[] {
-  return nodes.map(({ token, children }, index) => {
+// A reference in a link label must remain its own control. Split the link
+// around it, including references nested in emphasis, to avoid nested buttons.
+function renderLinkParts(nodes: MarkdownNode[], link: (content: ReactNode, key: number) => ReactNode, options: MarkdownRenderOptions): ReactNode[] {
+  const hasReference = (node: MarkdownNode): boolean => node.token.type === 'footnote_ref' || node.children.some(hasReference)
+  const output: ReactNode[] = []
+  let pending: MarkdownNode[] = []
+  const flush = () => {
+    if (pending.length) output.push(link(renderMarkdownNodes(pending, options), output.length))
+    pending = []
+  }
+  for (const node of nodes) {
+    if (!hasReference(node)) { pending.push(node); continue }
+    flush()
+    if (node.token.type === 'footnote_ref') output.push(<Fragment key={output.length}>{renderMarkdownNodes([node], options)}</Fragment>)
+    else {
+      const tag = ['strong', 'em', 's', 'del', 'mark'].includes(node.token.tag) ? node.token.tag : 'span'
+      output.push(createElement(tag, { key: output.length }, renderLinkParts(node.children, link, options)))
+    }
+  }
+  flush()
+  return output
+}
+
+export function MarkdownMermaidPreview({ source, label }: { source: string; label: string }) {
+  return <Suspense fallback={<pre>{source}</pre>}><MermaidPreview source={source} label={label} /></Suspense>
+}
+
+export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRenderOptions = {}): ReactNode[] {
+  return nodes.map((node, index) => {
+    const { token, children } = node
     const nested = () => renderMarkdownNodes(children, options)
+    if (token.meta?.callout || ['mark_open', 'footnote_ref', 'footnote_missing', 'footnote_block_open', 'footnote_open', 'footnote_anchor', 'table_of_contents'].includes(token.type)) {
+      return <Suspense key={index} fallback={<span>{token.content || (token.type === 'footnote_ref' ? `[${Number(token.meta?.id) + 1}]` : nested())}</span>}>
+        <AdvancedNode node={node} options={options} />
+      </Suspense>
+    }
     switch (token.type) {
       case 'text': return token.content
       case 'inline': return <Fragment key={index}>{nested()}</Fragment>
       case 'softbreak': return '\n'
       case 'hardbreak': return <br key={index} />
       case 'code_inline': return <code className="inline-code" key={index}>{token.content}</code>
-      case 'fence':
+      case 'fence': if (/^mermaid(?:\s|$)/i.test(token.info.trim())) return <MarkdownMermaidPreview key={index} source={token.content} label="Mermaid" />
+        return <pre key={index}><code>{token.content}</code></pre>
       case 'code_block': return <pre key={index}><code>{token.content}</code></pre>
       case 'hr': return <hr key={index} />
       case 'task_checkbox': return <Fragment key={index}><input type="checkbox" disabled checked={Boolean(token.meta?.checked)} aria-label="Task" />{' '}</Fragment>
-      case 'math_block': return <Suspense key={index} fallback={<pre>{token.content}</pre>}>
-        <MathPreview expression={token.content} label="Math" />
+      case 'math_inline':
+      case 'math_block': return <Suspense key={index} fallback={token.type === 'math_inline' ? <code>{token.content}</code> : <pre>{token.content}</pre>}>
+        <MathPreview expression={token.content} label="Math" displayMode={token.type === 'math_block'} />
       </Suspense>
+      case 'callout_title':
       case 'knowbook_metadata': return null
       case 'wiki_link': return options.renderReference ? options.renderReference(token.content, index) : options.onReference
         ? <button key={index} className="inline-link" type="button" onClick={() => options.onReference?.(token.content)}>{token.content}</button>
@@ -48,8 +94,8 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}
         const href = String(token.attrGet('href') ?? '')
         const url = normalizeMarkdownExternalUrl(href)
         const local = parseLocalMarkdownUrl(href)
-        return url || (local && options.onNavigateLink) ? <button key={index} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
-          onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{nested()}</button> : <span key={index} title={href}>{nested()}</span>
+        return url || (local && options.onNavigateLink) ? <Fragment key={index}>{renderLinkParts(children, (content, key) => <button key={key} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
+          onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{content}</button>, options)}</Fragment> : <span key={index} title={href}>{nested()}</span>
       }
       case 'image': {
         const src = normalizeMarkdownExternalUrl(String(token.attrGet('src') ?? ''))
@@ -74,13 +120,23 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: Options = {}
   })
 }
 
-export function MarkdownInline({ content, ...options }: { content: string } & Options) {
+export function MarkdownInline({ content, ...options }: { content: string } & MarkdownRenderOptions) {
   const references = useContext(MarkdownReferencesContext)
   const onNavigateLink = useContext(MarkdownNavigationContext)
   return <>{renderMarkdownNodes(parseMarkdownInline(content, { references }), { onNavigateLink, ...options })}</>
 }
 
-export function MarkdownContent({ content, ...options }: { content: string } & Options) {
+export function MarkdownNodes({ nodes, ...options }: { nodes: MarkdownNode[] } & MarkdownRenderOptions) {
+  const onNavigateLink = useContext(MarkdownNavigationContext)
+  return <>{renderMarkdownNodes(nodes, { onNavigateLink, ...options })}</>
+}
+
+export function MarkdownBlockContent(options: MarkdownRenderOptions) {
+  const nodes = useContext(MarkdownBlockNodesContext)
+  return <MarkdownNodes nodes={nodes ?? []} {...options} />
+}
+
+export function MarkdownContent({ content, ...options }: { content: string } & MarkdownRenderOptions) {
   const references = useContext(MarkdownReferencesContext)
   const onNavigateLink = useContext(MarkdownNavigationContext)
   const env = { references: { ...references } }

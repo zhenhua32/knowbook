@@ -1,6 +1,7 @@
 import MarkdownIt, { type Env, type Token } from 'markdown-it'
 import { installMarkdownExtensions } from './markdownExtensions'
 import { installMarkdownAutolinks } from './markdownAutolinks'
+import { installMarkdownAdvanced } from './markdownAdvanced'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -16,6 +17,7 @@ export function getHeadingLevel(type: string): HeadingLevel | null {
 export const markdownEngine = new MarkdownIt({ html: false, linkify: true, breaks: false })
 installMarkdownExtensions(markdownEngine)
 installMarkdownAutolinks(markdownEngine)
+installMarkdownAdvanced(markdownEngine)
 markdownEngine.linkify.add('file:', { validate: (text, pos) => text.slice(pos).match(/^\/\/[^\s<>()\]]+/)?.[0].replace(/[.,;!?]+$/, '').length ?? 0 })
 const defaultValidateLink = markdownEngine.validateLink.bind(markdownEngine)
 markdownEngine.validateLink = (url) => /^file:\/\//i.test(url) || defaultValidateLink(url)
@@ -29,24 +31,6 @@ markdownEngine.block.ruler.before('fence', 'knowbook_metadata', (state, start, _
   token.content = line
   token.map = [start, start + 1]
   state.line = start + 1
-  return true
-}, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
-
-markdownEngine.block.ruler.before('fence', 'math_block', (state, start, end, silent) => {
-  if (state.sCount[start] - state.blkIndent >= 4) return false
-  const line = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start]).trim()
-  if (line !== '$$') return false
-  let closing = start + 1
-  while (closing < end) {
-    if (state.src.slice(state.bMarks[closing] + state.tShift[closing], state.eMarks[closing]).trim() === '$$') break
-    closing++
-  }
-  if (closing === end) return false
-  if (silent) return true
-  const token = state.push('math_block', 'math', 0)
-  token.content = state.getLines(start + 1, closing, state.blkIndent, false)
-  token.map = [start, closing + 1]
-  state.line = closing + 1
   return true
 }, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
 
@@ -68,7 +52,6 @@ markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
 
 markdownEngine.renderer.rules.wiki_link = (tokens, index) => markdownEngine.utils.escapeHtml(`[[${tokens[index].content}]]`)
 markdownEngine.renderer.rules.knowbook_metadata = () => ''
-markdownEngine.renderer.rules.math_block = (tokens, index) => `<pre>${markdownEngine.utils.escapeHtml(tokens[index].content)}</pre>\n`
 
 export type MarkdownNode = { token: Token; children: MarkdownNode[] }
 
