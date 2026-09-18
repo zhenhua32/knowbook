@@ -17,6 +17,7 @@ type DocumentPreviewHeaderProps = {
   mdCopyFlash: boolean
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
+  onCheckLinks?: () => void
   onAddChild: () => void
   canUndo: boolean
   canRedo: boolean
@@ -48,6 +49,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     mdCopyFlash,
     onCopyMarkdown,
     onSaveMarkdown,
+    onCheckLinks,
     onAddChild,
     canUndo,
     canRedo,
@@ -169,6 +171,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           onClose={() => setActionMenuOpen(false)}
           onCopyMarkdown={onCopyMarkdown}
           onSaveMarkdown={onSaveMarkdown}
+          onCheckLinks={onCheckLinks}
           onUndo={onUndo}
           onRedo={onRedo}
           onMoveTargetChange={onMoveTargetChange}

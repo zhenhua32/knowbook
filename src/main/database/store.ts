@@ -30,6 +30,8 @@ import type {
   DocumentCatalogPageInput,
   DocumentChild,
   DocumentDetail,
+  DocumentLinkCheck,
+  DocumentLinkIssueReason,
   DocumentIndexEntry,
   DocumentSuggestion,
   DocumentTreeNode,
@@ -62,6 +64,8 @@ import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
+import { MarkdownLinkIndex, type MarkdownIndexedPathChange } from './markdown-link-index'
+import { getMarkdownHeadingTargets, getMarkdownHeadingRewrites } from '@shared/markdownLinkMaintenance'
 import {
   createLegacyDatabaseViewConfig,
   normalizeDatabaseViewConfig
@@ -329,15 +333,22 @@ export interface ExportStandaloneDatabase {
 
 export class KnowbookStore {
   private readonly db: SqliteDatabase
+  private readonly markdownLinks: MarkdownLinkIndex
   readonly pluginPlatform: SqlitePluginPlatformRepository
   readonly assistantSessions: SqliteAssistantSessionRepository
   private deferredLinkResyncDepth = 0
   private deferredFullLinkResyncRequested = false
+  private bulkMarkdownState: {
+    paths: Map<string, string>
+    headings: Map<string, ReturnType<typeof getMarkdownHeadingTargets>>
+    replaced: Set<string>
+  } | null = null
 
   constructor(private readonly databasePath: string) {
     mkdirSync(dirname(databasePath), { recursive: true })
     const databaseAlreadyExists = existsSync(databasePath)
     this.db = new Database(databasePath)
+    this.markdownLinks = new MarkdownLinkIndex(this.db)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('busy_timeout = 5000')
@@ -422,6 +433,11 @@ export class KnowbookStore {
       if (schemaVersion < 14) {
         this.ensureBlockMarkdownFormatColumn()
         this.db.pragma('user_version = 14')
+      }
+      if (schemaVersion < 15) {
+        this.markdownLinks.rebuild()
+        this.resyncLinks()
+        this.db.pragma('user_version = 15')
       }
     })
   }
@@ -1228,9 +1244,31 @@ export class KnowbookStore {
       return !existing || existing.content !== block.content
     })
 
+    if (this.bulkMarkdownState) {
+      this.bulkMarkdownState.replaced.add(documentId)
+      if (this.bulkMarkdownState.paths.has(documentId) && !this.bulkMarkdownState.headings.has(documentId)
+        && (blocksChanged || normalizedTitle !== document.title)) {
+        const oldBlocks = this.markdownLinks.readDocument(documentId)!.blocks
+        this.bulkMarkdownState.headings.set(documentId, getMarkdownHeadingTargets(oldBlocks, document.title))
+      }
+    }
     if (!metadataChanged && !blocksChanged) {
       return [documentId]
     }
+
+    const markdownChanges: MarkdownIndexedPathChange[] = this.deferredLinkResyncDepth === 0
+      ? pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path, after: entry.path === oldPath ? newPath : newPath + entry.path.slice(oldPath.length) }))
+      : []
+    if (this.deferredLinkResyncDepth === 0 && (blocksChanged || normalizedTitle !== document.title)) {
+      const oldBlocks = this.markdownLinks.readDocument(documentId)!.blocks
+      const headings = getMarkdownHeadingRewrites(getMarkdownHeadingTargets(oldBlocks, document.title), getMarkdownHeadingTargets(persistedBlocks, normalizedTitle))
+      if (headings.size) {
+        const changedPath = markdownChanges.find((entry) => entry.id === documentId)
+        if (changedPath) changedPath.headings = headings
+        else markdownChanges.push({ id: documentId, before: oldPath, after: newPath, headings })
+      }
+    }
+    let rewrittenDocumentIds: string[] = []
 
     const updateDocumentMetadataStatement = this.db.prepare(`
       UPDATE documents
@@ -1319,14 +1357,17 @@ export class KnowbookStore {
         deleteBlockStatement.run(existing.id, documentId)
       }
 
+      if (this.deferredLinkResyncDepth === 0) {
+        rewrittenDocumentIds = this.markdownLinks.maintain(markdownChanges, [documentId], now)
+      }
       this.resyncLinksForReferenceChanges(
         changedReferenceTokens,
-        blockReferencesChanged ? [documentId] : []
+        [...(blockReferencesChanged ? [documentId] : []), ...rewrittenDocumentIds]
       )
     })
 
     transaction()
-    return newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]
+    return [...new Set([...(newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]), ...rewrittenDocumentIds])]
   }
 
   updateDocumentSummary(documentId: string, summary: string): void {
@@ -1395,15 +1436,21 @@ export class KnowbookStore {
       changedReferenceTokens.add(`${newPrefix}${descendant.path.slice(oldPrefix.length)}`)
     }
 
+    let rewrittenDocumentIds: string[] = []
+
     const transaction = this.db.transaction(() => {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
-      this.resyncLinksForReferenceChanges(changedReferenceTokens)
+      if (this.deferredLinkResyncDepth === 0) {
+        rewrittenDocumentIds = this.markdownLinks.maintain(affectedDescendants.map((entry) => ({ id: entry.id, before: entry.path,
+          after: newPrefix + entry.path.slice(oldPrefix.length) })), [], now)
+      }
+      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds)
     })
 
     transaction()
-    return affectedDescendants.map((row) => row.id)
+    return [...new Set([...affectedDescendants.map((row) => row.id), ...rewrittenDocumentIds])]
   }
 
   moveDocument(documentId: string, newParentId: string | null): string[] {
@@ -1454,6 +1501,7 @@ export class KnowbookStore {
 
     const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(newParentId) as { max_sort_order: number }
     const newSortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
+    let rewrittenDocumentIds: string[] = []
 
     const updateDocumentStatement = this.db.prepare(`
       UPDATE documents
@@ -1469,11 +1517,15 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
-      this.resyncLinksForReferenceChanges(changedReferenceTokens)
+      if (this.deferredLinkResyncDepth === 0) {
+        rewrittenDocumentIds = this.markdownLinks.maintain(pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path,
+          after: entry.path === document.path ? newPath : newPath + entry.path.slice(document.path.length) })), [], now)
+      }
+      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds)
     })
 
     transaction()
-    return this.getDocumentIdsInPathSubtree(newPath)
+    return [...new Set([...this.getDocumentIdsInPathSubtree(newPath), ...rewrittenDocumentIds])]
   }
 
   updateAiConfig(input: UpdateAiConfigInput): void {
@@ -2707,23 +2759,42 @@ export class KnowbookStore {
     return this.db.transaction(operation)()
   }
 
+  checkDocumentLinks(documentId: string, attachmentCheck: (url: string) => DocumentLinkIssueReason | null): DocumentLinkCheck {
+    return this.markdownLinks.check(documentId, attachmentCheck)
+  }
+
   runInBulkDocumentMutation<T>(operation: () => T): T {
     return this.runInTransaction(() => {
+      const previous = this.bulkMarkdownState
+      const previousRequested = this.deferredFullLinkResyncRequested
+      this.bulkMarkdownState = previous ? { ...previous, headings: new Map(previous.headings), replaced: new Set(previous.replaced) }
+        : { paths: new Map((this.db.prepare('SELECT id, path FROM documents').all() as Array<{ id: string; path: string }>).map((row) => [row.id, row.path])), headings: new Map(), replaced: new Set() }
       this.deferredLinkResyncDepth += 1
       try {
         const result = operation()
-        this.deferredLinkResyncDepth -= 1
-        if (this.deferredLinkResyncDepth === 0 && this.deferredFullLinkResyncRequested) {
+        if (this.deferredLinkResyncDepth === 1 && this.deferredFullLinkResyncRequested) {
+          const state = this.bulkMarkdownState!
+          const changes: MarkdownIndexedPathChange[] = []
+          for (const row of this.db.prepare('SELECT id, path FROM documents').all() as Array<{ id: string; path: string }>) {
+            const before = state.paths.get(row.id)
+            if (!before) continue
+            const oldHeadings = state.headings.get(row.id)
+            const document = oldHeadings && this.markdownLinks.readDocument(row.id)!
+            const headings = document && getMarkdownHeadingRewrites(oldHeadings!, getMarkdownHeadingTargets(document.blocks, document.title), true)
+            if (before !== row.path || headings?.size) changes.push({ id: row.id, before, after: row.path, headings })
+          }
+          this.markdownLinks.maintain(changes, state.replaced, new Date().toISOString(), state.replaced)
           this.deferredFullLinkResyncRequested = false
           this.resyncLinksForAllDocuments()
         }
         return result
       } catch (error) {
-        this.deferredLinkResyncDepth -= 1
-        if (this.deferredLinkResyncDepth === 0) {
-          this.deferredFullLinkResyncRequested = false
-        }
+        this.bulkMarkdownState = previous
+        this.deferredFullLinkResyncRequested = previousRequested
         throw error
+      } finally {
+        this.deferredLinkResyncDepth -= 1
+        if (this.deferredLinkResyncDepth === 0) this.bulkMarkdownState = null
       }
     })
   }
@@ -3209,6 +3280,7 @@ export class KnowbookStore {
   }
 
   private resyncLinksForAllDocuments(): void {
+    this.markdownLinks.rebuild()
     this.resyncLinks()
   }
 
@@ -3227,6 +3299,10 @@ export class KnowbookStore {
         .filter(Boolean)
     )
     const sourceDocumentIds = new Set(additionalSourceDocumentIds)
+    const indexedSources = this.db.prepare('SELECT DISTINCT source_document_id AS id FROM markdown_link_sources WHERE target_path = ?')
+    for (const token of normalizedReferenceTokens) {
+      for (const { id } of indexedSources.all(token) as Array<{ id: string }>) sourceDocumentIds.add(id)
+    }
 
     if (normalizedReferenceTokens.size > 0) {
       // Trigram FTS only matches needles of 3+ characters; shorter tokens
@@ -3266,6 +3342,7 @@ export class KnowbookStore {
       }
     }
 
+    for (const id of sourceDocumentIds) this.markdownLinks.syncDocument(id)
     this.resyncLinks(sourceDocumentIds)
   }
 
@@ -3375,6 +3452,12 @@ export class KnowbookStore {
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
       VALUES (?, ?, ?, ?, ?)
     `)
+    const selectMarkdownLinks = this.db.prepare(`SELECT DISTINCT source.source_document_id, target.id AS target_id, source.url
+      FROM markdown_link_sources AS source JOIN documents AS target ON target.path = source.target_path
+      WHERE source.kind <> 'wiki' AND target.id <> source.source_document_id
+      ${selectedSourceDocumentIds ? 'AND source.source_document_id = ?' : ''}`)
+    const markdownLinks = (selectedSourceDocumentIds
+      ? selectedSourceDocumentIds.flatMap((id) => selectMarkdownLinks.all(id)) : selectMarkdownLinks.all()) as Array<{ source_document_id: string; target_id: string; url: string }>
 
     const transaction = this.db.transaction(() => {
       if (selectedSourceDocumentIds) {
@@ -3403,6 +3486,7 @@ export class KnowbookStore {
           insertLink.run(randomUUID(), block.document_id, target.id, token, createdAt)
         }
       }
+      for (const link of markdownLinks) insertLink.run(randomUUID(), link.source_document_id, link.target_id, link.url, createdAt)
     })
 
     transaction()

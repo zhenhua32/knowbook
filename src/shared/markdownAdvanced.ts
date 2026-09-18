@@ -14,6 +14,22 @@ const escaped = (source: string, position: number) => {
   return slashes % 2 === 1
 }
 
+export function findMarkdownInlineMath(source: string, start: number, limit = source.length): { contentStart: number; contentEnd: number; end: number; markup: string } | null {
+  const dollar = source[start] === '$' && source[start + 1] !== '$' && source[start - 1] !== '$'
+  const bracket = source.startsWith('\\(', start)
+  if (!dollar && !bracket) return null
+  const opening = dollar ? '$' : '\\(', closing = dollar ? '$' : '\\)'
+  const contentStart = start + opening.length
+  if (dollar && /\s/.test(source[contentStart] ?? '')) return null
+  let end = source.indexOf(closing, contentStart)
+  while (end >= 0 && end < limit) {
+    if (!escaped(source, end) && (!dollar || (source[end + 1] !== '$' && source[end - 1] !== '$'
+      && !/\s/.test(source[end - 1]) && !/\d/.test(source[end + 1] ?? '')))) break
+    end = source.indexOf(closing, end + closing.length)
+  }
+  return end <= contentStart || end >= limit ? null : { contentStart, contentEnd: end, end: end + closing.length, markup: opening }
+}
+
 /** Extensions are parsed once for the complete document, before UI block slicing. */
 export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.before('normalize', 'document_environment', (state) => { state.env ??= {} })
@@ -69,27 +85,14 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
   md.renderer.rules.footnote_missing = (tokens, index) => `<span class="markdown-footnote-missing" title="Undefined footnote: ${md.utils.escapeHtml(String(tokens[index].meta?.label))}">${md.utils.escapeHtml(tokens[index].content)}</span>`
 
   md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
-    const start = state.pos
-    const dollar = state.src[start] === '$' && state.src[start + 1] !== '$' && state.src[start - 1] !== '$'
-    const bracket = state.src.startsWith('\\(', start)
-    if (!dollar && !bracket) return false
-    const opening = dollar ? '$' : '\\('
-    const closing = dollar ? '$' : '\\)'
-    const contentStart = start + opening.length
-    if (dollar && /\s/.test(state.src[contentStart] ?? '')) return false
-    let end = state.src.indexOf(closing, contentStart)
-    while (end >= 0 && end < state.posMax) {
-      if (!escaped(state.src, end) && (!dollar || (state.src[end + 1] !== '$' && state.src[end - 1] !== '$'
-        && !/\s/.test(state.src[end - 1]) && !/\d/.test(state.src[end + 1] ?? '')))) break
-      end = state.src.indexOf(closing, end + closing.length)
-    }
-    if (end <= contentStart || end >= state.posMax) return false
+    const match = findMarkdownInlineMath(state.src, state.pos, state.posMax)
+    if (!match) return false
     if (!silent) {
       const token = state.push('math_inline', 'math', 0)
-      token.content = state.src.slice(contentStart, end)
-      token.markup = opening
+      token.content = state.src.slice(match.contentStart, match.contentEnd)
+      token.markup = match.markup
     }
-    state.pos = end + closing.length
+    state.pos = match.end
     return true
   })
   md.renderer.rules.math_inline = (tokens, index) => `<span class="markdown-math-inline">${md.utils.escapeHtml(tokens[index].content)}</span>`

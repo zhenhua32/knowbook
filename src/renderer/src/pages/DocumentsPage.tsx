@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import '../document-experience.css'
 import type { ClipWebPageInput, HomeData } from '@shared/contracts'
@@ -12,6 +12,7 @@ import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '..
 import { DocumentsSection } from '../sections/DocumentsSection'
 
 const BLOCK_INDENT_SIZE = 24
+const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
 
 type DocumentsPageProps = {
   ai: AiDomainState
@@ -43,6 +44,7 @@ export function DocumentsPage({
   const searchComposingRef = useRef(false)
   const [webClipBusy, setWebClipBusy] = useState(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
+  const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
 
   const selectionAi = useDocumentSelectionAiState({
     aiEnabled: aiConfig.enabled,
@@ -339,7 +341,7 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={previewHeaderProps}
+        previewHeaderProps={{ ...previewHeaderProps, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId) }}
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
         selectionAiContent={selectionAiContent}
@@ -348,6 +350,14 @@ export function DocumentsPage({
         visibleEditorRows={visibleEditorRows}
       />
       </MarkdownNavigationContext.Provider>
+
+      {linkCheckDocumentId && linkCheckDocumentId === documents.selectedDocumentId && <Suspense fallback={null}>
+        <DocumentLinkCheckDialog documentId={linkCheckDocumentId} isZh={isZh} onFlush={documents.flushPendingChanges}
+          onClose={() => setLinkCheckDocumentId(null)} onLocate={(blockId) => {
+            const index = documents.draftBlocks.findIndex((block) => block.id === blockId)
+            if (index >= 0) documents.navigateToBlock(index)
+          }} />
+      </Suspense>}
 
       {documents.isGlobalSearchOpen && (
         <div className="global-search-overlay" onClick={documents.closeGlobalSearch}>

@@ -108,6 +108,7 @@ import {
 import { normalizeAiApiKey } from './ai-auth'
 import { MarkdownBackupService } from './backup/exporter'
 import { writeMarkdownFile } from './backup/markdown-file'
+import { checkMarkdownAttachment } from './markdown-attachment-check'
 import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
 import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
@@ -800,6 +801,9 @@ function formatRestorePreviewDetail(preview: BackupRestorePreview): string {
     `独立数据库：${preview.standaloneDatabases} 个（新建 ${preview.standaloneDatabasesCreated}，更新 ${preview.standaloneDatabasesUpdated}，删除 ${preview.standaloneDatabasesDeleted}）`,
     `路径冲突：${preview.conflictsResolved} 个；父级占位：${preview.placeholdersCreated} 个`,
     '',
+    '同一文档（优先匹配备份 ID，其次匹配完整路径）会以导入内容覆盖。普通 Markdown 目录不会删除未包含的文档；带完整备份清单时按清单恢复。',
+    '目录内可找到的相对图片和附件会复制到工作区；找不到的资源保留原链接，可在文档“检查链接”中查看。',
+    '',
     '继续后会先创建数据库安全副本，再应用恢复内容。'
   ].join('\n')
 }
@@ -1474,6 +1478,11 @@ function registerIpcHandlers(): void {
     return document
   })
 
+  ipcMain.handle('knowbook:check-document-links', (_event, documentId: string) => {
+    if (typeof documentId !== 'string' || !documentId) throw new Error('Invalid document ID')
+    return store.checkDocumentLinks(documentId, (url) => checkMarkdownAttachment(url, webClipAssetRoot))
+  })
+
   ipcMain.handle('knowbook:clip-web-page', async (_event, input: ClipWebPageInput) => {
     const result: ClipWebPageResult = await webClipper.clipWebPage(input)
     await emitClipMutationEvents(result)
@@ -1651,7 +1660,7 @@ function registerIpcHandlers(): void {
       })
     }
 
-    if (pathChanged) {
+    if (pathChanged || affectedDocumentIds.some((id) => id !== documentId)) {
       const document = store.getDocumentDetail(documentId)
       if (!document) {
         throw new Error('Document not found')

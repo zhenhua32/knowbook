@@ -819,6 +819,24 @@ export interface InvokeSystemPluginMainInput {
   input?: SystemPluginServiceRpcJson
 }
 
+export type DocumentLinkIssueReason = 'missing-document' | 'missing-heading' | 'missing-block'
+  | 'missing-attachment' | 'unmanaged-attachment' | 'invalid-path' | 'ambiguous-reference'
+
+export interface DocumentLinkIssue {
+  blockId: string
+  offset: number
+  url: string
+  reason: DocumentLinkIssueReason
+}
+
+export interface DocumentLinkCheck {
+  documentId: string
+  checkedAt: string
+  checkedCount: number
+  ignoredExternalCount: number
+  issues: DocumentLinkIssue[]
+}
+
 export interface ElectronApi {
   getHomeData: () => Promise<HomeData>
   getPluginHomeData: () => Promise<PluginHomeData>
@@ -831,6 +849,7 @@ export interface ElectronApi {
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
+  checkDocumentLinks: (documentId: string) => Promise<DocumentLinkCheck>
   clipWebPage: (input: ClipWebPageInput) => Promise<ClipWebPageResult>
   getWebClipBridgeStatus: () => Promise<WebClipBridgeStatus>
   updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => Promise<WebClipBridgeStatus>

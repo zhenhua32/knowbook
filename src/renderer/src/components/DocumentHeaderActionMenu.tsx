@@ -21,6 +21,7 @@ type DocumentHeaderActionMenuProps = {
   onClose: () => void
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
+  onCheckLinks?: () => void
   onUndo: () => void
   onRedo: () => void
   onMoveTargetChange: (value: string) => void
@@ -45,6 +46,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     onClose,
     onCopyMarkdown,
     onSaveMarkdown,
+    onCheckLinks,
     onUndo,
     onRedo,
     onMoveTargetChange,
@@ -88,6 +90,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
             <button className="context-menu-item" onClick={() => runAndClose(onSaveMarkdown)} type="button">
               {ui.saveMarkdown}
             </button>
+            {onCheckLinks && <button className="context-menu-item" onClick={() => runAndClose(onCheckLinks)} type="button">
+              {isZh ? '检查链接' : 'Check links'}
+            </button>}
             <button
               className="context-menu-item"
               disabled={!canUndo}

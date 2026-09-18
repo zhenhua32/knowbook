@@ -1,10 +1,16 @@
 import { markdownEngine, type MarkdownEnvironment, type MarkdownToken } from './markdownEngine'
+import { findMarkdownInlineMath } from './markdownAdvanced'
 
-export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' }
+export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink' }
+export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 
 /** Locate source destinations without rewriting labels, titles, code or other Markdown. */
 export function collectMarkdownDestinations(source: string): MarkdownDestination[] {
-  if (!source.includes('[')) return []
+  return collectMarkdownSourceLinks(source, false) as MarkdownDestination[]
+}
+
+export function collectMarkdownSourceLinks(source: string, includeWiki = true): MarkdownSourceLink[] {
+  if (!source.includes('[') && !source.includes('<')) return []
   const header = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   const headerEnd = header && /^[A-Za-z][\w-]*:/m.test(header[1]) ? header[0].length : 0
   const env: MarkdownEnvironment = { captureFootnoteSource: true }
@@ -13,10 +19,14 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
   const renderedTokens = markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
   const tokens = [...renderedTokens, ...(env.footnoteSourceTokens as MarkdownToken[] | undefined ?? [])]
   const allowed = new Set<string>()
+  const allowedWiki = new Set<string>()
+  const allowedAutolinks = new Set<string>()
   const visit = (items: MarkdownToken[]) => {
     for (const token of items) {
       const url = token.attrGet(token.type === 'image' ? 'src' : 'href')
       if (url) allowed.add(String(url))
+      if (token.type === 'link_open' && token.markup === 'autolink' && url) allowedAutolinks.add(String(url))
+      if (token.type === 'wiki_link') allowedWiki.add(token.content)
       if (token.children) visit(token.children)
     }
   }
@@ -33,13 +43,19 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
     .map((token) => [lines[token.map![0]], lines[token.map![1]]] as const)
   const tailEnds = new Map<number, number>()
   const state = new markdownEngine.inline.State(source, markdownEngine, env, [])
-  const destinations: MarkdownDestination[] = []
+  const destinations: MarkdownSourceLink[] = []
+  let wikiExcludedUntil = 0
   const whitespace = (position: number) => { while (/[ \t\r\n]/.test(source[position] ?? '') && position < source.length) position++; return position }
   for (let i = 0; i < source.length; i++) {
     while (excludedIndex < excluded.length && excluded[excludedIndex][1] <= i) excludedIndex++
     const skip = excluded[excludedIndex]
     if (skip && i >= skip[0]) { i = skip[1] - 1; continue }
     if (tailEnds.has(i)) { i = tailEnds.get(i)! - 1; continue }
+    if (source[i] === '$' || source.startsWith('\\(', i)) {
+      const inlineEnd = inlineRanges.find(([start, end]) => i >= start && i < end)?.[1] ?? source.length
+      const math = findMarkdownInlineMath(source, i, inlineEnd)
+      if (math) { i = math.end - 1; continue }
+    }
     if (source[i] === '\\') { i++; continue }
     if (source[i] === '`') {
       const run = source.slice(i).match(/^`+/)![0]
@@ -50,7 +66,25 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
       else i += run.length - 1
       continue
     }
+    if (source[i] === '<' && i >= wikiExcludedUntil) {
+      const end = source.indexOf('>', i + 1)
+      if (end > i && !/[<\s]/.test(source.slice(i + 1, end))) {
+        const raw = source.slice(i + 1, end)
+        const url = markdownEngine.normalizeLink(/^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `mailto:${raw}`)
+        if (allowedAutolinks.has(url)) {
+          destinations.push({ start: i + 1, end, url, kind: 'autolink' })
+          i = end; continue
+        }
+      }
+    }
     if (source[i] !== '[') continue
+    if (includeWiki && i >= wikiExcludedUntil && source.startsWith('[[', i)) {
+      const end = source.indexOf(']]', i + 2), label = end < 0 ? '' : source.slice(i + 2, end)
+      if (label.trim() && !/[\n\[\]]/.test(label) && allowedWiki.has(label.trim())) {
+        destinations.push({ start: i + 2 + label.length - label.trimStart().length, end: end - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })
+        i = end + 1; continue
+      }
+    }
     const labelEnd = markdownEngine.helpers.parseLinkLabel(state, i, false)
     if (labelEnd < 0) continue
     const delimiter = source[labelEnd + 1]
@@ -71,6 +105,13 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
       }
       if (source[end] !== ')') continue
       tailEnds.set(labelEnd + 1, end + 1)
+      wikiExcludedUntil = labelEnd + 1
+    } else {
+      const titleStart = whitespace(result.pos)
+      const title = markdownEngine.helpers.parseLinkTitle(source, titleStart, source.length)
+      const reference = env.references?.[markdownEngine.utils.normalizeReference(source.slice(i + 1, labelEnd))]
+      wikiExcludedUntil = title.ok && reference?.title === title.str && !/\n[ \t\r]*\n/.test(source.slice(result.pos, titleStart)) ? title.pos : result.pos
+      tailEnds.set(labelEnd + 1, wikiExcludedUntil)
     }
     const angled = source[start] === '<'
     destinations.push({ start: start + (angled ? 1 : 0), end: result.pos - (angled ? 1 : 0), url,
@@ -85,7 +126,12 @@ export function rewriteMarkdownDestinations(source: string, rewrite: (destinatio
   for (const edit of edits.reverse()) {
     if (edit.replacement == null || edit.replacement === edit.url) continue
     const escaped = edit.replacement.replace(/[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
-    source = source.slice(0, edit.start) + escaped + source.slice(edit.end)
+    if (edit.kind === 'autolink') {
+      // Relative destinations are not valid inside <...>; retain the visible
+      // label while converting the exported/imported URL to a normal link.
+      const label = source.slice(edit.start, edit.end).replace(/[\\\[\]]/g, '\\$&')
+      source = source.slice(0, edit.start - 1) + `[${label}](${escaped})` + source.slice(edit.end + 1)
+    } else source = source.slice(0, edit.start) + escaped + source.slice(edit.end)
   }
   return source
 }

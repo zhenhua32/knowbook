@@ -99,6 +99,19 @@ CREATE TABLE IF NOT EXISTS links (
 CREATE INDEX IF NOT EXISTS idx_links_source_document_id ON links(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_links_target_document_id ON links(target_document_id);
 
+CREATE TABLE IF NOT EXISTS markdown_link_sources (
+  source_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  source_block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  source_offset INTEGER NOT NULL,
+  url TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  target_path TEXT,
+  fragment TEXT,
+  PRIMARY KEY (source_block_id, source_offset)
+);
+CREATE INDEX IF NOT EXISTS idx_markdown_links_source ON markdown_link_sources(source_document_id);
+CREATE INDEX IF NOT EXISTS idx_markdown_links_target ON markdown_link_sources(target_path);
+
 CREATE TABLE IF NOT EXISTS databases (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
