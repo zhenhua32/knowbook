@@ -6,7 +6,7 @@ import {
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
-import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
+import { MarkdownBlockNodesContext, MarkdownDocumentContext } from './MarkdownDocumentContext'
 
 export const MarkdownReferencesContext = createContext<MarkdownEnvironment['references']>(undefined)
 const MathPreview = lazy(async () => {
@@ -28,6 +28,9 @@ export type MarkdownRenderOptions = {
   renderReference?: (label: string, index: number) => ReactNode
   hideImages?: boolean
   onNavigateLink?: (url: string) => void
+  onToggleTask?: (offset: number, checked: boolean) => void
+  canToggleTask?: (offset: number) => boolean
+  taskLabel?: string
 }
 
 function openLink(url: string) {
@@ -80,7 +83,10 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
         return <pre key={index}><code>{token.content}</code></pre>
       case 'code_block': return <pre key={index}><code>{token.content}</code></pre>
       case 'hr': return <hr key={index} />
-      case 'task_checkbox': return <Fragment key={index}><input type="checkbox" disabled checked={Boolean(token.meta?.checked)} aria-label="Task" />{' '}</Fragment>
+      case 'task_checkbox': return <Fragment key={index}><input type="checkbox"
+        disabled={!options.onToggleTask || typeof token.meta?.sourceOffset !== 'number' || options.canToggleTask?.(Number(token.meta.sourceOffset)) === false} checked={Boolean(token.meta?.checked)}
+        onChange={(event) => options.onToggleTask?.(Number(token.meta?.sourceOffset), event.target.checked)}
+        aria-label={`${options.taskLabel ?? 'Task'}${token.meta?.label ? ': ' + token.meta.label : ''}`} />{' '}</Fragment>
       case 'math_inline':
       case 'math_block': return <Suspense key={index} fallback={token.type === 'math_inline' ? <code>{token.content}</code> : <pre>{token.content}</pre>}>
         <MathPreview expression={token.content} label="Math" displayMode={token.type === 'math_block'} />
@@ -113,7 +119,8 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
           key: index,
           ...(token.tag === 'table' ? { className: 'block-markdown-table' } : {}),
           ...(token.tag === 'ol' && token.attrGet('start') !== null ? { start: Number(token.attrGet('start')) } : {}),
-          ...(alignment ? { style: { textAlign: alignment } } : {})
+          ...(alignment ? { style: { textAlign: alignment } } : {}),
+          ...(token.tag === 'li' && token.meta?.task ? { style: { listStyleType: 'none' } } : {})
         }, nested())
       }
     }
@@ -128,7 +135,9 @@ export function MarkdownInline({ content, ...options }: { content: string } & Ma
 
 export function MarkdownNodes({ nodes, ...options }: { nodes: MarkdownNode[] } & MarkdownRenderOptions) {
   const onNavigateLink = useContext(MarkdownNavigationContext)
-  return <>{renderMarkdownNodes(nodes, { onNavigateLink, ...options })}</>
+  const { onToggleTask, isZh, model } = useContext(MarkdownDocumentContext)
+  return <>{renderMarkdownNodes(nodes, { onNavigateLink, onToggleTask, canToggleTask: (offset) => model?.taskTargets.has(offset) ?? false,
+    taskLabel: isZh ? '任务' : 'Task', ...options })}</>
 }
 
 export function MarkdownBlockContent(options: MarkdownRenderOptions) {

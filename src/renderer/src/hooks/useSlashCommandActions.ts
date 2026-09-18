@@ -15,6 +15,8 @@ type SlashCommandLike = {
   | {
       kind: 'type'
       type: DocumentBlock['type']
+      templateContent?: string
+      templateLanguage?: string
     }
   | {
       kind: 'action'
@@ -138,6 +140,23 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     const nextContent = slashRemoval.content
 
     if (command.kind === 'type') {
+      pushToHistory(draftBlocks)
+      if (command.templateContent !== undefined) {
+        const targetIndex = activeBlockIndex + (nextContent.trim() ? 1 : 0)
+        const inserted = { ...buildBlockTypePatch(command.type, command.templateContent),
+          ...(command.templateLanguage ? { language: command.templateLanguage, markdownFormat: { codeInfo: command.templateLanguage } } : {}) }
+        setDraftBlocks((previous) => {
+          const next = [...previous]
+          next[activeBlockIndex] = { ...next[activeBlockIndex], content: nextContent }
+          if (targetIndex === activeBlockIndex) next[activeBlockIndex] = { ...next[activeBlockIndex], ...inserted, id: next[activeBlockIndex].id }
+          else next.splice(targetIndex, 0, inserted)
+          return next
+        })
+        setActiveBlockIndex(targetIndex)
+        setActiveCursorPosition(command.templateContent.length)
+        setPendingFocusBlockIndex(targetIndex)
+        return
+      }
       setDraftBlocks((previous) =>
         previous.map((block, index) =>
           index === activeBlockIndex
@@ -239,6 +258,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     insertChildDraftBlock,
     isNestableBlock,
     moveDraftBlockBySibling,
+    pushToHistory,
     removeDraftBlock,
     setActiveBlockIndex,
     setActiveCursorPosition,

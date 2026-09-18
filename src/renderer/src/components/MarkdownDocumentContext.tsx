@@ -9,14 +9,16 @@ export const MarkdownDocumentContext = createContext<{
   isZh: boolean
   footnoteId: (id: number, subId?: number) => string
   navigateFootnote: (id: number, subId?: number) => void
+  onToggleTask?: (offset: number, checked: boolean) => void
 }>({ isZh: false, footnoteId: (id, subId) => `fn-${id}${subId === undefined ? '' : `-ref-${subId}`}`, navigateFootnote: () => {} })
 
-export function MarkdownDocumentProvider({ model, documentId, isZh, containerRef, onRevealBlock, children }: {
+export function MarkdownDocumentProvider({ model, documentId, isZh, containerRef, onRevealBlock, onToggleTask, children }: {
   model?: MarkdownDocumentModel
   documentId: string
   isZh: boolean
   containerRef: RefObject<HTMLElement | null>
   onRevealBlock: (id: string) => void
+  onToggleTask?: (offset: number, checked: boolean) => void
   children: ReactNode
 }) {
   const scope = useId()
@@ -43,6 +45,6 @@ export function MarkdownDocumentProvider({ model, documentId, isZh, containerRef
     }
     frame.current = requestAnimationFrame(focus)
   }, [model, onRevealBlock, footnoteId, containerRef])
-  const value = useMemo(() => ({ model, isZh, footnoteId, navigateFootnote }), [model, isZh, footnoteId, navigateFootnote])
+  const value = useMemo(() => ({ model, isZh, footnoteId, navigateFootnote, onToggleTask }), [model, isZh, footnoteId, navigateFootnote, onToggleTask])
   return <MarkdownDocumentContext.Provider value={value}>{children}</MarkdownDocumentContext.Provider>
 }

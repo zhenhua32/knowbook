@@ -157,6 +157,7 @@ export function useDocumentsDomainState({
     loadDocumentIntoEditor,
     mdCopyFlash,
     pushToHistory,
+    checkpointDraft,
     redoEdit,
     saveDocument,
     saveDocumentAsMarkdown,
@@ -169,6 +170,7 @@ export function useDocumentsDomainState({
     updateDraftBlock,
     undoEdit
   } = useDocumentEditorState({
+    isReadingMode,
     onHomeDataChange,
     onMessage: onBackupMessage,
     onSelectedDocumentChange: setSelectedDocument,
@@ -710,6 +712,7 @@ export function useDocumentsDomainState({
     toggleDocumentsWideMode,
     togglePinDocument,
     undoEdit,
+    checkpointDraft,
     updateBlockHighlight,
     updateDraftBlock,
     updateGlobalSearchQuery

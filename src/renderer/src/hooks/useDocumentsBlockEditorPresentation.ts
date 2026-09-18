@@ -2,6 +2,7 @@ import { isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { getMarkdownListNumbers } from '@shared/markdown'
 import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
+import type { MarkdownHeading } from '@shared/markdownAdvanced'
 import { useMemo, useRef } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -88,6 +89,7 @@ export function useDocumentsBlockEditorPresentation({
   canMoveSelectionDown,
   canMoveSelectionUp,
   captureBlockCursor,
+  checkpointDraft,
   collapsedBlockIds,
   clearBlockSelection,
   continueBlockAt,
@@ -155,6 +157,8 @@ export function useDocumentsBlockEditorPresentation({
   updateBlockHighlight,
   updateDraftBlock
 }: UseDocumentsBlockEditorPresentationParams) {
+  const markdownDocument = useMemo(() => parseMarkdownDocumentBlocks(draftBlocks, selectedDocument?.title), [draftBlocks, selectedDocument?.title])
+  const markdownReferences = markdownDocument.environment.references
   const visibleEditorRows = useMemo<VisibleEditorRow[]>(() => {
     if (!selectedDocument) {
       return []
@@ -214,9 +218,9 @@ export function useDocumentsBlockEditorPresentation({
         collapsed: Boolean(block.id && collapsedBlockIds.has(block.id)),
         hasChildren: blockHasChildren(index),
         level: getHeadingLevel(block.type)!,
-        title: block.content
+        title: (markdownDocument.blockNodes[index]?.find((node) => node.token.type === 'heading_open')?.token.meta?.heading as MarkdownHeading | undefined)?.text ?? block.content
       }))
-  }, [draftBlocks, collapsedBlockIds, blockHasChildren])
+  }, [draftBlocks, collapsedBlockIds, blockHasChildren, markdownDocument])
 
   const outlinePanelProps: OutlinePanelProps | null = selectedDocument
     ? {
@@ -338,9 +342,6 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
-  const markdownDocument = useMemo(() => parseMarkdownDocumentBlocks(draftBlocks, selectedDocument?.title), [draftBlocks, selectedDocument?.title])
-  const markdownReferences = markdownDocument.environment.references
-
   const rowActions = useStableCallbackProps({
     adjustBlockDepth,
     adjustSelectedBlocksDepth,
@@ -348,6 +349,7 @@ export function useDocumentsBlockEditorPresentation({
     beginBlockDrag,
     canMoveSelectedRange,
     captureBlockCursor,
+    checkpointDraft: checkpointDraft ?? (() => {}),
     continueBlockAt,
     deleteSelectedBlocks,
     dismissSlashCommand,

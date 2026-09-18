@@ -2,6 +2,7 @@ import { isTaskBlockType, isListBlockType } from './blockTypes'
 import { serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange, type MarkdownRenderableBlock } from './markdown'
 import { markdownEngine, markdownTokenTree, type MarkdownEnvironment, type MarkdownNode } from './markdownEngine'
 import type { MarkdownHeading } from './markdownAdvanced'
+import { collectMarkdownTaskTargets, type MarkdownTaskTarget } from './markdownTasks'
 
 export type MarkdownDocumentModel = {
   source: string
@@ -11,6 +12,9 @@ export type MarkdownDocumentModel = {
   footnotes: MarkdownNode[]
   footnoteOrigins: Map<string, number>
   headings: MarkdownHeading[]
+  taskTargets: Map<number, MarkdownTaskTarget>
+  readingLists: Array<{ node: MarkdownNode; indices: number[] }>
+  listItemOwners: Map<MarkdownNode['token'], number>
 }
 
 function sliceNodes(nodes: MarkdownNode[], range: MarkdownBlockSourceRange, mappedArrays: WeakMap<MarkdownNode[], boolean>): MarkdownNode[] {
@@ -70,6 +74,22 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
   const footnotes = nodes.filter((node) => node.token.type === 'footnote_block_open')
   const body = nodes.filter((node) => node.token.type !== 'footnote_block_open' && node.token.type !== 'knowbook_metadata')
   const mappedArrays = new WeakMap<MarkdownNode[], boolean>()
+  const starts = new Map(ranges.map((range, index) => [range.startLine, index]))
+  const listItemOwners = new Map<MarkdownNode['token'], number>()
+  const claimed = new Set<number>()
+  const readingLists: MarkdownDocumentModel['readingLists'] = []
+  const collectListOwners = (node: MarkdownNode, indices: number[]) => {
+    const index = node.token.map && starts.get(node.token.map[0])
+    if (node.token.type === 'list_item_open' && typeof index === 'number' && isListBlockType(blocks[index].type) && !claimed.has(index)) {
+      claimed.add(index); indices.push(index); listItemOwners.set(node.token, index)
+    }
+    for (const child of node.children) collectListOwners(child, indices)
+  }
+  for (const node of body) if (['bullet_list_open', 'ordered_list_open'].includes(node.token.type)) {
+    const indices: number[] = []
+    collectListOwners(node, indices)
+    if (indices.length) readingLists.push({ node, indices })
+  }
   const blockNodes = ranges.map((range, index) => {
     const owned = sliceNodes(body, range, mappedArrays)
     if (!isListBlockType(blocks[index].type)) return owned
@@ -85,11 +105,12 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
   }
   blockNodes.forEach(visit)
   return { source, environment, blockNodes, blockIds: blocks.map((block) => block.id), footnotes, footnoteOrigins,
+    taskTargets: collectMarkdownTaskTargets(nodes, source, ranges, blocks), readingLists, listItemOwners,
     headings: (environment.documentHeadings ?? []) as MarkdownHeading[] }
 }
 
 export function hasAdvancedMarkdown(nodes: MarkdownNode[]): boolean {
-  return nodes.some(({ token, children }) => ['math_inline', 'math_block', 'footnote_ref', 'footnote_missing', 'table_of_contents', 'mark_open'].includes(token.type)
+  return nodes.some(({ token, children }) => ['math_inline', 'math_block', 'footnote_ref', 'footnote_missing', 'table_of_contents', 'mark_open', 'task_checkbox'].includes(token.type)
     || Boolean(token.meta?.callout) || (token.type === 'fence' && /^mermaid(?:\s|$)/i.test(token.info.trim()))
     || hasAdvancedMarkdown(children))
 }

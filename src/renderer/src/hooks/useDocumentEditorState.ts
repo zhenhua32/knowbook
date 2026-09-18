@@ -28,6 +28,7 @@ function areDraftBlockSnapshotsEqual(left: DocumentBlockDraft[] | undefined, rig
 type UseDocumentEditorStateParams = {
   selectedDocumentId: string | null
   selectedDocument: DocumentDetail | null
+  isReadingMode?: boolean
   ui: UiText
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
@@ -37,6 +38,7 @@ type UseDocumentEditorStateParams = {
 export function useDocumentEditorState({
   selectedDocumentId,
   selectedDocument,
+  isReadingMode = false,
   ui,
   onHomeDataChange,
   onSelectedDocumentChange,
@@ -54,6 +56,9 @@ export function useDocumentEditorState({
   const [mdCopyFlash, setMdCopyFlash] = useState(false)
   const editHistoryRef = useRef<DocumentBlockDraft[][]>([])
   const editHistoryPointerRef = useRef<number>(-1)
+  // Reading mode can undo its task changes, but must not replay earlier source edits.
+  const readingHistoryScopeRef = useRef<{ floor: number; ceiling: number } | null>(null)
+  const isReadingModeRef = useRef(isReadingMode)
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingHistorySnapshotRef = useRef<DocumentBlockDraft[] | null>(null)
@@ -68,6 +73,7 @@ export function useDocumentEditorState({
   draftTitleRef.current = draftTitle
   draftSummaryRef.current = draftSummary
   draftBlocksRef.current = draftBlocksState
+  isReadingModeRef.current = isReadingMode
 
   const clearAutoSaveTimer = useCallback(() => {
     if (autoSaveTimerRef.current) {
@@ -87,6 +93,7 @@ export function useDocumentEditorState({
 
     editHistoryRef.current = []
     editHistoryPointerRef.current = -1
+    readingHistoryScopeRef.current = null
     isRestoringHistoryRef.current = false
   }, [clearAutoSaveTimer])
 
@@ -94,6 +101,7 @@ export function useDocumentEditorState({
     const snapshot = cloneDraftBlocks(blocks)
     editHistoryRef.current = [snapshot]
     editHistoryPointerRef.current = 0
+    readingHistoryScopeRef.current = isReadingModeRef.current ? { floor: 0, ceiling: 0 } : null
     isRestoringHistoryRef.current = false
     pendingHistorySnapshotRef.current = null
   }, [])
@@ -221,6 +229,11 @@ export function useDocumentEditorState({
     trimmed.push(snapshot)
     editHistoryRef.current = trimmed.slice(-80)
     editHistoryPointerRef.current = editHistoryRef.current.length - 1
+    const scope = readingHistoryScopeRef.current
+    if (scope) {
+      scope.floor = Math.max(0, scope.floor - Math.max(0, trimmed.length - 80))
+      scope.ceiling = editHistoryPointerRef.current
+    }
     setHistoryRevision((current) => current + 1)
   }, [])
 
@@ -257,6 +270,15 @@ export function useDocumentEditorState({
     }, 600)
   }, [commitHistorySnapshot])
 
+  const checkpointDraft = useCallback(() => pushToHistory(draftBlocksRef.current), [pushToHistory])
+
+  useEffect(() => {
+    if (editHistoryPointerRef.current >= 0) checkpointDraft()
+    const pointer = editHistoryPointerRef.current
+    readingHistoryScopeRef.current = isReadingMode ? { floor: pointer, ceiling: pointer } : null
+    setHistoryRevision((current) => current + 1)
+  }, [checkpointDraft, isReadingMode])
+
   const undoEdit = useCallback(() => {
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
@@ -269,7 +291,7 @@ export function useDocumentEditorState({
     }
 
     const pointer = editHistoryPointerRef.current
-    if (pointer <= 0) {
+    if (pointer <= Math.max(0, readingHistoryScopeRef.current?.floor ?? 0)) {
       return
     }
 
@@ -286,7 +308,7 @@ export function useDocumentEditorState({
   const redoEdit = useCallback(() => {
     const history = editHistoryRef.current
     const pointer = editHistoryPointerRef.current
-    if (pointer >= history.length - 1) {
+    if (pointer >= Math.min(history.length - 1, readingHistoryScopeRef.current?.ceiling ?? Infinity)) {
       return
     }
 
@@ -455,8 +477,9 @@ export function useDocumentEditorState({
   }, [getDraftMarkdownExport, onMessage, selectedDocumentId, ui])
 
   return {
-    canRedo: editHistoryPointerRef.current < editHistoryRef.current.length - 1,
-    canUndo: editHistoryPointerRef.current > 0,
+    canRedo: editHistoryPointerRef.current < Math.min(editHistoryRef.current.length - 1, readingHistoryScopeRef.current?.ceiling ?? Infinity),
+    canUndo: editHistoryPointerRef.current > Math.max(0, readingHistoryScopeRef.current?.floor ?? 0),
+    checkpointDraft,
     cancelPendingAutoSave: clearAutoSaveTimer,
     clearEditorSession,
     copyDocumentAsMarkdown,

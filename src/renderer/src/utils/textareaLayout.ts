@@ -1,6 +1,13 @@
 const pending = new Set<HTMLTextAreaElement>()
 let frame: number | null = null
 
+export function focusBlockTextarea(textarea: HTMLTextAreaElement): void {
+  const source = textarea.closest<HTMLDetailsElement>('details.markdown-table-source')
+  if (source) source.open = true
+  textarea.focus()
+  scheduleTextareaResize(textarea)
+}
+
 // Measure a batch together: shrinking each textarea and reading it immediately
 // forces a full document layout for every block in a long note.
 export function scheduleTextareaResize(textarea: HTMLTextAreaElement | null): void {

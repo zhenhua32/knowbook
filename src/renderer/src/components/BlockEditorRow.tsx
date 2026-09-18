@@ -13,8 +13,12 @@ import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { extractBlockRichMedia } from '../utils/blockRichMedia'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { scheduleTextareaResize as resizeBlockTextarea } from '../utils/textareaLayout'
+import { scheduleTextareaResize as resizeBlockTextarea, focusBlockTextarea } from '../utils/textareaLayout'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
+
+const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
+const MarkdownFormatToolbar = lazy(() => import('./MarkdownFormatToolbar').then((module) => ({ default: module.MarkdownFormatToolbar })))
 
 const CodeBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
@@ -71,6 +75,7 @@ export type BlockEditorRowProps = {
 
   // Callbacks: block operations
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
+  checkpointDraft?: () => void
   updateBlockHighlight: (index: number, highlight: string | undefined) => void
   insertDraftBlockAt: (index: number, anchorIndex: number) => void
 
@@ -217,9 +222,22 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [editingLanguage, setEditingLanguage] = useState(false)
   const [showBlockToolbar, setShowBlockToolbar] = useState(false)
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
+  const [isTableSourceExpanded, setIsTableSourceExpanded] = useState(false)
+  const InputColumn = block.type === 'table' ? 'details' : 'div'
+  const canFormat = !['code', 'math', 'divider', 'table'].includes(block.type)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
+  const applyFormat = (format: MarkdownFormat) => {
+    const textarea = textareaRef.current
+    if (!textarea || !canFormat || composingRef.current) return
+    const result = formatMarkdownSelection(textarea.value, textarea.selectionStart, textarea.selectionEnd, format, isZh ? '链接文字' : 'Link')
+    props.checkpointDraft?.()
+    updateDraftBlock(index, { content: result.content })
+    requestAnimationFrame(() => {
+      textarea.focus(); textarea.setSelectionRange(result.start, result.end); captureBlockCursor(index, textarea)
+    })
+  }
   const getAdjacentVisibleIndex = (delta: -1 | 1) => {
     for (let next = index + delta; next >= 0 && next < draftBlockCount; next += delta) {
       if (blockTextareaRefs.current[next]) return next
@@ -453,7 +471,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 type="checkbox"
                 checked={block.checked}
                 aria-label={isZh ? '待办状态' : 'Todo status'}
-                onChange={(event) => updateDraftBlock(index, { checked: event.target.checked })}
+                onChange={(event) => { props.checkpointDraft?.(); updateDraftBlock(index, { checked: event.target.checked }) }}
               />
             )}
             {block.type === 'bulleted-list' && <span className="block-bullet-dot" />}
@@ -481,8 +499,12 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               )
             )}
 
-            <div
-              className="block-editor-input-column"
+            <InputColumn
+              className={`block-editor-input-column${block.type === 'table' ? ' markdown-table-source' : ''}`}
+              open={block.type === 'table' ? isTableSourceExpanded : undefined}
+              onToggle={(event) => {
+                if (block.type === 'table') { setIsTableSourceExpanded((event.currentTarget as HTMLDetailsElement).open); resizeBlockTextarea(textareaRef.current) }
+              }}
               onBlur={(event) => {
                 // Keep the state intact when focus moves from the editor to its toggle.
                 if (hasRichMedia && !event.currentTarget.contains(event.relatedTarget)) {
@@ -490,6 +512,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 }
               }}
             >
+              {block.type === 'table' ? <summary>{isZh ? '编辑表格源码' : 'Edit table source'}</summary> : null}
+              {canFormat && activeBlockIndex === index ? <Suspense fallback={null}><MarkdownFormatToolbar isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()} /></Suspense> : null}
               {hasRichMedia ? (
                 <button
                   aria-expanded={isMediaSourceExpanded}
@@ -651,6 +675,13 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   event.stopPropagation()
                   return
                 }
+                const format = canFormat ? markdownFormatShortcut(event) : null
+                if (format) { event.preventDefault(); event.stopPropagation(); applyFormat(format); return }
+                if (canFormat && event.altKey && event.key === 'F10' && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+                  event.preventDefault(); event.stopPropagation()
+                  event.currentTarget.closest('.block-editor-input-column')?.querySelector<HTMLButtonElement>('.markdown-format-toolbar button')?.focus()
+                  return
+                }
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
                   const el = event.currentTarget
@@ -681,7 +712,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     const previousIndex = getAdjacentVisibleIndex(-1)
                     const prev = previousIndex === null ? null : blockTextareaRefs.current[previousIndex]
                     if (prev) {
-                      prev.focus()
+                      focusBlockTextarea(prev)
                       prev.setSelectionRange(prev.value.length, prev.value.length)
                     }
                     return
@@ -690,7 +721,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     const nextIndex = getAdjacentVisibleIndex(1)
                     const next = nextIndex === null ? null : blockTextareaRefs.current[nextIndex]
                     if (next) {
-                      next.focus()
+                      focusBlockTextarea(next)
                       next.setSelectionRange(0, 0)
                     }
                     return
@@ -766,7 +797,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 }
 
 
-                // Tab / Shift+Tab: adjust nesting for list-like blocks, otherwise keep the current space insertion behavior.
+                // Lists retain Tab nesting. Shift+Tab in other text blocks returns to the format toolbar.
                 if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey) {
                   event.preventDefault()
                   const el = event.currentTarget
@@ -780,6 +811,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
                   if (isNestableBlockType(block.type)) {
                     adjustBlockDepth(index, event.shiftKey ? -1 : 1, start)
+                    return
+                  }
+
+                  if (canFormat && event.shiftKey) {
+                    el.closest('.block-editor-input-column')?.querySelector<HTMLButtonElement>('.markdown-format-toolbar button:last-child')?.focus()
                     return
                   }
 
@@ -881,7 +917,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               rows={1}
               value={block.content}
             />
-            </div>
+            </InputColumn>
           </div>
         )}
 
@@ -898,7 +934,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
           <MarkdownBlockContent onReference={(label) => { void navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} />
         </div> : null}
         {block.type === 'table' ? (
-          <MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />
+          <Suspense fallback={<MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />}>
+            <MarkdownTableEditor content={block.content} isZh={isZh} onBeginEdit={props.checkpointDraft}
+              onChange={(content, transaction) => { if (transaction) props.checkpointDraft?.(); updateDraftBlock(index, { content }) }} />
+          </Suspense>
         ) : null}
         {block.type === 'code' && block.content.trim() ? (
           isMermaid ? <MarkdownMermaidPreview source={block.content} label={isZh ? 'Mermaid 图表' : 'Mermaid diagram'} /> : <Suspense fallback={<div className="block-structured-preview-loading">{ui.common.loading}</div>}>

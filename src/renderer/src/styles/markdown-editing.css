@@ -1,0 +1,23 @@
+.markdown-format-toolbar { display: flex; flex-wrap: wrap; gap: 3px; padding: 4px 0; }
+.markdown-format-toolbar button { min-width: 30px; padding: 3px 7px; border: 1px solid var(--kb-line); border-radius: 5px; background: var(--kb-bg); color: var(--kb-text-soft); cursor: pointer; }
+.markdown-format-toolbar button:hover, .markdown-format-toolbar button:focus-visible { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
+.markdown-table-editor { min-width: 0; margin-block: 8px; border: 1px solid var(--kb-line); border-radius: 8px; }
+.markdown-table-tools { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px; border-bottom: 1px solid var(--kb-line); align-items: center; }
+.markdown-table-tools button, .markdown-table-tools select { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--kb-line); border-radius: 4px; background: var(--kb-bg); color: var(--kb-text-soft); }
+.markdown-table-tools button:disabled { opacity: .45; }
+.markdown-table-tools .markdown-format-toolbar { margin-left: auto; padding: 0; }
+.markdown-table-grid { overflow: auto; }
+.markdown-table-grid table { margin: 0; min-width: 100%; }
+.markdown-table-grid :is(th, td) { min-width: 120px; max-width: 500px; cursor: text; }
+.markdown-table-grid [data-selected=true] { outline: 2px solid var(--kb-accent-strong); outline-offset: -2px; }
+.markdown-table-grid textarea { display: block; width: 100%; min-width: 100px; min-height: 32px; padding: 0; resize: vertical; font: inherit; color: inherit; border: 0; outline: 0; background: transparent; line-height: 1.5; }
+.markdown-table-cell-empty { color: var(--kb-text-muted); }
+.markdown-table-help { margin: 0; padding: 6px 8px; font-size: 11px; color: var(--kb-text-muted); }
+.markdown-table-source > summary { font-size: 12px; cursor: pointer; color: var(--kb-text-muted); padding: 4px; }
+.markdown-reading-list { padding: 0; margin: 6px 0; list-style: none; }
+.markdown-reading-list .markdown-reading-list { margin-inline-start: 24px; margin-block: 0; }
+.markdown-reading-list > li { margin: 0; padding: 0; }
+.markdown-reading-list-tight > li > .document-reading-row { padding-block: 1px; }
+.markdown-reading-list-loose > li > .document-reading-row { padding-block: 7px; }
+.markdown-reading-list .document-reading-content p { margin-block: 0 8px; }
+.markdown-reading-list .document-reading-content p:last-child { margin-bottom: 0; }

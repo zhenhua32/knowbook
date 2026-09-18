@@ -14,6 +14,8 @@ type BlockSlashCommand = {
   | {
       kind: 'type'
       type: DocumentBlockDraft['type']
+      templateContent?: string
+      templateLanguage?: string
     }
   | {
       kind: 'action'
@@ -128,7 +130,7 @@ export function useEditorAssistState({
         .join(' ')
         .toLowerCase()
         .includes(query)
-    })
+    }).sort((first, second) => Number(second.id === query) - Number(first.id === query))
   }, [activeSlashContext, blockSlashCommands])
 
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
@@ -139,7 +141,7 @@ export function useEditorAssistState({
       return
     }
 
-    setSelectedSlashCommandIndex((previous) => Math.min(previous, filteredSlashCommands.length - 1))
+    setSelectedSlashCommandIndex(0)
   }, [activeBlockIndex, activeSlashContext?.query, filteredSlashCommands.length])
 
   useEffect(() => {
@@ -312,6 +314,29 @@ function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
       keywords: ['separator', 'rule', 'hr', 'divider', '分隔线'],
       kind: 'type',
       type: 'divider'
+    },
+    {
+      id: 'table', label: ui.blockTypeOptions.table,
+      description: language === 'zh-CN' ? '插入可直接编辑的表格。' : 'Insert a table with editable cells.',
+      keywords: ['grid', 'table', '表格'], kind: 'type', type: 'table',
+      templateContent: language === 'zh-CN' ? '| 列 1 | 列 2 |\n| --- | --- |\n|  |  |' : '| Column 1 | Column 2 |\n| --- | --- |\n|  |  |'
+    },
+    {
+      id: 'mermaid', label: language === 'zh-CN' ? 'Mermaid 图表' : 'Mermaid diagram',
+      description: language === 'zh-CN' ? '插入图表并编辑源码。' : 'Insert a diagram and edit its source.',
+      keywords: ['diagram', 'flowchart', '图表', '流程图'], kind: 'type', type: 'code', templateLanguage: 'mermaid',
+      templateContent: language === 'zh-CN' ? 'flowchart LR\n  A[开始] --> B[完成]' : 'flowchart LR\n  A[Start] --> B[Done]'
+    },
+    {
+      id: 'callout', label: language === 'zh-CN' ? '提示块' : 'Callout',
+      description: language === 'zh-CN' ? '插入带标题的提示块。' : 'Insert a titled callout.',
+      keywords: ['note', 'tip', 'warning', '提示', '警告'], kind: 'type', type: 'quote',
+      templateContent: language === 'zh-CN' ? '[!note] 提示\n在此输入内容' : '[!note] Note\nWrite here'
+    },
+    {
+      id: 'toc', label: language === 'zh-CN' ? '文内目录' : 'Table of contents',
+      description: language === 'zh-CN' ? '插入自动更新的章节目录。' : 'Insert an automatically updated heading index.',
+      keywords: ['outline', 'contents', '目录'], kind: 'type', type: 'paragraph', templateContent: '[TOC]'
     },
     {
       id: 'above',

@@ -167,6 +167,10 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
       const preview = page.getByRole('region', { name: uiText('Table preview', '表格预览') })
       await expect(preview).toContainText('Alpha')
 
+      const source = row.locator('details.markdown-table-source')
+      if (await source.getAttribute('open') === null) await source.locator('summary').click()
+      await expect(editor).toBeVisible()
+
       await editor.fill('| Name | Value |\n| --- | ---: |\n| Beta | 2 |')
       await expect(preview).toContainText('Beta')
       await expect(preview).not.toContainText('Alpha')

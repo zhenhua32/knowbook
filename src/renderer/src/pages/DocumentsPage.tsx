@@ -106,6 +106,7 @@ export function DocumentsPage({
     canMoveSelectionDown: documents.canMoveSelectionDown,
     canMoveSelectionUp: documents.canMoveSelectionUp,
     captureBlockCursor: documents.captureBlockCursor,
+    checkpointDraft: documents.checkpointDraft,
     collapsedBlockIds: documents.collapsedBlockIds,
     clearBlockSelection: documents.clearBlockSelection,
     continueBlockAt: documents.continueBlockAt,

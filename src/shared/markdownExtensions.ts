@@ -1,5 +1,6 @@
 import type MarkdownIt from 'markdown-it'
 import type { Delimiter, StateInline } from 'markdown-it'
+import { markdownInlineText } from './markdownHeadingText'
 
 export function parseTaskListMarker(content: string): { length: number; checked: boolean } | null {
   const match = content.match(/^[ \t]*\[([ xX\t\n\f\v])\](?:[ \t\n\f\v]+|$)/)
@@ -9,6 +10,10 @@ export function parseTaskListMarker(content: string): { length: number; checked:
 /** GFM extensions shared by HTML output, React previews and block import. */
 export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.before('inline', 'tasklist_prepare', (state) => {
+    const lines = state.src.split('\n')
+    const offsets: number[] = []
+    let offset = 0
+    for (const line of lines) { offsets.push(offset); offset += line.length + 1 }
     for (let index = 2; index < state.tokens.length; index++) {
       const inline = state.tokens[index]
       if (inline.type !== 'inline' || state.tokens[index - 1].type !== 'paragraph_open'
@@ -17,7 +22,12 @@ export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): 
       // are ordinary text, and code/links must never become task markers.
       const task = parseTaskListMarker(inline.content)
       if (!task) continue
-      inline.meta = { ...inline.meta, task, taskSource: inline.content }
+      state.tokens[index - 2].meta = { ...state.tokens[index - 2].meta, task: true }
+      const marker = inline.content.slice(0, task.length).trimStart().match(/^\[[ xX\t\n\f\v]\]/)?.[0]
+      const line = inline.map?.[0]
+      const column = line === undefined || !marker ? -1 : lines[line].indexOf(marker)
+      inline.meta = { ...inline.meta, task, taskSource: inline.content,
+        taskOffset: line !== undefined && column >= 0 ? offsets[line] + column + 1 : undefined }
       inline.content = inline.content.slice(task.length)
     }
   })
@@ -27,7 +37,8 @@ export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): 
       if (inline.type !== 'inline' || !task || typeof inline.meta?.taskSource !== 'string') continue
       inline.content = inline.meta.taskSource
       const checkbox = new state.Token('task_checkbox', 'input', 0)
-      checkbox.meta = { checked: task.checked }
+      checkbox.meta = { checked: task.checked, sourceOffset: inline.meta.taskOffset,
+        label: markdownInlineText(inline.children ?? []).trim().split('\n')[0] }
       inline.children?.unshift(checkbox)
     }
   })

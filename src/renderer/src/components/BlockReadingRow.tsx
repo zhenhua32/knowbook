@@ -21,7 +21,7 @@ const MathPreview = lazy(async () => {
 
 export const BlockReadingRow = memo(function BlockReadingRow({
   block, index, indentPx, numberLabel, isHighlighted, isSearchMatch, hasChildren,
-  collapsed, onToggleCollapse, onNavigateReference, ui, isZh
+  collapsed, onToggleCollapse, onNavigateReference, onToggleTask, ui, isZh
 }: {
   block: DocumentBlockDraft
   index: number
@@ -33,6 +33,7 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   collapsed: boolean
   onToggleCollapse: (id: string) => void
   onNavigateReference: (content: string, cursor: number) => void | Promise<void>
+  onToggleTask?: (checked: boolean) => void
   ui: UiText
   isZh: boolean
 }) {
@@ -73,7 +74,8 @@ export const BlockReadingRow = memo(function BlockReadingRow({
       onClick={() => onToggleCollapse(block.id!)}>{collapsed ? '▸' : '▾'}</button> : null}
     {isOrderedListBlockType(block.type) ? <span className="reading-list-marker" aria-hidden="true">{numberLabel}</span>
       : block.type === 'bulleted-list' ? <span className="reading-list-marker" aria-hidden="true">•</span> : null}
-    {isTaskBlockType(block.type) ? <input type="checkbox" checked={block.checked} disabled aria-label={isZh ? '待办状态' : 'Todo status'} /> : null}
+    {isTaskBlockType(block.type) ? <input type="checkbox" checked={block.checked} disabled={!onToggleTask}
+      onChange={(event) => onToggleTask?.(event.target.checked)} aria-label={isZh ? '待办状态' : 'Todo status'} /> : null}
     <div className="document-reading-content">{content}
       {!structured && !advanced ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
     </div>

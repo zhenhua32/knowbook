@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
+import { focusBlockTextarea } from '../utils/textareaLayout'
 
 type UseBlockFocusStateParams = {
   activeCursorPosition: number
@@ -27,7 +28,7 @@ export function useBlockFocusState({
     const focusTarget = () => {
       const textarea = blockTextareaRefs.current[pendingFocusBlockIndex]
       if (textarea) {
-        textarea.focus()
+        focusBlockTextarea(textarea)
         const cursor = Math.max(0, Math.min(activeCursorPosition, textarea.value.length))
         textarea.setSelectionRange(cursor, cursor)
         captureBlockCursor(pendingFocusBlockIndex, textarea)

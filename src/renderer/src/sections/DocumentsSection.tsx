@@ -1,6 +1,7 @@
 import { MarkdownNodes, MarkdownReferencesContext } from '../components/MarkdownContent'
 import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../components/MarkdownDocumentContext'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { markdownTaskPatch } from '@shared/markdownTasks'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSearchPanel } from '../components/BlockSearchPanel'
@@ -15,6 +16,7 @@ import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 import { BlockReadingRow } from '../components/BlockReadingRow'
 import { DocumentNavigationBar } from '../components/DocumentNavigationBar'
 import { useDocumentViewport } from '../hooks/useDocumentViewport'
+const MarkdownReadingList = lazy(() => import('../components/MarkdownReadingList').then((module) => ({ default: module.MarkdownReadingList })))
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
@@ -125,6 +127,33 @@ export function DocumentsSection({
   const workspaceGridRef = useRef<HTMLElement | null>(null)
   const [isResizingAuxPanel, setIsResizingAuxPanel] = useState(false)
   const documentReady = Boolean(selectedDocument && !previewHeaderProps.detailLoading)
+  const onToggleMarkdownTask = useCallback((offset: number, checked: boolean) => {
+    const target = blockEditorRowSharedProps?.markdownDocument?.taskTargets.get(offset)
+    if (!target || !blockEditorRowSharedProps) return
+    const patch = markdownTaskPatch(blockEditorRowSharedProps.getDraftBlocks()[target.index], target, checked)
+    if (!patch) return
+    blockEditorRowSharedProps.checkpointDraft?.()
+    blockEditorRowSharedProps.updateDraftBlock(target.index, patch)
+  }, [blockEditorRowSharedProps])
+  const readingRows = useMemo(() => new Map(visibleEditorRows.map((row) => [row.index, row])), [visibleEditorRows])
+  const visibleReadingIndices = useMemo(() => new Set(readingRows.keys()), [readingRows])
+  const readingGroups = useMemo(() => {
+    const groups = new Map<number, { first: number; node: NonNullable<SharedBlockEditorRowProps['markdownDocument']>['readingLists'][number]['node'] }>()
+    for (const group of blockEditorRowSharedProps?.markdownDocument?.readingLists ?? []) {
+      const indices = group.indices.filter((index) => readingRows.has(index))
+      for (const index of indices) groups.set(index, { first: indices[0], node: group.node })
+    }
+    return groups
+  }, [blockEditorRowSharedProps?.markdownDocument, readingRows])
+  const renderReadingRow = (row: VisibleEditorRow, grouped = false) => blockEditorRowSharedProps && <MarkdownBlockNodesContext.Provider
+    key={row.block.id ?? row.index} value={blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]}>
+    <BlockReadingRow {...row} indentPx={grouped ? 0 : row.indentPx}
+      collapsed={Boolean(row.block.id && blockEditorRowSharedProps.collapsedBlockIds.has(row.block.id))}
+      onToggleCollapse={blockEditorRowSharedProps.toggleBlockCollapse}
+      onNavigateReference={blockEditorRowSharedProps.navigateInlineReferenceAtCursor}
+      ui={previewHeaderProps.ui} isZh={previewHeaderProps.isZh}
+      onToggleTask={(checked) => { blockEditorRowSharedProps.checkpointDraft?.(); blockEditorRowSharedProps.updateDraftBlock(row.index, { checked }) }} />
+  </MarkdownBlockNodesContext.Provider>
   const auxPanelProps = documentsAuxPanelProps?.isOpen && documentReady ? documentsAuxPanelProps : null
   const showAuxPanel = Boolean(auxPanelProps)
   const viewport = useDocumentViewport({
@@ -267,20 +296,23 @@ export function DocumentsSection({
                <MarkdownReferencesContext.Provider value={blockEditorRowSharedProps?.markdownReferences}>
                <MarkdownDocumentProvider key={selectedDocument.id} documentId={selectedDocument.id}
                  model={blockEditorRowSharedProps?.markdownDocument} isZh={previewHeaderProps.isZh}
-                 containerRef={viewport.contentRef} onRevealBlock={onRevealBlock}>
+                 containerRef={viewport.contentRef} onRevealBlock={onRevealBlock} onToggleTask={onToggleMarkdownTask}>
                <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
                 {!isReadingMode && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {blockEditorRowSharedProps
-                  ? visibleEditorRows.map((row) => (
+                  ? visibleEditorRows.map((row) => {
+                     if (isReadingMode) {
+                       const group = readingGroups.get(row.index)
+                       if (!group) return renderReadingRow(row)
+                       if (group.first !== row.index) return null
+                       return <Suspense key={row.block.id ?? row.index} fallback={renderReadingRow(row)}>
+                         <MarkdownReadingList node={group.node} owners={blockEditorRowSharedProps.markdownDocument!.listItemOwners}
+                           visible={visibleReadingIndices} renderBlock={(index) => { const item = readingRows.get(index); return item ? renderReadingRow(item, true) : null }} />
+                       </Suspense>
+                     }
+                     return (
                      <MarkdownBlockNodesContext.Provider key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`} value={blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]}>
-                     {isReadingMode ? <BlockReadingRow
-                       {...row}
-                       collapsed={Boolean(row.block.id && blockEditorRowSharedProps.collapsedBlockIds.has(row.block.id))}
-                       onToggleCollapse={blockEditorRowSharedProps.toggleBlockCollapse}
-                       onNavigateReference={blockEditorRowSharedProps.navigateInlineReferenceAtCursor}
-                       ui={previewHeaderProps.ui}
-                       isZh={previewHeaderProps.isZh}
-                     /> : <BlockEditorRow
+                     <BlockEditorRow
                        {...blockEditorRowSharedProps}
                        block={row.block}
                        dropPreview={row.dropPreview}
@@ -291,9 +323,9 @@ export function DocumentsSection({
                         isSelected={row.isSelected}
                        isSearchMatch={row.isSearchMatch}
                        numberLabel={row.numberLabel}
-                     />}
+                     />
                      </MarkdownBlockNodesContext.Provider>
-                  ))
+                  )})
                   : null}
                 {blockEditorRowSharedProps?.markdownDocument?.footnotes.length ? <MarkdownNodes nodes={blockEditorRowSharedProps.markdownDocument.footnotes}
                   onReference={(label) => { void blockEditorRowSharedProps.navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} /> : null}
