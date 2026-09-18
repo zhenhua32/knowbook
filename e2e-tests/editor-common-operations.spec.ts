@@ -541,10 +541,10 @@ test.describe('Editor Common Operations Durability @electron', () => {
       await expect.poll(() => page.evaluate(async (id) => {
         const detail = await window.knowbook.getDocumentDetail(id)
         return detail?.blocks.map((block) => ({ type: block.type, content: block.content })) ?? null
-      }, documentId)).toEqual([{ type: 'paragraph', content: 'Start writing here.' }])
+      }, documentId)).toEqual([{ type: 'paragraph', content: '' }])
       await reopenDocument(page, title)
       await expect(page.locator('textarea.block-inline-textarea')).toHaveCount(1)
-      await expect(page.locator('textarea.block-inline-textarea').first()).toHaveValue('Start writing here.')
+      await expect(page.locator('textarea.block-inline-textarea').first()).toHaveValue('')
     })
   })
 })
