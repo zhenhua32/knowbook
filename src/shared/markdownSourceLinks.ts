@@ -3,7 +3,7 @@ import type { Env, StateBlock, Token } from 'markdown-it'
 
 export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink' }
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
-type Capture = { links: MarkdownSourceLink[]; maps: WeakMap<Token[], number[]>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
+type Capture = { links: MarkdownSourceLink[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
 
@@ -68,10 +68,12 @@ function record(data: Capture, link: MarkdownSourceLink): void {
 /** Capture successful parser rules, not URL matches elsewhere in a document.
  * The ruler's typed rule registry is used only to decorate existing rules;
  * grammar, lookahead, nesting limits and container boundaries remain upstream.
- * Source maps are allocated only for link extraction, never normal rendering. */
+ * Source maps are allocated only for source operations, never normal rendering. */
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
-    if (state.env.captureSourceLinks) state.env.markdownSourceLinks = { links: [], maps: new WeakMap() } satisfies Capture
+    if (state.env.captureSourceLinks) state.env.markdownSourceLinks = {
+      links: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined
+    } satisfies Capture
   })
   for (const name of ['paragraph', 'heading', 'lheading', 'table', 'reference']) {
     const { fn, alt } = md.block.ruler.__rules__.find((entry) => entry.name === name)!
@@ -110,7 +112,10 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     if (!data) return
     for (const token of state.tokens) {
       const map = sourceMap(token)
-      if (token.type === 'inline' && token.children && map) data.maps.set(token.children, map)
+      if (token.type === 'inline' && token.children && map) {
+        data.maps.set(token.children, map)
+        if (map.length) data.ranges?.push({ start: map[0], end: map.at(-1)! + 1 })
+      }
     }
   })
   const parseInline = md.inline.parse.bind(md.inline)
@@ -169,4 +174,9 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
 
 export function capturedMarkdownSourceLinks(env: Env): MarkdownSourceLink[] {
   return capture(env)?.links ?? []
+}
+
+/** Inline block boundaries after task/callout prefixes, before footnote relocation. */
+export function capturedMarkdownInlineRanges(env: Env): Array<{ start: number; end: number }> {
+  return capture(env)?.ranges ?? []
 }

@@ -16,10 +16,11 @@ export class MarkdownLinkIndex {
     const separator = token.lastIndexOf('#')
     const name = separator < 0 ? token : token.slice(0, separator).trim()
     if (!name) return null
-    const byPath = this.db.prepare('SELECT path FROM documents WHERE path = ?').get(name) as { path: string } | undefined
+    const byPath = (this.db.prepare('SELECT path FROM documents WHERE path = ?').get(name)
+      ?? this.db.prepare('SELECT path FROM documents WHERE path = ? COLLATE NOCASE LIMIT 1').get(name)) as { path: string } | undefined
     if (byPath) return { path: byPath.path, fragment: separator < 0 ? '' : token.slice(separator + 1).trim() }
     if (separator >= 0) return null
-    const byTitle = this.db.prepare('SELECT path FROM documents WHERE title = ? LIMIT 2').all(name) as Array<{ path: string }>
+    const byTitle = this.db.prepare('SELECT path FROM documents WHERE title = ? COLLATE NOCASE LIMIT 2').all(name) as Array<{ path: string }>
     return byTitle.length === 1 ? { path: byTitle[0].path, fragment: '' } : null
   }
 
@@ -71,7 +72,7 @@ export class MarkdownLinkIndex {
           if (link.url.includes('#') && !blockExists.get(id, target.fragment)) reason = 'missing-block'
         } else if (!link.url.includes('#') && blockExists.get(documentId, link.url)) {
           // A bare block ID is a valid local block reference.
-        } else if (!link.url.includes('#') && (this.db.prepare('SELECT id FROM documents WHERE title = ? LIMIT 2').all(link.url)).length > 1) {
+        } else if (!link.url.includes('#') && (this.db.prepare('SELECT id FROM documents WHERE title = ? COLLATE NOCASE LIMIT 2').all(link.url)).length > 1) {
           reason = 'ambiguous-reference'
         } else reason = 'missing-document'
       } else if (/^file:/i.test(link.url)) {
@@ -103,21 +104,27 @@ export class MarkdownLinkIndex {
     return report
   }
 
-  maintain(changes: MarkdownIndexedPathChange[], changedSources: Iterable<string>, now: string, authoritativeSources: ReadonlySet<string> = new Set()): string[] {
+  maintain(changes: MarkdownIndexedPathChange[], changedSources: Iterable<string>, now: string, authoritativeSources: ReadonlySet<string> = new Set(), syncedSources: Set<string> = new Set()): string[] {
     const byOldPath = new Map(changes.map((change) => [change.before, change]))
     const oldSourcePaths = new Map(changes.map((change) => [change.id, change.before]))
     const sources = new Set(changedSources)
     const incoming = this.db.prepare('SELECT DISTINCT source_document_id AS id FROM markdown_link_sources WHERE target_path = ?')
+    const incomingHeadings = this.db.prepare(`SELECT DISTINCT source_document_id AS id FROM markdown_link_sources
+      WHERE target_path = ? AND kind != 'wiki' AND fragment IN (SELECT value FROM json_each(?))`)
     for (const change of changes) {
       sources.add(change.id)
-      for (const { id } of incoming.all(change.before) as Array<{ id: string }>) sources.add(id)
+      // A heading edit cannot change links to the document top, stable headings
+      // or Wiki block IDs. Path moves still visit every incoming source.
+      const candidates = change.before !== change.after ? incoming.all(change.before)
+        : incomingHeadings.all(change.before, JSON.stringify([...(change.headings?.keys() ?? [])].filter(Boolean)))
+      for (const { id } of candidates as Array<{ id: string }>) sources.add(id)
     }
     const updateBlock = this.db.prepare('UPDATE blocks SET content = ?, updated_at = ? WHERE id = ? AND document_id = ?')
     const touchDocument = this.db.prepare('UPDATE documents SET updated_at = ? WHERE id = ?')
     const affected: string[] = []
     const changedHeadingLabels: MarkdownIndexedPathChange[] = []
     for (const id of sources) {
-      if (authoritativeSources.has(id)) { this.syncDocument(id); continue }
+      if (authoritativeSources.has(id)) { this.syncDocument(id); syncedSources.add(id); continue }
       const document = this.readDocument(id)
       if (!document) continue
       const wikiBindings = new Map((this.db.prepare(`SELECT source_block_id, url, target_path FROM markdown_link_sources
@@ -147,10 +154,11 @@ export class MarkdownLinkIndex {
         if (headings.size) changedHeadingLabels.push({ id, before: document.path, after: document.path, headings })
       }
       this.syncDocument(id)
+      syncedSources.add(id)
     }
     // Rewriting a Wiki link can also change the visible text of a heading in
     // its source. Propagate that anchor change after the path pass completes.
-    const cascaded = changedHeadingLabels.length ? this.maintain(changedHeadingLabels, [], now, authoritativeSources) : []
+    const cascaded = changedHeadingLabels.length ? this.maintain(changedHeadingLabels, [], now, authoritativeSources, syncedSources) : []
     return [...new Set([...affected, ...cascaded])]
   }
 }

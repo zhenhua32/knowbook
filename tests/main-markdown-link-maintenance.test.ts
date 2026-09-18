@@ -215,3 +215,83 @@ test('schema 16 rebuilds stale table link positions before a target is renamed',
     assert.ok(content.includes('[code](Target.md)'))
   } finally { store.destroy(); rmSync(root, { recursive: true, force: true }) }
 })
+
+test('popular heading edits maintain only relevant fragments and keep index resolution correct across undo and rename', () => {
+  withStore((store) => {
+    const target = create(store, 'Target', '## Old\n\n## Stable')
+    const original = store.getDocumentDetail(target)!
+    const stable: string[] = [], changing: string[] = []
+    store.runInBulkDocumentMutation(() => {
+      for (let index = 0; index < 40; index++) {
+        if (index % 4) stable.push(create(store, `Stable ${index}`, `[Top](Target.md#) [Same](Target.md#stable) [[Target#${original.blocks[0].id}]]`))
+        else changing.push(create(store, `Changing ${index}`, '[Inline](Target.md?query=1#old)\n\n[Defined][d]\n\n[d]: Target.md#old\n\n| Link |\n| - |\n| [Cell](Target.md#old) |'))
+      }
+    })
+    const stableBefore = stable.map((id) => store.getDocumentDetail(id))
+    const changed = store.updateDocument(target, { ...original, blocks: original.blocks.map((block, index) => index === 0 ? { ...block, content: 'New' } : block) })
+    assert.deepEqual(new Set(changed), new Set([target, ...changing]))
+    assert.deepEqual(stable.map((id) => store.getDocumentDetail(id)), stableBefore)
+    for (const id of changing) {
+      assert.ok(collectDocumentMarkdownLinks(store.getDocumentDetail(id)!.blocks).every((link) => link.url.endsWith('#new')))
+      assert.deepEqual(store.checkDocumentLinks(id, () => null).issues, [])
+    }
+    store.updateDocument(target, original)
+    store.updateDocument(target, { ...original, title: 'Renamed' })
+    for (const id of [...stable, ...changing]) {
+      const detail = store.getDocumentDetail(id)!
+      assert.ok(collectDocumentMarkdownLinks(detail.blocks).every((link) => link.url.startsWith('Renamed')))
+      assert.ok(detail.outgoingLinks.every((link) => link.id === target))
+      assert.deepEqual(store.checkDocumentLinks(id, () => null).issues, [])
+    }
+  })
+})
+
+test('outgoing relations follow parsed Wiki links and block structure instead of literal text', () => {
+  withStore((store) => {
+    const target = create(store, 'Target', 'Body')
+    const source = create(store, 'Source', '[[target]] [Ordinary](Target.md)')
+    const original = store.getDocumentDetail(source)!
+    assert.equal(original.outgoingLinks.length, 2)
+    for (const type of ['code', 'math']) {
+      store.updateDocument(source, { ...original, blocks: original.blocks.map((block) => ({ ...block, type })) })
+      assert.deepEqual(store.getDocumentDetail(source)!.outgoingLinks, [])
+      assert.ok(!store.getDocumentDetail(target)!.backlinks.some((link) => link.id === source))
+    }
+    store.updateDocument(source, original)
+    assert.equal(store.getDocumentDetail(source)!.outgoingLinks.length, 2)
+    store.updateDocument(source, { ...original, blocks: drafts('`[[Target]]` $[[Target]]$ ![ [[Target]] ](https://example.com/image.png)') })
+    assert.deepEqual(store.getDocumentDetail(source)!.outgoingLinks, [])
+  })
+})
+
+test('case-variant Wiki links resolve when a target is created and follow its canonical path on rename', () => {
+  withStore((store) => {
+    const source = create(store, 'Source', '[[future]] [[FUTURE#body]]')
+    assert.equal(store.checkDocumentLinks(source, () => null).issues.length, 2)
+    const target = create(store, 'Future')
+    store.updateDocument(target, { ...store.getDocumentDetail(target)!, blocks: [{ id: 'body', type: 'paragraph', content: 'Body', checked: false, depth: 0 }] })
+    assert.equal(store.getDocumentDetail(source)!.outgoingLinks.length, 2)
+    assert.deepEqual(store.checkDocumentLinks(source, () => null).issues, [])
+    store.updateDocument(target, { ...store.getDocumentDetail(target)!, title: 'Final' })
+    assert.equal(store.getDocumentDetail(source)!.blocks[0].content, '[[Final]] [[Final#body]]')
+    assert.deepEqual(store.checkDocumentLinks(source, () => null).issues, [])
+  })
+})
+
+test('schema 17 refreshes old Wiki relations and case-variant bindings with a migration backup', () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-link-relations-migration-')), path = join(root, 'workspace.sqlite')
+  let store = new KnowbookStore(path)
+  try {
+    const target = create(store, 'Target'), source = create(store, 'Source', '[[target]]')
+    const literal = create(store, 'Literal', '`[[Target]]`')
+    store.getUnsafeDatabaseHandle().prepare('INSERT INTO links (id, source_document_id, target_document_id, label, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run('stale', literal, target, 'Target', new Date().toISOString())
+    store.getUnsafeDatabaseHandle().exec("UPDATE markdown_link_sources SET target_path = NULL WHERE kind = 'wiki'; PRAGMA user_version = 16;")
+    store.destroy(); store = new KnowbookStore(path)
+    assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v16-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))
+    assert.deepEqual(store.getDocumentDetail(literal)!.outgoingLinks, [])
+    store.updateDocument(target, { ...store.getDocumentDetail(target)!, title: 'Renamed' })
+    assert.equal(store.getDocumentDetail(source)!.blocks[0].content, '[[Renamed]]')
+    assert.equal(store.getDocumentDetail(literal)!.blocks[0].content, '`[[Target]]`')
+  } finally { store.destroy(); rmSync(root, { recursive: true, force: true }) }
+})

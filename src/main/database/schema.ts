@@ -1,3 +1,56 @@
+// FTS UNINDEXED IDs cannot support point deletes. Stable lookup row IDs avoid
+// scanning every block on an edit and remain valid across database VACUUM.
+export const searchIndexSchema = `
+CREATE TABLE IF NOT EXISTS document_search_ids (
+  search_rowid INTEGER PRIMARY KEY,
+  document_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS block_search_ids (
+  search_rowid INTEGER PRIMARY KEY,
+  block_id TEXT NOT NULL UNIQUE
+);
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_insert
+AFTER INSERT ON documents BEGIN
+  INSERT INTO document_search_ids(document_id) VALUES (new.id);
+  INSERT INTO document_search(rowid, document_id, title, path, summary)
+  VALUES ((SELECT search_rowid FROM document_search_ids WHERE document_id = new.id), new.id, new.title, new.path, new.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_update
+AFTER UPDATE OF title, path, summary ON documents BEGIN
+  DELETE FROM document_search WHERE rowid = (SELECT search_rowid FROM document_search_ids WHERE document_id = old.id);
+  INSERT INTO document_search(rowid, document_id, title, path, summary)
+  VALUES ((SELECT search_rowid FROM document_search_ids WHERE document_id = old.id), new.id, new.title, new.path, new.summary);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_document_search_delete
+AFTER DELETE ON documents BEGIN
+  DELETE FROM document_search WHERE rowid = (SELECT search_rowid FROM document_search_ids WHERE document_id = old.id);
+  DELETE FROM document_search_ids WHERE document_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_insert
+AFTER INSERT ON blocks BEGIN
+  INSERT INTO block_search_ids(block_id) VALUES (new.id);
+  INSERT INTO block_search(rowid, block_id, document_id, content)
+  VALUES ((SELECT search_rowid FROM block_search_ids WHERE block_id = new.id), new.id, new.document_id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_update
+AFTER UPDATE OF document_id, content ON blocks BEGIN
+  DELETE FROM block_search WHERE rowid = (SELECT search_rowid FROM block_search_ids WHERE block_id = old.id);
+  INSERT INTO block_search(rowid, block_id, document_id, content)
+  VALUES ((SELECT search_rowid FROM block_search_ids WHERE block_id = old.id), new.id, new.document_id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_search_delete
+AFTER DELETE ON blocks BEGIN
+  DELETE FROM block_search WHERE rowid = (SELECT search_rowid FROM block_search_ids WHERE block_id = old.id);
+  DELETE FROM block_search_ids WHERE block_id = old.id;
+END;
+`
+
 export const appSchema = `
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,
@@ -52,41 +105,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS block_search USING fts5(
   tokenize='trigram'
 );
 
-CREATE TRIGGER IF NOT EXISTS trg_document_search_insert
-AFTER INSERT ON documents BEGIN
-  INSERT INTO document_search(document_id, title, path, summary)
-  VALUES (new.id, new.title, new.path, new.summary);
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_document_search_update
-AFTER UPDATE OF title, path, summary ON documents BEGIN
-  DELETE FROM document_search WHERE document_id = old.id;
-  INSERT INTO document_search(document_id, title, path, summary)
-  VALUES (new.id, new.title, new.path, new.summary);
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_document_search_delete
-AFTER DELETE ON documents BEGIN
-  DELETE FROM document_search WHERE document_id = old.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_block_search_insert
-AFTER INSERT ON blocks BEGIN
-  INSERT INTO block_search(block_id, document_id, content)
-  VALUES (new.id, new.document_id, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_block_search_update
-AFTER UPDATE OF document_id, content ON blocks BEGIN
-  DELETE FROM block_search WHERE block_id = old.id;
-  INSERT INTO block_search(block_id, document_id, content)
-  VALUES (new.id, new.document_id, new.content);
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_block_search_delete
-AFTER DELETE ON blocks BEGIN
-  DELETE FROM block_search WHERE block_id = old.id;
-END;
+${searchIndexSchema}
 
 CREATE TABLE IF NOT EXISTS links (
   id TEXT PRIMARY KEY,

@@ -90,3 +90,37 @@ test('link formatting selects its URL and formatting shortcuts leave global sear
   assert.equal(markdownFormatShortcut({ key: 'k', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false }), null)
   assert.equal(markdownFormatShortcut({ key: 'K', ctrlKey: false, metaKey: true, altKey: false, shiftKey: true }), 'link')
 })
+
+test('multiline styles respect paragraph boundaries and toggle a mixed selection as one action', () => {
+  for (const [format, tag, marker] of [['bold', 'strong', '**'], ['italic', 'em', '*'], ['strike', 'del', '~~'], ['highlight', 'mark', '=='], ['code', 'code', '`']] as const) {
+    for (const newline of ['\n', '\r\n', '\r']) {
+      const source = `前 中文 😀${newline}软换行${newline} ${newline}后 日本語`
+      const formatted = formatMarkdownSelection(source, 0, source.length, format)
+      assert.equal((markdownEngine.render(formatted.content).match(new RegExp(`<${tag}>`, 'g')) ?? []).length, 2)
+      assert.equal((markdownEngine.render(formatted.content).match(/<p>/g) ?? []).length, 2)
+      assert.equal(formatMarkdownSelection(formatted.content, formatted.start, formatted.end, format).content, source)
+      const mixed = `${marker}One${marker}${newline}${newline}Two`
+      const uniform = formatMarkdownSelection(mixed, 0, mixed.length, format)
+      assert.equal(uniform.content, `${marker}One${marker}${newline}${newline}${marker}Two${marker}`)
+      assert.equal(formatMarkdownSelection(uniform.content, uniform.start, uniform.end, format).content, `One${newline}${newline}Two`)
+    }
+  }
+})
+
+test('cross-block formatting preserves structural markers, literal blocks and unreferenced footnotes', () => {
+  const source = '# Title\n\n- [ ] Task\n- List\n\n> Quote\n> continued\n\n> [!note] Note\n> Body\n\n```ts\nconst literal = 1\n```\n\n$$\nx + y\n$$\n\n[^unused]: Footnote\n\nLast'
+  const result = formatMarkdownSelection(source, 0, source.length, 'bold')
+  assert.equal(result.content, '# **Title**\n\n- [ ] **Task**\n- **List**\n\n> **Quote\n> continued**\n\n> [!note] **Note**\n> **Body**\n\n```ts\nconst literal = 1\n```\n\n$$\nx + y\n$$\n\n[^unused]: **Footnote**\n\n**Last**')
+  const html = markdownEngine.render(result.content)
+  assert.match(html, /<h1[^>]*><strong>Title<\/strong><\/h1>/)
+  assert.match(html, /type="checkbox"[^>]*> <strong>Task<\/strong>/)
+  assert.match(html, /<code class="language-ts">const literal = 1\n<\/code>/)
+  assert.equal(formatMarkdownSelection(result.content, result.start, result.end, 'bold').content, source)
+})
+
+test('cross-paragraph link formatting creates valid separate links and selects the first URL', () => {
+  const result = formatMarkdownSelection('One\n\nTwo', 0, 8, 'link')
+  assert.equal(result.content, '[One](https://)\n\n[Two](https://)')
+  assert.equal(result.content.slice(result.start, result.end), 'https://')
+  assert.equal((markdownEngine.render(result.content).match(/<a /g) ?? []).length, 2)
+})

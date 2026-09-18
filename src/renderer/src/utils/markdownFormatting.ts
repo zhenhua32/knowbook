@@ -1,4 +1,5 @@
-import { parseMarkdownInline } from '@shared/markdownEngine'
+import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment } from '@shared/markdownEngine'
+import { capturedMarkdownInlineRanges } from '@shared/markdownSourceLinks'
 
 export type MarkdownFormat = 'bold' | 'italic' | 'strike' | 'highlight' | 'code' | 'link'
 export type FormattedSelection = { content: string; start: number; end: number }
@@ -6,6 +7,39 @@ export type FormattedSelection = { content: string; start: number; end: number }
 export function formatMarkdownSelection(content: string, start: number, end: number, format: MarkdownFormat, linkLabel = 'Link'): FormattedSelection {
   start = Math.max(0, Math.min(content.length, start))
   end = Math.max(start, Math.min(content.length, end))
+  if (!/[\r\n]/.test(content.slice(start, end))) return formatInlineSelection(content, start, end, format, linkLabel)
+  const env: MarkdownEnvironment = { captureSourceLinks: true, captureInlineRanges: true }
+  markdownEngine.parse(content, env)
+  const offsets: number[] = []
+  for (let index = 0; index < content.length; index++) {
+    offsets.push(index)
+    if (content[index] === '\r' && content[index + 1] === '\n') index++
+  }
+  offsets.push(content.length)
+  const ranges = capturedMarkdownInlineRanges(env).map((range) => ({ start: Math.max(start, offsets[range.start]), end: Math.min(end, offsets[range.end]) }))
+    .filter((range) => range.start < range.end && content.slice(range.start, range.end).trim())
+    .sort((a, b) => a.start - b.start)
+  if (!ranges.length) return { content, start, end }
+  // Mixed selections gain the style everywhere; a fully styled selection
+  // removes it everywhere. Block syntax and literal code/math stay untouched.
+  const remove = ranges.map((range) => formatInlineSelection(content, range.start, range.end, format, linkLabel).content.length < content.length)
+  const removeAll = remove.every(Boolean)
+  let selectionEnd = end, selectionStart = start
+  for (let index = ranges.length - 1; index >= 0; index--) {
+    const range = ranges[index]
+    const result = removeAll || !remove[index] ? formatInlineSelection(content, range.start, range.end, format, linkLabel)
+      : { content, start: range.start, end: range.end }
+    const delta = result.content.length - content.length
+    selectionEnd = index === ranges.length - 1 ? Math.max(result.end, range.end + delta) : selectionEnd + delta
+    content = result.content
+    selectionStart = Math.min(range.start, result.start)
+    // Separate paragraphs need separate links. Select the first destination.
+    if (format === 'link' && index === 0) { selectionStart = result.start; selectionEnd = result.end }
+  }
+  return { content, start: selectionStart, end: selectionEnd }
+}
+
+function formatInlineSelection(content: string, start: number, end: number, format: MarkdownFormat, linkLabel: string): FormattedSelection {
   const selection = content.slice(start, end)
   // Whitespace outside the text must stay outside emphasis delimiters.
   if (format !== 'code' && format !== 'link' && selection.trim()) {
@@ -16,7 +50,11 @@ export function formatMarkdownSelection(content: string, start: number, end: num
   if (format === 'code' && text.startsWith('`')) {
     const nodes = parseMarkdownInline(text)
     if (nodes.length === 1 && nodes[0].token.type === 'code_inline') {
-      const unwrapped = nodes[0].token.content
+      const width = nodes[0].token.markup.length
+      const raw = text.slice(width, -width)
+      // Rendered code normalizes newlines to spaces; toggling must retain the
+      // original source and remove only the optional boundary padding.
+      const unwrapped = /^ .* $/s.test(raw) && raw.trim() ? raw.slice(1, -1) : raw
       return { content: content.slice(0, start) + unwrapped + content.slice(end), start, end: start + unwrapped.length }
     }
   }

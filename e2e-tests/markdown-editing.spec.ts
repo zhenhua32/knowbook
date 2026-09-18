@@ -257,3 +257,29 @@ test('Chromium IME commit and cancel preserve multilingual Markdown and uppercas
     await expect(page.locator('.document-reading-row')).toContainText(initial.slice(2) + '输入完成')
   })
 })
+
+test('cross-paragraph formatting keeps Markdown structure through toggle, undo, save and reload @electron', async () => {
+  await withElectronApp(async ({ page }) => {
+    const source = '第一段 中文 😀\n软换行\n\n第二段 日本語\n\n- [ ] Task\n\n```ts\nconst untouched = 1\n```'
+    const formatted = '**第一段 中文 😀\n软换行**\n\n**第二段 日本語**\n\n- [ ] **Task**\n\n```ts\nconst untouched = 1\n```'
+    const id = await openDocument(page, 'Paragraph formatting', [{ type: 'paragraph', content: source, checked: false, depth: 0 }])
+    const editor = page.locator('textarea.block-inline-textarea').first()
+    await editor.focus(); await editor.press('Control+a'); await editor.press('Control+b')
+    await expect(editor).toHaveValue(formatted)
+    await editor.press('Control+b')
+    await expect(editor).toHaveValue(source)
+    await editor.press('Control+z')
+    await expect(editor).toHaveValue(formatted)
+    await editor.press('Control+z')
+    await expect(editor).toHaveValue(source)
+    await editor.press('Control+Shift+z')
+    await expect(editor).toHaveValue(formatted)
+    await expect.poll(async () => (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))?.blocks[0].content).toBe(formatted)
+    await page.reload(); await page.locator('.tree-button', { hasText: 'Paragraph formatting' }).first().click()
+    await expect(editor).toHaveValue(formatted)
+    await page.locator('.document-view-toggle').click()
+    await expect(page.locator('.document-reading-row strong')).toHaveCount(3)
+    await expect(page.getByRole('checkbox', { name: /Task/ })).not.toBeChecked()
+    await expect(page.locator('.document-reading-row pre')).toContainText('const untouched = 1')
+  })
+})

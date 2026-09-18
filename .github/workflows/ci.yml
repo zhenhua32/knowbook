@@ -51,12 +51,17 @@ jobs:
       - name: Check Markdown performance regression ceilings
         run: npm run benchmark:markdown
 
+      - name: Check Markdown link maintenance regression ceilings
+        run: npm run benchmark:markdown-links
+
       - name: Upload Markdown performance report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: markdown-quality-report
-          path: test-results/markdown-quality-report.json
+          path: |
+            test-results/markdown-quality-report.json
+            test-results/markdown-link-report.json
           if-no-files-found: ignore
           retention-days: 14
 

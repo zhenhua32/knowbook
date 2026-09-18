@@ -59,7 +59,7 @@ import type {
   SearchSemanticNotesInput,
   SemanticSearchResult
 } from '@shared/contracts'
-import { appSchema } from './schema'
+import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
@@ -237,12 +237,6 @@ interface LinkedDocumentRow {
 }
 
 interface DocumentChildRow {
-  id: string
-  title: string
-  path: string
-}
-
-interface DocumentLookupRow {
   id: string
   title: string
   path: string
@@ -434,12 +428,17 @@ export class KnowbookStore {
         this.ensureBlockMarkdownFormatColumn()
         this.db.pragma('user_version = 14')
       }
-      if (schemaVersion < 16) {
-        // v16 captures parser positions, including table cells that v15's
-        // document-wide scanner could miss or mistake for literal text.
+      if (schemaVersion < 17) {
+        for (const table of ['document', 'block']) for (const operation of ['insert', 'update', 'delete']) {
+          this.db.exec(`DROP TRIGGER IF EXISTS trg_${table}_search_${operation}`)
+        }
+        this.db.exec(searchIndexSchema)
+        this.rebuildSearchIndexes()
+        // Rebuild parser positions (v16) and the unified Wiki/Markdown relation
+        // projection (v17), including canonical case-insensitive Wiki bindings.
         this.markdownLinks.rebuild()
         this.resyncLinks()
-        this.db.pragma('user_version = 16')
+        this.db.pragma('user_version = 17')
       }
     })
   }
@@ -574,19 +573,30 @@ export class KnowbookStore {
   }
 
   private migrateToSchemaVersion2(): void {
+    this.rebuildSearchIndexes()
     this.db.exec(`
-      DELETE FROM document_search;
-      INSERT INTO document_search(document_id, title, path, summary)
-      SELECT id, title, path, summary FROM documents;
-
-      DELETE FROM block_search;
-      INSERT INTO block_search(block_id, document_id, content)
-      SELECT id, document_id, content FROM blocks;
-
       CREATE INDEX IF NOT EXISTS idx_documents_updated_at
         ON documents(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_blocks_document_sort
         ON blocks(document_id, sort_order);
+    `)
+  }
+
+  private rebuildSearchIndexes(): void {
+    this.db.exec(`
+      DELETE FROM document_search;
+      DELETE FROM document_search_ids;
+      INSERT INTO document_search_ids(document_id) SELECT id FROM documents;
+      INSERT INTO document_search(rowid, document_id, title, path, summary)
+      SELECT ids.search_rowid, docs.id, docs.title, docs.path, docs.summary
+      FROM documents AS docs JOIN document_search_ids AS ids ON ids.document_id = docs.id;
+
+      DELETE FROM block_search;
+      DELETE FROM block_search_ids;
+      INSERT INTO block_search_ids(block_id) SELECT id FROM blocks;
+      INSERT INTO block_search(rowid, block_id, document_id, content)
+      SELECT ids.search_rowid, blocks.id, blocks.document_id, blocks.content
+      FROM blocks JOIN block_search_ids AS ids ON ids.block_id = blocks.id;
     `)
   }
 
@@ -1241,10 +1251,6 @@ export class KnowbookStore {
       || newPath !== oldPath
       || normalizedSummary !== document.summary
     const blocksChanged = changedPersistedBlocks.length > 0 || deletedExistingBlocks.length > 0
-    const blockReferencesChanged = deletedExistingBlocks.length > 0 || changedPersistedBlocks.some((block) => {
-      const existing = existingBlockById.get(block.id)
-      return !existing || existing.content !== block.content
-    })
 
     if (this.bulkMarkdownState) {
       this.bulkMarkdownState.replaced.add(documentId)
@@ -1359,12 +1365,13 @@ export class KnowbookStore {
         deleteBlockStatement.run(existing.id, documentId)
       }
 
+      const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
-        rewrittenDocumentIds = this.markdownLinks.maintain(markdownChanges, [documentId], now)
+        rewrittenDocumentIds = this.markdownLinks.maintain(markdownChanges, [documentId], now, undefined, syncedMarkdownSources)
       }
       this.resyncLinksForReferenceChanges(
         changedReferenceTokens,
-        [...(blockReferencesChanged ? [documentId] : []), ...rewrittenDocumentIds]
+        [...(blocksChanged ? [documentId] : []), ...rewrittenDocumentIds], syncedMarkdownSources
       )
     })
 
@@ -1444,11 +1451,12 @@ export class KnowbookStore {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
+      const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
         rewrittenDocumentIds = this.markdownLinks.maintain(affectedDescendants.map((entry) => ({ id: entry.id, before: entry.path,
-          after: newPrefix + entry.path.slice(oldPrefix.length) })), [], now)
+          after: newPrefix + entry.path.slice(oldPrefix.length) })), [], now, undefined, syncedMarkdownSources)
       }
-      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds)
+      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds, syncedMarkdownSources)
     })
 
     transaction()
@@ -1519,11 +1527,12 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
         rewrittenDocumentIds = this.markdownLinks.maintain(pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path,
-          after: entry.path === document.path ? newPath : newPath + entry.path.slice(document.path.length) })), [], now)
+          after: entry.path === document.path ? newPath : newPath + entry.path.slice(document.path.length) })), [], now, undefined, syncedMarkdownSources)
       }
-      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds)
+      this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds, syncedMarkdownSources)
     })
 
     transaction()
@@ -3288,7 +3297,8 @@ export class KnowbookStore {
 
   private resyncLinksForReferenceChanges(
     referenceTokens: Iterable<string>,
-    additionalSourceDocumentIds: Iterable<string> = []
+    additionalSourceDocumentIds: Iterable<string> = [],
+    syncedMarkdownSources: ReadonlySet<string> = new Set()
   ): void {
     if (this.deferredLinkResyncDepth > 0) {
       this.deferredFullLinkResyncRequested = true
@@ -3301,6 +3311,7 @@ export class KnowbookStore {
         .filter(Boolean)
     )
     const sourceDocumentIds = new Set(additionalSourceDocumentIds)
+    const wikiReferenceTokens = new Set([...normalizedReferenceTokens].map((token) => token.toLowerCase()))
     const indexedSources = this.db.prepare('SELECT DISTINCT source_document_id AS id FROM markdown_link_sources WHERE target_path = ?')
     for (const token of normalizedReferenceTokens) {
       for (const { id } of indexedSources.all(token) as Array<{ id: string }>) sourceDocumentIds.add(id)
@@ -3338,13 +3349,18 @@ export class KnowbookStore {
       }
 
       for (const block of candidateBlocks) {
-        if (this.extractLinkTargets(block.content).some((token) => normalizedReferenceTokens.has(token))) {
+        if (this.extractLinkTargets(block.content).some((token) => {
+          const separator = token.lastIndexOf('#')
+          return wikiReferenceTokens.has((separator < 0 ? token : token.slice(0, separator).trim()).toLowerCase())
+        })) {
           sourceDocumentIds.add(block.document_id)
         }
       }
     }
 
-    for (const id of sourceDocumentIds) this.markdownLinks.syncDocument(id)
+    // Maintenance has already indexed its final rewrites in this transaction.
+    // Newly resolvable/ambiguous Wiki sources still need their own refresh.
+    for (const id of sourceDocumentIds) if (!syncedMarkdownSources.has(id)) this.markdownLinks.syncDocument(id)
     this.resyncLinks(sourceDocumentIds)
   }
 
@@ -3380,86 +3396,20 @@ export class KnowbookStore {
       return
     }
 
-    let blocks: BlockReferenceRow[]
-    if (selectedSourceDocumentIds) {
-      const selectBlocks = this.db.prepare(`
-        SELECT document_id, content
-        FROM blocks
-        WHERE document_id = ?
-        ORDER BY sort_order ASC
-      `)
-      blocks = selectedSourceDocumentIds.flatMap(
-        (documentId) => selectBlocks.all(documentId) as BlockReferenceRow[]
-      )
-    } else {
-      blocks = this.db.prepare(`
-        SELECT document_id, content
-        FROM blocks
-        ORDER BY document_id ASC, sort_order ASC
-      `).all() as BlockReferenceRow[]
-    }
-
-    const referenceTokens = new Set<string>()
-    for (const block of blocks) {
-      for (const token of this.extractLinkTargets(block.content)) {
-        referenceTokens.add(token)
-      }
-    }
-
-    const targetByToken = new Map<string, DocumentLookupRow | null>()
-    if (selectedSourceDocumentIds) {
-      const findDocumentByPath = this.db.prepare(`
-        SELECT id, title, path
-        FROM documents
-        WHERE path = ? COLLATE NOCASE
-        LIMIT 1
-      `)
-      const findDocumentsByTitle = this.db.prepare(`
-        SELECT id, title, path
-        FROM documents
-        WHERE title = ? COLLATE NOCASE
-        ORDER BY path ASC
-        LIMIT 2
-      `)
-      for (const token of referenceTokens) {
-        const pathMatch = findDocumentByPath.get(token) as DocumentLookupRow | undefined
-        if (pathMatch) {
-          targetByToken.set(token, pathMatch)
-          continue
-        }
-        const titleMatches = findDocumentsByTitle.all(token) as DocumentLookupRow[]
-        targetByToken.set(token, titleMatches.length === 1 ? titleMatches[0] : null)
-      }
-    } else {
-      const documents = this.db.prepare(`
-        SELECT id, title, path
-        FROM documents
-      `).all() as DocumentLookupRow[]
-      const pathMap = new Map<string, DocumentLookupRow>()
-      const titleMap = new Map<string, DocumentLookupRow | null>()
-      for (const document of documents) {
-        pathMap.set(document.path.toLowerCase(), document)
-        const existing = titleMap.get(document.title.toLowerCase())
-        titleMap.set(document.title.toLowerCase(), existing === undefined ? document : null)
-      }
-      for (const token of referenceTokens) {
-        const normalizedToken = token.toLowerCase()
-        targetByToken.set(token, pathMap.get(normalizedToken) ?? titleMap.get(normalizedToken) ?? null)
-      }
-    }
-
     const deleteSourceLinks = this.db.prepare('DELETE FROM links WHERE source_document_id = ?')
     const deleteAllLinks = this.db.prepare('DELETE FROM links')
     const insertLink = this.db.prepare(`
       INSERT INTO links (id, source_document_id, target_document_id, label, created_at)
       VALUES (?, ?, ?, ?, ?)
     `)
+    // All relations use the same parsed source index as navigation/maintenance.
+    // Regex scans used to count Wiki text in code, math and image alt labels.
     const selectMarkdownLinks = this.db.prepare(`SELECT DISTINCT source.source_document_id, target.id AS target_id, source.url
       FROM markdown_link_sources AS source JOIN documents AS target ON target.path = source.target_path
-      WHERE source.kind <> 'wiki' AND target.id <> source.source_document_id
-      ${selectedSourceDocumentIds ? 'AND source.source_document_id = ?' : ''}`)
+      WHERE (source.kind = 'wiki' OR target.id <> source.source_document_id)
+      ${selectedSourceDocumentIds ? 'AND source.source_document_id IN (SELECT value FROM json_each(?))' : ''}`)
     const markdownLinks = (selectedSourceDocumentIds
-      ? selectedSourceDocumentIds.flatMap((id) => selectMarkdownLinks.all(id)) : selectMarkdownLinks.all()) as Array<{ source_document_id: string; target_id: string; url: string }>
+      ? selectMarkdownLinks.all(JSON.stringify(selectedSourceDocumentIds)) : selectMarkdownLinks.all()) as Array<{ source_document_id: string; target_id: string; url: string }>
 
     const transaction = this.db.transaction(() => {
       if (selectedSourceDocumentIds) {
@@ -3470,24 +3420,7 @@ export class KnowbookStore {
         deleteAllLinks.run()
       }
 
-      const seen = new Set<string>()
       const createdAt = new Date().toISOString()
-      for (const block of blocks) {
-        for (const token of this.extractLinkTargets(block.content)) {
-          const target = targetByToken.get(token)
-          if (!target) {
-            continue
-          }
-
-          const linkKey = `${block.document_id}:${target.id}:${token}`
-          if (seen.has(linkKey)) {
-            continue
-          }
-
-          seen.add(linkKey)
-          insertLink.run(randomUUID(), block.document_id, target.id, token, createdAt)
-        }
-      }
       for (const link of markdownLinks) insertLink.run(randomUUID(), link.source_document_id, link.target_id, link.url, createdAt)
     })
 
