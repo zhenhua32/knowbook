@@ -1,7 +1,7 @@
 import { serializeMarkdownWithBlockRanges, type MarkdownRenderableBlock } from './markdown'
 import { collectMarkdownSourceLinks, parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, type MarkdownSourceLink } from './markdownLinks'
 import { markdownEngine, type MarkdownEnvironment } from './markdownEngine'
-import { markdownHeadingSlug, markdownInlineText } from './markdownHeadingText'
+import { createMarkdownHeadingSlugger, markdownInlineText } from './markdownHeadingText'
 import type { MarkdownHeading } from './markdownAdvanced'
 
 export type MarkdownDocumentLink = MarkdownSourceLink & { blockIndex: number; blockId?: string }
@@ -44,7 +44,7 @@ export function getMarkdownHeadingTargets(blocks: MarkdownRenderableBlock[], tit
   const environment: MarkdownEnvironment = { documentTitle: title }
   markdownEngine.parse(markdown, environment)
   const titleText = markdownInlineText(markdownEngine.parseInline(title, { references: environment.references })[0]?.children ?? [])
-  const targets: MarkdownHeadingTarget[] = [{ key: '$title', blockId: null, text: titleText, slug: markdownHeadingSlug(titleText, new Set()) }]
+  const targets: MarkdownHeadingTarget[] = [{ key: '$title', blockId: null, text: titleText, slug: createMarkdownHeadingSlugger()(titleText) }]
   const ordinals = new Map<string, number>()
   let rangeIndex = 0
   for (const heading of (environment.documentHeadings ?? []) as MarkdownHeading[]) {
@@ -64,38 +64,63 @@ function missingHeadingSlug(key: string): string {
   return 'knowbook-missing-heading-' + Array.from(key).map((character) => character.codePointAt(0)!.toString(16)).join('-')
 }
 
+function countHeadingText(headings: MarkdownHeadingTarget[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const heading of headings) counts.set(heading.text, (counts.get(heading.text) ?? 0) + 1)
+  return counts
+}
+
+function groupHeadingsByBlock(headings: MarkdownHeadingTarget[]): Map<string | null, MarkdownHeadingTarget[]> {
+  const groups = new Map<string | null, MarkdownHeadingTarget[]>()
+  for (const heading of headings) {
+    const group = groups.get(heading.blockId)
+    if (group) group.push(heading)
+    else groups.set(heading.blockId, [heading])
+  }
+  return groups
+}
+
 export function getMarkdownHeadingRewrites(before: MarkdownHeadingTarget[], after: MarkdownHeadingTarget[], matchRecreated = false): Map<string, string> {
   if (matchRecreated) {
     // A plain Markdown import can recreate block IDs. Only identical, unique
     // heading text is sufficient evidence to retain that section's identity.
     const oldBlocks = new Set(before.map((heading) => heading.blockId))
     const newBlocks = new Set(after.map((heading) => heading.blockId))
+    const newCounts = countHeadingText(after)
+    const candidates = new Map<string, MarkdownHeadingTarget | null>()
+    for (const heading of before) {
+      if (!newBlocks.has(heading.blockId)) candidates.set(heading.text, candidates.has(heading.text) ? null : heading)
+    }
     after = after.map((heading) => {
       if (oldBlocks.has(heading.blockId)) return heading
-      const matches = before.filter((old) => old.text === heading.text && !newBlocks.has(old.blockId))
-      return matches.length === 1 && after.filter((item) => item.text === heading.text).length === 1
-        ? { ...heading, key: matches[0].key, blockId: matches[0].blockId } : heading
+      const old = candidates.get(heading.text)
+      return old && newCounts.get(heading.text) === 1 ? { ...heading, key: old.key, blockId: old.blockId } : heading
     })
   }
   const rewrites = new Map<string, string>()
   const used = new Set(after.map((heading) => heading.slug))
-  const byBlock = new Map<string | null, MarkdownHeadingTarget[]>()
-  for (const heading of after) byBlock.set(heading.blockId, [...(byBlock.get(heading.blockId) ?? []), heading])
-  const oldByBlock = new Map<string | null, MarkdownHeadingTarget[]>()
-  for (const heading of before) oldByBlock.set(heading.blockId, [...(oldByBlock.get(heading.blockId) ?? []), heading])
-  for (const [blockId, old] of oldByBlock) {
+  const byBlock = groupHeadingsByBlock(after)
+  for (const [blockId, old] of groupHeadingsByBlock(before)) {
     const current = byBlock.get(blockId) ?? []
+    const oldCounts = countHeadingText(old), currentCounts = countHeadingText(current)
     const remaining = new Set(current)
     const matched = new Map<MarkdownHeadingTarget, MarkdownHeadingTarget>()
+    const byText = new Map<string, { headings: MarkdownHeadingTarget[]; offset: number }>()
+    for (const heading of current) {
+      const queue = byText.get(heading.text)
+      if (queue) queue.headings.push(heading)
+      else byText.set(heading.text, { headings: [heading], offset: 0 })
+    }
     for (const heading of old) {
       // Several headings inside one raw block have no individual block IDs.
       // A changed duplicate count cannot tell us which occurrence survived.
-      if (old.filter((item) => item.text === heading.text).length !== current.filter((item) => item.text === heading.text).length) continue
-      const sameText = [...remaining].find((item) => item.text === heading.text)
+      if (oldCounts.get(heading.text) !== currentCounts.get(heading.text)) continue
+      const queue = byText.get(heading.text)
+      const sameText = queue?.headings[queue.offset++]
       if (sameText) { matched.set(heading, sameText); remaining.delete(sameText) }
     }
     const unmatched = old.filter((heading) => !matched.has(heading))
-    if (unmatched.length === 1 && remaining.size === 1) matched.set(unmatched[0], [...remaining][0])
+    if (unmatched.length === 1 && remaining.size === 1) matched.set(unmatched[0], remaining.values().next().value!)
     for (const heading of old) {
       const target = matched.get(heading)
       let slug = target?.slug
@@ -109,9 +134,10 @@ export function getMarkdownHeadingRewrites(before: MarkdownHeadingTarget[], afte
   const oldSlugs = new Set(before.map((heading) => heading.slug))
   const oldKeys = new Set(before.map((heading) => heading.key))
   for (const heading of after) {
+    if (oldKeys.has(heading.key)) continue
     let missing = missingHeadingSlug(heading.key)
     while (oldSlugs.has(missing)) missing += '-missing'
-    if (!oldKeys.has(heading.key)) rewrites.set(missing, heading.slug)
+    rewrites.set(missing, heading.slug)
   }
   return rewrites
 }

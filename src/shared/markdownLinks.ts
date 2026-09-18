@@ -1,8 +1,6 @@
-import { markdownEngine, type MarkdownEnvironment, type MarkdownToken } from './markdownEngine'
-import { findMarkdownInlineMath } from './markdownAdvanced'
-
-export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink' }
-export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
+import { markdownEngine, type MarkdownEnvironment } from './markdownEngine'
+import { capturedMarkdownSourceLinks, type MarkdownDestination, type MarkdownSourceLink } from './markdownSourceLinks'
+export type { MarkdownDestination, MarkdownSourceLink } from './markdownSourceLinks'
 
 /** Locate source destinations without rewriting labels, titles, code or other Markdown. */
 export function collectMarkdownDestinations(source: string): MarkdownDestination[] {
@@ -13,112 +11,20 @@ export function collectMarkdownSourceLinks(source: string, includeWiki = true): 
   if (!source.includes('[') && !source.includes('<')) return []
   const header = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   const headerEnd = header && /^[A-Za-z][\w-]*:/m.test(header[1]) ? header[0].length : 0
-  const env: MarkdownEnvironment = { captureFootnoteSource: true }
-  // Metadata values are not Markdown content. Keep line offsets while masking
-  // the header so links/definitions in YAML cannot affect body rewriting.
-  const renderedTokens = markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
-  const tokens = [...renderedTokens, ...(env.footnoteSourceTokens as MarkdownToken[] | undefined ?? [])]
-  const allowed = new Set<string>()
-  const allowedWiki = new Set<string>()
-  const allowedAutolinks = new Set<string>()
-  const visit = (items: MarkdownToken[]) => {
-    for (const token of items) {
-      const url = token.attrGet(token.type === 'image' ? 'src' : 'href')
-      if (url) allowed.add(String(url))
-      if (token.type === 'link_open' && token.markup === 'autolink' && url) allowedAutolinks.add(String(url))
-      if (token.type === 'wiki_link') allowedWiki.add(token.content)
-      if (token.children) visit(token.children)
-    }
+  const env: MarkdownEnvironment = { captureSourceLinks: true }
+  // Metadata values are not Markdown content. Keep offsets while masking YAML.
+  markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
+  // markdown-it normalizes CRLF/CR before parsing; edits address the original
+  // source, including its existing line endings and UTF-16 character positions.
+  const offsets: number[] = []
+  for (let index = 0; index < source.length; index++) {
+    offsets.push(index)
+    if (source[index] === '\r' && source[index + 1] === '\n') index++
   }
-  visit(tokens)
-  const lines = [0]
-  for (let i = 0; i < source.length; i++) if (source[i] === '\n') lines.push(i + 1)
-  lines.push(source.length)
-  const excluded = tokens.filter((token) => ['fence', 'code_block', 'math_block', 'knowbook_metadata'].includes(token.type) && token.map)
-    .map((token) => [lines[token.map![0]], lines[token.map![1]]] as const)
-    .concat(headerEnd ? [[0, headerEnd] as const] : [])
-    .sort((left, right) => left[0] - right[0])
-  let excludedIndex = 0
-  const inlineRanges = tokens.filter((token) => ['inline', 'tr_open'].includes(token.type) && token.map)
-    .map((token) => [lines[token.map![0]], lines[token.map![1]]] as const)
-  const tailEnds = new Map<number, number>()
-  const state = new markdownEngine.inline.State(source, markdownEngine, env, [])
-  const destinations: MarkdownSourceLink[] = []
-  let wikiExcludedUntil = 0
-  const whitespace = (position: number) => { while (/[ \t\r\n]/.test(source[position] ?? '') && position < source.length) position++; return position }
-  for (let i = 0; i < source.length; i++) {
-    while (excludedIndex < excluded.length && excluded[excludedIndex][1] <= i) excludedIndex++
-    const skip = excluded[excludedIndex]
-    if (skip && i >= skip[0]) { i = skip[1] - 1; continue }
-    if (tailEnds.has(i)) { i = tailEnds.get(i)! - 1; continue }
-    if (source[i] === '$' || source.startsWith('\\(', i)) {
-      const inlineEnd = inlineRanges.find(([start, end]) => i >= start && i < end)?.[1] ?? source.length
-      const math = findMarkdownInlineMath(source, i, inlineEnd)
-      if (math) { i = math.end - 1; continue }
-    }
-    if (source[i] === '\\') { i++; continue }
-    if (source[i] === '`') {
-      const run = source.slice(i).match(/^`+/)![0]
-      const inlineEnd = inlineRanges.find(([start, end]) => i >= start && i < end)?.[1] ?? source.length
-      let end = source.indexOf(run, i + run.length)
-      while (end >= 0 && (source[end - 1] === '`' || source[end + run.length] === '`')) end = source.indexOf(run, end + run.length)
-      if (end >= 0 && end < inlineEnd) i = end + run.length - 1
-      else i += run.length - 1
-      continue
-    }
-    if (source[i] === '<' && i >= wikiExcludedUntil) {
-      const end = source.indexOf('>', i + 1)
-      if (end > i && !/[<\s]/.test(source.slice(i + 1, end))) {
-        const raw = source.slice(i + 1, end)
-        const url = markdownEngine.normalizeLink(/^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `mailto:${raw}`)
-        if (allowedAutolinks.has(url)) {
-          destinations.push({ start: i + 1, end, url, kind: 'autolink' })
-          i = end; continue
-        }
-      }
-    }
-    if (source[i] !== '[') continue
-    if (includeWiki && i >= wikiExcludedUntil && source.startsWith('[[', i)) {
-      const end = source.indexOf(']]', i + 2), label = end < 0 ? '' : source.slice(i + 2, end)
-      if (label.trim() && !/[\n\[\]]/.test(label) && allowedWiki.has(label.trim())) {
-        destinations.push({ start: i + 2 + label.length - label.trimStart().length, end: end - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })
-        i = end + 1; continue
-      }
-    }
-    const labelEnd = markdownEngine.helpers.parseLinkLabel(state, i, false)
-    if (labelEnd < 0) continue
-    const delimiter = source[labelEnd + 1]
-    const definition = delimiter === ':' && /^(?:[ \t\r]|>|[-+*]|\d+[.)])*$/.test(source.slice(source.lastIndexOf('\n', i - 1) + 1, i))
-    if (delimiter !== '(' && !definition) continue
-    const start = whitespace(labelEnd + 2)
-    const result = markdownEngine.helpers.parseLinkDestination(source, start, source.length)
-    if (!result.ok) continue
-    const url = markdownEngine.normalizeLink(result.str)
-    if (!markdownEngine.validateLink(url) || (!definition && !allowed.has(url))) continue
-    if (definition && env.references?.[markdownEngine.utils.normalizeReference(source.slice(i + 1, labelEnd))]?.href !== url) continue
-    if (!definition) {
-      let end = whitespace(result.pos)
-      if (end > result.pos && source[end] !== ')') {
-        const title = markdownEngine.helpers.parseLinkTitle(source, end, source.length)
-        if (!title.ok) continue
-        end = whitespace(title.pos)
-      }
-      if (source[end] !== ')') continue
-      tailEnds.set(labelEnd + 1, end + 1)
-      wikiExcludedUntil = labelEnd + 1
-    } else {
-      const titleStart = whitespace(result.pos)
-      const title = markdownEngine.helpers.parseLinkTitle(source, titleStart, source.length)
-      const reference = env.references?.[markdownEngine.utils.normalizeReference(source.slice(i + 1, labelEnd))]
-      wikiExcludedUntil = title.ok && reference?.title === title.str && !/\n[ \t\r]*\n/.test(source.slice(result.pos, titleStart)) ? title.pos : result.pos
-      tailEnds.set(labelEnd + 1, wikiExcludedUntil)
-    }
-    const angled = source[start] === '<'
-    destinations.push({ start: start + (angled ? 1 : 0), end: result.pos - (angled ? 1 : 0), url,
-      kind: definition ? 'definition' : source[i - 1] === '!' ? 'image' : 'link' })
-    // Keep scanning the label: a linked image has two independent destinations.
-  }
-  return destinations.sort((a, b) => a.start - b.start).filter((entry, index, all) => index === 0 || entry.start !== all[index - 1].start)
+  offsets.push(source.length)
+  return capturedMarkdownSourceLinks(env).filter((link) => includeWiki || link.kind !== 'wiki')
+    .map((link) => ({ ...link, start: offsets[link.start], end: offsets[link.end] }))
+    .sort((a, b) => a.start - b.start)
 }
 
 export function rewriteMarkdownDestinations(source: string, rewrite: (destination: MarkdownDestination) => string | null | undefined): string {

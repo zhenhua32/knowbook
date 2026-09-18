@@ -223,3 +223,37 @@ test('advanced slash templates insert useful content without replacing existing 
     }
   })
 })
+
+test('Chromium IME commit and cancel preserve multilingual Markdown and uppercase shortcuts @electron', async () => {
+  await withElectronApp(async ({ page }) => {
+    const initial = '中文 日本語 한국어 العربية 👩🏽‍💻'
+    const id = await openDocument(page, 'Composition quality', [{ type: 'paragraph', content: initial, checked: false, depth: 0 }])
+    const editor = page.locator('textarea.block-inline-textarea').first()
+    const cdp = await page.context().newCDPSession(page)
+    await editor.focus(); await editor.press('End')
+    await cdp.send('Input.imeSetComposition', { text: '拼音候选', selectionStart: 4, selectionEnd: 4 })
+    await expect(editor).toHaveValue(initial + '拼音候选')
+    await cdp.send('Input.imeSetComposition', { text: '输入完成', selectionStart: 4, selectionEnd: 4 })
+    await cdp.send('Input.insertText', { text: '输入完成' })
+    await expect(editor).toHaveValue(initial + '输入完成')
+    await expect(page.locator('textarea.block-inline-textarea')).toHaveCount(1)
+    await cdp.send('Input.imeSetComposition', { text: '取消候选', selectionStart: 4, selectionEnd: 4 })
+    await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 })
+    await expect(editor).toHaveValue(initial + '输入完成')
+    await editor.evaluate((input) => (input as HTMLTextAreaElement).setSelectionRange(0, 2))
+    await editor.press('Control+B')
+    await expect(editor).toHaveValue('**中文**' + initial.slice(2) + '输入完成')
+    await editor.press('Control+Z')
+    await expect(editor).toHaveValue(initial + '输入完成')
+    await editor.press('Control+Shift+Z')
+    const expected = '**中文**' + initial.slice(2) + '输入完成'
+    await expect(editor).toHaveValue(expected)
+    await expect.poll(async () => (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))?.blocks[0].content).toBe(expected)
+    await cdp.detach()
+    await page.reload(); await page.locator('.tree-button', { hasText: 'Composition quality' }).first().click()
+    await expect(editor).toHaveValue(expected)
+    await page.locator('.document-view-toggle').click()
+    await expect(page.locator('.document-reading-row strong')).toHaveText('中文')
+    await expect(page.locator('.document-reading-row')).toContainText(initial.slice(2) + '输入完成')
+  })
+})

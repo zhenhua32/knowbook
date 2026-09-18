@@ -3,6 +3,8 @@ import test from 'node:test'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { auditMarkdownExample, canonicalMarkdownHtml, loadMarkdownPolicies, loadMarkdownSpec, markdownSpecNames } from './helpers/markdownSpec'
+import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
+import { markdownEngine } from '../src/shared/markdownEngine'
 
 const policies = loadMarkdownPolicies()
 test('official fixture content is pinned independently of local line endings', () => {
@@ -35,4 +37,15 @@ test('the HTML comparator retains content, list structure, code whitespace and l
     ['<a href="/a">link</a>', '<a href="/b">link</a>'],
     ['<ol start="3"><li>a</li></ol>', '<ol><li>a</li></ol>']
   ]) assert.notEqual(canonicalMarkdownHtml(a), canonicalMarkdownHtml(b))
+})
+
+test('every collected destination in the official corpus points to its actual source URL', () => {
+  for (const name of markdownSpecNames) for (const example of loadMarkdownSpec(name)) {
+    for (const destination of collectMarkdownDestinations(example.markdown)) {
+      const raw = example.markdown.slice(destination.start, destination.end)
+      const parsed = markdownEngine.helpers.parseLinkDestination(`<${raw}>`, 0, raw.length + 2)
+      const value = destination.kind === 'autolink' ? /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `mailto:${raw}` : parsed.str
+      assert.equal(markdownEngine.normalizeLink(value), destination.url, `${name} #${example.example}: ${raw}`)
+    }
+  }
 })

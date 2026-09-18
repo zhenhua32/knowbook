@@ -11,6 +11,7 @@
     "tests/**/*.test.tsx",
     "e2e-tests/**/*.ts",
     "scripts/performance-benchmark.ts",
+    "scripts/markdown-quality-benchmark.ts",
     "scripts/markdown-spec-report.ts"
   ]
 }

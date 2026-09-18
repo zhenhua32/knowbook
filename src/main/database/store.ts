@@ -434,10 +434,12 @@ export class KnowbookStore {
         this.ensureBlockMarkdownFormatColumn()
         this.db.pragma('user_version = 14')
       }
-      if (schemaVersion < 15) {
+      if (schemaVersion < 16) {
+        // v16 captures parser positions, including table cells that v15's
+        // document-wide scanner could miss or mistake for literal text.
         this.markdownLinks.rebuild()
         this.resyncLinks()
-        this.db.pragma('user_version = 15')
+        this.db.pragma('user_version = 16')
       }
     })
   }

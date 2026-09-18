@@ -26,6 +26,7 @@
     "test:markdown-spec": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/markdown-spec-report.ts",
     "verify:renderer-bundle": "node scripts/verify-renderer-bundle.mjs",
     "benchmark:performance": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/performance-benchmark.ts",
+    "benchmark:markdown": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/markdown-quality-benchmark.ts",
     "benchmark:performance:backup": "cross-env KNOWBOOK_BENCHMARK_BACKUP_IO=1 npm run benchmark:performance",
     "test:e2e": "npm run build && playwright test --grep @electron",
     "test:runtime-smoke": "npm run build && electron --no-sandbox --disable-gpu --disable-software-rasterizer --in-process-gpu scripts/quickjs-runtime-smoke.mjs",

@@ -15,6 +15,8 @@ function webLinkLength(source: string): number {
 
 /** GFM web autolinks, including trailing punctuation, parentheses and entities. */
 export function installMarkdownAutolinks(md: InstanceType<typeof MarkdownIt>): void {
+  const autolink = md.inline.ruler.__rules__.find((rule) => rule.name === 'autolink')!.fn
+  md.inline.ruler.at('autolink', (state, silent) => state.linkLevel > 0 ? false : autolink(state, silent))
   md.linkify.add('www.', {
     validate: (text, pos) => webLinkLength(text.slice(pos)),
     normalize: (match) => { match.url = `http://${match.raw}` }

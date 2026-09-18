@@ -183,7 +183,7 @@ test('a maintained Wiki heading also updates incoming Markdown anchors without t
   })
 })
 
-test('schema 15 backfills the index and preserves a migration backup before rewriting existing links', () => {
+test('link index migration backfills the index and preserves a backup before rewriting existing links', () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-link-migration-')), path = join(root, 'workspace.sqlite')
   let store = new KnowbookStore(path)
   try {
@@ -194,5 +194,24 @@ test('schema 15 backfills the index and preserves a migration backup before rewr
     assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v14-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))
     store.updateDocument(target, { ...store.getDocumentDetail(target)!, title: 'Renamed' })
     assert.equal(collectDocumentMarkdownLinks(store.getDocumentDetail(source)!.blocks)[0].url, 'Renamed.md#old')
+  } finally { store.destroy(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('schema 16 rebuilds stale table link positions before a target is renamed', () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-link-position-migration-')), path = join(root, 'workspace.sqlite')
+  let store = new KnowbookStore(path)
+  try {
+    const target = create(store, 'Target')
+    const source = create(store, 'Source', '| A | B |\n| - | - |\n| $unfinished | [real](Target.md)$ |\n| literal | ` [code](Target.md) ` |')
+    // Simulate v15's missed entry; migration must not depend on editing Source.
+    store.getUnsafeDatabaseHandle().exec('DELETE FROM markdown_link_sources; DELETE FROM links; PRAGMA user_version = 15;')
+    store.destroy(); store = new KnowbookStore(path)
+    assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v15-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))
+    const detail = store.getDocumentDetail(source)!
+    assert.equal(detail.outgoingLinks.length, 1)
+    store.updateDocument(target, { ...store.getDocumentDetail(target)!, title: 'Moved' })
+    const content = store.getDocumentDetail(source)!.blocks[0].content
+    assert.ok(content.includes('[real](Moved.md)'))
+    assert.ok(content.includes('[code](Target.md)'))
   } finally { store.destroy(); rmSync(root, { recursive: true, force: true }) }
 })

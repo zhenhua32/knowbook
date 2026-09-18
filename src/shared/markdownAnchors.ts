@@ -1,5 +1,5 @@
 import { collectMarkdownReferences, getHeadingLevel, markdownEngine } from './markdownEngine'
-import { markdownHeadingSlug, markdownInlineText as inlineText } from './markdownHeadingText'
+import { createMarkdownHeadingSlugger, markdownInlineText as inlineText } from './markdownHeadingText'
 import { serializeBlocksToMarkdown } from './markdown'
 import type { DocumentBlockDraft } from './contracts'
 
@@ -7,12 +7,11 @@ type HeadingBlock = Pick<DocumentBlockDraft, 'id' | 'type' | 'content' | 'depth'
 export type MarkdownAnchor = { slug: string; blockIndex: number; blockId?: string; headingIndex: number }
 
 export function collectMarkdownAnchors(title: string, blocks: HeadingBlock[]): MarkdownAnchor[] {
-  const used = new Set<string>()
+  const slug = createMarkdownHeadingSlugger()
   const references = collectMarkdownReferences(serializeBlocksToMarkdown(blocks))
   const anchors: MarkdownAnchor[] = []
   const add = (text: string, blockIndex: number, headingIndex: number) => {
-    const slug = markdownHeadingSlug(text, used)
-    anchors.push({ slug, blockIndex, blockId: blocks[blockIndex]?.id, headingIndex })
+    anchors.push({ slug: slug(text), blockIndex, blockId: blocks[blockIndex]?.id, headingIndex })
   }
   add(inlineText(markdownEngine.parseInline(title, { references })[0]?.children ?? []), -1, 0)
   blocks.forEach((block, index) => {

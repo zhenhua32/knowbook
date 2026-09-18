@@ -19,6 +19,7 @@ export function useAppKeyboardShortcuts({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
+      const key = event.key.toLowerCase()
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
         const pageIndex = Number(event.key) - 1
         const targetPage = PAGE_ORDER[pageIndex]
@@ -28,7 +29,7 @@ export function useAppKeyboardShortcuts({
         }
       }
 
-      if ((event.ctrlKey || event.metaKey) && event.key === 'f') {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'f') {
         if (shell.activePage !== 'documents') {
           return
         }
@@ -41,7 +42,7 @@ export function useAppKeyboardShortcuts({
         }
       }
 
-      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'k') {
         if (shell.activePage !== 'documents') {
           return
         }
@@ -65,14 +66,14 @@ export function useAppKeyboardShortcuts({
         return
       }
 
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key === 'z') {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'z') {
         if (documents.isEditing && shell.activePage === 'documents') {
           event.preventDefault()
           documents.undoEdit()
         }
       }
 
-      if ((event.ctrlKey || event.metaKey) && (event.key === 'y' || (event.shiftKey && event.key === 'z'))) {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && ((!event.shiftKey && key === 'y') || (event.shiftKey && key === 'z'))) {
         if (documents.isEditing && shell.activePage === 'documents') {
           event.preventDefault()
           documents.redoEdit()

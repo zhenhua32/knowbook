@@ -2,7 +2,9 @@ import type MarkdownIt from 'markdown-it'
 import type { Token } from 'markdown-it'
 import footnote from 'markdown-it-footnote'
 import mark from 'markdown-it-mark'
-import { markdownHeadingSlug, markdownInlineText } from './markdownHeadingText'
+import { createMarkdownHeadingSlugger, markdownInlineText } from './markdownHeadingText'
+import { createMarkdownInlineMathMatcher } from './markdownInlineMath'
+import { sliceMarkdownSourceMap } from './markdownSourceLinks'
 
 export type MarkdownCallout = { kind: string; title: string; folded: boolean | null; titleToken: Token }
 export type MarkdownHeading = { slug: string; text: string; level: number; line: number }
@@ -12,22 +14,6 @@ const escaped = (source: string, position: number) => {
   let slashes = 0
   while (position > 0 && source[--position] === '\\') slashes++
   return slashes % 2 === 1
-}
-
-export function findMarkdownInlineMath(source: string, start: number, limit = source.length): { contentStart: number; contentEnd: number; end: number; markup: string } | null {
-  const dollar = source[start] === '$' && source[start + 1] !== '$' && source[start - 1] !== '$'
-  const bracket = source.startsWith('\\(', start)
-  if (!dollar && !bracket) return null
-  const opening = dollar ? '$' : '\\(', closing = dollar ? '$' : '\\)'
-  const contentStart = start + opening.length
-  if (dollar && /\s/.test(source[contentStart] ?? '')) return null
-  let end = source.indexOf(closing, contentStart)
-  while (end >= 0 && end < limit) {
-    if (!escaped(source, end) && (!dollar || (source[end + 1] !== '$' && source[end - 1] !== '$'
-      && !/\s/.test(source[end - 1]) && !/\d/.test(source[end + 1] ?? '')))) break
-    end = source.indexOf(closing, end + closing.length)
-  }
-  return end <= contentStart || end >= limit ? null : { contentStart, contentEnd: end, end: end + closing.length, markup: opening }
 }
 
 /** Extensions are parsed once for the complete document, before UI block slicing. */
@@ -84,8 +70,12 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
   md.renderer.rules.footnote_caption = (tokens, index) => `[${Number(tokens[index].meta?.id) + 1}]`
   md.renderer.rules.footnote_missing = (tokens, index) => `<span class="markdown-footnote-missing" title="Undefined footnote: ${md.utils.escapeHtml(String(tokens[index].meta?.label))}">${md.utils.escapeHtml(tokens[index].content)}</span>`
 
+  const mathMatchers = new WeakMap<object, ReturnType<typeof createMarkdownInlineMathMatcher>>()
   md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
-    const match = findMarkdownInlineMath(state.src, state.pos, state.posMax)
+    if (state.src[state.pos] !== '$' && !state.src.startsWith('\\(', state.pos)) return false
+    let matchMath = mathMatchers.get(state)
+    if (!matchMath) { matchMath = createMarkdownInlineMathMatcher(state.src); mathMatchers.set(state, matchMath) }
+    const match = matchMath(state.pos, state.posMax)
     if (!match) return false
     if (!silent) {
       const token = state.push('math_inline', 'math', 0)
@@ -166,9 +156,14 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
       titleToken.content = title
       titleToken.children = []
       titleToken.meta = { calloutTitle: true }
+      if (header[3]?.trim()) {
+        const start = header[0].replace(/\n$/, '').length - header[3].trimStart().length
+        sliceMarkdownSourceMap(inline, start, start + title.length, titleToken)
+      }
       const callout: MarkdownCallout = { kind, title, folded: header[2] ? header[2] === '-' : null, titleToken }
       token.meta = { ...token.meta, callout }
       stack.push(callout)
+      sliceMarkdownSourceMap(inline, header[0].length)
       inline.content = inline.content.slice(header[0].length)
       if (!inline.content) {
         paragraph.hidden = true
@@ -275,8 +270,8 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
   })
 
   md.core.ruler.after('footnote_order', 'document_headings', (state) => {
-    const used = new Set<string>()
-    if (typeof state.env.documentTitle === 'string') markdownHeadingSlug(markdownInlineText(md.parseInline(state.env.documentTitle, { references: state.env.references })[0]?.children ?? []), used)
+    const slug = createMarkdownHeadingSlugger()
+    if (typeof state.env.documentTitle === 'string') slug(markdownInlineText(md.parseInline(state.env.documentTitle, { references: state.env.references })[0]?.children ?? []))
     const headings: MarkdownHeading[] = []
     const hasToc = state.tokens.some((token) => token.type === 'table_of_contents')
     for (let index = 0; index < state.tokens.length; index++) {
@@ -284,7 +279,7 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
       if (token.type === 'footnote_block_open') break
       if (token.type !== 'heading_open') continue
       const text = markdownInlineText(state.tokens[index + 1].children ?? [])
-      const heading = { slug: markdownHeadingSlug(text, used), text, level: Number(token.tag.slice(1)), line: token.map?.[0] ?? 0 }
+      const heading = { slug: slug(text), text, level: Number(token.tag.slice(1)), line: token.map?.[0] ?? 0 }
       headings.push(heading)
       token.meta = { ...token.meta, heading }
       if (hasToc) token.attrSet('id', heading.slug)

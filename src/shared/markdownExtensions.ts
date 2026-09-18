@@ -1,6 +1,7 @@
 import type MarkdownIt from 'markdown-it'
 import type { Delimiter, StateInline } from 'markdown-it'
 import { markdownInlineText } from './markdownHeadingText'
+import { sliceMarkdownSourceMap } from './markdownSourceLinks'
 
 export function parseTaskListMarker(content: string): { length: number; checked: boolean } | null {
   const match = content.match(/^[ \t]*\[([ xX\t\n\f\v])\](?:[ \t\n\f\v]+|$)/)
@@ -28,6 +29,7 @@ export function installMarkdownExtensions(md: InstanceType<typeof MarkdownIt>): 
       const column = line === undefined || !marker ? -1 : lines[line].indexOf(marker)
       inline.meta = { ...inline.meta, task, taskSource: inline.content,
         taskOffset: line !== undefined && column >= 0 ? offsets[line] + column + 1 : undefined }
+      sliceMarkdownSourceMap(inline, task.length)
       inline.content = inline.content.slice(task.length)
     }
   })

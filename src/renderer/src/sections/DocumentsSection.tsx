@@ -1,6 +1,7 @@
 import { MarkdownNodes, MarkdownReferencesContext } from '../components/MarkdownContent'
 import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../components/MarkdownDocumentContext'
 import { markdownTaskPatch } from '@shared/markdownTasks'
+import { hasAdvancedMarkdown } from '@shared/markdownDocument'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
@@ -310,10 +311,16 @@ export function DocumentsSection({
                            visible={visibleReadingIndices} renderBlock={(index) => { const item = readingRows.get(index); return item ? renderReadingRow(item, true) : null }} />
                        </Suspense>
                      }
+                     const nodes = blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]
+                     // Plain source rows do not render document tokens. Keep
+                     // their context stable when another paragraph changes;
+                     // tables and advanced previews still receive full tokens.
+                     const previewNodes = nodes && (row.block.type === 'table' || hasAdvancedMarkdown(nodes)) ? nodes : undefined
                      return (
-                     <MarkdownBlockNodesContext.Provider key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`} value={blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]}>
+                     <MarkdownBlockNodesContext.Provider key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`} value={previewNodes}>
                      <BlockEditorRow
                        {...blockEditorRowSharedProps}
+                       markdownDocument={undefined}
                        block={row.block}
                        dropPreview={row.dropPreview}
                        hasChildren={row.hasChildren}

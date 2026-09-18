@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { uiText, withElectronApp } from './helpers/electron'
 
 async function seedLongDocument(page: Page) {
@@ -31,6 +32,44 @@ async function topInCanvas(page: Page, index: number) {
     return row.getBoundingClientRect().top - panel.querySelector('.document-sticky-header')!.getBoundingClientRect().bottom
   })
 }
+
+test('long-document input reaches the next rendered frame within the regression budget @electron', async () => {
+  test.setTimeout(120_000)
+  await withElectronApp(async ({ page }) => {
+    const id = await seedLongDocument(page)
+    const editor = page.locator('[data-block-index="2"] textarea')
+    await editor.click(); await editor.press('Control+End')
+    const profiler = process.env.KNOWBOOK_PROFILE_MARKDOWN === '1' ? await page.context().newCDPSession(page) : null
+    if (profiler) { await profiler.send('Profiler.enable'); await profiler.send('Profiler.start') }
+    // Measure from a trusted Chromium input event through one rendering
+    // opportunity. This is a frame proxy, not an OS screen-presentation time.
+    for (const text of ['中', '文', ' ', '日', '本', '語', ' ', '한', '글', ' ', '😀', ' ', '$x ', 'test', '完成']) {
+      await editor.evaluate((input) => {
+        input.addEventListener('input', () => {
+          const start = performance.now()
+          requestAnimationFrame(() => requestAnimationFrame(() => performance.measure('markdown-input-frame', { start, end: performance.now() })))
+        }, { once: true, capture: true })
+      })
+      const count = await page.evaluate(() => performance.getEntriesByName('markdown-input-frame').length)
+      await page.keyboard.insertText(text)
+      await expect.poll(() => page.evaluate(() => performance.getEntriesByName('markdown-input-frame').length)).toBe(count + 1)
+    }
+    const samples = await page.evaluate(() => performance.getEntriesByName('markdown-input-frame').map((entry) => entry.duration))
+    const sorted = samples.toSorted((a, b) => a - b), medianMs = sorted[Math.floor(samples.length / 2)], p95Ms = sorted[Math.ceil(samples.length * 0.95) - 1]
+    mkdirSync('test-results', { recursive: true })
+    if (profiler) {
+      writeFileSync('test-results/markdown-input.cpuprofile', JSON.stringify((await profiler.send('Profiler.stop')).profile))
+      await profiler.detach()
+    }
+    writeFileSync('test-results/markdown-input-frame-report.json', JSON.stringify({ blocks: 642, samplesMs: samples, medianMs, p95Ms,
+      platform: process.platform, method: 'Trusted input event to second requestAnimationFrame; GPU disabled by Electron test harness',
+      ceilingMs: 500 }, null, 2) + '\n')
+    expect(p95Ms).toBeLessThan(500)
+    await expect.poll(async () => (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))?.blocks[2].content).toMatch(/完成$/)
+    await page.locator('.document-view-toggle').click()
+    await expect(page.locator('[data-block-index="2"]')).toContainText('中文 日本語 한글 😀 $x test完成')
+  })
+})
 
 test('long document keeps navigation, search and reading position usable @electron', async () => {
   test.setTimeout(120_000)

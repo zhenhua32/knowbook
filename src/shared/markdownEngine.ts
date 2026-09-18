@@ -2,6 +2,7 @@ import MarkdownIt, { type Env, type Token } from 'markdown-it'
 import { installMarkdownExtensions } from './markdownExtensions'
 import { installMarkdownAutolinks } from './markdownAutolinks'
 import { installMarkdownAdvanced } from './markdownAdvanced'
+import { installMarkdownSourceLinks } from './markdownSourceLinks'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -37,6 +38,9 @@ markdownEngine.block.ruler.before('fence', 'knowbook_metadata', (state, start, _
 // Register wiki links before normal links, so escapes and code spans are handled
 // by the parser instead of a second regex pass over already-rendered content.
 markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
+  // Let normal link-label lookahead balance these brackets as text. A Wiki
+  // token is interactive and cannot become an anchor inside another anchor.
+  if (silent) return false
   if (!state.src.startsWith('[[', state.pos) || state.linkLevel > 0) return false
   const end = state.src.indexOf(']]', state.pos + 2)
   if (end < 0) return false
@@ -52,6 +56,7 @@ markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
 
 markdownEngine.renderer.rules.wiki_link = (tokens, index) => markdownEngine.utils.escapeHtml(`[[${tokens[index].content}]]`)
 markdownEngine.renderer.rules.knowbook_metadata = () => ''
+installMarkdownSourceLinks(markdownEngine)
 
 export type MarkdownNode = { token: Token; children: MarkdownNode[] }
 

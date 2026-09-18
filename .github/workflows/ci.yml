@@ -48,11 +48,32 @@ jobs:
       - name: Run unit and integration tests
         run: npm test
 
+      - name: Check Markdown performance regression ceilings
+        run: npm run benchmark:markdown
+
+      - name: Upload Markdown performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-quality-report
+          path: test-results/markdown-quality-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Build application
         run: npm run build
 
       - name: Run Electron E2E tests
         run: xvfb-run --auto-servernum npx playwright test --grep @electron
+
+      - name: Upload Markdown input frame report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-input-frame-report
+          path: test-results/markdown-input-frame-report.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Electron E2E failure evidence
         if: failure()
