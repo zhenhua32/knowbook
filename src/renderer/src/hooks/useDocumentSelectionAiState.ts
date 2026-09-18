@@ -34,6 +34,7 @@ function cloneDraftBlock(block: DocumentBlockDraft): DocumentBlockDraft {
     tags: block.tags ? [...block.tags] : undefined,
     language: block.language,
     listStart: block.listStart,
+    markdownFormat: block.markdownFormat ? { ...block.markdownFormat } : undefined,
     highlight: block.highlight
   }
 }

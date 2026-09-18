@@ -77,3 +77,13 @@ test('nested tasks render consistently without changing reusable parser tokens',
   assert.equal(render(), html)
   assert.equal(JSON.stringify(nodes), before)
 })
+
+test('automatic web links follow GFM path boundaries in renderer and media previews', () => {
+  const content = 'www.google.com/search?q=(business))+ok www.example.com/query&hl; hello@mail+xyz.example'
+  const html = renderToStaticMarkup(<MarkdownInline content={content} />)
+  assert.match(html, /title="http:\/\/www.google.com\/search\?q=\(business\)\)\+ok"/)
+  assert.match(html, /title="http:\/\/www.example.com\/query"/)
+  assert.match(html, /&amp;hl;/)
+  assert.doesNotMatch(html, /title="mailto:hello@mail\+xyz.example"/)
+  assert.equal(extractBlockRichMedia('www.example.com').links[0]?.url, 'http://www.example.com/')
+})

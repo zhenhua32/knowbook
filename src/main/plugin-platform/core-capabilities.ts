@@ -321,7 +321,7 @@ function parseBlocks(value: PluginJsonValue): DocumentBlockDraft[] {
   return value.map((raw, index) => {
     const block = objectInput(raw, `Document block ${index}`)
     onlyKeys(block, [
-      'id', 'type', 'content', 'checked', 'depth', 'parentBlockId', 'tags', 'language', 'highlight', 'listStart'
+      'id', 'type', 'content', 'checked', 'depth', 'parentBlockId', 'tags', 'language', 'highlight', 'listStart', 'markdownFormat'
     ], `Document block ${index}`)
     const tags = block.tags === undefined ? undefined : stringArray(block.tags, `Document block ${index} tags`, 100, 200)
     return {
@@ -340,11 +340,25 @@ function parseBlocks(value: PluginJsonValue): DocumentBlockDraft[] {
         language: requiredString(block.language, `Document block ${index} language`, 100)
       }),
       ...(block.listStart === undefined ? {} : { listStart: integer(block.listStart, `Document block ${index} listStart`, 0, 999999999) }),
+      ...(block.markdownFormat === undefined ? {} : { markdownFormat: parseMarkdownFormat(block.markdownFormat) }),
       ...(block.highlight === undefined ? {} : {
         highlight: requiredString(block.highlight, `Document block ${index} highlight`, 100)
       })
     }
   })
+}
+
+function parseMarkdownFormat(value: PluginJsonValue) {
+  const input = objectInput(value, 'Markdown format')
+  onlyKeys(input, ['listMarker', 'listLoose', 'codeInfo', 'emptyCode'], 'Markdown format')
+  const listMarker = optionalString(input.listMarker, 'Markdown list marker', 1)
+  if (listMarker !== undefined && !['-', '+', '*', '.', ')'].includes(listMarker)) throw new Error('Markdown list marker is invalid.')
+  return {
+    ...(listMarker === undefined ? {} : { listMarker: listMarker as '-' | '+' | '*' | '.' | ')' }),
+    ...(input.listLoose === undefined ? {} : { listLoose: booleanValue(input.listLoose, 'Markdown loose list') }),
+    ...(input.codeInfo === undefined ? {} : { codeInfo: requiredString(input.codeInfo, 'Markdown code info', 1000, true) }),
+    ...(input.emptyCode === undefined ? {} : { emptyCode: booleanValue(input.emptyCode, 'Markdown empty code') })
+  }
 }
 
 function authorizeDocumentConstraint(

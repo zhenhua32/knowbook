@@ -37,3 +37,10 @@ test('document draft comparison detects persisted field and ordering changes', (
     [{ ...baseBlock, id: 'block-2' }, baseBlock]
   ), false)
 })
+
+test('format-only draft changes require persistence', () => {
+  const block = { ...baseBlock, type: 'bulleted-list', markdownFormat: { listMarker: '-' as const, listLoose: false } }
+  assert.equal(areDocumentDraftBlocksEqual([block], [{ ...block, markdownFormat: { ...block.markdownFormat, listLoose: true } }]), false)
+  assert.equal(areDocumentDraftBlocksEqual([block], [{ ...block, markdownFormat: { ...block.markdownFormat, listMarker: '+' } }]), false)
+  assert.equal(areDocumentDraftBlocksEqual([block], [{ ...block, markdownFormat: { listLoose: false, listMarker: '-' } }]), true)
+})

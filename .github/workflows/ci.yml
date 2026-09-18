@@ -33,6 +33,18 @@ jobs:
       - name: Typecheck System Plugin v3 starter examples
         run: npm run typecheck:system-plugin-examples
 
+      - name: Verify Markdown standards and round trips
+        run: npm run test:markdown-spec
+
+      - name: Upload Markdown standards report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-spec-report
+          path: test-results/markdown-spec-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Run unit and integration tests
         run: npm test
 

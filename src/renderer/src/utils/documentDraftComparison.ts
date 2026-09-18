@@ -41,6 +41,10 @@ export function areDocumentDraftBlocksEqual(
       || leftBlock.depth !== rightBlock.depth
       || (leftBlock.parentBlockId ?? null) !== (rightBlock.parentBlockId ?? null)
       || (leftBlock.listStart ?? null) !== (rightBlock.listStart ?? null)
+      || leftBlock.markdownFormat?.listMarker !== rightBlock.markdownFormat?.listMarker
+      || leftBlock.markdownFormat?.listLoose !== rightBlock.markdownFormat?.listLoose
+      || leftBlock.markdownFormat?.codeInfo !== rightBlock.markdownFormat?.codeInfo
+      || Boolean(leftBlock.markdownFormat?.emptyCode) !== Boolean(rightBlock.markdownFormat?.emptyCode)
       || (leftBlock.language ?? null) !== (rightBlock.language ?? null)
       || (leftBlock.highlight ?? null) !== (rightBlock.highlight ?? null)
       || !areTagsEqual(leftBlock.tags, rightBlock.tags)

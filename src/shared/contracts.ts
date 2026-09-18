@@ -354,6 +354,7 @@ export interface DocumentBlock {
   language?: string
   /** Explicit starting number on the first item of an ordered list. */
   listStart?: number
+  markdownFormat?: import('./markdownFormat').MarkdownBlockFormat
   highlight?: string
 }
 
@@ -368,6 +369,7 @@ export interface DocumentBlockDraft {
   language?: string
   /** Explicit starting number on the first item of an ordered list. */
   listStart?: number
+  markdownFormat?: import('./markdownFormat').MarkdownBlockFormat
   highlight?: string
 }
 

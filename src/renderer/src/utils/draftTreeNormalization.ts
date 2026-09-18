@@ -1,5 +1,6 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
+import { normalizeMarkdownFormat } from '@shared/markdownFormat'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from './draftBlockShape'
@@ -39,6 +40,7 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
       type,
       checked,
       listStart: isOrderedListBlockType(type) ? normalizeListStart(block.listStart) : undefined,
+      markdownFormat: normalizeMarkdownFormat(type, block.markdownFormat),
       language: type === 'code' ? (detectCodeLanguage(block.content, block.language) ?? undefined) : undefined,
       depth,
       parentBlockId

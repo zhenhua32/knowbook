@@ -8,6 +8,7 @@ import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
 import { parsePastedMarkdown } from '../src/renderer/src/utils/markdownInput.ts'
 import { serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
+import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
 
 test('paste, SQLite, backup and restore preserve headings, list starts, identities and content', async () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-markdown-roundtrip-'))
@@ -54,8 +55,8 @@ test('schema 13 migrates existing notes and keeps a migration safety copy', () =
     store.destroy()
     store = new KnowbookStore(path)
     assert.deepEqual(store.getDocumentDetail(doc.id)!.blocks, before)
-    assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), 13)
-    assert.ok(readdirSync(root).some((name) => name.includes('pre-migration-v12-to-v13-')))
+    assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
+    assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v12-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))
   } finally {
     store.destroy()
     rmSync(root, { recursive: true, force: true })

@@ -1,5 +1,6 @@
 import MarkdownIt, { type Env, type Token } from 'markdown-it'
 import { installMarkdownExtensions } from './markdownExtensions'
+import { installMarkdownAutolinks } from './markdownAutolinks'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -14,6 +15,7 @@ export function getHeadingLevel(type: string): HeadingLevel | null {
 // HTML stays text. Rendering tokens as React elements never enables raw HTML.
 export const markdownEngine = new MarkdownIt({ html: false, linkify: true, breaks: false })
 installMarkdownExtensions(markdownEngine)
+installMarkdownAutolinks(markdownEngine)
 markdownEngine.linkify.add('file:', { validate: (text, pos) => text.slice(pos).match(/^\/\/[^\s<>()\]]+/)?.[0].replace(/[.,;!?]+$/, '').length ?? 0 })
 const defaultValidateLink = markdownEngine.validateLink.bind(markdownEngine)
 markdownEngine.validateLink = (url) => /^file:\/\//i.test(url) || defaultValidateLink(url)

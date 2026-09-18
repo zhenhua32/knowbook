@@ -454,7 +454,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               editingLanguage ? (
                 <CodeBlockLanguageSelector
                   currentLanguage={block.language ?? effectiveCodeLanguage ?? undefined}
-                  onChange={(lang) => updateDraftBlock(index, { language: lang })}
+                  onChange={(lang) => updateDraftBlock(index, { language: lang, markdownFormat: { ...block.markdownFormat, codeInfo: lang } })}
                   onBlur={() => setEditingLanguage(false)}
                   isZh={isZh}
                 />

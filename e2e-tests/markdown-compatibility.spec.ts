@@ -68,7 +68,7 @@ test('Markdown paste, persistence, reading, outline and copy agree @electron', a
     await first.press('Control+c')
     await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toContain('###### Sixth level')
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText())
-    expect(copied).toContain('7. First\n\n   - Nested\n\n8. Second')
+    expect(copied).toContain('7. First\n   * Nested\n8. Second')
     expect(copied).toContain('[ref]: https://example.com "Reference title"')
     await page.keyboard.press('Escape')
     await page.reload()

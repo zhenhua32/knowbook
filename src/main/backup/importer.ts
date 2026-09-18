@@ -544,6 +544,7 @@ export class MarkdownRestoreService {
         tags: block.tags,
         language: block.language ?? undefined,
         listStart: block.listStart,
+        markdownFormat: block.markdownFormat,
         highlight: block.highlight
       }))
     }

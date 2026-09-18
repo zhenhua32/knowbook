@@ -111,3 +111,27 @@ test('shortcuts preserve code, quote and math source and parse complete fences',
   assert.equal(getMarkdownShortcut({ ...paragraph, type: 'math' }, '- x'), null)
   assert.equal(getMarkdownShortcut(paragraph, '\\# literal'), null)
 })
+
+test('lazy code spans, terminal hashes, blank code lines and large ordered counts retain meaning', () => {
+  for (const source of [
+    '> foo `\n===\n`', '> foo\n===\nbar `\n===\n`',
+    '> foo `\n===\n`\n>\n> bar\n===',
+    '   - foo\n    - bar\n\n     ```\n     code\n     ```',
+    '999999999. a\n1. b', 'Foo #\n===', '```\n\n```',
+    '- first\n\n  - nested\n- last', '- a\n  - b\n\n- c'
+  ]) {
+    let exported = source
+    for (let cycle = 0; cycle < 3; cycle++) {
+      exported = serializeBlocksToMarkdown(parseMarkdownBlocks(exported))
+      assert.equal(markdownEngine.render(exported), markdownEngine.render(source), source)
+    }
+  }
+})
+
+test('explicit numbering restarts survive even when an editor retains the original list marker', () => {
+  const blocks = parseMarkdownBlocks('1. First\n2. Second\n3. Third\n4. Fourth')
+  blocks[2].listStart = 1
+  const exported = serializeBlocksToMarkdown(blocks)
+  assert.equal(markdownEngine.render(exported), '<ol>\n<li>First</li>\n<li>Second</li>\n</ol>\n<ol>\n<li>Third</li>\n<li>Fourth</li>\n</ol>\n')
+  assert.deepEqual(getMarkdownListNumbers(parseMarkdownBlocks(exported)), [1, 2, 1, 2])
+})

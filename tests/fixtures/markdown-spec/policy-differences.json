@@ -1,0 +1,630 @@
+{
+  "commonmark-0.31.2": {
+    "21": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;/bar/)&quot;&gt;</p>\n"
+    },
+    "31": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;öö.html&quot;&gt;</p>\n"
+    },
+    "148": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;&lt;tr&gt;&lt;td&gt;\n&lt;pre&gt;\n<strong>Hello</strong>,</p>\n<p><em>world</em>.\n&lt;/pre&gt;\n&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</p>\n"
+    },
+    "149": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;\n&lt;tr&gt;\n&lt;td&gt;\nhi\n&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/table&gt;</p>\n<p>okay.</p>\n"
+    },
+    "150": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>hello</em>\n&lt;foo&gt;&lt;a&gt;</p>\n"
+    },
+    "151": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/div&gt;\n<em>foo</em></p>\n"
+    },
+    "152": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;DIV CLASS=&quot;foo&quot;&gt;</p>\n<p><em>Markdown</em></p>\n<p>&lt;/DIV&gt;</p>\n"
+    },
+    "153": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot;\nclass=&quot;bar&quot;&gt;\n&lt;/div&gt;</p>\n"
+    },
+    "154": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot; class=&quot;bar\nbaz&quot;&gt;\n&lt;/div&gt;</p>\n"
+    },
+    "155": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>foo</em></p>\n<p><em>bar</em></p>\n"
+    },
+    "156": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot;\n<em>hi</em></p>\n"
+    },
+    "157": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div class\nfoo</p>\n"
+    },
+    "158": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div *???-&amp;&amp;&amp;-&lt;---\n<em>foo</em></p>\n"
+    },
+    "159": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;&lt;a href=&quot;bar&quot;&gt;<em>foo</em>&lt;/a&gt;&lt;/div&gt;</p>\n"
+    },
+    "160": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;&lt;tr&gt;&lt;td&gt;\nfoo\n&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</p>\n"
+    },
+    "161": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;&lt;/div&gt;</p>\n<pre><code class=\"language-c\">int x = 33;\n</code></pre>\n"
+    },
+    "162": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/a&gt;</p>\n"
+    },
+    "163": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;Warning&gt;\n<em>bar</em>\n&lt;/Warning&gt;</p>\n"
+    },
+    "164": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;i class=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/i&gt;</p>\n"
+    },
+    "165": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/ins&gt;\n<em>bar</em></p>\n"
+    },
+    "166": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;\n<em>foo</em>\n&lt;/del&gt;</p>\n"
+    },
+    "167": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;</p>\n<p><em>foo</em></p>\n<p>&lt;/del&gt;</p>\n"
+    },
+    "168": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;<em>foo</em>&lt;/del&gt;</p>\n"
+    },
+    "169": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;pre language=&quot;haskell&quot;&gt;&lt;code&gt;\nimport Text.HTML.TagSoup</p>\n<p>main :: IO ()\nmain = print $ parseTags tags\n&lt;/code&gt;&lt;/pre&gt;\nokay</p>\n"
+    },
+    "170": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;script type=&quot;text/javascript&quot;&gt;\n// JavaScript example</p>\n<p>document.getElementById(&quot;demo&quot;).innerHTML = &quot;Hello JavaScript!&quot;;\n&lt;/script&gt;\nokay</p>\n"
+    },
+    "171": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;textarea&gt;</p>\n<p><em>foo</em></p>\n<p><em>bar</em></p>\n<p>&lt;/textarea&gt;</p>\n"
+    },
+    "172": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style\ntype=&quot;text/css&quot;&gt;\nh1 {color:red;}</p>\n<p>p {color:blue;}\n&lt;/style&gt;\nokay</p>\n"
+    },
+    "173": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style\ntype=&quot;text/css&quot;&gt;</p>\n<p>foo</p>\n"
+    },
+    "174": {
+      "reason": "html-as-text",
+      "html": "<blockquote>\n<p>&lt;div&gt;\nfoo</p>\n</blockquote>\n<p>bar</p>\n"
+    },
+    "175": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>&lt;div&gt;</li>\n<li>foo</li>\n</ul>\n"
+    },
+    "176": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style&gt;p{color:red;}&lt;/style&gt;\n<em>foo</em></p>\n"
+    },
+    "177": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- foo --&gt;<em>bar</em>\n<em>baz</em></p>\n"
+    },
+    "178": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;script&gt;\nfoo\n&lt;/script&gt;1. <em>bar</em></p>\n"
+    },
+    "179": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- Foo</p>\n<p>bar\nbaz --&gt;\nokay</p>\n"
+    },
+    "180": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;?php</p>\n<p>echo '&gt;';</p>\n<p>?&gt;\nokay</p>\n"
+    },
+    "181": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!DOCTYPE html&gt;</p>\n"
+    },
+    "182": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;![CDATA[\nfunction matchwo(a,b)\n{\nif (a &lt; b &amp;&amp; a &lt; 0) then {\nreturn 1;</p>\n<p>} else {</p>\n<pre><code>return 0;\n</code></pre>\n<p>}\n}\n]]&gt;\nokay</p>\n"
+    },
+    "183": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- foo --&gt;</p>\n<pre><code>&lt;!-- foo --&gt;\n</code></pre>\n"
+    },
+    "184": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;</p>\n<pre><code>&lt;div&gt;\n</code></pre>\n"
+    },
+    "185": {
+      "reason": "html-as-text",
+      "html": "<p>Foo\n&lt;div&gt;\nbar\n&lt;/div&gt;</p>\n"
+    },
+    "186": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\nbar\n&lt;/div&gt;\n<em>foo</em></p>\n"
+    },
+    "187": {
+      "reason": "html-as-text",
+      "html": "<p>Foo\n&lt;a href=&quot;bar&quot;&gt;\nbaz</p>\n"
+    },
+    "188": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;</p>\n<p><em>Emphasized</em> text.</p>\n<p>&lt;/div&gt;</p>\n"
+    },
+    "189": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>Emphasized</em> text.\n&lt;/div&gt;</p>\n"
+    },
+    "190": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;</p>\n<p>&lt;tr&gt;</p>\n<p>&lt;td&gt;\nHi\n&lt;/td&gt;</p>\n<p>&lt;/tr&gt;</p>\n<p>&lt;/table&gt;</p>\n"
+    },
+    "191": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;</p>\n<p>&lt;tr&gt;</p>\n<pre><code>&lt;td&gt;\n  Hi\n&lt;/td&gt;\n</code></pre>\n<p>&lt;/tr&gt;</p>\n<p>&lt;/table&gt;</p>\n"
+    },
+    "201": {
+      "reason": "html-as-text",
+      "html": "<p>[foo]: &lt;bar&gt;(baz)</p>\n<p>[foo]</p>\n"
+    },
+    "308": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<p>&lt;!-- --&gt;</p>\n<ul>\n<li>baz</li>\n<li>bim</li>\n</ul>\n"
+    },
+    "309": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>\n<p>foo</p>\n<p>notcode</p>\n</li>\n<li>\n<p>foo</p>\n</li>\n</ul>\n<p>&lt;!-- --&gt;</p>\n<pre><code>code\n</code></pre>\n"
+    },
+    "344": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;<code>&quot;&gt;</code></p>\n"
+    },
+    "475": {
+      "reason": "html-as-text",
+      "html": "<p><em>&lt;img src=&quot;foo&quot; title=&quot;</em>&quot;/&gt;</p>\n"
+    },
+    "476": {
+      "reason": "html-as-text",
+      "html": "<p><strong>&lt;a href=&quot;</strong>&quot;&gt;</p>\n"
+    },
+    "477": {
+      "reason": "html-as-text",
+      "html": "<p><strong>&lt;a href=&quot;</strong>&quot;&gt;</p>\n"
+    },
+    "491": {
+      "reason": "html-as-text",
+      "html": "<p>[link](&lt;foo\nbar&gt;)</p>\n"
+    },
+    "494": {
+      "reason": "html-as-text",
+      "html": "<p>[a](&lt;b)c\n[a](&lt;b)c&gt;\n[a](&lt;b&gt;c)</p>\n"
+    },
+    "524": {
+      "reason": "html-as-text",
+      "html": "<p><a href=\"baz\">foo &lt;bar attr=&quot;</a>&quot;&gt;</p>\n"
+    },
+    "536": {
+      "reason": "html-as-text",
+      "html": "<p><a href=\"/uri\">foo &lt;bar attr=&quot;</a>&quot;&gt;</p>\n"
+    },
+    "559": {
+      "reason": "wiki-links",
+      "html": "<p>[[*foo* bar]]</p>\n"
+    },
+    "602": {
+      "reason": "automatic-links",
+      "html": "<p>&lt;<a href=\"https://foo.bar/baz\">https://foo.bar/baz</a> bim&gt;</p>\n"
+    },
+    "608": {
+      "reason": "automatic-links",
+      "html": "<p>&lt; <a href=\"https://foo.bar\">https://foo.bar</a> &gt;</p>\n"
+    },
+    "611": {
+      "reason": "automatic-links",
+      "html": "<p><a href=\"https://example.com\">https://example.com</a></p>\n"
+    },
+    "612": {
+      "reason": "automatic-links",
+      "html": "<p><a href=\"mailto:foo@bar.example.com\">foo@bar.example.com</a></p>\n"
+    },
+    "613": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a&gt;&lt;bab&gt;&lt;c2c&gt;</p>\n"
+    },
+    "614": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a/&gt;&lt;b2/&gt;</p>\n"
+    },
+    "615": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a  /&gt;&lt;b2\ndata=&quot;foo&quot; &gt;</p>\n"
+    },
+    "616": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a foo=&quot;bar&quot; bam = 'baz &lt;em&gt;&quot;&lt;/em&gt;'\n_boolean zoop:33=zoop:33 /&gt;</p>\n"
+    },
+    "617": {
+      "reason": "html-as-text",
+      "html": "<p>Foo &lt;responsive-image src=&quot;foo.jpg&quot; /&gt;</p>\n"
+    },
+    "623": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/a&gt;&lt;/foo &gt;</p>\n"
+    },
+    "625": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;!-- this is a --\ncomment - with hyphens --&gt;</p>\n"
+    },
+    "626": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;!--&gt; foo --&gt;</p>\n<p>foo &lt;!---&gt; foo --&gt;</p>\n"
+    },
+    "627": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;?php echo $a; ?&gt;</p>\n"
+    },
+    "628": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;!ELEMENT br EMPTY&gt;</p>\n"
+    },
+    "629": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;![CDATA[&gt;&amp;&lt;]]&gt;</p>\n"
+    },
+    "630": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;a href=&quot;ö&quot;&gt;</p>\n"
+    },
+    "631": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;a href=&quot;*&quot;&gt;</p>\n"
+    },
+    "642": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo<br>\nbar&quot;&gt;</p>\n"
+    },
+    "643": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo<br>\nbar&quot;&gt;</p>\n"
+    }
+  },
+  "gfm-0.29": {
+    "118": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;&lt;tr&gt;&lt;td&gt;\n&lt;pre&gt;\n<strong>Hello</strong>,</p>\n<p><em>world</em>.\n&lt;/pre&gt;\n&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</p>\n"
+    },
+    "119": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;\n&lt;tr&gt;\n&lt;td&gt;\nhi\n&lt;/td&gt;\n&lt;/tr&gt;\n&lt;/table&gt;</p>\n<p>okay.</p>\n"
+    },
+    "120": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>hello</em>\n&lt;foo&gt;&lt;a&gt;</p>\n"
+    },
+    "121": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/div&gt;\n<em>foo</em></p>\n"
+    },
+    "122": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;DIV CLASS=&quot;foo&quot;&gt;</p>\n<p><em>Markdown</em></p>\n<p>&lt;/DIV&gt;</p>\n"
+    },
+    "123": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot;\nclass=&quot;bar&quot;&gt;\n&lt;/div&gt;</p>\n"
+    },
+    "124": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot; class=&quot;bar\nbaz&quot;&gt;\n&lt;/div&gt;</p>\n"
+    },
+    "125": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>foo</em></p>\n<p><em>bar</em></p>\n"
+    },
+    "126": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div id=&quot;foo&quot;\n<em>hi</em></p>\n"
+    },
+    "127": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div class\nfoo</p>\n"
+    },
+    "128": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div *???-&amp;&amp;&amp;-&lt;---\n<em>foo</em></p>\n"
+    },
+    "129": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;&lt;a href=&quot;bar&quot;&gt;<em>foo</em>&lt;/a&gt;&lt;/div&gt;</p>\n"
+    },
+    "130": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;&lt;tr&gt;&lt;td&gt;\nfoo\n&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</p>\n"
+    },
+    "131": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;&lt;/div&gt;</p>\n<pre><code class=\"language-c\">int x = 33;\n</code></pre>\n"
+    },
+    "132": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/a&gt;</p>\n"
+    },
+    "133": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;Warning&gt;\n<em>bar</em>\n&lt;/Warning&gt;</p>\n"
+    },
+    "134": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;i class=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/i&gt;</p>\n"
+    },
+    "135": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/ins&gt;\n<em>bar</em></p>\n"
+    },
+    "136": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;\n<em>foo</em>\n&lt;/del&gt;</p>\n"
+    },
+    "137": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;</p>\n<p><em>foo</em></p>\n<p>&lt;/del&gt;</p>\n"
+    },
+    "138": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;del&gt;<em>foo</em>&lt;/del&gt;</p>\n"
+    },
+    "139": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;pre language=&quot;haskell&quot;&gt;&lt;code&gt;\nimport Text.HTML.TagSoup</p>\n<p>main :: IO ()\nmain = print $ parseTags tags\n&lt;/code&gt;&lt;/pre&gt;\nokay</p>\n"
+    },
+    "140": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;script type=&quot;text/javascript&quot;&gt;\n// JavaScript example</p>\n<p>document.getElementById(&quot;demo&quot;).innerHTML = &quot;Hello JavaScript!&quot;;\n&lt;/script&gt;\nokay</p>\n"
+    },
+    "141": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style\ntype=&quot;text/css&quot;&gt;\nh1 {color:red;}</p>\n<p>p {color:blue;}\n&lt;/style&gt;\nokay</p>\n"
+    },
+    "142": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style\ntype=&quot;text/css&quot;&gt;</p>\n<p>foo</p>\n"
+    },
+    "143": {
+      "reason": "html-as-text",
+      "html": "<blockquote>\n<p>&lt;div&gt;\nfoo</p>\n</blockquote>\n<p>bar</p>\n"
+    },
+    "144": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>&lt;div&gt;</li>\n<li>foo</li>\n</ul>\n"
+    },
+    "145": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;style&gt;p{color:red;}&lt;/style&gt;\n<em>foo</em></p>\n"
+    },
+    "146": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- foo --&gt;<em>bar</em>\n<em>baz</em></p>\n"
+    },
+    "147": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;script&gt;\nfoo\n&lt;/script&gt;1. <em>bar</em></p>\n"
+    },
+    "148": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- Foo</p>\n<p>bar\nbaz --&gt;\nokay</p>\n"
+    },
+    "149": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;?php</p>\n<p>echo '&gt;';</p>\n<p>?&gt;\nokay</p>\n"
+    },
+    "150": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!DOCTYPE html&gt;</p>\n"
+    },
+    "151": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;![CDATA[\nfunction matchwo(a,b)\n{\nif (a &lt; b &amp;&amp; a &lt; 0) then {\nreturn 1;</p>\n<p>} else {</p>\n<pre><code>return 0;\n</code></pre>\n<p>}\n}\n]]&gt;\nokay</p>\n"
+    },
+    "152": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;!-- foo --&gt;</p>\n<pre><code>&lt;!-- foo --&gt;\n</code></pre>\n"
+    },
+    "153": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;</p>\n<pre><code>&lt;div&gt;\n</code></pre>\n"
+    },
+    "154": {
+      "reason": "html-as-text",
+      "html": "<p>Foo\n&lt;div&gt;\nbar\n&lt;/div&gt;</p>\n"
+    },
+    "155": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\nbar\n&lt;/div&gt;\n<em>foo</em></p>\n"
+    },
+    "156": {
+      "reason": "html-as-text",
+      "html": "<p>Foo\n&lt;a href=&quot;bar&quot;&gt;\nbaz</p>\n"
+    },
+    "157": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;</p>\n<p><em>Emphasized</em> text.</p>\n<p>&lt;/div&gt;</p>\n"
+    },
+    "158": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;div&gt;\n<em>Emphasized</em> text.\n&lt;/div&gt;</p>\n"
+    },
+    "159": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;</p>\n<p>&lt;tr&gt;</p>\n<p>&lt;td&gt;\nHi\n&lt;/td&gt;</p>\n<p>&lt;/tr&gt;</p>\n<p>&lt;/table&gt;</p>\n"
+    },
+    "160": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;table&gt;</p>\n<p>&lt;tr&gt;</p>\n<pre><code>&lt;td&gt;\n  Hi\n&lt;/td&gt;\n</code></pre>\n<p>&lt;/tr&gt;</p>\n<p>&lt;/table&gt;</p>\n"
+    },
+    "170": {
+      "reason": "html-as-text",
+      "html": "<p>[foo]: &lt;bar&gt;(baz)</p>\n<p>[foo]</p>\n"
+    },
+    "288": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<p>&lt;!-- --&gt;</p>\n<ul>\n<li>baz</li>\n<li>bim</li>\n</ul>\n"
+    },
+    "289": {
+      "reason": "html-as-text",
+      "html": "<ul>\n<li>\n<p>foo</p>\n<p>notcode</p>\n</li>\n<li>\n<p>foo</p>\n</li>\n</ul>\n<p>&lt;!-- --&gt;</p>\n<pre><code>code\n</code></pre>\n"
+    },
+    "317": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;/bar/)&quot;&gt;</p>\n"
+    },
+    "327": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;öö.html&quot;&gt;</p>\n"
+    },
+    "354": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;<code>&quot;&gt;</code></p>\n"
+    },
+    "484": {
+      "reason": "html-as-text",
+      "html": "<p><em>&lt;img src=&quot;foo&quot; title=&quot;</em>&quot;/&gt;</p>\n"
+    },
+    "485": {
+      "reason": "html-as-text",
+      "html": "<p><strong>&lt;a href=&quot;</strong>&quot;&gt;</p>\n"
+    },
+    "486": {
+      "reason": "html-as-text",
+      "html": "<p><strong>&lt;a href=&quot;</strong>&quot;&gt;</p>\n"
+    },
+    "501": {
+      "reason": "html-as-text",
+      "html": "<p>[link](&lt;foo\nbar&gt;)</p>\n"
+    },
+    "504": {
+      "reason": "html-as-text",
+      "html": "<p>[a](&lt;b)c\n[a](&lt;b)c&gt;\n[a](&lt;b&gt;c)</p>\n"
+    },
+    "533": {
+      "reason": "html-as-text",
+      "html": "<p><a href=\"baz\">foo &lt;bar attr=&quot;</a>&quot;&gt;</p>\n"
+    },
+    "545": {
+      "reason": "html-as-text",
+      "html": "<p><a href=\"/uri\">foo &lt;bar attr=&quot;</a>&quot;&gt;</p>\n"
+    },
+    "568": {
+      "reason": "wiki-links",
+      "html": "<p>[[*foo* bar]]</p>\n"
+    },
+    "611": {
+      "reason": "automatic-links",
+      "html": "<p>&lt;<a href=\"http://foo.bar/baz\">http://foo.bar/baz</a> bim&gt;</p>\n"
+    },
+    "617": {
+      "reason": "automatic-links",
+      "html": "<p>&lt; <a href=\"http://foo.bar\">http://foo.bar</a> &gt;</p>\n"
+    },
+    "620": {
+      "reason": "automatic-links",
+      "html": "<p><a href=\"http://example.com\">http://example.com</a></p>\n"
+    },
+    "621": {
+      "reason": "automatic-links",
+      "html": "<p><a href=\"mailto:foo@bar.example.com\">foo@bar.example.com</a></p>\n"
+    },
+    "633": {
+      "reason": "unsupported-protocol",
+      "html": "<p><a href=\"mailto:foo@bar.baz\">mailto:foo@bar.baz</a></p>\n<p><a href=\"mailto:a.b-c_d@a.b\">mailto:a.b-c_d@a.b</a></p>\n<p><a href=\"mailto:a.b-c_d@a.b\">mailto:a.b-c_d@a.b</a>.</p>\n<p><a href=\"mailto:a.b-c_d@a.b\">mailto:a.b-c_d@a.b</a>/</p>\n<p>mailto:a.b-c_d@a.b-</p>\n<p>mailto:a.b-c_d@a.b_</p>\n<p>xmpp:foo@bar.baz</p>\n<p>xmpp:foo@bar.baz.</p>\n"
+    },
+    "634": {
+      "reason": "unsupported-protocol",
+      "html": "<p>xmpp:foo@bar.baz/txt</p>\n<p>xmpp:foo@bar.baz/txt@bin</p>\n<p>xmpp:foo@bar.baz/txt@bin.com</p>\n"
+    },
+    "635": {
+      "reason": "unsupported-protocol",
+      "html": "<p>xmpp:foo@bar.baz/txt/bin</p>\n"
+    },
+    "636": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a&gt;&lt;bab&gt;&lt;c2c&gt;</p>\n"
+    },
+    "637": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a/&gt;&lt;b2/&gt;</p>\n"
+    },
+    "638": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a  /&gt;&lt;b2\ndata=&quot;foo&quot; &gt;</p>\n"
+    },
+    "639": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a foo=&quot;bar&quot; bam = 'baz &lt;em&gt;&quot;&lt;/em&gt;'\n_boolean zoop:33=zoop:33 /&gt;</p>\n"
+    },
+    "640": {
+      "reason": "html-as-text",
+      "html": "<p>Foo &lt;responsive-image src=&quot;foo.jpg&quot; /&gt;</p>\n"
+    },
+    "646": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;/a&gt;&lt;/foo &gt;</p>\n"
+    },
+    "648": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;!-- this is a\ncomment - with hyphen --&gt;</p>\n"
+    },
+    "651": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;?php echo $a; ?&gt;</p>\n"
+    },
+    "652": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;!ELEMENT br EMPTY&gt;</p>\n"
+    },
+    "653": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;![CDATA[&gt;&amp;&lt;]]&gt;</p>\n"
+    },
+    "654": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;a href=&quot;ö&quot;&gt;</p>\n"
+    },
+    "655": {
+      "reason": "html-as-text",
+      "html": "<p>foo &lt;a href=&quot;*&quot;&gt;</p>\n"
+    },
+    "657": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;strong&gt; &lt;title&gt; &lt;style&gt; &lt;em&gt;</p>\n<p>&lt;blockquote&gt;\n&lt;xmp&gt; is disallowed.  &lt;XMP&gt; is also disallowed.\n&lt;/blockquote&gt;</p>\n"
+    },
+    "667": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo<br>\nbar&quot;&gt;</p>\n"
+    },
+    "668": {
+      "reason": "html-as-text",
+      "html": "<p>&lt;a href=&quot;foo<br>\nbar&quot;&gt;</p>\n"
+    }
+  }
+}

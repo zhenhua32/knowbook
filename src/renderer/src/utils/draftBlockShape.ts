@@ -9,7 +9,7 @@ export function normalizeBlockDepth(type: string, depth: number) {
 }
 
 export function toDraftBlock(
-  block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'tags' | 'language' | 'listStart' | 'highlight'>
+  block: Pick<DocumentBlock, 'id' | 'type' | 'content' | 'checked' | 'depth' | 'parentBlockId' | 'tags' | 'language' | 'listStart' | 'markdownFormat' | 'highlight'>
 ): DocumentBlockDraft {
   return {
     id: block.id,
@@ -21,6 +21,7 @@ export function toDraftBlock(
     tags: block.tags ? [...block.tags] : undefined,
     language: block.language,
     ...(block.listStart === undefined ? {} : { listStart: block.listStart }),
+    ...(block.markdownFormat === undefined ? {} : { markdownFormat: { ...block.markdownFormat } }),
     highlight: block.highlight
   }
 }

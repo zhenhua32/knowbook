@@ -56,7 +56,7 @@ test('GFM extensions remain editable and survive actual file export and import @
       rmSync(filePath, { force: true })
       await page.locator('.document-header-more-button').click()
       await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Save MD', '导出 Markdown') }).click()
-      await expect.poll(() => { try { return readFileSync(filePath, 'utf8') } catch { return '' } }).toContain('3. [ ] Ship')
+      await expect.poll(() => { try { return readFileSync(filePath, 'utf8') } catch { return '' } }).toContain('3) [ ] Ship')
       return readFileSync(filePath, 'utf8')
     }
     const exported = await exportFile()
@@ -67,7 +67,7 @@ test('GFM extensions remain editable and survive actual file export and import @
     expect(result?.restored).toBe(1)
     await openDocument()
     const after = (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))!.blocks
-    const content = (blocks: typeof after) => blocks.map(({ type, content, checked, depth, listStart }) => ({ type, content, checked, depth, listStart }))
+    const content = (blocks: typeof after) => blocks.map(({ type, content, checked, depth, listStart, markdownFormat }) => ({ type, content, checked, depth, listStart, markdownFormat }))
     expect(content(after)).toEqual(content(before))
     expect(await exportFile()).toBe(exported)
     await page.screenshot({ path: 'test-results/markdown-extensions.png', fullPage: false })

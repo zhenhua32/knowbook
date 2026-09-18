@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store.ts'
+import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
@@ -41,13 +42,13 @@ test('KnowbookStore migrates a legacy database once and records its schema versi
   const migratedStore = new KnowbookStore(databasePath)
   migratedStore.destroy()
   assert.equal(
-    readdirSync(tempRoot).some((entry) => entry.startsWith('legacy.sqlite.pre-migration-v0-to-v13-')),
+    readdirSync(tempRoot).some((entry) => entry.startsWith(`legacy.sqlite.pre-migration-v0-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)),
     true
   )
 
   const migratedDatabase = new Database(databasePath)
   try {
-    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), 13)
+    assert.equal(migratedDatabase.pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
     const columnNames = (migratedDatabase.pragma('table_info(document_database_columns)') as Array<{ name: string }>)
       .map((column) => column.name)
     const valueColumnNames = (migratedDatabase.pragma('table_info(document_database_values)') as Array<{ name: string }>)
@@ -182,8 +183,8 @@ test('KnowbookStore v12 migration preserves pending uninstall and persists the d
     assert.equal(record.status, 'uninstall-pending')
     assert.equal(record.preserveDataOnUninstall, false)
     migrated.pluginPlatform.updateSystemPluginInstallation(record.id, { preserveDataOnUninstall: true })
-    assert.equal(migrated.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), 13)
-    assert.equal(readdirSync(tempRoot).some((entry) => entry.startsWith('v11.sqlite.pre-migration-v11-to-v13-')), true)
+    assert.equal(migrated.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
+    assert.equal(readdirSync(tempRoot).some((entry) => entry.startsWith(`v11.sqlite.pre-migration-v11-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)), true)
   } finally { migrated.destroy() }
   const reopened = new KnowbookStore(databasePath)
   try { assert.equal(reopened.pluginPlatform.getSystemPluginInstallationByPlugin('system.retention')?.preserveDataOnUninstall, true) }
@@ -235,7 +236,7 @@ test('KnowbookStore v4 migration backfills full view config and readable record 
     assert.deepEqual(migratedView?.config.sorts, [{ fieldId: '__created_at__', direction: 'asc' }])
     assert.equal(migratedEntity?.title, document.title)
     assert.equal(
-      readdirSync(tempRoot).some((entry) => entry.startsWith('v3.sqlite.pre-migration-v3-to-v13-')),
+      readdirSync(tempRoot).some((entry) => entry.startsWith(`v3.sqlite.pre-migration-v3-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)),
       true
     )
   } finally {

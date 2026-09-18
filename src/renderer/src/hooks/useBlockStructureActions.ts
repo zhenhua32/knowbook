@@ -201,7 +201,10 @@ export function useBlockStructureActions({
       next.splice(
         index + 1,
         0,
-        buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null)
+        {
+          ...buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null),
+          ...(nextType === currentBlock.type && currentBlock.markdownFormat ? { markdownFormat: { ...currentBlock.markdownFormat } } : {})
+        }
       )
       return next
     })

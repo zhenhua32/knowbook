@@ -59,6 +59,7 @@ import type {
 } from '@shared/contracts'
 import { appSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
 import {
@@ -203,6 +204,7 @@ interface ExportBlockRow {
   sort_order: number
   language: string | null
   list_start: number | null
+  markdown_format_json: string | null
   highlight: string | null
 }
 
@@ -299,6 +301,7 @@ export interface ExportDocument {
     sortOrder: number
     language?: string
     listStart?: number
+    markdownFormat?: MarkdownBlockFormat
     highlight?: string
   }>
 }
@@ -415,6 +418,10 @@ export class KnowbookStore {
       if (schemaVersion < 13) {
         this.ensureBlockLanguageColumn()
         this.db.pragma('user_version = 13')
+      }
+      if (schemaVersion < 14) {
+        this.ensureBlockMarkdownFormatColumn()
+        this.db.pragma('user_version = 14')
       }
     })
   }
@@ -537,6 +544,7 @@ export class KnowbookStore {
     this.ensureBlockDepthColumn()
     this.ensureBlockTagsColumn()
     this.ensureBlockLanguageColumn()
+    this.ensureBlockMarkdownFormatColumn()
     this.ensureBlockHighlightColumn()
     this.ensureBlockParentRelationships()
     this.ensureDocumentSortOrderColumn()
@@ -933,7 +941,7 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, highlight
+      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, markdown_format_json, highlight
       FROM blocks
       WHERE document_id = ?
       ORDER BY sort_order ASC
@@ -983,6 +991,7 @@ export class KnowbookStore {
         sortOrder: block.sort_order,
         language: block.language ?? undefined,
         listStart: block.list_start ?? undefined,
+        markdownFormat: decodeMarkdownFormat(block.type, block.markdown_format_json),
         highlight: block.highlight ?? undefined
       })),
       children: children.map((child): DocumentChild => ({
@@ -1010,7 +1019,7 @@ export class KnowbookStore {
     const row = this.db.prepare(`
       SELECT
         b.id, b.type, b.content, b.checked, b.depth, b.tags_json,
-        b.parent_block_id, b.sort_order, b.language, b.list_start, b.highlight,
+        b.parent_block_id, b.sort_order, b.language, b.list_start, b.markdown_format_json, b.highlight,
         d.id AS doc_id, d.title AS doc_title, d.path AS doc_path
       FROM blocks b
       INNER JOIN documents d ON d.id = b.document_id
@@ -1026,6 +1035,7 @@ export class KnowbookStore {
       sort_order: number
       language: string | null
       list_start: number | null
+      markdown_format_json: string | null
       highlight: string | null
       doc_id: string
       doc_title: string
@@ -1048,6 +1058,7 @@ export class KnowbookStore {
         sortOrder: row.sort_order,
         language: row.language ?? undefined,
         listStart: row.list_start ?? undefined,
+        markdownFormat: decodeMarkdownFormat(row.type, row.markdown_format_json),
         highlight: row.highlight ?? undefined
       },
       documentId: row.doc_id,
@@ -1172,7 +1183,7 @@ export class KnowbookStore {
       tagsJson: JSON.stringify(this.normalizeBlockTags(block.tags))
     }))
     const existingBlocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, highlight
+      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, markdown_format_json, highlight
       FROM blocks
       WHERE document_id = ?
     `).all(documentId) as ExportBlockRow[]
@@ -1204,6 +1215,7 @@ export class KnowbookStore {
         || (existing.tags_json ?? '[]') !== block.tagsJson
         || existing.language !== (block.language ?? null)
         || existing.list_start !== (block.listStart ?? null)
+        || existing.markdown_format_json !== (block.markdownFormat ? JSON.stringify(block.markdownFormat) : null)
         || existing.highlight !== (block.highlight ?? null)
     })
     const deletedExistingBlocks = existingBlocks.filter((block) => !persistedBlockIds.has(block.id))
@@ -1237,13 +1249,13 @@ export class KnowbookStore {
     `)
     const deleteBlockStatement = this.db.prepare('DELETE FROM blocks WHERE id = ? AND document_id = ?')
     const insertBlockStatement = this.db.prepare(`
-      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, list_start, highlight, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blocks (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, list_start, markdown_format_json, highlight, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const updateBlockStatement = this.db.prepare(`
       UPDATE blocks
       SET parent_block_id = ?, sort_order = ?, type = ?, content = ?, checked = ?, depth = ?,
-        tags_json = ?, language = ?, list_start = ?, highlight = ?, updated_at = ?
+        tags_json = ?, language = ?, list_start = ?, markdown_format_json = ?, highlight = ?, updated_at = ?
       WHERE id = ? AND document_id = ?
     `)
 
@@ -1276,6 +1288,7 @@ export class KnowbookStore {
             block.tagsJson,
             language,
             block.listStart ?? null,
+            block.markdownFormat ? JSON.stringify(block.markdownFormat) : null,
             highlight,
             now,
             block.id,
@@ -1294,6 +1307,7 @@ export class KnowbookStore {
             block.tagsJson,
             language,
             block.listStart ?? null,
+            block.markdownFormat ? JSON.stringify(block.markdownFormat) : null,
             highlight,
             now,
             now
@@ -2151,7 +2165,7 @@ export class KnowbookStore {
     }
 
     const blockRows = this.db.prepare(`
-      SELECT id, document_id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, highlight
+      SELECT id, document_id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, markdown_format_json, highlight
       FROM blocks
       ORDER BY document_id ASC, sort_order ASC
     `).all() as ExportDocumentBlockRow[]
@@ -2181,6 +2195,7 @@ export class KnowbookStore {
         sortOrder: block.sort_order,
         language: block.language ?? undefined,
         listStart: block.list_start ?? undefined,
+        markdownFormat: decodeMarkdownFormat(block.type, block.markdown_format_json),
         highlight: block.highlight ?? undefined
       }))
     }))
@@ -3056,6 +3071,7 @@ export class KnowbookStore {
         tags: this.normalizeBlockTags(block.tags),
         language: normalizedLanguage,
         listStart: isOrderedListBlockType(type) ? normalizeListStart(block.listStart) : undefined,
+        markdownFormat: normalizeMarkdownFormat(type, block.markdownFormat),
         highlight: this.normalizeBlockHighlight(block.highlight)
       }
     })
@@ -3067,7 +3083,7 @@ export class KnowbookStore {
     return [
       {
         type: 'paragraph',
-        content: 'Start writing here.',
+        content: '',
         checked: false,
         depth: 0,
         tags: [],
@@ -3435,6 +3451,13 @@ export class KnowbookStore {
        autoSummaryOnSave: this.readSetting('ai.autoSummaryOnSave') === 'true',
        relatedNotesEnabled: this.readSetting('ai.relatedNotesEnabled') !== 'false',
        hasApiKey: Boolean(this.readSetting('ai.apiKey'))
+    }
+  }
+
+  private ensureBlockMarkdownFormatColumn(): void {
+    const columns = this.db.pragma('table_info(blocks)') as Array<{ name: string }>
+    if (!columns.some((column) => column.name === 'markdown_format_json')) {
+      this.db.exec('ALTER TABLE blocks ADD COLUMN markdown_format_json TEXT')
     }
   }
 
