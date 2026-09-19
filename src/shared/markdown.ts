@@ -382,12 +382,21 @@ function protectContainerParagraphs(body: string, children: MarkdownNode[], firs
 
 /** Parse source into editable blocks. Complex list bodies remain Markdown in the
  * item; simple nested lists become the existing flat parent/depth structure. */
-export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlock[] {
+export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[]): MarkdownRenderableBlock[] {
+  if (sourceRanges) sourceRanges.length = 0
   const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!source.trim()) return []
   const lines = source.split('\n')
   const nodes = markdownTokenTree(markdownEngine.parse(source, {}))
   const blocks: MarkdownRenderableBlock[] = []
+  // Optional ranges refer to the normalized LF source. A simple list parent's
+  // range stops before its children, matching the flat editable block model.
+  const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => {
+    while (startLine < endLine && !lines[startLine]?.trim()) startLine++
+    while (endLine > startLine && !lines[endLine - 1]?.trim()) endLine--
+    sourceRanges?.push({ index: blocks.length, startLine, endLine })
+    blocks.push(block)
+  }
   const raw = (node: MarkdownNode) => trimBlankLines(lines.slice(...node.token.map!).join('\n'))
   const make = (type: string, content: string, depth = 0): MarkdownRenderableBlock => ({ type, content, checked: false, depth })
   const append = (node: MarkdownNode, depth = 0) => {
@@ -407,25 +416,25 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
         block.checked = task?.checked ?? false
         block.markdownFormat = { listMarker: token.markup as MarkdownBlockFormat['listMarker'], listLoose: loose }
         if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
-        blocks.push(block)
+        push(block, item.token.map![0], simple ? item.children[0].token.map![1] : item.token.map![1])
         if (simple) item.children.slice(1).forEach((child) => append(child, depth + 1))
       })
     } else if (token.type === 'heading_open') {
-      blocks.push(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''))
+      push(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
     } else if (token.type === 'fence' || token.type === 'code_block') {
-      blocks.push({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
-        markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } })
+      push({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
+        markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
     } else if (token.type === 'math_block') {
-      blocks.push(make('math', token.content))
+      push(make('math', token.content), ...token.map!)
     } else if (token.type === 'hr') {
-      blocks.push(make('divider', ''))
+      push(make('divider', ''), ...token.map!)
     } else if (token.type === 'table_open') {
-      blocks.push(make('table', raw(node)))
+      push(make('table', raw(node)), ...token.map!)
     } else if (token.type === 'blockquote_open') {
       const body = raw(node).split('\n').map((line) => expandLeadingTabs(line).replace(/^ {0,3}> ?/, '')).join('\n')
-      blocks.push(make('quote', protectContainerParagraphs(body, children, token.map![0])))
+      push(make('quote', protectContainerParagraphs(body, children, token.map![0])), ...token.map!)
     } else {
-      blocks.push(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')))
+      push(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')), ...token.map!)
     }
   }
 
@@ -437,11 +446,11 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
     const gap = trimBlankLines(lines.slice(cursor, node.token.map[0]).join('\n'))
     // Reference definitions produce no Markdown tokens. Keep their source so
     // definitions stay editable, survive export, and can resolve across blocks.
-    if (gap.trim()) blocks.push(make('paragraph', gap))
+    if (gap.trim()) push(make('paragraph', gap), cursor, node.token.map[0])
     cursor = node.token.map[1]
     if (node.token.type === 'knowbook_metadata') {
       pending = parseMarkdownBlockMetadata(node.token.content)
-      if (!pending) blocks.push(make('paragraph', node.token.content))
+      if (!pending) push(make('paragraph', node.token.content), ...node.token.map)
       else if (pending.type) {
         let next = index + 1
         while (next < nodes.length && nodes[next].token.type !== 'knowbook_metadata') next++
@@ -463,7 +472,7 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
         // Metadata is authoritative, including the absence of format hints in
         // older backups or blocks created directly in the editor.
         delete parsed.markdownFormat
-        blocks.push(applyMarkdownBlockMetadata({ ...parsed, type: pending.type }, pending))
+        push(applyMarkdownBlockMetadata({ ...parsed, type: pending.type }, pending), node.token.map[0], end)
         pending = null
         cursor = end
         index = next - 1
@@ -478,7 +487,7 @@ export function parseMarkdownBlocks(markdownBody: string): MarkdownRenderableBlo
     }
   }
   const remaining = trimBlankLines(lines.slice(cursor).join('\n'))
-  if (remaining.trim()) blocks.push(applyMarkdownBlockMetadata(make('paragraph', remaining), pending))
+  if (remaining.trim()) push(applyMarkdownBlockMetadata(make('paragraph', remaining), pending), cursor, lines.length)
   return finalizeParsedMarkdownBlocks(blocks)
 }
 

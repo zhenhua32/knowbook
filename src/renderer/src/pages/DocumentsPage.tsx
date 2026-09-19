@@ -1,7 +1,7 @@
 import { lazy, Suspense, useRef, useState } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import '../document-experience.css'
-import type { ClipWebPageInput, HomeData } from '@shared/contracts'
+import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
 import { useDocumentSelectionAiState } from '../hooks/useDocumentSelectionAiState'
@@ -13,6 +13,7 @@ import { DocumentsSection } from '../sections/DocumentsSection'
 
 const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
+const DocumentMarkdownSourceDialog = lazy(() => import('../components/DocumentMarkdownSourceDialog'))
 
 type DocumentsPageProps = {
   ai: AiDomainState
@@ -45,6 +46,7 @@ export function DocumentsPage({
   const [webClipBusy, setWebClipBusy] = useState(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
+  const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
 
   const selectionAi = useDocumentSelectionAiState({
     aiEnabled: aiConfig.enabled,
@@ -341,7 +343,10 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={{ ...previewHeaderProps, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId) }}
+        previewHeaderProps={{ ...previewHeaderProps, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
+          onEditMarkdownSource: () => {
+            if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
+          } }}
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
         selectionAiContent={selectionAiContent}
@@ -350,6 +355,18 @@ export function DocumentsPage({
         visibleEditorRows={visibleEditorRows}
       />
       </MarkdownNavigationContext.Provider>
+
+      {sourceEditor && sourceEditor.documentId === documents.selectedDocumentId && <Suspense fallback={null}>
+        <DocumentMarkdownSourceDialog key={sourceEditor.documentId} blocks={sourceEditor.blocks} isZh={isZh}
+          onClose={() => setSourceEditor(null)} onApply={(blocks) => {
+            if (JSON.stringify(documents.getDraftBlocks()) !== JSON.stringify(sourceEditor.blocks)) return false
+            documents.checkpointDraft()
+            documents.clearBlockSelection()
+            documents.setIsReadingMode(false)
+            documents.setDraftBlocks(blocks)
+            return true
+          }} />
+      </Suspense>}
 
       {linkCheckDocumentId && linkCheckDocumentId === documents.selectedDocumentId && <Suspense fallback={null}>
         <DocumentLinkCheckDialog documentId={linkCheckDocumentId} isZh={isZh} onFlush={documents.flushPendingChanges}

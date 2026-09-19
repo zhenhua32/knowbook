@@ -1,0 +1,90 @@
+{
+  "version": "1.13.7",
+  "phaseReset": "After verifying bold, undo, redo and reload, restored the original Markdown before checking rendering, task interaction and rename.",
+  "download": "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.13.7/Obsidian-1.13.7.exe",
+  "binarySha256": "f233dc24896b3f2d5f9e4b01111181a561d0760b2105f0a474024c5f3143a9bc",
+  "testedAt": "2026-09-19T08:56:28.357Z",
+  "inputSha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433",
+  "initialExact": true,
+  "crossParagraphBold": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+  "undoExact": true,
+  "redoExact": true,
+  "reloadExact": true,
+  "table": {
+    "rows": 3,
+    "cells": [
+      [
+        {
+          "text": "Left",
+          "align": "start"
+        },
+        {
+          "text": "Center",
+          "align": "center"
+        },
+        {
+          "text": "Right",
+          "align": "end"
+        }
+      ],
+      [
+        {
+          "text": "a|b",
+          "align": "start"
+        },
+        {
+          "text": "strong",
+          "align": "center"
+        },
+        {
+          "text": "c\\|d",
+          "align": "end"
+        }
+      ],
+      [
+        {
+          "text": "二",
+          "align": "start"
+        },
+        {
+          "text": "old",
+          "align": "center"
+        },
+        {
+          "text": "guide",
+          "align": "end"
+        }
+      ]
+    ]
+  },
+  "taskChanged": true,
+  "callout": "A tip\n\nBody with formatting.",
+  "math": 2,
+  "footnotes": "A formatted footnote with a reference.↩︎↩︎",
+  "image": [
+    {
+      "alt": "local image",
+      "complete": true,
+      "width": 64
+    }
+  ],
+  "afterRename": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Renamed.md#destination), [[Renamed]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+  "product": "Obsidian",
+  "scope": "Completed subset: open, cross-paragraph bold, undo/redo, reload, rendering, task toggle, rename. Table editing and repeated file round trips were not tested.",
+  "settings": {
+    "alwaysUpdateLinks": true,
+    "mermaid": "Allowed for this isolated fixture vault",
+    "plugins": "No community plugins"
+  },
+  "runtime": {
+    "electron": "43.3.0",
+    "chromium": "150.0.7871.212",
+    "node": "24.18.1",
+    "platform": "Windows x64"
+  },
+  "diagramLabels": [
+    "Write",
+    "Save",
+    "Reopen"
+  ]
+}

@@ -91,6 +91,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      - name: Upload Markdown workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-workflow-report
+          path: |
+            test-results/markdown-workflow-knowbook.json
+            test-results/markdown-workflow-knowbook.png
+          if-no-files-found: ignore
+          retention-days: 14
+
   plugin-runtime-security:
     name: System Plugin v3 acceptance (Windows)
     # npm's bundled node-gyp does not recognize the VS 2026 toolchain on windows-latest.

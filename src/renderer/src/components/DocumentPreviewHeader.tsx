@@ -18,6 +18,7 @@ type DocumentPreviewHeaderProps = {
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
+  onEditMarkdownSource?: () => void
   onAddChild: () => void
   canUndo: boolean
   canRedo: boolean
@@ -50,6 +51,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     onCopyMarkdown,
     onSaveMarkdown,
     onCheckLinks,
+    onEditMarkdownSource,
     onAddChild,
     canUndo,
     canRedo,
@@ -172,6 +174,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           onCopyMarkdown={onCopyMarkdown}
           onSaveMarkdown={onSaveMarkdown}
           onCheckLinks={onCheckLinks}
+          onEditMarkdownSource={onEditMarkdownSource}
           onUndo={onUndo}
           onRedo={onRedo}
           onMoveTargetChange={onMoveTargetChange}

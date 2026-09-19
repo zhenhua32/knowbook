@@ -1,2 +1,5 @@
 # Yarn file: dependency hashes require identical fixture bytes on every platform.
 e2e-tests/fixtures/modern-yarn/** text eol=lf
+
+# Markdown comparisons publish input hashes; keep the same corpus bytes in every checkout.
+tests/fixtures/markdown-workflows/** text eol=lf

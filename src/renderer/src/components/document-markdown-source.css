@@ -1,0 +1,22 @@
+.document-markdown-source {
+  width: min(960px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--kb-line-strong);
+  border-radius: 14px;
+  color: var(--kb-text);
+  background: var(--kb-canvas);
+}
+.document-markdown-source::backdrop { background: #0009; }
+.document-markdown-source header, .document-markdown-source footer { display: flex; align-items: center; gap: 10px; }
+.document-markdown-source header { justify-content: space-between; }
+.document-markdown-source h3 { margin: 0; }
+.document-markdown-source > p { margin: 12px 0; font-size: 13px; }
+.document-markdown-source > textarea {
+  display: block; box-sizing: border-box; width: 100%; height: min(60vh, 660px); min-height: 160px;
+  resize: vertical; padding: 14px; margin: 10px 0; border: 1px solid var(--kb-line-strong); border-radius: 8px;
+  color: inherit; background: transparent; font: 14px/1.7 Consolas, monospace; tab-size: 2;
+}
+.document-markdown-source > textarea:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
+.document-markdown-source footer > :last-child { margin-left: auto; }

@@ -1,13 +1,18 @@
 import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { capturedMarkdownInlineRanges } from '@shared/markdownSourceLinks'
+import { markdownSourceChange, type MarkdownSourceChange } from './markdownSourceDraft'
 
 export type MarkdownFormat = 'bold' | 'italic' | 'strike' | 'highlight' | 'code' | 'link'
 export type FormattedSelection = { content: string; start: number; end: number }
 
-export function formatMarkdownSelection(content: string, start: number, end: number, format: MarkdownFormat, linkLabel = 'Link'): FormattedSelection {
+export function formatMarkdownSelection(content: string, start: number, end: number, format: MarkdownFormat, linkLabel = 'Link', onChange?: (change: MarkdownSourceChange) => void): FormattedSelection {
   start = Math.max(0, Math.min(content.length, start))
   end = Math.max(start, Math.min(content.length, end))
-  if (!/[\r\n]/.test(content.slice(start, end))) return formatInlineSelection(content, start, end, format, linkLabel)
+  if (!/[\r\n]/.test(content.slice(start, end))) {
+    const result = formatInlineSelection(content, start, end, format, linkLabel)
+    if (result.content !== content) onChange?.(markdownSourceChange(content, result.content))
+    return result
+  }
   const env: MarkdownEnvironment = { captureSourceLinks: true, captureInlineRanges: true }
   markdownEngine.parse(content, env)
   const offsets: number[] = []
@@ -30,6 +35,7 @@ export function formatMarkdownSelection(content: string, start: number, end: num
     const result = removeAll || !remove[index] ? formatInlineSelection(content, range.start, range.end, format, linkLabel)
       : { content, start: range.start, end: range.end }
     const delta = result.content.length - content.length
+    if (result.content !== content) onChange?.(markdownSourceChange(content, result.content))
     selectionEnd = index === ranges.length - 1 ? Math.max(result.end, range.end + delta) : selectionEnd + delta
     content = result.content
     selectionStart = Math.min(range.start, result.start)

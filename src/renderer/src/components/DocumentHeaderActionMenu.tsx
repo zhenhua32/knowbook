@@ -22,6 +22,7 @@ type DocumentHeaderActionMenuProps = {
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
+  onEditMarkdownSource?: () => void
   onUndo: () => void
   onRedo: () => void
   onMoveTargetChange: (value: string) => void
@@ -47,6 +48,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     onCopyMarkdown,
     onSaveMarkdown,
     onCheckLinks,
+    onEditMarkdownSource,
     onUndo,
     onRedo,
     onMoveTargetChange,
@@ -84,6 +86,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
       >
         <div className="context-menu-section">
           <div className="context-menu-group">
+            {onEditMarkdownSource && <button className="context-menu-item" onClick={() => runAndClose(onEditMarkdownSource)} type="button">
+              {isZh ? '编辑 Markdown 源码' : 'Edit Markdown source'}
+            </button>}
             <button className="context-menu-item" onClick={() => runAndClose(onCopyMarkdown)} type="button">
               {ui.copyMarkdown}
             </button>

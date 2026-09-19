@@ -1,0 +1,27 @@
+{
+  "product": "Joplin",
+  "version": "3.7.18",
+  "capturedAt": "2026-09-19T09:58:18.890Z",
+  "inputSha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433",
+  "scope": "Directory import only, using the native MD - Markdown (directory) menu. Editing, rendering verification, export and repeated round trips remain untested.",
+  "settings": "Isolated test profile, default Markdown options, built-in plugins only, no synchronisation target configured",
+  "download": "https://github.com/laurent22/joplin/releases/download/v3.7.18/JoplinPortable.exe",
+  "binarySha256": "f4c82cfd69d629402c2cab3862970b5b447c36bca0396e1f61ebd923db5194cb",
+  "runtime": {
+    "electron": "42.3.0",
+    "chromium": "148.0.7778.180",
+    "node": "24.15.0",
+    "platform": "Windows x64"
+  },
+  "source": "Read-only SQLite query of the isolated test profile after native import",
+  "notes": [
+    {
+      "title": "Acceptance",
+      "body": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+    },
+    {
+      "title": "Target",
+      "body": "# Target\n\n## Destination\n\nTarget body.\n"
+    }
+  ]
+}
