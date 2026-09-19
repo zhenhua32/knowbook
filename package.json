@@ -61,6 +61,9 @@
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/state": "^6.7.5",
+    "@codemirror/view": "^6.43.12",
     "@mozilla/readability": "^0.6.0",
     "@types/turndown": "^5.0.6",
     "better-sqlite3": "^11.8.1",

@@ -13,12 +13,15 @@
 .document-markdown-source header { justify-content: space-between; }
 .document-markdown-source h3 { margin: 0; }
 .document-markdown-source > p { margin: 12px 0; font-size: 13px; }
-.document-markdown-source > textarea {
+.document-markdown-source-editor {
   display: block; box-sizing: border-box; width: 100%; height: min(60vh, 660px); min-height: 160px;
-  resize: vertical; padding: 14px; margin: 10px 0; border: 1px solid var(--kb-line-strong); border-radius: 8px;
-  color: inherit; background: transparent; font: 14px/1.7 Consolas, monospace; tab-size: 2;
-  text-rendering: optimizeSpeed; font-kerning: none;
-  contain: layout style paint;
+  resize: vertical; overflow: hidden; margin: 10px 0; border: 1px solid var(--kb-line-strong); border-radius: 8px;
 }
-.document-markdown-source > textarea:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
+.document-markdown-source-editor .cm-editor { height: 100%; color: inherit; background: transparent; }
+.document-markdown-source-editor .cm-scroller { overflow: auto; font: 14px/1.7 Consolas, monospace; }
+.document-markdown-source-editor .cm-content { padding: 14px 0; caret-color: var(--kb-text); }
+.document-markdown-source-editor .cm-line { padding: 0 14px; }
+.document-markdown-source-editor .cm-cursor { border-left-color: var(--kb-text); }
+.document-markdown-source-editor .cm-editor.cm-focused { outline: none; }
+.document-markdown-source-editor:focus-within { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
 .document-markdown-source footer > :last-child { margin-left: auto; }

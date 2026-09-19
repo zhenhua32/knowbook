@@ -1,17 +1,21 @@
 {
-  "recordedAt": "2026-09-19T12:53:17.584Z",
-  "commit": "bbc28164b1f157880e02d129063f80b3907c613b",
+  "recordedAt": "2026-09-19T14:25:15.054Z",
+  "commit": "ee2fbe5aa3dd250f7424efad3b3a4f496682b188",
   "workingTreeChanged": true,
   "sourceFiles": [
+    "package-lock.json",
     "src/renderer/src/components/DocumentMarkdownSourceDialog.tsx",
     "src/renderer/src/components/document-markdown-source.css",
+    "src/renderer/src/pages/DocumentsPage.tsx",
+    "src/renderer/src/hooks/useDocumentEditorState.ts",
     "src/renderer/src/utils/markdownSourceDraft.ts",
     "src/renderer/src/utils/markdownFormatting.ts",
     "src/shared/markdown.ts"
   ],
-  "sourceFingerprint": "2d3bdb456268633bb277c1a6c79581c5f07c1fc20c3a83a8a22c6e3bdb037379",
+  "sourceFingerprint": "a124f9832a678360ac93b32b1c8937e971c12813a66763e5a0f21e574e72b1ed",
   "blocks": 4000,
   "characters": 512089,
+  "visibleSourceLines": 33,
   "sourceSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
   "environment": {
     "platform": "win32",
@@ -28,64 +32,61 @@
       "name": "source-open-frame",
       "warmups": 0,
       "samplesMs": [
-        1585.199999988079
+        1175.800000011921
       ],
-      "medianMs": 1585.199999988079,
-      "p95Ms": 1585.199999988079,
+      "medianMs": 1175.800000011921,
+      "p95Ms": 1175.800000011921,
       "ceilingMs": 3000
     },
     {
       "name": "source-input-frame",
       "warmups": 0,
       "samplesMs": [
-        81.69999998807907,
-        80,
-        125.5,
-        75,
-        81.39999997615814,
-        142.10000002384186,
-        77.69999998807907,
-        80.2999999821186,
-        121.69999998807907,
-        89.80000001192093,
-        107.7000000178814,
-        133,
-        72.40000000596046,
-        84.40000000596046,
-        133.2000000178814
+        27,
+        13,
+        13.400000005960464,
+        25.5,
+        20.30000001192093,
+        21.80000001192093,
+        12.899999976158142,
+        20.299999982118607,
+        16,
+        17.19999998807907,
+        28.900000005960464,
+        28.900000005960464,
+        11.799999982118607,
+        22.5,
+        24.599999994039536
       ],
-      "medianMs": 84.40000000596046,
-      "p95Ms": 142.10000002384186,
+      "medianMs": 20.30000001192093,
+      "p95Ms": 28.900000005960464,
       "ceilingMs": 500
     },
     {
       "name": "source-format-frame",
       "warmups": 2,
       "samplesMs": [
-        581,
-        688.7000000178814,
-        584.6000000238419,
-        583.5,
-        543.3000000119209,
-        490.90000000596046,
-        568.7999999821186
+        169,
+        161.09999999403954,
+        146.89999997615814,
+        155,
+        131.60000002384186,
+        125.09999999403954,
+        160.09999999403954
       ],
-      "medianMs": 581,
-      "p95Ms": 688.7000000178814,
+      "medianMs": 155,
+      "p95Ms": 169,
       "ceilingMs": 1500
     },
     {
       "name": "source-apply-frame",
       "warmups": 0,
       "samplesMs": [
-        2986.0999999940395
+        2978.0999999940395
       ],
-      "medianMs": 2986.0999999940395,
-      "p95Ms": 2986.0999999940395,
+      "medianMs": 2978.0999999940395,
+      "p95Ms": 2978.0999999940395,
       "ceilingMs": 8000
     }
-  ],
-  "provenance": {
-    "sourceContext": "Local full Markdown Electron suite, 19 passed. Native competitor test processes were closed during measurement. The commit is the workspace base; the source fingerprint identifies the tested changes."
-  }
+  ]
 }

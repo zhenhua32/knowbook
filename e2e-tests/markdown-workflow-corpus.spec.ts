@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import { withElectronApp, uiText } from './helpers/electron'
+import { expectSource, selectSource, sourceValue } from './helpers/markdown-source'
 
 test('shared Markdown workflow corpus preserves edits, rendering, links and file round trips @electron', async () => {
   test.setTimeout(180_000)
@@ -40,16 +41,13 @@ test('shared Markdown workflow corpus preserves edits, rendering, links and file
     await page.locator('.document-header-more-button').click()
     await page.getByRole('button', { name: uiText('Edit Markdown source', '编辑 Markdown 源码'), exact: true }).click()
     const sourceEditor = page.getByRole('textbox', { name: uiText('Markdown body source', 'Markdown 正文源码') })
-    const originalSource = await sourceEditor.inputValue()
-    await sourceEditor.evaluate(input => {
-      const editor = input as HTMLTextAreaElement
-      editor.setSelectionRange(editor.value.indexOf('First editable') + 6, editor.value.indexOf('Second editable') + 6)
-    })
+    const originalSource = await sourceValue(sourceEditor)
+    await selectSource(sourceEditor, originalSource.indexOf('First editable') + 6, originalSource.indexOf('Second editable') + 6)
     await sourceEditor.press('Control+b')
     const formattedSource = originalSource.replace(originalParagraph, formatted).replace('Second editable', '**Second** editable')
-    await expect(sourceEditor).toHaveValue(formattedSource)
-    await sourceEditor.press('Control+z'); await expect(sourceEditor).toHaveValue(originalSource)
-    await sourceEditor.press('Control+Shift+Z'); await expect(sourceEditor).toHaveValue(formattedSource)
+    await expectSource(sourceEditor, formattedSource)
+    await sourceEditor.press('Control+z'); await expectSource(sourceEditor, originalSource)
+    await sourceEditor.press('Control+Shift+Z'); await expectSource(sourceEditor, formattedSource)
     await page.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true }).click()
     await expect(sourceEditor).toHaveCount(0)
     await page.locator('.document-header-save-button').click()

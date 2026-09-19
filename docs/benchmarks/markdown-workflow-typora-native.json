@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-19T12:51:39.790Z",
+  "recordedAt": "2026-09-19T13:44:54.398Z",
   "application": "Typora",
   "version": "1.14.10",
   "platform": "Windows x64",
@@ -33,8 +33,45 @@
     "columns": 3
   },
   "limitations": [
-    "Formatting, undo and redo were saved and verified. A fresh reopen has not yet been checked.",
-    "Table editing, task toggling, target rename and three file round trips remain unverified.",
+    "Three new-directory reopen/save cycles remain incomplete. Only the first native Save As has been verified.",
     "No same-method competitor performance comparison or system IME candidate-window acceptance is claimed."
-  ]
+  ],
+  "reopen": {
+    "coldRestart": true,
+    "formattedTextObserved": true,
+    "method": "Relaunched the owned visible Typora process with the saved fixture; checked the editor and accessibility text."
+  },
+  "tableEdit": {
+    "command": "Click first data cell, append edited 中文, Ctrl+S",
+    "onlyRequestedCellChanged": true,
+    "columns": 3,
+    "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b edited 中文 | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+  },
+  "taskToggle": {
+    "command": "Click Pending task checkbox, Ctrl+S",
+    "onlyPendingTaskChanged": true
+  },
+  "rename": {
+    "command": "Open Target.md; File > Move To; save as Renamed.md; return to Acceptance and Ctrl+S",
+    "fileRenamed": true,
+    "targetContentPreserved": true,
+    "ordinaryLinkAfter": "[target](Target.md#destination)",
+    "wikiLinkAfter": "[[Target]]",
+    "codeLiteralPreserved": true,
+    "note": "Links remained unchanged in this isolated default profile. No automatic-link-update prompt was observed.",
+    "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b edited 中文 | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+  },
+  "saveAs": {
+    "command": "Ctrl+Shift+S to a new empty directory",
+    "completedSaves": 1,
+    "completedReopens": 0,
+    "identicalMarkdown": true,
+    "savedSha256": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
+    "filesCreated": [
+      "Acceptance.md"
+    ],
+    "imageReference": "![local image](pixel.svg)",
+    "imageCopied": false,
+    "note": "The ordinary Save As route saved only Markdown. Assets were not manually copied into the target directory."
+  }
 }

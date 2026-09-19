@@ -1,4 +1,4 @@
-import { createElement, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { editMarkdownTable, parseEditableMarkdownTable, parseTableClipboard, serializeEditableMarkdownTable, type MarkdownTableEdit, type TableOperation } from '@shared/markdownTableEditing'
 import { parseMarkdownTableNode } from '@shared/markdownTable'
 import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
@@ -22,9 +22,26 @@ export function MarkdownTableEditor({ content, onChange, onBeginEdit, isZh }: {
   const [editing, setEditing] = useState<(Cell & { value: string }) | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const editor = useRef<HTMLTextAreaElement>(null)
+  const pendingFocus = useRef<{ cell: Cell; edit: boolean; selectAll?: boolean; range?: { start: number; end: number } } | null>(null)
   const lastEmitted = useRef<string | undefined>(undefined)
   const composing = useRef(false)
   const cellValue = (model: MarkdownTableEdit, cell: Cell) => (cell.row ? model.rows[cell.row - 1] : model.headers)?.[cell.column] ?? ''
+  useLayoutEffect(() => {
+    const pending = pendingFocus.current
+    if (!pending) return
+    if (pending.edit && (!editing || editing.row !== pending.cell.row || editing.column !== pending.cell.column)) return
+    const target = pending.edit ? editor.current
+      : container.current?.querySelector<HTMLElement>(`[data-row="${pending.cell.row}"][data-column="${pending.cell.column}"]`)
+    if (!target) return
+    pendingFocus.current = null
+    // Restore focus in the commit that changes the editor. A deferred frame
+    // can run after the next Tab/shortcut and steal focus or use a stale range.
+    if (document.activeElement !== target) target.focus()
+    if (pending.edit && editor.current) {
+      if (pending.range) editor.current.setSelectionRange(pending.range.start, pending.range.end)
+      else if (pending.selectAll) editor.current.select()
+    }
+  })
   useEffect(() => {
     if (content === lastEmitted.current) return
     lastEmitted.current = undefined
@@ -35,13 +52,10 @@ export function MarkdownTableEditor({ content, onChange, onBeginEdit, isZh }: {
   }, [content, table])
   const focusCell = (cell: Cell, edit: boolean, model = table, initial?: string) => {
     if (!model) return
+    pendingFocus.current = { cell, edit, selectAll: initial === undefined }
     setSelected(cell)
     if (edit) { onBeginEdit?.(); setEditing({ ...cell, value: initial ?? cellValue(model, cell) }) }
     else setEditing(null)
-    requestAnimationFrame(() => {
-      if (edit) { editor.current?.focus(); if (initial === undefined) editor.current?.select() }
-      else container.current?.querySelector<HTMLElement>(`[data-row="${cell.row}"][data-column="${cell.column}"]`)?.focus()
-    })
   }
   const apply = (operation: TableOperation, transaction = true): MarkdownTableEdit | null => {
     if (!table) return null
@@ -58,11 +72,11 @@ export function MarkdownTableEditor({ content, onChange, onBeginEdit, isZh }: {
   }
   const format = (kind: MarkdownFormat) => {
     const input = editor.current
-    if (!editing || !input) return
+    if (!editing || !input || composing.current) return
     const result = formatMarkdownSelection(input.value, input.selectionStart, input.selectionEnd, kind, isZh ? '链接文字' : 'Link')
     onBeginEdit?.()
+    pendingFocus.current = { cell: editing, edit: true, range: result }
     updateValue(result.content)
-    requestAnimationFrame(() => { input.focus(); input.setSelectionRange(result.start, result.end) })
   }
   const moveEditing = (row: number, column: number) => {
     if (!table || row < 0 || column < 0 || column >= table.headers.length) return

@@ -22,7 +22,7 @@ KnowBook 自动化复现：先运行 `npm run build`，再运行 `npx playwright
 | KnowBook | 当前源码；独立临时数据库 | 固定语料 Electron 回归覆盖完整正文选区、格式和撤销、表格修改、阅读渲染、任务、改名、附件与三轮往返；另检查块 ID 和引用；已增加 800／4000 块源码编辑延迟验收 | 系统输入法候选窗口；与竞品一致的应用性能采样 |
 | Obsidian | 1.13.7，Windows x64；无社区插件；允许测试库 Mermaid；启用自动更新内部链接 | 打开原文、跨段部分加粗、撤销／重做、重新载入、表格及高级内容呈现、任务勾选、目标改名 | 表格修改；相同三轮文件往返；与其他应用一致的性能采样 |
 | Joplin | 3.7.18，Windows x64；隔离配置，默认 Markdown 选项，无同步目标 | 通过原生 `MD - Markdown (文件目录)` 导入两篇测试笔记和图片；退出后只读检查数据库中的正文 | 编辑与渲染断言、改名、导出和三轮往返 |
-| Typora | 1.14.10，Windows x64；隔离配置，中文界面，用户授权本次免费试用 | 已进入编辑器并打开原文；精确跨段部分选区、加粗、撤销和重做，三次保存后逐字核对源码；观察三列表格呈现 | 重新打开；表格修改、任务、目标改名及三轮文件往返 |
+| Typora | 1.14.10，Windows x64；隔离配置，中文界面，用户授权本次免费试用 | 跨段部分选区、加粗、撤销／重做、保存及冷启动重开；表格修改、任务勾选、目标改名；另存到新目录后逐字核对 Markdown | 新目录重开及三轮文件往返；相同方法的性能采样 |
 
 Obsidian 的 Electron／Chromium 为 43.3.0／150.0.7871.212，Joplin 为 42.3.0／148.0.7778.180；两者均使用官方发布程序。版本来源：[Obsidian 发布](https://github.com/obsidianmd/obsidian-releases/releases/tag/v1.13.7)、[Joplin 发布](https://github.com/laurent22/joplin/releases/tag/v3.7.18)、[Typora 下载](https://typora.io/)。Typora 已通过原生界面的“以后再说”进入剩余 15 天的试用；此前测试脚本的隐藏启动选项影响编辑器显示，改为可见窗口启动后打开了测试文档。未完成的步骤仍保留为待验收项。
 
@@ -31,8 +31,10 @@ Obsidian 的 Electron／Chromium 为 43.3.0／150.0.7871.212，Joplin 为 42.3.0
 - Obsidian 与 Typora 本次三列表格中的代码单元格均呈现 `c\|d`，保留反斜杠；KnowBook 的断言要求呈现 `c|d`。普通单元格 `a\|b` 在三者均呈现 `a|b`。这只是当前固定样例的结果。
 - Joplin 的普通 Markdown 目录导入把链接和图片转换为 `:/...` 内部地址；本次还改写了代码围栏内 `[link](Target.md)` 的目标。该结果来自导入后的持久化正文，不是仅从预览推断。KnowBook 回归要求代码围栏内的同名链接在导入、改名和往返时保持字面内容。
 - Obsidian 在启用内部链接自动更新后，正确更新普通链接与 Wiki 链接，并保留代码围栏中的同名内容。KnowBook 使用默认链接维护流程验证相同性质。
+- Typora 通过“文件 → 移动到”将 `Target.md` 改为 `Renamed.md` 后，正文中的普通链接与 Wiki 链接仍指向旧名称，代码字面内容保持不变。这是本次隔离默认配置的观察；未出现自动更新链接的提示。表格和任务的修改均只改变目标位置。
+- Typora 的普通“另存为”流程在新的空目录中只产生 `Acceptance.md`，正文逐字一致，`pixel.svg` 未随文件复制，相对图片引用保持原文。本次未手动补入附件，也未把此步骤算作完整三轮往返。
 - 不将 Joplin／Typora 尚未执行的步骤标成“不支持”；未进行同机同方法的应用性能采样，不能据此比较速度或宣称整体领先。
 
-可审查记录：[Obsidian 操作与原文](benchmarks/markdown-workflow-obsidian.json)、[Joplin 导入后正文](benchmarks/markdown-workflow-joplin-import.json)、[Typora 原生选区、格式与撤销重做](benchmarks/markdown-workflow-typora-native.json)。Obsidian 记录仅去除与比较无关的 Mermaid CSS 和侧栏文本，保留实际单元格内容、格式后源码与改名后源码。Typora 的格式后源码只改变指定的两个选区，撤销后保存与原始文件一致，重做后保存与第一次加粗一致；这些结果尚不包含冷启动重开。
+可审查记录：[Obsidian 操作与原文](benchmarks/markdown-workflow-obsidian.json)、[Joplin 导入后正文](benchmarks/markdown-workflow-joplin-import.json)、[Typora 原生操作与文件核对](benchmarks/markdown-workflow-typora-native.json)。Obsidian 记录仅去除与比较无关的 Mermaid CSS 和侧栏文本，保留实际单元格内容、格式后源码与改名后源码。Typora 的格式后源码只改变指定的两个选区，撤销后保存与原始文件一致，重做后保存与第一次加粗一致；冷启动后确认编辑结果保留。
 
 Obsidian 的编辑／撤销／重载子流程完成后，恢复了原始正文再验证阅读、任务与改名；目前还不是贯穿全部步骤的连续往返验收。后续需用上面的统一步骤补齐这一部分。

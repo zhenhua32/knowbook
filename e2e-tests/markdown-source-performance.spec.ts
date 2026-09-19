@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import { withElectronApp, uiText } from './helpers/electron'
 import { sourceEditingBlocks } from '../tests/fixtures/markdown-source-performance'
+import { expectSource, selectSource, sourceValue } from './helpers/markdown-source'
 
 // Measure inside the renderer, starting at the trusted input/click/keydown
 // event. Two animation frames include a rendering opportunity, not OS display latency.
@@ -16,9 +17,9 @@ async function measureNextFrame(target: Locator, eventName: 'input' | 'click' | 
       if (!event.isTrusted) throw new Error('Expected trusted input')
       const start = performance.now()
       const frame = () => requestAnimationFrame(() => requestAnimationFrame(() => performance.measure(name, { start, end: performance.now() })))
-      if (name === 'source-open-frame' && !document.querySelector('.document-markdown-source textarea')) {
+      if (name === 'source-open-frame' && !document.querySelector('.document-markdown-source .cm-content')) {
         const observer = new MutationObserver(() => {
-          if (document.querySelector('.document-markdown-source textarea')) { observer.disconnect(); frame() }
+          if (document.querySelector('.document-markdown-source .cm-content')) { observer.disconnect(); frame() }
         })
         observer.observe(document.body, { childList: true, subtree: true })
       } else frame()
@@ -57,23 +58,22 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
         await profiler.detach()
       }
     }
-    const original = await editor.inputValue()
+    const original = await sourceValue(editor)
     const entries = (name: string) => page.evaluate(name => performance.getEntriesByName(name).map(entry => entry.duration), name)
     let inputCount = 0
     for (const index of [1, Math.floor(count / 2) + 1, count - 2]) {
-      await editor.evaluate((input, index) => {
-        const textarea = input as HTMLTextAreaElement, prefix = `段落 ${index} `
-        const caret = textarea.value.indexOf(prefix) + prefix.length
-        if (caret < prefix.length) throw new Error('Missing paragraph')
-        textarea.setSelectionRange(caret, caret)
-      }, index)
+      const prefix = `段落 ${index} `, source = await sourceValue(editor)
+      const caret = source.indexOf(prefix) + prefix.length
+      expect(caret).toBeGreaterThanOrEqual(prefix.length)
+      await selectSource(editor, caret)
+      await expect(editor).toContainText(prefix)
       for (const text of ['中文', '日本語', '한글', '🙂', ' editing ']) {
         await measureNextFrame(editor, 'input', 'source-input-frame')
         await page.keyboard.insertText(text)
         await expect.poll(async () => (await entries('source-input-frame')).length).toBe(++inputCount)
       }
     }
-    const edited = await editor.inputValue()
+    const edited = await sourceValue(editor)
     let formatted = ''
     const formatProfiler = process.env.KNOWBOOK_PROFILE_MARKDOWN_FORMAT === '1' ? await page.context().newCDPSession(page) : null
     if (formatProfiler) await formatProfiler.send('Profiler.enable')
@@ -88,13 +88,13 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
         writeFileSync(`test-results/markdown-source-format-${count}.cpuprofile`, JSON.stringify((await formatProfiler.send('Profiler.stop')).profile))
         await formatProfiler.detach()
       }
-      formatted = await editor.inputValue()
+      formatted = await sourceValue(editor)
       expect(formatted).toContain('## **章节 0 · Source editing**')
       expect(formatted).toContain('**段落 1 中文日本語한글🙂 editing ')
-      if (index < 8) { await editor.press('Control+z'); await expect(editor).toHaveValue(edited) }
+      if (index < 8) { await editor.press('Control+z'); await expectSource(editor, edited) }
     }
-    await editor.press('Control+z'); await expect(editor).toHaveValue(edited)
-    await editor.press('Control+Shift+Z'); await expect(editor).toHaveValue(formatted)
+    await editor.press('Control+z'); await expectSource(editor, edited)
+    await editor.press('Control+Shift+Z'); await expectSource(editor, formatted)
     const apply = dialog.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true })
     await measureNextFrame(apply, 'click', 'source-apply-frame')
     await apply.click()
@@ -116,16 +116,20 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
         p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1], ceilingMs })
     }
     await page.reload(); await page.locator('.tree-button', { hasText: 'Large source editing' }).click()
-    await open(); await expect(editor).toHaveValue(formatted)
+    await open(); await expectSource(editor, formatted)
+    // Keep all 4000 source blocks in the model while mounting only a viewport.
+    const visibleSourceLines = await editor.locator('.cm-line').count()
+    expect(visibleSourceLines).toBeLessThan(150)
     mkdirSync('test-results', { recursive: true })
-    const sourceFiles = ['src/renderer/src/components/DocumentMarkdownSourceDialog.tsx',
+    const sourceFiles = ['package-lock.json', 'src/renderer/src/components/DocumentMarkdownSourceDialog.tsx',
       'src/renderer/src/components/document-markdown-source.css',
+      'src/renderer/src/pages/DocumentsPage.tsx', 'src/renderer/src/hooks/useDocumentEditorState.ts',
       'src/renderer/src/utils/markdownSourceDraft.ts', 'src/renderer/src/utils/markdownFormatting.ts', 'src/shared/markdown.ts']
     writeFileSync(`test-results/markdown-source-frame-${count}.json`, JSON.stringify({ recordedAt: new Date().toISOString(),
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim(),
       workingTreeChanged: Boolean(execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8', windowsHide: true }).trim()),
       sourceFiles, sourceFingerprint: createHash('sha256').update(sourceFiles.map(path => path + '\n' + readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).join('\n')).digest('hex'),
-      blocks: count, characters: original.length, sourceSha256: createHash('sha256').update(original).digest('hex'),
+      blocks: count, characters: original.length, visibleSourceLines, sourceSha256: createHash('sha256').update(original).digest('hex'),
       environment: { platform: process.platform, cpu: os.cpus()[0]?.model, renderer: await page.evaluate(() => navigator.userAgent) },
       method: 'Trusted event to second animation frame; opening also waits for the lazy editor DOM. GPU disabled. Input at beginning/middle/end. Format: two warmups and seven samples. Open/apply each have one sample. Ceilings detect regressions, not OS screen latency or competitor performance.',
       reload: true, blockIds: true, tags: true, literalCode: true, metrics }, null, 2) + '\n')

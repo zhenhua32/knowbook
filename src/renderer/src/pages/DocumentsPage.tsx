@@ -1,5 +1,6 @@
 import { lazy, Suspense, useRef, useState } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
 import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -359,7 +360,7 @@ export function DocumentsPage({
       {sourceEditor && sourceEditor.documentId === documents.selectedDocumentId && <Suspense fallback={null}>
         <DocumentMarkdownSourceDialog key={sourceEditor.documentId} blocks={sourceEditor.blocks} isZh={isZh}
           onClose={() => setSourceEditor(null)} onApply={(blocks) => {
-            if (JSON.stringify(documents.getDraftBlocks()) !== JSON.stringify(sourceEditor.blocks)) return false
+            if (!areDocumentDraftBlocksEqual(documents.getDraftBlocks(), sourceEditor.blocks)) return false
             documents.checkpointDraft()
             documents.clearBlockSelection()
             documents.setIsReadingMode(false)

@@ -22,7 +22,9 @@ function cloneDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
 }
 
 function areDraftBlockSnapshotsEqual(left: DocumentBlockDraft[] | undefined, right: DocumentBlockDraft[]): boolean {
-  return Boolean(left) && JSON.stringify(left) === JSON.stringify(right)
+  // Hydration after saving can reorder fields or normalize absent values.
+  // Those acknowledgements must not count as edits that truncate redo.
+  return left !== undefined && areDocumentDraftBlocksEqual(left, right)
 }
 
 type UseDocumentEditorStateParams = {

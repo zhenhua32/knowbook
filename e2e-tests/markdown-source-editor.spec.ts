@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { withElectronApp, uiText } from './helpers/electron'
+import { expectSource, selectSource, sourceValue } from './helpers/markdown-source'
 
 test('full Markdown source keeps referenced identities, duplicate edits, history and IME drafts @electron', async () => {
   test.setTimeout(120_000)
@@ -26,13 +27,13 @@ test('full Markdown source keeps referenced identities, duplicate edits, history
     }
     await open()
     const editor = page.getByRole('textbox', { name: uiText('Markdown body source', 'Markdown 正文源码') })
-    await expect(editor).toHaveValue('Same\n\nSame\n\nTail 中文🙂')
+    await expectSource(editor, 'Same\n\nSame\n\nTail 中文🙂')
     await editor.press('Control+Home')
     await page.keyboard.insertText('Same\n\n')
-    await expect(editor).toHaveValue('Same\n\nSame\n\nSame\n\nTail 中文🙂')
-    await editor.evaluate(input => (input as HTMLTextAreaElement).setSelectionRange(6, 12))
+    await expectSource(editor, 'Same\n\nSame\n\nSame\n\nTail 中文🙂')
+    await selectSource(editor, 6, 12)
     await editor.press('Backspace')
-    await expect(editor).toHaveValue('Same\n\nSame\n\nTail 中文🙂')
+    await expectSource(editor, 'Same\n\nSame\n\nTail 中文🙂')
     await page.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true }).click()
     await expect(editor).toHaveCount(0)
     await page.locator('.document-header-save-button').click()
@@ -51,18 +52,18 @@ test('full Markdown source keeps referenced identities, duplicate edits, history
     await expect.poll(async () => (await detail())?.blocks[0].id).toBe(changed[0].id)
 
     await open(); await editor.press('Control+End')
-    const initial = await editor.inputValue()
+    const initial = await sourceValue(editor)
     const cdp = await page.context().newCDPSession(page)
     await cdp.send('Input.imeSetComposition', { text: '候选', selectionStart: 2, selectionEnd: 2 })
-    await expect(editor).toHaveValue(initial + '候选')
+    await expectSource(editor, initial + '候选')
     await expect(page.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true })).toBeDisabled()
     await cdp.send('Input.insertText', { text: '输入完成' })
-    await expect(editor).toHaveValue(initial + '输入完成')
-    await editor.press('Control+z'); await expect(editor).toHaveValue(initial)
-    await editor.press('Control+Shift+Z'); await expect(editor).toHaveValue(initial + '输入完成')
+    await expectSource(editor, initial + '输入完成')
+    await editor.press('Control+z'); await expectSource(editor, initial)
+    await editor.press('Control+Shift+Z'); await expectSource(editor, initial + '输入完成')
     await cdp.send('Input.imeSetComposition', { text: '取消候选', selectionStart: 4, selectionEnd: 4 })
     await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 })
-    await expect(editor).toHaveValue(initial + '输入完成')
+    await expectSource(editor, initial + '输入完成')
     await expect(page.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true })).toBeEnabled()
     await editor.press('Alt+F10')
     await expect(page.getByRole('button', { name: uiText('Bold', '粗体'), exact: true }).last()).toBeFocused()
@@ -72,7 +73,7 @@ test('full Markdown source keeps referenced identities, duplicate edits, history
     await expect.poll(async () => (await detail())?.blocks[2].content).toBe('Tail 中文🙂输入完成')
     await cdp.detach()
     await page.reload(); await page.locator('.tree-button', { hasText: 'Source editing' }).click()
-    await open(); await expect(editor).toHaveValue(initial + '输入完成')
+    await open(); await expectSource(editor, initial + '输入完成')
     await editor.press('Control+End'); await page.keyboard.insertText(' discarded')
     await page.getByRole('button', { name: uiText('Cancel', '取消'), exact: true }).click()
     expect((await detail())?.blocks[2].content).toBe('Tail 中文🙂输入完成')
