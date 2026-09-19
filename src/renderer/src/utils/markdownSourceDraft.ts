@@ -60,6 +60,56 @@ export function replaceMarkdownSource(draft: MarkdownSourceDraft, change: Markdo
   return { ...draft, source: draft.source.slice(0, from) + insert + draft.source.slice(to), anchors }
 }
 
+/** Apply disjoint edits expressed in the original source coordinates. Formatting
+ * emits them from right to left; mapping each anchor only through nearby edits
+ * avoids rebuilding every block position for every formatted paragraph. */
+export function replaceMarkdownSourceChanges(draft: MarkdownSourceDraft, changes: MarkdownSourceChange[]): MarkdownSourceDraft {
+  const ordered = changes.toSorted((a, b) => a.from - b.from || a.to - b.to)
+  let cursor = 0, shift = 0
+  const parts: string[] = []
+  const edits: Array<MarkdownSourceChange & { shift: number; claimed: boolean }> = []
+  for (const change of ordered) {
+    if (change.from < cursor || change.to < change.from || change.to > draft.source.length
+      || edits.at(-1)?.from === change.from) throw new Error('Overlapping or invalid Markdown source changes')
+    if (draft.source.slice(change.from, change.to) === change.insert) continue
+    edits.push({ ...change, shift, claimed: false })
+    parts.push(draft.source.slice(cursor, change.from), change.insert)
+    cursor = change.to
+    shift += change.insert.length - (change.to - change.from)
+  }
+  if (!edits.length) return draft
+  parts.push(draft.source.slice(cursor))
+  const anchors = draft.anchors.flatMap((anchor) => {
+    let low = 0, high = edits.length
+    while (low < high) {
+      const middle = (low + high) >>> 1, edit = edits[middle]
+      if (edit.to <= anchor.from) low = middle + 1
+      else high = middle
+    }
+    // An insertion into an existing empty block belongs to that block.
+    if (anchor.from === anchor.to && low > 0 && edits[low - 1].from === anchor.from && edits[low - 1].to === anchor.to) low--
+    const precedingShift = edits[low]?.shift ?? shift
+    let from = anchor.from + precedingShift, to = anchor.to + precedingShift
+    for (let index = low; index < edits.length; index++) {
+      const edit = edits[index]
+      if (edit.from > anchor.to || edit.from === anchor.to && anchor.from !== anchor.to) break
+      const editFrom = edit.from + edit.shift, editTo = edit.to + edit.shift
+      if (from === to && from === editFrom && editFrom === editTo) {
+        edit.claimed = true; to = from + edit.insert.length; continue
+      }
+      if (to <= editFrom) break
+      const delta = edit.insert.length - (edit.to - edit.from)
+      if (from >= editTo) { from += delta; to += delta; continue }
+      if (editFrom <= from && editTo >= to && (!edit.insert || edit.claimed)) return []
+      edit.claimed = true
+      from = from < editFrom ? from : editFrom
+      to = to > editTo ? to + delta : editFrom + edit.insert.length
+    }
+    return [{ ...anchor, from, to }]
+  })
+  return { ...draft, source: parts.join(''), anchors }
+}
+
 /** Reparse syntax only when the user applies the source draft. Metadata and
  * references follow surviving blocks; pasted metadata cannot claim other IDs. */
 export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): DocumentBlockDraft[] {

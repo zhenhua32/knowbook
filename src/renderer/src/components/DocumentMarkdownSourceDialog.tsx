@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSource, type MarkdownSourceDraft } from '../utils/markdownSourceDraft'
+import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSource, replaceMarkdownSourceChanges, type MarkdownSourceDraft, type MarkdownSourceChange } from '../utils/markdownSourceDraft'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { MarkdownFormatToolbar } from './MarkdownFormatToolbar'
@@ -71,10 +71,10 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
   const format = (kind: MarkdownFormat) => {
     const target = editor.current
     if (!target || composing.current) return
-    let draft = current.current.draft
+    const changes: MarkdownSourceChange[] = [], draft = current.current.draft
     const result = formatMarkdownSelection(draft.source, target.selectionStart, target.selectionEnd, kind,
-      isZh ? '链接' : 'Link', (change) => { draft = replaceMarkdownSource(draft, change) })
-    commit({ draft, start: result.start, end: result.end })
+      isZh ? '链接' : 'Link', (change) => changes.push(change))
+    commit({ draft: replaceMarkdownSourceChanges(draft, changes), start: result.start, end: result.end })
   }
   const apply = () => {
     if (composing.current) return

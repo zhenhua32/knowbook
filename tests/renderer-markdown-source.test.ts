@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { parseMarkdownBlocks, type MarkdownBlockSourceRange } from '../src/shared/markdown'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
-import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSource } from '../src/renderer/src/utils/markdownSourceDraft'
+import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSource, replaceMarkdownSourceChanges, type MarkdownSourceChange } from '../src/renderer/src/utils/markdownSourceDraft'
 import { formatMarkdownSelection } from '../src/renderer/src/utils/markdownFormatting'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization'
 
@@ -102,4 +102,35 @@ test('source edits preserve untouched mixed Markdown groups and blank block iden
   assert.equal(result[0].type, 'paragraph')
   const empty = createMarkdownSourceDraft([paragraph('empty', '')])
   assert.equal(markdownSourceDraftToBlocks(replaceMarkdownSource(empty, { from: 0, to: 0, insert: 'Written' }))[0].id, 'empty')
+})
+
+test('batched paragraph formatting retains exactly the identities and source of individual edits', () => {
+  const blocks = [paragraph('first', 'First 中文🙂.'), paragraph('empty', ''), paragraph('group', 'One\n\nTwo'),
+    { ...paragraph('code', 'literal **code**'), type: 'code', language: 'text' }, paragraph('last', '**Last**')]
+  for (const format of ['bold', 'italic', 'strike', 'highlight', 'code', 'link'] as const) {
+    const original = createMarkdownSourceDraft(blocks), changes: MarkdownSourceChange[] = []
+    const result = formatMarkdownSelection(original.source, 0, original.source.length, format, 'Link', change => changes.push(change))
+    const sequential = changes.reduce(replaceMarkdownSource, original)
+    const batched = replaceMarkdownSourceChanges(original, changes)
+    assert.deepEqual(batched, sequential)
+    assert.equal(batched.source, result.content)
+    assert.deepEqual(markdownSourceDraftToBlocks(batched), markdownSourceDraftToBlocks(sequential))
+  }
+})
+
+test('disjoint source replacements preserve sequential edit identity semantics at block boundaries', () => {
+  const original = createMarkdownSourceDraft([paragraph('a', 'Same'), paragraph('b', 'Same'), paragraph('empty', ''), paragraph('c', 'Tail')])
+  let seed = 91827
+  const random = (maximum: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % maximum }
+  for (let run = 0; run < 1000; run++) {
+    const changes: MarkdownSourceChange[] = []
+    let cursor = 0
+    while (cursor <= original.source.length) {
+      const from = Math.min(original.source.length, cursor + random(4)), to = Math.min(original.source.length, from + random(5))
+      changes.unshift({ from, to, insert: ['', '*', '中文', '\n\n'][random(4)] })
+      cursor = to + 1
+    }
+    assert.deepEqual(replaceMarkdownSourceChanges(original, changes), changes.reduce(replaceMarkdownSource, original), JSON.stringify(changes))
+  }
+  assert.throws(() => replaceMarkdownSourceChanges(original, [{ from: 0, to: 4, insert: 'A' }, { from: 2, to: 5, insert: 'B' }]), /Overlapping/)
 })

@@ -54,6 +54,9 @@ jobs:
       - name: Check Markdown link maintenance regression ceilings
         run: npm run benchmark:markdown-links
 
+      - name: Check full Markdown source editing regression ceilings
+        run: npm run benchmark:markdown-source
+
       - name: Upload Markdown performance report
         if: always()
         uses: actions/upload-artifact@v4
@@ -99,6 +102,17 @@ jobs:
           path: |
             test-results/markdown-workflow-knowbook.json
             test-results/markdown-workflow-knowbook.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Markdown source editor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-source-report
+          path: |
+            test-results/markdown-source-*.json
+            test-results/markdown-source-*.png
           if-no-files-found: ignore
           retention-days: 14
 

@@ -1,0 +1,87 @@
+{
+  "recordedAt": "2026-09-19T12:01:20.444Z",
+  "commit": "bd50148bf77ad70fbb383959b6a30f6300559e78",
+  "workingTreeChanged": true,
+  "sourceFiles": [
+    "src/renderer/src/components/DocumentMarkdownSourceDialog.tsx",
+    "src/renderer/src/utils/markdownSourceDraft.ts",
+    "src/renderer/src/utils/markdownFormatting.ts",
+    "src/shared/markdown.ts"
+  ],
+  "sourceFingerprint": "b2d83c0f6a80fa1507bebfa7a0a64af95ec4f3ceed85579c2b6eb273ce6b814d",
+  "blocks": 800,
+  "characters": 101769,
+  "sourceSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+  "environment": {
+    "platform": "win32",
+    "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+    "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) knowbook/0.1.2 Chrome/134.0.6998.205 Electron/35.7.5 Safari/537.36"
+  },
+  "method": "Trusted event to second animation frame; opening also waits for the lazy editor DOM. GPU disabled. Input at beginning/middle/end. Format: two warmups and seven samples. Open/apply each have one sample. Ceilings detect regressions, not OS screen latency or competitor performance.",
+  "reload": true,
+  "blockIds": true,
+  "tags": true,
+  "literalCode": true,
+  "metrics": [
+    {
+      "name": "source-open-frame",
+      "warmups": 0,
+      "samplesMs": [
+        532.6999999880791
+      ],
+      "medianMs": 532.6999999880791,
+      "p95Ms": 532.6999999880791,
+      "ceilingMs": 3000
+    },
+    {
+      "name": "source-input-frame",
+      "warmups": 0,
+      "samplesMs": [
+        59.5,
+        16.19999998807907,
+        23.19999998807907,
+        19.19999998807907,
+        21.19999998807907,
+        19.600000023841858,
+        16.599999994039536,
+        23.5,
+        29.299999982118607,
+        19.5,
+        15.800000011920929,
+        16.69999998807907,
+        16.69999998807907,
+        21.80000001192093,
+        17.700000017881393
+      ],
+      "medianMs": 19.5,
+      "p95Ms": 59.5,
+      "ceilingMs": 500
+    },
+    {
+      "name": "source-format-frame",
+      "warmups": 2,
+      "samplesMs": [
+        95.19999998807907,
+        96.40000000596046,
+        97.7999999821186,
+        94.7999999821186,
+        92.80000001192093,
+        96.10000002384186,
+        90.2999999821186
+      ],
+      "medianMs": 95.19999998807907,
+      "p95Ms": 97.7999999821186,
+      "ceilingMs": 1500
+    },
+    {
+      "name": "source-apply-frame",
+      "warmups": 0,
+      "samplesMs": [
+        557.5
+      ],
+      "medianMs": 557.5,
+      "p95Ms": 557.5,
+      "ceilingMs": 8000
+    }
+  ]
+}

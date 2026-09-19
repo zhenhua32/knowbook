@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-19T11:38:12.338Z",
+  "commit": "bd50148bf77ad70fbb383959b6a30f6300559e78",
+  "workingTreeChanged": true,
+  "sourceFingerprint": "6e92e66941787df6a0906a1cfb58ae6d2b5e2cab44c4eda0fc2e7d37fce4490a",
+  "fingerprintFiles": [
+    "src/renderer/src/utils/markdownSourceDraft.ts",
+    "src/renderer/src/utils/markdownFormatting.ts",
+    "src/shared/markdown.ts",
+    "src/shared/markdownEngine.ts",
+    "src/shared/markdownSourceLinks.ts",
+    "tests/fixtures/markdown-source-performance.ts"
+  ],
+  "warmups": 2,
+  "samples": 7,
+  "environment": {
+    "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+    "logicalCpus": 12,
+    "platform": "win32",
+    "architecture": "x64",
+    "node": "v22.16.0",
+    "electron": "35.7.5"
+  },
+  "method": "Isolated process operations; two warmups and seven samples. Verification outside the timed region. p95 is the maximum sample. Ceilings detect regressions; these are not UI latency or competitor results.",
+  "inputs": [
+    {
+      "blocks": 800,
+      "characters": 101769,
+      "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+    },
+    {
+      "blocks": 4000,
+      "characters": 512089,
+      "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "800/open",
+      "samplesMs": [
+        3.28449999999998,
+        2.148400000000038,
+        1.9704999999999018,
+        1.9809999999999945,
+        2.0028000000002066,
+        5.79119999999989,
+        2.6369999999999436
+      ],
+      "medianMs": 2.148400000000038,
+      "p95Ms": 5.79119999999989,
+      "ceilingMs": 250,
+      "passed": true
+    },
+    {
+      "name": "800/input",
+      "samplesMs": [
+        1.3139000000001033,
+        1.116899999999987,
+        1.0371999999999844,
+        1.0844999999999345,
+        1.0670000000000073,
+        1.0387000000000626,
+        1.1532999999999447
+      ],
+      "medianMs": 1.0844999999999345,
+      "p95Ms": 1.3139000000001033,
+      "ceilingMs": 100,
+      "passed": true
+    },
+    {
+      "name": "800/format-all",
+      "samplesMs": [
+        33.52430000000004,
+        21.86200000000008,
+        17.76200000000017,
+        14.020600000000059,
+        25.788699999999835,
+        15.663999999999987,
+        30.251700000000028
+      ],
+      "medianMs": 21.86200000000008,
+      "p95Ms": 33.52430000000004,
+      "ceilingMs": 1500,
+      "passed": true
+    },
+    {
+      "name": "800/apply",
+      "samplesMs": [
+        20.076999999999998,
+        15.678700000000163,
+        17.26800000000003,
+        14.977100000000064,
+        15.31309999999985,
+        19.248400000000174,
+        16.93489999999997
+      ],
+      "medianMs": 16.93489999999997,
+      "p95Ms": 20.076999999999998,
+      "ceilingMs": 1000,
+      "passed": true
+    },
+    {
+      "name": "4000/open",
+      "samplesMs": [
+        10.397699999999986,
+        10.362600000000157,
+        9.415099999999939,
+        14.003299999999854,
+        12.788800000000037,
+        8.684500000000071,
+        9.388599999999997
+      ],
+      "medianMs": 10.362600000000157,
+      "p95Ms": 14.003299999999854,
+      "ceilingMs": 250,
+      "passed": true
+    },
+    {
+      "name": "4000/input",
+      "samplesMs": [
+        6.863400000000183,
+        5.679900000000089,
+        5.4418000000000575,
+        7.815799999999854,
+        5.822100000000091,
+        5.720299999999952,
+        6.5534999999999854
+      ],
+      "medianMs": 5.822100000000091,
+      "p95Ms": 7.815799999999854,
+      "ceilingMs": 100,
+      "passed": true
+    },
+    {
+      "name": "4000/format-all",
+      "samplesMs": [
+        110.13789999999972,
+        121.66619999999966,
+        113.50340000000006,
+        109.68229999999994,
+        97.96300000000019,
+        95.9734999999996,
+        103.23890000000029
+      ],
+      "medianMs": 109.68229999999994,
+      "p95Ms": 121.66619999999966,
+      "ceilingMs": 1500,
+      "passed": true
+    },
+    {
+      "name": "4000/apply",
+      "samplesMs": [
+        131.85990000000038,
+        98.95359999999982,
+        126.3163999999997,
+        115.15439999999944,
+        110.5630999999994,
+        120.41929999999957,
+        132.58830000000034
+      ],
+      "medianMs": 120.41929999999957,
+      "p95Ms": 132.58830000000034,
+      "ceilingMs": 1000,
+      "passed": true
+    }
+  ],
+  "provenance": {
+    "verification": "Block identity and metadata checks occur outside timing. Format timing includes one equality check between returned source and the source draft."
+  }
+}

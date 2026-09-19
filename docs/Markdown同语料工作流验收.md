@@ -19,12 +19,12 @@ KnowBook 自动化复现：先运行 `npm run build`，再运行 `npx playwright
 
 | 应用 | 版本与配置 | 已验证范围 | 仍待验证 |
 | --- | --- | --- | --- |
-| KnowBook | 当前源码；独立临时数据库 | 固定语料 Electron 回归覆盖完整正文选区、格式和撤销、表格修改、阅读渲染、任务、改名、附件与三轮往返；另检查块 ID 和引用 | 系统输入法候选窗口；更大文档的整篇源码编辑延迟 |
+| KnowBook | 当前源码；独立临时数据库 | 固定语料 Electron 回归覆盖完整正文选区、格式和撤销、表格修改、阅读渲染、任务、改名、附件与三轮往返；另检查块 ID 和引用；已增加 800／4000 块源码编辑延迟验收 | 系统输入法候选窗口；与竞品一致的应用性能采样 |
 | Obsidian | 1.13.7，Windows x64；无社区插件；允许测试库 Mermaid；启用自动更新内部链接 | 打开原文、跨段部分加粗、撤销／重做、重新载入、表格及高级内容呈现、任务勾选、目标改名 | 表格修改；相同三轮文件往返；与其他应用一致的性能采样 |
 | Joplin | 3.7.18，Windows x64；隔离配置，默认 Markdown 选项，无同步目标 | 通过原生 `MD - Markdown (文件目录)` 导入两篇测试笔记和图片；退出后只读检查数据库中的正文 | 编辑与渲染断言、改名、导出和三轮往返 |
-| Typora | 1.14.10，Windows x64；用户授权本次免费试用 | 官方签名程序成功打开欢迎界面 | 固定语料的全部工作流 |
+| Typora | 1.14.10，Windows x64；用户授权本次免费试用 | 官方签名程序打开欢迎及试用许可界面，提示剩余 15 天；尚未确认进入编辑器 | 固定语料的全部工作流 |
 
-Obsidian 的 Electron／Chromium 为 43.3.0／150.0.7871.212，Joplin 为 42.3.0／148.0.7778.180；两者均使用官方发布程序。版本来源：[Obsidian 发布](https://github.com/obsidianmd/obsidian-releases/releases/tag/v1.13.7)、[Joplin 发布](https://github.com/laurent22/joplin/releases/tag/v3.7.18)、[Typora 下载](https://typora.io/)。原生界面操作已按用户的 Esc 停止指令结束，未完成的实测继续保留为待验收项。
+Obsidian 的 Electron／Chromium 为 43.3.0／150.0.7871.212，Joplin 为 42.3.0／148.0.7778.180；两者均使用官方发布程序。版本来源：[Obsidian 发布](https://github.com/obsidianmd/obsidian-releases/releases/tag/v1.13.7)、[Joplin 发布](https://github.com/laurent22/joplin/releases/tag/v3.7.18)、[Typora 下载](https://typora.io/)。原生自动化多次报告 Esc 停止信号；尚未确认执行 Typora 的“以后再说”按钮，不能据此认定试用或编辑器不可用。未完成的实测继续保留为待验收项。
 
 ## 此语料中观察到的差异
 
