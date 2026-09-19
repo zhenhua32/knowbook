@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSource, replaceMarkdownSourceChanges, type MarkdownSourceDraft, type MarkdownSourceChange } from '../utils/markdownSourceDraft'
@@ -16,6 +16,8 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
   onClose: () => void
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(() => ({ draft: createMarkdownSourceDraft(blocks), start: 0, end: 0 }))
+  const initialSource = useRef(snapshot.draft.source)
+  const restoreSelection = useRef(false)
   const current = useRef(snapshot)
   const history = useRef({ entries: [snapshot], index: 0, lastInput: 0 })
   const dialog = useRef<HTMLDialogElement>(null)
@@ -26,6 +28,20 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
   const [isComposing, setIsComposing] = useState(false)
   const [error, setError] = useState('')
   const labelId = useId(), hintId = useId()
+
+  useLayoutEffect(() => {
+    const target = editor.current
+    if (!target) return
+    // Native input already updated the textarea. Only programmatic edits need
+    // a value write; keeping defaultValue stable avoids cloning a large source
+    // into the textarea's default content on every React render.
+    if (target.value !== snapshot.draft.source) target.value = snapshot.draft.source
+    if (restoreSelection.current) {
+      restoreSelection.current = false
+      target.focus()
+      target.setSelectionRange(snapshot.start, snapshot.end)
+    }
+  }, [snapshot])
 
   useEffect(() => {
     const returnFocus = document.querySelector<HTMLElement>('.document-header-more-button')
@@ -41,11 +57,8 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
 
   const display = (next: Snapshot, focus = false) => {
     current.current = next
+    restoreSelection.current = focus
     setSnapshot(next)
-    if (focus) requestAnimationFrame(() => {
-      editor.current?.focus()
-      editor.current?.setSelectionRange(next.start, next.end)
-    })
   }
   const commit = (next: Snapshot, input = false, previousSelection?: { start: number; end: number }) => {
     if (next.draft === current.current.draft) return
@@ -87,7 +100,7 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
       <button type="button" className="secondary-button" disabled={isComposing} onClick={onClose}>{isZh ? '取消' : 'Cancel'}</button></header>
     <p id={hintId}>{isZh ? '在完整正文中连续选择和编辑；应用后自动保存。' : 'Select and edit across the complete body. Changes autosave after applying.'}</p>
     <MarkdownFormatToolbar isZh={isZh} onFormat={format} onReturnToEditor={() => editor.current?.focus()} />
-    <textarea ref={editor} aria-label={isZh ? 'Markdown 正文源码' : 'Markdown body source'} spellCheck={false} value={snapshot.draft.source}
+    <textarea ref={editor} aria-label={isZh ? 'Markdown 正文源码' : 'Markdown body source'} spellCheck={false} defaultValue={initialSource.current}
       onChange={(event) => {
         const target = event.currentTarget
         const selection = beforeInput.current

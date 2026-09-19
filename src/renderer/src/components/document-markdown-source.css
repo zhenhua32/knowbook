@@ -17,6 +17,8 @@
   display: block; box-sizing: border-box; width: 100%; height: min(60vh, 660px); min-height: 160px;
   resize: vertical; padding: 14px; margin: 10px 0; border: 1px solid var(--kb-line-strong); border-radius: 8px;
   color: inherit; background: transparent; font: 14px/1.7 Consolas, monospace; tab-size: 2;
+  text-rendering: optimizeSpeed; font-kerning: none;
+  contain: layout style paint;
 }
 .document-markdown-source > textarea:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
 .document-markdown-source footer > :last-child { margin-left: auto; }

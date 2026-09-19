@@ -1,14 +1,15 @@
 {
-  "recordedAt": "2026-09-19T12:01:20.444Z",
-  "commit": "bd50148bf77ad70fbb383959b6a30f6300559e78",
+  "recordedAt": "2026-09-19T12:52:20.313Z",
+  "commit": "bbc28164b1f157880e02d129063f80b3907c613b",
   "workingTreeChanged": true,
   "sourceFiles": [
     "src/renderer/src/components/DocumentMarkdownSourceDialog.tsx",
+    "src/renderer/src/components/document-markdown-source.css",
     "src/renderer/src/utils/markdownSourceDraft.ts",
     "src/renderer/src/utils/markdownFormatting.ts",
     "src/shared/markdown.ts"
   ],
-  "sourceFingerprint": "b2d83c0f6a80fa1507bebfa7a0a64af95ec4f3ceed85579c2b6eb273ce6b814d",
+  "sourceFingerprint": "2d3bdb456268633bb277c1a6c79581c5f07c1fc20c3a83a8a22c6e3bdb037379",
   "blocks": 800,
   "characters": 101769,
   "sourceSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
@@ -27,61 +28,64 @@
       "name": "source-open-frame",
       "warmups": 0,
       "samplesMs": [
-        532.6999999880791
+        581.3000000119209
       ],
-      "medianMs": 532.6999999880791,
-      "p95Ms": 532.6999999880791,
+      "medianMs": 581.3000000119209,
+      "p95Ms": 581.3000000119209,
       "ceilingMs": 3000
     },
     {
       "name": "source-input-frame",
       "warmups": 0,
       "samplesMs": [
-        59.5,
-        16.19999998807907,
+        40.20000001788139,
+        20.299999982118607,
+        21.200000017881393,
+        18,
+        19.400000005960464,
         23.19999998807907,
-        19.19999998807907,
-        21.19999998807907,
-        19.600000023841858,
-        16.599999994039536,
-        23.5,
-        29.299999982118607,
-        19.5,
-        15.800000011920929,
-        16.69999998807907,
-        16.69999998807907,
-        21.80000001192093,
-        17.700000017881393
+        22.19999998807907,
+        23.69999998807907,
+        23.599999994039536,
+        18,
+        16.5,
+        17.19999998807907,
+        20.899999976158142,
+        16.200000017881393,
+        23.80000001192093
       ],
-      "medianMs": 19.5,
-      "p95Ms": 59.5,
+      "medianMs": 20.899999976158142,
+      "p95Ms": 40.20000001788139,
       "ceilingMs": 500
     },
     {
       "name": "source-format-frame",
       "warmups": 2,
       "samplesMs": [
-        95.19999998807907,
-        96.40000000596046,
-        97.7999999821186,
-        94.7999999821186,
-        92.80000001192093,
-        96.10000002384186,
-        90.2999999821186
+        116.5,
+        117.2999999821186,
+        107.19999998807907,
+        113.90000000596046,
+        110,
+        148.90000000596046,
+        116.59999999403954
       ],
-      "medianMs": 95.19999998807907,
-      "p95Ms": 97.7999999821186,
+      "medianMs": 116.5,
+      "p95Ms": 148.90000000596046,
       "ceilingMs": 1500
     },
     {
       "name": "source-apply-frame",
       "warmups": 0,
       "samplesMs": [
-        557.5
+        690.0999999940395
       ],
-      "medianMs": 557.5,
-      "p95Ms": 557.5,
+      "medianMs": 690.0999999940395,
+      "p95Ms": 690.0999999940395,
       "ceilingMs": 8000
     }
-  ]
+  ],
+  "provenance": {
+    "sourceContext": "Local full Markdown Electron suite, 19 passed. Native competitor test processes were closed during measurement. The commit is the workspace base; the source fingerprint identifies the tested changes."
+  }
 }

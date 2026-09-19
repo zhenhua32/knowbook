@@ -1,7 +1,7 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { hasAdvancedMarkdown, type MarkdownDocumentModel } from '@shared/markdownDocument'
-import { lazy, memo, Suspense, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MarkdownBlockContent, MarkdownMermaidPreview } from './MarkdownContent'
 import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { detectCodeLanguage } from '@shared/code'
@@ -228,15 +228,26 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
+  const formatSelection = useRef<{ content: string; start: number; end: number } | null>(null)
+  useLayoutEffect(() => {
+    const selection = formatSelection.current, textarea = textareaRef.current
+    if (!selection || !textarea || textarea.value !== selection.content) return
+    formatSelection.current = null
+    textarea.focus()
+    textarea.setSelectionRange(selection.start, selection.end)
+    captureBlockCursor(index, textarea)
+  })
   const applyFormat = (format: MarkdownFormat) => {
     const textarea = textareaRef.current
     if (!textarea || !canFormat || composingRef.current) return
     const result = formatMarkdownSelection(textarea.value, textarea.selectionStart, textarea.selectionEnd, format, isZh ? '链接文字' : 'Link')
+    if (result.content === textarea.value) {
+      textarea.focus(); textarea.setSelectionRange(result.start, result.end); captureBlockCursor(index, textarea)
+      return
+    }
+    formatSelection.current = result
     props.checkpointDraft?.()
     updateDraftBlock(index, { content: result.content })
-    requestAnimationFrame(() => {
-      textarea.focus(); textarea.setSelectionRange(result.start, result.end); captureBlockCursor(index, textarea)
-    })
   }
   const getAdjacentVisibleIndex = (delta: -1 | 1) => {
     for (let next = index + delta; next >= 0 && next < draftBlockCount; next += delta) {

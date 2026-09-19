@@ -1,0 +1,40 @@
+{
+  "recordedAt": "2026-09-19T12:51:39.790Z",
+  "application": "Typora",
+  "version": "1.14.10",
+  "platform": "Windows x64",
+  "executableSha256": "3a1807daf4f0f9e8d1257fac5f61429e9535debf230ffece8b7d931749108a57",
+  "method": "Native Windows UI through @oai/sky; fixture files read after Ctrl+S. No DOM injection or source-file writes were used to perform the formatting operation.",
+  "settings": "Isolated test profile and fixture directory; Simplified Chinese UI; user-authorized 15-day free trial.",
+  "launch": "Visible process launch is required. The earlier windowsHide option hid the editor behind the separate trial prompt. Later was clicked and the Acceptance.md editor was observed.",
+  "input": {
+    "path": "tests/fixtures/markdown-workflows/Acceptance.md",
+    "sha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433"
+  },
+  "selectionBeforeFormatting": "editable paragraph 中文🙂.\nSecond",
+  "format": {
+    "command": "Ctrl+B",
+    "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+    "onlyRequestedRangesChanged": true
+  },
+  "undo": {
+    "command": "Ctrl+Z then Ctrl+S",
+    "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+    "restoresOriginal": true
+  },
+  "redo": {
+    "command": "Edit > Redo then Ctrl+S",
+    "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+    "restoresFormat": true
+  },
+  "initialTableObservation": {
+    "ordinaryCell": "a|b",
+    "codeCell": "c\\|d",
+    "columns": 3
+  },
+  "limitations": [
+    "Formatting, undo and redo were saved and verified. A fresh reopen has not yet been checked.",
+    "Table editing, task toggling, target rename and three file round trips remain unverified.",
+    "No same-method competitor performance comparison or system IME candidate-window acceptance is claimed."
+  ]
+}

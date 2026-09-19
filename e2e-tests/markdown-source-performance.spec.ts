@@ -75,11 +75,19 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
     }
     const edited = await editor.inputValue()
     let formatted = ''
+    const formatProfiler = process.env.KNOWBOOK_PROFILE_MARKDOWN_FORMAT === '1' ? await page.context().newCDPSession(page) : null
+    if (formatProfiler) await formatProfiler.send('Profiler.enable')
     for (let index = 0; index < 9; index++) {
       await editor.press('Control+a')
+      if (formatProfiler && index === 2) await formatProfiler.send('Profiler.start')
       await measureNextFrame(editor, 'keydown', 'source-format-frame')
       await editor.press('Control+b')
       await expect.poll(async () => (await entries('source-format-frame')).length).toBe(index + 1)
+      if (formatProfiler && index === 2) {
+        mkdirSync('test-results', { recursive: true })
+        writeFileSync(`test-results/markdown-source-format-${count}.cpuprofile`, JSON.stringify((await formatProfiler.send('Profiler.stop')).profile))
+        await formatProfiler.detach()
+      }
       formatted = await editor.inputValue()
       expect(formatted).toContain('## **章节 0 · Source editing**')
       expect(formatted).toContain('**段落 1 中文日本語한글🙂 editing ')
@@ -111,6 +119,7 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
     await open(); await expect(editor).toHaveValue(formatted)
     mkdirSync('test-results', { recursive: true })
     const sourceFiles = ['src/renderer/src/components/DocumentMarkdownSourceDialog.tsx',
+      'src/renderer/src/components/document-markdown-source.css',
       'src/renderer/src/utils/markdownSourceDraft.ts', 'src/renderer/src/utils/markdownFormatting.ts', 'src/shared/markdown.ts']
     writeFileSync(`test-results/markdown-source-frame-${count}.json`, JSON.stringify({ recordedAt: new Date().toISOString(),
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim(),
@@ -121,6 +130,25 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
       method: 'Trusted event to second animation frame; opening also waits for the lazy editor DOM. GPU disabled. Input at beginning/middle/end. Format: two warmups and seven samples. Open/apply each have one sample. Ceilings detect regressions, not OS screen latency or competitor performance.',
       reload: true, blockIds: true, tags: true, literalCode: true, metrics }, null, 2) + '\n')
     await page.screenshot({ path: `test-results/markdown-source-frame-${count}.png` })
+    if (metrics.some(metric => metric.p95Ms >= metric.ceilingMs)) {
+      // Keep profiling overhead out of the measured samples. A failed budget
+      // gets a separate rendering trace before the original assertion fails.
+      const diagnostic = await page.context().newCDPSession(page)
+      const traceEvents: unknown[] = []
+      try {
+        diagnostic.on('Tracing.dataCollected', event => traceEvents.push(...event.value))
+        await editor.press('Control+a')
+        await diagnostic.send('Tracing.start', { categories: 'devtools.timeline,blink.user_timing,v8', options: 'record-as-much-as-possible' })
+        await editor.press('Control+b')
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+        const complete = new Promise<void>(resolve => diagnostic.once('Tracing.tracingComplete', () => resolve()))
+        await diagnostic.send('Tracing.end')
+        await complete
+        writeFileSync(`test-results/markdown-source-render-${count}.trace.json`, JSON.stringify({ traceEvents }))
+      } catch (error) {
+        console.warn('Could not capture the separate source rendering diagnostic:', error)
+      } finally { await diagnostic.detach() }
+    }
     for (const metric of metrics) expect(metric.p95Ms, JSON.stringify(metric)).toBeLessThan(metric.ceilingMs)
   })
 })
