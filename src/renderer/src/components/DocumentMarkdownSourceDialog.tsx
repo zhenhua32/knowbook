@@ -57,7 +57,10 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
     if (input && state.index > 0 && (Date.now() - state.lastInput < 600
       || composing.current && state.index > compositionHistoryIndex.current)) state.entries[state.index] = next
     else { state.entries.push(next); state.index++ }
-    if (state.entries.length > 80) { state.entries.shift(); state.index-- }
+    if (state.entries.length > 80) {
+      state.entries.shift(); state.index--
+      compositionHistoryIndex.current = Math.max(-1, compositionHistoryIndex.current - 1)
+    }
     state.lastInput = input ? Date.now() : 0
     display(next, !input, changes)
   }

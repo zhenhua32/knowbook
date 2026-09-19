@@ -2,6 +2,48 @@ import { expect, test } from '@playwright/test'
 import { withElectronApp, uiText } from './helpers/electron'
 import { expectSource, selectSource, sourceValue } from './helpers/markdown-source'
 
+test('source history keeps slow IME composition in one undo after pruning @electron', async () => {
+  test.setTimeout(90_000)
+  await withElectronApp(async ({ page }) => {
+    const initial = 'Anchor 中文'
+    const { id, blockId } = await page.evaluate(async initial => {
+      const { id } = await window.knowbook.createDocument(null)
+      await window.knowbook.updateDocument(id, { title: 'Source composition history', summary: '', blocks: [
+        { type: 'paragraph', content: initial, checked: false, depth: 0 }
+      ] })
+      return { id, blockId: (await window.knowbook.getDocumentDetail(id))!.blocks[0].id }
+    }, initial)
+    await page.reload(); await page.locator('.tree-button', { hasText: 'Source composition history' }).click()
+    await page.locator('.document-header-more-button').click()
+    await page.getByRole('button', { name: uiText('Edit Markdown source', '编辑 Markdown 源码'), exact: true }).click()
+    const editor = page.getByRole('textbox', { name: uiText('Markdown body source', 'Markdown 正文源码') })
+    await expectSource(editor, initial)
+    await selectSource(editor, 0, 6)
+    // Real formatting commands fill the bounded history; each pair restores the text.
+    for (let edit = 0; edit < 82; edit++) await editor.press('Control+b')
+    await expectSource(editor, initial)
+    await editor.press('Control+End')
+    const compositionTime = Date.now()
+    await page.clock.setFixedTime(compositionTime)
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Input.imeSetComposition', { text: '候', selectionStart: 1, selectionEnd: 1 })
+    await expectSource(editor, initial + '候')
+    // Cross the normal typing coalescing window while the same composition continues.
+    await page.clock.setFixedTime(compositionTime + 1000)
+    await cdp.send('Input.imeSetComposition', { text: '候选', selectionStart: 2, selectionEnd: 2 })
+    await expectSource(editor, initial + '候选')
+    await cdp.send('Input.insertText', { text: '输入完成' })
+    await expectSource(editor, initial + '输入完成')
+    await editor.press('Control+z'); await expectSource(editor, initial)
+    await editor.press('Control+Shift+Z'); await expectSource(editor, initial + '输入完成')
+    await editor.press('Control+s')
+    await expect(editor).toHaveCount(0)
+    await expect.poll(async () => (await page.evaluate(id => window.knowbook.getDocumentDetail(id), id))?.blocks
+      .map(block => ({ id: block.id, content: block.content }))).toEqual([{ id: blockId, content: initial + '输入完成' }])
+    await cdp.detach()
+  })
+})
+
 test('full Markdown source keeps referenced identities, duplicate edits, history and IME drafts @electron', async () => {
   test.setTimeout(120_000)
   await withElectronApp(async ({ page }) => {
