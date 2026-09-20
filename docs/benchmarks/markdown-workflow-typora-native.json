@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-19T13:44:54.398Z",
+  "recordedAt": "2026-09-20T00:14:37.629Z",
   "application": "Typora",
   "version": "1.14.10",
   "platform": "Windows x64",
@@ -33,7 +33,6 @@
     "columns": 3
   },
   "limitations": [
-    "Three new-directory reopen/save cycles remain incomplete. Only the first native Save As has been verified.",
     "No same-method competitor performance comparison or system IME candidate-window acceptance is claimed."
   ],
   "reopen": {
@@ -63,8 +62,8 @@
   },
   "saveAs": {
     "command": "Ctrl+Shift+S to a new empty directory",
-    "completedSaves": 1,
-    "completedReopens": 0,
+    "completedSaves": 3,
+    "completedReopens": 3,
     "identicalMarkdown": true,
     "savedSha256": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
     "filesCreated": [
@@ -72,6 +71,50 @@
     ],
     "imageReference": "![local image](pixel.svg)",
     "imageCopied": false,
-    "note": "The ordinary Save As route saved only Markdown. Assets were not manually copied into the target directory."
+    "note": "All three Markdown files match the saved edited source byte for byte. Ordinary Save As created only Markdown; the relative image was visibly missing on reopening. No manual asset or target-note copying and no image-copy preference change was performed.",
+    "completedResaves": 3,
+    "rounds": [
+      {
+        "round": 1,
+        "reopened": true,
+        "resaved": true,
+        "sha256": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
+        "identicalMarkdown": true,
+        "filesCreated": [
+          "Acceptance.md"
+        ],
+        "imageCopied": false,
+        "imagePlaceholderObserved": true,
+        "editorText": "Markdown workflow 中文 加粗、斜体、删除线、a|b and reference. First editable paragraph 中文🙂. Second editable paragraph 日本語한글. Lists and table Pending task Finished task ◦ Nested item 3. Ordered three 4. Ordered four Quoted text. Quoted task Left Center Right a|b edited 中文 strong c\\|d 二 old guide Extensions Repeated footnote[^note] and again[^note]. Inline math $E=mc^2$ and ==highlight==. ∑ 𝑖 = 1 𝑛 𝑖 = 𝑛 ( 𝑛 + 1 ) 2 [!tip] A tip Body with formatting. Write Save Reopen literal ~~strike~~, [x], $x$, [[Target]] and [link](Target.md) Links Local heading, target, [[Target]], ![local image](pixel.svg). [^ note ] : A formatted footnote with a reference. ↩ ↩ [ guide ] : https://example.com/guide​ \"Guide\""
+      },
+      {
+        "round": 2,
+        "reopened": true,
+        "resaved": true,
+        "sha256": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
+        "identicalMarkdown": true,
+        "filesCreated": [
+          "Acceptance.md"
+        ],
+        "imageCopied": false,
+        "imagePlaceholderObserved": true,
+        "editorText": "Markdown workflow 中文 加粗、斜体、删除线、a|b and reference. First editable paragraph 中文🙂. Second editable paragraph 日本語한글. Lists and table Pending task Finished task ◦ Nested item 3. Ordered three 4. Ordered four Quoted text. Quoted task Left Center Right a|b edited 中文 strong c\\|d 二 old guide Extensions Repeated footnote[^note] and again[^note]. Inline math $E=mc^2$ and ==highlight==. ∑ 𝑖 = 1 𝑛 𝑖 = 𝑛 ( 𝑛 + 1 ) 2 [!tip] A tip Body with formatting. Write Save Reopen literal ~~strike~~, [x], $x$, [[Target]] and [link](Target.md) Links Local heading, target, [[Target]], ![local image](pixel.svg). [^ note ] : A formatted footnote with a reference. ↩ ↩ [ guide ] : https://example.com/guide​ \"Guide\""
+      },
+      {
+        "round": 3,
+        "reopened": true,
+        "resaved": true,
+        "sha256": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
+        "identicalMarkdown": true,
+        "filesCreated": [
+          "Acceptance.md"
+        ],
+        "imageCopied": false,
+        "imagePlaceholderObserved": true,
+        "editorText": "Markdown workflow 中文 加粗、斜体、删除线、a|b and reference. First editable paragraph 中文🙂. Second editable paragraph 日本語한글. Lists and table Pending task Finished task ◦ Nested item 3. Ordered three 4. Ordered four Quoted text. Quoted task Left Center Right a|b edited 中文 strong c\\|d 二 old guide Extensions Repeated footnote[^note] and again[^note]. Inline math $E=mc^2$ and ==highlight==. ∑ 𝑖 = 1 𝑛 𝑖 = 𝑛 ( 𝑛 + 1 ) 2 [!tip] A tip Body with formatting. Write Save Reopen literal ~~strike~~, [x], $x$, [[Target]] and [link](Target.md) Links Local heading, target, [[Target]], ![local image](pixel.svg). [^ note ] : A formatted footnote with a reference. ↩ ↩ [ guide ] : https://example.com/guide​ \"Guide\""
+      }
+    ],
+    "fullDocumentAndAssetsPreserved": false,
+    "method": "Native Save As into each empty directory; close the saved document window, reopen through the native Open dialog, inspect the editor, and Ctrl+S. The first reopen followed a new application launch. Read files after saving; no source or asset files were written to perform these operations."
   }
 }

@@ -1,0 +1,532 @@
+{
+  "recordedAt": "2026-09-20T11:58:05.165Z",
+  "app": "Obsidian",
+  "version": "1.13.7",
+  "platform": "Windows x64",
+  "method": "Native Windows @oai/sky interaction. File snapshots and byte comparisons are read-only. No source reset between editing, table, task, rename and portable folder rounds.",
+  "configuration": {
+    "communityPlugins": false,
+    "autoUpdateLinks": true,
+    "mermaid": "Fresh vaults show trust prompt; no permission button was automated. Earlier rendered Mermaid evidence remains in markdown-workflow-obsidian.json."
+  },
+  "phases": {
+    "baseline": {
+      "phase": "baseline",
+      "recordedAt": "2026-09-20T11:41:38.559Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433"
+    },
+    "bold": {
+      "phase": "bold",
+      "recordedAt": "2026-09-20T11:41:52.631Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "1e124c1dd52871f5e558791626d64d5892f46216f99a6c4f2d3877e96de29f46"
+    },
+    "undo": {
+      "phase": "undo",
+      "recordedAt": "2026-09-20T11:42:05.896Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433"
+    },
+    "redo": {
+      "phase": "redo",
+      "recordedAt": "2026-09-20T11:42:22.610Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "1e124c1dd52871f5e558791626d64d5892f46216f99a6c4f2d3877e96de29f46"
+    },
+    "reopened": {
+      "phase": "reopened",
+      "recordedAt": "2026-09-20T11:42:42.347Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "1e124c1dd52871f5e558791626d64d5892f46216f99a6c4f2d3877e96de29f46"
+    },
+    "table": {
+      "phase": "table",
+      "recordedAt": "2026-09-20T11:43:39.175Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "deab6c3b8f80a0268784577a7c306d0509f0ddde6b3e609bf9277450e0abbeb5"
+    },
+    "task": {
+      "phase": "task",
+      "recordedAt": "2026-09-20T11:43:54.273Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Target.md#destination), [[Target]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "bfdbdfab8a56e5ec7babd55d65e4325e649fd08236f862c446740936779da08b"
+    },
+    "rename": {
+      "phase": "rename",
+      "recordedAt": "2026-09-20T11:44:28.310Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Renamed.md#destination), [[Renamed]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "788467052785f1be25e4babe5d5bd34001cb9336fb71526e00a989365d281eee"
+    }
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "recordedAt": "2026-09-20T11:49:52.582Z",
+      "sourceDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-native-vault",
+      "reopenedDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-portable-1\\vault",
+      "method": "Copy the previously saved two Markdown files and local SVG to a fresh independent vault, then native open, save, image rendering and link navigation. No Obsidian Markdown-export feature is implied.",
+      "files": [
+        {
+          "name": "Acceptance.md",
+          "bytes": 1102,
+          "sha256": "788467052785f1be25e4babe5d5bd34001cb9336fb71526e00a989365d281eee",
+          "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Renamed.md#destination), [[Renamed]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+        },
+        {
+          "name": "Renamed.md",
+          "bytes": 39,
+          "sha256": "281525be6c84b85c693133219ef66f3215df6476b633094b940a588a4e73b09f",
+          "source": "# Target\n\n## Destination\n\nTarget body.\n"
+        },
+        {
+          "name": "pixel.svg",
+          "bytes": 180,
+          "sha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6"
+        }
+      ]
+    },
+    {
+      "round": 2,
+      "recordedAt": "2026-09-20T11:51:41.825Z",
+      "sourceDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-portable-1\\vault",
+      "reopenedDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-portable-2\\vault",
+      "method": "Copy the previously saved two Markdown files and local SVG to a fresh independent vault, then native open, save, image rendering and link navigation. No Obsidian Markdown-export feature is implied.",
+      "files": [
+        {
+          "name": "Acceptance.md",
+          "bytes": 1102,
+          "sha256": "788467052785f1be25e4babe5d5bd34001cb9336fb71526e00a989365d281eee",
+          "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Renamed.md#destination), [[Renamed]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+        },
+        {
+          "name": "Renamed.md",
+          "bytes": 39,
+          "sha256": "281525be6c84b85c693133219ef66f3215df6476b633094b940a588a4e73b09f",
+          "source": "# Target\n\n## Destination\n\nTarget body.\n"
+        },
+        {
+          "name": "pixel.svg",
+          "bytes": 180,
+          "sha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6"
+        }
+      ]
+    },
+    {
+      "round": 3,
+      "recordedAt": "2026-09-20T11:53:26.135Z",
+      "sourceDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-portable-2\\vault",
+      "reopenedDirectory": "D:\\code\\github\\knowbook\\.tmp\\markdown-competitors\\obsidian-portable-3\\vault",
+      "method": "Copy the previously saved two Markdown files and local SVG to a fresh independent vault, then native open, save, image rendering and link navigation. No Obsidian Markdown-export feature is implied.",
+      "files": [
+        {
+          "name": "Acceptance.md",
+          "bytes": 1102,
+          "sha256": "788467052785f1be25e4babe5d5bd34001cb9336fb71526e00a989365d281eee",
+          "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.**\n\n**Second** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](Renamed.md#destination), [[Renamed]], ![local image](pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n"
+        },
+        {
+          "name": "Renamed.md",
+          "bytes": 39,
+          "sha256": "281525be6c84b85c693133219ef66f3215df6476b633094b940a588a4e73b09f",
+          "source": "# Target\n\n## Destination\n\nTarget body.\n"
+        },
+        {
+          "name": "pixel.svg",
+          "bytes": 180,
+          "sha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6"
+        }
+      ]
+    }
+  ],
+  "observations": [
+    {
+      "phase": "selection",
+      "selectedText": "editable paragraph 中文🙂.\nSecond",
+      "documentText": "​\n​\n￼\n# Markdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\na|b\n￼\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n￼\n​\nA tip\nBody with formatting.\n￼",
+      "elements": [
+        "194 表格",
+        "196 列标题 Left",
+        "199 列标题 Center",
+        "201 列标题 Right",
+        "204 项 a|b",
+        "207 项 c\\|d",
+        "256 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "reopened",
+      "documentText": "​\n​\n￼\n# Markdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\na|b\n￼\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n￼\n​\nA tip\nBody with formatting.\n￼",
+      "elements": [
+        "443 表格",
+        "445 列标题 Left",
+        "448 列标题 Center",
+        "450 列标题 Right",
+        "453 项 a|b",
+        "456 项 c\\|d",
+        "521 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "rename",
+      "documentText": "​\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\n￼\n￼\na|b edited 中文\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n￼\n​\nA tip\nBody with formatting.\n￼",
+      "elements": [
+        "538 表格",
+        "540 列标题 Left",
+        "543 列标题 Center",
+        "545 列标题 Right",
+        "548 项 a|b edited 中文",
+        "555 项 c\\|d",
+        "575 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "read-table",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\n0 条反向链接\n￼\n149 个词\n1,054 个字符\n￼",
+      "elements": [
+        "538 表格",
+        "540 列标题 Left",
+        "543 列标题 Center",
+        "545 列标题 Right",
+        "548 项 a|b edited 中文",
+        "555 项 c\\|d",
+        "663 文本 0 条反向链接",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "read-extensions-with-trust-prompt",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,054 个字符\n￼",
+      "elements": [
+        "684 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "715 表格",
+        "717 列标题 Left",
+        "718 列标题 Center",
+        "719 列标题 Right",
+        "721 项 a|b edited 中文",
+        "723 项 c\\|d",
+        "728 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "733 链接 [1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "735 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "766 文本 在此仓库中显示 Mermaid 图表？",
+        "767 文本 仅在你信任此仓库的内容时才允许。",
+        "768 按钮 允许",
+        "783 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "785 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "787 链接 Renamed Value: app://obsidian.md/Renamed",
+        "789 图形 local image",
+        "797 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "799 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-6fa1b133d51b9294",
+        "800 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-6fa1b133d51b9294",
+        "663 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "read-links-image",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,054 个字符\n￼",
+      "elements": [
+        "684 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "715 表格",
+        "717 列标题 Left",
+        "718 列标题 Center",
+        "719 列标题 Right",
+        "721 项 a|b edited 中文",
+        "723 项 c\\|d",
+        "728 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "733 链接 [1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "735 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "766 文本 在此仓库中显示 Mermaid 图表？",
+        "767 文本 仅在你信任此仓库的内容时才允许。",
+        "768 按钮 允许",
+        "783 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "785 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "787 链接 Renamed Value: app://obsidian.md/Renamed",
+        "789 图形 local image",
+        "797 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "799 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-6fa1b133d51b9294",
+        "800 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-6fa1b133d51b9294",
+        "663 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "renamed-heading-opened",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n2 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "832 标题 ​ Destination",
+        "837 文本 2 条反向链接",
+        "2 条反向链接"
+      ]
+    },
+    {
+      "phase": "round-1-open",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\n​\n￼\nRound 1\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nRound 1\n/\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,056 个字符\n￼",
+      "elements": [
+        "886 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "917 表格",
+        "919 列标题 Left",
+        "920 列标题 Center",
+        "921 列标题 Right",
+        "923 项 a|b edited 中文",
+        "925 项 c\\|d",
+        "930 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "934 链接 [1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "936 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "967 文本 在此仓库中显示 Mermaid 图表？",
+        "968 文本 仅在你信任此仓库的内容时才允许。",
+        "969 按钮 允许",
+        "984 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "986 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "988 链接 Renamed Value: app://obsidian.md/Renamed",
+        "990 图形 local image",
+        "998 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "1000 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-6fa1b133d51b9294",
+        "1001 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-6fa1b133d51b9294",
+        "1002 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "round-1-links-image",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\n​\n￼\nRound 1\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nRound 1\n/\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,056 个字符\n￼",
+      "elements": [
+        "886 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "917 表格",
+        "919 列标题 Left",
+        "920 列标题 Center",
+        "921 列标题 Right",
+        "923 项 a|b edited 中文",
+        "925 项 c\\|d",
+        "930 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "934 链接 [1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "936 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-6fa1b133d51b9294",
+        "967 文本 在此仓库中显示 Mermaid 图表？",
+        "968 文本 仅在你信任此仓库的内容时才允许。",
+        "969 按钮 允许",
+        "984 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "986 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "988 链接 Renamed Value: app://obsidian.md/Renamed",
+        "990 图形 local image",
+        "998 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "1000 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-6fa1b133d51b9294",
+        "1001 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-6fa1b133d51b9294",
+        "1002 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "same-vault-copy-resolved-root-target",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nobsidian-native-vault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\n​\n￼\nRound 1\n​\n​\n￼\nRound 2\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n6 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "1012 标题 ​ Destination",
+        "1024 文本 6 条反向链接",
+        "6 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-1-open",
+      "documentText": "​\n​\n￼\n# Markdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\na|b edited 中文\n￼\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.",
+      "elements": [
+        "196 表格",
+        "198 列标题 Left",
+        "201 列标题 Center",
+        "203 列标题 Right",
+        "206 项 a|b edited 中文",
+        "209 项 c\\|d",
+        "242 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-1-read-links-image",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,056 个字符\n￼",
+      "elements": [
+        "285 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "316 表格",
+        "318 列标题 Left",
+        "319 列标题 Center",
+        "320 列标题 Right",
+        "322 项 a|b edited 中文",
+        "324 项 c\\|d",
+        "329 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "333 链接 [1] Value: app://obsidian.md/index.html#fn-1-42061c2007f420be",
+        "335 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-42061c2007f420be",
+        "367 文本 在此仓库中显示 Mermaid 图表？",
+        "368 文本 仅在你信任此仓库的内容时才允许。",
+        "369 按钮 允许",
+        "384 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "386 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "388 链接 Renamed Value: app://obsidian.md/Renamed",
+        "390 图形 local image",
+        "398 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "400 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-42061c2007f420be",
+        "401 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-42061c2007f420be",
+        "242 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-1-target",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n2 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "412 标题 ​ Destination",
+        "415 文本 2 条反向链接",
+        "2 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-2-open",
+      "documentText": "​\n​\n￼\n# Markdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\na|b edited 中文\n￼\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.",
+      "elements": [
+        "196 表格",
+        "198 列标题 Left",
+        "201 列标题 Center",
+        "203 列标题 Right",
+        "206 项 a|b edited 中文",
+        "209 项 c\\|d",
+        "242 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-2-read-links-image",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,056 个字符\n￼",
+      "elements": [
+        "290 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "321 表格",
+        "323 列标题 Left",
+        "324 列标题 Center",
+        "325 列标题 Right",
+        "327 项 a|b edited 中文",
+        "329 项 c\\|d",
+        "334 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "338 链接 [1] Value: app://obsidian.md/index.html#fn-1-d3fa20abe279bc77",
+        "340 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-d3fa20abe279bc77",
+        "372 文本 在此仓库中显示 Mermaid 图表？",
+        "373 文本 仅在你信任此仓库的内容时才允许。",
+        "374 按钮 允许",
+        "389 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "391 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "393 链接 Renamed Value: app://obsidian.md/Renamed",
+        "395 图形 local image",
+        "403 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "405 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-d3fa20abe279bc77",
+        "406 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-d3fa20abe279bc77",
+        "242 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-2-target",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n2 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "415 标题 ​ Destination",
+        "420 文本 2 条反向链接",
+        "2 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-3-open",
+      "documentText": "​\n​\n￼\n# Markdown workflow\n中文 加粗、斜体、删除线、a|b and \nreference\n.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n​\n￼\nLists and table\n￼\n Pending task\n​\n​\n￼\n￼\n Finished task  \n​\n-\n​ \nNested item\n3. Ordered three\n4. Ordered four\n​\n> Quoted text.\n​\n>\n​\n> - [ ] Quoted task\nLeft\n￼\n￼\nCenter\n￼\nRight\n￼\na|b edited 中文\n￼\nstrong\nc\\|d\n二\n￼\nold\n[guide][guide]\n￼\n￼\n​\n​\n￼\nExtensions\nRepeated footnote[^note] and again[^note].\nInline math \nE\n=\nm\nc\n2\n and highlight.",
+      "elements": [
+        "196 表格",
+        "198 列标题 Left",
+        "201 列标题 Center",
+        "203 列标题 Right",
+        "206 项 a|b edited 中文",
+        "209 项 c\\|d",
+        "242 文本 0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-3-read-links-image",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nAcceptance\n￼\n￼\n￼\n￼\n￼\n￼\nAcceptance\n￼\n￼\nAcceptance\n​\n￼\nMarkdown workflow\n中文 加粗、斜体、删除线、a|b and reference.\nFirst editable paragraph 中文🙂.\nSecond editable paragraph 日本語한글.\n​\n￼\nLists and table\n￼\nPending task\n​\n￼\n￼\nFinished task\n​\n​​\n​\nNested item\n3. Ordered three\n4. Ordered four\nQuoted text.\n￼\nQuoted task\nLeft\nCenter\nRight\na|b edited 中文\nstrong\nc\\|d\n二\nold\nguide\n​\n￼\nExtensions\nRepeated footnote[1] and again[1-1].\nInline math \nE\n=\nm\nc\n2\n and highlight.\nn\n∑\ni\n=\n1\ni\n=\n￼\nn\n(\nn\n+\n1\n)\n￼\n2\n￼\n​\nA tip\nBody with formatting.\n在此仓库中显示 Mermaid 图表？\n仅在你信任此仓库的内容时才允许。\n允许\nflowchart\n LR\n  A\n[Write] --> B[Save] --> C[Reopen]\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](Target.md)\n​\n￼\nLinks\nLocal heading, target, Renamed, \n￼\n.\n￼\n1. A formatted footnote with a reference.↩︎↩︎\n0 条反向链接\n￼\n149 个词\n1,056 个字符\n￼",
+      "elements": [
+        "285 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "316 表格",
+        "318 列标题 Left",
+        "319 列标题 Center",
+        "320 列标题 Right",
+        "322 项 a|b edited 中文",
+        "324 项 c\\|d",
+        "329 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "333 链接 [1] Value: app://obsidian.md/index.html#fn-1-cc49a467bf9833ef",
+        "335 链接 [1-1] Value: app://obsidian.md/index.html#fn-1-cc49a467bf9833ef",
+        "367 文本 在此仓库中显示 Mermaid 图表？",
+        "368 文本 仅在你信任此仓库的内容时才允许。",
+        "369 按钮 允许",
+        "384 链接 Local heading Value: app://obsidian.md/index.html#lists-and-table",
+        "386 链接 target Value: app://obsidian.md/Renamed.md#destination",
+        "388 链接 Renamed Value: app://obsidian.md/Renamed",
+        "390 图形 local image",
+        "398 链接 https://example.com/guide Description: Guide Value: https://example.com/guide",
+        "400 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-cc49a467bf9833ef",
+        "401 链接 ↩︎ Value: app://obsidian.md/index.html#fnref-1-1-cc49a467bf9833ef",
+        "242 文本 0 条反向链接",
+        "在此仓库中显示 Mermaid 图表？",
+        "仅在你信任此仓库的内容时才允许。",
+        "允许",
+        "0 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-3-target",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n2 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "413 标题 ​ Destination",
+        "416 文本 2 条反向链接",
+        "2 条反向链接"
+      ]
+    },
+    {
+      "phase": "portable-3-wiki-target",
+      "documentText": "￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\nvault\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n￼\n​\nAcceptance\n​\npixel\nSVG\n​\nRenamed\nRenamed\n￼\n￼\n￼\n￼\n￼\n￼\nRenamed\n￼\n￼\nRenamed\n​\n￼\nTarget\n​\n￼\nDestination\nTarget body.\n2 条反向链接\n￼\n4 个词\n39 个字符\n￼",
+      "elements": [
+        "587 标题 ​ Destination",
+        "592 文本 2 条反向链接",
+        "2 条反向链接"
+      ]
+    }
+  ],
+  "assertions": {
+    "continuousEdits": true,
+    "paragraphAwareBold": true,
+    "undoRestoresOriginal": true,
+    "redoAndTabReopenPreserved": true,
+    "tableThreeColumnsAndAlignment": true,
+    "onlyPendingTaskChanged": true,
+    "ordinaryAndWikiRename": true,
+    "literalCodeUnchanged": true,
+    "portableRounds": 3,
+    "markdownAndImageBytesPreserved": true,
+    "headingNavigationEachRound": true,
+    "wikiNavigationFinalRound": true
+  },
+  "knownDifferences": [
+    "Code table cell renders c\\|d, retaining backslash. Table editing repads table whitespace; text outside the table remains unchanged.",
+    "Copying same-named files to child folders inside the original vault resolved the short Renamed.md link to the root target. This diagnostic was not counted as a successful isolated-vault round. Three subsequent independent vaults each contained only the transferred files and passed target navigation."
+  ],
+  "limitations": [
+    "Portable migration explicitly copies both Markdown files and the SVG. It does not test or claim an Obsidian Markdown-export command.",
+    "Native functional test only; no performance ranking follows.",
+    "The fresh vault Mermaid trust prompt remains pending user handling; raw source is preserved.",
+    "The initial format reopen closes and reopens a note tab in the same process; independent vault rounds use fresh application processes."
+  ]
+}

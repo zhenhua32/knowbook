@@ -1,0 +1,231 @@
+{
+  "product": "Joplin",
+  "version": "3.7.18",
+  "recordedAt": "2026-09-20T11:11:44.228Z",
+  "inputSha256": "06d5cb9602c323e5f7130e1b53f8c34f8ce5610856c134cd5a1d9a90d03c1433",
+  "download": "https://github.com/laurent22/joplin/releases/download/v3.7.18/JoplinPortable.exe",
+  "binarySha256": "f4c82cfd69d629402c2cab3862970b5b447c36bca0396e1f61ebd923db5194cb",
+  "runtime": {
+    "electron": "42.3.0",
+    "chromium": "148.0.7778.180",
+    "node": "24.15.0",
+    "platform": "Windows x64"
+  },
+  "method": "Native Windows UI selection, Ctrl+B / Ctrl+Z / Ctrl+Y, graceful quit and relaunch, inline table edit, task click, title rename, viewer navigation, notebook MD export and directory reimport. Evidence reads use read-only SQLite and exported files; no database or source-file writes perform the measured operations.",
+  "settings": "Isolated test profile, default Markdown options, built-in plugins only, no synchronisation target configured; default inline Markdown rendering retained; ordinary MD export without front matter",
+  "formatting": {
+    "selectedText": "editable paragraph 中文🙂.\n\nSecond",
+    "shortcut": "Ctrl+B",
+    "undo": "Ctrl+Z",
+    "redo": "Ctrl+Y",
+    "undoRestoresExactSource": true,
+    "redoRestoresExactSource": true,
+    "coldReopenPreservesSource": true,
+    "independentParagraphBoldSpans": false,
+    "observation": "One outer pair of bold markers spans the blank line and remains literal in the rendered view."
+  },
+  "table": {
+    "edit": "a|b -> a|b edited 中文",
+    "otherSourcePreserved": true,
+    "threeColumnsAndAlignmentPreserved": true,
+    "codeCellRendered": "c|d",
+    "observation": "Native inline table edit aligns Markdown source whitespace; text outside the table is byte-identical."
+  },
+  "task": {
+    "pendingChecked": true,
+    "onlyTargetTaskChanged": true
+  },
+  "rename": {
+    "from": "Target",
+    "to": "Renamed",
+    "ordinaryInternalIdUnchanged": true,
+    "nativeTargetNavigationVerified": true,
+    "wikiLinkRemainsLiteral": "[[Target]]",
+    "targetBody": "# Target\n\n## Destination\n\nTarget body.\n"
+  },
+  "rendering": {
+    "footnoteAndTwoBacklinks": true,
+    "inlineAndBlockMath": true,
+    "mermaid": true,
+    "localImage": true,
+    "highlight": true,
+    "tipRenderedAsOrdinaryQuote": true,
+    "wikiLinkRenderedAsLiteral": true
+  },
+  "phases": {
+    "baseline": {
+      "recordedAt": "2026-09-20T10:46:03.387Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "ddd16bc000cdfddc3ef5c91f1e3e61e5fa49fe9ff325d99bc721dec58d0e3dca"
+    },
+    "bold": {
+      "recordedAt": "2026-09-20T10:47:03.593Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "74b2a143fb6821bbc0f7525cefef53238f487167e0525a0344b35684a9fe8f6c"
+    },
+    "undo": {
+      "recordedAt": "2026-09-20T10:47:49.416Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst editable paragraph 中文🙂.\n\nSecond editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "ddd16bc000cdfddc3ef5c91f1e3e61e5fa49fe9ff325d99bc721dec58d0e3dca"
+    },
+    "redo": {
+      "recordedAt": "2026-09-20T10:48:40.072Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "74b2a143fb6821bbc0f7525cefef53238f487167e0525a0344b35684a9fe8f6c"
+    },
+    "reopened": {
+      "recordedAt": "2026-09-20T10:49:51.035Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a\\|b | **strong** | `c\\|d` |\n| 二 | ~~old~~ | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "74b2a143fb6821bbc0f7525cefef53238f487167e0525a0344b35684a9fe8f6c"
+    },
+    "table": {
+      "recordedAt": "2026-09-20T10:55:49.606Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [ ] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "6235a91ef88d4e6805794fdcf0da0fea64d33f2c0ec00893205b526a51670cde"
+    },
+    "task": {
+      "recordedAt": "2026-09-20T10:56:19.193Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "a6d4f2503a9f801097024ad9a28888c0595cb45893ffce5f8ea9e57c4ce5ae92"
+    },
+    "rename": {
+      "recordedAt": "2026-09-20T10:57:06.487Z",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/ad3995d4d8ef476db3d3e7ef3004ccfd#destination), [[Target]], ![local image](:/62b9704e54124b9e811b57a8bd849921).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "a6d4f2503a9f801097024ad9a28888c0595cb45893ffce5f8ea9e57c4ce5ae92"
+    }
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "recordedAt": "2026-09-20T11:02:42.869Z",
+      "importedFromExport": 1,
+      "reexportedTo": 2,
+      "notebook": "markdown-workflows (1)",
+      "acceptanceId": "9b0517ea0a9148768faefb7ce23669a6",
+      "targetId": "e67bcda80bf94276a97ef47c8d0552b7",
+      "imageId": "de3e6343d8454f07ab9d371af30e226d",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/e67bcda80bf94276a97ef47c8d0552b7)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/e67bcda80bf94276a97ef47c8d0552b7#destination), [[Target]], ![local image](:/de3e6343d8454f07ab9d371af30e226d).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "6271cd7c931f1bf613942127c841c88283059bb7ae7d13e41406d4a5478eb6ad",
+      "sourcePreservedAfterMappingNewIds": true,
+      "nativeReopenVerified": true,
+      "exportedImageBytesPreserved": true
+    },
+    {
+      "round": 2,
+      "recordedAt": "2026-09-20T11:05:48.513Z",
+      "importedFromExport": 2,
+      "reexportedTo": 3,
+      "notebook": "markdown-workflows (1) (1)",
+      "acceptanceId": "3f6bf54c49554de9ba8dc563134ed235",
+      "targetId": "9646b55fb6ae42daab6b57f7e8b1984a",
+      "imageId": "07dc18d170d1443ab3bea1ba18c8f0fa",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/9646b55fb6ae42daab6b57f7e8b1984a)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/9646b55fb6ae42daab6b57f7e8b1984a#destination), [[Target]], ![local image](:/07dc18d170d1443ab3bea1ba18c8f0fa).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "bdc5544dd2c12bd3ba1666b235bf7ca646150e16394f8ae7fe97230e0c4fa3f1",
+      "sourcePreservedAfterMappingNewIds": true,
+      "nativeReopenVerified": true,
+      "exportedImageBytesPreserved": true
+    },
+    {
+      "round": 3,
+      "recordedAt": "2026-09-20T11:09:25.845Z",
+      "importedFromExport": 3,
+      "reexportedTo": 4,
+      "notebook": "markdown-workflows (1) (1) (1)",
+      "acceptanceId": "d6886998498f46c58f462d6494b22151",
+      "targetId": "142546d303c8432680c1ab38c616649d",
+      "imageId": "13665ed700c0470b8a8e551dd12b26c6",
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](:/142546d303c8432680c1ab38c616649d)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](:/142546d303c8432680c1ab38c616649d#destination), [[Target]], ![local image](:/13665ed700c0470b8a8e551dd12b26c6).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "041bd45eb04b2e965a6289f96fbe95e8802a1f777d0c1f0c280b932c885da09e",
+      "sourcePreservedAfterMappingNewIds": true,
+      "nativeReopenVerified": true,
+      "exportedImageBytesPreserved": true
+    }
+  ],
+  "exports": [
+    {
+      "export": 1,
+      "folder": "markdown-workflows",
+      "files": [
+        "markdown-workflows/Acceptance.md",
+        "markdown-workflows/Renamed.md",
+        "_resources/pixel.svg"
+      ],
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](../markdown-workflows/Renamed.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](../markdown-workflows/Renamed.md#destination), [[Target]], ![local image](../_resources/pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "7662c8c800e96beee67f3f564957b0be6e729d0e9c764bf9c5b1da1892d3f73d",
+      "targetPath": "../markdown-workflows/Renamed.md",
+      "imagePath": "../_resources/pixel.svg",
+      "imageSha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6",
+      "targetAndImageResolve": true,
+      "sourcePreservedAfterMappingInternalIdsToPaths": true
+    },
+    {
+      "export": 2,
+      "folder": "markdown-workflows (1)",
+      "files": [
+        "markdown-workflows (1)/Acceptance.md",
+        "markdown-workflows (1)/Renamed.md",
+        "_resources/pixel.svg"
+      ],
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](../markdown-workflows%20%281%29/Renamed.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](../markdown-workflows%20%281%29/Renamed.md#destination), [[Target]], ![local image](../_resources/pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "76088c156bcbfdcac72e47a519af49e0202cde4d39001414e8e090f8ed13a234",
+      "targetPath": "../markdown-workflows%20%281%29/Renamed.md",
+      "imagePath": "../_resources/pixel.svg",
+      "imageSha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6",
+      "targetAndImageResolve": true,
+      "sourcePreservedAfterMappingInternalIdsToPaths": true
+    },
+    {
+      "export": 3,
+      "folder": "markdown-workflows (1) (1)",
+      "files": [
+        "markdown-workflows (1) (1)/Acceptance.md",
+        "markdown-workflows (1) (1)/Renamed.md",
+        "_resources/pixel.svg"
+      ],
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](../markdown-workflows%20%281%29%20%281%29/Renamed.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](../markdown-workflows%20%281%29%20%281%29/Renamed.md#destination), [[Target]], ![local image](../_resources/pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "3dc88a3258ee0a012e6c8821c9ea7b1d05f11567234dbe960796cd92624b4b09",
+      "targetPath": "../markdown-workflows%20%281%29%20%281%29/Renamed.md",
+      "imagePath": "../_resources/pixel.svg",
+      "imageSha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6",
+      "targetAndImageResolve": true,
+      "sourcePreservedAfterMappingInternalIdsToPaths": true
+    },
+    {
+      "export": 4,
+      "folder": "markdown-workflows (1) (1) (1)",
+      "files": [
+        "markdown-workflows (1) (1) (1)/Acceptance.md",
+        "markdown-workflows (1) (1) (1)/Renamed.md",
+        "_resources/pixel.svg"
+      ],
+      "source": "# Markdown workflow\n\n中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide].\n\nFirst **editable paragraph 中文🙂.\n\nSecond** editable paragraph 日本語한글.\n\n## Lists and table\n\n- [x] Pending task\n- [x] Finished task\n  - Nested **item**\n\n3. Ordered three\n4. Ordered four\n\n> Quoted **text**.\n>\n> - [ ] Quoted task\n\n| Left           |   Center   |          Right |\n| :------------- | :--------: | -------------: |\n| a\\|b edited 中文 | **strong** |         `c\\|d` |\n| 二              |  ~~old~~   | [guide][guide] |\n\n## Extensions\n\nRepeated footnote[^note] and again[^note].\n\nInline math $E=mc^2$ and ==highlight==.\n\n$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$\n\n> [!tip] A tip\n> Body with **formatting**.\n\n```mermaid\nflowchart LR\n  A[Write] --> B[Save] --> C[Reopen]\n```\n\n```text\nliteral ~~strike~~, [x], $x$, [[Target]] and [link](../markdown-workflows%20%281%29%20%281%29%20%281%29/Renamed.md)\n```\n\n## Links\n\n[Local heading](#lists-and-table), [target](../markdown-workflows%20%281%29%20%281%29%20%281%29/Renamed.md#destination), [[Target]], ![local image](../_resources/pixel.svg).\n\n[^note]: A **formatted** footnote with a [reference][guide].\n\n[guide]: https://example.com/guide \"Guide\"\n",
+      "sha256": "6fc0daef76d940412fc55573352305513a88c4905816757270f486d4713adab7",
+      "targetPath": "../markdown-workflows%20%281%29%20%281%29%20%281%29/Renamed.md",
+      "imagePath": "../_resources/pixel.svg",
+      "imageSha256": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6",
+      "targetAndImageResolve": true,
+      "sourcePreservedAfterMappingInternalIdsToPaths": true
+    }
+  ],
+  "nativeExcerpts": {
+    "table": "70 选项 (selectable) Acceptance ID: list-note-abc547544f6c465496e696625b832e2d\n76 编辑 (settable, string) 笔记标题 Value: Acceptance\n107 编辑 (settable, string) Markdown 编辑器 Value: # Markdown workflow 中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide]. First **editable paragraph 中文🙂. Second** editable paragraph 日本語한글. ## Lists and table Pending task Finished task Nested **item** 3. Ordered three 4. Ordered four > Quoted **text**. > > Quoted task Left Center Right a|b edited 中文 + strong c|d 二 old [guide][guide] ## Extensions Repeated footnote[^note] and again[^note]. Inline math $E=mc^2$ and ==highlight==. $$ \\sum_{i=1}^{n} i = \\frac{n(n+1)}{2} $$ > [!tip] A tip > Body with **formatting**. ```mermaid flowchart LR A[Write] --> B[Save] --> C[Reopen]\n332 项 a|b edited 中文 +\n337 项 c|d\n> [!tip] A tip",
+    "task": "70 选项 (selectable) Acceptance ID: list-note-abc547544f6c465496e696625b832e2d\n76 编辑 (settable, string) 笔记标题 Value: Acceptance\n107 编辑 (settable, string) Markdown 编辑器 Value: # Markdown workflow 中文 **加粗**、*斜体*、~~删除线~~、`a|b` and [reference][guide]. First **editable paragraph 中文🙂. Second** editable paragraph 日本語한글. ## Lists and table Pending task Finished task Nested **item** 3. Ordered three 4. Ordered four > Quoted **text**. > > Quoted task Left Center Right a|b edited 中文 strong c|d 二 old [guide][guide] ## Extensions Repeated footnote[^note] and again[^note]. Inline math $E=mc^2$ and ==highlight==. $$ \\sum_{i=1}^{n} i = \\frac{n(n+1)}{2} $$ > [!tip] A tip > Body with **formatting**. ```mermaid flowchart LR A[Write] --> B[Save] --> C[Reopen]\n332 项 a|b edited 中文\n337 项 c|d\n> [!tip] A tip",
+    "renderTop": "70 选项 (selectable) Acceptance ID: list-note-abc547544f6c465496e696625b832e2d\n76 编辑 (settable, string) 笔记标题 Value: Acceptance\n567 标题 Markdown workflow ID: markdown-workflow\n606 项 a|b edited 中文\n608 项 c|d\n621 数学\n630 数学\n646 文本 [!tip] A tip\n653 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n657 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n658 文本 , [[Target]],\n659 图形 local image",
+    "renderExtensions": "70 选项 (selectable) Acceptance ID: list-note-abc547544f6c465496e696625b832e2d\n76 编辑 (settable, string) 笔记标题 Value: Acceptance\n567 标题 Markdown workflow ID: markdown-workflow\n606 项 a|b edited 中文\n608 项 c|d\n621 数学\n630 数学\n646 文本 [!tip] A tip\n653 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n657 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n658 文本 , [[Target]],\n659 图形 local image",
+    "renderLinks": "70 选项 (selectable) Acceptance ID: list-note-abc547544f6c465496e696625b832e2d\n76 编辑 (settable, string) 笔记标题 Value: Acceptance\n567 标题 Markdown workflow ID: markdown-workflow\n606 项 a|b edited 中文\n608 项 c|d\n621 数学\n630 数学\n646 文本 [!tip] A tip\n653 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/ad3995d4d8ef476db3d3e7ef3004ccfd)\n657 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n658 文本 , [[Target]],\n659 图形 local image",
+    "round1": "1061 选项 (selectable) Acceptance ID: list-note-9b0517ea0a9148768faefb7ce23669a6\n1015 编辑 (settable, string) 笔记标题 Value: Acceptance\n1073 标题 Markdown workflow ID: markdown-workflow\n1112 项 a|b edited 中文\n1114 项 c|d\n1127 数学\n1136 数学\n1152 文本 [!tip] A tip\n1162 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/e67bcda80bf94276a97ef47c8d0552b7)\n1166 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n1167 文本 , [[Target]],\n1168 图形 local image",
+    "round2": "1856 选项 (selectable) Acceptance ID: list-note-3f6bf54c49554de9ba8dc563134ed235\n1703 编辑 (settable, string) 笔记标题 Value: Acceptance\n1869 标题 Markdown workflow ID: markdown-workflow\n1908 项 a|b edited 中文\n1910 项 c|d\n1923 数学\n1932 数学\n1948 文本 [!tip] A tip\n1958 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/9646b55fb6ae42daab6b57f7e8b1984a)\n1962 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n1963 文本 , [[Target]],\n1964 图形 local image",
+    "round3": "2656 选项 (selectable) Acceptance ID: list-note-d6886998498f46c58f462d6494b22151\n2504 编辑 (settable, string) 笔记标题 Value: Acceptance\n2668 标题 Markdown workflow ID: markdown-workflow\n2707 项 a|b edited 中文\n2709 项 c|d\n2722 数学\n2731 数学\n2747 文本 [!tip] A tip\n2757 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/142546d303c8432680c1ab38c616649d)\n2761 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n2762 文本 , [[Target]],\n2763 图形 local image",
+    "round3Links": "2656 选项 (selectable) Acceptance ID: list-note-d6886998498f46c58f462d6494b22151\n2504 编辑 (settable, string) 笔记标题 Value: Acceptance\n2668 标题 Markdown workflow ID: markdown-workflow\n2707 项 a|b edited 中文\n2709 项 c|d\n2722 数学\n2731 数学\n2747 文本 [!tip] A tip\n2757 文本 literal ~~strike~~, [x], $x$, [[Target]] and [link](:/142546d303c8432680c1ab38c616649d)\n2761 链接 target Value: joplin-content://note-viewer/D:/code/github/knowbook/.tmp/markdown-competitors/joplin-3.7.18/resources/app.asar/gui/note-viewer/index.html#\n2762 文本 , [[Target]],\n2763 图形 local image",
+    "round3Target": "2656 选项 (selectable) Acceptance ID: list-note-d6886998498f46c58f462d6494b22151\n2504 编辑 (settable, string) 笔记标题 Value: Renamed\n2781 标题 Destination ID: destination"
+  },
+  "differences": [
+    "Cross-paragraph bold inserts one pair of markers across a blank line, leaving literal markers in this example.",
+    "Import and export also rewrite the apparent link inside the text code fence; code literal fidelity is not preserved.",
+    "Wiki link and [!tip] remain literal with the default tested settings."
+  ],
+  "limitations": [
+    "The three rounds import into new notebooks in the same isolated profile. Joplin adds name suffixes, and creates new note/resource IDs; raw hashes differ. Only explicit address mapping is used for the exact source comparisons.",
+    "No competitor performance comparison or operating-system IME result is claimed by this record."
+  ]
+}

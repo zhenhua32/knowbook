@@ -1,0 +1,803 @@
+{
+  "recordedAt": "2026-09-20T13:00:46.243Z",
+  "testedKnowBookCommit": "c8ecaa528ceabe8f28902e50ec8cc701db11b461",
+  "inputs": [
+    {
+      "blocks": 800,
+      "characters": 101769,
+      "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+    },
+    {
+      "blocks": 4000,
+      "characters": 512089,
+      "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+    }
+  ],
+  "method": {
+    "input": "Windows native numeric 7 key through @oai/sky, full source editor, Ctrl+Home, separate observed inputs",
+    "timing": "Trusted non-composing insertText event capture to second requestAnimationFrame; 2 warmups then 7 samples. Full document read and hash comparison occur after the timing ends.",
+    "validation": "Nine leading 7 characters and otherwise exact source. Typora fallback uses one leading 7 and native Ctrl+S, without a timing claim.",
+    "automation": "Native Windows actions perform measured edits; local CDP is read-only renderer instrumentation. Each benchmark application is closed before measuring the next. No builds or tests run during sampling."
+  },
+  "configuration": {
+    "gpu": "--disable-gpu for each app",
+    "additionalFlags": {
+      "knowbook": [
+        "--no-sandbox",
+        "--disable-software-rasterizer",
+        "--in-process-gpu"
+      ],
+      "obsidian": [
+        "--disable-software-rasterizer",
+        "--in-process-gpu"
+      ],
+      "typora": [
+        "--disable-software-rasterizer",
+        "--in-process-gpu"
+      ],
+      "joplin": []
+    },
+    "joplinFlagDifference": "Joplin rejected --disable-software-rasterizer; its recorded run omitted that flag and --in-process-gpu. It retained default inline Markdown styling in the editor-only layout.",
+    "typoraDebugger": "Typora rejected --remote-debugging-port=0 with \"Arguments not allowed debug in production main thread\". Normal native input/save checks were completed without the debugger flag."
+  },
+  "reports": [
+    {
+      "recordedAt": "2026-09-20T12:31:29.098Z",
+      "app": "knowbook",
+      "blocks": 800,
+      "mode": "Full Markdown source; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) knowbook/0.1.2 Chrome/134.0.6998.205 Electron/35.7.5 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 984,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 101769,
+        "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 51,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 46.900000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 56.80000001192093,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 57,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 45.30000001192093,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 49.20000001788139,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 70.59999999403954,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 31.700000017881393,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 51.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 51.5,
+        "p95Ms": 70.59999999403954
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 101778,
+        "sha256": "051e90084519d79536507b2644a3bfe1b71d227b8b69487a087bc9deb287ab4b"
+      }
+    },
+    {
+      "recordedAt": "2026-09-20T12:36:34.998Z",
+      "app": "knowbook",
+      "blocks": 4000,
+      "mode": "Full Markdown source; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) knowbook/0.1.2 Chrome/134.0.6998.205 Electron/35.7.5 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 984,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 512089,
+        "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 65.60000002384186,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 69,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 70,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 25.69999998807907,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 62.19999998807907,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 24.600000023841858,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 57.80000001192093,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 26.19999998807907,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 52.900000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 52.900000005960464,
+        "p95Ms": 70
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 512098,
+        "sha256": "156c51069120249c4d0069f2da3f4e0f4c22bb9f63e0f783f81b859ca1dc7b8c"
+      }
+    },
+    {
+      "recordedAt": "2026-09-20T12:15:45.186Z",
+      "app": "obsidian",
+      "blocks": 800,
+      "mode": "Source mode; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) obsidian/1.13.7 Chrome/150.0.7871.212 Electron/43.3.0 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 1032,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 101769,
+        "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 5.300000011920929,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 5.800000011920929,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 4.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 5.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 4.200000017881393,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 6.699999988079071,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 3.2999999821186066,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 3.7000000178813934,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 4.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 4.5,
+        "p95Ms": 6.699999988079071
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 101778,
+        "sha256": "051e90084519d79536507b2644a3bfe1b71d227b8b69487a087bc9deb287ab4b"
+      }
+    },
+    {
+      "recordedAt": "2026-09-20T12:18:21.529Z",
+      "app": "obsidian",
+      "blocks": 4000,
+      "mode": "Source mode; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) obsidian/1.13.7 Chrome/150.0.7871.212 Electron/43.3.0 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 1032,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 512089,
+        "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 5.200000017881393,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 5.700000017881393,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 5.699999988079071,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 4.4000000059604645,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 6.899999976158142,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 6.199999988079071,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 3.5999999940395355,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 3.9000000059604645,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 3.800000011920929,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 4.4000000059604645,
+        "p95Ms": 6.899999976158142
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 512098,
+        "sha256": "156c51069120249c4d0069f2da3f4e0f4c22bb9f63e0f783f81b859ca1dc7b8c"
+      }
+    },
+    {
+      "recordedAt": "2026-09-20T12:53:35.942Z",
+      "app": "joplin",
+      "blocks": 800,
+      "mode": "Full Markdown source editor only; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Joplin/3.7.18 Chrome/148.0.7778.180 Electron/42.3.0 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 984,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 101769,
+        "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 59.400000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 32.80000001192093,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 42.20000001788139,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 30.099999994039536,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 30.900000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 32.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 41.900000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 33,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 30.19999998807907,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 32.5,
+        "p95Ms": 42.20000001788139
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 101778,
+        "sha256": "051e90084519d79536507b2644a3bfe1b71d227b8b69487a087bc9deb287ab4b"
+      }
+    },
+    {
+      "recordedAt": "2026-09-20T12:55:52.034Z",
+      "app": "joplin",
+      "blocks": 4000,
+      "mode": "Full Markdown source editor only; maximized",
+      "method": "Native Windows numeric 7 key input, at the start of the full Markdown source. Trusted input event capture to second requestAnimationFrame. Two warmups then seven samples. GPU disabled. Read-only renderer listeners; no simulated/CDP input.",
+      "environment": {
+        "platform": "win32",
+        "cpu": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+        "logicalCpus": 12,
+        "renderer": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Joplin/3.7.18 Chrome/148.0.7778.180 Electron/42.3.0 Safari/537.36",
+        "viewport": {
+          "width": 1920,
+          "height": 984,
+          "devicePixelRatio": 2
+        }
+      },
+      "input": {
+        "characters": 512089,
+        "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+      },
+      "raw": [
+        {
+          "index": 1,
+          "ms": 46.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 2,
+          "ms": 37.10000002384186,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 3,
+          "ms": 45.5,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 4,
+          "ms": 30.30000001192093,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 5,
+          "ms": 31.700000017881393,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 6,
+          "ms": 36.400000005960464,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 7,
+          "ms": 31.099999994039536,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 8,
+          "ms": 34.599999994039536,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        },
+        {
+          "index": 9,
+          "ms": 49.19999998807907,
+          "isTrusted": true,
+          "isComposing": false,
+          "inputType": "insertText",
+          "data": "7",
+          "target": "DIV"
+        }
+      ],
+      "summary": {
+        "samples": 7,
+        "medianMs": 34.599999994039536,
+        "p95Ms": 49.19999998807907
+      },
+      "complete": true,
+      "sourceVerified": true,
+      "output": {
+        "characters": 512098,
+        "sha256": "156c51069120249c4d0069f2da3f4e0f4c22bb9f63e0f783f81b859ca1dc7b8c"
+      }
+    }
+  ],
+  "typora": [
+    {
+      "blocks": 800,
+      "input": {
+        "characters": 101769,
+        "sha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab"
+      },
+      "output": {
+        "characters": 101770,
+        "sha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514"
+      },
+      "nativeSingleDigitInputAndSave": true,
+      "exactSourceVerified": true,
+      "timing": null
+    },
+    {
+      "blocks": 4000,
+      "input": {
+        "characters": 512089,
+        "sha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823"
+      },
+      "output": {
+        "characters": 512090,
+        "sha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9"
+      },
+      "nativeSingleDigitInputAndSave": true,
+      "exactSourceVerified": true,
+      "timing": null
+    }
+  ],
+  "screenshotPaths": {
+    "knowbook": "markdown-native-source-knowbook-4000.png",
+    "obsidian": "markdown-native-source-obsidian-4000.png",
+    "joplin": "markdown-native-source-joplin-4000.png",
+    "typora": "markdown-native-source-typora-4000.png"
+  },
+  "diagnostic": {
+    "knowbookAdditionalProfile": {
+      "blocks": 4000,
+      "inputToSecondFrameMs": 22.11,
+      "layoutMs": 2.663,
+      "commitMs": 4.963,
+      "excludedFromSamples": true,
+      "interpretation": "A separate traced input contains layout and paint work but does not reproduce the 70 ms sample. One trace is insufficient to attribute the cross-product difference to a specific algorithm."
+    }
+  },
+  "limitations": [
+    "This measures a rendering opportunity, not physical screen presentation or end-to-end OS keyboard latency.",
+    "Only single-character input at source start was timed; open, bulk formatting, paste, save and document middle/end are outside this competitor sample.",
+    "Seven measured samples per size make p95 the maximum sample; this is a small, single-machine run, not a statistically established overall ranking.",
+    "Applications have different Electron/Chromium versions, UI chrome/editor widths, fonts, source styling and additional GPU flags. KnowBook/Joplin viewports are 1920x984; Obsidian is 1920x1032; DPR is 2.",
+    "KnowBook is slower in this recorded metric than Obsidian and Joplin. The data does not establish overall superiority.",
+    "Typora has no comparable frame timing in this run; passing native input/save does not imply equal speed.",
+    "KnowBook drafts used for timing were cancelled or the isolated app was closed. Save/round-trip guarantees come from separate acceptance evidence."
+  ],
+  "excludedDiagnostics": [
+    "Obsidian paste and IME calibration inputs",
+    "Obsidian input before maximization",
+    "KnowBook 800-block windowed diagnostic",
+    "Failed launches and unfocused inputs",
+    "Additional KnowBook performance trace"
+  ]
+}

@@ -1,0 +1,536 @@
+{
+  "recordedAt": "2026-09-20T11:39:22.339Z",
+  "app": "KnowBook",
+  "testedCommit": "c8ecaa528ceabe8f28902e50ec8cc701db11b461",
+  "platform": "Windows x64",
+  "method": "Windows native input through @oai/sky. Fixture prepared through the application API in an isolated profile; read-only DOM listeners and getDocumentDetail snapshots collect evidence. No CDP composition injection or literal Unicode typing used for measured edits.",
+  "inputMethod": "Active Windows Chinese Pinyin IME; ni candidate popup visibly offered 你 as first candidate. Exact IME vendor/version was not queried.",
+  "steps": [
+    "Native n then i; observe candidate popup",
+    "Ctrl+S while composing keeps dialog open and persisted content unchanged",
+    "Space commits 你",
+    "Ctrl+Z once restores Anchor 中文",
+    "Ctrl+Shift+Z once restores Anchor 中文你",
+    "Native h starts second candidate",
+    "Escape cancels candidate without closing source dialog",
+    "Ctrl+S applies; wait for autosave",
+    "Open source dialog again; verify text, original block ID and tag"
+  ],
+  "fixture": {
+    "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+    "initial": "Anchor 中文",
+    "blockId": "9f1d8f44-f518-4fb5-ae2a-285abcb53222"
+  },
+  "phases": {
+    "candidate-ni": {
+      "recordedAt": "2026-09-20T11:29:56.816Z",
+      "source": "Anchor 中文ni",
+      "editorText": "Anchor 中文ni",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "candidate-save": {
+      "recordedAt": "2026-09-20T11:34:02.523Z",
+      "source": "Anchor 中文ni",
+      "editorText": "Anchor 中文ni",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "committed": {
+      "recordedAt": "2026-09-20T11:34:21.587Z",
+      "source": "Anchor 中文你",
+      "editorText": "Anchor 中文你",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "undo": {
+      "recordedAt": "2026-09-20T11:34:41.705Z",
+      "source": "Anchor 中文",
+      "editorText": "Anchor 中文",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "redo": {
+      "recordedAt": "2026-09-20T11:35:05.893Z",
+      "source": "Anchor 中文你",
+      "editorText": "Anchor 中文你",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "candidate-h": {
+      "recordedAt": "2026-09-20T11:35:33.780Z",
+      "source": "Anchor 中文你h",
+      "editorText": "Anchor 中文你h",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "candidate-cancelled": {
+      "recordedAt": "2026-09-20T11:35:57.972Z",
+      "source": "Anchor 中文你",
+      "editorText": "Anchor 中文你",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:28:22.806Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "saved": {
+      "recordedAt": "2026-09-20T11:36:17.649Z",
+      "source": null,
+      "editorText": null,
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:36:12.791Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文你",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    },
+    "reopened": {
+      "recordedAt": "2026-09-20T11:36:45.923Z",
+      "source": "Anchor 中文你",
+      "editorText": "Anchor 中文你",
+      "detail": {
+        "id": "639de35c-0a65-4ef9-bdd1-e6a6962c4d20",
+        "title": "Native IME acceptance",
+        "path": "Native IME acceptance",
+        "summary": "",
+        "updatedAt": "2026-09-20T11:36:12.791Z",
+        "blocks": [
+          {
+            "id": "9f1d8f44-f518-4fb5-ae2a-285abcb53222",
+            "type": "paragraph",
+            "content": "Anchor 中文你",
+            "checked": false,
+            "depth": 0,
+            "tags": [
+              "native-ime"
+            ],
+            "parentBlockId": null,
+            "sortOrder": 0
+          }
+        ],
+        "children": [],
+        "outgoingLinks": [],
+        "backlinks": []
+      }
+    }
+  },
+  "events": [
+    {
+      "type": "keydown",
+      "time": 1789903781679,
+      "key": "Process",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionstart",
+      "time": 1789903781685,
+      "data": "",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionupdate",
+      "time": 1789903781686,
+      "data": "n",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "input",
+      "time": 1789903781689,
+      "data": "n",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789903791387,
+      "key": "Process",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionupdate",
+      "time": 1789903791395,
+      "data": "ni",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "input",
+      "time": 1789903791396,
+      "data": "ni",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904036361,
+      "key": "Process",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904036372,
+      "key": "Process",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904055804,
+      "key": "Process",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionupdate",
+      "time": 1789904055812,
+      "data": "你",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "input",
+      "time": 1789904055814,
+      "data": "你",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionend",
+      "time": 1789904055817,
+      "data": "你",
+      "isTrusted": false,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904076629,
+      "key": "Control",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904076637,
+      "key": "z",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904100532,
+      "key": "Control",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904100542,
+      "key": "Shift",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904100548,
+      "key": "Z",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904127787,
+      "key": "Process",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionstart",
+      "time": 1789904127788,
+      "data": "",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionupdate",
+      "time": 1789904127789,
+      "data": "h",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "input",
+      "time": 1789904127790,
+      "data": "h",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904152349,
+      "key": "Process",
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionupdate",
+      "time": 1789904152361,
+      "data": "",
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "input",
+      "time": 1789904152366,
+      "data": null,
+      "isComposing": true,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "compositionend",
+      "time": 1789904152366,
+      "data": "",
+      "isTrusted": false,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904171959,
+      "key": "Control",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    },
+    {
+      "type": "keydown",
+      "time": 1789904171967,
+      "key": "s",
+      "isComposing": false,
+      "isTrusted": true,
+      "target": "Markdown body source"
+    }
+  ],
+  "accessibility": {
+    "candidate": {
+      "document_text": "Anchor 中文ni",
+      "focused_element": "46 文档 KnowBook Value: file:///D:/code/github/knowbook/out/renderer/index.html ID: 641936",
+      "tree": "Window: \"KnowBook\", App: electron.exe.\n\t0 窗格 KnowBook Secondary Actions: Raise\n\t\t46 文档 KnowBook Value: file:///D:/code/github/knowbook/out/renderer/index.html ID: 641936\n\t\t\t136 custom Edit Markdown source\n\t\t\t\t137 横幅\n\t\t\t\t\t138 按钮 (disabled) Cancel\n\t\t\t\t139 文本 Select and edit across the complete body. Changes autosave after applying.\n\t\t\t\t140 工具栏 Text formatting\n\t\t\t\t\t141 按钮 Bold\n\t\t\t\t\t142 按钮 Italic\n\t\t\t\t\t143 按钮 Strikethrough\n\t\t\t\t\t144 按钮 Highlight text\n\t\t\t\t\t145 按钮 Inline code\n\t\t\t\t\t146 按钮 Insert link\n\t\t\t\t147 组\n\t\t\t\t148 组\n\t\t\t\t\t149 编辑 (settable, string) Markdown body source Value: Anchor 中文ni\n\t\t\t\t\t\t150 文本 Anchor 中文ni\n\t\t\t\t151 内容信息\n\t\t\t\t\t152 按钮 (disabled) Undo\n\t\t\t\t\t153 按钮 (disabled) Redo\n\t\t\t\t\t154 按钮 (disabled) Apply changes\n\t\t2 标题栏 (settable, string) Value: KnowBook\n\t\t\t3 菜单栏 系统 ID: MenuBar\n\t\t\t\t4 菜单项 系统\n\t\t\t5 按钮 最小化\n\t\t\t6 按钮 最大化\n\t\t\t7 按钮 关闭\n\t\t8 窗格\n\t\t\t9 窗格\n\t\t\t\t10 窗格\n\t\t\t\t\t11 窗格\n\t\t\t\t\t\t12 窗格\n\t\t\t\t\t\t\t13 菜单项 File\n\t\t\t\t\t\t\t14 菜单项 Edit\n\t\t\t\t\t\t\t15 菜单项 View\n\t\t\t\t\t\t\t16 菜单项 Window\n\t\t\t\t\t\t\t17 菜单项 Help\n\t\t\t\t\t\t18 窗格\n\t\t\t\t\t\t\t19 窗格\n\t\t\t\t\t\t\t20 窗格\n\nDocument text: ```\nAnchor 中文ni\n```"
+    },
+    "reopened": {
+      "document_text": "Anchor 中文你",
+      "focused_element": "46 文档 KnowBook Value: file:///D:/code/github/knowbook/out/renderer/index.html ID: 641936",
+      "tree": "Window: \"KnowBook\", App: electron.exe.\n\t0 窗格 KnowBook Secondary Actions: Raise\n\t\t46 文档 KnowBook Value: file:///D:/code/github/knowbook/out/renderer/index.html ID: 641936\n\t\t\t243 custom Edit Markdown source\n\t\t\t\t244 横幅\n\t\t\t\t\t245 按钮 Cancel\n\t\t\t\t246 文本 Select and edit across the complete body. Changes autosave after applying.\n\t\t\t\t247 工具栏 Text formatting\n\t\t\t\t\t248 按钮 Bold\n\t\t\t\t\t249 按钮 Italic\n\t\t\t\t\t250 按钮 Strikethrough\n\t\t\t\t\t251 按钮 Highlight text\n\t\t\t\t\t252 按钮 Inline code\n\t\t\t\t\t253 按钮 Insert link\n\t\t\t\t254 组\n\t\t\t\t255 组\n\t\t\t\t\t256 编辑 (settable, string) Markdown body source Value: Anchor 中文你\n\t\t\t\t\t\t257 文本 Anchor 中文你\n\t\t\t\t258 内容信息\n\t\t\t\t\t259 按钮 (disabled) Undo\n\t\t\t\t\t260 按钮 (disabled) Redo\n\t\t\t\t\t261 按钮 Apply changes\n\t\t2 标题栏 (settable, string) Value: KnowBook\n\t\t\t3 菜单栏 系统 ID: MenuBar\n\t\t\t\t4 菜单项 系统\n\t\t\t5 按钮 最小化\n\t\t\t6 按钮 最大化\n\t\t\t7 按钮 关闭\n\t\t8 窗格\n\t\t\t9 窗格\n\t\t\t\t10 窗格\n\t\t\t\t\t11 窗格\n\t\t\t\t\t\t12 窗格\n\t\t\t\t\t\t\t13 菜单项 File\n\t\t\t\t\t\t\t14 菜单项 Edit\n\t\t\t\t\t\t\t15 菜单项 View\n\t\t\t\t\t\t\t16 菜单项 Window\n\t\t\t\t\t\t\t17 菜单项 Help\n\t\t\t\t\t\t18 窗格\n\t\t\t\t\t\t\t19 窗格\n\t\t\t\t\t\t\t20 窗格\n\nDocument text: ```\nAnchor 中文你\n```"
+    }
+  },
+  "screenshot": {
+    "path": "markdown-native-ime-candidate.png",
+    "sha256": "120ee662f85a3a61ab834d7017e37ca541d118a9e0b1ccaa0d3edf8d3bfda0a4"
+  },
+  "assertions": {
+    "candidateSaveProtected": true,
+    "singleUndo": true,
+    "singleRedo": true,
+    "cancelKeepsDialog": true,
+    "persistedChinese": true,
+    "reopenedSource": true,
+    "blockIdPreserved": true,
+    "tagsPreserved": true
+  },
+  "limitations": [
+    "One active Windows Chinese IME and one short source fixture; not a claim about all input methods.",
+    "Native compositionstart, compositionupdate and input events are trusted. Captured compositionend events have isTrusted=false; the raw values are retained.",
+    "Reopened the source dialog in the same application process; this record does not claim a cold restart.",
+    "An earlier run was interrupted by an EBUSY error in the evidence collector. Only the complete second run is included."
+  ]
+}
