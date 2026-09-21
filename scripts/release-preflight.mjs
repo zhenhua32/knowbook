@@ -18,8 +18,8 @@ const requiredFiles = [
   'electron-builder.yml',
   '.github/workflows/release.yml',
   'build/icon.png',
-  '发布与签名说明.md',
-  '发版流程.md'
+  'docs/发布与签名说明.md',
+  'docs/发版流程.md'
 ]
 
 const failures = []
