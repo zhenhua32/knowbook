@@ -2,7 +2,7 @@ import type MarkdownIt from 'markdown-it'
 import type { Token } from 'markdown-it'
 import footnote from 'markdown-it-footnote'
 import mark from 'markdown-it-mark'
-import { createMarkdownHeadingSlugger, markdownInlineText } from './markdownHeadingText'
+import { createMarkdownHeadingSlugger, markdownHtmlAnchorNames, markdownInlineText } from './markdownHeadingText'
 import { createMarkdownInlineMathMatcher } from './markdownInlineMath'
 import { sliceMarkdownSourceMap } from './markdownSourceLinks'
 
@@ -270,7 +270,9 @@ export function installMarkdownAdvanced(md: InstanceType<typeof MarkdownIt>): vo
   })
 
   md.core.ruler.after('footnote_order', 'document_headings', (state) => {
-    const slug = createMarkdownHeadingSlugger()
+    const htmlAnchors = markdownHtmlAnchorNames(state.tokens)
+    state.env.htmlAnchorNames = htmlAnchors
+    const slug = createMarkdownHeadingSlugger(htmlAnchors)
     if (typeof state.env.documentTitle === 'string') slug(markdownInlineText(md.parseInline(state.env.documentTitle, { references: state.env.references })[0]?.children ?? []))
     const headings: MarkdownHeading[] = []
     const hasToc = state.tokens.some((token) => token.type === 'table_of_contents')

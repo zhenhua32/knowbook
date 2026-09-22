@@ -15,7 +15,7 @@ export function getMarkdownShortcut(block: DocumentBlockDraft, content: string):
   if (['bulleted-list', 'numbered-list'].includes(block.type) && task && /\][ \t]/.test(content)) {
     return { ...block, type: block.type === 'numbered-list' ? 'numbered-todo' : 'todo', checked: task.checked, content: content.slice(task.length) }
   }
-  if (['code', 'math', 'table', 'divider', 'quote'].includes(block.type)) return null
+  if (['code', 'math', 'table', 'divider', 'quote', 'frontmatter', 'html'].includes(block.type)) return null
   if (/^\$\$ /.test(content)) return { ...block, type: 'math', content: content.slice(3) }
   const parsed = parsePastedMarkdown(content)
   if (parsed.length === 1 && parsed[0].type !== 'paragraph') {

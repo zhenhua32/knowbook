@@ -75,6 +75,7 @@
     "markdown-it": "^15.0.2",
     "markdown-it-footnote": "^4.0.0",
     "markdown-it-mark": "^4.0.0",
+    "parse5": "^8.0.1",
     "quickjs-wasi": "3.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

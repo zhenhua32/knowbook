@@ -81,8 +81,8 @@ test('backup filename escaping and document metadata preserve cross-file targets
   const stores: KnowbookStore[] = []
   try {
     const input = join(root, 'input'); mkdirSync(input)
-    writeFileSync(join(input, 'Start.md'), '---\npath: Docs?/入口\n---\n\n[目标](Target.md#section)\n\n[定义][ref]\n\n[ref]: Target.md#section')
-    writeFileSync(join(input, 'Target.md'), '---\npath: Other?/目标\n---\n\n## Section\n\n[返回](Start.md)')
+    writeFileSync(join(input, 'Start.md'), '---\npath: Docs?/入口\n---\n<!-- knowbook:backup v1 -->\n\n[目标](Target.md#section)\n\n[定义][ref]\n\n[ref]: Target.md#section')
+    writeFileSync(join(input, 'Target.md'), '---\npath: Other?/目标\n---\n<!-- knowbook:backup v1 -->\n\n## Section\n\n[返回](Start.md)')
     const store = new KnowbookStore(join(root, 'store.sqlite')); stores.push(store)
     await new MarkdownRestoreService(store).restoreFromDirectory(input)
     const body = (db: KnowbookStore, path: string) => buildDraftMarkdownExport(db.getDocumentDetail(db.getAllDocumentSnapshots().find((doc) => doc.path === path)!.id)!).markdown

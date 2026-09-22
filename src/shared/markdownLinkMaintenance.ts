@@ -1,5 +1,6 @@
 import { serializeMarkdownWithBlockRanges, type MarkdownRenderableBlock } from './markdown'
-import { collectMarkdownSourceLinks, parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, type MarkdownSourceLink } from './markdownLinks'
+import { collectMarkdownSourceLinks, escapeMarkdownDestination, parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, type MarkdownSourceLink } from './markdownLinks'
+import { collectMarkdownAnchors } from './markdownAnchors'
 import { markdownEngine, type MarkdownEnvironment } from './markdownEngine'
 import { createMarkdownHeadingSlugger, markdownInlineText } from './markdownHeadingText'
 import type { MarkdownHeading } from './markdownAdvanced'
@@ -22,7 +23,7 @@ export function collectDocumentMarkdownLinks(blocks: MarkdownRenderableBlock[]):
     while (line + 1 < lineOffsets.length && lineOffsets[line + 1] <= link.start) line++
     while (rangeIndex < ranges.length && ranges[rangeIndex].endLine <= line) rangeIndex++
     const range = ranges[rangeIndex], block = blocks[rangeIndex]
-    if (!range || !block || line < range.startLine || ['code', 'math'].includes(block.type)) continue
+    if (!range || !block || line < range.startLine || ['code', 'math', 'frontmatter'].includes(block.type)) continue
     let local = localLines.get(rangeIndex)
     if (!local) {
       const blockLines = block.content.split('\n'), offsets = [0]
@@ -44,7 +45,7 @@ export function getMarkdownHeadingTargets(blocks: MarkdownRenderableBlock[], tit
   const environment: MarkdownEnvironment = { documentTitle: title }
   markdownEngine.parse(markdown, environment)
   const titleText = markdownInlineText(markdownEngine.parseInline(title, { references: environment.references })[0]?.children ?? [])
-  const targets: MarkdownHeadingTarget[] = [{ key: '$title', blockId: null, text: titleText, slug: createMarkdownHeadingSlugger()(titleText) }]
+  const targets: MarkdownHeadingTarget[] = [{ key: '$title', blockId: null, text: titleText, slug: createMarkdownHeadingSlugger(environment.htmlAnchorNames as string[] | undefined)(titleText) }]
   const ordinals = new Map<string, number>()
   let rangeIndex = 0
   for (const heading of (environment.documentHeadings ?? []) as MarkdownHeading[]) {
@@ -54,6 +55,11 @@ export function getMarkdownHeadingTargets(blocks: MarkdownRenderableBlock[], tit
     const ordinal = ordinals.get(block.id) ?? 0
     ordinals.set(block.id, ordinal + 1)
     targets.push({ key: `${block.id}:${ordinal}`, blockId: block.id, text: heading.text, slug: heading.slug })
+  }
+  if (/<(?:a|br|img|details|summary|kbd|sub|sup)(?=[\s/>])/i.test(markdown)) {
+    for (const anchor of collectMarkdownAnchors(title, blocks).filter((anchor) => anchor.headingIndex < 0 && anchor.blockId)) {
+      targets.push({ key: `${anchor.blockId}:html:${-anchor.headingIndex}`, blockId: anchor.blockId!, text: anchor.slug, slug: anchor.slug })
+    }
   }
   return targets
 }
@@ -171,7 +177,7 @@ export function rewriteDocumentMarkdownLinks<T extends MarkdownRenderableBlock>(
   for (const link of collectDocumentMarkdownLinks(blocks).reverse()) {
     const replacement = rewrite(link)
     if (replacement == null || replacement === link.url) continue
-    const escaped = link.kind === 'wiki' ? replacement : replacement.replace(/[\s<>()[\]\\]/g, (character) => encodeURIComponent(character).replace('(', '%28').replace(')', '%29'))
+    const escaped = link.kind === 'wiki' ? replacement : escapeMarkdownDestination(replacement, link.syntax)
     const block = next[link.blockIndex]
     next[link.blockIndex] = { ...block, content: block.content.slice(0, link.start) + escaped + block.content.slice(link.end) }
   }

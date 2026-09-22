@@ -440,6 +440,15 @@ export class KnowbookStore {
         this.resyncLinks()
         this.db.pragma('user_version = 17')
       }
+      if (schemaVersion < 18) {
+        // HTML destinations now participate in the same derived link index.
+        // Earlier migrations already rebuilt it with the current parser.
+        if (schemaVersion >= 17) {
+          this.markdownLinks.rebuild()
+          this.resyncLinks()
+        }
+        this.db.pragma('user_version = 18')
+      }
     })
   }
 

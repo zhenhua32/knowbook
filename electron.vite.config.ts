@@ -75,7 +75,7 @@ export default defineConfig({
       rollupOptions: {
         output: {
           // Share and cache the parser independently of the app entry and pages.
-          manualChunks: { 'markdown-engine': ['markdown-it'] }
+          manualChunks: { 'markdown-engine': ['markdown-it', 'parse5', resolve(__dirname, 'src/shared/markdownHtml.ts'), resolve(__dirname, 'src/shared/markdownFrontmatter.ts')] }
         }
       }
     },

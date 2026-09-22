@@ -1,7 +1,7 @@
 import type MarkdownIt from 'markdown-it'
 import type { Env, StateBlock, Token } from 'markdown-it'
 
-export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink' }
+export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' }
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 type Capture = { links: MarkdownSourceLink[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
@@ -128,7 +128,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     try { parseInline(source, engine, env, tokens) }
     finally { if (data) data.context = previous }
   }
-  for (const name of ['link', 'image', 'autolink', 'wiki_link', 'footnote_inline']) {
+  for (const name of ['link', 'image', 'autolink', 'wiki_link', 'footnote_inline', 'safe_html']) {
     const { fn } = md.inline.ruler.__rules__.find((entry) => entry.name === name)!
     md.inline.ruler.at(name, (state, silent) => {
       const data = capture(state.env)
@@ -146,6 +146,11 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       try { accepted = fn(state, false) }
       finally { data.context = previous; data.inAlt = previousAlt }
       if (!accepted) return false
+      if (name === 'safe_html') {
+        const html = state.tokens.slice(first).find((token) => token.meta?.htmlSourceLinks)
+        for (const link of (html?.meta?.htmlSourceLinks ?? []) as MarkdownDestination[]) record(data, { ...link, start: start + link.start, end: start + link.end })
+        return true
+      }
       if (name === 'footnote_inline') return true
       if (name === 'wiki_link') {
         const label = state.src.slice(start + 2, state.pos - 2)
@@ -174,6 +179,20 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
 
 export function capturedMarkdownSourceLinks(env: Env): MarkdownSourceLink[] {
   return capture(env)?.links ?? []
+}
+
+/** A details body is block-parsed in its own source slice, then put back into
+ * the parent document before the shared inline pass. */
+export function shiftMarkdownSourceCapture(env: Env, tokens: Token[], linkStart: number, offset: (position: number) => number, lines: number): void {
+  const data = capture(env)
+  if (data) for (let index = linkStart; index < data.links.length; index++) {
+    data.links[index].start = offset(data.links[index].start); data.links[index].end = offset(data.links[index].end)
+  }
+  for (const token of tokens) {
+    if (token.map) token.map = [token.map[0] + lines, token.map[1] + lines]
+    const map = sourceMap(token)
+    if (map) token.meta = { ...token.meta, sourceMap: map.map(offset) }
+  }
 }
 
 /** Inline block boundaries after task/callout prefixes, before footnote relocation. */

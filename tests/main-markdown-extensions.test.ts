@@ -57,7 +57,7 @@ test('ordinary import promotes only a matching title while backups retain a matc
     mkdirSync(dir)
     writeFileSync(join(dir, 'Empty.md'), '# Empty\n')
     writeFileSync(join(dir, 'Other.md'), '# Different\n\nBody')
-    writeFileSync(join(dir, 'Backup.md'), '---\nkind: document\n---\n\n# Backup\n\nBody')
+    writeFileSync(join(dir, 'Backup.md'), '---\nkind: document\n---\n<!-- knowbook:backup v1 -->\n\n# Backup\n\nBody')
     await new MarkdownRestoreService(store).restoreFromDirectory(dir)
     const body = (path: string) => store.getDocumentDetail(store.getAllDocumentSnapshots().find((entry) => entry.path === path)!.id)!.blocks
     assert.equal(body('Empty')[0].content, '')

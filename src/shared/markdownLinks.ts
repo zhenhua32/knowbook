@@ -1,5 +1,6 @@
 import { markdownEngine, type MarkdownEnvironment } from './markdownEngine'
 import { capturedMarkdownSourceLinks, type MarkdownDestination, type MarkdownSourceLink } from './markdownSourceLinks'
+import { extractMarkdownFrontmatter } from './markdownFrontmatter'
 export type { MarkdownDestination, MarkdownSourceLink } from './markdownSourceLinks'
 
 /** Locate source destinations without rewriting labels, titles, code or other Markdown. */
@@ -9,8 +10,7 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
 
 export function collectMarkdownSourceLinks(source: string, includeWiki = true): MarkdownSourceLink[] {
   if (!source.includes('[') && !source.includes('<')) return []
-  const header = source.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
-  const headerEnd = header && /^[A-Za-z][\w-]*:/m.test(header[1]) ? header[0].length : 0
+  const headerEnd = extractMarkdownFrontmatter(source)?.end ?? 0
   const env: MarkdownEnvironment = { captureSourceLinks: true }
   // Metadata values are not Markdown content. Keep offsets while masking YAML.
   markdownEngine.parse(source.slice(0, headerEnd).replace(/[^\r\n]/g, ' ') + source.slice(headerEnd), env)
@@ -31,7 +31,7 @@ export function rewriteMarkdownDestinations(source: string, rewrite: (destinatio
   const edits = collectMarkdownDestinations(source).map((destination) => ({ ...destination, replacement: rewrite(destination) }))
   for (const edit of edits.reverse()) {
     if (edit.replacement == null || edit.replacement === edit.url) continue
-    const escaped = edit.replacement.replace(/[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
+    const escaped = escapeMarkdownDestination(edit.replacement, edit.syntax)
     if (edit.kind === 'autolink') {
       // Relative destinations are not valid inside <...>; retain the visible
       // label while converting the exported/imported URL to a normal link.
@@ -40,6 +40,11 @@ export function rewriteMarkdownDestinations(source: string, rewrite: (destinatio
     } else source = source.slice(0, edit.start) + escaped + source.slice(edit.end)
   }
   return source
+}
+
+export function escapeMarkdownDestination(url: string, syntax?: 'html'): string {
+  return syntax === 'html' ? url.replace(/[\s"'&<>=`|]/g, (char) => `&#${char.charCodeAt(0)};`)
+    : url.replace(/[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
 }
 
 export function parseLocalMarkdownUrl(url: string): { path: string; fragment: string; suffix: string } | null {

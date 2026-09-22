@@ -3,7 +3,7 @@ import test from 'node:test'
 import { parseMarkdownBackupDocument, renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
 import { parseMarkdownTable, renderMarkdownTableHtml } from '../src/shared/markdownTable.ts'
 
-test('renderMarkdownTableHtml escapes untrusted cell content', () => {
+test('renderMarkdownTableHtml permits images while discarding untrusted attributes', () => {
   const html = renderMarkdownTableHtml([
     '| Header | Other |',
     '| --- | --- |',
@@ -11,9 +11,9 @@ test('renderMarkdownTableHtml escapes untrusted cell content', () => {
   ].join('\n'))
 
   assert.ok(html)
-  assert.equal(html.includes('<img'), false)
+  assert.equal(html.includes('<img src="x" alt="">'), true)
   assert.equal(html.includes('onerror="alert(1)"'), false)
-  assert.equal(html.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt; &amp; text'), true)
+  assert.equal(html.includes(' &amp; text'), true)
 })
 
 test('parseMarkdownTable rejects delimiter rows with a different column count', () => {
@@ -155,7 +155,7 @@ test('parseMarkdownBackupDocument round-trips frontmatter and block metadata', (
 
 test('parseMarkdownBackupDocument strips a UTF-8 BOM before reading frontmatter', () => {
   const parsed = parseMarkdownBackupDocument(
-    '\uFEFF---\nkind: document\nid: doc-bom\npath: Home/Bom\nsummary: "Bombed"\n---\n\nHello world'
+    '\uFEFF---\nkind: document\nid: doc-bom\npath: Home/Bom\nsummary: "Bombed"\n---\n<!-- knowbook:backup v1 -->\n\nHello world'
   )
 
   assert.equal(parsed.frontmatter.kind, 'document')

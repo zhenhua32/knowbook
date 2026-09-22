@@ -2,6 +2,7 @@ import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode }
 import { isTaskBlockType, isOrderedListBlockType } from './blockTypes'
 import { parseTaskListMarker } from './markdownExtensions'
 import { normalizeMarkdownFormat, type MarkdownBlockFormat } from './markdownFormat'
+import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFrontmatter'
 
 export type MarkdownRenderableBlock = {
   id?: string
@@ -21,6 +22,7 @@ export type MarkdownDocumentFrontmatter = Record<string, string>
 
 export interface ParsedMarkdownDocument {
   frontmatter: MarkdownDocumentFrontmatter
+  isKnowbookBackup: boolean
   blocks: MarkdownRenderableBlock[]
 }
 
@@ -190,26 +192,19 @@ function decodeMarkdownFrontmatterValue(rawValue: string): string {
 
 function parseMarkdownFrontmatter(markdown: string): { frontmatter: MarkdownDocumentFrontmatter; body: string } {
   const normalizedMarkdown = markdown.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
-  if (!normalizedMarkdown.startsWith('---\n')) {
+  const header = extractMarkdownFrontmatter(normalizedMarkdown)
+  if (!header) {
     return {
       frontmatter: {},
       body: normalizedMarkdown
     }
   }
 
-  const closingIndex = normalizedMarkdown.search(/\n---(?:\n|$)/)
-  if (closingIndex === -1) {
-    return {
-      frontmatter: {},
-      body: normalizedMarkdown
-    }
-  }
-
-  const frontmatterLines = normalizedMarkdown.slice(4, closingIndex).split('\n')
-  if (!frontmatterLines.some((line) => /^[A-Za-z][\w-]*:/.test(line))) return { frontmatter: {}, body: normalizedMarkdown }
+  const frontmatterLines = header.raw.split('\n').slice(1, -1)
   const frontmatter: MarkdownDocumentFrontmatter = {}
 
   for (const line of frontmatterLines) {
+    if (!/^[A-Za-z][\w-]*:/.test(line)) continue
     const separatorIndex = line.indexOf(':')
     if (separatorIndex <= 0) {
       continue
@@ -225,7 +220,7 @@ function parseMarkdownFrontmatter(markdown: string): { frontmatter: MarkdownDocu
 
   return {
     frontmatter,
-    body: normalizedMarkdown.slice(closingIndex + 5)
+    body: header.body
   }
 }
 
@@ -424,6 +419,10 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
     } else if (token.type === 'fence' || token.type === 'code_block') {
       push({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
         markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
+    } else if (token.type === 'frontmatter') {
+      push(make('frontmatter', token.content), ...token.map!)
+    } else if (token.type === 'html_details_open') {
+      push(make('html', raw(node)), ...token.map!)
     } else if (token.type === 'math_block') {
       push(make('math', token.content), ...token.map!)
     } else if (token.type === 'hr') {
@@ -457,7 +456,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
         const end = nodes[next]?.token.map?.[0] ?? lines.length
         const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
         let parsed = parseMarkdownBlocks(body)[0] ?? make(pending.type, '')
-        if (['paragraph', 'table'].includes(pending.type)) parsed = make(pending.type, body)
+        if (['paragraph', 'table', 'frontmatter', 'html'].includes(pending.type)) parsed = make(pending.type, body)
         else if (isNestableMarkdownBlock(pending.type)) {
           let content = stripListMarker(body)
           const task = isTaskBlockType(pending.type) ? parseTaskListMarker(content) : null
@@ -557,6 +556,7 @@ export function serializeMarkdownWithBlockRanges(
   return { markdown, ranges }
 }
 
+/** KnowBook's backup envelope, explicitly distinguished from user YAML. */
 export function renderMarkdownFrontmatter(frontmatter: MarkdownDocumentFrontmatter): string {
   const lines = ['---']
 
@@ -564,15 +564,23 @@ export function renderMarkdownFrontmatter(frontmatter: MarkdownDocumentFrontmatt
     lines.push(`${key}: ${JSON.stringify(value)}`)
   }
 
-  lines.push('---', '')
+  lines.push('---', KNOWBOOK_BACKUP_MARKER, '')
   return lines.join('\n')
 }
 
 export function parseMarkdownBackupDocument(markdown: string): ParsedMarkdownDocument {
   const { frontmatter, body } = parseMarkdownFrontmatter(markdown)
+  const marked = body.startsWith(KNOWBOOK_BACKUP_MARKER + '\n') || body === KNOWBOOK_BACKUP_MARKER
+  // Older backups had no marker. Recognize their full schema,
+  // never an ordinary file's id/path/kind alone.
+  const legacyDocument = ['id', 'title', 'path', 'updatedAt', 'summary', 'documentDatabaseColumns', 'documentDatabaseFieldValues'].every((key) => Object.hasOwn(frontmatter, key))
+    || Boolean(frontmatter.id && frontmatter.path && /^<!-- knowbook:block \{.*\} -->$/m.test(body))
+  const legacyDatabase = frontmatter.kind === 'standalone-database' && ['databaseId', 'databaseName', 'databaseColumns', 'databaseSavedViews', 'databaseEntities'].every((key) => Object.hasOwn(frontmatter, key))
+  const isKnowbookBackup = marked || legacyDocument || legacyDatabase
   return {
     frontmatter,
-    blocks: parseMarkdownBlocks(body)
+    isKnowbookBackup,
+    blocks: parseMarkdownBlocks(isKnowbookBackup ? marked ? body.slice(KNOWBOOK_BACKUP_MARKER.length).replace(/^\n/, '') : body : markdown)
   }
 }
 /** Number the complete document before hiding folded rows. Child lists must not

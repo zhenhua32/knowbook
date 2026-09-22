@@ -11,8 +11,10 @@ type MarkdownDocumentShape = {
 }
 
 export function buildDocumentMarkdown(document: MarkdownDocumentShape): string {
-  const body = serializeBlocksToMarkdown(document.blocks)
-  return body.trim() === '' ? `# ${document.title}\n` : `# ${document.title}\n\n${body}`
+  const first = document.blocks[0]
+  const header = first?.type === 'frontmatter' ? first.content + '\n\n' : ''
+  const body = serializeBlocksToMarkdown(header ? document.blocks.slice(1) : document.blocks)
+  return header + (body.trim() === '' ? `# ${document.title}\n` : `# ${document.title}\n\n${body}`)
 }
 
 export function getDocumentMarkdownFileName(document: Pick<DocumentDetail, 'path' | 'title'>): string {

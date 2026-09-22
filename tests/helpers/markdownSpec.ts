@@ -38,7 +38,7 @@ export function canonicalMarkdownHtml(html: string): string {
   return JSON.stringify(visit(fragment))
 }
 
-export interface MarkdownPolicyDifference { reason: 'html-as-text' | 'automatic-links' | 'wiki-links' | 'unsupported-protocol'; html: string }
+export interface MarkdownPolicyDifference { reason: 'html-as-text' | 'limited-html' | 'automatic-links' | 'wiki-links' | 'unsupported-protocol'; html: string }
 export type MarkdownPolicyDifferences = Record<MarkdownSpecName, Record<string, MarkdownPolicyDifference>>
 export function loadMarkdownPolicies(): MarkdownPolicyDifferences {
   return JSON.parse(readFileSync(new URL('../fixtures/markdown-spec/policy-differences.json', import.meta.url), 'utf8'))

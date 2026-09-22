@@ -67,6 +67,7 @@ export function MarkdownMermaidPreview({ source, label }: { source: string; labe
 export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRenderOptions = {}): ReactNode[] {
   return nodes.map((node, index) => {
     const { token, children } = node
+    const anchor = token.meta?.html ? String(token.attrGet('id') || token.attrGet('name') || '') : ''
     const nested = () => renderMarkdownNodes(children, options)
     if (token.meta?.callout || ['mark_open', 'footnote_ref', 'footnote_missing', 'footnote_block_open', 'footnote_open', 'footnote_anchor', 'table_of_contents'].includes(token.type)) {
       return <Suspense key={index} fallback={<span>{token.content || (token.type === 'footnote_ref' ? `[${Number(token.meta?.id) + 1}]` : nested())}</span>}>
@@ -77,7 +78,7 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
       case 'text': return token.content
       case 'inline': return <Fragment key={index}>{nested()}</Fragment>
       case 'softbreak': return '\n'
-      case 'hardbreak': return <br key={index} />
+      case 'hardbreak': return <br key={index} data-markdown-anchor={anchor || undefined} />
       case 'code_inline': return <code className="inline-code" key={index}>{token.content}</code>
       case 'fence': if (/^mermaid(?:\s|$)/i.test(token.info.trim())) return <MarkdownMermaidPreview key={index} source={token.content} label="Mermaid" />
         return <pre key={index}><code>{token.content}</code></pre>
@@ -92,6 +93,7 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
         <MathPreview expression={token.content} label="Math" displayMode={token.type === 'math_block'} />
       </Suspense>
       case 'callout_title':
+      case 'frontmatter':
       case 'knowbook_metadata': return null
       case 'wiki_link': return options.renderReference ? options.renderReference(token.content, index) : options.onReference
         ? <button key={index} className="inline-link" type="button" onClick={() => options.onReference?.(token.content)}>{token.content}</button>
@@ -100,23 +102,30 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
         const href = String(token.attrGet('href') ?? '')
         const url = normalizeMarkdownExternalUrl(href)
         const local = parseLocalMarkdownUrl(href)
-        return url || (local && options.onNavigateLink) ? <Fragment key={index}>{renderLinkParts(children, (content, key) => <button key={key} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
-          onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{content}</button>, options)}</Fragment> : <span key={index} title={href}>{nested()}</span>
+        if (!url && !(local && options.onNavigateLink)) return <span key={index} data-markdown-anchor={anchor || undefined} title={href}>{nested()}</span>
+        const parts = renderLinkParts(children, (content, key) => <button key={key} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
+          onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{content}</button>, options)
+        return anchor ? <span key={index} data-markdown-anchor={anchor}>{parts}</span> : <Fragment key={index}>{parts}</Fragment>
       }
       case 'image': {
         const src = normalizeMarkdownExternalUrl(String(token.attrGet('src') ?? ''))
-        if (!src || src.startsWith('mailto:')) return <span key={index}>{`![${token.content}](${String(token.attrGet('src') ?? '')})`}</span>
+        if (!src || src.startsWith('mailto:')) return <span key={index}>{token.meta?.html ? String(token.meta.htmlSource ?? '') : `![${token.content}](${String(token.attrGet('src') ?? '')})`}</span>
         if (options.hideImages) return null
         return <img key={index} alt={token.content} title={String(token.attrGet('title') ?? '') || undefined} loading="lazy"
+          width={token.meta?.html ? token.attrGet('width') ?? undefined : undefined} height={token.meta?.html ? token.attrGet('height') ?? undefined : undefined}
+          data-markdown-anchor={anchor || undefined}
           className="markdown-inline-image" src={toBlockRichMediaPreviewUrl(src)} />
       }
       default: {
         // Only parser-generated, allowlisted elements and attributes reach React.
-        if (!['p', 'strong', 'em', 's', 'del', 'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(token.tag)) return token.content
+        if (!['p', 'strong', 'em', 's', 'del', 'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(token.tag)
+          && !(token.meta?.html && ['details', 'summary', 'kbd', 'sub', 'sup', 'a'].includes(token.tag))) return token.content
         if (token.hidden) return <Fragment key={index}>{nested()}</Fragment>
         const alignment = String(token.attrGet('style') ?? '').match(/^text-align:(left|center|right)$/)?.[1] as 'left' | 'center' | 'right' | undefined
-        return createElement(token.tag === 's' ? 'del' : token.tag, {
+        return createElement(token.tag === 's' ? 'del' : token.tag === 'a' ? 'span' : token.tag, {
           key: index,
+          ...(token.meta?.html ? { title: token.attrGet('title') ?? undefined, 'data-markdown-anchor': anchor || undefined } : {}),
+          ...(token.tag === 'details' ? { open: token.attrGet('open') !== null, className: 'markdown-details' } : {}),
           ...(token.tag === 'table' ? { className: 'block-markdown-table' } : {}),
           ...(token.tag === 'ol' && token.attrGet('start') !== null ? { start: Number(token.attrGet('start')) } : {}),
           ...(alignment ? { style: { textAlign: alignment } } : {}),

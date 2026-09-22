@@ -1,6 +1,7 @@
 import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { capturedMarkdownInlineRanges } from '@shared/markdownSourceLinks'
 import type { MarkdownSourceChange } from './markdownSourceDraft'
+import { extractMarkdownFrontmatter } from '@shared/markdownFrontmatter'
 
 export type MarkdownFormat = 'bold' | 'italic' | 'strike' | 'highlight' | 'code' | 'link'
 export type FormattedSelection = { content: string; start: number; end: number }
@@ -21,6 +22,7 @@ function applyChanges(content: string, changes: MarkdownSourceChange[]): string 
 export function formatMarkdownSelection(content: string, start: number, end: number, format: MarkdownFormat, linkLabel = 'Link', onChange?: (change: MarkdownSourceChange) => void): FormattedSelection {
   start = Math.max(0, Math.min(content.length, start))
   end = Math.max(start, Math.min(content.length, end))
+  if (end <= (extractMarkdownFrontmatter(content)?.end ?? -1)) return { content, start, end }
   if (!/[\r\n]/.test(content.slice(start, end))) {
     const result = formatInlineSelection(content, start, end, format, linkLabel)
     if (content.slice(result.change.from, result.change.to) !== result.change.insert) onChange?.(result.change)

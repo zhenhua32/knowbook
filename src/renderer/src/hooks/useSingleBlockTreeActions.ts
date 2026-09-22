@@ -173,7 +173,7 @@ export function useSingleBlockTreeActions({
     const isMergeable =
       previousBlock.type === currentBlock.type &&
       previousBlock.depth === currentBlock.depth &&
-      !['code', 'math', 'divider'].includes(currentBlock.type)
+      !['code', 'math', 'divider', 'frontmatter', 'html'].includes(currentBlock.type)
 
     if (!isMergeable) {
       return

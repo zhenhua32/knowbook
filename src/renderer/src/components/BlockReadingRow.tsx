@@ -39,10 +39,11 @@ export const BlockReadingRow = memo(function BlockReadingRow({
 }) {
   const nodes = useContext(MarkdownBlockNodesContext)
   const advanced = Boolean(nodes && hasAdvancedMarkdown(nodes))
-  const structured = ['code', 'math', 'table', 'divider'].includes(block.type)
+  const structured = ['code', 'math', 'table', 'divider', 'frontmatter'].includes(block.type)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   let content: ReactNode
   if (block.type === 'divider') content = <hr />
+  else if (block.type === 'frontmatter') content = <details className="markdown-frontmatter"><summary>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</summary><pre>{block.content}</pre></details>
   else if (isMermaid) content = <MarkdownMermaidPreview source={block.content} label={isZh ? 'Mermaid 图表' : 'Mermaid diagram'} />
   else if (block.type === 'code') content = <Suspense fallback={<pre>{block.content}</pre>}>
     <CodePreview code={block.content} language={block.language ?? null} label={isZh ? '代码' : 'Code'} />

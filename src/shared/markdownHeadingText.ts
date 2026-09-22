@@ -6,8 +6,22 @@ export function markdownInlineText(tokens: Token[]): string {
     : ['softbreak', 'hardbreak'].includes(token.type) ? ' ' : '').join('')
 }
 
-export function createMarkdownHeadingSlugger(): (text: string) => string {
-  const used = new Set<string>(), nextSuffix = new Map<string, number>()
+export function markdownHtmlAnchorNames(tokens: Token[]): string[] {
+  const names = new Set<string>()
+  const visit = (items: Token[]) => {
+    for (const token of items) {
+      if (token.type === 'footnote_block_open') break
+      const name = token.meta?.html && (token.attrGet('id') || token.attrGet('name'))
+      if (name) names.add(String(name))
+      if (token.children) visit(token.children)
+    }
+  }
+  visit(tokens)
+  return [...names]
+}
+
+export function createMarkdownHeadingSlugger(reserved: Iterable<string> = []): (text: string) => string {
+  const used = new Set<string>(reserved), nextSuffix = new Map<string, number>()
   return (text) => {
     const base = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}_\-\s]/gu, '').replace(/\s/g, '-')
     let slug = base, suffix = nextSuffix.get(base) ?? 1

@@ -53,8 +53,8 @@
       "html": "<p>&lt;div *???-&amp;&amp;&amp;-&lt;---\n<em>foo</em></p>\n"
     },
     "159": {
-      "reason": "html-as-text",
-      "html": "<p>&lt;div&gt;&lt;a href=&quot;bar&quot;&gt;<em>foo</em>&lt;/a&gt;&lt;/div&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p>&lt;div&gt;<a href=\"bar\">*foo*</a>&lt;/div&gt;</p>\n"
     },
     "160": {
       "reason": "html-as-text",
@@ -65,8 +65,8 @@
       "html": "<p>&lt;div&gt;&lt;/div&gt;</p>\n<pre><code class=\"language-c\">int x = 33;\n</code></pre>\n"
     },
     "162": {
-      "reason": "html-as-text",
-      "html": "<p>&lt;a href=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/a&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p><a href=\"foo\">\n*bar*\n</a></p>\n"
     },
     "163": {
       "reason": "html-as-text",
@@ -201,8 +201,8 @@
       "html": "<p>&lt;a href=&quot;<code>&quot;&gt;</code></p>\n"
     },
     "475": {
-      "reason": "html-as-text",
-      "html": "<p><em>&lt;img src=&quot;foo&quot; title=&quot;</em>&quot;/&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p>*<img src=\"foo\" title=\"*\" alt=\"\"></p>\n"
     },
     "476": {
       "reason": "html-as-text",
@@ -355,8 +355,8 @@
       "html": "<p>&lt;div *???-&amp;&amp;&amp;-&lt;---\n<em>foo</em></p>\n"
     },
     "129": {
-      "reason": "html-as-text",
-      "html": "<p>&lt;div&gt;&lt;a href=&quot;bar&quot;&gt;<em>foo</em>&lt;/a&gt;&lt;/div&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p>&lt;div&gt;<a href=\"bar\">*foo*</a>&lt;/div&gt;</p>\n"
     },
     "130": {
       "reason": "html-as-text",
@@ -367,8 +367,8 @@
       "html": "<p>&lt;div&gt;&lt;/div&gt;</p>\n<pre><code class=\"language-c\">int x = 33;\n</code></pre>\n"
     },
     "132": {
-      "reason": "html-as-text",
-      "html": "<p>&lt;a href=&quot;foo&quot;&gt;\n<em>bar</em>\n&lt;/a&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p><a href=\"foo\">\n*bar*\n</a></p>\n"
     },
     "133": {
       "reason": "html-as-text",
@@ -507,8 +507,8 @@
       "html": "<p>&lt;a href=&quot;<code>&quot;&gt;</code></p>\n"
     },
     "484": {
-      "reason": "html-as-text",
-      "html": "<p><em>&lt;img src=&quot;foo&quot; title=&quot;</em>&quot;/&gt;</p>\n"
+      "reason": "limited-html",
+      "html": "<p>*<img src=\"foo\" title=\"*\" alt=\"\"></p>\n"
     },
     "485": {
       "reason": "html-as-text",

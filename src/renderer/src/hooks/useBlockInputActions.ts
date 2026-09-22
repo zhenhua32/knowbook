@@ -86,7 +86,7 @@ export function useBlockInputActions({
     const activeRange = selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end
       ? getMultiBlockOperationRange(selectedBlockRange) : null
     // Source editors own their newlines. Pasting code must never invoke shortcuts.
-    if (!activeRange && ['code', 'math', 'table'].includes(current.type)) return false
+    if (!activeRange && ['code', 'math', 'table', 'frontmatter', 'html'].includes(current.type)) return false
     const text = pastedText.replace(/\r\n?/g, '\n')
     if (!activeRange && !text.includes('\n')) return false
     const start = activeRange?.start ?? index

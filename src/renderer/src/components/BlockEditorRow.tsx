@@ -211,8 +211,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const nodes = useContext(MarkdownBlockNodesContext)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
-  const showAdvancedPreview = !['code', 'math', 'divider', 'table'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
-  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table'].includes(block.type) && !showAdvancedPreview
+  const showAdvancedPreview = !['code', 'math', 'divider', 'table', 'frontmatter'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
+  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table', 'frontmatter'].includes(block.type) && !showAdvancedPreview
   const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
   const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
 
@@ -224,7 +224,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
   const [isTableSourceExpanded, setIsTableSourceExpanded] = useState(false)
   const InputColumn = block.type === 'table' ? 'details' : 'div'
-  const canFormat = !['code', 'math', 'divider', 'table'].includes(block.type)
+  const canFormat = !['code', 'math', 'divider', 'table', 'frontmatter', 'html'].includes(block.type)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
@@ -524,6 +524,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               }}
             >
               {block.type === 'table' ? <summary>{isZh ? '编辑表格源码' : 'Edit table source'}</summary> : null}
+              {block.type === 'frontmatter' ? <span>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</span> : null}
               {canFormat && activeBlockIndex === index ? <Suspense fallback={null}><MarkdownFormatToolbar isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()} /></Suspense> : null}
               {hasRichMedia ? (
                 <button

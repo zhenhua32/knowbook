@@ -3,6 +3,8 @@ import { installMarkdownExtensions } from './markdownExtensions'
 import { installMarkdownAutolinks } from './markdownAutolinks'
 import { installMarkdownAdvanced } from './markdownAdvanced'
 import { installMarkdownSourceLinks } from './markdownSourceLinks'
+import { installMarkdownFrontmatter } from './markdownFrontmatter'
+import { installMarkdownHtml } from './markdownHtml'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -14,11 +16,12 @@ export function getHeadingLevel(type: string): HeadingLevel | null {
 }
 
 // One grammar for clipboard/import, reading, table cells and media extraction.
-// HTML stays text. Rendering tokens as React elements never enables raw HTML.
+// Common HTML becomes allowlisted tokens; other raw markup remains text.
 export const markdownEngine = new MarkdownIt({ html: false, linkify: true, breaks: false })
 installMarkdownExtensions(markdownEngine)
 installMarkdownAutolinks(markdownEngine)
 installMarkdownAdvanced(markdownEngine)
+installMarkdownFrontmatter(markdownEngine)
 markdownEngine.linkify.add('file:', { validate: (text, pos) => text.slice(pos).match(/^\/\/[^\s<>()\]]+/)?.[0].replace(/[.,;!?]+$/, '').length ?? 0 })
 const defaultValidateLink = markdownEngine.validateLink.bind(markdownEngine)
 markdownEngine.validateLink = (url) => /^file:\/\//i.test(url) || defaultValidateLink(url)
@@ -56,6 +59,7 @@ markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
 
 markdownEngine.renderer.rules.wiki_link = (tokens, index) => markdownEngine.utils.escapeHtml(`[[${tokens[index].content}]]`)
 markdownEngine.renderer.rules.knowbook_metadata = () => ''
+installMarkdownHtml(markdownEngine)
 installMarkdownSourceLinks(markdownEngine)
 
 export type MarkdownNode = { token: Token; children: MarkdownNode[] }

@@ -484,11 +484,16 @@ export class MarkdownRestoreService {
     relativePath: string,
     parsed: ParsedBackupDocument
   ): RestoreSourceFile {
-    if (parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
+    // The old manifest had just two fields. Its reserved file location is the
+    // additional discriminator; a normal note may use these same YAML keys.
+    const legacyManifest = relativePath.replace(/\\/g, '/') === '__knowbook/databases/index'
+      && parsed.frontmatter.kind === STANDALONE_DATABASE_MANIFEST_BACKUP_KIND
+      && Object.hasOwn(parsed.frontmatter, 'databaseIds')
+    if (parsed.isKnowbookBackup && parsed.frontmatter.kind === STANDALONE_DATABASE_BACKUP_KIND) {
       return this.parseSourceStandaloneDatabase(filePath, parsed)
     }
 
-    if (parsed.frontmatter.kind === STANDALONE_DATABASE_MANIFEST_BACKUP_KIND) {
+    if ((parsed.isKnowbookBackup || legacyManifest) && parsed.frontmatter.kind === STANDALONE_DATABASE_MANIFEST_BACKUP_KIND) {
       return this.parseSourceStandaloneDatabaseManifest(filePath, parsed)
     }
 
@@ -501,8 +506,9 @@ export class MarkdownRestoreService {
     relativePath: string
   ): RestoreSourceDocument {
     const normalizedRelativePath = this.normalizeDocumentPath(relativePath)
-    const normalizedDocumentPath = this.normalizeDocumentPath(parsed.frontmatter.path || normalizedRelativePath)
-    const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(parsed.frontmatter.documentDatabaseColumns, filePath)
+    const metadata = parsed.isKnowbookBackup ? parsed.frontmatter : {}
+    const normalizedDocumentPath = this.normalizeDocumentPath(metadata.path || normalizedRelativePath)
+    const documentDatabaseColumns = this.parseSourceDocumentDatabaseColumns(metadata.documentDatabaseColumns, filePath)
 
     if (!normalizedDocumentPath) {
       throw new Error(`Cannot restore document without a valid path: ${filePath}`)
@@ -514,23 +520,24 @@ export class MarkdownRestoreService {
     // Treat that matching heading as the document title on import, otherwise
     // each export/import cycle adds another copy to the editable body. Backup
     // documents carry metadata and must retain every original block verbatim.
-    const hasMetadata = Object.keys(parsed.frontmatter).length > 0 || parsed.blocks.some((block) => block.id)
-    const first = parsed.blocks[0]
+    const hasMetadata = parsed.isKnowbookBackup || parsed.blocks.some((block) => block.id)
+    const titleIndex = parsed.blocks[0]?.type === 'frontmatter' ? 1 : 0
+    const first = parsed.blocks[titleIndex]
     const blocks = !hasMetadata && first?.type === 'heading-1' && first.content.trim() === title
-      ? parsed.blocks.slice(1) : parsed.blocks
+      ? parsed.blocks.filter((_, index) => index !== titleIndex) : parsed.blocks
     if (!blocks.length) blocks.push({ type: 'paragraph', content: '', checked: false, depth: 0 })
 
     return {
       kind: 'document',
       sourceFilePath: filePath,
-      sourceDocumentId: parsed.frontmatter.id?.trim() || null,
+      sourceDocumentId: metadata.id?.trim() || null,
       documentPath: normalizedDocumentPath,
       restoreScopePath: this.deriveRestoreScopePath(normalizedDocumentPath, normalizedRelativePath),
       title,
-      summary: parsed.frontmatter.summary ?? '',
+      summary: metadata.summary ?? '',
       documentDatabaseColumns,
       documentDatabaseFieldValues: this.parseSourceDocumentDatabaseFieldValues(
-        parsed.frontmatter.documentDatabaseFieldValues,
+        metadata.documentDatabaseFieldValues,
         documentDatabaseColumns,
         filePath
       ),

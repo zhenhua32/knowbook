@@ -103,7 +103,13 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
         return
       }
       const row = scrollRef.current?.querySelector<HTMLElement>(`[data-block-index="${navigation.index}"]`)
-      const heading = navigation.headingIndex !== undefined ? row?.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')[navigation.headingIndex] : null
+      const position = navigation.headingIndex
+      const heading = position !== undefined ? position < 0
+        ? row?.querySelectorAll<HTMLElement>('[data-markdown-anchor]')[-position - 1]
+        : row?.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')[position] : null
+      for (let parent = heading?.parentElement; parent && parent !== row; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true
+      }
       if (row) scrollToElement(heading ?? row)
     })
     return () => cancelAnimationFrame(frame)
