@@ -49,9 +49,10 @@ test('diagnostics preserve positions in nested details, quotes, lists, footnotes
   assert.deepEqual(issues.map((issue) => issue.reason), ['html-attributes', 'html-attributes', 'unsupported-html', 'html-attributes', 'unsupported-html'])
 })
 
-test('foreign wiki embeds and aliases are diagnosed without treating code examples as links', () => {
+test('unsupported note embeds and external block syntax are diagnosed; aliases and images are supported', () => {
   const issues = diagnose('![[Picture.png]] and [[Note|label]] and [[Note#^block]] and `![[code]]` and [[Ordinary]]')
-  assert.deepEqual(issues.map((issue) => issue.reason), ['wiki-syntax', 'wiki-syntax', 'wiki-syntax'])
+  assert.deepEqual(issues.map((issue) => issue.reason), ['wiki-syntax'])
+  assert.equal(diagnose('![[Note]]')[0].reason, 'wiki-syntax')
   assert.deepEqual(diagnose('\\![[Ordinary]] and `![[Ordinary]]`'), [])
 })
 

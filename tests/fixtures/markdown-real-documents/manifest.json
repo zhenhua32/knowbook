@@ -61,7 +61,6 @@
           "outside-import-root",
           "html-attributes",
           "unsupported-html",
-          "wiki-syntax",
           "wiki-syntax"
         ],
         "指南/部署 步骤.md": []

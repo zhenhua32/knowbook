@@ -1,5 +1,7 @@
 import { useCallback, useMemo } from 'react'
 import type { DocumentBlockDraft, DocumentTreeNode } from '@shared/contracts'
+import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
+import { findWikiHeading } from '@shared/markdownWiki'
 import {
   getInlineReferenceTokenAtCursor,
   resolveInlineReferenceTarget
@@ -16,6 +18,8 @@ type UseInlineReferenceNavigationParams = {
   draftBlocks: DocumentBlockDraft[]
   onOpenDocument: (documentId: string) => void
   onOpenDocumentBlock: (documentId: string, blockId: string) => void
+  onOpenAnchor: (documentId: string, anchor: string) => void
+  draftTitle: string
   selectedDocumentId: string | null
   setBackupMessage: (message: string | null) => void
   uiBlockReferenceNotFound: string
@@ -26,6 +30,8 @@ export function useInlineReferenceNavigation({
   draftBlocks,
   onOpenDocument,
   onOpenDocumentBlock,
+  onOpenAnchor,
+  draftTitle,
   selectedDocumentId,
   setBackupMessage,
   uiBlockReferenceNotFound
@@ -60,18 +66,26 @@ export function useInlineReferenceNavigation({
       return
     }
 
-    const blockReference = await window.knowbook.getBlockReference(target.documentPath, target.blockId)
-    if (!blockReference) {
+    const document = documentReferences.find((entry) => entry.path === target.documentPath)
+    const detail = document && (document.id === selectedDocumentId ? { id: document.id, title: draftTitle, blocks: draftBlocks }
+      : await window.knowbook.getDocumentDetail(document.id))
+    if (!detail) {
       setBackupMessage(uiBlockReferenceNotFound)
       return
     }
-
-    onOpenDocumentBlock(blockReference.documentId, blockReference.block.id)
+    if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
+    else {
+      const heading = findWikiHeading(target.blockId, getMarkdownHeadingTargets(detail.blocks, detail.title))
+      if (heading) onOpenAnchor(detail.id, heading.slug)
+      else setBackupMessage(uiBlockReferenceNotFound)
+    }
   }, [
     documentReferences,
     draftBlocks,
     onOpenDocument,
     onOpenDocumentBlock,
+    onOpenAnchor,
+    draftTitle,
     selectedDocumentId,
     setBackupMessage,
     uiBlockReferenceNotFound

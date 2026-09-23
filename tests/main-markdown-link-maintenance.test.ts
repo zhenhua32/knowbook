@@ -93,7 +93,7 @@ test('link diagnostics distinguish local failures, accept complete-document head
     const report = store.checkDocumentLinks(source, (url) => checkMarkdownAttachment(url, assets))
     assert.equal(report.checkedCount, 14)
     assert.equal(report.ignoredExternalCount, 2)
-    assert.deepEqual(report.issues.map((issue) => issue.reason), ['missing-document', 'missing-heading', 'missing-block', 'ambiguous-reference', 'missing-attachment', 'unmanaged-attachment', 'unmanaged-attachment', 'invalid-path'])
+    assert.deepEqual(report.issues.map((issue) => issue.reason), ['missing-document', 'missing-heading', 'missing-heading', 'ambiguous-reference', 'missing-attachment', 'unmanaged-attachment', 'unmanaged-attachment', 'invalid-path'])
     assert.ok(report.issues.every((issue) => issue.blockId && issue.offset >= 0))
     assert.equal(checkMarkdownAttachment('file://%broken', assets), 'invalid-path')
   } finally { store.destroy(); rmSync(root, { recursive: true, force: true }) }

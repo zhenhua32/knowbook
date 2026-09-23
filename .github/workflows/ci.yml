@@ -109,6 +109,8 @@ jobs:
             test-results/markdown-workflow-knowbook.png
             test-results/markdown-import-report.json
             test-results/markdown-import-report.png
+            test-results/markdown-wiki.json
+            test-results/markdown-wiki.png
           if-no-files-found: ignore
           retention-days: 14
 

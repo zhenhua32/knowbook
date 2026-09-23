@@ -23,7 +23,7 @@ KnowBook 的粘贴、Markdown 导入、阅读、表格预览和复制导出使�
 | Mermaid | `mermaid` 围栏代码块，本地图表预览；支持流程图、时序图等随包提供的图表类型 |
 | 提示块 | `> [!note] 标题` 等类型、带格式的标题、嵌套正文；`+` 默认展开、`-` 默认折叠 |
 | 文内目录 | 独占一行的 `[TOC]`（大小写均可），列出正文标题，点击展开并定位章节 |
-| KnowBook 扩展 | `[[文档或块引用]]` |
+| Wiki 链接与图片 | `[[文档或块引用]]`、`[[文档\|显示名]]`、`[[文档#章节]]`、`[[#本页章节]]`、`![[图片.png]]`；支持路径、唯一标题及可选 `.md` 后缀 |
 | YAML Front Matter | 文件开头的 YAML 键值文件头，原样保存字段、顺序、注释、嵌套数组、锚点/别名和多行标量；支持 `---` 或 `...` 结束标记 |
 | 常用 HTML | `<br>`、`<kbd>`、`<sub>`、`<sup>`、`<details>/<summary>`、`<a>` 链接与自定义锚点、`<img>` 及整数宽高；折叠正文支持 Markdown、嵌套折叠、引用和列表 |
 
@@ -69,7 +69,7 @@ KnowBook 的粘贴、Markdown 导入、阅读、表格预览和复制导出使�
 - HTML 支持上述常用子集，未知或不完整的标签保留为文字；不支持任意 HTML/CSS 布局、脚本、事件属性、iframe、SVG 或危险 URL。允许链接/图片地址、替代文字、标题、自定义锚点、展开状态和 1–10000 的整数宽高。外部链接打开支持 HTTP、HTTPS、邮件，以及应用管理的附件目录内的本地文件。
 - YAML 文件头须位于文首、具有结束分隔符及顶层键值字段；普通 `---` 分隔线保持原语义。此阶段保留 YAML 源码，不提供字段类型编辑器或 YAML 校验，不会执行 YAML 自定义标签或解析别名。
 - 相对图片的收纳发生在文件导入时；仅粘贴 Markdown 文本无法得知原文件所在目录。跨文件跳转目前面向 `.md` 文档；单文件导出不自动导出它链接到的其他文档，整体迁移请使用备份或保持文档目录结构。
-- 自动维护面向工作区内可确定身份的链接，不猜测同名文档或恢复时无法匹配的复杂章节。Wiki 的 `#` 后仍是块 ID；普通 Markdown 的 `#` 后是章节或 HTML 自定义锚点。
+- 自动维护面向工作区内可确定身份的链接，不猜测同名文档或恢复时无法匹配的复杂章节。Wiki 的 `#` 后优先匹配实际存在的块 ID，再匹配章节文字、slug 或 HTML 自定义锚点；显式别名在改名移动时保持不变。图片与旧库升级的完整范围见 [Wiki 兼容验收](MarkdownWiki兼容验收.md)。
 - 数学公式采用 KaTeX 支持的 TeX 子集，关闭可信 HTML 扩展并限制宏展开；`$5 and $10` 等常见价格文字不会识别成公式。不把未闭合分隔符自动补齐，原文仍可编辑。
 - Mermaid 按需加载本地代码，图表内容不能开启 HTML 或点击回调。图表内外部图片暂不支持，保留源码并显示提示；单图限制为 50000 字符、500 条边。Markdown 导出保留图表源码，不将 SVG 写回正文。
 - 提示块支持 `[!类型]` 与 `+` / `-` 的常见形式，未知类型使用通用外观；不承诺实现其他应用的所有专有扩展。文内目录不包含脚注正文中的标题。
@@ -97,3 +97,4 @@ KnowBook 的粘贴、Markdown 导入、阅读、表格预览和复制导出使�
 - `tests/shared-markdown-frontmatter-html.test.tsx`、`tests/main-markdown-frontmatter-interop.test.ts`：YAML 保真、HTML 属性筛选和链接位置、嵌套容器、三轮真实文件往返、身份字段冲突及当前/旧备份恢复。
 - `e2e-tests/markdown-frontmatter-html.spec.ts`：粘贴、属性块、HTML 预览与阅读、折叠锚点定位、任务勾选、源码撤销重做、重载和实际文件导出。
 - `tests/shared-markdown-import-diagnostics.test.ts`、`tests/main-markdown-import-report.test.ts`、`e2e-tests/markdown-import-report.spec.ts`：真实文档语料、导入报告、来源定位、三轮文件与备份往返、取消及失败回滚。
+- `tests/shared-markdown-wiki.test.tsx`、`tests/main-markdown-wiki.test.ts`、`e2e-tests/markdown-wiki.spec.ts`：Wiki 别名、章节、图片嵌入、旧块引用、索引迁移、改名移动及连续往返。

@@ -11,10 +11,10 @@ const labels: Record<MarkdownImportIssueReason, [string, string]> = {
   'unmanaged-attachment': ['附件未收纳到工作区', 'Attachment was not copied into the workspace'],
   'outside-import-root': ['附件位于所选目录之外，已保留原链接', 'Attachment is outside the selected folder; original link preserved'],
   'invalid-path': ['链接路径无效', 'Invalid link path'],
-  'ambiguous-reference': ['同名文档无法确定，请使用完整路径', 'Ambiguous document title; use a full path'],
+  'ambiguous-reference': ['同名目标无法确定，请使用完整路径', 'Ambiguous target; use a full path'],
   'unsupported-html': ['HTML 未完整支持，已保留源码', 'HTML is not fully supported; source preserved'],
   'html-attributes': ['部分 HTML 属性仅保留在源码中', 'Some HTML attributes are preserved only in source'],
-  'wiki-syntax': ['嵌入或别名语法未支持，已保留源码', 'Embed or alias syntax is unsupported; source preserved']
+  'wiki-syntax': ['此嵌入或外部块引用语法未支持，已保留源码', 'This embed or external block reference is unsupported; source preserved']
 }
 
 function readableSource(source: string): string {

@@ -1,7 +1,8 @@
 import type MarkdownIt from 'markdown-it'
 import type { Env, StateBlock, Token } from 'markdown-it'
+import { parseWikiReference } from './markdownWiki'
 
-export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' | 'bare' }
+export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' | 'bare' | 'wiki' }
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 export type MarkdownCompatibilityFinding = { start: number; end: number; reason: 'unsupported-html' | 'html-attributes' | 'wiki-syntax' }
 type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
@@ -144,7 +145,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     try { parseInline(source, engine, env, tokens) }
     finally { if (data) data.context = previous }
   }
-  for (const name of ['link', 'image', 'autolink', 'linkify', 'wiki_link', 'footnote_inline', 'safe_html']) {
+  for (const name of ['link', 'image', 'autolink', 'linkify', 'wiki_link', 'wiki_embed', 'footnote_inline', 'safe_html']) {
     const { fn } = md.inline.ruler.__rules__.find((entry) => entry.name === name)!
     md.inline.ruler.at(name, (state, silent) => {
       const data = capture(state.env)
@@ -169,13 +170,20 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
         return true
       }
       if (name === 'footnote_inline') return true
+      if (name === 'wiki_embed') {
+        const token = state.tokens.slice(first).find((item) => item.meta?.wiki)!
+        if (token.type !== 'image') recordMarkdownCompatibility(state.env, { start, end: state.pos, reason: 'wiki-syntax' })
+        else {
+          const raw = state.src.slice(start + 3, state.pos - 2), reference = parseWikiReference(raw)
+          const from = start + 3 + raw.length - raw.trimStart().length
+          record(data, { start: from, end: from + reference.target.length, url: String(token.attrGet('src')), kind: 'image', syntax: 'wiki' })
+        }
+        return true
+      }
       if (name === 'wiki_link') {
         const label = state.src.slice(start + 2, state.pos - 2)
-        let slashCount = 0
-        for (let index = start - 2; index >= 0 && state.src[index] === '\\'; index--) slashCount++
-        const embed = state.src[start - 1] === '!' && slashCount % 2 === 0
-        if (embed || label.includes('|') || /#\^/.test(label)) {
-          recordMarkdownCompatibility(state.env, { start: embed ? start - 1 : start, end: state.pos, reason: 'wiki-syntax' })
+        if (parseWikiReference(label).fragment.startsWith('^')) {
+          recordMarkdownCompatibility(state.env, { start, end: state.pos, reason: 'wiki-syntax' })
         }
         record(data, { start: start + 2 + label.length - label.trimStart().length,
           end: state.pos - 2 - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })

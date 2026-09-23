@@ -177,8 +177,9 @@ export function rewriteDocumentMarkdownLinks<T extends MarkdownRenderableBlock>(
   for (const link of collectDocumentMarkdownLinks(blocks).reverse()) {
     const replacement = rewrite(link)
     if (replacement == null || replacement === link.url) continue
-    const escaped = link.kind === 'wiki' ? replacement : escapeMarkdownDestination(replacement, link.syntax)
     const block = next[link.blockIndex]
+    const escaped = link.kind === 'wiki' ? (block.content.slice(link.start, link.end).includes('\\|') ? replacement.replace(/\|/g, '\\|') : replacement)
+      : escapeMarkdownDestination(replacement, link.syntax)
     next[link.blockIndex] = { ...block, content: block.content.slice(0, link.start) + escaped + block.content.slice(link.end) }
   }
   return next

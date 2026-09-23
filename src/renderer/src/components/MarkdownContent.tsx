@@ -5,6 +5,7 @@ import {
 } from '@shared/markdownEngine'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
+import { parseWikiReference, wikiDisplayText } from '@shared/markdownWiki'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from './MarkdownDocumentContext'
 
@@ -95,9 +96,14 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
       case 'callout_title':
       case 'frontmatter':
       case 'knowbook_metadata': return null
-      case 'wiki_link': return options.renderReference ? options.renderReference(token.content, index) : options.onReference
-        ? <button key={index} className="inline-link" type="button" onClick={() => options.onReference?.(token.content)}>{token.content}</button>
-        : <span key={index}>{`[[${token.content}]]`}</span>
+      case 'wiki_embed': return <span key={index}>{token.content}</span>
+      case 'wiki_link': {
+        if (parseWikiReference(token.content).fragment.startsWith('^')) return <span key={index}>{`[[${token.content}]]`}</span>
+        const navigate = options.onReference ?? (options.onNavigateLink ? (raw: string) => options.onNavigateLink?.('knowbook-wiki:' + raw) : undefined)
+        return options.renderReference ? options.renderReference(token.content, index) : navigate
+          ? <button key={index} className="inline-link" type="button" title={parseWikiReference(token.content).target} onClick={() => navigate(token.content)}>{wikiDisplayText(token.content)}</button>
+          : <span key={index}>{wikiDisplayText(token.content)}</span>
+      }
       case 'link_open': {
         const href = String(token.attrGet('href') ?? '')
         const url = normalizeMarkdownExternalUrl(href)
@@ -109,7 +115,7 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
       }
       case 'image': {
         const src = normalizeMarkdownExternalUrl(String(token.attrGet('src') ?? ''))
-        if (!src || src.startsWith('mailto:')) return <span key={index}>{token.meta?.html ? String(token.meta.htmlSource ?? '') : `![${token.content}](${String(token.attrGet('src') ?? '')})`}</span>
+        if (!src || src.startsWith('mailto:')) return <span key={index}>{token.meta?.wiki ? String(token.meta.wikiSource) : token.meta?.html ? String(token.meta.htmlSource ?? '') : `![${token.content}](${String(token.attrGet('src') ?? '')})`}</span>
         if (options.hideImages) return null
         return <img key={index} alt={token.content} title={String(token.attrGet('title') ?? '') || undefined} loading="lazy"
           width={token.meta?.html ? token.attrGet('width') ?? undefined : undefined} height={token.meta?.html ? token.attrGet('height') ?? undefined : undefined}

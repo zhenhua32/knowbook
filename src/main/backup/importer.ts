@@ -78,6 +78,7 @@ type PreparedRestoreSources = {
   sourceStandaloneDatabases: RestoreSourceStandaloneDatabase[]
   sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
   assets: RestoreAssetCopy[]
+  wikiAssets: Map<string, string[]>
 }
 
 type DocumentSnapshot = ReturnType<KnowbookStore['getAllDocumentSnapshots']>[number]
@@ -257,7 +258,8 @@ export class MarkdownRestoreService {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest,
-      assets
+      assets,
+      wikiAssets
     } = await this.prepareRestoreSources(root, true)
 
     const stagedAssets = await this.stageRestoreAssets(assets)
@@ -311,7 +313,7 @@ export class MarkdownRestoreService {
             at: new Date().toISOString()
           }
         })
-        return { ...result, importReport: createMarkdownImportReport(this.store, importedFiles, root, this.assetRoot) }
+        return { ...result, importReport: createMarkdownImportReport(this.store, importedFiles, root, this.assetRoot, wikiAssets) }
       })
     } catch (error) {
       try {
@@ -333,7 +335,8 @@ export class MarkdownRestoreService {
   }
 
   private async prepareRestoreSources(root: string, collectAssets: boolean): Promise<PreparedRestoreSources> {
-    const markdownFiles = await this.collectMarkdownFiles(root)
+    const wikiAssets = new Map<string, string[]>()
+    const markdownFiles = await this.collectMarkdownFiles(root, wikiAssets)
     const budget: RestoreReadBudget = {
       assetPaths: new Set(),
       assetBytes: 0
@@ -357,7 +360,7 @@ export class MarkdownRestoreService {
         budget,
         assetsByDestination
       )
-      markdown = await this.restoreRelativeAssetReferences(root, filePath, markdown, collectAssets, budget, assetsByDestination)
+      markdown = await this.restoreRelativeAssetReferences(root, filePath, markdown, collectAssets, budget, assetsByDestination, wikiAssets)
       sourceInputs.push({ filePath, relativePath, markdown })
     }
 
@@ -418,11 +421,12 @@ export class MarkdownRestoreService {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest,
-      assets: [...assetsByDestination.values()]
+      assets: [...assetsByDestination.values()],
+      wikiAssets
     }
   }
 
-  private async collectMarkdownFiles(root: string): Promise<string[]> {
+  private async collectMarkdownFiles(root: string, wikiAssets: Map<string, string[]>): Promise<string[]> {
     const rootStat = await lstat(root).catch(() => null)
     if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
       throw new Error('Restore directory not found')
@@ -462,6 +466,9 @@ export class MarkdownRestoreService {
           throw new Error(`Restore directory contains an unsupported file type: ${fullPath}`)
         }
         if (!entry.name.toLowerCase().endsWith('.md')) {
+          const key = entry.name.toLowerCase()
+          const matches = wikiAssets.get(key) ?? []
+          matches.push(fullPath); wikiAssets.set(key, matches)
           continue
         }
 
@@ -704,17 +711,24 @@ export class MarkdownRestoreService {
 
   private async restoreRelativeAssetReferences(
     root: string, markdownFilePath: string, markdown: string, collectAssets: boolean,
-    budget: RestoreReadBudget, assetsByDestination: Map<string, RestoreAssetCopy>
+    budget: RestoreReadBudget, assetsByDestination: Map<string, RestoreAssetCopy>, wikiAssets: Map<string, string[]>
   ): Promise<string> {
     if (!this.assetRoot) return markdown
     const realRoot = await realpath(root)
     const replacements = new Map<string, string>()
-    for (const { url } of collectMarkdownDestinations(markdown)) {
-      if (replacements.has(url)) continue
+    for (const { url, syntax } of collectMarkdownDestinations(markdown)) {
+      const key = JSON.stringify([url, syntax])
+      if (replacements.has(key)) continue
       const local = parseLocalMarkdownUrl(url)
       if (!local?.path || /\.md$/i.test(local.path)) continue
-      const sourcePath = local.path.startsWith('/') ? resolve(root, local.path.slice(1)) : resolve(dirname(markdownFilePath), local.path)
+      let sourcePath = local.path.startsWith('/') || syntax === 'wiki' && !/^\.\.?\//.test(local.path)
+        ? resolve(root, local.path.replace(/^\//, '')) : resolve(dirname(markdownFilePath), local.path)
       if (!this.isPathInsideRoot(sourcePath, root)) continue
+      if (syntax === 'wiki' && !local.path.includes('/') && !(await lstat(sourcePath).catch(() => null))?.isFile()) {
+        const matches = wikiAssets.get(local.path.toLowerCase()) ?? []
+        if (matches.length !== 1) continue
+        sourcePath = matches[0]
+      }
       const info = await lstat(sourcePath).catch(() => null)
       // Missing/out-of-root destinations retain their source, never read arbitrary files.
       if (!info?.isFile() || info.isSymbolicLink()) continue
@@ -732,9 +746,9 @@ export class MarkdownRestoreService {
       const extension = extname(realSourcePath).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 16)
       const destinationPath = join(this.assetRoot, 'markdown', hash.slice(0, 2), `${hash}${extension}`)
       if (collectAssets) assetsByDestination.set(destinationPath, { sourcePath: realSourcePath, destinationPath })
-      replacements.set(url, pathToFileURL(destinationPath).toString() + local.suffix)
+      replacements.set(key, pathToFileURL(destinationPath).toString() + local.suffix)
     }
-    return rewriteMarkdownDestinations(markdown, ({ url }) => replacements.get(url))
+    return rewriteMarkdownDestinations(markdown, ({ url, syntax }) => replacements.get(JSON.stringify([url, syntax])))
   }
 
   private async stageRestoreAssets(assets: RestoreAssetCopy[]): Promise<StagedRestoreAssets | null> {

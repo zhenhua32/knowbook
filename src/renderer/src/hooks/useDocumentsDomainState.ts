@@ -526,6 +526,8 @@ export function useDocumentsDomainState({
   const navigateInlineReferenceAtCursor = useInlineReferenceNavigation({
     documentTree,
     draftBlocks,
+    draftTitle,
+    onOpenAnchor: openDocumentAnchorInDocumentsPage,
     onOpenDocument: openDocumentInDocumentsPage,
     onOpenDocumentBlock: openDocumentBlockInDocumentsPage,
     selectedDocumentId,
@@ -535,6 +537,7 @@ export function useDocumentsDomainState({
 
   const navigateMarkdownLink = useMarkdownNavigation({
     documentTree, selectedDocument, onOpenDocument: openDocumentInDocumentsPage,
+    onWikiReference: (token) => { void navigateInlineReferenceAtCursor(`[[${token}]]`, 2) },
     onOpenAnchor: openDocumentAnchorInDocumentsPage, onMessage: onBackupMessage, isZh: uiLanguage === 'zh-CN'
   })
 

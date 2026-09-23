@@ -43,9 +43,9 @@ export function rewriteMarkdownDestinations(source: string, rewrite: (destinatio
   return source
 }
 
-export function escapeMarkdownDestination(url: string, syntax?: 'html' | 'bare'): string {
+export function escapeMarkdownDestination(url: string, syntax?: 'html' | 'bare' | 'wiki'): string {
   return syntax === 'html' ? url.replace(/[\s"'&<>=`|]/g, (char) => `&#${char.charCodeAt(0)};`)
-    : url.replace(/[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
+    : url.replace(syntax === 'wiki' ? /[\s<>[\]\\|]/g : /[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
 }
 
 export function parseLocalMarkdownUrl(url: string): { path: string; fragment: string; suffix: string } | null {

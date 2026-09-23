@@ -111,6 +111,6 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
 
 export function hasAdvancedMarkdown(nodes: MarkdownNode[]): boolean {
   return nodes.some(({ token, children }) => ['math_inline', 'math_block', 'footnote_ref', 'footnote_missing', 'table_of_contents', 'mark_open', 'task_checkbox'].includes(token.type)
-    || Boolean(token.meta?.callout || token.meta?.html) || (token.type === 'fence' && /^mermaid(?:\s|$)/i.test(token.info.trim()))
+    || token.type === 'wiki_link' || Boolean(token.meta?.callout || token.meta?.html || token.meta?.wiki) || (token.type === 'fence' && /^mermaid(?:\s|$)/i.test(token.info.trim()))
     || hasAdvancedMarkdown(children))
 }

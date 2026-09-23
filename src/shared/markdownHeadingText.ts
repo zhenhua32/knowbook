@@ -1,8 +1,10 @@
 import type { Token } from 'markdown-it'
+import { wikiDisplayText } from './markdownWiki'
 
 export function markdownInlineText(tokens: Token[]): string {
   return tokens.map((token) => token.children ? markdownInlineText(token.children)
-    : ['text', 'code_inline', 'wiki_link', 'math_inline'].includes(token.type) ? token.content
+    : token.type === 'wiki_link' ? wikiDisplayText(token.content)
+    : ['text', 'code_inline', 'math_inline'].includes(token.type) ? token.content
     : ['softbreak', 'hardbreak'].includes(token.type) ? ' ' : '').join('')
 }
 

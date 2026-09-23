@@ -5,6 +5,7 @@ import { installMarkdownAdvanced } from './markdownAdvanced'
 import { installMarkdownSourceLinks } from './markdownSourceLinks'
 import { installMarkdownFrontmatter } from './markdownFrontmatter'
 import { installMarkdownHtml } from './markdownHtml'
+import { installMarkdownWiki } from './markdownWiki'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -59,6 +60,7 @@ markdownEngine.inline.ruler.before('link', 'wiki_link', (state, silent) => {
 
 markdownEngine.renderer.rules.wiki_link = (tokens, index) => markdownEngine.utils.escapeHtml(`[[${tokens[index].content}]]`)
 markdownEngine.renderer.rules.knowbook_metadata = () => ''
+installMarkdownWiki(markdownEngine)
 installMarkdownHtml(markdownEngine)
 installMarkdownSourceLinks(markdownEngine)
 

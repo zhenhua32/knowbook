@@ -2,11 +2,12 @@ import { useCallback, useMemo } from 'react'
 import type { DocumentDetail, DocumentTreeNode } from '@shared/contracts'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 
-export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDocument, onOpenAnchor, onMessage, isZh }: {
+export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDocument, onOpenAnchor, onWikiReference, onMessage, isZh }: {
   documentTree: DocumentTreeNode[]
   selectedDocument: DocumentDetail | null
   onOpenDocument: (documentId: string) => void
   onOpenAnchor: (documentId: string, anchor: string) => void
+  onWikiReference: (token: string) => void
   onMessage: (message: string) => void
   isZh: boolean
 }) {
@@ -17,6 +18,7 @@ export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDo
     return ids
   }, [documentTree])
   return useCallback((url: string) => {
+    if (url.startsWith('knowbook-wiki:')) { onWikiReference(url.slice('knowbook-wiki:'.length)); return }
     if (!selectedDocument) return
     const target = resolveMarkdownDocumentPath(selectedDocument.path, url)
     const id = target?.path === selectedDocument.path ? selectedDocument.id : target && documentIds.get(target.path)
@@ -28,5 +30,5 @@ export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDo
     }
     if (url.includes('#')) onOpenAnchor(id, target.fragment)
     else onOpenDocument(id)
-  }, [documentIds, isZh, onMessage, onOpenAnchor, onOpenDocument, selectedDocument])
+  }, [documentIds, isZh, onMessage, onOpenAnchor, onOpenDocument, onWikiReference, selectedDocument])
 }

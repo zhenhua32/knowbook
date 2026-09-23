@@ -449,6 +449,11 @@ export class KnowbookStore {
         }
         this.db.pragma('user_version = 18')
       }
+      if (schemaVersion < 19) {
+        // Wiki aliases, headings and image embeds change derived bindings only.
+        if (schemaVersion >= 18) { this.markdownLinks.rebuild(); this.resyncLinks() }
+        this.db.pragma('user_version = 19')
+      }
     })
   }
 
@@ -3359,8 +3364,8 @@ export class KnowbookStore {
 
       for (const block of candidateBlocks) {
         if (this.extractLinkTargets(block.content).some((token) => {
-          const separator = token.lastIndexOf('#')
-          return wikiReferenceTokens.has((separator < 0 ? token : token.slice(0, separator).trim()).toLowerCase())
+          const name = token.split('|', 1)[0].split('#', 1)[0].trim().replace(/\.md$/i, '').replace(/^\//, '')
+          return [token, name, name.split('/').at(-1)!].some((candidate) => wikiReferenceTokens.has(candidate.toLowerCase()))
         })) {
           sourceDocumentIds.add(block.document_id)
         }
@@ -3415,7 +3420,7 @@ export class KnowbookStore {
     // Regex scans used to count Wiki text in code, math and image alt labels.
     const selectMarkdownLinks = this.db.prepare(`SELECT DISTINCT source.source_document_id, target.id AS target_id, source.url
       FROM markdown_link_sources AS source JOIN documents AS target ON target.path = source.target_path
-      WHERE (source.kind = 'wiki' OR target.id <> source.source_document_id)
+      WHERE (source.kind IN ('wiki', 'wiki-heading') OR target.id <> source.source_document_id)
       ${selectedSourceDocumentIds ? 'AND source.source_document_id IN (SELECT value FROM json_each(?))' : ''}`)
     const markdownLinks = (selectedSourceDocumentIds
       ? selectMarkdownLinks.all(JSON.stringify(selectedSourceDocumentIds)) : selectMarkdownLinks.all()) as Array<{ source_document_id: string; target_id: string; url: string }>
