@@ -17,7 +17,10 @@ export function useWorkspaceOperations({
 }: UseWorkspaceOperationsParams) {
   const {
     handleBackup,
-    handleRestoreBackup
+    handleRestoreBackup,
+    importReport,
+    isImportReportOpen,
+    setImportReportOpen
   } = useWorkspaceBackupActions({
     flushPendingDocumentChanges: documents.flushPendingChanges,
     reloadDatabaseDomain,
@@ -60,6 +63,9 @@ export function useWorkspaceOperations({
   return {
     handleBackup,
     handleRestoreBackup,
+    importReport,
+    isImportReportOpen,
+    setImportReportOpen,
     ...workspaceDocumentManagement
   }
 }

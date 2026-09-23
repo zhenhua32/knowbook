@@ -8,6 +8,7 @@ const DocumentsPage = lazy(async () => {
   const module = await import('../pages/DocumentsPage')
   return { default: module.DocumentsPage }
 })
+const MarkdownImportReportDialog = lazy(() => import('./MarkdownImportReportDialog'))
 
 const DatabasePage = lazy(async () => {
   const module = await import('../pages/DatabasePage')
@@ -64,6 +65,17 @@ export function AppPageContent({
           <button className="flash-close" onClick={() => shell.setBackupMessage(null)} type="button">✕</button>
         </p>
       ) : null}
+
+      {workspace.importReport && <div><button type="button" className="secondary-button" onClick={() => workspace.setImportReportOpen(true)}>
+        {shell.isZh ? '查看最近导入报告' : 'View latest import report'}
+      </button></div>}
+      {workspace.importReport && workspace.isImportReportOpen && <Suspense fallback={null}>
+        <MarkdownImportReportDialog report={workspace.importReport} isZh={shell.isZh}
+          onClose={() => workspace.setImportReportOpen(false)} onLocate={(documentId, blockId) => {
+            if (blockId) documents.openDocumentBlockInDocumentsPage(documentId, blockId)
+            else documents.openDocumentInDocumentsPage(documentId)
+          }} />
+      </Suspense>}
 
       <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
         {shell.activePage === 'dashboard' ? (

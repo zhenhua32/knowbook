@@ -219,7 +219,7 @@ function createUiText(language: UiLanguage) {
       ? 'SQLite 仍是单一事实源，Markdown 备份会导出为树形目录，renderer 现在已经可以经由 preload bridge 浏览文档层级并检查文档关系。'
       : 'SQLite remains the source of truth, markdown backups export into a nested tree, and the renderer can now browse document hierarchy and inspect document relationships over the preload bridge.',
     runBackupNow: zh ? '立即执行备份' : 'Run backup now',
-    restoreBackup: zh ? '恢复备份' : 'Restore backup',
+    restoreBackup: zh ? '导入 Markdown / 恢复备份' : 'Import Markdown / restore backup',
     documentsLabel: zh ? '文档数' : 'Documents',
     blocksLabel: zh ? '块数' : 'Blocks',
     linksLabel: zh ? '链接数' : 'Links',

@@ -11,7 +11,7 @@ export type MarkdownHeadingTarget = { key: string; blockId: string | null; text:
 /** Translate parser positions back into block content, without re-importing a
  * serialized document and losing block identities or editor metadata. */
 export function collectDocumentMarkdownLinks(blocks: MarkdownRenderableBlock[]): MarkdownDocumentLink[] {
-  if (!blocks.some((block) => /[\[<]/.test(block.content))) return []
+  if (!blocks.some((block) => /[\[<]|file:/i.test(block.content))) return []
   const { markdown, ranges } = serializeMarkdownWithBlockRanges(blocks)
   const lines = markdown.split('\n')
   const lineOffsets = [0]

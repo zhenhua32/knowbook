@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "readme",
+      "expectedIssues": {
+        "README.md": [
+          "missing-document",
+          "missing-document"
+        ]
+      },
+      "sha256NormalizedLf": {
+        "README.md": "4be181f1920ecce286589cdf3863fac8dedd0aa674a54fb8a7d299978b9701fa"
+      }
+    },
+    {
+      "name": "technical",
+      "expectedIssues": {
+        "Markdown高级语法.md": []
+      },
+      "sha256NormalizedLf": {
+        "Markdown高级语法.md": "e6ce6ccb0227c9e501f1b4e0ab634a7ddd10d675328300bb9f4bb53a326f8e51"
+      }
+    },
+    {
+      "name": "joplin",
+      "expectedIssues": {
+        "markdown-workflows/Acceptance.md": [
+          "missing-document"
+        ],
+        "markdown-workflows/Renamed.md": []
+      },
+      "sha256NormalizedLf": {
+        "markdown-workflows/Acceptance.md": "7662c8c800e96beee67f3f564957b0be6e729d0e9c764bf9c5b1da1892d3f73d",
+        "markdown-workflows/Renamed.md": "281525be6c84b85c693133219ef66f3215df6476b633094b940a588a4e73b09f",
+        "_resources/pixel.svg": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6"
+      }
+    },
+    {
+      "name": "typora",
+      "expectedIssues": {
+        "Acceptance.md": [
+          "missing-document",
+          "missing-document"
+        ],
+        "Renamed.md": []
+      },
+      "sha256NormalizedLf": {
+        "Acceptance.md": "2ef691aaf0b3970c93f39d4b07bde5281114c19d96b0e8d874c66762d62bf364",
+        "pixel.svg": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6",
+        "Renamed.md": "281525be6c84b85c693133219ef66f3215df6476b633094b940a588a4e73b09f"
+      }
+    },
+    {
+      "name": "vault",
+      "expectedIssues": {
+        "项目说明.md": [
+          "missing-attachment",
+          "missing-heading",
+          "missing-document",
+          "outside-import-root",
+          "html-attributes",
+          "unsupported-html",
+          "wiki-syntax",
+          "wiki-syntax"
+        ],
+        "指南/部署 步骤.md": []
+      },
+      "sha256NormalizedLf": {
+        "项目说明.md": "200a029e8eb6abb7500a860ed49e88cecb8c8ee598e2c488d077dbc1062738af",
+        "指南/部署 步骤.md": "a2ff233716880b236e28b2491955df370a0611ddcee0f7a089b045c6b3f841e2",
+        "附件/config.txt": "c35b589c8cad69ce2dc5a4bfd92c2c14b3622ab86151d30a30e2f9b93cc56968",
+        "附件/截图.svg": "2689566ce9e0d55c91160cc35fc228a6fff8da5c3f610a4c3854d9a94f9404e6"
+      }
+    }
+  ]
+}

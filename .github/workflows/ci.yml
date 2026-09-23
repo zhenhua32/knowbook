@@ -107,6 +107,8 @@ jobs:
           path: |
             test-results/markdown-workflow-knowbook.json
             test-results/markdown-workflow-knowbook.png
+            test-results/markdown-import-report.json
+            test-results/markdown-import-report.png
           if-no-files-found: ignore
           retention-days: 14
 

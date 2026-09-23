@@ -64,6 +64,8 @@ KnowBook 的粘贴、Markdown 导入、阅读、表格预览和复制导出使�
 
 ## 边界
 
+目录导入现提供逐文件兼容性报告，支持搜索、筛选及来源块定位。真实 README、技术文档、已有编辑器导出文件和多文件笔记库的往返验收见 [导入诊断验收](Markdown导入诊断验收.md)。
+
 - HTML 支持上述常用子集，未知或不完整的标签保留为文字；不支持任意 HTML/CSS 布局、脚本、事件属性、iframe、SVG 或危险 URL。允许链接/图片地址、替代文字、标题、自定义锚点、展开状态和 1–10000 的整数宽高。外部链接打开支持 HTTP、HTTPS、邮件，以及应用管理的附件目录内的本地文件。
 - YAML 文件头须位于文首、具有结束分隔符及顶层键值字段；普通 `---` 分隔线保持原语义。此阶段保留 YAML 源码，不提供字段类型编辑器或 YAML 校验，不会执行 YAML 自定义标签或解析别名。
 - 相对图片的收纳发生在文件导入时；仅粘贴 Markdown 文本无法得知原文件所在目录。跨文件跳转目前面向 `.md` 文档；单文件导出不自动导出它链接到的其他文档，整体迁移请使用备份或保持文档目录结构。
@@ -94,3 +96,4 @@ KnowBook 的粘贴、Markdown 导入、阅读、表格预览和复制导出使�
 - `e2e-tests/long-document-experience.spec.ts` 与 `markdown-editing.spec.ts`：642 块文档的输入帧延迟，以及 Chromium 输入法候选提交／取消、多语言内容、大写快捷键、保存重载。具体测量边界见 [质量与性能验收](Markdown质量与性能验收.md)。
 - `tests/shared-markdown-frontmatter-html.test.tsx`、`tests/main-markdown-frontmatter-interop.test.ts`：YAML 保真、HTML 属性筛选和链接位置、嵌套容器、三轮真实文件往返、身份字段冲突及当前/旧备份恢复。
 - `e2e-tests/markdown-frontmatter-html.spec.ts`：粘贴、属性块、HTML 预览与阅读、折叠锚点定位、任务勾选、源码撤销重做、重载和实际文件导出。
+- `tests/shared-markdown-import-diagnostics.test.ts`、`tests/main-markdown-import-report.test.ts`、`e2e-tests/markdown-import-report.spec.ts`：真实文档语料、导入报告、来源定位、三轮文件与备份往返、取消及失败回滚。

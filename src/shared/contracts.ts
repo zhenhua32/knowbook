@@ -681,6 +681,32 @@ export interface BackupRestoreResult {
   root: string
   at: string
   safetyBackupPath?: string
+  importReport?: MarkdownImportReport
+}
+
+export type MarkdownImportIssueReason = DocumentLinkIssueReason | 'outside-import-root'
+  | 'unsupported-html' | 'html-attributes' | 'wiki-syntax'
+
+export interface MarkdownImportIssue {
+  reason: MarkdownImportIssueReason
+  blockId: string
+  offset: number
+  source: string
+}
+
+export interface MarkdownImportFileResult {
+  sourcePath: string
+  documentPath: string
+  documentId: string
+  status: 'created' | 'updated'
+  issues: MarkdownImportIssue[]
+  omittedIssueCount: number
+}
+
+export interface MarkdownImportReport {
+  files: MarkdownImportFileResult[]
+  issueCount: number
+  ignoredExternalCount: number
 }
 
 export interface BackupRestorePreview {

@@ -802,7 +802,7 @@ function formatRestorePreviewDetail(preview: BackupRestorePreview): string {
     `路径冲突：${preview.conflictsResolved} 个；父级占位：${preview.placeholdersCreated} 个`,
     '',
     '同一文档（优先匹配备份 ID，其次匹配完整路径）会以导入内容覆盖。普通 Markdown 目录不会删除未包含的文档；带完整备份清单时按清单恢复。',
-    '目录内可找到的相对图片和附件会复制到工作区；找不到的资源保留原链接，可在文档“检查链接”中查看。',
+    '目录内可找到的相对图片和附件会复制到工作区；找不到的资源保留原链接。完成后显示逐文件导入报告，可定位附件、链接和语法兼容性问题。',
     '',
     '继续后会先创建数据库安全副本，再应用恢复内容。'
   ].join('\n')
@@ -2064,8 +2064,8 @@ function registerIpcHandlers(): void {
     try {
       const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
       const openDialogOptions: OpenDialogOptions = {
-        title: '选择备份目录',
-        buttonLabel: '恢复备份',
+        title: '选择 Markdown 或备份目录',
+        buttonLabel: '选择目录',
         properties: ['openDirectory']
       }
       const result = targetWindow

@@ -9,7 +9,7 @@ export function collectMarkdownDestinations(source: string): MarkdownDestination
 }
 
 export function collectMarkdownSourceLinks(source: string, includeWiki = true): MarkdownSourceLink[] {
-  if (!source.includes('[') && !source.includes('<')) return []
+  if (!source.includes('[') && !source.includes('<') && !/file:/i.test(source)) return []
   const headerEnd = extractMarkdownFrontmatter(source)?.end ?? 0
   const env: MarkdownEnvironment = { captureSourceLinks: true }
   // Metadata values are not Markdown content. Keep offsets while masking YAML.
@@ -36,13 +36,14 @@ export function rewriteMarkdownDestinations(source: string, rewrite: (destinatio
       // Relative destinations are not valid inside <...>; retain the visible
       // label while converting the exported/imported URL to a normal link.
       const label = source.slice(edit.start, edit.end).replace(/[\\\[\]]/g, '\\$&')
-      source = source.slice(0, edit.start - 1) + `[${label}](${escaped})` + source.slice(edit.end + 1)
+      const brackets = edit.syntax === 'bare' ? 0 : 1
+      source = source.slice(0, edit.start - brackets) + `[${label}](${escaped})` + source.slice(edit.end + brackets)
     } else source = source.slice(0, edit.start) + escaped + source.slice(edit.end)
   }
   return source
 }
 
-export function escapeMarkdownDestination(url: string, syntax?: 'html'): string {
+export function escapeMarkdownDestination(url: string, syntax?: 'html' | 'bare'): string {
   return syntax === 'html' ? url.replace(/[\s"'&<>=`|]/g, (char) => `&#${char.charCodeAt(0)};`)
     : url.replace(/[\s<>()[\]\\]/g, (char) => encodeURIComponent(char).replace('(', '%28').replace(')', '%29'))
 }

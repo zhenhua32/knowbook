@@ -17,6 +17,7 @@ import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
 import { parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, rewriteMarkdownDestinations } from '@shared/markdownLinks'
 import { KnowbookStore } from '../database/store'
+import { rewriteBackupAssetReferences } from './markdown-asset-references'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
@@ -301,7 +302,8 @@ class MarkdownBackupWriter {
     }
 
     const normalizedAssetRoot = resolve(this.assetRoot)
-    return markdown.replace(FILE_URL_PATTERN, (assetUrl) => {
+    return rewriteBackupAssetReferences(markdown, FILE_URL_PATTERN, (assetUrl) => {
+      if (!assetUrl.startsWith('file:')) return null
       let candidatePath: string
       try {
         candidatePath = resolve(fileURLToPath(assetUrl))

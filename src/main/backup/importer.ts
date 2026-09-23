@@ -20,6 +20,8 @@ import { createLegacyDatabaseViewConfig, normalizeDatabaseViewConfig } from '@sh
 import { parseMarkdownBackupDocument } from '@shared/markdown'
 import { collectMarkdownDestinations, parseLocalMarkdownUrl, relativeMarkdownPath, rewriteMarkdownDestinations } from '@shared/markdownLinks'
 import { KnowbookStore } from '../database/store'
+import { createMarkdownImportReport, type ImportedMarkdownFile } from './import-report'
+import { collectBackupAssetReferences, rewriteBackupAssetReferences } from './markdown-asset-references'
 
 type RestoreSourceDocument = {
   kind: 'document'
@@ -172,7 +174,7 @@ export class MarkdownRestoreService {
     try {
       return MarkdownRestoreService.strictUtf8Decoder.decode(bytes)
     } catch {
-      throw new Error(`Restore file is not valid UTF-8 and was skipped from the restore plan: ${filePath}`)
+      throw new Error(`Restore file is not valid UTF-8; import was canceled: ${filePath}`)
     }
   }
 
@@ -267,46 +269,49 @@ export class MarkdownRestoreService {
         await this.publishRestoreAssets(stagedAssets, publishedAssets)
       }
 
-      return this.store.runInBulkDocumentMutation(() => {
-        let created = 0
-        let updated = 0
-        const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
-        let placeholdersCreated = 0
-        const restoredDocumentIds = new Set<string>()
-        const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
+      return this.store.runInTransaction(() => {
+        const importedFiles: ImportedMarkdownFile[] = []
+        const result = this.store.runInBulkDocumentMutation(() => {
+          let created = 0
+          let updated = 0
+          const conflictsResolved = this.countResolvableConflicts(sourceDocuments)
+          let placeholdersCreated = 0
+          const documentDatabaseColumnIdMap = this.ensureDocumentDatabaseColumns(sourceDocuments)
 
-        // Manifest-gated deletions run before restores so stale occupants of
-        // backed-up paths cannot block id-matched documents from moving home.
-        let deleted = 0
-        if (sourceStandaloneDatabaseManifest) {
-          deleted = this.deleteMissingDocuments(
-            sourceDocuments,
-            this.computePreRestorableDocumentIds(sourceDocuments)
-          )
-        }
-
-        for (const source of sourceDocuments) {
-          const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
-          placeholdersCreated += result.placeholdersCreated
-          restoredDocumentIds.add(result.documentId)
-          if (result.mode === 'created') {
-            created += 1
-          } else {
-            updated += 1
+          // Manifest-gated deletions run before restores so stale occupants of
+          // backed-up paths cannot block id-matched documents from moving home.
+          let deleted = 0
+          if (sourceStandaloneDatabaseManifest) {
+            deleted = this.deleteMissingDocuments(
+              sourceDocuments,
+              this.computePreRestorableDocumentIds(sourceDocuments)
+            )
           }
-        }
-        this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
 
-        return {
-          restored: sourceDocuments.length,
-          created,
-          updated,
-          deleted,
-          conflictsResolved,
-          placeholdersCreated,
-          root,
-          at: new Date().toISOString()
-        }
+          for (const source of sourceDocuments) {
+            const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
+            importedFiles.push({ sourceFilePath: source.sourceFilePath, documentId: result.documentId, status: result.mode })
+            placeholdersCreated += result.placeholdersCreated
+            if (result.mode === 'created') {
+              created += 1
+            } else {
+              updated += 1
+            }
+          }
+          this.restoreStandaloneDatabases(sourceStandaloneDatabases, Boolean(sourceStandaloneDatabaseManifest))
+
+          return {
+            restored: sourceDocuments.length,
+            created,
+            updated,
+            deleted,
+            conflictsResolved,
+            placeholdersCreated,
+            root,
+            at: new Date().toISOString()
+          }
+        })
+        return { ...result, importReport: createMarkdownImportReport(this.store, importedFiles, root, this.assetRoot) }
       })
     } catch (error) {
       try {
@@ -644,10 +649,12 @@ export class MarkdownRestoreService {
     const snapshotAssetRoot = resolve(root, ...ASSET_BACKUP_ROOT.split('/'))
     const normalizedAssetRoot = resolve(this.assetRoot)
     const replacements = new Map<string, string>()
-    const portableReferences = [...new Set(markdown.match(PORTABLE_ASSET_REFERENCE_PATTERN) ?? [])]
+    const portableReferences = collectBackupAssetReferences(markdown, PORTABLE_ASSET_REFERENCE_PATTERN)
 
     for (const portableReference of portableReferences) {
-      const sourceAssetPath = resolve(dirname(markdownFilePath), portableReference)
+      const local = parseLocalMarkdownUrl(portableReference)
+      if (!local?.path) continue
+      const sourceAssetPath = local.path.startsWith('/') ? resolve(root, local.path.slice(1)) : resolve(dirname(markdownFilePath), local.path)
       if (!this.isPathInsideRoot(sourceAssetPath, snapshotAssetRoot)) {
         continue
       }
@@ -689,13 +696,10 @@ export class MarkdownRestoreService {
           destinationPath
         })
       }
-      replacements.set(portableReference, pathToFileURL(destinationPath).toString())
+      replacements.set(portableReference, pathToFileURL(destinationPath).toString() + local.suffix)
     }
 
-    return markdown.replace(
-      PORTABLE_ASSET_REFERENCE_PATTERN,
-      (portableReference) => replacements.get(portableReference) ?? portableReference
-    )
+    return rewriteBackupAssetReferences(markdown, PORTABLE_ASSET_REFERENCE_PATTERN, (url) => replacements.get(url))
   }
 
   private async restoreRelativeAssetReferences(

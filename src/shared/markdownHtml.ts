@@ -1,7 +1,7 @@
 import type MarkdownIt from 'markdown-it'
 import type { Token } from 'markdown-it'
 import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
-import { capturedMarkdownSourceLinks, shiftMarkdownSourceCapture, type MarkdownDestination } from './markdownSourceLinks'
+import { capturedMarkdownSourceLinks, capturedMarkdownCompatibility, recordMarkdownCompatibility, shiftMarkdownSourceCapture, type MarkdownDestination, type MarkdownCompatibilityFinding } from './markdownSourceLinks'
 
 const tags = new Set(['br', 'kbd', 'sub', 'sup', 'img', 'a', 'details', 'summary'])
 const voidTags = new Set(['br', 'img'])
@@ -107,6 +107,27 @@ function parsedElement(source: string): Html.Element | null {
     && (voidTags.has(root.tagName) || location.endTag) ? root : null
 }
 
+function compatibilityFindings(source: string): MarkdownCompatibilityFinding[] {
+  const issues: MarkdownCompatibilityFinding[] = []
+  const visit = (nodes: Html.ChildNode[]) => {
+    for (const node of nodes) {
+      const location = node.sourceCodeLocation
+      if (!location || 'value' in node) continue
+      if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || !tags.has(node.tagName)) {
+        issues.push({ start: location.startOffset, end: location.endOffset, reason: 'unsupported-html' })
+        continue
+      }
+      const kept = new Set(attributes(node).map(([name]) => name))
+      if (node.attrs.some((attr) => !kept.has(attr.name))) {
+        issues.push({ start: location.startOffset, end: node.sourceCodeLocation?.startTag?.endOffset ?? location.endOffset, reason: 'html-attributes' })
+      }
+      visit(node.childNodes)
+    }
+  }
+  visit(parseFragment(source, { sourceCodeLocationInfo: true }).childNodes)
+  return issues
+}
+
 /** HTML is converted to the same safe token tree as Markdown. No raw HTML,
  * CSS, event handlers, foreign namespaces or executable URL schemes reach the
  * renderer. Unsupported/malformed markup remains editable literal text. */
@@ -134,6 +155,22 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     }
     state.pos += source.length
     return true
+  })
+
+  // Observation only: do not consume input or change how Markdown renders.
+  // Escapes, code, math, YAML and image alt text retain the parser's exclusions.
+  md.inline.ruler.before('safe_html', 'html_compatibility', (state, silent) => {
+    if (silent || !state.env.captureCompatibility || state.src[state.pos] !== '<') return false
+    const rest = state.src.slice(state.pos)
+    const complete = elementSource(state.src, state.pos)
+    const raw = complete ?? /^(?:<!--[\s\S]*?-->|<[a-z][\w-]*(?:[^"'<>]|"[^"]*"|'[^']*')*>)/i.exec(rest)?.[0]
+    if (!raw) return false
+    const findings = complete && parsedElement(complete) ? compatibilityFindings(raw)
+      : [{ start: 0, end: raw.length, reason: 'unsupported-html' as const }]
+    for (const finding of findings) recordMarkdownCompatibility(state.env, {
+      ...finding, start: state.pos + finding.start, end: state.pos + finding.end
+    })
+    return false
   })
 
   md.block.ruler.before('html_block', 'html_details', (state, start, end, silent) => {
@@ -166,6 +203,9 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     if (silent) return true
     const open = state.push('html_details_open', 'details', 1)
     open.attrs = attributes(root); open.meta = { html: true }; open.map = [start, nextLine]
+    for (const finding of state.env.captureCompatibility ? compatibilityFindings(opening! + '</details>') : []) {
+      recordMarkdownCompatibility(state.env, { ...finding, start: positions[finding.start], end: positions[finding.end] }, true)
+    }
     let bodyStart = opening!.length
     const summaryStart = bodyStart + source.slice(bodyStart).length - source.slice(bodyStart).trimStart().length
     const summarySource = /^<summary(?=[\s>])/i.test(source.slice(summaryStart)) ? elementSource(source, summaryStart) : null
@@ -174,6 +214,9 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
       const location = first.sourceCodeLocation
       const summary = state.push('html_element_open', 'summary', 1)
       summary.attrs = attributes(first); summary.meta = { html: true }
+      for (const finding of state.env.captureCompatibility ? compatibilityFindings(summarySource!.slice(0, location.startTag!.endOffset) + '</summary>') : []) {
+        recordMarkdownCompatibility(state.env, { ...finding, start: positions[summaryStart + finding.start], end: positions[summaryStart + finding.end] }, true)
+      }
       const inline = state.push('inline', '', 0)
       inline.content = summarySource!.slice(location.startTag!.endOffset, location.endTag!.startOffset)
       inline.children = []
@@ -183,6 +226,7 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     }
     const body = source.slice(bodyStart, closing.index)
     const bodyTokens: Token[] = [], linkStart = capturedMarkdownSourceLinks(state.env).length
+    const diagnosticStart = capturedMarkdownCompatibility(state.env).length
     const previous = state.env.suppressFrontmatter
     const previousDepth = Number(state.env.htmlDetailsDepth ?? 0)
     state.env.suppressFrontmatter = true
@@ -190,7 +234,7 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     try { md.block.parse(body, md, state.env, bodyTokens) }
     finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth }
     const lineOffset = start + (source.slice(0, bodyStart).match(/\n/g)?.length ?? 0)
-    shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, (offset) => positions[bodyStart + offset], lineOffset)
+    shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, (offset) => positions[bodyStart + offset], lineOffset, diagnosticStart)
     for (const token of bodyTokens) token.level += state.level
     state.tokens.push(...bodyTokens)
     state.push('html_details_close', 'details', -1)

@@ -1,9 +1,10 @@
 import type MarkdownIt from 'markdown-it'
 import type { Env, StateBlock, Token } from 'markdown-it'
 
-export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' }
+export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' | 'bare' }
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
-type Capture = { links: MarkdownSourceLink[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
+export type MarkdownCompatibilityFinding = { start: number; end: number; reason: 'unsupported-html' | 'html-attributes' | 'wiki-syntax' }
+type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
 
@@ -65,6 +66,21 @@ function record(data: Capture, link: MarkdownSourceLink): void {
   data.links.push({ ...link, start: map[link.start + offset], end: map[link.end - 1 + offset] + 1 })
 }
 
+/** Diagnostics use the same positions and exclusions as rendered links. */
+export function recordMarkdownCompatibility(env: Env, finding: MarkdownCompatibilityFinding, block = false): void {
+  const data = capture(env)
+  if (!env.captureCompatibility || !data || data.inAlt) return
+  if (block) { data.diagnostics.push(finding); return }
+  if (!data.context) return
+  const { positions, offset } = data.context
+  const start = positions[finding.start + offset], end = positions[finding.end - 1 + offset]
+  if (start !== undefined && end !== undefined) data.diagnostics.push({ ...finding, start, end: end + 1 })
+}
+
+export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFinding[] {
+  return capture(env)?.diagnostics ?? []
+}
+
 /** Capture successful parser rules, not URL matches elsewhere in a document.
  * The ruler's typed rule registry is used only to decorate existing rules;
  * grammar, lookahead, nesting limits and container boundaries remain upstream.
@@ -72,7 +88,7 @@ function record(data: Capture, link: MarkdownSourceLink): void {
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
     if (state.env.captureSourceLinks) state.env.markdownSourceLinks = {
-      links: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined
+      links: [], diagnostics: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined
     } satisfies Capture
   })
   for (const name of ['paragraph', 'heading', 'lheading', 'table', 'reference']) {
@@ -128,7 +144,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     try { parseInline(source, engine, env, tokens) }
     finally { if (data) data.context = previous }
   }
-  for (const name of ['link', 'image', 'autolink', 'wiki_link', 'footnote_inline', 'safe_html']) {
+  for (const name of ['link', 'image', 'autolink', 'linkify', 'wiki_link', 'footnote_inline', 'safe_html']) {
     const { fn } = md.inline.ruler.__rules__.find((entry) => entry.name === name)!
     md.inline.ruler.at(name, (state, silent) => {
       const data = capture(state.env)
@@ -136,6 +152,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       if (name === 'footnote_inline' && !state.src.startsWith('^[', state.pos)) return false
       if (name === 'image' && !state.src.startsWith('![', state.pos)) return false
       const start = state.pos, first = state.tokens.length, previous = data.context, previousAlt = data.inAlt
+      const schemeLength = name === 'linkify' ? /[a-z][a-z\d+.-]*$/i.exec(state.src.slice(Math.max(0, start - Math.min(10, state.pending.length)), start))?.[0].length ?? 0 : 0
       // An image's alt text is plain text. Inline footnotes have a separate
       // inline parser whose offsets start after the ^[ opening marker.
       if (name === 'image' || name === 'footnote_inline') {
@@ -154,6 +171,12 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       if (name === 'footnote_inline') return true
       if (name === 'wiki_link') {
         const label = state.src.slice(start + 2, state.pos - 2)
+        let slashCount = 0
+        for (let index = start - 2; index >= 0 && state.src[index] === '\\'; index--) slashCount++
+        const embed = state.src[start - 1] === '!' && slashCount % 2 === 0
+        if (embed || label.includes('|') || /#\^/.test(label)) {
+          recordMarkdownCompatibility(state.env, { start: embed ? start - 1 : start, end: state.pos, reason: 'wiki-syntax' })
+        }
         record(data, { start: start + 2 + label.length - label.trimStart().length,
           end: state.pos - 2 - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })
         return true
@@ -161,7 +184,9 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       const token = state.tokens.slice(first).find((item) => item.type === (name === 'image' ? 'image' : 'link_open'))
       if (!token) return true
       const url = String(token.attrGet(name === 'image' ? 'src' : 'href') ?? '')
-      if (name === 'autolink') record(data, { start: start + 1, end: state.pos - 1, url, kind: 'autolink' })
+      if (name === 'linkify') {
+        if (/^file:/i.test(url)) record(data, { start: start - schemeLength, end: state.pos, url, kind: 'autolink', syntax: 'bare' })
+      } else if (name === 'autolink') record(data, { start: start + 1, end: state.pos - 1, url, kind: 'autolink' })
       else if (!token.meta?.label) {
         const labelEnd = md.helpers.parseLinkLabel(state, start + (name === 'image' ? 1 : 0), name === 'link')
         let position = labelEnd + 2
@@ -183,10 +208,14 @@ export function capturedMarkdownSourceLinks(env: Env): MarkdownSourceLink[] {
 
 /** A details body is block-parsed in its own source slice, then put back into
  * the parent document before the shared inline pass. */
-export function shiftMarkdownSourceCapture(env: Env, tokens: Token[], linkStart: number, offset: (position: number) => number, lines: number): void {
+export function shiftMarkdownSourceCapture(env: Env, tokens: Token[], linkStart: number, offset: (position: number) => number, lines: number, diagnosticStart = 0): void {
   const data = capture(env)
   if (data) for (let index = linkStart; index < data.links.length; index++) {
     data.links[index].start = offset(data.links[index].start); data.links[index].end = offset(data.links[index].end)
+  }
+  if (data) for (let index = diagnosticStart; index < data.diagnostics.length; index++) {
+    data.diagnostics[index].start = offset(data.diagnostics[index].start)
+    data.diagnostics[index].end = offset(data.diagnostics[index].end)
   }
   for (const token of tokens) {
     if (token.map) token.map = [token.map[0] + lines, token.map[1] + lines]

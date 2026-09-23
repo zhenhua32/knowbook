@@ -1,6 +1,6 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentDetail, HomeData } from '@shared/contracts'
+import type { DocumentDetail, HomeData, MarkdownImportReport } from '@shared/contracts'
 import type { UiText } from '../i18n'
 
 type UseWorkspaceBackupActionsParams = {
@@ -24,6 +24,8 @@ export function useWorkspaceBackupActions({
   setSelectedDocumentId,
   ui
 }: UseWorkspaceBackupActionsParams) {
+  const [importReport, setImportReport] = useState<MarkdownImportReport | null>(null)
+  const [isImportReportOpen, setImportReportOpen] = useState(false)
   const refreshWorkspaceAfterStorageMutation = useCallback(async () => {
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
@@ -63,6 +65,8 @@ export function useWorkspaceBackupActions({
 
       await refreshWorkspaceAfterStorageMutation()
       reloadDatabaseDomain()
+      setImportReport(result.importReport ?? null)
+      setImportReportOpen(Boolean(result.importReport))
       const restoredMessage = ui.backupRestored(
         result.restored,
         result.created,
@@ -82,6 +86,9 @@ export function useWorkspaceBackupActions({
   }, [flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, reloadDatabaseDomain, setBackupMessage, ui])
 
   return {
+    importReport,
+    isImportReportOpen,
+    setImportReportOpen,
     handleBackup,
     handleRestoreBackup,
     refreshWorkspaceAfterStorageMutation
