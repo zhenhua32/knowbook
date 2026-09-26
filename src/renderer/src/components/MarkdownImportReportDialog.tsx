@@ -45,8 +45,8 @@ export default function MarkdownImportReportDialog({ report, isZh, onClose, onLo
       : `Imported ${report.files.length} documents; ${report.issueCount} items need review.`}</p>
     <p className="mini-hint">{isZh ? `结果来自本次导入时的检查。外部网址未联网检查（${report.ignoredExternalCount} 个）。`
       : `Results reflect this import. External URLs were not fetched (${report.ignoredExternalCount}).`}</p>
-    <p><label>{isZh ? '查找文件 ' : 'Find a file '}<input className="editor-input" type="search" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(25) }} /></label></p>
-    <p><label><input type="checkbox" checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setLimit(25) }} />
+    <p><label className="document-report-search">{isZh ? '查找文件' : 'Find a file'}<input className="editor-input" type="search" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(25) }} /></label></p>
+    <p><label className="document-report-filter"><input type="checkbox" checked={onlyIssues} onChange={(event) => { setOnlyIssues(event.target.checked); setLimit(25) }} />
       {isZh ? '只显示需检查的文件' : 'Only files needing review'}</label></p>
     <ul>{files.slice(0, limit).map((file) => <li key={file.documentId}>
       <details>

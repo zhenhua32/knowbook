@@ -1,0 +1,131 @@
+/* Wave 27: Global Search Modal */
+.global-search-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 24, 15, 0.45);
+  z-index: 9999;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  backdrop-filter: blur(2px);
+}
+
+.global-search-modal {
+  background: var(--kb-canvas);
+  color: var(--kb-text);
+  border-radius: 16px;
+  box-shadow: 0 16px 56px rgba(30,24,15,0.28), 0 2px 8px rgba(30,24,15,0.12);
+  width: min(660px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.global-search-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--kb-line);
+}
+
+.global-search-header > button {
+  flex-shrink: 0;
+}
+
+.global-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 1.05rem;
+  color: var(--kb-text);
+  font-family: inherit;
+}
+
+.global-search-input::placeholder { color: var(--kb-text-muted); }
+:root[data-theme='dark'] .global-search-input { background: transparent; }
+
+.global-search-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.global-search-results > .mini-hint {
+  padding: 4px 16px;
+  line-height: 1.6;
+}
+
+.global-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 16px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.global-search-result:hover { background: var(--kb-accent-soft); }
+
+.global-search-result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.global-search-doc-path {
+  font-size: 0.78rem;
+  color: var(--kb-text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-search-doc-title {
+  font-size: 0.95rem;
+  color: var(--kb-text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.global-search-match-badge {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.global-search-match-title {
+  background: var(--kb-accent-soft);
+  color: var(--kb-accent-strong);
+}
+
+.global-search-match-block {
+  background: var(--kb-bg);
+  color: var(--kb-text-soft);
+}
+
+.global-search-snippet {
+  font-size: 0.82rem;
+  color: var(--kb-text-soft);
+  line-height: 1.5;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

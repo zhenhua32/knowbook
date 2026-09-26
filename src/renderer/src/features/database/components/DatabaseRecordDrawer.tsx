@@ -54,7 +54,7 @@ export function DatabaseRecordDrawer({
       <button aria-label={text.close} className="dbw-drawer-scrim" onClick={onClose} type="button" />
       <aside aria-label={text.recordDetails} aria-modal="true" className="dbw-drawer dbw-record-drawer" ref={drawerRef} role="dialog" tabIndex={-1}>
         <header className="dbw-drawer-header">
-          <div><p className="dbw-eyebrow">{text.recordDetails}</p><h2>{record.title}</h2></div>
+          <div><p className="dbw-eyebrow">{text.recordDetails}</p><h2 title={record.title}>{record.title}</h2></div>
           <button aria-label={text.close} className="dbw-icon-button" onClick={onClose} ref={closeRef} type="button">×</button>
         </header>
         <div className="dbw-record-form">
@@ -69,7 +69,7 @@ export function DatabaseRecordDrawer({
           {draft.documentId ? <button className="dbw-open-document-button" onClick={() => onOpenDocument(draft.documentId)} type="button">↗ {text.openDocument}</button> : null}
           <div className="dbw-record-properties">
             {propertyFields.map((field) => (
-              <label key={field.id}>
+              <div className="dbw-record-field" key={field.id}>
                 <span>{field.name}</span>
                 <DatabaseValueEditor
                   column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }}
@@ -77,7 +77,7 @@ export function DatabaseRecordDrawer({
                   textCommitMode="change"
                   value={draft.fieldValues[field.id] ?? null}
                 />
-              </label>
+              </div>
             ))}
           </div>
         </div>
@@ -131,7 +131,7 @@ export function CreateRecordDialog({
           <label><span>{text.title} *</span><input onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} ref={titleRef} value={draft.title} /></label>
           <label><span>{text.linkedDocument}</span><select onChange={(event) => setDraft((current) => ({ ...current, documentId: event.target.value }))} value={draft.documentId}><option value="">{text.noLinkedDocument}</option>{documents.map((document) => <option key={document.id} value={document.id}>{document.path}</option>)}</select></label>
           {propertyFields.map((field) => (
-            <label key={field.id}><span>{field.name}</span><DatabaseValueEditor column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }} onChangeValue={(value) => setDraft((current) => ({ ...current, fieldValues: { ...current.fieldValues, [field.id]: value } }))} textCommitMode="change" value={draft.fieldValues[field.id] ?? null} /></label>
+            <div className="dbw-record-field" key={field.id}><span>{field.name}</span><DatabaseValueEditor column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }} onChangeValue={(value) => setDraft((current) => ({ ...current, fieldValues: { ...current.fieldValues, [field.id]: value } }))} textCommitMode="change" value={draft.fieldValues[field.id] ?? null} /></div>
           ))}
         </div>
         <footer><button className="dbw-quiet-button" disabled={!draft.title.trim()} onClick={() => void submit(true)} type="button">{text.createAndContinue}</button><button className="dbw-primary-button" disabled={!draft.title.trim()} onClick={() => void submit(false)} type="button">{text.create}</button></footer>

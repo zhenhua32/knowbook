@@ -2,6 +2,7 @@ import { lazy, Suspense, useRef, useState, type ReactNode } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
+import '../components/global-search.css'
 import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
@@ -405,7 +406,7 @@ export function DocumentsPage({
                 onCompositionEnd={() => { searchComposingRef.current = false }}
                 onBlur={() => { searchComposingRef.current = false }}
               />
-              <button className="secondary-button" onClick={documents.closeGlobalSearch} type="button">✕</button>
+              <button aria-label={isZh ? '关闭搜索' : 'Close search'} className="secondary-button" onClick={documents.closeGlobalSearch} type="button">✕</button>
             </div>
             <div className="global-search-results">
               {documents.globalSearchLoading && <p className="mini-hint">{ui.globalSearchLoading}</p>}

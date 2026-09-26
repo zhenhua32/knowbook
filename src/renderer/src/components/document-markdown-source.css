@@ -9,7 +9,7 @@
   background: var(--kb-canvas);
 }
 .document-markdown-source::backdrop { background: #0009; }
-.document-markdown-source header, .document-markdown-source footer { display: flex; align-items: center; gap: 10px; }
+.document-markdown-source header, .document-markdown-source footer { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .document-markdown-source header { justify-content: space-between; }
 .document-markdown-source h3 { margin: 0; }
 .document-markdown-source > p { margin: 12px 0; font-size: 13px; }

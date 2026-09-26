@@ -390,17 +390,16 @@ export function PluginsSection({
                       <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(item.plugin.name)}</span>
                       <div className="plugin-card-copy">
                         <div className="plugin-card-title-row">
-                          <strong>{item.plugin.name}</strong>
+                          <strong title={item.plugin.name}>{item.plugin.name}</strong>
                           {item.plugin.source === 'dynamic' ? (
                             <span className="plugin-ai-badge">✦ {isZh ? 'AI 创建' : 'AI created'}</span>
                           ) : null}
                         </div>
-                        <p>{item.plugin.description || (isZh ? '暂无插件说明' : 'No description provided')}</p>
+                        <p title={item.plugin.description}>{item.plugin.description || (isZh ? '暂无插件说明' : 'No description provided')}</p>
                         <div className="plugin-card-meta">
                           <span>{item.plugin.version}</span>
-                          <span>·</span>
                           <span>{isZh ? '来源：' : 'Source: '}{sourceLabel(item.plugin.source, isZh)}</span>
-                          <span>·</span><span>{item.plugin.revisionCount} revisions</span>
+                          <span>{item.plugin.revisionCount} revisions</span>
                         </div>
                       </div>
                       <div className="plugin-card-state">
@@ -853,7 +852,7 @@ function V2PluginInspector({
     <>
       <div className="plugin-inspector-head">
         <span className="plugin-avatar plugin-avatar-v2">{pluginInitials(plugin.name)}</span>
-        <div><span>{isZh ? '插件详情 · 来源：' : 'Plugin details · Source: '}{sourceLabel(plugin.source, isZh)}</span><h4>{plugin.name}</h4><code>{plugin.pluginId}</code></div>
+        <div><span>{isZh ? '插件详情 · 来源：' : 'Plugin details · Source: '}{sourceLabel(plugin.source, isZh)}</span><h4 title={plugin.name}>{plugin.name}</h4><code title={plugin.pluginId}>{plugin.pluginId}</code></div>
       </div>
       <p className="plugin-inspector-description">{plugin.description || (isZh ? '暂无插件说明。' : 'No description provided.')}</p>
       {canCustomize ? (
@@ -862,7 +861,7 @@ function V2PluginInspector({
         </button>
       ) : null}
       <div className="plugin-detail-grid">
-        <div><span>{isZh ? '版本' : 'Version'}</span><strong>{plugin.version}</strong></div>
+        <div><span>{isZh ? '版本' : 'Version'}</span><strong title={plugin.version}>{plugin.version}</strong></div>
         <div><span>Revision</span><strong>{plugin.revisionCount}</strong></div>
         <div><span>{isZh ? '违规记录' : 'Violations'}</span><strong>{plugin.violationCount}</strong></div>
         <div><span>{isZh ? '最近更新' : 'Updated'}</span><strong>{formatUpdatedAt(plugin.updatedAt, isZh)}</strong></div>

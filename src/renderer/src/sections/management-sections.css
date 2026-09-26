@@ -32,6 +32,7 @@
 }
 
 .management-page .pill {
+  max-width: 100%;
   padding: 5px 9px;
   color: var(--kb-text-muted);
   font-size: var(--kb-type-caption);
@@ -39,6 +40,24 @@
   line-height: 18px;
   letter-spacing: 0;
   text-transform: none;
+  overflow-wrap: anywhere;
+}
+
+.management-page :is(.panel-head, .plugin-dashboard-head) {
+  flex-wrap: wrap;
+}
+
+.management-page :is(.panel-head > div, .event-feed-head strong, .document-row > div, .ai-context-title) {
+  min-width: 0;
+}
+
+.management-page :is(.event-feed-item, .document-row, .plugin-dashboard-card, .ai-context-card) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.management-page .document-meta {
+  flex-shrink: 0;
 }
 
 .management-page .stats-grid {
@@ -119,6 +138,8 @@
   color: var(--kb-text);
   font-size: var(--kb-type-body);
   line-height: 22px;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .management-page .document-list {
@@ -188,7 +209,12 @@
 }
 
 .settings-inline-field {
+  flex-wrap: wrap;
   gap: 10px;
+}
+
+.settings-inline-field .editor-input {
+  flex-basis: 220px;
 }
 
 .settings-inline-field .secondary-button {
@@ -222,6 +248,7 @@
   color: var(--kb-text-soft);
   font-size: var(--kb-type-body);
   line-height: 22px;
+  overflow-wrap: anywhere;
 }
 
 .management-page .assistant-workbench {

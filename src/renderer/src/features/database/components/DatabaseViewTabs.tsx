@@ -52,6 +52,7 @@ export function DatabaseViewTabs({
               className="dbw-view-tab"
               onClick={() => onSelectView(view.id)}
               onDoubleClick={() => onRenameView(view)}
+              title={view.name}
               type="button"
             >
               <LayoutIcon layout={view.config.layout} />

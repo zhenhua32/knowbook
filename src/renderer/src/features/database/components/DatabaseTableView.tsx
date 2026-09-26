@@ -36,7 +36,8 @@ export function DatabaseTableView({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
-  const rowHeight = 58
+  const rowHeight = 64
+  const tableWidth = 44 + fields.reduce((width, field) => width + (columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180)), 0)
   const overscan = 8
   const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
@@ -61,6 +62,7 @@ export function DatabaseTableView({
     <div className="dbw-table-scroll" data-testid="database-table-view" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} ref={scrollRef}>
       <table
         className="dbw-table"
+        style={{ minWidth: tableWidth }}
         onKeyDown={(event) => {
           if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return
           const target = event.target as HTMLElement
@@ -90,7 +92,7 @@ export function DatabaseTableView({
             const width = columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180)
             return (
               <th className={field.role === 'title' ? 'dbw-title-column' : ''} key={field.id} style={{ minWidth: width, width }}>
-                {field.name}{field.role === 'system' ? <span className="dbw-lock-mark">⌁</span> : null}
+                <span className="dbw-column-label" title={field.name}>{field.name}{field.role === 'system' ? <span className="dbw-lock-mark">⌁</span> : null}</span>
                 <span
                   aria-hidden="true"
                   className="dbw-column-resizer"
@@ -156,7 +158,7 @@ function ReadOnlyValue({ field, record }: { field: DatabaseField; record: Databa
     const date = new Date(String(value))
     return <span>{Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString()}</span>
   }
-  return <span title={String(value)}>{String(value)}</span>
+  return <span className="dbw-readonly-value" title={String(value)}>{String(value)}</span>
 }
 
 function toDocumentValue(value: unknown): DocumentDatabaseFieldValue {

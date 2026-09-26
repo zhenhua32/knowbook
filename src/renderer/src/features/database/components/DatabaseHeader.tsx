@@ -56,6 +56,7 @@ export function DatabaseHeader({
               setPickerOpen((open) => !open)
               setMenuOpen(false)
             }}
+            title={currentSource.kind === 'document-catalog' ? text.allDocuments : currentSource.name}
             type="button"
           >
             <span>{currentSource.kind === 'document-catalog' ? text.allDocuments : currentSource.name}</span>
@@ -75,6 +76,7 @@ export function DatabaseHeader({
                 />
               </label>
               <div className="dbw-source-list">
+                {filteredSources.length === 0 ? <p className="dbw-source-empty">{text.noDatabases}</p> : null}
                 {systemSources.map((source) => (
                   <SourceOption allDocumentsLabel={text.allDocuments} currentId={currentSource.id} key={source.id} onSelect={(sourceId) => { setPickerOpen(false); setQuery(''); onSourceChange(sourceId) }} source={source} systemLabel={text.system} />
                 ))}

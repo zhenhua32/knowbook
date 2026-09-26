@@ -200,7 +200,7 @@ function FilterRuleRow({
   const needsValue = !['is-empty', 'is-not-empty', 'is-checked', 'is-not-checked'].includes(rule.operator)
 
   return (
-    <div className="dbw-filter-row">
+    <div className={`dbw-filter-row${needsValue ? '' : ' dbw-filter-row-without-value'}`}>
       <select onChange={(event) => onChange({ ...rule, fieldId: event.target.value, operator: 'contains', value: '' })} value={rule.fieldId}>
         {fields.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}
       </select>
