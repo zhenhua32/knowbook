@@ -270,8 +270,8 @@ export function useDocumentsDomainState({
     openGlobalSearch,
     updateGlobalSearchQuery
   } = useGlobalDocumentSearch({
-    documentCatalog,
-    onOpenDocument: openDocumentInDocumentsPage
+    onOpenDocument: openDocumentInDocumentsPage,
+    onOpenBlock: openDocumentBlockInDocumentsPage
   })
   const {
     canMoveSelectedRange,
@@ -541,10 +541,9 @@ export function useDocumentsDomainState({
 
   useEffect(() => {
     if (activePage !== 'documents') {
-      closeGlobalSearch()
       closeBlockSearch()
     }
-  }, [activePage, closeBlockSearch, closeGlobalSearch])
+  }, [activePage, closeBlockSearch])
 
   useEffect(() => {
     function handleMouseUp() {

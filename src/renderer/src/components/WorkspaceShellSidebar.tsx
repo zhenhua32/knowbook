@@ -40,7 +40,7 @@ export function WorkspaceShellSidebar({
       backTitle={`${shell.ui.back} (Alt+←)`}
       forwardTitle={`${shell.ui.forward} (Alt+→)`}
       rootsCountLabel={shell.ui.rootsCount(shell.homeData.documentTree.length)}
-      onOpenGlobalSearch={documents.openGlobalSearch}
+      onOpenGlobalSearch={() => documents.openGlobalSearch()}
       globalSearchTitle={`${shell.ui.globalSearch} (Ctrl+K)`}
       onCreateRoot={() => {
         void workspace.handleCreateDocument(null)

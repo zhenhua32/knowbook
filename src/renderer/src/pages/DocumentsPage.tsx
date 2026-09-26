@@ -1,10 +1,8 @@
-import { Suspense, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useState, type ReactNode } from 'react'
 import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from '../components/RecoveryState'
-import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
-import '../components/global-search.css'
 import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
@@ -48,7 +46,6 @@ export function DocumentsPage({
   pluginMenuContent,
   ui
 }: DocumentsPageProps) {
-  const searchComposingRef = useRef(false)
   const [webClipBusy, setWebClipBusy] = useState(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
@@ -385,66 +382,6 @@ export function DocumentsPage({
           }} />
       </Suspense>}
 
-      {documents.isGlobalSearchOpen && (
-        <div className="global-search-overlay" onClick={documents.closeGlobalSearch}>
-          <div className="global-search-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="global-search-header">
-              <input
-                autoFocus
-                className="global-search-input"
-                placeholder={ui.globalSearchPlaceholder}
-                type="text"
-                value={documents.globalSearchQuery}
-                onChange={(event) => {
-                  void documents.updateGlobalSearchQuery(event.target.value)
-                }}
-                onKeyDown={(event) => {
-                  if (isImeKeyboardEvent(event.nativeEvent, searchComposingRef.current)) {
-                    event.stopPropagation()
-                    return
-                  }
-                  if (event.key === 'Escape') {
-                    documents.closeGlobalSearch()
-                  }
-                }}
-                onCompositionStart={() => { searchComposingRef.current = true }}
-                onCompositionEnd={() => { searchComposingRef.current = false }}
-                onBlur={() => { searchComposingRef.current = false }}
-              />
-              <button aria-label={isZh ? '关闭搜索' : 'Close search'} className="secondary-button" onClick={documents.closeGlobalSearch} type="button">✕</button>
-            </div>
-            <div className="global-search-results">
-              {documents.globalSearchLoading && <p className="mini-hint">{ui.globalSearchLoading}</p>}
-              {documents.globalSearchError && <RecoveryState compact title={isZh ? '搜索暂时不可用' : 'Search is unavailable'}
-                description={isZh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'}
-                error={documents.globalSearchError} onRetry={documents.retryGlobalSearch} />}
-              {!documents.globalSearchLoading && !documents.globalSearchError && documents.globalSearchQuery.trim() && documents.globalSearchResults.length === 0 && (
-                <p className="mini-hint">{ui.globalSearchNoResults}</p>
-              )}
-              {!documents.globalSearchLoading && !documents.globalSearchQuery.trim() && (
-                <p className="mini-hint">{ui.globalSearchPrompt}</p>
-              )}
-              {documents.globalSearchResults.map((result, index) => (
-                <button
-                  className="global-search-result"
-                  key={index}
-                  onClick={() => documents.handleGlobalSearchNavigate(result)}
-                  type="button"
-                >
-                  <div className="global-search-result-header">
-                    <span className="global-search-doc-path">{result.documentPath}</span>
-                    <span className={`global-search-match-badge ${result.matchType === 'title' ? 'global-search-match-title' : 'global-search-match-block'}`}>
-                      {result.matchType === 'title' ? ui.titleMatchLabel : result.blockType ?? ui.blockMatchFallback}
-                    </span>
-                  </div>
-                  <strong className="global-search-doc-title">{result.documentTitle}</strong>
-                  {result.snippet ? <p className="global-search-snippet">{result.snippet}</p> : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }

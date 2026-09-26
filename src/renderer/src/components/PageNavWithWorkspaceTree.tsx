@@ -1,10 +1,12 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { Suspense, useCallback, useState, type ReactNode } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import { PageRail } from './PageRail'
 import { DocumentTree } from './DocumentTree'
-import { DocumentTreeContextMenu } from './DocumentTreeContextMenu'
+import { lazyWithRetry } from '../utils/lazyWithRetry'
 import type { UiLanguage } from '../i18n'
 import { getUiText } from '../i18n'
+
+const DocumentTreeContextMenu = lazyWithRetry(async () => ({ default: (await import('./DocumentTreeContextMenu')).DocumentTreeContextMenu }))
 
 type PageNavWithWorkspaceTreeProps = {
   notificationControl?: ReactNode
@@ -141,7 +143,8 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
       {/* Compact Horizontal Navigation Rail */}
       <PageRail
-        notificationControl={props.notificationControl}
+        notificationControl={<>{isNavCollapsed && <button type="button" className="nav-icon-btn" title={globalSearchTitle}
+          aria-label={globalSearchTitle} onClick={onOpenGlobalSearch}><SearchIcon /></button>}{props.notificationControl}</>}
         activePage={activePage}
         brandEyebrow={brandEyebrow}
         collapseTitle={collapseSidebarLabel}
@@ -244,6 +247,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
       </div>
 
       {treeContextMenu ? (
+        <Suspense fallback={null}>
         <DocumentTreeContextMenu
           x={treeContextMenu.x}
           y={treeContextMenu.y}
@@ -271,6 +275,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
           }}
           onClose={() => setTreeContextMenu(null)}
         />
+        </Suspense>
       ) : null}
     </div>
   )

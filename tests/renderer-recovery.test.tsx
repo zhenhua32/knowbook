@@ -131,7 +131,7 @@ test('search failures are distinct from no results and late requests cannot over
   const requests: Array<{ resolve: (value: GlobalSearchResult[]) => void; reject: (error: Error) => void }> = []
   await withRenderer({ searchDocuments: () => new Promise((resolve, reject) => requests.push({ resolve, reject })) }, async ({ render }) => {
     let search!: ReturnType<typeof useGlobalDocumentSearch>
-    function Harness() { search = useGlobalDocumentSearch({ documentCatalog: [], onOpenDocument: () => undefined }); return null }
+    function Harness() { search = useGlobalDocumentSearch({ onOpenDocument: () => undefined }); return null }
     await render(<Harness />)
     t.mock.timers.enable({ apis: ['setTimeout'] })
     try {
@@ -177,6 +177,47 @@ test('manual and automatic saves never write a retained draft to a document that
       await act(async () => editor.saveDocument())
       assert.deepEqual(writes, ['a'])
       assert.equal(editor.draftTitle, 'Retained draft')
+    } finally { t.mock.timers.reset() }
+  })
+})
+
+test('global search opens authoritative result IDs and targets matching blocks without a cached catalog', async () => {
+  const opened: string[][] = []
+  await withRenderer({}, async ({ render }) => {
+    let search!: ReturnType<typeof useGlobalDocumentSearch>
+    function Harness() {
+      search = useGlobalDocumentSearch({ onOpenDocument: (id) => { opened.push([id]) }, onOpenBlock: (id, block) => { opened.push([id, block]) } })
+      return null
+    }
+    await render(<Harness />)
+    const result: GlobalSearchResult = { documentId: 'outside-cache', documentTitle: 'Found', documentPath: 'Found', matchType: 'block', snippet: 'needle', blockId: 'exact-block' }
+    await act(async () => { search.openGlobalSearch(); search.handleGlobalSearchNavigate(result) })
+    assert.deepEqual(opened, [['outside-cache', 'exact-block']])
+    await act(async () => search.handleGlobalSearchNavigate({ ...result, matchType: 'title', blockId: undefined }))
+    assert.deepEqual(opened, [['outside-cache', 'exact-block'], ['outside-cache']])
+    assert.equal(search.isGlobalSearchOpen, false)
+  })
+})
+
+test('command mode cancels pending document queries and ignores their late results', async (t) => {
+  let calls = 0
+  let resolve!: (results: GlobalSearchResult[]) => void
+  await withRenderer({ searchDocuments: () => { calls++; return new Promise((done) => { resolve = done }) } }, async ({ render }) => {
+    let search!: ReturnType<typeof useGlobalDocumentSearch>
+    function Harness() { search = useGlobalDocumentSearch({ onOpenDocument: () => undefined }); return null }
+    await render(<Harness />)
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      await act(async () => { search.openGlobalSearch(); search.updateGlobalSearchQuery('document') })
+      await act(async () => t.mock.timers.tick(160))
+      await act(async () => search.openGlobalSearch('commands'))
+      await act(async () => search.updateGlobalSearchQuery('  > settings'))
+      await act(async () => t.mock.timers.tick(160))
+      await act(async () => resolve([{ documentId: 'late', documentTitle: 'Late', documentPath: 'Late', matchType: 'title', snippet: '' }]))
+      assert.equal(calls, 1)
+      assert.equal(search.globalSearchLoading, false)
+      assert.deepEqual(search.globalSearchResults, [])
+      assert.equal(search.globalSearchQuery, '  > settings')
     } finally { t.mock.timers.reset() }
   })
 })

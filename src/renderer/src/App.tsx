@@ -11,6 +11,7 @@ import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
 
 const AppPageContent = lazyWithRetry(async () => ({ default: (await import('./components/AppPageContent')).AppPageContent }))
+const GlobalSearchPalette = lazyWithRetry(() => import('./components/GlobalSearchPalette'))
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
@@ -50,6 +51,9 @@ export function App() {
   return (
     <>
       <PluginUiPreparationHost />
+      {documentsDomain.isGlobalSearchOpen && <ErrorBoundary onNavigate={documentsDomain.closeGlobalSearch} navigateLabel={shell.isZh ? '关闭搜索' : 'Close search'}>
+        <Suspense fallback={null}><GlobalSearchPalette documents={documentsDomain} shell={shell} workspace={workspaceOperations} /></Suspense>
+      </ErrorBoundary>}
       <div className="shell" data-testid="shell">
         <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
           <ErrorBoundary page>

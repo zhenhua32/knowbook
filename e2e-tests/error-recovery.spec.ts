@@ -102,7 +102,7 @@ test('search failure preserves the query and is not presented as an empty result
     await page.keyboard.press('Control+k')
     const search = page.locator('.global-search-modal')
     await search.locator('input').fill('Home')
-    await expect(search.getByRole('heading')).toHaveText(uiText('Search is unavailable', '搜索暂时不可用'))
+    await expect(search.locator('.recovery-state').getByRole('heading')).toHaveText(uiText('Search is unavailable', '搜索暂时不可用'))
     await expect(search.locator('.mini-hint')).toHaveCount(0)
     await expect(search.locator('input')).toHaveValue('Home')
     await page.screenshot({ path: testInfo.outputPath('search-error.png') })

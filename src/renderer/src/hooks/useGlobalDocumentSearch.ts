@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DocumentIndexEntry, GlobalSearchResult } from '@shared/contracts'
+import type { GlobalSearchResult } from '@shared/contracts'
 import { getErrorMessage } from '../utils/errorMessage'
 
 type UseGlobalDocumentSearchParams = {
-  documentCatalog: DocumentIndexEntry[]
   onOpenDocument: (documentId: string) => void
+  onOpenBlock?: (documentId: string, blockId: string) => void
 }
 
-export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: UseGlobalDocumentSearchParams) {
+export function useGlobalDocumentSearch({ onOpenDocument, onOpenBlock }: UseGlobalDocumentSearchParams) {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('')
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
@@ -26,12 +26,12 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
 
   useEffect(() => cancelPendingSearch, [cancelPendingSearch])
 
-  const openGlobalSearch = useCallback(() => {
+  const openGlobalSearch = useCallback((mode?: 'commands') => {
     cancelPendingSearch()
     setGlobalSearchError(null)
     setGlobalSearchLoading(false)
     setIsGlobalSearchOpen(true)
-    setGlobalSearchQuery('')
+    setGlobalSearchQuery(mode === 'commands' ? '>' : '')
     setGlobalSearchResults([])
   }, [cancelPendingSearch])
 
@@ -50,7 +50,7 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
     setGlobalSearchError(null)
     setGlobalSearchResults([])
 
-    if (!query.trim()) {
+    if (!query.trim() || query.trimStart().startsWith('>')) {
       setGlobalSearchResults([])
       setGlobalSearchLoading(false)
       return
@@ -79,14 +79,10 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   }, [cancelPendingSearch])
 
   const handleGlobalSearchNavigate = useCallback((result: GlobalSearchResult) => {
-    const document = documentCatalog.find((entry) => entry.id === result.documentId)
-    if (!document) {
-      return
-    }
-
-    onOpenDocument(document.id)
+    if (result.blockId && onOpenBlock) onOpenBlock(result.documentId, result.blockId)
+    else onOpenDocument(result.documentId)
     closeGlobalSearch()
-  }, [closeGlobalSearch, documentCatalog, onOpenDocument])
+  }, [closeGlobalSearch, onOpenDocument, onOpenBlock])
 
   return {
     closeGlobalSearch,

@@ -17,9 +17,26 @@ export function useAppKeyboardShortcuts({
 }: UseAppKeyboardShortcutsParams) {
   const composingTargetRef = useRef<EventTarget | null>(null)
   useEffect(() => {
+    function handleGlobalShortcut(event: KeyboardEvent) {
+      if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
+      if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
+      const key = event.key.toLowerCase()
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && ((!event.shiftKey && key === 'k') || (event.shiftKey && key === 'p'))) {
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.shiftKey) documents.openGlobalSearch('commands')
+        else if (documents.isGlobalSearchOpen) documents.closeGlobalSearch()
+        else documents.openGlobalSearch()
+      }
+    }
     function handleKeyDown(event: KeyboardEvent) {
       if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
+      if (event.defaultPrevented) return
       const key = event.key.toLowerCase()
+      if (documents.isGlobalSearchOpen) {
+        if (event.key === 'Escape') { event.preventDefault(); documents.closeGlobalSearch() }
+        return
+      }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
         const pageIndex = Number(event.key) - 1
         const targetPage = PAGE_ORDER[pageIndex]
@@ -40,24 +57,6 @@ export function useAppKeyboardShortcuts({
         } else {
           documents.openBlockSearch()
         }
-      }
-
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'k') {
-        if (shell.activePage !== 'documents') {
-          return
-        }
-
-        event.preventDefault()
-        if (documents.isGlobalSearchOpen) {
-          documents.closeGlobalSearch()
-        } else {
-          documents.openGlobalSearch()
-        }
-      }
-
-      if (event.key === 'Escape' && documents.isGlobalSearchOpen && shell.activePage === 'documents') {
-        documents.closeGlobalSearch()
-        return
       }
 
       if (event.key === 'Escape' && shell.activePage === 'documents' && documents.selectedBlockRange) {
@@ -100,11 +99,13 @@ export function useAppKeyboardShortcuts({
     window.addEventListener('compositionstart', startComposition, true)
     window.addEventListener('compositionend', endComposition, true)
     window.addEventListener('blur', endComposition, true)
+    window.addEventListener('keydown', handleGlobalShortcut, true)
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.removeEventListener('compositionstart', startComposition, true)
       window.removeEventListener('compositionend', endComposition, true)
       window.removeEventListener('blur', endComposition, true)
+      window.removeEventListener('keydown', handleGlobalShortcut, true)
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [
