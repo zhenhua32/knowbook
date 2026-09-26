@@ -1,4 +1,5 @@
 /** Type-only authoring entry point. Plugins receive these APIs at runtime. */
+export type { AppNotificationInput, AppNotificationAction, AppNotificationHandle } from './app-notification'
 export type { SystemPluginV3Manifest, SystemPluginDependencyPlan } from './system-plugin'
 export type {
   FullTrustPluginIdentity, SystemPluginDisposable, SystemPluginLifecycle,

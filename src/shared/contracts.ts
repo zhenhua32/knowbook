@@ -868,6 +868,7 @@ export interface ElectronApi {
   getPluginHomeData: () => Promise<PluginHomeData>
   onWorkspaceMutated: (listener: () => void) => () => void
   onPluginsMutated: (listener: () => void) => () => void
+  onPluginNotification: (listener: (notification: import('./app-notification').PluginNotification) => void) => () => void
   onPluginUiPreparation: (listener: (request: PluginUiPreparationRequest) => void) => () => void
   reportPluginUiPreparation: (result: PluginUiPreparationResult) => Promise<void>
   reportPluginUiRuntimeFailure: (failure: PluginUiRuntimeFailure) => Promise<void>

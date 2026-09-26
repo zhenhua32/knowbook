@@ -130,6 +130,7 @@ export function AppPageContent({
           <DocumentsPage
             ai={features.ai}
             aiConfig={shell.homeData.aiConfig}
+            pluginMenuContent={<PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.header.menu" />}
             documentTree={shell.homeData.documentTree}
             documents={documents}
             isZh={shell.isZh}

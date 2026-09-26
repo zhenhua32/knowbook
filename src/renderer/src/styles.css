@@ -6455,7 +6455,8 @@ select:focus-visible {
   .stats-grid,
   .detail-grid,
   .management-page-header,
-  .plugin-dashboard-grid
+  .plugin-dashboard-grid,
+  .plugin-slot
 ) {
   width: min(100%, 1520px);
   margin-inline: auto;

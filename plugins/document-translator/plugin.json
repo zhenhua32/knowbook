@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 3,
+  "trust": "full",
+  "id": "document-translator",
+  "name": "文档翻译",
+  "version": "1.0.0",
+  "description": "使用 KnowBook 的 AI 配置，将文档翻译成简体中文，或生成逐块双语对照文档。",
+  "publisher": "KnowBook",
+  "fullAccess": true,
+  "entries": { "main": "main.cjs", "renderer": "renderer.cjs" },
+  "riskDeclarations": ["node", "network", "ai", "documents", "renderer"]
+}

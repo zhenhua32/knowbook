@@ -9,6 +9,7 @@ export const PLUGIN_UI_SLOT_CATALOG = Object.freeze({
   'navigation.primary': slot('navigation', 8, 40),
   'workspace.dashboard': slot('surface', 16, 200),
   'documents.header.actions': slot('action', 8, 40),
+  'documents.header.menu': slot('action', 8, 40),
   'documents.editor.toolbar': slot('action', 12, 40),
   'documents.block.context-menu': slot('action', 12, 40),
   'documents.aux-panel': slot('surface', 8, 180),

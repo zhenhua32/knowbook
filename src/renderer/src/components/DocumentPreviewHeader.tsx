@@ -37,6 +37,7 @@ type DocumentPreviewHeaderProps = {
   documentsWideMode: boolean
   onToggleWideMode: () => void
   detailLoading: boolean
+  pluginMenuContent?: ReactNode
 }
 
 export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
@@ -69,7 +70,8 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
     onToggleAuxPanel,
     documentsWideMode,
     onToggleWideMode,
-    detailLoading
+    detailLoading,
+    pluginMenuContent
   } = props
 
   const hasDocument = Boolean(selectedDocumentId)
@@ -160,6 +162,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
 
       {actionMenuOpen && hasDocument ? (
         <DocumentHeaderActionMenu
+          pluginMenuContent={pluginMenuContent}
           x={actionMenuPosition.x}
           y={actionMenuPosition.y}
           ui={ui}

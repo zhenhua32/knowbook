@@ -1,4 +1,5 @@
 import type { UiText } from '../i18n'
+import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
 
@@ -30,6 +31,7 @@ type DocumentHeaderActionMenuProps = {
   onToggleAuxPanel: () => void
   onToggleWideMode: () => void
   onDelete: () => void
+  pluginMenuContent?: ReactNode
 }
 
 export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
@@ -55,7 +57,8 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
     onMove,
     onToggleAuxPanel,
     onToggleWideMode,
-    onDelete
+    onDelete,
+    pluginMenuContent
   } = props
 
   const auxLabel = documentsAuxPanelOpen
@@ -123,6 +126,12 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
               {wideModeLabel}
             </button>
           </div>
+        </div>
+
+        <div onClick={(event) => {
+          if ((event.target as Element).closest('button.context-menu-item:not(:disabled)')) onClose()
+        }}>
+          {pluginMenuContent}
         </div>
 
         <div className="context-menu-section">

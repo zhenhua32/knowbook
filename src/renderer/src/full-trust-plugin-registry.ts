@@ -5,6 +5,8 @@ import { useSyncExternalStore, type ComponentType, type ReactNode } from 'react'
 import type { RunPluginUiActionInput, PluginUiSlot } from '@shared/plugin-ui'
 import { PLUGIN_UI_SLOT_CATALOG } from '@shared/plugin-ui'
 import type { SystemPluginServiceRpcJson } from '../../main/system-plugin/service-rpc'
+import type { AppNotificationHandle, AppNotificationInput } from '@shared/app-notification'
+import { appNotifications } from './app-notifications'
 
 export type FullTrustRendererDisposable = () => void | Promise<void>
 
@@ -146,6 +148,7 @@ export interface FullTrustRendererPluginApi {
   readonly ReactDOM: typeof ReactDOM
   readonly ReactDOMClient: typeof ReactDOMClient
   invokeMain(method: string, input?: SystemPluginServiceRpcJson): Promise<SystemPluginServiceRpcJson>
+  showNotification(input: AppNotificationInput): AppNotificationHandle
   registerSlotContribution(input: FullTrustReactSlotContributionInput): FullTrustRendererDisposable
   createRoot(container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions): ReactDOMClient.Root
   createPortal(children: ReactNode, container: Element | DocumentFragment, key?: string | null): React.ReactPortal
@@ -492,6 +495,7 @@ export class FullTrustPluginRegistry {
       },
       registerSlotContribution: (input: FullTrustReactSlotContributionInput) =>
         this.registerSlotContribution(record, input),
+      showNotification: (input: AppNotificationInput) => this.showNotification(record, input),
       createRoot: (container: Element | DocumentFragment, options?: ReactDOMClient.RootOptions) =>
         this.createRoot(record, container, options),
       createPortal: (children: ReactNode, container: Element | DocumentFragment, key?: string | null) => {
@@ -525,6 +529,25 @@ export class FullTrustPluginRegistry {
       registerDisposable: (disposable: FullTrustRendererDisposable, label?: string) =>
         this.trackDisposable(record, disposable, label ?? 'plugin disposable')
     })
+  }
+
+  private showNotification(record: ActivePluginRecord, input: AppNotificationInput): AppNotificationHandle {
+    let latest = input
+    let handle: AppNotificationHandle | undefined
+    let dismissed = false
+    const dispose = this.trackDisposable(record, () => {
+      dismissed = true
+      handle?.dismiss()
+    }, 'app notification', () => { handle = appNotifications.show(latest) })
+    return {
+      update: (next) => {
+        this.assertActiveRecord(record)
+        if (dismissed) return
+        latest = next
+        handle?.update(next)
+      },
+      dismiss: () => { void dispose() }
+    }
   }
 
   private createRoot(

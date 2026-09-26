@@ -8,6 +8,8 @@
 
 [主题切换](../plugins/theme-switcher/README.md) 是随应用提供并默认启用的内置 v3 插件：Main 校验并持久化主题选择，Renderer 使用消息接口、设置插槽和可清理的 CSS 注册实现六款主题，不改写宿主浅色 / 深色设置。
 
+[文档翻译](../plugins/document-translator/README.md) 同样是随应用提供并默认启用的内置 v3 插件：复用宿主 AI，将已保存文档翻译为简体中文或逐块双语对照，并创建同级副本。示例展示长任务分批、进度查询、取消、格式保护及完成后统一保存。默认启用只提供操作入口，点击翻译后才调用 AI。
+
 内置代码来自宿主编译时的 `builtin-catalog.ts`，仅支持无需依赖安装的 Main/Renderer 包；注册记录标注为系统内置，不生成用户确认记录。内置版本跟随应用内容哈希更新，保留用户停用、主题偏好和安全停用状态。插件可停用，但不能单独卸载、回滚或从外部覆盖。外部 manifest 和安装请求不能加入该目录；下面的安装确认流程适用于外部插件。
 
 1. 在插件中心选择示例目录，核对来源、插件 ID、SHA-256、系统访问与依赖计划。
@@ -67,6 +69,10 @@ Settings 的任意值是字符串，复杂值自行 JSON 编码并给 key 加插
 ## Renderer 与窗口
 
 Renderer `.cjs` 导出 `(api) => ...` 初始化函数。使用 `api.React/ReactDOM/ReactDOMClient` 的宿主单例，避免随插件打包另一份 React。`registerSlotContribution`、`registerCommand`、`registerPage`、`injectCss`、DOM/theme helper 和注册的 disposable 随 revision 激活/撤销；自建副作用仍须自行登记。
+
+`documents.header.menu` 位于文档右上角“…”更多操作菜单内，接收当前 `documentId`；使用 `context-menu-item` 样式的按钮执行后自动关闭菜单。该插槽只在菜单打开时挂载，异步任务及需要跨开关保留的状态应放在 Main 或 Renderer 初始化作用域中。`documents.header.actions` 仍是文档页面顶部的独立区域。
+
+`api.showNotification({ title, message, level, progress, progressLabel, actions, persistent })` 使用宿主右下角的应用内通知，返回 `update(input)` 和 `dismiss()` 句柄。`update` 替换同一通知，不重复堆叠，也不会重新弹出已关闭的通知。`level: 'progress'` 的任务通知持续显示，`progress` 为 0–100 百分比，省略时显示不确定进度。操作可用 `{ label, run }` 执行回调，或 `{ label, documentId }` 经宿主正常导航流程打开文档。错误、任务和带操作的通知不自动消失；普通提示在 6 秒后关闭，悬停或键盘聚焦时暂停。通知在 revision 提交后显示，停用、替换或激活失败时自动清理。需要保留任务结果时设置 `persistent: true`；应用退出后通知不持久化。
 
 Main 可用 `context.renderer.handle(method, handler)` 注册插件自己的 JSON 方法，Renderer 用 `await api.invokeMain(method, input)` 调用。例如 Main 注册 `get-state` 返回插件设置，Renderer 挂载时读取，保存表单时调用另一个写入方法。宿主绑定插件 ID 和精确 revision，支持 Main 已就绪后的 Renderer 初始化调用，停用时自动撤销方法并拒绝未完成请求；旧 revision 的调用和返回值不再交付。参数及结果必须为纯 JSON（省略输入时为 `null`），默认每次请求上限 1 MiB、32 个并发请求、15 秒超时。超时不能中止 Full Trust 代码已开始的副作用，耗时任务需由插件自行取消。不要通过此桥返回函数、Store、Electron 对象或流。
 

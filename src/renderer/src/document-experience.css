@@ -175,3 +175,16 @@
 .document-reading-content :is(ul, ol) { padding-inline-start: 1.7em; }
 .markdown-inline-image { max-width: 100%; max-height: 480px; object-fit: contain; }
 .toc-children .toc-children { margin-inline-start: 12px; }
+
+.document-header-action-menu .plugin-slot {
+  gap: 0;
+  margin: 0;
+}
+
+.document-header-action-menu .plugin-view {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+}

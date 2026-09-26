@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState, type ReactNode } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
@@ -27,6 +27,7 @@ type DocumentsPageProps = {
   onDeleteSelectedDocument: () => Promise<unknown> | void
   onMoveSelectedDocument: () => Promise<unknown> | void
   plugins: PluginsDomainState
+  pluginMenuContent?: ReactNode
   ui: UiText
 }
 
@@ -41,6 +42,7 @@ export function DocumentsPage({
   onDeleteSelectedDocument,
   onMoveSelectedDocument,
   plugins,
+  pluginMenuContent,
   ui
 }: DocumentsPageProps) {
   const searchComposingRef = useRef(false)
@@ -344,7 +346,7 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={{ ...previewHeaderProps, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
+        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
           onEditMarkdownSource: () => {
             if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
           } }}

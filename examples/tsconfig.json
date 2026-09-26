@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": { "allowJs": true, "checkJs": true, "noEmit": true },
-  "include": ["system-plugin-v3-starter/*.cjs", "system-plugin-v3-starter/*.d.ts", "../plugins/activity-pulse/*.cjs", "../plugins/theme-switcher/*.cjs", "../src/main/node-worker.d.ts", "../src/shared/**/*.d.ts"]
+  "include": ["system-plugin-v3-starter/*.cjs", "system-plugin-v3-starter/*.d.ts", "../plugins/activity-pulse/*.cjs", "../plugins/theme-switcher/*.cjs", "../plugins/document-translator/*.cjs", "../src/main/node-worker.d.ts", "../src/shared/**/*.d.ts"]
 }

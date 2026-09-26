@@ -22,6 +22,7 @@ test('Plugin UI publishes the complete versioned ADR slot catalog', () => {
     'navigation.primary',
     'workspace.dashboard',
     'documents.header.actions',
+    'documents.header.menu',
     'documents.editor.toolbar',
     'documents.block.context-menu',
     'documents.aux-panel',

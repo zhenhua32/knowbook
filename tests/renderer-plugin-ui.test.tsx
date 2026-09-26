@@ -595,7 +595,7 @@ test('all published slots are mounted in product surfaces', () => {
   const page = readFileSync(new URL('../src/renderer/src/components/AppPageContent.tsx', import.meta.url), 'utf8')
   const sidebar = readFileSync(new URL('../src/renderer/src/components/WorkspaceShellSidebar.tsx', import.meta.url), 'utf8')
   for (const slot of [
-    'workspace.dashboard', 'documents.header.actions', 'documents.editor.toolbar',
+    'workspace.dashboard', 'documents.header.actions', 'documents.header.menu', 'documents.editor.toolbar',
     'documents.block.context-menu', 'documents.aux-panel', 'database.view.tabs',
     'database.record.actions', 'settings.sections', 'assistant.tools', 'assistant.message.cards'
   ]) assert.ok(page.includes(`slot="${slot}"`), slot)

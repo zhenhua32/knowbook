@@ -135,6 +135,11 @@ const api: ElectronApi = {
       ipcRenderer.removeListener(PLUGINS_MUTATED_CHANNEL, wrapped)
     }
   },
+  onPluginNotification: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, notification: import('../shared/app-notification').PluginNotification) => listener(notification)
+    ipcRenderer.on('knowbook:plugin-notification', wrapped)
+    return () => { ipcRenderer.removeListener('knowbook:plugin-notification', wrapped) }
+  },
   onPluginUiPreparation: (listener) => {
     pluginUiPreparationListeners.add(listener)
     for (const request of queuedPluginUiPreparations.splice(0)) listener(request)
