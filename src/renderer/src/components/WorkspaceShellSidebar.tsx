@@ -1,4 +1,5 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import type { PageId } from '../hooks/useAppShellState'
 import type { DocumentsSidebarState, WorkspaceSidebarActions } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
@@ -22,6 +23,8 @@ export function WorkspaceShellSidebar({
   return (
     <>
     <PageNavWithWorkspaceTree
+      workspaceUnavailable={shell.workspaceReady ? undefined : shell.workspaceError
+        ? (shell.isZh ? '文档列表加载失败' : 'Document list could not be loaded') : shell.ui.common.loading}
       notificationControl={<Suspense fallback={<span className="nav-icon-btn notification-bell" aria-hidden="true" />}>
         <AppNotificationHost isZh={shell.isZh} onOpenDocument={documents.openDocumentInDocumentsPage} />
       </Suspense>}

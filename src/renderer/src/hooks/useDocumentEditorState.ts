@@ -331,7 +331,7 @@ export function useDocumentEditorState({
   }, [setDraftBlocks])
 
   const persistDraft = useCallback(async (silentValidationFailure = false) => {
-    if (!selectedDocumentId || !selectedDocument) {
+    if (!selectedDocumentId || !selectedDocument || selectedDocument.id !== selectedDocumentId) {
       return false
     }
 

@@ -9,6 +9,7 @@ import type {
   DocumentDatabaseColumnType,
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
+import { getErrorMessage } from '../utils/errorMessage'
 
 export const BOARD_GROUP_BY_PARENT = '__parent__'
 
@@ -47,6 +48,12 @@ export function useDatabaseDomainState(isActive = true) {
   const [databaseEntityViewMode, setDatabaseEntityViewMode] = useState<StandaloneDatabaseEntityViewMode>('cards')
   const [selectedDatabaseEntityIds, setSelectedDatabaseEntityIds] = useState<string[]>([])
   const [databaseDomainRevision, setDatabaseDomainRevision] = useState(0)
+  const [listReady, setListReady] = useState(false)
+  const [loadedDatabaseId, setLoadedDatabaseId] = useState<string | null>(null)
+  const [listLoading, setListLoading] = useState(false)
+  const [dataLoading, setDataLoading] = useState(false)
+  const [listError, setListError] = useState<string | null>(null)
+  const [dataError, setDataError] = useState<string | null>(null)
   const reloadDatabaseDomain = useCallback(() => {
     setDatabaseDomainRevision((revision) => revision + 1)
   }, [])
@@ -57,24 +64,28 @@ export function useDatabaseDomainState(isActive = true) {
     }
 
     let mounted = true
-
+    setListLoading(true)
+    setListError(null)
     window.knowbook.getDatabases().then((items) => {
       if (mounted) {
         setDatabases(items)
+        setListReady(true)
         setDatabaseEntityDatabaseId((current) => {
           if (current && items.some((database) => database.id === current)) {
             return current
           }
-          const rememberedId = window.localStorage.getItem('knowbook.database.last-source')
+          let rememberedId: string | null = null
+          try { rememberedId = window.localStorage.getItem('knowbook.database.last-source') } catch { /* A preference cache is optional. */ }
           const remembered = items.find((database) => database.id === rememberedId)
           return remembered?.id ?? items.find((database) => database.kind === 'document-catalog')?.id ?? items[0]?.id ?? ''
         })
       }
     }).catch((error) => {
       if (mounted) {
+        setListError(getErrorMessage(error, 'Databases could not be loaded.'))
         console.warn('Failed to load databases.', error)
       }
-    })
+    }).finally(() => { if (mounted) setListLoading(false) })
 
     return () => {
       mounted = false
@@ -87,8 +98,11 @@ export function useDatabaseDomainState(isActive = true) {
     }
 
     let mounted = true
+    setDataError(null)
 
     if (!databaseEntityDatabaseId) {
+      setDataLoading(false)
+      setLoadedDatabaseId(null)
       setDatabaseSavedViews([])
       setActiveDatabaseSavedViewId('')
       setIsCreatingDatabaseSavedView(false)
@@ -107,6 +121,7 @@ export function useDatabaseDomainState(isActive = true) {
       }
     }
 
+    setDataLoading(true)
     setDatabaseSavedViews([])
     setActiveDatabaseSavedViewId('')
     setIsCreatingDatabaseSavedView(false)
@@ -122,6 +137,7 @@ export function useDatabaseDomainState(isActive = true) {
       window.knowbook.getDatabaseSavedViews(databaseEntityDatabaseId)
     ]).then(([items, columns, views]) => {
       if (mounted) {
+        setLoadedDatabaseId(databaseEntityDatabaseId)
         setDatabaseEntities(items)
         setSelectedDatabaseColumns(columns)
         setDatabaseSavedViews(views)
@@ -131,9 +147,10 @@ export function useDatabaseDomainState(isActive = true) {
       }
     }).catch((error) => {
       if (mounted) {
+        setDataError(getErrorMessage(error, 'Database records could not be loaded.'))
         console.warn('Failed to load database workspace data.', error)
       }
-    })
+    }).finally(() => { if (mounted) setDataLoading(false) })
 
     return () => {
       mounted = false
@@ -144,7 +161,7 @@ export function useDatabaseDomainState(isActive = true) {
     if (!databaseEntityDatabaseId) {
       return
     }
-    window.localStorage.setItem('knowbook.database.last-source', databaseEntityDatabaseId)
+    try { window.localStorage.setItem('knowbook.database.last-source', databaseEntityDatabaseId) } catch { /* Keep navigation usable without storage. */ }
   }, [databaseEntityDatabaseId])
 
   useEffect(() => {
@@ -158,6 +175,9 @@ export function useDatabaseDomainState(isActive = true) {
   }, [databaseEntityFilterScope, selectedDatabaseColumns])
 
   return {
+    databaseError: listError ?? dataError,
+    databaseLoading: listLoading || dataLoading,
+    databaseReady: listReady && (!databaseEntityDatabaseId || loadedDatabaseId === databaseEntityDatabaseId),
     activeDatabaseSavedViewId,
     boardGroupBy,
     catalogQuery,

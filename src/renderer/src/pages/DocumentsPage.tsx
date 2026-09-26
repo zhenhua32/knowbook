@@ -1,4 +1,6 @@
-import { lazy, Suspense, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useRef, useState, type ReactNode } from 'react'
+import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
+import { RecoveryState } from '../components/RecoveryState'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
@@ -305,7 +307,10 @@ export function DocumentsPage({
   return (
     <>
       <MarkdownNavigationContext.Provider value={documents.navigateMarkdownLink}>
-      <DocumentsSection
+      {documents.documentLoadError ? <RecoveryState
+        title={documents.documentLoadError.missing ? (isZh ? '文档不存在' : 'Document not found') : (isZh ? '无法加载文档' : 'Unable to load document')}
+        description={isZh ? '可以重试，或从左侧选择其他文档。' : 'Retry or select another document from the sidebar.'}
+        error={documents.documentLoadError.message} onRetry={documents.retryDocumentLoad} busy={documents.detailLoading} /> : <DocumentsSection
         isReadingMode={documents.isReadingMode}
         navigationRequest={documents.blockNavigationRequest}
         onRevealBlock={documents.revealBlockAncestors}
@@ -357,7 +362,7 @@ export function DocumentsPage({
         selectionToolbarProps={selectionToolbarProps}
         summaryCardProps={summaryCardProps}
         visibleEditorRows={visibleEditorRows}
-      />
+      />}
       </MarkdownNavigationContext.Provider>
 
       {sourceEditor && sourceEditor.documentId === documents.selectedDocumentId && <Suspense fallback={null}>
@@ -410,10 +415,13 @@ export function DocumentsPage({
             </div>
             <div className="global-search-results">
               {documents.globalSearchLoading && <p className="mini-hint">{ui.globalSearchLoading}</p>}
-              {!documents.globalSearchLoading && documents.globalSearchQuery && documents.globalSearchResults.length === 0 && (
+              {documents.globalSearchError && <RecoveryState compact title={isZh ? '搜索暂时不可用' : 'Search is unavailable'}
+                description={isZh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'}
+                error={documents.globalSearchError} onRetry={documents.retryGlobalSearch} />}
+              {!documents.globalSearchLoading && !documents.globalSearchError && documents.globalSearchQuery.trim() && documents.globalSearchResults.length === 0 && (
                 <p className="mini-hint">{ui.globalSearchNoResults}</p>
               )}
-              {!documents.globalSearchLoading && !documents.globalSearchQuery && (
+              {!documents.globalSearchLoading && !documents.globalSearchQuery.trim() && (
                 <p className="mini-hint">{ui.globalSearchPrompt}</p>
               )}
               {documents.globalSearchResults.map((result, index) => (

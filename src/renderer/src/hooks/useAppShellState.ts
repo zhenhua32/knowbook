@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
 import {
   UI_LANGUAGE_SETTING_KEY,
@@ -12,6 +12,7 @@ import { createTrailingSingleFlightRefresh } from '../utils/singleFlightRefresh'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 import { applyAppearanceTheme } from '../utils/appearanceTheme'
 import { notify } from '../notify'
+import { getErrorMessage } from '../utils/errorMessage'
 
 const emptyState: HomeData = {
   appearanceTheme: 'light',
@@ -60,9 +61,16 @@ export function useAppShellState() {
   const [homeData, setHomeData] = useState<HomeData>(emptyState)
   const [catalogColumns, setCatalogColumns] = useState<DocumentDatabaseColumn[]>([])
   const [catalogDocuments, setCatalogDocuments] = useState<DocumentCatalogEntry[]>([])
-  const catalogLoadedRef = useRef(false)
+  const [catalogReady, setCatalogReady] = useState(false)
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  const [catalogRevision, setCatalogRevision] = useState(0)
+  const retryCatalog = useCallback(() => setCatalogRevision((value) => value + 1), [])
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [workspaceReady, setWorkspaceReady] = useState(false)
+  const reloadRef = useRef<() => void>(() => undefined)
+  const retryWorkspace = useCallback(() => reloadRef.current(), [])
   const [activePage, setActivePage] = useState<PageId>('documents')
   const [isNavCollapsed, setIsNavCollapsed] = useState(false)
 
@@ -79,15 +87,22 @@ export function useAppShellState() {
     let mounted = true
 
     const refreshHomeData = async () => {
-      const data = await window.knowbook.getHomeData()
-      if (!mounted) {
-        return
+      if (!mounted) return
+      setLoading(true)
+      setWorkspaceError(null)
+      try {
+        const data = await window.knowbook.getHomeData()
+        if (!mounted) return
+        setHomeData(data)
+        setWorkspaceReady(true)
+      } catch (error) {
+        if (mounted) setWorkspaceError(getErrorMessage(error, 'Workspace data could not be loaded.'))
+      } finally {
+        if (mounted) setLoading(false)
       }
-
-      setHomeData(data)
-      setLoading(false)
     }
     const requestHomeDataRefresh = createTrailingSingleFlightRefresh(refreshHomeData)
+    reloadRef.current = () => { void requestHomeDataRefresh() }
     const refreshPluginHomeData = async () => {
       const pluginData = await window.knowbook.getPluginHomeData()
       if (!mounted) {
@@ -98,9 +113,7 @@ export function useAppShellState() {
     }
     const requestPluginHomeDataRefresh = createTrailingSingleFlightRefresh(refreshPluginHomeData)
 
-    void requestHomeDataRefresh().catch((error) => {
-      console.warn('Failed to load home data.', error)
-    })
+    void requestHomeDataRefresh()
 
     window.knowbook.getSetting(UI_LANGUAGE_SETTING_KEY).then((value) => {
       if (!mounted) {
@@ -119,12 +132,11 @@ export function useAppShellState() {
     })
 
     const unsubscribeWorkspace = window.knowbook.onWorkspaceMutated(() => {
-      void requestHomeDataRefresh().catch((error) => {
-        console.warn('Failed to refresh workspace after external mutation.', error)
-      })
+      void requestHomeDataRefresh()
     })
     const unsubscribePlugins = window.knowbook.onPluginsMutated(() => {
       void requestPluginHomeDataRefresh().catch((error) => {
+        if (mounted) setWorkspaceError(getErrorMessage(error, 'Plugin state could not be refreshed.'))
         console.warn('Failed to refresh plugin state.', error)
       })
     })
@@ -141,12 +153,13 @@ export function useAppShellState() {
   }, [homeData.databaseColumns])
 
   useEffect(() => {
-    if (activePage !== 'database' || catalogDocuments.length > 0) {
+    if (activePage !== 'database') {
       return
     }
 
     let mounted = true
     setCatalogLoading(true)
+    setCatalogError(null)
     Promise.all([
       window.knowbook.getDocumentDatabaseColumns(),
       collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage)
@@ -156,8 +169,9 @@ export function useAppShellState() {
       }
       setCatalogColumns(columns)
       setCatalogDocuments(documents)
-      catalogLoadedRef.current = true
+      setCatalogReady(true)
     }).catch((error) => {
+      if (mounted) setCatalogError(getErrorMessage(error, 'The document catalog could not be loaded.'))
       console.warn('Failed to load the document database catalog.', error)
     }).finally(() => {
       if (mounted) {
@@ -168,26 +182,7 @@ export function useAppShellState() {
     return () => {
       mounted = false
     }
-  }, [activePage, catalogDocuments.length])
-
-  useEffect(() => {
-    if (activePage !== 'database' || !catalogLoadedRef.current) {
-      return
-    }
-
-    let mounted = true
-    void collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage).then((documents) => {
-      if (mounted) {
-        setCatalogDocuments(documents)
-      }
-    }).catch((error) => {
-      console.warn('Failed to refresh the loaded document database catalog.', error)
-    })
-
-    return () => {
-      mounted = false
-    }
-  }, [activePage, homeData.documentCatalog])
+  }, [activePage, catalogRevision, homeData.documentCatalog])
 
   useEffect(() => {
     if (!uiLanguageHydrated) {
@@ -243,7 +238,13 @@ export function useAppShellState() {
     activePage,
     catalogColumns,
     catalogDocuments,
-    catalogLoading: catalogLoading || (activePage === 'database' && catalogDocuments.length === 0),
+    catalogLoading,
+    catalogReady,
+    catalogError,
+    retryCatalog,
+    workspaceError,
+    workspaceReady,
+    retryWorkspace,
     homeData,
     isNavCollapsed,
     isZh,

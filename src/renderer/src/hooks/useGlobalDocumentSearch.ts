@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentIndexEntry, GlobalSearchResult } from '@shared/contracts'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type UseGlobalDocumentSearchParams = {
   documentCatalog: DocumentIndexEntry[]
@@ -11,6 +12,7 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResult[]>([])
   const [isGlobalSearchOpen, setIsGlobalSearchOpen] = useState(false)
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false)
+  const [globalSearchError, setGlobalSearchError] = useState<string | null>(null)
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchRequestSequenceRef = useRef(0)
 
@@ -25,10 +27,13 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   useEffect(() => cancelPendingSearch, [cancelPendingSearch])
 
   const openGlobalSearch = useCallback(() => {
+    cancelPendingSearch()
+    setGlobalSearchError(null)
+    setGlobalSearchLoading(false)
     setIsGlobalSearchOpen(true)
     setGlobalSearchQuery('')
     setGlobalSearchResults([])
-  }, [])
+  }, [cancelPendingSearch])
 
   const closeGlobalSearch = useCallback(() => {
     cancelPendingSearch()
@@ -36,11 +41,14 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
     setGlobalSearchQuery('')
     setGlobalSearchResults([])
     setGlobalSearchLoading(false)
+    setGlobalSearchError(null)
   }, [cancelPendingSearch])
 
   const updateGlobalSearchQuery = useCallback((query: string) => {
     cancelPendingSearch()
     setGlobalSearchQuery(query)
+    setGlobalSearchError(null)
+    setGlobalSearchResults([])
 
     if (!query.trim()) {
       setGlobalSearchResults([])
@@ -59,6 +67,7 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
       }).catch((error) => {
         if (searchRequestSequenceRef.current === requestSequence) {
           setGlobalSearchResults([])
+          setGlobalSearchError(getErrorMessage(error, 'Search could not be completed.'))
           console.warn('Failed to search documents.', error)
         }
       }).finally(() => {
@@ -82,6 +91,8 @@ export function useGlobalDocumentSearch({ documentCatalog, onOpenDocument }: Use
   return {
     closeGlobalSearch,
     globalSearchLoading,
+    globalSearchError,
+    retryGlobalSearch: () => updateGlobalSearchQuery(globalSearchQuery),
     globalSearchQuery,
     globalSearchResults,
     handleGlobalSearchNavigate,

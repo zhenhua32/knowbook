@@ -260,6 +260,8 @@ export function useDocumentsDomainState({
   })
   const {
     closeGlobalSearch,
+    globalSearchError,
+    retryGlobalSearch,
     globalSearchLoading,
     globalSearchQuery,
     globalSearchResults,
@@ -322,7 +324,7 @@ export function useDocumentsDomainState({
     }
   })
 
-  useDocumentsLoadingOrchestration({
+  const { documentLoadError, retryDocumentLoad } = useDocumentsLoadingOrchestration({
     clearEditorAssistSuggestions,
     clearEditorSession,
     clearMoveTarget,
@@ -598,7 +600,9 @@ export function useDocumentsDomainState({
     copySelectedBlocksAsPlainText,
     cutSelectedBlocks,
     deleteSelectedBlocks,
-    detailLoading,
+    detailLoading: detailLoading || Boolean(selectedDocumentId && selectedDocument?.id !== selectedDocumentId && !documentLoadError),
+    documentLoadError,
+    retryDocumentLoad,
     dismissSlashCommand,
     documentsAuxPanelOpen,
     documentsAuxPanelWidth,
@@ -630,6 +634,8 @@ export function useDocumentsDomainState({
     globalSearchQuery,
     globalSearchResults,
     handleBlockContentChange,
+    globalSearchError,
+    retryGlobalSearch,
     handleBlockMouseEnter,
     handleBlockPaste,
     handleBlockSearchSelect,

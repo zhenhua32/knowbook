@@ -1,4 +1,6 @@
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
+import { RecoveryState } from './RecoveryState'
 import type { AppFeatureDomainsState, WorkspaceOperationsState } from '../types/appComposition'
 import type { DatabaseDomainState, DocumentsDomainState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
@@ -57,8 +59,17 @@ export function AppPageContent({
   const databaseContext = database.databaseEntityDatabaseId
     ? { databaseId: database.databaseEntityDatabaseId }
     : undefined
+  if (!shell.workspaceReady) return <main className="content">
+    {shell.workspaceError ? <RecoveryState title={shell.isZh ? '无法打开工作区' : 'Unable to open the workspace'}
+      description={shell.isZh ? '工作区数据读取失败。请重试；若问题持续，可以查看诊断信息或以安全模式启动。' : 'Workspace data could not be loaded. Retry, check diagnostics, or restart in safe mode.'}
+      error={shell.workspaceError} onRetry={shell.retryWorkspace} busy={shell.loading} allowRestart />
+      : <p role="status">{shell.ui.common.loading}</p>}
+  </main>
   return (
     <main className={`content page-${shell.activePage}${shell.activePage === 'documents' ? '' : ' management-page'}`}>
+      {shell.workspaceError && <RecoveryState compact title={shell.isZh ? '工作区刷新失败' : 'Workspace refresh failed'}
+        description={shell.isZh ? '仍显示上次成功读取的内容。可以重试刷新，当前编辑草稿会保留。' : 'Showing the last loaded data. Retry the refresh; editor drafts are preserved.'}
+        error={shell.workspaceError} onRetry={shell.retryWorkspace} busy={shell.loading} />}
       {workspace.importReport && <div><button type="button" className="secondary-button" onClick={() => workspace.setImportReportOpen(true)}>
         {shell.isZh ? '查看最近导入报告' : 'View latest import report'}
       </button></div>}
@@ -94,6 +105,9 @@ export function AppPageContent({
             catalogColumns={shell.catalogColumns}
             catalogDocuments={shell.catalogDocuments}
             catalogLoading={shell.catalogLoading}
+            catalogReady={shell.catalogReady}
+            catalogError={shell.catalogError}
+            onRetryCatalog={shell.retryCatalog}
             database={database}
             documentCatalog={shell.catalogDocuments}
             onCatalogColumnsChange={shell.setCatalogColumns}

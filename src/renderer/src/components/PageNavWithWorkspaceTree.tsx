@@ -8,6 +8,7 @@ import { getUiText } from '../i18n'
 
 type PageNavWithWorkspaceTreeProps = {
   notificationControl?: ReactNode
+  workspaceUnavailable?: string
   activePage: string
   pageItems: Array<{
     id: string
@@ -168,7 +169,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
                 <ArrowIcon direction="right" />
               </button>
             </div>
-            <button className="sidebar-search-button" onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">
+            <button className="sidebar-search-button" disabled={Boolean(props.workspaceUnavailable)} onClick={onOpenGlobalSearch} title={globalSearchTitle} type="button">
               <SearchIcon />
               <span>{ui.globalSearch}</span>
               <kbd>Ctrl K</kbd>
@@ -178,7 +179,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
           <div className="sidebar-section-heading">
             <span>{isZh ? '我的文档' : 'My documents'}</span>
             <span className="sidebar-section-count">{totalDocumentsCount ?? 0}</span>
-            <button className="sidebar-create-button" onClick={onCreateRoot} title={newRootLabel} type="button">
+            <button className="sidebar-create-button" disabled={Boolean(props.workspaceUnavailable)} onClick={onCreateRoot} title={newRootLabel} type="button">
               <PlusIcon />
             </button>
           </div>
@@ -235,7 +236,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
               />
             ) : (
               <div className="sidebar-empty-state">
-                {isZh ? '还没有文档' : 'No documents yet'}
+                {props.workspaceUnavailable || (isZh ? '还没有文档' : 'No documents yet')}
               </div>
             )}
           </div>

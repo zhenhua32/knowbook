@@ -138,7 +138,7 @@ export function useDocumentsLoadingOrchestration({
     notify(uiBlockReferenceNotFound, 'warning')
   }, [notify, uiBlockReferenceNotFound])
 
-  useDocumentLoadingAndBlockNavigation({
+  return useDocumentLoadingAndBlockNavigation({
     clearPendingTarget,
     draftBlocks,
     draftTitle,

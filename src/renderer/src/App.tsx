@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useRef } from 'react'
 import { useAppShellState } from './hooks/useAppShellState'
 import { useAppFeatureDomains } from './hooks/useAppFeatureDomains'
 import { useAppKeyboardShortcuts } from './hooks/useAppKeyboardShortcuts'
 import { useDatabaseDomainState } from './hooks/useDatabaseDomainState'
 import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
 import { useWorkspaceOperations } from './hooks/useWorkspaceOperations'
-import { AppPageContent } from './components/AppPageContent'
+import { ErrorBoundary } from './components/ErrorBoundary'
+import { lazyWithRetry } from './utils/lazyWithRetry'
 import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
+
+const AppPageContent = lazyWithRetry(async () => ({ default: (await import('./components/AppPageContent')).AppPageContent }))
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
@@ -44,26 +47,37 @@ export function App() {
     },
     shell,
   })
-return (
+  return (
     <>
-     <PluginUiPreparationHost />
-     <div className="shell" data-testid="shell">
-       <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
-          <WorkspaceShellSidebar
-            documents={documentsDomain}
-            shell={shell}
-            workspace={workspaceOperations}
-          />
+      <PluginUiPreparationHost />
+      <div className="shell" data-testid="shell">
+        <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
+          <ErrorBoundary page>
+            <WorkspaceShellSidebar
+              documents={documentsDomain}
+              shell={shell}
+              workspace={workspaceOperations}
+            />
+          </ErrorBoundary>
         </div>
 
-        <AppPageContent
-          database={databaseDomain}
-          documents={documentsDomain}
-          features={featureDomains}
-          shell={shell}
-          workspace={workspaceOperations}
-        />
-     </div>
+        <ErrorBoundary
+          page
+          resetKey={`${shell.activePage}:${documentsDomain.selectedDocumentId}:${databaseDomain.databaseEntityDatabaseId}`}
+          onNavigate={() => shell.setActivePage(shell.activePage === 'dashboard' ? 'documents' : 'dashboard')}
+          navigateLabel={shell.activePage === 'dashboard' ? (shell.isZh ? '返回文档' : 'Go to documents') : undefined}
+        >
+          <Suspense fallback={<main className="content" role="status">{shell.ui.common.loading}</main>}>
+            <AppPageContent
+              database={databaseDomain}
+              documents={documentsDomain}
+              features={featureDomains}
+              shell={shell}
+              workspace={workspaceOperations}
+            />
+          </Suspense>
+        </ErrorBoundary>
+      </div>
     </>
   )
 }

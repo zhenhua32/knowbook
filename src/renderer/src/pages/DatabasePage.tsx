@@ -7,11 +7,15 @@ import type { UiText } from '../i18n'
 import type { DatabaseDomainState, DatabaseWorkspaceBoardState } from '../types/appDomains'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 import { DatabaseWorkspace } from '../features/database/DatabaseWorkspace'
+import { RecoveryState } from '../components/RecoveryState'
 
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
   catalogDocuments: DocumentCatalogEntry[]
   catalogLoading: boolean
+  catalogReady: boolean
+  catalogError: string | null
+  onRetryCatalog: () => void
   database: DatabaseDomainState
   documentCatalog: DocumentCatalogEntry[]
   onCatalogColumnsChange: Dispatch<SetStateAction<DocumentDatabaseColumn[]>>
@@ -28,6 +32,9 @@ export function DatabasePage({
   catalogColumns,
   catalogDocuments,
   catalogLoading,
+  catalogReady,
+  catalogError,
+  onRetryCatalog,
   database,
   onCatalogColumnsChange,
   onCatalogDocumentsChange,
@@ -70,11 +77,20 @@ export function DatabasePage({
     onHomeDataChange
   ])
 
-  if (catalogLoading && catalogDocuments.length === 0) {
+  const error = catalogError ?? database.databaseError
+  const ready = catalogReady && database.databaseReady
+  const recovery = error ? <RecoveryState compact={ready} title={ui.language === 'zh-CN' ? '数据库加载失败' : 'Unable to load database'}
+    description={ready ? (ui.language === 'zh-CN' ? '仍显示上次成功读取的数据，请重试刷新。' : 'Showing the last loaded data. Retry the refresh.') : undefined}
+    error={error} busy={catalogLoading || database.databaseLoading} onRetry={() => { onRetryCatalog(); database.reloadDatabaseDomain() }} /> : null
+  if (error && !ready) return recovery
+  if (!ready) {
     return <div className="dbw-loading">{ui.common.loading}</div>
   }
+  if (!database.databases.length) return <>{recovery}<p className="dbw-loading" role="status">{ui.language === 'zh-CN' ? '暂无可用的数据库。' : 'No databases are available.'}
+    <button type="button" className="secondary-button" onClick={database.reloadDatabaseDomain}>{ui.language === 'zh-CN' ? '刷新' : 'Refresh'}</button></p></>
 
   return (
+    <>{recovery}
     <DatabaseWorkspace
       activeViewId={database.activeDatabaseSavedViewId}
       catalogColumns={catalogColumns}
@@ -93,5 +109,6 @@ export function DatabasePage({
       selectedColumns={database.selectedDatabaseColumns}
       selectedRecordIds={database.selectedDatabaseEntityIds}
     />
+    </>
   )
 }

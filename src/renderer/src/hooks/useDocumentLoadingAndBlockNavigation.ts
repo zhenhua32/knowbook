@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
 import type { PendingBlockNavigationTarget } from './useDocumentNavigationState'
 import { collectMarkdownAnchors } from '@shared/markdownAnchors'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type UseDocumentLoadingAndBlockNavigationParams = {
   selectedDocumentId: string | null
@@ -32,6 +33,9 @@ export function useDocumentLoadingAndBlockNavigation({
   onPendingTargetResolved,
   onPendingTargetMissing
 }: UseDocumentLoadingAndBlockNavigationParams) {
+  const [failure, setFailure] = useState<{ documentId: string; missing: boolean; message: string } | null>(null)
+  const [revision, setRevision] = useState(0)
+  const retryDocumentLoad = useCallback(() => setRevision((value) => value + 1), [])
   const callbackRef = useRef({
     onDocumentLoaded,
     onNoDocumentSelected,
@@ -47,6 +51,7 @@ export function useDocumentLoadingAndBlockNavigation({
   }
 
   useEffect(() => {
+    setFailure(null)
     if (!selectedDocumentId) {
       setSelectedDocument(null)
       setDetailLoading(false)
@@ -63,6 +68,7 @@ export function useDocumentLoadingAndBlockNavigation({
       }
 
       if (!detail) {
+        setFailure({ documentId: selectedDocumentId, missing: true, message: '' })
         setSelectedDocument(null)
         callbackRef.current.onNoDocumentSelected()
         setDetailLoading(false)
@@ -72,8 +78,9 @@ export function useDocumentLoadingAndBlockNavigation({
       setSelectedDocument(detail)
       callbackRef.current.onDocumentLoaded(detail)
       setDetailLoading(false)
-    }).catch(() => {
+    }).catch((error) => {
       if (mounted) {
+        setFailure({ documentId: selectedDocumentId, missing: false, message: getErrorMessage(error, 'Document data could not be loaded.') })
         setDetailLoading(false)
       }
     })
@@ -81,7 +88,7 @@ export function useDocumentLoadingAndBlockNavigation({
     return () => {
       mounted = false
     }
-  }, [selectedDocumentId, setDetailLoading, setSelectedDocument])
+  }, [revision, selectedDocumentId, setDetailLoading, setSelectedDocument])
 
   useEffect(() => {
     if (!pendingBlockNavigationTarget || pendingBlockNavigationTarget.documentId !== selectedDocumentId) {
@@ -119,4 +126,5 @@ export function useDocumentLoadingAndBlockNavigation({
     selectedDocument,
     selectedDocumentId
   ])
+  return { documentLoadError: failure?.documentId === selectedDocumentId ? failure : null, retryDocumentLoad }
 }

@@ -6669,3 +6669,14 @@ select:focus-visible {
 
 .nav-icon-btn.notification-bell { position: relative; flex-shrink: 0; justify-content: center; width: 32px; height: 32px; padding: 0; }
 .notification-badge { position: absolute; top: -3px; right: -5px; min-width: 16px; padding: 0 3px; border-radius: 10px; background: #b6324b; color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
+.recovery-state { box-sizing: border-box; align-self: start; width: min(680px, 100%); min-width: 0; margin: 32px auto; padding: 28px; border: 1px solid var(--kb-line); border-radius: 16px; background: var(--kb-canvas); color: var(--kb-text); }
+.shell > .recovery-state { width: auto; margin: 32px; }
+.recovery-state h2 { margin: 0; font-size: 20px; }
+.recovery-state p { margin: 12px 0; overflow-wrap: anywhere; color: var(--kb-text-muted); }
+.recovery-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.recovery-details { margin-top: 18px; font-size: 13px; }
+.recovery-details summary { cursor: pointer; }
+.recovery-details pre { max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.recovery-state-compact { width: 100%; margin: 0 0 16px; padding: 18px; }
+.recovery-state-compact h2 { font-size: 16px; }
+.sidebar .recovery-state { margin: 12px 0; padding: 14px; }
