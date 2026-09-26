@@ -182,8 +182,12 @@ test('a failed draft save blocks a search jump without losing the draft or chang
     const home = await page.evaluate(() => window.knowbook.getHomeData())
     const target = home.documentCatalog.find((document) => document.id !== home.initialDocumentId)!
     await app.evaluate(({ ipcMain }) => {
+      process.env.KNOWBOOK_SEARCH_SAVE_ATTEMPTS = '0'
       ipcMain.removeHandler('knowbook:update-document')
-      ipcMain.handle('knowbook:update-document', () => { throw new Error('Palette draft save blocked') })
+      ipcMain.handle('knowbook:update-document', () => {
+        process.env.KNOWBOOK_SEARCH_SAVE_ATTEMPTS = String(Number(process.env.KNOWBOOK_SEARCH_SAVE_ATTEMPTS) + 1)
+        throw new Error('Palette draft save blocked')
+      })
     })
     await ensureDocumentMetadataEditor(page)
     const title = page.locator('.document-summary-card .editor-input').first()
@@ -193,7 +197,15 @@ test('a failed draft save blocks a search jump without losing the draft or chang
     await page.keyboard.press('Control+k')
     await page.locator('.global-search-input').fill(target.title)
     await page.locator('.global-search-result').filter({ has: page.locator('.global-search-doc-title', { hasText: target.title }) }).first().click()
-    await expect(page.locator('.global-search-modal')).toHaveCount(0)
+    await expect(page.locator('.global-search-modal')).toBeVisible()
+    await expect(page.locator('.global-search-input')).toHaveValue(target.title)
+    await expect(page.locator('.palette-action-feedback')).toContainText(/draft and search are preserved|草稿和搜索已保留/)
+    // A second attempt must execute again, rather than getting stuck in a busy state.
+    const attempts = await app.evaluate(() => Number(process.env.KNOWBOOK_SEARCH_SAVE_ATTEMPTS))
+    await page.locator('.global-search-input').press('Enter')
+    await expect.poll(() => app.evaluate(() => Number(process.env.KNOWBOOK_SEARCH_SAVE_ATTEMPTS))).toBeGreaterThan(attempts)
+    await expect(page.locator('.palette-action-feedback')).toHaveAttribute('role', 'alert')
+    await page.keyboard.press('Escape')
     await expect(page.locator('.page-settings')).toBeVisible()
     await expect(page.locator('.app-notifications')).toContainText('Palette draft save blocked')
     await page.getByTitle(uiText('Documents', '文档'), { exact: true }).click()

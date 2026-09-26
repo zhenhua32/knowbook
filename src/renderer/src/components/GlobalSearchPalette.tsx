@@ -8,6 +8,8 @@ import { createPaletteCommands, matchPaletteCommands, type PaletteCommand } from
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { getErrorMessage } from '../utils/errorMessage'
 import { RecoveryState } from './RecoveryState'
+import { SearchMatchText } from './SearchMatchText'
+import { searchResultDocumentLink } from '../utils/searchResultLink'
 import './global-search.css'
 
 type PaletteItem = { id: string; result: GlobalSearchResult } | { id: string; command: PaletteCommand }
@@ -18,6 +20,9 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
   const dialog = useRef<HTMLDialogElement>(null), input = useRef<HTMLInputElement>(null), composing = useRef(false)
   const executing = useRef(false), listId = useId(), titleId = useId(), hintId = useId()
   const [activeId, setActiveId] = useState('')
+  const [busy, setBusy] = useState<'open' | 'copy' | null>(null)
+  const [feedback, setFeedback] = useState<{ itemId: string; message: string; error: boolean } | null>(null)
+  const mounted = useRef(false), actionSequence = useRef(0)
   const zh = shell.isZh
   const query = documents.globalSearchQuery
   const commandsOnly = query.trimStart().startsWith('>')
@@ -26,19 +31,23 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     : shell.homeData.recentDocuments.slice(0, 6).map((document) => ({ documentId: document.id, documentTitle: document.title,
       documentPath: document.path, matchType: 'title', snippet: '' }))
   const items: PaletteItem[] = [
-    ...results.map((result) => ({ id: `document:${result.documentId}:${result.blockId || 'title'}`, result })),
+    ...results.map((result) => ({ id: `document:${result.documentId}:${result.matchType}:${result.blockId || ''}`, result })),
     ...commands.map((command) => ({ id: command.id, command }))
   ]
   const available = items.filter((item) => !('command' in item && item.command.disabledReason))
   const selected = available.find((item) => item.id === activeId) || available[0]
   const selectedIndex = items.findIndex((item) => item.id === selected?.id)
+  const selectedResult = selected && 'result' in selected ? selected.result : null
+  const primaryLabel = selectedResult?.blockId ? (zh ? '定位内容块' : 'Go to block') : (zh ? '打开文档' : 'Open document')
 
   useEffect(() => {
+    mounted.current = true
     const previous = document.activeElement as HTMLElement | null
     const element = dialog.current!
     element.showModal()
     input.current?.focus()
     return () => {
+      mounted.current = false
       element.close()
       if (previous?.isConnected) previous.focus({ preventScroll: true })
     }
@@ -47,11 +56,35 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     if (selectedIndex >= 0) document.getElementById(`${listId}-${selectedIndex}`)?.scrollIntoView({ block: 'nearest' })
   }, [listId, selectedIndex, selected?.id])
 
-  const updateQuery = (value: string) => { setActiveId(''); documents.updateGlobalSearchQuery(value) }
-  const execute = (item: PaletteItem | undefined) => {
-    if (!item || executing.current || ('command' in item && item.command.disabledReason)) return
+  const updateQuery = (value: string) => { actionSequence.current++; setFeedback(null); setActiveId(''); documents.updateGlobalSearchQuery(value) }
+  const runResultAction = async (item: PaletteItem & { result: GlobalSearchResult }, action: 'open' | 'document' | 'copy') => {
+    if (executing.current) return
     executing.current = true
-    if ('result' in item) { documents.handleGlobalSearchNavigate(item.result); return }
+    const sequence = ++actionSequence.current
+    setBusy(action === 'copy' ? 'copy' : 'open')
+    setFeedback(null)
+    const report = (message: string, error = false) => {
+      if (mounted.current && sequence === actionSequence.current) setFeedback({ itemId: item.id, message, error })
+    }
+    try {
+      if (action === 'copy') {
+        await window.knowbook.writeClipboardText(searchResultDocumentLink(item.result))
+        report(zh ? '文档链接已复制，可粘贴到其他文档。' : 'Document link copied. Paste it into another document.')
+      } else if (!await documents.handleGlobalSearchNavigate(item.result, action === 'document')) {
+        report(zh ? '未能切换文档，草稿和搜索已保留。请处理保存错误后重试。' : 'Could not switch documents. Your draft and search are preserved. Resolve the save error and retry.', true)
+        input.current?.focus()
+      }
+    } catch (error) {
+      report(getErrorMessage(error, action === 'copy' ? (zh ? '复制失败，请重试。' : 'Copy failed. Please retry.') : (zh ? '打开失败，请重试。' : 'Could not open the result. Please retry.')), true)
+    } finally {
+      executing.current = false
+      if (mounted.current) setBusy(null)
+    }
+  }
+  const execute = (item: PaletteItem | undefined, documentOnly = false) => {
+    if (!item || executing.current || ('command' in item && item.command.disabledReason)) return
+    if ('result' in item) { void runResultAction(item, documentOnly ? 'document' : 'open'); return }
+    executing.current = true
     documents.closeGlobalSearch()
     void (async () => {
       try { await item.command.run() }
@@ -82,7 +115,7 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
         const next = available[(current + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length]
         if (next) setActiveId(next.id)
       }
-      if (event.key === 'Enter') { event.preventDefault(); execute(selected) }
+      if (event.key === 'Enter' && !event.altKey && !event.shiftKey) { event.preventDefault(); execute(selected, event.ctrlKey || event.metaKey) }
     }}>
     <div className="palette-heading"><h2 id={titleId}>{zh ? '搜索与命令' : 'Search and commands'}</h2>
       <button type="button" className="palette-mode" aria-pressed={commandsOnly} onClick={() => { updateQuery(commandsOnly ? '' : '>'); input.current?.focus() }}>
@@ -102,27 +135,38 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
         description={zh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'} error={documents.globalSearchError} onRetry={documents.retryGlobalSearch} />}
       {!query.trim() && <p className="mini-hint">{zh ? '搜索所有文档标题和内容块，输入 > 查找命令。' : 'Search all document titles and blocks, or type > for commands.'}</p>}
       {!documents.globalSearchLoading && !documents.globalSearchError && query.trim() && items.length === 0 && <p className="mini-hint" role="status">{shell.ui.globalSearchNoResults}</p>}
-      <div id={listId} role="listbox" aria-label={zh ? '搜索结果与命令' : 'Results and commands'}>
+      <div id={listId} role="listbox" aria-busy={Boolean(busy)} aria-label={zh ? '搜索结果与命令' : 'Results and commands'}>
         {items.map((item, index) => <div key={item.id}>
           {(index === 0 || ('command' in item && 'result' in items[index - 1])) && <div className="palette-section-label" role="presentation">
             {'command' in item ? (zh ? '命令' : 'Commands') : query.trim() ? (zh ? '文档' : 'Documents') : (zh ? '最近更新' : 'Recently updated')}</div>}
           <button type="button" role="option" id={`${listId}-${index}`} aria-selected={selected?.id === item.id}
             disabled={'command' in item && Boolean(item.command.disabledReason)} tabIndex={-1}
             className={`${'result' in item ? 'global-search-result' : 'palette-command'} palette-option`}
-            onMouseMove={() => setActiveId(item.id)} onClick={() => execute(item)}>
+            onMouseMove={() => { if (!executing.current) setActiveId(item.id) }} onClick={() => { setActiveId(item.id); execute(item) }}>
             {'result' in item ? <>
-              <div className="global-search-result-header"><span className="global-search-doc-path">{item.result.documentPath}</span>
+              <div className="global-search-result-header"><span className="global-search-doc-path" title={item.result.documentPath}><SearchMatchText text={item.result.documentPath} query={query} /></span>
                 <span className={`global-search-match-badge global-search-match-${item.result.matchType === 'title' ? 'title' : 'block'}`}>
-                  {item.result.matchType === 'title' ? shell.ui.titleMatchLabel : item.result.blockType ?? shell.ui.blockMatchFallback}</span></div>
-              <strong className="global-search-doc-title">{item.result.documentTitle}</strong>
-              {item.result.snippet && <p className="global-search-snippet">{item.result.snippet}</p>}
+                  {item.result.matchType === 'title' ? (zh ? '文档' : 'Document') : shell.ui.blockTypeBadges[item.result.blockType ?? ''] ?? shell.ui.blockMatchFallback}</span></div>
+              <strong className="global-search-doc-title"><SearchMatchText text={item.result.documentTitle} query={query} /></strong>
+              {item.result.snippet && <p className="global-search-snippet" title={item.result.snippet}><SearchMatchText text={item.result.snippet} query={query} /></p>}
             </> : <><div className="palette-command-heading"><strong>{item.command.title}</strong>{item.command.shortcut && <kbd>{item.command.shortcut}</kbd>}</div>
               <span className="global-search-snippet">{item.command.disabledReason || item.command.description}</span></>}
           </button>
         </div>)}
       </div>
     </div>
-    <footer id={hintId} className="palette-footer"><span>{zh ? '↑↓ 选择 · Enter 执行 · Esc 关闭' : '↑↓ Choose · Enter Run · Esc Close'}</span>
-      <span role="status" aria-live="polite">{zh ? `${items.length} 项` : `${items.length} items`}</span></footer>
+    {selected && 'result' in selected && <div className="palette-result-actions" role="group" aria-label={zh ? '所选搜索结果操作' : 'Selected result actions'}>
+      <span className="palette-action-target" title={selected.result.documentPath}>{selected.result.documentPath}</span>
+      <div><button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => execute(selected)}>{primaryLabel}</button>
+        {selectedResult?.blockId && <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => execute(selected, true)}>{zh ? '打开文档' : 'Open document'}</button>}
+        <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => { void runResultAction(selected, 'copy') }}>{zh ? '复制文档链接' : 'Copy document link'}</button></div>
+    </div>}
+    {(busy || (feedback && feedback.itemId === selected?.id)) && <p className="palette-action-feedback" role={feedback?.error && !busy ? 'alert' : 'status'}>
+      {busy ? busy === 'open' ? (zh ? '正在打开…' : 'Opening…') : (zh ? '正在复制…' : 'Copying…') : feedback?.message}</p>}
+    <footer id={hintId} className="palette-footer"><span>{selectedResult?.blockId
+      ? (zh ? '↑↓ 选择 · Enter 定位 · Ctrl/⌘ Enter 打开文档 · Esc 关闭' : '↑↓ Choose · Enter Go to block · Ctrl/⌘ Enter Open document · Esc Close')
+      : (zh ? '↑↓ 选择 · Enter 执行 · Esc 关闭' : '↑↓ Choose · Enter Run · Esc Close')}</span>
+      <span role="status" aria-live="polite">{zh ? `${results.length} 个结果 · ${commands.length} 个命令`
+        : `${results.length} result${results.length === 1 ? '' : 's'} · ${commands.length} command${commands.length === 1 ? '' : 's'}`}</span></footer>
   </dialog>, document.body)
 }

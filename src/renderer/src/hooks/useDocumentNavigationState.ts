@@ -38,24 +38,26 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
   }, [onBeforeOpenDocument, selectedDocumentId])
 
   const openDocumentInDocumentsPage = useCallback((documentId: string) => {
-    void prepareNavigation(documentId).then((allowed) => {
+    return prepareNavigation(documentId).then((allowed) => {
       if (!allowed) {
-        return
+        return false
       }
       setPendingBlockNavigationTarget(null)
       setSelectedDocumentId(documentId)
       onActivePageChange('documents')
+      return true
     })
   }, [onActivePageChange, prepareNavigation])
 
   const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
-    void prepareNavigation(documentId).then((allowed) => {
+    return prepareNavigation(documentId).then((allowed) => {
       if (!allowed) {
-        return
+        return false
       }
       setPendingBlockNavigationTarget({ documentId, blockId })
       setSelectedDocumentId(documentId)
       onActivePageChange('documents')
+      return true
     })
   }, [onActivePageChange, prepareNavigation])
 

@@ -138,6 +138,15 @@
 .palette-command-heading strong { font-size: 14px; overflow-wrap: anywhere; }
 .palette-command-heading kbd { flex-shrink: 0; font: inherit; font-size: 11px; color: var(--kb-text-soft); }
 .palette-command:disabled { cursor: default; opacity: .6; }
-.palette-footer { flex-shrink: 0; border-top: 1px solid var(--kb-line); font-size: 12px; color: var(--kb-text-muted); }
+.palette-footer { flex-shrink: 0; flex-wrap: wrap; border-top: 1px solid var(--kb-line); font-size: 12px; color: var(--kb-text-soft); }
 .global-search-results > .recovery-state { width: calc(100% - 32px); margin: 8px 16px; }
+
+.global-search-result mark { color: inherit; background: transparent; font-weight: 700; text-decoration: underline; text-decoration-color: var(--kb-accent); text-underline-offset: 3px; }
+.global-search-result[aria-selected='true'] .global-search-snippet { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.palette-result-actions { flex-shrink: 0; padding: 10px 16px; border-top: 1px solid var(--kb-line); }
+.palette-action-target { display: block; margin-bottom: 8px; color: var(--kb-text-soft); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.palette-result-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.palette-result-actions button { min-height: 32px; }
+.palette-action-feedback { flex-shrink: 0; margin: 0; padding: 8px 16px; color: var(--kb-text); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.palette-action-feedback[role='alert'] { border-left: 3px solid var(--kb-danger); padding-left: 13px; background: color-mix(in srgb, var(--kb-danger) 8%, var(--kb-canvas)); }
 

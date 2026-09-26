@@ -3,8 +3,8 @@ import type { GlobalSearchResult } from '@shared/contracts'
 import { getErrorMessage } from '../utils/errorMessage'
 
 type UseGlobalDocumentSearchParams = {
-  onOpenDocument: (documentId: string) => void
-  onOpenBlock?: (documentId: string, blockId: string) => void
+  onOpenDocument: (documentId: string) => boolean | void | Promise<boolean | void>
+  onOpenBlock?: (documentId: string, blockId: string) => boolean | void | Promise<boolean | void>
 }
 
 export function useGlobalDocumentSearch({ onOpenDocument, onOpenBlock }: UseGlobalDocumentSearchParams) {
@@ -78,10 +78,15 @@ export function useGlobalDocumentSearch({ onOpenDocument, onOpenBlock }: UseGlob
     }, 160)
   }, [cancelPendingSearch])
 
-  const handleGlobalSearchNavigate = useCallback((result: GlobalSearchResult) => {
-    if (result.blockId && onOpenBlock) onOpenBlock(result.documentId, result.blockId)
-    else onOpenDocument(result.documentId)
-    closeGlobalSearch()
+  const handleGlobalSearchNavigate = useCallback(async (result: GlobalSearchResult, documentOnly = false) => {
+    const sequence = searchRequestSequenceRef.current
+    const opened = result.blockId && onOpenBlock && !documentOnly
+      ? await onOpenBlock(result.documentId, result.blockId)
+      : await onOpenDocument(result.documentId)
+    // A blocked save must keep the query; a late completion must not close a new search.
+    if (opened === false) return false
+    if (sequence === searchRequestSequenceRef.current) closeGlobalSearch()
+    return true
   }, [closeGlobalSearch, onOpenDocument, onOpenBlock])
 
   return {

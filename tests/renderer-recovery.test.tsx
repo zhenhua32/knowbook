@@ -221,3 +221,56 @@ test('command mode cancels pending document queries and ignores their late resul
     } finally { t.mock.timers.reset() }
   })
 })
+
+test('search navigation waits for permission, preserves blocked queries and can retry as a whole document', async () => {
+  let finish!: (allowed: boolean) => void
+  let blockOpens = 0, documentOpens = 0
+  const result: GlobalSearchResult = { documentId: 'destination', documentTitle: 'Found', documentPath: 'Found', matchType: 'block', snippet: 'needle', blockId: 'block' }
+  await withRenderer({}, async ({ render }) => {
+    let search!: ReturnType<typeof useGlobalDocumentSearch>
+    function Harness() {
+      search = useGlobalDocumentSearch({ onOpenDocument: async () => { documentOpens++; return true },
+        onOpenBlock: () => { blockOpens++; return new Promise<boolean>((resolve) => { finish = resolve }) } })
+      return null
+    }
+    await render(<Harness />)
+    await act(async () => { search.openGlobalSearch(); search.updateGlobalSearchQuery('needle') })
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = search.handleGlobalSearchNavigate(result) })
+    assert.equal(search.isGlobalSearchOpen, true)
+    assert.equal(blockOpens, 1)
+    await act(async () => { finish(false); assert.equal(await navigation, false) })
+    assert.equal(search.isGlobalSearchOpen, true)
+    assert.equal(search.globalSearchQuery, 'needle')
+    await act(async () => { assert.equal(await search.handleGlobalSearchNavigate(result, true), true) })
+    assert.equal(documentOpens, 1)
+    assert.equal(search.isGlobalSearchOpen, false)
+  })
+})
+
+test('a rejected navigation is retryable and an old completion cannot close a reopened search', async () => {
+  let finish!: () => void
+  let fail = true
+  const result: GlobalSearchResult = { documentId: 'destination', documentTitle: 'Found', documentPath: 'Found', matchType: 'title', snippet: '' }
+  await withRenderer({}, async ({ render }) => {
+    let search!: ReturnType<typeof useGlobalDocumentSearch>
+    function Harness() {
+      search = useGlobalDocumentSearch({ onOpenDocument: async () => {
+        if (fail) throw new Error('save unavailable')
+        await new Promise<void>((resolve) => { finish = resolve })
+      } })
+      return null
+    }
+    await render(<Harness />)
+    await act(async () => search.openGlobalSearch())
+    await act(async () => { await assert.rejects(search.handleGlobalSearchNavigate(result), /save unavailable/) })
+    assert.equal(search.isGlobalSearchOpen, true)
+    fail = false
+    let navigation!: Promise<boolean>
+    await act(async () => { navigation = search.handleGlobalSearchNavigate(result) })
+    await act(async () => { search.closeGlobalSearch(); search.openGlobalSearch('commands') })
+    await act(async () => { finish(); await navigation })
+    assert.equal(search.isGlobalSearchOpen, true)
+    assert.equal(search.globalSearchQuery, '>')
+  })
+})
