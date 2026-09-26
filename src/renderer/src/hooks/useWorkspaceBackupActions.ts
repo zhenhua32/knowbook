@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentDetail, HomeData, MarkdownImportReport } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -7,7 +7,6 @@ type UseWorkspaceBackupActionsParams = {
   selectedDocumentId: string | null
   flushPendingDocumentChanges: () => Promise<boolean>
   reloadDatabaseDomain: () => void
-  setBackupMessage: (message: string | null) => void
   setHomeData: Dispatch<SetStateAction<HomeData>>
   setSelectedDocument: Dispatch<SetStateAction<DocumentDetail | null>>
   setSelectedDocumentId: Dispatch<SetStateAction<string | null>>
@@ -18,7 +17,6 @@ export function useWorkspaceBackupActions({
   selectedDocumentId,
   flushPendingDocumentChanges,
   reloadDatabaseDomain,
-  setBackupMessage,
   setHomeData,
   setSelectedDocument,
   setSelectedDocumentId,
@@ -26,15 +24,19 @@ export function useWorkspaceBackupActions({
 }: UseWorkspaceBackupActionsParams) {
   const [importReport, setImportReport] = useState<MarkdownImportReport | null>(null)
   const [isImportReportOpen, setImportReportOpen] = useState(false)
+  const selection = useRef(selectedDocumentId)
+  selection.current = selectedDocumentId
   const refreshWorkspaceAfterStorageMutation = useCallback(async () => {
     const refreshed = await window.knowbook.getHomeData()
     setHomeData(refreshed)
     const nextDocumentId = selectedDocumentId ?? refreshed.initialDocumentId
+    if (selection.current !== selectedDocumentId) return
     if (!selectedDocumentId && nextDocumentId) {
       setSelectedDocumentId(nextDocumentId)
     }
     if (selectedDocumentId) {
       const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
+      if (selection.current !== selectedDocumentId) return
       if (detail) {
         setSelectedDocument(detail)
       } else {
@@ -44,46 +46,15 @@ export function useWorkspaceBackupActions({
     }
   }, [selectedDocumentId, setHomeData, setSelectedDocument, setSelectedDocumentId])
 
-  const handleBackup = useCallback(async () => {
-    if (!await flushPendingDocumentChanges()) {
-      return
-    }
-    const result = await window.knowbook.triggerBackup()
-    await refreshWorkspaceAfterStorageMutation()
-    setBackupMessage(ui.backupExported(result.exported, result.at))
-  }, [flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, setBackupMessage, ui])
+  const latest = useRef({ flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, reloadDatabaseDomain, ui })
+  latest.current = { flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, reloadDatabaseDomain, ui }
 
-  const handleRestoreBackup = useCallback(async () => {
-    try {
-      if (!await flushPendingDocumentChanges()) {
-        return
-      }
-      const result = await window.knowbook.restoreBackupFromFolder()
-      if (!result) {
-        return
-      }
-
-      await refreshWorkspaceAfterStorageMutation()
-      reloadDatabaseDomain()
-      setImportReport(result.importReport ?? null)
-      setImportReportOpen(Boolean(result.importReport))
-      const restoredMessage = ui.backupRestored(
-        result.restored,
-        result.created,
-        result.updated,
-        result.deleted,
-        result.conflictsResolved,
-        result.placeholdersCreated,
-        result.at
-      )
-      setBackupMessage(result.safetyBackupPath
-        ? `${restoredMessage} ${ui.backupSafetyCopyCreated(result.safetyBackupPath)}`
-        : restoredMessage)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.backupRestoreFailed
-      setBackupMessage(message)
-    }
-  }, [flushPendingDocumentChanges, refreshWorkspaceAfterStorageMutation, reloadDatabaseDomain, setBackupMessage, ui])
+  const runBackup = useCallback(async (restore: boolean) => {
+    const { runWorkspaceBackup } = await import('../workspace-backup-notifications')
+    await runWorkspaceBackup(restore, latest, setImportReport, setImportReportOpen)
+  }, [])
+  const handleBackup = useCallback(() => runBackup(false), [runBackup])
+  const handleRestoreBackup = useCallback(() => runBackup(true), [runBackup])
 
   return {
     importReport,

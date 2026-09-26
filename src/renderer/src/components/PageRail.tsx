@@ -7,6 +7,7 @@ type RailPageItem = {
 }
 
 type PageRailProps = {
+  notificationControl?: ReactNode
   brandEyebrow: string
   activePage: string
   pageItems: RailPageItem[]
@@ -46,6 +47,7 @@ export function PageRail(props: PageRailProps) {
           <strong>KnowBook</strong>
           <small>{pageTitle}</small>
         </span>
+        {props.notificationControl}
         {onToggleCollapse ? (
           <button
             aria-label={toggleTitle}

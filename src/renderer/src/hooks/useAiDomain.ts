@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -11,7 +12,7 @@ type UseAiDomainParams = {
   isZh: boolean
   onDraftSummaryChange: Dispatch<SetStateAction<string>>
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
-  onMessage: (message: string | null) => void
+  onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
   onSelectedDocumentChange: Dispatch<SetStateAction<DocumentDetail | null>>
   selectedDocument: DocumentDetail | null

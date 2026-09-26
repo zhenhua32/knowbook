@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentDetail, HomeData } from '@shared/contracts'
@@ -5,7 +6,7 @@ import { toDraftBlock } from '../utils/draftBlockShape'
 
 type UseDocumentTodoActionsParams = {
   selectedDocument: DocumentDetail | null
-  setBackupMessage: (message: string | null) => void
+  notify: AppMessageHandler
   setHomeData: Dispatch<SetStateAction<HomeData>>
   setIsSaving: Dispatch<SetStateAction<boolean>>
   setSelectedDocument: Dispatch<SetStateAction<DocumentDetail | null>>
@@ -14,7 +15,7 @@ type UseDocumentTodoActionsParams = {
 
 export function useDocumentTodoActions({
   selectedDocument,
-  setBackupMessage,
+  notify,
   setHomeData,
   setIsSaving,
   setSelectedDocument,
@@ -51,11 +52,11 @@ export function useDocumentTodoActions({
       setSelectedDocument(refreshedDetail)
     } catch (error) {
       const message = error instanceof Error ? error.message : todoUpdateFailedMessage
-      setBackupMessage(message)
+      notify(message, 'error')
     } finally {
       setIsSaving(false)
     }
-  }, [selectedDocument, setBackupMessage, setHomeData, setIsSaving, setSelectedDocument, todoUpdateFailedMessage])
+  }, [selectedDocument, notify, setHomeData, setIsSaving, setSelectedDocument, todoUpdateFailedMessage])
 
   return {
     toggleTodoBlockChecked

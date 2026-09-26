@@ -22,7 +22,7 @@ export function useAppFeatureDomains({
     isZh: shell.isZh,
     onDraftSummaryChange: documents.setDraftSummary,
     onHomeDataChange: shell.setHomeData,
-    onMessage: shell.setBackupMessage,
+    onMessage: shell.notify,
     onOpenDocument: documents.openDocumentInDocumentsPage,
     onSelectedDocumentChange: documents.setSelectedDocument,
     selectedDocument: documents.selectedDocument,
@@ -34,7 +34,7 @@ export function useAppFeatureDomains({
     homeData: shell.homeData,
     onDraftSummaryChange: documents.setDraftSummary,
     onHomeDataChange: shell.setHomeData,
-    onMessage: shell.setBackupMessage,
+    onMessage: shell.notify,
     onSelectedDocumentChange: documents.setSelectedDocument,
     selectedDocument: documents.selectedDocument,
     selectedDocumentId: documents.selectedDocumentId,
@@ -67,7 +67,7 @@ export function useAppFeatureDomains({
     onBackupNow: () => {
       void handleBackup()
     },
-    onMessage: (message) => shell.setBackupMessage(message),
+    onMessage: shell.notify,
     onOpenDocument: documents.openDocumentInDocumentsPage,
     onOpenPlugins: () => {
       shell.setActivePage('plugins')

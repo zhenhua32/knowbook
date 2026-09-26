@@ -11,6 +11,7 @@ import {
 import { createTrailingSingleFlightRefresh } from '../utils/singleFlightRefresh'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 import { applyAppearanceTheme } from '../utils/appearanceTheme'
+import { notify } from '../notify'
 
 const emptyState: HomeData = {
   appearanceTheme: 'light',
@@ -63,7 +64,6 @@ export function useAppShellState() {
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [activePage, setActivePage] = useState<PageId>('documents')
-  const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [isNavCollapsed, setIsNavCollapsed] = useState(false)
 
   useEffect(() => {
@@ -201,15 +201,6 @@ export function useAppShellState() {
     document.documentElement.lang = uiLanguage
   }, [uiLanguage])
 
-  useEffect(() => {
-    if (!backupMessage) {
-      return
-    }
-
-    const timer = setTimeout(() => setBackupMessage(null), 3000)
-    return () => clearTimeout(timer)
-  }, [backupMessage])
-
   const pageItems = useMemo<PageItem[]>(() => [
     {
       id: 'documents',
@@ -250,7 +241,6 @@ export function useAppShellState() {
 
   return {
     activePage,
-    backupMessage,
     catalogColumns,
     catalogDocuments,
     catalogLoading: catalogLoading || (activePage === 'database' && catalogDocuments.length === 0),
@@ -262,7 +252,7 @@ export function useAppShellState() {
     pageItems,
     pageTitle: activePageItem?.label ?? '',
     setActivePage,
-    setBackupMessage,
+    notify,
     setCatalogColumns,
     setCatalogDocuments,
     setHomeData,

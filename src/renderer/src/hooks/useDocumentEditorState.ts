@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
@@ -34,7 +35,7 @@ type UseDocumentEditorStateParams = {
   ui: UiText
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
 }
 
 export function useDocumentEditorState({
@@ -344,7 +345,7 @@ export function useDocumentEditorState({
       setFailedSave(failedSnapshot)
       if (!silentValidationFailure) {
         console.error('Tree structure validation failed:', validation.errors)
-        onMessage(ui.cannotSaveInvalidBlockTree(validation.errors))
+        onMessage(ui.cannotSaveInvalidBlockTree(validation.errors), 'error')
       }
 
       return false
@@ -394,7 +395,7 @@ export function useDocumentEditorState({
         return false
       }
 
-      onMessage(getErrorMessage(error, ui.documentSaveFailed))
+      onMessage(getErrorMessage(error, ui.documentSaveFailed), 'error')
       return false
     } finally {
       if (saveSequence === saveSequenceRef.current) {
@@ -463,7 +464,7 @@ export function useDocumentEditorState({
       await window.knowbook.writeClipboardText(snapshot.markdown)
       triggerTransientFlash(setMdCopyFlash)
     } catch (error) {
-      onMessage(getErrorMessage(error, ui.markdownCopyFailed))
+      onMessage(getErrorMessage(error, ui.markdownCopyFailed), 'error')
     }
   }, [getDraftMarkdownExport, onMessage, selectedDocumentId, triggerTransientFlash, ui.markdownCopyFailed])
 
@@ -474,7 +475,7 @@ export function useDocumentEditorState({
       const savedPath = await window.knowbook.saveMarkdownFile(snapshot.fileName, snapshot.markdown)
       if (savedPath) onMessage(ui.markdownExportedPath(savedPath))
     } catch (error) {
-      onMessage(getErrorMessage(error, ui.markdownExportFailed))
+      onMessage(getErrorMessage(error, ui.markdownExportFailed), 'error')
     }
   }, [getDraftMarkdownExport, onMessage, selectedDocumentId, ui])
 

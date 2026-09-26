@@ -8,7 +8,6 @@ import { useWorkspaceOperations } from './hooks/useWorkspaceOperations'
 import { AppPageContent } from './components/AppPageContent'
 import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
-import { AppNotificationHost } from './components/AppNotificationHost'
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
@@ -48,7 +47,6 @@ export function App() {
 return (
     <>
      <PluginUiPreparationHost />
-     <AppNotificationHost isZh={shell.isZh} onOpenDocument={documentsDomain.openDocumentInDocumentsPage} />
      <div className="shell" data-testid="shell">
        <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
           <WorkspaceShellSidebar

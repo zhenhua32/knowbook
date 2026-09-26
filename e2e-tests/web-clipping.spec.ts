@@ -192,7 +192,7 @@ test.describe('Web Clipping @electron', () => {
         await getWebClipUrlInput(page).fill(sourceServer.articleUrl)
         await page.getByRole('button', { name: uiText('Clip webpage', '剪藏网页') }).click()
 
-        await expect(page.locator('.flash-message')).toContainText(/Clipped webpage into|已剪藏网页并创建文档/)
+        await expect(page.locator('.app-notifications')).toContainText(/Clipped webpage into|已剪藏网页并创建文档/)
         await expect(await getTitleInput(page)).toHaveValue(articleTitle)
         await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${articleTitle}`)
         await expect.poll(async () => {
@@ -237,7 +237,7 @@ test.describe('Web Clipping @electron', () => {
         await page.getByLabel(uiText('Listening port', '监听端口')).fill(`${bridgePort}`)
         await page.getByRole('button', { name: uiText('Save bridge settings', '保存桥接设置') }).click()
 
-        await expect(page.locator('.flash-message')).toContainText(/Web clip bridge settings saved|网页剪藏桥接设置已保存/)
+        await expect(page.locator('.app-notifications')).toContainText(/Web clip bridge settings saved|网页剪藏桥接设置已保存/)
         await expect(page.getByLabel(uiText('Extension endpoint', '扩展提交地址'))).toHaveValue(`http://127.0.0.1:${bridgePort}/clip`)
         const token = await page.getByLabel(uiText('Authorization token', '授权令牌')).inputValue()
 

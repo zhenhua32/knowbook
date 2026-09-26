@@ -7,6 +7,8 @@ export interface PluginNotification {
 export type AppNotificationAction = {
   label: string
   disabled?: boolean
+  /** Close the history panel after an action successfully opens another surface. */
+  closeNotificationCenter?: boolean
 } & ({ documentId: string } | { run: () => void | Promise<void> })
 
 export interface AppNotificationInput {

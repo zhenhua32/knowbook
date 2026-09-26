@@ -107,6 +107,8 @@ import {
 } from './ai-service'
 import { normalizeAiApiKey } from './ai-auth'
 import { MarkdownBackupService } from './backup/exporter'
+import { BackupHealthTracker } from './backup/health'
+import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL } from '@shared/backup-health'
 import { writeMarkdownFile } from './backup/markdown-file'
 import { checkMarkdownAttachment } from './markdown-attachment-check'
 import { runBackupExportInWorker } from './backup/worker-client'
@@ -260,6 +262,9 @@ process.on('uncaughtException', (error) => {
 
 let mainWindow: ElectronBrowserWindow | null = null
 let backupTimer: NodeJS.Timeout | null = null
+const backupHealth = new BackupHealthTracker((state) => {
+  if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send(BACKUP_HEALTH_CHANNEL, state)
+})
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
 const summaryGenerationRequests = new Map<string, {
@@ -2050,8 +2055,10 @@ function registerIpcHandlers(): void {
     removeSystemPluginFramePolicy(input.frameName)
   })
 
+  ipcMain.handle(GET_BACKUP_HEALTH_CHANNEL, () => backupHealth.getSnapshot())
   ipcMain.handle('knowbook:trigger-backup', async () => {
     const result: BackupResult = await backupService.exportAll(true)
+    backupHealth.report(null)
     return result
   })
 
@@ -2606,7 +2613,9 @@ function startBackupSchedule(): void {
 async function runScheduledBackup(): Promise<void> {
   try {
     await backupService.exportAll()
+    backupHealth.report(null)
   } catch (error) {
+    backupHealth.report(error instanceof Error ? error.message : String(error))
     console.warn('Scheduled workspace backup failed.', error)
   }
 }

@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useMemo } from 'react'
 import type { DocumentDetail, DocumentTreeNode } from '@shared/contracts'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
@@ -8,7 +9,7 @@ export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDo
   onOpenDocument: (documentId: string) => void
   onOpenAnchor: (documentId: string, anchor: string) => void
   onWikiReference: (token: string) => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
   isZh: boolean
 }) {
   const documentIds = useMemo(() => {
@@ -25,7 +26,7 @@ export function useMarkdownNavigation({ documentTree, selectedDocument, onOpenDo
     if (!target || !id) {
       let label = url
       try { label = decodeURIComponent(url) } catch { /* Preserve malformed input for the message. */ }
-      onMessage(isZh ? `找不到链接目标：${label}` : `Link target not found: ${label}`)
+      onMessage(isZh ? `找不到链接目标：${label}` : `Link target not found: ${label}`, 'warning')
       return
     }
     if (url.includes('#')) onOpenAnchor(id, target.fragment)

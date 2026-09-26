@@ -25,7 +25,6 @@ export function useWorkspaceOperations({
     flushPendingDocumentChanges: documents.flushPendingChanges,
     reloadDatabaseDomain,
     selectedDocumentId: documents.selectedDocumentId,
-    setBackupMessage: shell.setBackupMessage,
     setHomeData: shell.setHomeData,
     setSelectedDocument: documents.setSelectedDocument,
     setSelectedDocumentId: documents.setSelectedDocumentId,
@@ -35,7 +34,7 @@ export function useWorkspaceOperations({
   const {
     updateDocumentDatabaseValue
   } = useDocumentCatalogDatabaseActions({
-    setBackupMessage: shell.setBackupMessage,
+    notify: shell.notify,
     setCatalogDocuments: shell.setCatalogDocuments
   })
 
@@ -50,7 +49,7 @@ export function useWorkspaceOperations({
     onClearEditorSession: documents.clearEditorSession,
     onDetailLoadingChange: documents.setDetailLoading,
     onHomeDataChange: shell.setHomeData,
-    onMessage: (message) => shell.setBackupMessage(message),
+    onMessage: shell.notify,
     onMoveTargetIdChange: documents.setMoveTargetId,
     onSelectedDocumentChange: documents.setSelectedDocument,
     onSelectedDocumentIdChange: documents.setSelectedDocumentId,

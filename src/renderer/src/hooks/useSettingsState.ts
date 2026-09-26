@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useState } from 'react'
 import type { AppUpdateState, WebClipBridgeStatus } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -5,7 +6,7 @@ import type { UiText } from '../i18n'
 type UseSettingsStateParams = {
   isSettingsPageActive: boolean
   ui: UiText
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
 }
 
 export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSettingsStateParams) {
@@ -92,7 +93,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       const message = error instanceof Error
         ? `${ui.appUpdateCheckFailed} ${error.message}`
         : ui.appUpdateCheckFailed
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       setAppUpdateRefreshing(false)
     }
@@ -105,7 +106,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       const message = error instanceof Error
         ? `${ui.appUpdateInstallFailed} ${error.message}`
         : ui.appUpdateInstallFailed
-      onMessage(message)
+      onMessage(message, 'error')
     }
   }, [onMessage, ui])
 
@@ -127,7 +128,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       const message = error instanceof Error
         ? `${ui.webClipBridgeSaveFailed} ${error.message}`
         : ui.webClipBridgeSaveFailed
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       setWebClipBridgeSaving(false)
     }
@@ -143,7 +144,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       onMessage(ui.webClipBridgeEndpointCopied)
     } catch (error) {
       const message = error instanceof Error ? `${ui.copyFailed} ${error.message}` : ui.copyFailed
-      onMessage(message)
+      onMessage(message, 'error')
     }
   }, [onMessage, ui, webClipBridgeStatus?.endpoint])
 
@@ -157,7 +158,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       onMessage(ui.webClipBridgeTokenCopied)
     } catch (error) {
       const message = error instanceof Error ? `${ui.copyFailed} ${error.message}` : ui.copyFailed
-      onMessage(message)
+      onMessage(message, 'error')
     }
   }, [onMessage, ui, webClipBridgeStatus?.token])
 

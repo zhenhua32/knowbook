@@ -1,4 +1,5 @@
 import electron from 'electron'
+import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
   AppUpdateState,
   AskAiInput,
@@ -227,6 +228,12 @@ const api: ElectronApi = {
   removeSystemPluginFramePolicy: (input: RemoveSystemPluginFramePolicyInput) => ipcRenderer.invoke('knowbook:remove-system-plugin-frame-policy', input) as Promise<void>,
   invokeSystemPluginMain: (input: InvokeSystemPluginMainInput) => ipcRenderer.invoke('knowbook:invoke-system-plugin-main', input),
   triggerBackup: () => ipcRenderer.invoke('knowbook:trigger-backup') as Promise<BackupResult>,
+  getBackupHealth: () => ipcRenderer.invoke(GET_BACKUP_HEALTH_CHANNEL) as Promise<BackupHealth>,
+  onBackupHealth: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: BackupHealth) => listener(state)
+    ipcRenderer.on(BACKUP_HEALTH_CHANNEL, wrapped)
+    return () => { ipcRenderer.removeListener(BACKUP_HEALTH_CHANNEL, wrapped) }
+  },
   restoreBackupFromFolder: () => ipcRenderer.invoke('knowbook:restore-backup-from-folder') as Promise<BackupRestoreResult | null>,
   writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
   openExternalUrl: (url: string) => ipcRenderer.invoke('knowbook:open-external-url', url) as Promise<void>,

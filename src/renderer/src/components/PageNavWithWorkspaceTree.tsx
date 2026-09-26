@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import { PageRail } from './PageRail'
 import { DocumentTree } from './DocumentTree'
@@ -7,6 +7,7 @@ import type { UiLanguage } from '../i18n'
 import { getUiText } from '../i18n'
 
 type PageNavWithWorkspaceTreeProps = {
+  notificationControl?: ReactNode
   activePage: string
   pageItems: Array<{
     id: string
@@ -139,6 +140,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
       {/* Compact Horizontal Navigation Rail */}
       <PageRail
+        notificationControl={props.notificationControl}
         activePage={activePage}
         brandEyebrow={brandEyebrow}
         collapseTitle={collapseSidebarLabel}

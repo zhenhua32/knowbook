@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useMemo } from 'react'
 import type { DocumentBlockDraft, DocumentTreeNode } from '@shared/contracts'
 import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
@@ -21,7 +22,7 @@ type UseInlineReferenceNavigationParams = {
   onOpenAnchor: (documentId: string, anchor: string) => void
   draftTitle: string
   selectedDocumentId: string | null
-  setBackupMessage: (message: string | null) => void
+  notify: AppMessageHandler
   uiBlockReferenceNotFound: string
 }
 
@@ -33,7 +34,7 @@ export function useInlineReferenceNavigation({
   onOpenAnchor,
   draftTitle,
   selectedDocumentId,
-  setBackupMessage,
+  notify,
   uiBlockReferenceNotFound
 }: UseInlineReferenceNavigationParams) {
   const documentReferences = useMemo(() => buildDocumentReferences(documentTree), [documentTree])
@@ -52,7 +53,7 @@ export function useInlineReferenceNavigation({
 
     const target = resolveInlineReferenceTarget(token, documentReferences, blockReferences, selectedDocumentId)
     if (!target) {
-      setBackupMessage(uiBlockReferenceNotFound)
+      notify(uiBlockReferenceNotFound, 'warning')
       return
     }
 
@@ -70,14 +71,14 @@ export function useInlineReferenceNavigation({
     const detail = document && (document.id === selectedDocumentId ? { id: document.id, title: draftTitle, blocks: draftBlocks }
       : await window.knowbook.getDocumentDetail(document.id))
     if (!detail) {
-      setBackupMessage(uiBlockReferenceNotFound)
+      notify(uiBlockReferenceNotFound, 'warning')
       return
     }
     if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
     else {
       const heading = findWikiHeading(target.blockId, getMarkdownHeadingTargets(detail.blocks, detail.title))
       if (heading) onOpenAnchor(detail.id, heading.slug)
-      else setBackupMessage(uiBlockReferenceNotFound)
+      else notify(uiBlockReferenceNotFound, 'warning')
     }
   }, [
     documentReferences,
@@ -87,7 +88,7 @@ export function useInlineReferenceNavigation({
     onOpenAnchor,
     draftTitle,
     selectedDocumentId,
-    setBackupMessage,
+    notify,
     uiBlockReferenceNotFound
   ])
 }

@@ -52,7 +52,7 @@ test('relative images and cross-document headings work after import, reload, fol
     await expect(headings.nth(1)).toBeInViewport()
     await page.locator('.document-reading-content .inline-link', { hasText: '返回入口' }).click()
     await page.locator('.document-reading-content .inline-link', { hasText: '失效' }).click()
-    await expect(page.locator('.flash-message')).toContainText(/找不到链接目标|Link target not found/)
+    await expect(page.locator('.app-notifications')).toContainText(/找不到链接目标|Link target not found/)
     await page.locator('.document-header-more-button').click()
     await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Save MD', '导出 Markdown') }).click()
     await expect.poll(() => { try { return readFileSync(output, 'utf8') } catch { return '' } }).toContain('.assets/')

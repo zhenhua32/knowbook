@@ -164,7 +164,7 @@ test.describe('System Plugin v3 @electron', () => {
       await expect.poll(async () => {
         const status = await request.locator('.plugin-status').textContent()
         if (status === 'pending-restart') return status
-        const message = await first?.page.locator('.flash-message').textContent().catch(() => null)
+        const message = await first?.page.locator('.app-notifications').textContent().catch(() => null)
         const logRoot = retainedRoot
           ? join(retainedRoot, 'system-plugins', 'logs', pluginId)
           : null

@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import type { ComponentProps } from 'react'
 import type { RecentDocument, WorkspaceSummary } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
@@ -26,7 +27,7 @@ type UseSettingsDomainParams = {
   onAiModelChange: (value: string) => void
   onAiRelatedNotesEnabledChange: (value: boolean) => void
   onBackupNow: () => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
   onOpenPlugins: () => void
   onRestoreBackup: () => void

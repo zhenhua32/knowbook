@@ -1,14 +1,15 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 
 type UseDocumentCatalogDatabaseActionsParams = {
-  setBackupMessage: (message: string | null) => void
+  notify: AppMessageHandler
   setCatalogDocuments: Dispatch<SetStateAction<DocumentCatalogEntry[]>>
 }
 
 export function useDocumentCatalogDatabaseActions({
-  setBackupMessage,
+  notify,
   setCatalogDocuments
 }: UseDocumentCatalogDatabaseActionsParams) {
   const updateDocumentDatabaseValue = useCallback(async (documentId: string, columnId: string, value: DocumentDatabaseFieldValue) => {
@@ -24,9 +25,9 @@ export function useDocumentCatalogDatabaseActions({
     } catch (error) {
       setCatalogDocuments((previous) => restoreDocumentCatalogFieldValue(previous, documentId, columnId, previousFieldValue))
       const message = error instanceof Error ? error.message : 'Failed to update database value.'
-      setBackupMessage(message)
+      notify(message, 'error')
     }
-  }, [setBackupMessage, setCatalogDocuments])
+  }, [notify, setCatalogDocuments])
 
   return {
     updateDocumentDatabaseValue

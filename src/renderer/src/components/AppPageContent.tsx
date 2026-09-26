@@ -59,13 +59,6 @@ export function AppPageContent({
     : undefined
   return (
     <main className={`content page-${shell.activePage}${shell.activePage === 'documents' ? '' : ' management-page'}`}>
-      {shell.backupMessage ? (
-        <p className="flash-message">
-          {shell.backupMessage}
-          <button className="flash-close" onClick={() => shell.setBackupMessage(null)} type="button">✕</button>
-        </p>
-      ) : null}
-
       {workspace.importReport && <div><button type="button" className="secondary-button" onClick={() => workspace.setImportReportOpen(true)}>
         {shell.isZh ? '查看最近导入报告' : 'View latest import report'}
       </button></div>}
@@ -106,7 +99,7 @@ export function AppPageContent({
             onCatalogColumnsChange={shell.setCatalogColumns}
             onCatalogDocumentsChange={shell.setCatalogDocuments}
             onHomeDataChange={shell.setHomeData}
-            onMessage={shell.setBackupMessage}
+            onMessage={shell.notify}
             onOpenDocument={documents.openDocumentInDocumentsPage}
             selectedDocumentId={documents.selectedDocumentId}
             ui={shell.ui}

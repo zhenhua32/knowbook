@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -20,7 +21,7 @@ type UseBlockDragDropActionsParams = {
   moveDraftSubtree: (sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) => void
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   selectedBlockRange: BlockSelectionRange | null
-  setBackupMessage: Dispatch<SetStateAction<string | null>>
+  notify: AppMessageHandler
   setDragOverBlockDepth: Dispatch<SetStateAction<number | null>>
   setDragOverBlockIndex: Dispatch<SetStateAction<number | null>>
   setDraggingBlockIndex: Dispatch<SetStateAction<number | null>>
@@ -37,7 +38,7 @@ export function useBlockDragDropActions({
   moveDraftSubtree,
   pushToHistory,
   selectedBlockRange,
-  setBackupMessage,
+  notify,
   setDragOverBlockDepth,
   setDragOverBlockIndex,
   setDraggingBlockIndex
@@ -51,7 +52,7 @@ export function useBlockDragDropActions({
     if (activeMultiBlockRange) {
       const interactionIssue = getMultiBlockInteractionGuard(activeMultiBlockRange)
       if (interactionIssue) {
-        setBackupMessage(interactionIssue)
+        notify(interactionIssue, 'warning')
         return
       }
     }
@@ -59,7 +60,7 @@ export function useBlockDragDropActions({
     setDraggingBlockIndex(index)
     setDragOverBlockIndex(index)
     setDragOverBlockDepth(draftBlocks[index]?.depth ?? null)
-  }, [draftBlocks, getMultiBlockInteractionGuard, selectedBlockRange, setBackupMessage, setDragOverBlockDepth, setDragOverBlockIndex, setDraggingBlockIndex])
+  }, [draftBlocks, getMultiBlockInteractionGuard, selectedBlockRange, notify, setDragOverBlockDepth, setDragOverBlockIndex, setDraggingBlockIndex])
 
   const getDraggedBlockDepthPreview = useCallback((targetIndex: number, clientX: number, element: HTMLDivElement) => {
     if (draggingBlockIndex === null) {
@@ -101,7 +102,7 @@ export function useBlockDragDropActions({
     if (isMultiBlockDrag && selectedBlockRange) {
       const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
       if (interactionIssue) {
-        setBackupMessage(interactionIssue)
+        notify(interactionIssue, 'warning')
         endBlockDrag()
         return
       }
@@ -185,7 +186,7 @@ export function useBlockDragDropActions({
     normalizeBlockDepth,
     pushToHistory,
     selectedBlockRange,
-    setBackupMessage
+    notify
   ])
 
   return {

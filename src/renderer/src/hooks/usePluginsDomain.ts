@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -10,7 +11,7 @@ type UsePluginsDomainParams = {
   homeData: HomeData
   onDraftSummaryChange: Dispatch<SetStateAction<string>>
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
-  onMessage: (message: string | null) => void
+  onMessage: AppMessageHandler
   onSelectedDocumentChange: Dispatch<SetStateAction<DocumentDetail | null>>
   selectedDocument: DocumentDetail | null
   selectedDocumentId: string | null
@@ -101,7 +102,7 @@ export function usePluginsDomain({
         onHomeDataChange((current) => ({ ...current, ...refreshed }))
         onMessage('插件隔离状态已解除；重新激活仍需新的审批。')
       }).catch((error: unknown) => {
-        onMessage(error instanceof Error ? error.message : 'Plugin recovery failed.')
+        onMessage(error instanceof Error ? error.message : 'Plugin recovery failed.', 'error')
       })
     },
     onResolveSystemPluginInstallRequest: (requestId, pluginId, artifactSha256, decision, acknowledgeSystemAccess) => {
@@ -118,7 +119,7 @@ export function usePluginsDomain({
           ? '系统插件已确认，将在应用重启后的系统安装阶段处理；当前进程未加载任何原生代码。'
           : '系统插件安装请求已取消。')
       }).catch((error: unknown) => {
-        onMessage(error instanceof Error ? error.message : 'System plugin confirmation failed.')
+        onMessage(error instanceof Error ? error.message : 'System plugin confirmation failed.', 'error')
       })
     },
     aiEnabled: homeData.aiConfig.enabled,

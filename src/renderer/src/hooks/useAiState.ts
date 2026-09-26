@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -10,7 +11,7 @@ type UseAiStateParams = {
   onHomeDataChange: (homeData: HomeData) => void
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onDraftSummaryChange: (summary: string) => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
 }
 
 export function useAiState({
@@ -81,7 +82,7 @@ export function useAiState({
       onMessage(ui.aiSettingsSaved)
     } catch (error) {
       const message = getErrorMessage(error, ui.aiRequestFailed)
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       setAiSaving(false)
     }
@@ -117,7 +118,7 @@ export function useAiState({
       onHomeDataChange(refreshed)
       onMessage(ui.aiApiKeyCleared)
     } catch (error) {
-      onMessage(getErrorMessage(error, ui.aiRequestFailed))
+      onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
     } finally {
       setAiSaving(false)
     }
@@ -204,7 +205,7 @@ export function useAiState({
       onMessage(ui.aiAutomationResult(result))
     } catch (error) {
       const message = getErrorMessage(error, ui.aiAutomationFailed)
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       setAiAutomationsRunning(false)
     }

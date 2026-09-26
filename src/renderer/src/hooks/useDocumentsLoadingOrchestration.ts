@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
 import { useDocumentLoadingAndBlockNavigation } from './useDocumentLoadingAndBlockNavigation'
@@ -25,7 +26,7 @@ type UseDocumentsLoadingOrchestrationParams = {
   selectedDocumentId: string | null
   setActiveBlockIndex: (index: number | null) => void
   setActiveCursorPosition: (position: number) => void
-  setBackupMessage: (message: string | null) => void
+  notify: AppMessageHandler
   setDetailLoading: (loading: boolean) => void
   setHighlightedBlockId: (blockId: string | null) => void
   setPendingBlockNavigationTarget: (target: PendingBlockNavigationTarget | null) => void
@@ -53,7 +54,7 @@ export function useDocumentsLoadingOrchestration({
   selectedDocumentId,
   setActiveBlockIndex,
   setActiveCursorPosition,
-  setBackupMessage,
+  notify,
   setDetailLoading,
   setHighlightedBlockId,
   setPendingBlockNavigationTarget,
@@ -134,8 +135,8 @@ export function useDocumentsLoadingOrchestration({
   ])
 
   const handlePendingTargetMissing = useCallback(() => {
-    setBackupMessage(uiBlockReferenceNotFound)
-  }, [setBackupMessage, uiBlockReferenceNotFound])
+    notify(uiBlockReferenceNotFound, 'warning')
+  }, [notify, uiBlockReferenceNotFound])
 
   useDocumentLoadingAndBlockNavigation({
     clearPendingTarget,

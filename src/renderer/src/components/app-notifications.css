@@ -43,11 +43,12 @@
 .app-notification-actions button { padding: 5px 10px; border: 1px solid var(--kb-line, #e2e5ef); border-radius: 7px; color: var(--kb-accent, #6266dc); background: transparent; font: inherit; cursor: pointer; }
 .app-notification-actions button:hover { background: var(--kb-accent-soft, #f0f1fe); }
 .app-notification-actions button:disabled { opacity: .55; cursor: not-allowed; }
-.app-notification-close { padding: 0 2px; border: 0; background: transparent; color: var(--kb-text-muted, #657089); font-size: 20px; line-height: 22px; cursor: pointer; }
+.app-notification-close { flex-shrink: 0; min-width: 28px; min-height: 28px; padding: 0 2px; border: 0; background: transparent; color: var(--kb-text-muted, #657089); font-size: 20px; line-height: 22px; cursor: pointer; }
 .app-notification button:focus-visible { outline: 2px solid var(--kb-accent, #6266dc); outline-offset: 2px; }
 .app-notification-action-error { margin: 6px 0 0; color: var(--notification-alert, #ba364b); overflow-wrap: anywhere; }
 
-:root[data-theme='dark'] .app-notification {
+:root[data-theme='dark'] .app-notification,
+:root[data-theme='dark'] .notification-center {
   --kb-canvas: #202631;
   --kb-line: #424c60;
   --kb-text: #eef3f8;
@@ -56,6 +57,24 @@
   --kb-accent: #b3b8ff;
   --kb-accent-soft: #303755;
   --notification-alert: #ff9aaa;
+}
+
+.notification-center { width: min(560px, calc(100vw - 32px)); max-height: min(760px, calc(100dvh - 48px)); padding: 0; border: 1px solid var(--kb-line, #e2e5ef); border-radius: 18px; color: var(--kb-text, #202735); background: var(--kb-canvas, #fff); box-shadow: 0 24px 80px #0004; overflow: hidden; }
+.notification-center::backdrop { background: #101a2e55; backdrop-filter: blur(3px); }
+.notification-center-content { display: flex; flex-direction: column; max-height: inherit; }
+.notification-center-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px 24px 16px; }
+.notification-center-header h2 { margin: 0; font-size: 20px; }
+.notification-center-header p { margin: 6px 0 0; color: var(--kb-text-muted, #657089); font-size: 12px; }
+.notification-center-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 24px 16px; font-size: 12px; color: var(--kb-text-muted, #657089); border-bottom: 1px solid var(--kb-line, #e2e5ef); }
+.notification-center-list { display: grid; gap: 12px; padding: 16px 24px 24px; overflow-y: auto; overscroll-behavior: contain; }
+.notification-center-list .app-notification { box-shadow: none; }
+.notification-center-empty { padding: 32px 0; margin: 0; text-align: center; color: var(--kb-text-muted, #657089); }
+.notification-time { display: block; margin-top: 6px; color: var(--kb-text-muted, #657089); font-size: 11px; }
+.notification-center button:focus-visible { outline: 2px solid var(--kb-accent, #6266dc); outline-offset: 2px; }
+@media (max-width: 480px) {
+  .notification-center-header { padding: 20px 16px 12px; }
+  .notification-center-toolbar { padding: 0 16px 12px; }
+  .notification-center-list { padding: 12px 16px 20px; }
 }
 :root[data-theme='dark'] .app-notification-success .app-notification-icon { color: #62c99f; }
 :root[data-theme='dark'] .app-notification-warning .app-notification-icon { color: #ecc182; }

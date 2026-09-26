@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import '../features/database/database-workspace.css'
 import type { Dispatch, SetStateAction } from 'react'
@@ -16,7 +17,7 @@ type DatabasePageProps = {
   onCatalogColumnsChange: Dispatch<SetStateAction<DocumentDatabaseColumn[]>>
   onCatalogDocumentsChange: Dispatch<SetStateAction<DocumentCatalogEntry[]>>
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
-  onMessage: (message: string | null) => void
+  onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
   selectedDocumentId: string | null
   workspaceBoard: DatabaseWorkspaceBoardState

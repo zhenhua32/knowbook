@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { isTaskBlockType } from '@shared/blockTypes'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
@@ -66,7 +67,7 @@ type UseMultiBlockActionsParams = {
   selectedBlockRange: BlockSelectionRange | null
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
-  setBackupMessage: Dispatch<SetStateAction<string | null>>
+  notify: AppMessageHandler
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
   setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
   setSelectedBlockRange: Dispatch<SetStateAction<BlockSelectionRange | null>>
@@ -88,7 +89,7 @@ export function useMultiBlockActions({
   selectedBlockRange,
   setActiveBlockIndex,
   setActiveCursorPosition,
-  setBackupMessage,
+  notify,
   setDraftBlocks,
   setPendingFocusBlockIndex,
   setSelectedBlockRange,
@@ -113,13 +114,13 @@ export function useMultiBlockActions({
 
     const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
     if (interactionIssue) {
-      setBackupMessage(interactionIssue)
+      notify(interactionIssue, 'warning')
       return
     }
 
     const visibleSiblingSlice = getVisibleSiblingSelectionSlice(selectedBlockRange)
     if (!visibleSiblingSlice) {
-      setBackupMessage(ui.invalidVisibleTreeSlice)
+      notify(ui.invalidVisibleTreeSlice, 'warning')
       return
     }
 
@@ -177,7 +178,7 @@ export function useMultiBlockActions({
     pushToHistory,
     selectedBlockRange,
     setActiveBlockIndex,
-    setBackupMessage,
+    notify,
     setDraftBlocks,
     setPendingFocusBlockIndex,
     setSelectedBlockRange,
@@ -192,7 +193,7 @@ export function useMultiBlockActions({
 
     const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
     if (interactionIssue) {
-      setBackupMessage(interactionIssue)
+      notify(interactionIssue, 'warning')
       return
     }
 
@@ -301,7 +302,7 @@ export function useMultiBlockActions({
     selectedBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
-    setBackupMessage,
+    notify,
     setDraftBlocks,
     setPendingFocusBlockIndex,
     shiftDraftFragmentDepth
@@ -333,7 +334,7 @@ export function useMultiBlockActions({
     setActiveBlockIndex(focusIndex)
     setPendingFocusBlockIndex(focusIndex)
     endBlockDrag()
-    setBackupMessage(ui.convertedBlocks(operationCount, getBlockTypeLabel(nextType)))
+    notify(ui.convertedBlocks(operationCount, getBlockTypeLabel(nextType)))
   }, [
     activeBlockIndex,
     buildBlockTypePatch,
@@ -344,7 +345,7 @@ export function useMultiBlockActions({
     pushToHistory,
     selectedBlockRange,
     setActiveBlockIndex,
-    setBackupMessage,
+    notify,
     setDraftBlocks,
     setPendingFocusBlockIndex,
     ui
@@ -392,12 +393,12 @@ export function useMultiBlockActions({
 
     try {
       await window.knowbook.writeClipboardText(text)
-      setBackupMessage(ui.copiedBlocks(count))
+      notify(ui.copiedBlocks(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.copyFailed
-      setBackupMessage(message)
+      notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, setBackupMessage, ui])
+  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, notify, ui])
 
   const copySelectedBlocksAsPlainText = useCallback(async () => {
     if (!selectedBlockRange) {
@@ -410,12 +411,12 @@ export function useMultiBlockActions({
 
     try {
       await window.knowbook.writeClipboardText(text)
-      setBackupMessage(ui.copiedPlainText(count))
+      notify(ui.copiedPlainText(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.copyTextFailed
-      setBackupMessage(message)
+      notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, serializeDraftBlockRangeAsPlainText, setBackupMessage, ui])
+  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, serializeDraftBlockRangeAsPlainText, notify, ui])
 
   const cutSelectedBlocks = useCallback(async () => {
     if (!selectedBlockRange) {
@@ -429,12 +430,12 @@ export function useMultiBlockActions({
     try {
       await window.knowbook.writeClipboardText(text)
       removeSelectedBlockRange(range)
-      setBackupMessage(ui.cutBlocks(count))
+      notify(ui.cutBlocks(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.cutFailed
-      setBackupMessage(message)
+      notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, setBackupMessage, ui])
+  }, [draftBlocks, getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, notify, ui])
 
   const deleteSelectedBlocks = useCallback(() => {
     if (!selectedBlockRange) {
@@ -444,8 +445,8 @@ export function useMultiBlockActions({
     const range = getMultiBlockOperationRange(selectedBlockRange)
     const count = range.end - range.start + 1
     removeSelectedBlockRange(range)
-    setBackupMessage(ui.deletedBlocks(count))
-  }, [getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, setBackupMessage, ui])
+    notify(ui.deletedBlocks(count))
+  }, [getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, notify, ui])
 
   const duplicateSelectedBlocks = useCallback(() => {
     if (!selectedBlockRange) {
@@ -476,7 +477,7 @@ export function useMultiBlockActions({
     setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
     setPendingFocusBlockIndex(duplicatedRange.start)
     endBlockDrag()
-    setBackupMessage(ui.duplicatedBlocks(count))
+    notify(ui.duplicatedBlocks(count))
   }, [
     draftBlocks,
     endBlockDrag,
@@ -485,7 +486,7 @@ export function useMultiBlockActions({
     selectedBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
-    setBackupMessage,
+    notify,
     setDraftBlocks,
     setPendingFocusBlockIndex,
     setSelectedBlockRange,

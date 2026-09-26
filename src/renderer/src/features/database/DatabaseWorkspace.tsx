@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../../notify'
 import { useEffect, useMemo, useState } from 'react'
 import type {
   DatabaseEntity,
@@ -48,7 +49,7 @@ type DatabaseWorkspaceProps = {
   selectedRecordIds: string[]
   onActiveViewIdChange: (viewId: string) => void
   onCurrentDatabaseIdChange: (databaseId: string) => void
-  onMessage: (message: string | null) => void
+  onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
   onRefresh: (databaseId?: string, preferredViewId?: string) => Promise<void>
   onSelectedRecordIdsChange: (recordIds: string[]) => void
@@ -184,7 +185,7 @@ export function DatabaseWorkspace({
 
   if (!currentSource) return <div className="dbw-loading">{text.loading}</div>
 
-  const reportError = (error: unknown) => onMessage(error instanceof Error ? error.message : text.failed)
+  const reportError = (error: unknown) => onMessage(error instanceof Error ? error.message : text.failed, 'error')
   const run = async (action: () => Promise<void>, successMessage?: string) => {
     try {
       await action()

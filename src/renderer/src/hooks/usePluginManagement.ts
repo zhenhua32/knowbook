@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import type {
   DocumentDetail,
@@ -15,7 +16,7 @@ type UsePluginManagementParams = {
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onDraftSummaryChange: (summary: string) => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
 }
 
 export function usePluginManagement({
@@ -47,7 +48,7 @@ export function usePluginManagement({
         : `Plugin "${plugin.name}" was ${enabled ? 'enabled' : 'disabled'}.`)
     } catch (error) {
       await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件状态更新失败。' : 'Plugin status update failed.'))
+      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件状态更新失败。' : 'Plugin status update failed.'), 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -65,7 +66,7 @@ export function usePluginManagement({
       await refreshPluginHomeData()
       onMessage(ui.language === 'zh-CN' ? `插件“${plugin.name}”已卸载。` : `Plugin "${plugin.name}" was uninstalled.`)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件卸载失败。' : 'Plugin uninstall failed.'))
+      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件卸载失败。' : 'Plugin uninstall failed.'), 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -81,7 +82,7 @@ export function usePluginManagement({
         ? `已检查“${request.name}”并计算精确 artifact 哈希；请在安全队列中确认。`
         : `Inspected "${request.name}" and calculated its exact artifact hash. Review it in the security queue.`)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '系统插件检查失败。' : 'System plugin inspection failed.'))
+      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '系统插件检查失败。' : 'System plugin inspection failed.'), 'error')
     } finally {
       setPluginInventoryBusy(false)
     }
@@ -96,7 +97,7 @@ export function usePluginManagement({
         ? `Full Trust 插件“${plugin.name}”已${enabled ? '标记为重启后启用' : '停用'}。`
         : `Full Trust plugin "${plugin.name}" was ${enabled ? 'scheduled to enable after restart' : 'disabled'}.`)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin status update failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin status update failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -109,7 +110,7 @@ export function usePluginManagement({
       await refreshPluginHomeData()
       onMessage(ui.language === 'zh-CN' ? '已解除安全停用；插件将在重启后重新尝试启动。' : 'Safe-mode disable was cleared; startup will be retried after restart.')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin recovery failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin recovery failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -124,7 +125,7 @@ export function usePluginManagement({
         ? `已停用并标记为重启后卸载；${preserveData ? '插件数据将保留供重新安装使用。' : '插件专属数据将一并删除。'}`
         : `Disabled and scheduled for uninstall after restart; plugin data will be ${preserveData ? 'retained for reinstall' : 'deleted'}.`)
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin uninstall failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin uninstall failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -137,7 +138,7 @@ export function usePluginManagement({
       await refreshPluginHomeData()
       onMessage(ui.language === 'zh-CN' ? '已选择回滚版本；重启后验证并激活。' : 'Rollback package selected; it will be verified and activated after restart.')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin rollback failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin rollback failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -158,7 +159,7 @@ export function usePluginManagement({
       await refreshPluginHomeData()
       onMessage(ui.language === 'zh-CN' ? '后台服务已启动。' : 'Background service started.')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin service start failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin service start failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -172,7 +173,7 @@ export function usePluginManagement({
       onMessage(ui.language === 'zh-CN' ? '后台服务已停止。' : 'Background service stopped.')
     } catch (error) {
       await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'System plugin service stop failed.')
+      onMessage(error instanceof Error ? error.message : 'System plugin service stop failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -187,7 +188,7 @@ export function usePluginManagement({
         ? '已生成独立的登录启动确认请求；尚未修改系统启动项。'
         : 'A separate login-startup review was created; no OS startup item has been changed yet.')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'OS persistence request failed.')
+      onMessage(error instanceof Error ? error.message : 'OS persistence request failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -215,7 +216,7 @@ export function usePluginManagement({
         : (ui.language === 'zh-CN' ? '登录启动请求已取消。' : 'The login-startup request was cancelled.'))
     } catch (error) {
       await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'OS persistence confirmation failed.')
+      onMessage(error instanceof Error ? error.message : 'OS persistence confirmation failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -233,7 +234,7 @@ export function usePluginManagement({
       onMessage(ui.language === 'zh-CN' ? '宿主管理的登录启动项已移除。' : 'The host-managed login-startup item was removed.')
     } catch (error) {
       await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'OS persistence removal failed.')
+      onMessage(error instanceof Error ? error.message : 'OS persistence removal failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -250,7 +251,7 @@ export function usePluginManagement({
         await window.knowbook.openSystemPluginLogDirectory({ pluginId: plugin.pluginId })
       }
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin directory could not be opened.')
+      onMessage(error instanceof Error ? error.message : 'System plugin directory could not be opened.', 'error')
     }
   }, [onMessage])
 
@@ -282,7 +283,7 @@ export function usePluginManagement({
       onMessage(result.message)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.pluginActionFailed
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       setPluginActionBusyKey(null)
     }

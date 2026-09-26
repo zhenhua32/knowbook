@@ -1,3 +1,4 @@
+import type { AppMessageHandler } from '../notify'
 import { useCallback, useState } from 'react'
 import { getBoardDropFieldValue, type BoardDropTarget } from '@shared/board'
 import type {
@@ -26,7 +27,7 @@ type UseWorkspaceDocumentManagementParams = {
   onClearEditorSession: () => void
   onDetailLoadingChange: (loading: boolean) => void
   onHomeDataChange: (homeData: HomeData) => void
-  onMessage: (message: string) => void
+  onMessage: AppMessageHandler
   onMoveTargetIdChange: (value: string) => void
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onSelectedDocumentIdChange: (documentId: string | null) => void
@@ -111,7 +112,7 @@ export function useWorkspaceDocumentManagement({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.moveFailed
-      onMessage(message)
+      onMessage(message, 'error')
     } finally {
       endDrag()
     }
@@ -132,7 +133,7 @@ export function useWorkspaceDocumentManagement({
       onSelectedDocumentIdChange(created.id)
     } catch (error) {
       onDetailLoadingChange(false)
-      onMessage(error instanceof Error ? error.message : ui.documentCreateFailed)
+      onMessage(error instanceof Error ? error.message : ui.documentCreateFailed, 'error')
     }
   }, [onClearEditorSession, onDetailLoadingChange, onFlushPendingDocumentChanges, onHomeDataChange, onMessage, onSelectedDocumentChange, onSelectedDocumentIdChange])
 
@@ -152,11 +153,12 @@ export function useWorkspaceDocumentManagement({
       onMessage(
         clipped.created
           ? (clipped.warnings.length > 0 ? ui.webClipImportedWithWarnings(clipped.title, clipped.warnings.length) : ui.webClipImported(clipped.title))
-          : ui.webClipOpenedExisting(clipped.title)
+          : ui.webClipOpenedExisting(clipped.title),
+        clipped.warnings.length > 0 ? 'warning' : 'success'
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.webClipFailed
-      onMessage(message)
+      onMessage(message, 'error')
       throw error
     }
   }, [onClearEditorSession, onDetailLoadingChange, onFlushPendingDocumentChanges, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
@@ -192,7 +194,7 @@ export function useWorkspaceDocumentManagement({
       onMessage(ui.markdownCopied)
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
-      onMessage(message)
+      onMessage(message, 'error')
     }
   }, [getMarkdownExport, onMessage, ui.markdownCopied])
 
@@ -209,7 +211,7 @@ export function useWorkspaceDocumentManagement({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.documentNotFoundMessage
-      onMessage(message)
+      onMessage(message, 'error')
     }
   }, [getMarkdownExport, onMessage, ui])
 

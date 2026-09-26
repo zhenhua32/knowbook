@@ -1,6 +1,5 @@
 import { isTaskBlockType } from '@shared/blockTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
 import type { AppShellState } from '../types/appShell'
@@ -48,7 +47,7 @@ export function useDocumentsDomainState({
       initialDocumentId
     },
     setActivePage: onActivePageChange,
-    setBackupMessage: onBackupMessage,
+    notify: onNotification,
     setHomeData: onHomeDataChange,
     ui,
     uiLanguage
@@ -70,9 +69,6 @@ export function useDocumentsDomainState({
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const flushPendingDocumentChangesRef = useRef<() => Promise<boolean>>(async () => true)
-  const updateBackupMessage: Dispatch<SetStateAction<string | null>> = useCallback((value) => {
-    onBackupMessage(typeof value === 'function' ? value(null) : value)
-  }, [onBackupMessage])
 
   const {
     clearMoveTarget,
@@ -172,7 +168,7 @@ export function useDocumentsDomainState({
   } = useDocumentEditorState({
     isReadingMode,
     onHomeDataChange,
-    onMessage: onBackupMessage,
+    onMessage: onNotification,
     onSelectedDocumentChange: setSelectedDocument,
     selectedDocument,
     selectedDocumentId,
@@ -346,7 +342,7 @@ export function useDocumentsDomainState({
     selectedDocumentId,
     setActiveBlockIndex,
     setActiveCursorPosition,
-    setBackupMessage: onBackupMessage,
+    notify: onNotification,
     setDetailLoading,
     setHighlightedBlockId,
     setPendingBlockNavigationTarget,
@@ -381,7 +377,7 @@ export function useDocumentsDomainState({
     selectedBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
-    setBackupMessage: updateBackupMessage,
+    notify: onNotification,
     setDraftBlocks,
     setPendingFocusBlockIndex,
     setSelectedBlockRange,
@@ -476,7 +472,7 @@ export function useDocumentsDomainState({
     moveDraftSubtree,
     pushToHistory,
     selectedBlockRange,
-    setBackupMessage: updateBackupMessage,
+    notify: onNotification,
     setDragOverBlockDepth,
     setDragOverBlockIndex,
     setDraggingBlockIndex
@@ -531,14 +527,14 @@ export function useDocumentsDomainState({
     onOpenDocument: openDocumentInDocumentsPage,
     onOpenDocumentBlock: openDocumentBlockInDocumentsPage,
     selectedDocumentId,
-    setBackupMessage: onBackupMessage,
+    notify: onNotification,
     uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
 
   const navigateMarkdownLink = useMarkdownNavigation({
     documentTree, selectedDocument, onOpenDocument: openDocumentInDocumentsPage,
     onWikiReference: (token) => { void navigateInlineReferenceAtCursor(`[[${token}]]`, 2) },
-    onOpenAnchor: openDocumentAnchorInDocumentsPage, onMessage: onBackupMessage, isZh: uiLanguage === 'zh-CN'
+    onOpenAnchor: openDocumentAnchorInDocumentsPage, onMessage: onNotification, isZh: uiLanguage === 'zh-CN'
   })
 
   useEffect(() => {

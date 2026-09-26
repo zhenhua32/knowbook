@@ -235,7 +235,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await getTitleInput(page).fill('Invalid/Title')
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
-      await expect(page.locator('.flash-message')).toContainText('Document title cannot contain path separators')
+      await expect(page.locator('.app-notifications')).toContainText('Document title cannot contain path separators')
       await expect(getTitleInput(page)).toHaveValue('Invalid/Title')
       await expect(page.getByRole('button', { name: uiText('Save', '保存') })).toBeEnabled()
     })

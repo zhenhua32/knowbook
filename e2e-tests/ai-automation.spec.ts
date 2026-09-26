@@ -195,7 +195,7 @@ async function saveAiSettings(
   await page.getByLabel(uiText('API Key (leave blank to keep current)', 'API Key（留空表示保持当前值）')).fill('test-api-key')
 
   await page.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置') }).click()
-  await expect(page.locator('.flash-message')).toContainText(/AI settings saved\.|AI 设置已保存。/)
+  await expect(page.locator('.app-notifications')).toContainText(/AI settings saved\.|AI 设置已保存。/)
 }
 
 test.describe('AI Settings @electron', () => {
@@ -222,7 +222,7 @@ test.describe('AI Settings @electron', () => {
         await dialog.accept()
       })
       await page.getByRole('button', { name: uiText('Clear API key', '清除 API Key') }).click()
-      await expect(page.locator('.flash-message')).toContainText(/stored AI API key was cleared|已清除本机保存的 AI API Key/)
+      await expect(page.locator('.app-notifications')).toContainText(/stored AI API key was cleared|已清除本机保存的 AI API Key/)
       await expect.poll(async () => page.evaluate(async () => (await window.knowbook.getHomeData()).aiConfig.hasApiKey)).toBe(false)
     })
   })
@@ -280,7 +280,7 @@ test.describe('AI Settings @electron', () => {
         const summaryRequestCountBeforeRun = mockAiServer.requests.filter((request) => request.url === '/chat/completions').length
         await runAutomationsButton.click()
 
-        await expect(page.locator('.flash-message')).toContainText(/AI automation updated the summary\.|AI 自动化已更新摘要。/)
+        await expect(page.locator('.app-notifications')).toContainText(/AI automation updated the summary\.|AI 自动化已更新摘要。/)
         await expect.poll(() => mockAiServer.requests.filter((request) => request.url === '/chat/completions').length).toBe(summaryRequestCountBeforeRun + 1)
 
         await openDocumentsPage(page)

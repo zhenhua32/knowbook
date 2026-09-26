@@ -937,6 +937,8 @@ export interface ElectronApi {
   removeSystemPluginFramePolicy: (input: RemoveSystemPluginFramePolicyInput) => Promise<void>
   invokeSystemPluginMain: (input: InvokeSystemPluginMainInput) => Promise<SystemPluginServiceRpcJson>
   triggerBackup: () => Promise<BackupResult>
+  getBackupHealth: () => Promise<import('./backup-health').BackupHealth>
+  onBackupHealth: (listener: (state: import('./backup-health').BackupHealth) => void) => () => void
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>
   openExternalUrl: (url: string) => Promise<void>

@@ -1,8 +1,10 @@
+import { lazy, Suspense } from 'react'
 import type { PageId } from '../hooks/useAppShellState'
 import type { DocumentsSidebarState, WorkspaceSidebarActions } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
 import { PluginSlot } from './PluginSlot'
+const AppNotificationHost = lazy(async () => ({ default: (await import('./AppNotificationHost')).AppNotificationHost }))
 
 type WorkspaceShellSidebarProps = {
   documents: DocumentsSidebarState
@@ -20,6 +22,9 @@ export function WorkspaceShellSidebar({
   return (
     <>
     <PageNavWithWorkspaceTree
+      notificationControl={<Suspense fallback={<span className="nav-icon-btn notification-bell" aria-hidden="true" />}>
+        <AppNotificationHost isZh={shell.isZh} onOpenDocument={documents.openDocumentInDocumentsPage} />
+      </Suspense>}
       activePage={shell.activePage}
       pageItems={shell.pageItems}
       onSelectPage={(pageId) => shell.setActivePage(pageId as PageId)}
