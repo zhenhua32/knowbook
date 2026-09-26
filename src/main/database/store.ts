@@ -1173,7 +1173,8 @@ export class KnowbookStore {
 
     const title = this.generateSiblingTitle(parentId, 'Untitled')
     const id = randomUUID()
-    const slug = `doc-${id.slice(0, 8)}`
+    // Preserve the ID's uniqueness; truncated UUIDs collide in large workspaces.
+    const slug = `doc-${id}`
 
     const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(parentId) as { max_sort_order: number }
     const sortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
