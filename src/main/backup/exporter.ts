@@ -322,7 +322,7 @@ class MarkdownBackupWriter {
         this.copiedAssets.add(snapshotAssetPath)
       }
 
-      const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).replace(/\\/g, '/')
+      const portableReference = relative(dirname(markdownFilePath), snapshotAssetPath).split(sep).map(part => encodeURIComponent(part).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)).join('/')
       const parsedUrl = new URL(assetUrl)
       return (portableReference.startsWith('.') ? portableReference : `./${portableReference}`) + parsedUrl.search + parsedUrl.hash
     })

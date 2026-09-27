@@ -1,8 +1,9 @@
-import { memo, useState, useContext } from 'react'
+import { lazy, memo, Suspense, useState, useContext } from 'react'
 import { MarkdownReferencesContext } from './MarkdownContent'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+const AttachmentCard = lazy(() => import('./AttachmentCard').then(module => ({ default: module.AttachmentCard })))
 
 type BlockRichMediaPreviewProps = {
   content: string
@@ -41,7 +42,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
               <RichMediaImageCard
                 alt={image.alt}
                 key={image.url}
-                onOpen={() => openUrl(image.url)}
+                onOpen={() => { void import('./AttachmentPreview').then(module => module.showImagePreview(image.url, image.alt)) }}
                 previewUrl={toBlockRichMediaPreviewUrl(image.url)}
                 ui={ui}
               />
@@ -55,6 +56,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
           <p className="block-rich-media-label">{ui.blockPreviewLinksLabel}</p>
           <div className="block-rich-media-links">
             {richMedia.links.map((link) => (
+              link.url.startsWith('file:') ? <Suspense key={link.url} fallback={<span>{link.label}</span>}><AttachmentCard url={link.url} label={getLinkDisplayLabel(link.label, link.url)} /></Suspense> :
               <button
                 className="block-rich-media-link"
                 key={link.url}
@@ -118,7 +120,7 @@ function RichMediaImageCard({ alt, onOpen, previewUrl, ui }: RichMediaImageCardP
       </span>
       <span className="block-rich-media-caption">
         <span>{caption}</span>
-        <span className="block-rich-media-caption-action">{ui.blockPreviewOpenImage}<ExternalIcon /></span>
+        <span className="block-rich-media-caption-action">{ui.blockPreviewOpenImage}</span>
       </span>
     </button>
   )

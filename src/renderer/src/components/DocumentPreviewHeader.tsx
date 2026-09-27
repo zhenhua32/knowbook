@@ -20,6 +20,7 @@ type DocumentPreviewHeaderProps = {
   onCheckLinks?: () => void
   onEditMarkdownSource?: () => void
   onOpenHistory?: () => void
+  onOpenAttachments?: () => void
   onAddChild: () => void
   canUndo: boolean
   canRedo: boolean
@@ -134,6 +135,9 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
       </div>
       {hasDocument ? (
         <div className="document-header-actions">
+          {props.onOpenAttachments && <DocumentHeaderIconButton label={isZh ? '图片与附件' : 'Images and attachments'} onClick={props.onOpenAttachments}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L13 2a2 2 0 0 1 3 3L5 16" /></svg>
+          </DocumentHeaderIconButton>}
           <DocumentHeaderIconButton
             active={documentsAuxPanelOpen}
             ariaPressed={documentsAuxPanelOpen}

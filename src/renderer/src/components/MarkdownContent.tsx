@@ -118,6 +118,7 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
         if (!src || src.startsWith('mailto:')) return <span key={index}>{token.meta?.wiki ? String(token.meta.wikiSource) : token.meta?.html ? String(token.meta.htmlSource ?? '') : `![${token.content}](${String(token.attrGet('src') ?? '')})`}</span>
         if (options.hideImages) return null
         return <img key={index} alt={token.content} title={String(token.attrGet('title') ?? '') || undefined} loading="lazy"
+          {...(options.onNavigateLink && { role: 'button', tabIndex: 0 })}
           width={token.meta?.html ? token.attrGet('width') ?? undefined : undefined} height={token.meta?.html ? token.attrGet('height') ?? undefined : undefined}
           data-markdown-anchor={anchor || undefined}
           className="markdown-inline-image" src={toBlockRichMediaPreviewUrl(src)} />

@@ -78,7 +78,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     }
   }
 
-  return createPortal(<dialog ref={dialog} className={`app-confirm-dialog app-confirm-${tone}`} role="alertdialog" aria-modal="true"
+  return createPortal(<dialog data-block-shortcuts ref={dialog} className={`app-confirm-dialog app-confirm-${tone}`} role="alertdialog" aria-modal="true"
     aria-labelledby={titleId} aria-describedby={`${descriptionId}${note ? ` ${noteId}` : ''}`} aria-busy={busy} tabIndex={-1}
     onCancel={(event) => { event.preventDefault(); if (!lock.current && !composing.current) onCancel() }}
     onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}>

@@ -58,7 +58,7 @@ function ShortcutHelpDialog({ previous, onClose }: { previous: HTMLElement | nul
   }, [onClose, previous])
 
   const reset = () => { setQuery(''); setGroup(''); search.current?.focus() }
-  return <dialog ref={dialog} className="shortcut-help-dialog" aria-labelledby={titleId} aria-describedby={hintId}
+  return <dialog data-block-shortcuts ref={dialog} className="shortcut-help-dialog" aria-labelledby={titleId} aria-describedby={hintId}
     onCancel={(event) => { event.preventDefault(); if (!composing.current) onClose() }}
     onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}>
     <header><div><h2 id={titleId}>{zh ? '快捷键帮助' : 'Keyboard shortcuts'}</h2>

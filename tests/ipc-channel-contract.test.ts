@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const preloadSource = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8')
 const mainSource = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
+const attachmentHandlerSource = readFileSync(new URL('../src/main/attachment-ipc.ts', import.meta.url), 'utf8')
 
 function collectChannels(source: string, pattern: RegExp): string[] {
   return [...source.matchAll(pattern)].map((match) => match[1]).sort()
@@ -11,7 +12,8 @@ function collectChannels(source: string, pattern: RegExp): string[] {
 
 test('every preload invoke channel has exactly one main-process handler', () => {
   const invokedChannels = collectChannels(preloadSource, /ipcRenderer\.invoke\('([^']+)'/g)
-  const handledChannels = collectChannels(mainSource, /ipcMain\.handle\('([^']+)'/g)
+  const handledChannels = collectChannels(mainSource + attachmentHandlerSource, /ipcMain\.handle\('([^']+)'/g)
+  assert.equal((mainSource.match(/registerAttachmentHandlers\(ipcMain, attachmentStore\)/g) ?? []).length, 1)
 
   assert.equal(new Set(invokedChannels).size, invokedChannels.length, 'preload contains duplicate invoke channels')
   assert.equal(new Set(handledChannels).size, handledChannels.length, 'main process contains duplicate IPC handlers')

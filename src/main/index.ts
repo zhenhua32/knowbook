@@ -4,8 +4,9 @@ import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import electron from 'electron'
+import { AttachmentStore } from './attachments'
+import { registerAttachmentHandlers } from './attachment-ipc'
 import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
-import { fileURLToPath } from 'node:url'
 import type {
   AskAiInput,
   AskAiResult,
@@ -354,6 +355,7 @@ const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const restoreSafetyBackupRoot = join(userDataRoot, 'backups', 'restore-safety')
 const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
+const attachmentStore = new AttachmentStore(webClipAssetRoot)
 const systemPluginRoot = join(userDataRoot, 'system-plugins')
 const systemPluginStagingRoot = join(systemPluginRoot, 'staging')
 const systemPluginArtifactRoot = join(systemPluginRoot, 'artifacts')
@@ -1454,6 +1456,7 @@ async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise
 }
 
 function registerIpcHandlers(): void {
+  registerAttachmentHandlers(ipcMain, attachmentStore)
   ipcMain.handle('knowbook:get-home-data', () => {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {
@@ -2623,9 +2626,11 @@ async function openManagedExternalUrl(url: string): Promise<void> {
   }
 
   if (parsed.protocol === 'file:') {
-    const filePath = fileURLToPath(parsed)
-    if (!isPathInsideRoot(filePath, webClipAssetRoot)) {
-      throw new Error('Local file is outside the managed web clip asset root.')
+    const filePath = attachmentStore.resolve(url)
+    if (/\.(exe|com|bat|cmd|ps1|msi|scr|lnk|url|sh|bash|js|mjs|cjs|vbs|vbe|jse|wsf|wsh|hta|reg|py|pyw|jar|app|dmg|pkg|appimage|desktop|webloc)$/i.test(filePath)) {
+      const confirmation = await dialog.showMessageBox({ type: 'warning', buttons: ['取消 / Cancel', '打开 / Open'], defaultId: 0, cancelId: 0,
+        message: '此附件可能运行程序。仅打开你信任的文件。 / This attachment may run a program. Only open files you trust.', detail: attachmentStore.get(url).name })
+      if (confirmation.response !== 1) return
     }
 
     const errorMessage = await shell.openPath(filePath)
@@ -2743,10 +2748,7 @@ function registerAssetPreviewProtocol(): void {
         return new Response('Unsupported asset source.', { status: 400 })
       }
 
-      const assetPath = resolve(fileURLToPath(sourceUrl))
-      if (!isPathInsideRoot(assetPath, webClipAssetRoot)) {
-        return new Response('Asset path is outside the managed web clip asset root.', { status: 403 })
-      }
+      const assetPath = attachmentStore.resolve(sourceUrl.href)
 
       const stream = createReadStream(assetPath)
       const body = Readable.toWeb(stream) as ReadableStream
@@ -2755,6 +2757,7 @@ function registerAssetPreviewProtocol(): void {
         headers: {
           'cache-control': 'public, max-age=31536000, immutable',
           'content-type': getAssetContentType(assetPath),
+          'content-security-policy': "default-src 'none'; sandbox",
           'x-content-type-options': 'nosniff'
         }
       })
@@ -2822,6 +2825,12 @@ function getAssetContentType(filePath: string): string {
       return 'image/svg+xml'
     case '.webp':
       return 'image/webp'
+    case '.avif':
+      return 'image/avif'
+    case '.bmp':
+      return 'image/bmp'
+    case '.ico':
+      return 'image/x-icon'
     default:
       return 'application/octet-stream'
   }

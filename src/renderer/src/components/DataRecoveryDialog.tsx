@@ -103,7 +103,7 @@ export default function DataRecoveryDialog({ target, isZh: zh, onClose, beforeRe
     finally { lock.current = false; setBusy(false) }
   }
 
-  return createPortal(<dialog className="data-recovery-dialog" ref={dialog} aria-labelledby={titleId}
+  return createPortal(<dialog data-block-shortcuts className="data-recovery-dialog" ref={dialog} aria-labelledby={titleId}
     onCancel={(event) => { event.preventDefault(); if (!lock.current) onClose() }} onKeyDown={(event) => event.stopPropagation()}>
     <header><h2 id={titleId}>{title}</h2><button type="button" className="secondary-button" disabled={busy} onClick={onClose}>{zh ? '关闭' : 'Close'}</button></header>
     <p className="recovery-policy">{target.kind === 'trash'

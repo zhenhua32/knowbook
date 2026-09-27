@@ -951,6 +951,10 @@ export interface ElectronApi {
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>
   openExternalUrl: (url: string) => Promise<void>
+  importAttachments: (files: import('./attachments').AttachmentInput[]) => Promise<import('./attachments').ManagedAttachment[]>
+  getAttachment: (url: string) => Promise<import('./attachments').ManagedAttachment>
+  revealAttachment: (url: string) => Promise<void>
+  saveAttachment: (url: string) => Promise<string | null>
   saveMarkdownFile: (defaultFileName: string, content: string) => Promise<string | null>
   getSetting: (key: string) => Promise<string | null>
   saveSetting: (key: string, value: string) => Promise<void>

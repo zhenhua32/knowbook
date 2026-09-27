@@ -703,7 +703,7 @@ export class MarkdownRestoreService {
           destinationPath
         })
       }
-      replacements.set(portableReference, pathToFileURL(destinationPath).toString() + local.suffix)
+      replacements.set(portableReference, pathToFileURL(destinationPath).href.replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`) + local.suffix)
     }
 
     return rewriteBackupAssetReferences(markdown, PORTABLE_ASSET_REFERENCE_PATTERN, (url) => replacements.get(url))

@@ -1,0 +1,23 @@
+.document-attachment-surface { display: contents; }
+.attachment-dialog, .attachment-image-dialog { color: var(--kb-text); background: var(--kb-canvas); border: 1px solid var(--kb-line-strong); border-radius: 16px; padding: 24px; width: min(880px, calc(100vw - 40px)); max-height: 88vh; overflow: auto; font-size: 14px; }
+.attachment-dialog::backdrop, .attachment-image-dialog::backdrop { background: #0009; }
+.attachment-dialog header, .attachment-image-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.attachment-dialog h2, .attachment-image-dialog h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; min-width: 0; }
+.attachment-dialog header button, .attachment-image-dialog header button { flex-shrink: 0; }
+.attachment-upload { display: grid; gap: 12px; padding: 20px; margin: 20px 0; border: 1px dashed var(--kb-line-strong); border-radius: 10px; background: var(--kb-surface); line-height: 1.7; }
+.attachment-upload input { width: 100%; min-width: 0; }
+.attachment-list { display: grid; gap: 10px; }
+.attachment-card { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--kb-line-strong); border-radius: 10px; background: var(--kb-surface); }
+.attachment-card-description { display: grid; gap: 5px; flex: 1; min-width: 160px; overflow-wrap: anywhere; }
+.attachment-card-description small { color: var(--kb-text-muted); font-size: 12px; }
+.attachment-card-actions, .attachment-image-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.attachment-card-actions button { font-size: 12px; padding: 6px 10px; }
+.attachment-error { flex-basis: 100%; margin: 4px 0; overflow-wrap: anywhere; color: var(--kb-danger, #c94b48); }
+.attachment-import-status { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 1000; padding: 12px 20px; border: 1px solid var(--kb-line-strong); border-radius: 12px; color: var(--kb-text); background: var(--kb-canvas); box-shadow: 0 4px 24px #0003; }
+.attachment-image-dialog { width: min(1280px, calc(100vw - 40px)); }
+.attachment-image-tools { margin: 16px 0; }
+.attachment-image-tools span { font-size: 12px; }
+.attachment-image-stage { height: 62vh; overflow: auto; border-radius: 8px; background: color-mix(in srgb, var(--kb-text) 5%, var(--kb-canvas)); padding: 12px; }
+.attachment-image-stage.is-fit { display: flex; align-items: center; justify-content: center; }
+.attachment-image-stage img { display: block; object-fit: contain; max-width: 100%; max-height: 100%; }
+@media (max-width: 640px) { .attachment-dialog, .attachment-image-dialog { padding: 16px; } .attachment-card-actions { width: 100%; } .attachment-image-stage { height: 52vh; } }

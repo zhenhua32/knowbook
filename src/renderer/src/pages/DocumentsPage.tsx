@@ -12,6 +12,7 @@ import { MarkdownNavigationContext } from '../components/MarkdownNavigationConte
 import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPresentation'
 import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
 import { DocumentsSection } from '../sections/DocumentsSection'
+import { useDocumentAttachments } from '../hooks/useDocumentAttachments'
 
 const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
@@ -52,6 +53,7 @@ export function DocumentsPage({
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
   const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
+  const attachments = useDocumentAttachments(documents, isZh)
 
   const selectionAi = useDocumentSelectionAiState({
     aiEnabled: aiConfig.enabled,
@@ -304,7 +306,7 @@ export function DocumentsPage({
     : null
 
   return (
-    <>
+    <div {...attachments.surfaceProps}>
       <MarkdownNavigationContext.Provider value={documents.navigateMarkdownLink}>
       {documents.documentLoadError ? <RecoveryState
         title={documents.documentLoadError.missing ? (isZh ? '文档不存在' : 'Document not found') : (isZh ? '无法加载文档' : 'Unable to load document')}
@@ -351,7 +353,7 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
+        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
           onEditMarkdownSource: () => {
             if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
           } }}
@@ -384,6 +386,7 @@ export function DocumentsPage({
           }} />
       </Suspense>}
 
-    </>
+      {attachments.dialog}
+    </div>
   )
 }
