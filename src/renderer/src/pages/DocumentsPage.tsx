@@ -18,6 +18,7 @@ const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkChe
 const DocumentMarkdownSourceDialog = lazy(() => import('../components/DocumentMarkdownSourceDialog'))
 
 type DocumentsPageProps = {
+  onOpenHistory?: () => void
   ai: AiDomainState
   aiConfig: HomeData['aiConfig']
   documentTree: HomeData['documentTree']
@@ -33,6 +34,7 @@ type DocumentsPageProps = {
 }
 
 export function DocumentsPage({
+  onOpenHistory,
   ai,
   aiConfig,
   documentTree,
@@ -349,7 +351,7 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
+        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
           onEditMarkdownSource: () => {
             if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
           } }}

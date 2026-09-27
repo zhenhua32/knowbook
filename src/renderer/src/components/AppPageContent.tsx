@@ -1,4 +1,5 @@
-import { Suspense } from 'react'
+import { Suspense, useEffect, useState } from 'react'
+import type { DataRecoveryTarget } from './DataRecoveryDialog'
 import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from './RecoveryState'
 import type { AppFeatureDomainsState, WorkspaceOperationsState } from '../types/appComposition'
@@ -11,6 +12,7 @@ const DocumentsPage = lazy(async () => {
   return { default: module.DocumentsPage }
 })
 const MarkdownImportReportDialog = lazy(() => import('./MarkdownImportReportDialog'))
+const DataRecoveryHost = lazy(() => import('./DataRecoveryHost'))
 
 const DatabasePage = lazy(async () => {
   const module = await import('../pages/DatabasePage')
@@ -52,6 +54,12 @@ export function AppPageContent({
   shell,
   workspace
 }: AppPageContentProps) {
+  const [recoveryTarget, onOpenRecovery] = useState<DataRecoveryTarget | null>(null)
+  useEffect(() => {
+    const open = () => onOpenRecovery({ kind: 'trash' })
+    window.addEventListener('knowbook:open-trash', open)
+    return () => window.removeEventListener('knowbook:open-trash', open)
+  }, [])
   const pluginUiContributions = shell.homeData.pluginUiContributions ?? []
   const documentContext = documents.selectedDocumentId
     ? { documentId: documents.selectedDocumentId }
@@ -67,6 +75,8 @@ export function AppPageContent({
   </main>
   return (
     <main className={`content page-${shell.activePage}${shell.activePage === 'documents' ? '' : ' management-page'}`}>
+      {recoveryTarget && <Suspense fallback={null}><DataRecoveryHost target={recoveryTarget} documents={documents} shell={shell}
+        onClose={() => onOpenRecovery(null)} reloadDatabase={database.reloadDatabaseDomain} /></Suspense>}
       {shell.workspaceError && <RecoveryState compact title={shell.isZh ? '工作区刷新失败' : 'Workspace refresh failed'}
         description={shell.isZh ? '仍显示上次成功读取的内容。可以重试刷新，当前编辑草稿会保留。' : 'Showing the last loaded data. Retry the refresh; editor drafts are preserved.'}
         error={shell.workspaceError} onRetry={shell.retryWorkspace} busy={shell.loading} />}
@@ -135,6 +145,7 @@ export function AppPageContent({
           <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.header.actions" />
           <PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.editor.toolbar" />
           <DocumentsPage
+            onOpenHistory={() => { if (documents.selectedDocumentId) onOpenRecovery?.({ kind: 'history', documentId: documents.selectedDocumentId }) }}
             ai={features.ai}
             aiConfig={shell.homeData.aiConfig}
             pluginMenuContent={<PluginSlot context={documentContext} contributions={pluginUiContributions} slot="documents.header.menu" />}
@@ -160,6 +171,12 @@ export function AppPageContent({
         {shell.activePage === 'dashboard' || shell.activePage === 'settings' ? (
           <><DashboardSettingsSection {...features.settingsSectionProps} />{shell.activePage === 'settings' ? <PluginSlot contributions={pluginUiContributions} slot="settings.sections" /> : null}</>
         ) : null}
+        {shell.activePage === 'settings' && onOpenRecovery && <section className="panel">
+          <h3>{shell.isZh ? '数据恢复' : 'Data recovery'}</h3>
+          <p>{shell.isZh ? '找回删除的文档，或查看并恢复自动保留的备份版本。单篇文档历史可从文档右上角菜单打开。' : 'Recover deleted documents or restore retained backups. Document history is available from each document’s action menu.'}</p>
+          <div className="settings-actions"><button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'trash' })}>{shell.isZh ? '打开回收站' : 'Open Trash'}</button>
+            <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'backups' })}>{shell.isZh ? '查看备份版本' : 'View backup versions'}</button></div>
+        </section>}
       </Suspense>
     </main>
   )

@@ -892,6 +892,15 @@ export interface ElectronApi {
   updateDocumentDatabaseValue: (input: UpdateDocumentDatabaseValueInput) => Promise<void>
   updateDocument: (documentId: string, input: UpdateDocumentInput) => Promise<UpdateDocumentResult>
   deleteDocument: (documentId: string) => Promise<void>
+  listTrashedDocuments: () => Promise<import('./document-recovery').DocumentRecoveryEntry[]>
+  getTrashedDocument: (documentId: string) => Promise<UpdateDocumentInput>
+  restoreTrashedDocument: (documentId: string) => Promise<string>
+  purgeTrashedDocument: (documentId: string) => Promise<void>
+  listDocumentHistory: (documentId: string) => Promise<import('./document-recovery').DocumentRecoveryEntry[]>
+  getDocumentHistory: (documentId: string, versionId: string) => Promise<import('./document-recovery').DocumentRecoveryPreview>
+  restoreDocumentHistory: (documentId: string, versionId: string, expectedUpdatedAt: string) => Promise<void>
+  listBackupVersions: () => Promise<import('./document-recovery').BackupVersion[]>
+  restoreBackupVersion: (versionId: string) => Promise<BackupRestoreResult | null>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
   listAssistantSessions: () => Promise<AssistantSessionSummary[]>

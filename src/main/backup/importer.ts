@@ -924,6 +924,7 @@ export class MarkdownRestoreService {
     let mode: 'created' | 'updated'
 
     if (existing) {
+      this.store.documentRecovery.checkpoint(existing.id, 'restore')
       if (existing.parentId !== ensuredParent.documentId) {
         this.store.moveDocument(existing.id, ensuredParent.documentId)
       }

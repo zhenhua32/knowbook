@@ -61,6 +61,7 @@ import type {
 } from '@shared/contracts'
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { DocumentRecoveryRepository } from './document-recovery'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
@@ -330,6 +331,8 @@ export class KnowbookStore {
   private readonly markdownLinks: MarkdownLinkIndex
   readonly pluginPlatform: SqlitePluginPlatformRepository
   readonly assistantSessions: SqliteAssistantSessionRepository
+  readonly documentRecovery: DocumentRecoveryRepository
+  private restoringTrashedDocument = false
   private deferredLinkResyncDepth = 0
   private deferredFullLinkResyncRequested = false
   private bulkMarkdownState: {
@@ -342,7 +345,9 @@ export class KnowbookStore {
     mkdirSync(dirname(databasePath), { recursive: true })
     const databaseAlreadyExists = existsSync(databasePath)
     this.db = new Database(databasePath)
-    this.markdownLinks = new MarkdownLinkIndex(this.db)
+    this.markdownLinks = new MarkdownLinkIndex(this.db, (id) => {
+      if (!this.restoringTrashedDocument) this.documentRecovery?.checkpoint(id)
+    })
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('busy_timeout = 5000')
@@ -358,8 +363,10 @@ export class KnowbookStore {
     }
     this.db.exec(appSchema)
     this.migrateDatabase(schemaVersion)
+    if (this.readSetting('workspace.initialized') !== 'true') this.saveSetting('workspace.initialized', 'true')
     this.pluginPlatform = new SqlitePluginPlatformRepository(this.db)
     this.assistantSessions = new SqliteAssistantSessionRepository(this.db)
+    this.documentRecovery = new DocumentRecoveryRepository(this.db)
   }
 
   private migrateDatabase(schemaVersion: number): void {
@@ -454,6 +461,7 @@ export class KnowbookStore {
         if (schemaVersion >= 18) { this.markdownLinks.rebuild(); this.resyncLinks() }
         this.db.pragma('user_version = 19')
       }
+      if (schemaVersion < 20) this.db.pragma('user_version = 20')
     })
   }
 
@@ -1321,6 +1329,7 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
+      if (!this.restoringTrashedDocument) this.documentRecovery.checkpoint(documentId)
       if (metadataChanged) {
         updateDocumentMetadataStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
       } else {
@@ -1397,14 +1406,13 @@ export class KnowbookStore {
   updateDocumentSummary(documentId: string, summary: string): void {
     const normalizedSummary = summary.trim()
     const now = new Date().toISOString()
-    const result = this.db.prepare(`
-      UPDATE documents
-      SET summary = ?, updated_at = ?
-      WHERE id = ?
-    `).run(normalizedSummary, now, documentId)
-    if (result.changes === 0) {
-      throw new Error('Document not found')
-    }
+    this.db.transaction(() => {
+      const existing = this.db.prepare('SELECT summary FROM documents WHERE id = ?').get(documentId) as { summary: string } | undefined
+      if (!existing) throw new Error('Document not found')
+      if (existing.summary === normalizedSummary) return
+      this.documentRecovery.checkpoint(documentId)
+      this.db.prepare('UPDATE documents SET summary = ?, updated_at = ? WHERE id = ?').run(normalizedSummary, now, documentId)
+    })()
   }
 
   deleteDocument(documentId: string): string[] {
@@ -1432,7 +1440,8 @@ export class KnowbookStore {
       WHERE parent_id = ?
     `).all(document.id) as Array<{ id: string; title: string }>
     for (const child of directChildren) {
-      if (this.documentTitleExists(document.parent_id, child.title, child.id)) {
+      if (this.db.prepare('SELECT 1 FROM documents WHERE parent_id IS ? AND title = ? AND id NOT IN (?, ?)')
+        .get(document.parent_id, child.title, child.id, document.id)) {
         throw new Error(`Cannot delete document because sibling title already exists: ${child.title}`)
       }
     }
@@ -1463,6 +1472,7 @@ export class KnowbookStore {
     let rewrittenDocumentIds: string[] = []
 
     const transaction = this.db.transaction(() => {
+      this.documentRecovery.archive(documentId)
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
@@ -1476,6 +1486,60 @@ export class KnowbookStore {
 
     transaction()
     return [...new Set([...affectedDescendants.map((row) => row.id), ...rewrittenDocumentIds])]
+  }
+
+  restoreDocumentHistory(documentId: string, versionId: string, expectedUpdatedAt: string): string[] {
+    return this.db.transaction(() => {
+      const document = this.getDocumentDetail(documentId)
+      if (!document || document.updatedAt !== expectedUpdatedAt) throw new Error('Document changed. Reload before restoring history.')
+      const version = this.documentRecovery.getHistory(documentId, versionId)
+      this.documentRecovery.checkpoint(documentId, 'restore')
+      return this.updateDocument(documentId, version.content)
+    })()
+  }
+
+  restoreTrashedDocument(documentId: string): string {
+    return this.db.transaction(() => {
+      const snapshot = this.documentRecovery.getTrash(documentId)
+      const old = snapshot.document
+      if (this.getDocumentSnapshot(documentId)) throw new Error('A document with this ID already exists. The trash copy has been kept.')
+      const parent = old.parent_id ? this.getDocumentSnapshot(old.parent_id) : null
+      const title = this.generateSiblingTitle(parent?.id ?? null, old.title)
+      const path = parent ? `${parent.path}/${title}` : title
+      const now = new Date().toISOString()
+      this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(old.id, title, `doc-${old.id}`, parent?.id ?? null, path, '', old.sort_order, old.created_at, now)
+      this.restoringTrashedDocument = true
+      try { this.updateDocument(old.id, { ...snapshot.content, title }) }
+      finally { this.restoringTrashedDocument = false }
+      const restoreValue = (columnId: string, valueText: string | null, databaseId?: string): string | null => {
+        const row = this.db.prepare('SELECT * FROM document_database_columns WHERE id = ?').get(columnId) as DocumentDatabaseColumnRow | undefined
+        if (!row || (databaseId && row.database_id !== databaseId)) return null
+        const column = this.mapDocumentDatabaseColumnRow(row)
+        let value = this.parseDocumentDatabaseFieldValue(column, valueText)
+        if (column.type === 'select' && !column.options.includes(value as string)) return null
+        if (column.type === 'multi-select') value = (Array.isArray(value) ? value : []).filter((item) => column.options.includes(item))
+        return this.serializeDocumentDatabaseFieldValue(column, value)
+      }
+      for (const value of snapshot.values) {
+        const text = restoreValue(value.column_id, value.value_text)
+        if (text !== null) this.db.prepare(`INSERT INTO document_database_values (document_id, column_id, value_text, updated_at)
+          VALUES (?, ?, ?, ?)`).run(old.id, value.column_id, text, now)
+      }
+      for (const entity of snapshot.entities) {
+        if (!this.db.prepare('SELECT 1 FROM databases WHERE id = ?').get(entity.database_id)) continue
+        this.db.prepare(`INSERT INTO database_entities (id, database_id, title, document_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)`).run(entity.id, entity.database_id, entity.title, old.id, entity.created_at, now)
+        for (const value of entity.values) {
+          const text = restoreValue(value.column_id, value.value_text, entity.database_id)
+          if (text !== null) this.db.prepare(`INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
+            VALUES (?, ?, ?, ?)`).run(entity.id, value.column_id, text, now)
+        }
+      }
+      this.resyncLinksForReferenceChanges([old.title, old.path, title, path], [old.id])
+      this.documentRecovery.forgetTrash(documentId)
+      return documentId
+    })()
   }
 
   moveDocument(documentId: string, newParentId: string | null): string[] {
@@ -1590,6 +1654,7 @@ export class KnowbookStore {
 
     const transaction = this.db.transaction(() => {
       for (const update of updates) {
+        this.documentRecovery.checkpoint(documentId)
         updateBlockStatement.run(JSON.stringify(this.normalizeBlockTags(update.tags)), now, update.blockId, documentId)
       }
       updateDocumentStatement.run(now, documentId)
@@ -1617,6 +1682,7 @@ export class KnowbookStore {
 
     const transaction = this.db.transaction(() => {
       for (const update of updates) {
+        this.documentRecovery.checkpoint(documentId)
         updateBlockStatement.run(update.highlight, now, update.blockId, documentId)
       }
       updateDocumentStatement.run(now, documentId)
@@ -4260,6 +4326,7 @@ export class KnowbookStore {
   }
 
   private seed(): void {
+    if (this.readSetting('workspace.initialized') === 'true') return
     const documentCount = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
     if (documentCount > 0) {
       return

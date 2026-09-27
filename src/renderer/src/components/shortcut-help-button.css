@@ -5,3 +5,4 @@
 .shortcut-help-button kbd { margin-left: auto; padding: 1px 4px; border: 1px solid currentColor; border-radius: 4px; font-size: 11px; opacity: .7; }
 .sidebar-combined.collapsed .shortcut-help-button { justify-content: center; margin: auto 8px 12px; padding: 10px; }
 .sidebar-combined.collapsed .shortcut-help-button span, .sidebar-combined.collapsed .shortcut-help-button kbd { display: none; }
+.shortcut-help-button.sidebar-trash-button { margin-top: 8px; margin-bottom: 0; }

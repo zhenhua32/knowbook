@@ -5,12 +5,11 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
@@ -18,6 +17,7 @@ import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/ma
 import { parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, rewriteMarkdownDestinations } from '@shared/markdownLinks'
 import { KnowbookStore } from '../database/store'
 import { rewriteBackupAssetReferences } from './markdown-asset-references'
+import { listBackupVersions, publishBackupSnapshot, resolveBackupVersion, writeSnapshotMetadata } from './versions'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
@@ -88,7 +88,9 @@ export class MarkdownBackupService {
 
   exportAll(force = false): Promise<BackupResult> {
     if (this.inFlightExport) {
-      return this.inFlightExport
+      // A manually requested snapshot must include edits made after an older
+      // scheduled snapshot began reading its database transaction.
+      return force ? this.inFlightExport.then(() => this.exportAll(true)) : this.inFlightExport
     }
 
     const getBackupRevision = (this.store as KnowbookStore & { getBackupRevision?: () => string }).getBackupRevision
@@ -140,8 +142,11 @@ export class MarkdownBackupService {
   }
 
   async waitForIdle(): Promise<void> {
-    await this.inFlightExport
+    while (this.inFlightExport) await this.inFlightExport
   }
+
+  listVersions() { return listBackupVersions(this.backupRoot) }
+  resolveVersion(id: string) { return resolveBackupVersion(this.backupRoot, id) }
 
   private async performExport(job: BackupExportJob, fallbackExported: number): Promise<BackupResult> {
     const exported = await this.runExport(job)
@@ -184,6 +189,7 @@ class MarkdownBackupWriter {
         this.writeStandaloneDatabase(stagingRoot, database)
       }
       this.writeStandaloneDatabaseManifest(stagingRoot, standaloneDatabases)
+      writeSnapshotMetadata(stagingRoot, documents.length)
       this.replaceBackupSnapshot(stagingRoot)
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true })
@@ -263,29 +269,7 @@ class MarkdownBackupWriter {
   }
 
   private replaceBackupSnapshot(stagingRoot: string): void {
-    const previousRoot = `${this.backupRoot}.previous-${randomUUID()}`
-    const hadPreviousSnapshot = existsSync(this.backupRoot)
-
-    if (hadPreviousSnapshot) {
-      renameSync(this.backupRoot, previousRoot)
-    }
-
-    try {
-      renameSync(stagingRoot, this.backupRoot)
-    } catch (error) {
-      if (hadPreviousSnapshot && !existsSync(this.backupRoot)) {
-        renameSync(previousRoot, this.backupRoot)
-      }
-      throw error
-    }
-
-    if (hadPreviousSnapshot) {
-      try {
-        rmSync(previousRoot, { recursive: true, force: true })
-      } catch (error) {
-        console.warn(`Failed to remove the previous backup snapshot at ${previousRoot}. The new snapshot was published successfully.`, error)
-      }
-    }
+    publishBackupSnapshot(this.backupRoot, stagingRoot)
   }
 
   private assertPathInsideRoot(filePath: string, root: string): void {

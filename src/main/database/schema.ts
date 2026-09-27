@@ -52,6 +52,24 @@ END;
 `
 
 export const appSchema = `
+CREATE TABLE IF NOT EXISTS document_history (
+  id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  content_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_document_history_document ON document_history(document_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS document_trash (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  path TEXT NOT NULL,
+  deleted_at TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

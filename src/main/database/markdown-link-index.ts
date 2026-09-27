@@ -11,7 +11,7 @@ export type MarkdownIndexedPathChange = MarkdownPathChange & { id: string }
 /** Derived source index. Keep it in the same SQLite transaction as document
  * edits so a crash cannot leave link maintenance using stale destinations. */
 export class MarkdownLinkIndex {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly beforeUpdate?: (documentId: string) => void) {}
 
   resolveWiki(token: string, sourcePath: string, headings = new Map<string, ReturnType<typeof getMarkdownHeadingTargets>>()) {
     type Target = { id: string; path: string }
@@ -172,6 +172,7 @@ export class MarkdownLinkIndex {
       let changed = false
       for (let index = 0; index < rewritten.length; index++) {
         if (rewritten[index].content === document.blocks[index].content) continue
+        if (!changed) this.beforeUpdate?.(id)
         updateBlock.run(rewritten[index].content, now, rewritten[index].id, id); changed = true
       }
       if (changed) { touchDocument.run(now, id); affected.push(id) }

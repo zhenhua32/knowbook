@@ -24,6 +24,7 @@ type DocumentHeaderActionMenuProps = {
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
   onEditMarkdownSource?: () => void
+  onOpenHistory?: () => void
   onUndo: () => void
   onRedo: () => void
   onMoveTargetChange: (value: string) => void
@@ -89,6 +90,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
       >
         <div className="context-menu-section">
           <div className="context-menu-group">
+            {props.onOpenHistory && <button className="context-menu-item" onClick={() => runAndClose(props.onOpenHistory!)} type="button">
+              {isZh ? '文档历史' : 'Document history'}
+            </button>}
             {onEditMarkdownSource && <button className="context-menu-item" onClick={() => runAndClose(onEditMarkdownSource)} type="button">
               {isZh ? '编辑 Markdown 源码' : 'Edit Markdown source'}
             </button>}

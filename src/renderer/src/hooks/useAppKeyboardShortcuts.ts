@@ -13,7 +13,7 @@ type UseAppKeyboardShortcutsParams = {
 export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection, shell }: UseAppKeyboardShortcutsParams) {
   const composingTarget = useRef<EventTarget | null>(null)
   useEffect(() => {
-    const blocked = (event: KeyboardEvent) => document.querySelector('.app-confirm-dialog[open], .shortcut-help-dialog[open]')
+    const blocked = (event: KeyboardEvent) => document.querySelector('.app-confirm-dialog[open], .shortcut-help-dialog[open], .data-recovery-dialog[open]')
       || isImeKeyboardEvent(event, composingTarget.current !== null && composingTarget.current === event.target)
     const chord = (event: KeyboardEvent) => [event.ctrlKey || event.metaKey ? 'mod' : '', event.altKey ? 'alt' : '',
       event.shiftKey ? 'shift' : '', event.key.toLowerCase()].filter(Boolean).join('+')

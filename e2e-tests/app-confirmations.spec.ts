@@ -23,7 +23,7 @@ test('document confirmation traps focus, blocks global shortcuts, cancels safely
     const confirm = dialog.getByRole('button', { name: uiText('Delete document', '删除文档') })
     await expect(cancel).toBeFocused()
     await expect(dialog).toContainText(/Child documents will be kept|子文档会被保留/)
-    await expect(dialog).toContainText(/cannot be undone|无法撤销/)
+    await expect(dialog).toContainText(/move to Trash|移入回收站/)
     await page.keyboard.press('Shift+Tab')
     await expect(confirm).toBeFocused()
     await page.keyboard.press('Tab')

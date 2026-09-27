@@ -4,7 +4,7 @@ import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import electron from 'electron'
-import type { OpenDialogOptions } from 'electron'
+import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
 import { fileURLToPath } from 'node:url'
 import type {
   AskAiInput,
@@ -1696,6 +1696,32 @@ function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle('knowbook:list-trashed-documents', () => store.documentRecovery.listTrash())
+  ipcMain.handle('knowbook:get-trashed-document', (_event, documentId: string) => store.documentRecovery.getTrash(documentId).content)
+  ipcMain.handle('knowbook:purge-trashed-document', (_event, documentId: string) => {
+    store.documentRecovery.purge(documentId)
+    notifyWorkspaceMutation()
+  })
+  ipcMain.handle('knowbook:restore-trashed-document', async (_event, documentId: string) => {
+    const id = store.restoreTrashedDocument(documentId)
+    const document = store.getDocumentSnapshot(id)!
+    await workspaceEventBus.emit({ type: 'document.created', createdAt: new Date().toISOString(),
+      documentId: id, documentTitle: document.title, path: document.path, parentId: document.parentId })
+    notifyWorkspaceMutation()
+    return id
+  })
+  ipcMain.handle('knowbook:list-document-history', (_event, documentId: string) => store.documentRecovery.listHistory(documentId))
+  ipcMain.handle('knowbook:get-document-history', (_event, documentId: string, versionId: string) => store.documentRecovery.getHistory(documentId, versionId))
+  ipcMain.handle('knowbook:restore-document-history', async (_event, documentId: string, versionId: string, expectedUpdatedAt: string) => {
+    cancelDocumentSummaryGeneration(documentId)
+    const before = store.getDocumentSnapshot(documentId)
+    const affectedDocumentIds = store.restoreDocumentHistory(documentId, versionId, expectedUpdatedAt)
+    const document = store.getDocumentSnapshot(documentId)!
+    await workspaceEventBus.emit({ type: 'document.updated', createdAt: new Date().toISOString(), documentId,
+      documentTitle: document.title, path: document.path, affectedDocumentIds, pathChanged: before?.path !== document.path })
+    notifyWorkspaceMutation()
+  })
+
   ipcMain.handle('knowbook:move-document', async (_event, documentId: string, newParentId: string | null) => {
     const beforeDocument = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.moveDocument(documentId, newParentId)
@@ -2057,33 +2083,40 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(GET_BACKUP_HEALTH_CHANNEL, () => backupHealth.getSnapshot())
   ipcMain.handle('knowbook:trigger-backup', async () => {
+    if (restoreWorkflowInProgress) throw new Error('A restore workflow is already in progress.')
     const result: BackupResult = await backupService.exportAll(true)
     backupHealth.report(null)
     return result
   })
 
-  ipcMain.handle('knowbook:restore-backup-from-folder', async (event): Promise<BackupRestoreResult | null> => {
+  ipcMain.handle('knowbook:list-backup-versions', () => backupService.listVersions())
+  ipcMain.handle('knowbook:restore-backup-version', (event, versionId: string) => restoreBackupWorkflow(event, versionId))
+  ipcMain.handle('knowbook:restore-backup-from-folder', (event) => restoreBackupWorkflow(event))
+
+  async function restoreBackupWorkflow(event: IpcMainInvokeEvent, versionId?: string): Promise<BackupRestoreResult | null> {
     if (restoreWorkflowInProgress) {
       throw new Error('A restore workflow is already in progress.')
     }
 
     restoreWorkflowInProgress = true
     try {
+      await backupService.waitForIdle()
       const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
-      const openDialogOptions: OpenDialogOptions = {
-        title: '选择 Markdown 或备份目录',
-        buttonLabel: '选择目录',
-        properties: ['openDirectory']
+      let restoreRoot: string
+      if (versionId !== undefined) {
+        restoreRoot = backupService.resolveVersion(versionId)
+      } else {
+        const openDialogOptions: OpenDialogOptions = {
+          title: '选择 Markdown 或备份目录',
+          buttonLabel: '选择目录',
+          properties: ['openDirectory']
+        }
+        const result = targetWindow
+          ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
+          : await dialog.showOpenDialog(openDialogOptions)
+        if (result.canceled || result.filePaths.length === 0) return null
+        restoreRoot = result.filePaths[0]
       }
-      const result = targetWindow
-        ? await dialog.showOpenDialog(targetWindow, openDialogOptions)
-        : await dialog.showOpenDialog(openDialogOptions)
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return null
-      }
-
-      const restoreRoot = result.filePaths[0]
       const preview = await restoreService.previewFromDirectory(restoreRoot)
       const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
       const confirmationOptions = {
@@ -2107,14 +2140,16 @@ function registerIpcHandlers(): void {
       }
 
       const safetyBackupPath = await createRestoreSafetyBackup()
-      return {
+      const restored = {
         ...await restoreService.restoreFromDirectory(restoreRoot),
         safetyBackupPath
       }
+      notifyWorkspaceMutation()
+      return restored
     } finally {
       restoreWorkflowInProgress = false
     }
-  })
+  }
 
   ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {
     clipboard.writeText(text)
@@ -2611,6 +2646,7 @@ function startBackupSchedule(): void {
 }
 
 async function runScheduledBackup(): Promise<void> {
+  if (restoreWorkflowInProgress) return
   try {
     await backupService.exportAll()
     backupHealth.report(null)

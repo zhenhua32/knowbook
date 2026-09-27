@@ -1,0 +1,22 @@
+.data-recovery-dialog { width: min(1120px, calc(100vw - 48px)); max-height: 88vh; overflow: auto; padding: 24px; border: 1px solid var(--kb-line-strong); border-radius: 16px; color: var(--kb-text); background: var(--kb-canvas); font-size: 14px; }
+.data-recovery-dialog::backdrop { background: #0008; }
+.data-recovery-dialog header, .data-recovery-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.data-recovery-dialog h2 { margin: 0; font-size: 22px; }
+.data-recovery-dialog footer { justify-content: flex-end; margin-top: 20px; }
+.recovery-policy { line-height: 1.65; margin: 16px 0; }
+.recovery-layout { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 20px; min-height: 250px; }
+.recovery-layout aside { min-width: 0; }
+.recovery-layout aside input { width: 100%; }
+.recovery-layout ul { list-style: none; padding: 0; margin: 12px 0 0; max-height: 48vh; overflow: auto; }
+.recovery-layout li button { width: 100%; display: grid; gap: 5px; padding: 12px; text-align: left; color: inherit; border: 1px solid transparent; border-radius: 8px; background: transparent; overflow-wrap: anywhere; cursor: pointer; }
+.recovery-layout li button[aria-pressed="true"] { border-color: var(--kb-line-strong); background: var(--kb-surface); }
+.recovery-layout time, .recovery-layout small { font-size: 12px; }
+.recovery-preview { min-width: 0; max-height: 55vh; overflow: auto; }
+.recovery-comparison { display: grid; gap: 16px; }
+.recovery-comparison.has-current { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.recovery-comparison article { min-width: 0; }
+.recovery-comparison h3 { margin: 0; font-size: 15px; }
+.recovery-comparison h4, .recovery-comparison p { overflow-wrap: anywhere; }
+.recovery-comparison pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--kb-font-mono, monospace); font-size: 13px; line-height: 1.65; }
+.recovery-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 760px) { .recovery-layout, .recovery-comparison.has-current { grid-template-columns: minmax(0, 1fr); } .recovery-layout ul { max-height: 20vh; } }
