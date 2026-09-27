@@ -9,7 +9,8 @@ test('palette command aliases work across UI languages and require every query t
         { id: 'ai', label: isZh ? 'AI 助手' : 'AI Assistant', description: '' }] } as Parameters<typeof createPaletteCommands>[1],
       {} as Parameters<typeof createPaletteCommands>[2])
     for (const [query, id] of [['> save current document', 'save-document'], ['  > COPY document markdown ', 'copy-markdown'],
-      ['> 保存 当前', 'save-document'], ['> 导出 文档', 'export-markdown'], ['> ai assistant', 'page-ai'], ['> 设置', 'page-settings'], ['> import backup', 'import-backup']]) {
+      ['> 保存 当前', 'save-document'], ['> 导出 文档', 'export-markdown'], ['> ai assistant', 'page-ai'], ['> 设置', 'page-settings'], ['> import backup', 'import-backup'],
+      ['> 快捷键 帮助', 'shortcut-help'], ['> keyboard shortcuts', 'shortcut-help']]) {
       assert.ok(matchPaletteCommands(commands, query).some((command) => command.id === id), `${query} (${isZh ? 'Chinese' : 'English'})`)
     }
     assert.deepEqual(matchPaletteCommands(commands, '> save impossiblecommand'), [])

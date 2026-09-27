@@ -6,6 +6,7 @@ import type { AppShellState } from '../types/appShell'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
 import { PluginSlot } from './PluginSlot'
 const AppNotificationHost = lazy(async () => ({ default: (await import('./AppNotificationHost')).AppNotificationHost }))
+const ShortcutHelpButton = lazy(() => import('./ShortcutHelpButton'))
 
 type WorkspaceShellSidebarProps = {
   documents: DocumentsSidebarState
@@ -23,6 +24,7 @@ export function WorkspaceShellSidebar({
   return (
     <>
     <PageNavWithWorkspaceTree
+      footerControl={<Suspense fallback={null}><ShortcutHelpButton isZh={shell.isZh} /></Suspense>}
       workspaceUnavailable={shell.workspaceReady ? undefined : shell.workspaceError
         ? (shell.isZh ? '文档列表加载失败' : 'Document list could not be loaded') : shell.ui.common.loading}
       notificationControl={<Suspense fallback={<span className="nav-icon-btn notification-bell" aria-hidden="true" />}>

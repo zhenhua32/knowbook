@@ -1,0 +1,7 @@
+.shortcut-help-button { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-height: 40px; margin: auto 12px 12px; padding: 10px 12px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.shortcut-help-button:hover { background: #ffffff12; }
+.shortcut-help-button:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 2px; }
+.shortcut-help-button svg { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.shortcut-help-button kbd { margin-left: auto; padding: 1px 4px; border: 1px solid currentColor; border-radius: 4px; font-size: 11px; opacity: .7; }
+.sidebar-combined.collapsed .shortcut-help-button { justify-content: center; margin: auto 8px 12px; padding: 10px; }
+.sidebar-combined.collapsed .shortcut-help-button span, .sidebar-combined.collapsed .shortcut-help-button kbd { display: none; }

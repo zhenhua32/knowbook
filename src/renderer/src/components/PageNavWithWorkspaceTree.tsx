@@ -10,6 +10,7 @@ const DocumentTreeContextMenu = lazyWithRetry(async () => ({ default: (await imp
 
 type PageNavWithWorkspaceTreeProps = {
   notificationControl?: ReactNode
+  footerControl?: ReactNode
   workspaceUnavailable?: string
   activePage: string
   pageItems: Array<{
@@ -246,6 +247,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         </div>
       </div>
 
+      {props.footerControl}
       {treeContextMenu ? (
         <Suspense fallback={null}>
         <DocumentTreeContextMenu

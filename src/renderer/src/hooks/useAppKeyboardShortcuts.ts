@@ -10,109 +10,59 @@ type UseAppKeyboardShortcutsParams = {
   shell: ShellPageState
 }
 
-export function useAppKeyboardShortcuts({
-  documents,
-  onClearBlockRangeSelection,
-  shell
-}: UseAppKeyboardShortcutsParams) {
-  const composingTargetRef = useRef<EventTarget | null>(null)
+export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection, shell }: UseAppKeyboardShortcutsParams) {
+  const composingTarget = useRef<EventTarget | null>(null)
   useEffect(() => {
-    function handleGlobalShortcut(event: KeyboardEvent) {
-      if (document.querySelector('.app-confirm-dialog[open]')) return
-      if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
-      if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
-      const key = event.key.toLowerCase()
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && ((!event.shiftKey && key === 'k') || (event.shiftKey && key === 'p'))) {
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.shiftKey) documents.openGlobalSearch('commands')
-        else if (documents.isGlobalSearchOpen) documents.closeGlobalSearch()
-        else documents.openGlobalSearch()
+    const blocked = (event: KeyboardEvent) => document.querySelector('.app-confirm-dialog[open], .shortcut-help-dialog[open]')
+      || isImeKeyboardEvent(event, composingTarget.current !== null && composingTarget.current === event.target)
+    const chord = (event: KeyboardEvent) => [event.ctrlKey || event.metaKey ? 'mod' : '', event.altKey ? 'alt' : '',
+      event.shiftKey ? 'shift' : '', event.key.toLowerCase()].filter(Boolean).join('+')
+    const handleGlobalShortcut = (event: KeyboardEvent) => {
+      if (blocked(event)) return
+      const key = chord(event)
+      if (key === 'f1') {
+        event.preventDefault(); event.stopPropagation()
+        if (!event.repeat) void import('../openShortcutHelp').then(({ openShortcutHelp }) => openShortcutHelp())
+        return
       }
+      if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
+      if (key !== 'mod+k' && key !== 'mod+shift+p') return
+      event.preventDefault(); event.stopPropagation()
+      if (key === 'mod+shift+p') documents.openGlobalSearch('commands')
+      else if (documents.isGlobalSearchOpen) documents.closeGlobalSearch()
+      else documents.openGlobalSearch()
     }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (document.querySelector('.app-confirm-dialog[open]')) return
-      if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
-      if (event.defaultPrevented) return
-      const key = event.key.toLowerCase()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (blocked(event) || event.defaultPrevented) return
+      const key = chord(event)
       if (documents.isGlobalSearchOpen) {
         if (event.key === 'Escape') { event.preventDefault(); documents.closeGlobalSearch() }
         return
       }
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && /^[1-7]$/.test(event.key)) {
-        const pageIndex = Number(event.key) - 1
-        const targetPage = PAGE_ORDER[pageIndex]
-        if (targetPage) {
-          event.preventDefault()
-          shell.setActivePage(targetPage)
-        }
+      if (/^mod\+[1-6]$/.test(key)) {
+        event.preventDefault(); shell.setActivePage(PAGE_ORDER[Number(key.at(-1)) - 1]); return
       }
-
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'f') {
-        if (shell.activePage !== 'documents') {
-          return
-        }
-
-        event.preventDefault()
-        if (documents.isBlockSearchOpen) {
-          documents.closeBlockSearch()
-        } else {
-          documents.openBlockSearch()
-        }
+      if (shell.activePage !== 'documents') return
+      const actions: Record<string, (() => void) | undefined> = {
+        'mod+f': documents.isBlockSearchOpen ? documents.closeBlockSearch : documents.openBlockSearch,
+        'alt+arrowleft': documents.navBack,
+        'alt+arrowright': documents.navForward,
+        escape: documents.selectedBlockRange ? onClearBlockRangeSelection : undefined,
+        'mod+z': documents.isEditing ? documents.undoEdit : undefined,
+        'mod+y': documents.isEditing ? documents.redoEdit : undefined
       }
-
-      if (event.key === 'Escape' && shell.activePage === 'documents' && documents.selectedBlockRange) {
-        event.preventDefault()
-        onClearBlockRangeSelection()
-        return
-      }
-
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'z') {
-        if (documents.isEditing && shell.activePage === 'documents') {
-          event.preventDefault()
-          documents.undoEdit()
-        }
-      }
-
-      if ((event.ctrlKey || event.metaKey) && !event.altKey && ((!event.shiftKey && key === 'y') || (event.shiftKey && key === 'z'))) {
-        if (documents.isEditing && shell.activePage === 'documents') {
-          event.preventDefault()
-          documents.redoEdit()
-        }
-      }
-
-      if (event.altKey && event.key === 'ArrowLeft') {
-        if (shell.activePage === 'documents') {
-          event.preventDefault()
-          documents.navBack()
-        }
-      }
-
-      if (event.altKey && event.key === 'ArrowRight') {
-        if (shell.activePage === 'documents') {
-          event.preventDefault()
-          documents.navForward()
-        }
-      }
+      const action = actions[key === 'mod+shift+z' ? 'mod+y' : key]
+      if (action) { event.preventDefault(); action() }
     }
-
-    const startComposition = (event: CompositionEvent) => { composingTargetRef.current = event.target }
-    const endComposition = () => { composingTargetRef.current = null }
-    window.addEventListener('compositionstart', startComposition, true)
-    window.addEventListener('compositionend', endComposition, true)
-    window.addEventListener('blur', endComposition, true)
-    window.addEventListener('keydown', handleGlobalShortcut, true)
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('compositionstart', startComposition, true)
-      window.removeEventListener('compositionend', endComposition, true)
-      window.removeEventListener('blur', endComposition, true)
-      window.removeEventListener('keydown', handleGlobalShortcut, true)
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [
-    documents,
-    onClearBlockRangeSelection,
-    shell
-  ])
+    const startComposition = (event: CompositionEvent) => { composingTarget.current = event.target }
+    const endComposition = () => { composingTarget.current = null }
+    const controller = new AbortController()
+    const capture = { capture: true, signal: controller.signal }
+    window.addEventListener('compositionstart', startComposition, capture)
+    window.addEventListener('compositionend', endComposition, capture)
+    window.addEventListener('blur', endComposition, capture)
+    window.addEventListener('keydown', handleGlobalShortcut, capture)
+    window.addEventListener('keydown', handleKeyDown, { signal: controller.signal })
+    return () => controller.abort()
+  }, [documents, onClearBlockRangeSelection, shell])
 }

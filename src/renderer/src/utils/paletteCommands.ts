@@ -1,6 +1,7 @@
 import type { DocumentsDomainState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
 import type { WorkspaceOperationsState } from '../types/appComposition'
+import { openShortcutHelp } from '../openShortcutHelp'
 
 export type PaletteCommand = {
   id: string
@@ -26,6 +27,8 @@ export function createPaletteCommands(documents: DocumentsDomainState, shell: Ap
   const currentTitle = documents.draftTitle || documents.selectedDocument?.title || ''
   const pageKeywords = { documents: '文档', dashboard: '总览 仪表盘', database: '数据库', ai: 'assistant chat 助手 问答', plugins: '插件 中心', settings: 'preferences 配置 设置' }
   return [
+    { id: 'shortcut-help', title: zh ? '快捷键帮助' : 'Keyboard shortcuts', description: zh ? '搜索按键、操作名称和适用场景' : 'Find key combinations, actions, and where they work',
+      keywords: 'keyboard shortcuts hotkeys help keys 快捷键 键盘 按键 帮助', shortcut: 'F1', run: openShortcutHelp },
     { id: 'new-document', title: zh ? '新建文档' : 'New document', description: zh ? '在根目录创建文档' : 'Create a document at the workspace root', keywords: 'new create document 新建 创建 文档', disabledReason: unavailable,
       run: async () => { await workspace.handleCreateDocument(null); shell.setActivePage('documents') } },
     ...shell.pageItems.map((page, index) => ({ id: `page-${page.id}`, title: page.label, description: page.description,
