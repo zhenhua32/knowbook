@@ -1,4 +1,5 @@
 import type { AppMessageHandler } from '../notify'
+import { confirmAction } from '../confirmAction'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -99,29 +100,28 @@ export function useAiState({
    ])
 
   const clearAiApiKey = useCallback(async () => {
-    if (!window.confirm(ui.confirmClearAiApiKey)) {
-      return
-    }
-
-    setAiSaving(true)
-    try {
-      await window.knowbook.updateAiConfig({
-        enabled: aiEnabledDraft,
-        baseUrl: aiBaseUrlDraft,
-        model: aiModelDraft,
-        autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-        relatedNotesEnabled: aiRelatedNotesEnabledDraft,
-        clearApiKey: true
-      })
-      const refreshed = await window.knowbook.getHomeData()
-      setAiApiKeyDraft('')
-      onHomeDataChange(refreshed)
-      onMessage(ui.aiApiKeyCleared)
-    } catch (error) {
-      onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
-    } finally {
-      setAiSaving(false)
-    }
+    await confirmAction({ title: ui.clearAiApiKey, description: ui.confirmClearAiApiKey,
+      note: ui.language === 'zh-CN' ? '清除后，AI 请求需要重新配置 API Key。' : 'AI requests will require a new API key.',
+      onConfirm: async () => {
+        setAiSaving(true)
+        try {
+          await window.knowbook.updateAiConfig({
+            enabled: aiEnabledDraft,
+            baseUrl: aiBaseUrlDraft,
+            model: aiModelDraft,
+            autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
+            relatedNotesEnabled: aiRelatedNotesEnabledDraft,
+            clearApiKey: true
+          })
+          const refreshed = await window.knowbook.getHomeData()
+          setAiApiKeyDraft('')
+          onHomeDataChange(refreshed)
+          onMessage(ui.aiApiKeyCleared)
+        } finally {
+          setAiSaving(false)
+        }
+      }
+    })
   }, [
     aiAutoSummaryOnSaveDraft,
     aiBaseUrlDraft,

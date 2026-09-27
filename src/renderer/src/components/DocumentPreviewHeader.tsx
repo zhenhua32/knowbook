@@ -1,4 +1,4 @@
-import { useState, type MouseEvent, type MouseEventHandler, type ReactNode } from 'react'
+import { useRef, useState, type MouseEvent, type MouseEventHandler, type ReactNode } from 'react'
 import type { UiText } from '../i18n'
 import { DocumentHeaderActionMenu } from './DocumentHeaderActionMenu'
 
@@ -77,6 +77,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
   const hasDocument = Boolean(selectedDocumentId)
   const hasHeaderStatus = mdCopyFlash || detailLoading
   const [actionMenuOpen, setActionMenuOpen] = useState(false)
+  const actionMenuTrigger = useRef<HTMLButtonElement | null>(null)
   const [actionMenuPosition, setActionMenuPosition] = useState({ x: 0, y: 0 })
   const auxButtonLabel = documentsAuxPanelOpen
     ? (isZh ? '收起辅助区' : 'Hide auxiliary')
@@ -85,6 +86,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
   const saveButtonLabel = isSaving ? ui.common.saving : ui.common.save
 
   const handleOpenActionMenu = (event: MouseEvent<HTMLButtonElement>) => {
+    actionMenuTrigger.current = event.currentTarget
     const rect = event.currentTarget.getBoundingClientRect()
     const menuWidth = 280
     const nextX = Math.min(Math.max(12, rect.right - menuWidth), window.innerWidth - menuWidth - 12)
@@ -173,7 +175,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           documentsWideMode={documentsWideMode}
           moveTargetId={moveTargetId}
           moveOptions={moveOptions}
-          onClose={() => setActionMenuOpen(false)}
+          onClose={() => { setActionMenuOpen(false); actionMenuTrigger.current?.focus({ preventScroll: true }) }}
           onCopyMarkdown={onCopyMarkdown}
           onSaveMarkdown={onSaveMarkdown}
           onCheckLinks={onCheckLinks}

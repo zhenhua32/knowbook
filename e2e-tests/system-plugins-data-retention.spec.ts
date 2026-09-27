@@ -43,7 +43,7 @@ test('uninstall UI keeps private data for reinstall or deletes it after restart 
     const button = context!.page.locator('.system-plugin-request').filter({ hasText: 'Data retention acceptance' })
       .getByRole('button', { name: uiText('Uninstall', '卸载') })
     await button.click()
-    return context!.page.getByRole('dialog', { name: /Data retention acceptance/ })
+    return context!.page.getByRole('alertdialog', { name: /Data retention acceptance/ })
   }
   try {
     cpSync(resolve('examples/system-plugin-v3-starter'), source, { recursive: true })

@@ -18,6 +18,7 @@ export function useAppKeyboardShortcuts({
   const composingTargetRef = useRef<EventTarget | null>(null)
   useEffect(() => {
     function handleGlobalShortcut(event: KeyboardEvent) {
+      if (document.querySelector('.app-confirm-dialog[open]')) return
       if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
       if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
       const key = event.key.toLowerCase()
@@ -30,6 +31,7 @@ export function useAppKeyboardShortcuts({
       }
     }
     function handleKeyDown(event: KeyboardEvent) {
+      if (document.querySelector('.app-confirm-dialog[open]')) return
       if (isImeKeyboardEvent(event, composingTargetRef.current !== null && composingTargetRef.current === event.target)) return
       if (event.defaultPrevented) return
       const key = event.key.toLowerCase()

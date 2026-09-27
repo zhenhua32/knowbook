@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { getActiveUiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
+import { confirmAction } from '../confirmAction'
 
 export type RecoveryStateProps = {
   title: string
@@ -30,11 +31,14 @@ export function RecoveryState({ title, description, error, onRetry, onNavigate, 
       setActionError(getErrorMessage(cause, isZh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
     } finally { lock.current = false; setRunning(false) }
   }
-  const restart = (safe: boolean) => {
-    if (!window.confirm(isZh
-      ? `${safe ? '将重启应用，并在本次启动中跳过系统插件。' : '将重新加载界面。'}未保存的内容可能丢失，是否继续？`
-      : `${safe ? 'Restart the app without system plugins for this boot?' : 'Reload the interface?'} Unsaved changes may be lost.`)) return
-    return safe ? window.knowbook.restartInSystemPluginSafeMode() : window.location.reload()
+  const restart = async (safe: boolean) => {
+    const label = safe ? (isZh ? '安全模式重启' : 'Restart in safe mode') : (isZh ? '重新加载界面' : 'Reload interface')
+    await confirmAction({ title: label, tone: 'warning',
+      description: isZh
+        ? `${safe ? '将重启应用，并在本次启动中跳过系统插件。' : '将重新加载界面。'}未保存的内容可能丢失。`
+        : `${safe ? 'The app will restart without system plugins for this boot.' : 'The interface will reload.'} Unsaved changes may be lost.`,
+      onConfirm: () => safe ? window.knowbook.restartInSystemPluginSafeMode() : window.location.reload()
+    })
   }
   return <section className={`recovery-state${compact ? ' recovery-state-compact' : ''}`} aria-label={title} aria-busy={busy || running}>
     <div role="alert"><h2>{title}</h2>{description && <p>{description}</p>}</div>

@@ -1,4 +1,5 @@
 import type { AppMessageHandler } from '../notify'
+import { confirmAction } from '../confirmAction'
 import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
 import type {
   DocumentDetail,
@@ -55,21 +56,22 @@ export function usePluginManagement({
   }, [onMessage, refreshPluginHomeData, ui.language])
 
   const removePluginV2 = useCallback(async (plugin: PluginV2InstallationSummary) => {
-    const accepted = window.confirm(ui.language === 'zh-CN'
-      ? `确定卸载“${plugin.name}”吗？插件代码、历史版本、授权和本地状态都会被移除，此操作无法撤销。`
-      : `Uninstall "${plugin.name}"? Its code, revision history, grants, and local state will be removed. This cannot be undone.`)
-    if (!accepted) return
-
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.removePluginV2({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? `插件“${plugin.name}”已卸载。` : `Plugin "${plugin.name}" was uninstalled.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件卸载失败。' : 'Plugin uninstall failed.'), 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
+    await confirmAction({ title: ui.language === 'zh-CN' ? `卸载“${plugin.name}”` : `Uninstall "${plugin.name}"`,
+      confirmLabel: ui.language === 'zh-CN' ? '卸载插件' : 'Uninstall plugin',
+      description: ui.language === 'zh-CN'
+        ? `确定卸载“${plugin.name}”吗？插件代码、历史版本、授权和本地状态都会被移除，此操作无法撤销。`
+        : `Uninstall "${plugin.name}"? Its code, revision history, grants, and local state will be removed. This cannot be undone.`,
+      onConfirm: async () => {
+        setPluginBusyId(plugin.pluginId)
+        try {
+          await window.knowbook.removePluginV2({ pluginId: plugin.pluginId })
+          await refreshPluginHomeData()
+          onMessage(ui.language === 'zh-CN' ? `插件“${plugin.name}”已卸载。` : `Plugin "${plugin.name}" was uninstalled.`)
+        } finally {
+          setPluginBusyId(null)
+        }
+      }
+    })
   }, [onMessage, refreshPluginHomeData, ui.language])
 
   const installSystemPluginFromFolder = useCallback(async () => {
@@ -124,8 +126,6 @@ export function usePluginManagement({
       onMessage(ui.language === 'zh-CN'
         ? `已停用并标记为重启后卸载；${preserveData ? '插件数据将保留供重新安装使用。' : '插件专属数据将一并删除。'}`
         : `Disabled and scheduled for uninstall after restart; plugin data will be ${preserveData ? 'retained for reinstall' : 'deleted'}.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin uninstall failed.', 'error')
     } finally {
       setPluginBusyId(null)
     }
@@ -145,11 +145,13 @@ export function usePluginManagement({
   }, [onMessage, refreshPluginHomeData, ui.language])
 
   const restartInSystemPluginSafeMode = useCallback(async () => {
-    const accepted = window.confirm(ui.language === 'zh-CN'
-      ? '立即重启并跳过所有 Full Trust 插件启动吗？v2 插件不受影响。'
-      : 'Restart now and skip every Full Trust plugin for one boot? v2 plugins are unaffected.')
-    if (!accepted) return
-    await window.knowbook.restartInSystemPluginSafeMode()
+    const label = ui.language === 'zh-CN' ? '安全模式重启' : 'Restart in safe mode'
+    await confirmAction({ title: label, tone: 'warning',
+      description: ui.language === 'zh-CN'
+        ? '将立即重启，并在本次启动中跳过所有 Full Trust 插件。v2 插件不受影响。未保存的内容可能丢失。'
+        : 'Restart now and skip every Full Trust plugin for one boot. v2 plugins are unaffected. Unsaved changes may be lost.',
+      onConfirm: () => window.knowbook.restartInSystemPluginSafeMode()
+    })
   }, [ui.language])
 
   const startSystemPluginService = useCallback(async (plugin: SystemPluginSummary) => {
@@ -223,21 +225,25 @@ export function usePluginManagement({
   }, [onMessage, refreshPluginHomeData, ui.language])
 
   const removeSystemPluginOsPersistence = useCallback(async (plugin: SystemPluginSummary) => {
-    const accepted = window.confirm(ui.language === 'zh-CN'
-      ? `移除 ${plugin.name} 的宿主管理登录启动项吗？仅会删除与已记录命令精确匹配的启动项。`
-      : `Remove the host-managed login-startup item for ${plugin.name}? Only an exact recorded target will be removed.`)
-    if (!accepted) return
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.removeSystemPluginOsPersistence({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '宿主管理的登录启动项已移除。' : 'The host-managed login-startup item was removed.')
-    } catch (error) {
-      await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'OS persistence removal failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
+    await confirmAction({ title: ui.language === 'zh-CN' ? '移除登录启动项' : 'Remove login-startup item',
+      confirmLabel: ui.language === 'zh-CN' ? '移除启动项' : 'Remove startup item', tone: 'warning',
+      description: ui.language === 'zh-CN'
+        ? `移除 ${plugin.name} 的宿主管理登录启动项吗？仅会删除与已记录命令精确匹配的启动项。`
+        : `Remove the host-managed login-startup item for ${plugin.name}? Only an exact recorded target will be removed.`,
+      onConfirm: async () => {
+        setPluginBusyId(plugin.pluginId)
+        try {
+          await window.knowbook.removeSystemPluginOsPersistence({ pluginId: plugin.pluginId })
+          await refreshPluginHomeData()
+          onMessage(ui.language === 'zh-CN' ? '宿主管理的登录启动项已移除。' : 'The host-managed login-startup item was removed.')
+        } catch (error) {
+          await refreshPluginHomeData().catch(() => undefined)
+          throw error
+        } finally {
+          setPluginBusyId(null)
+        }
+      }
+    })
   }, [onMessage, refreshPluginHomeData, ui.language])
 
   const openSystemPluginDirectory = useCallback(async (

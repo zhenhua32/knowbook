@@ -1490,22 +1490,6 @@
   .plugin-filter-tabs { flex-wrap: wrap; }
   .plugin-inspector.plugin-inline-details { margin-top: 16px; padding-top: 16px; }
 }
-.system-plugin-uninstall-dialog {
-  overflow: auto;
-  overflow-wrap: anywhere;
-}
-
-.system-plugin-uninstall-dialog > label {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.system-plugin-uninstall-dialog input[type='radio'] {
-  flex: 0 0 auto;
-  margin: 4px 0 0;
-}
-
 .system-plugin-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

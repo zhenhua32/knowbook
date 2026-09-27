@@ -391,24 +391,20 @@ export function DatabaseWorkspace({
   const handleConfirm = async () => {
     const target = confirmTarget
     if (!target) return
-    await run(async () => {
-      if (target.kind === 'database') {
-        await window.knowbook.deleteDatabase(target.id)
-        const fallback = sources.find((source) => source.kind === 'document-catalog')
-        setConfirmTarget(null)
-        await onRefresh(fallback?.id)
-        if (fallback) switchSource(fallback.id)
-        return
-      }
-      if (target.kind === 'view') await window.knowbook.deleteDatabaseSavedView(target.id)
-      if (target.kind === 'field') await window.knowbook.deleteDocumentDatabaseColumn(target.id)
-      if (target.kind === 'record') await window.knowbook.deleteDatabaseEntity(target.id)
-      if (target.kind === 'records') await window.knowbook.deleteDatabaseEntities({ entityIds: target.ids })
-      setConfirmTarget(null)
-      setOpenRecordId(null)
-      onSelectedRecordIdsChange([])
-      await refresh()
-    })
+    if (target.kind === 'database') {
+      await window.knowbook.deleteDatabase(target.id)
+      const fallback = sources.find((source) => source.kind === 'document-catalog')
+      await onRefresh(fallback?.id)
+      if (fallback) switchSource(fallback.id)
+      return
+    }
+    if (target.kind === 'view') await window.knowbook.deleteDatabaseSavedView(target.id)
+    if (target.kind === 'field') await window.knowbook.deleteDocumentDatabaseColumn(target.id)
+    if (target.kind === 'record') await window.knowbook.deleteDatabaseEntity(target.id)
+    if (target.kind === 'records') await window.knowbook.deleteDatabaseEntities({ entityIds: target.ids })
+    setOpenRecordId(null)
+    onSelectedRecordIdsChange([])
+    await refresh()
   }
 
   const toggleField = (fieldId: string) => updateDraft((current) => ({
@@ -534,7 +530,7 @@ export function DatabaseWorkspace({
       <CreateRecordDialog documents={catalogDocuments} fields={visibleFields} onCancel={() => setCreateRecordOpen(false)} onCreate={createRecord} open={createRecordOpen} text={text} />
       <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
       <DatabaseFormDialog description={formDescription} name={formName} onCancel={() => setFormMode(null)} onDescriptionChange={setFormDescription} onNameChange={setFormName} onSubmit={() => void submitForm()} open={formMode !== null} submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text} title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView} withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
-      <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} onCancel={() => setConfirmTarget(null)} onConfirm={() => void handleConfirm()} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
+      <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} onCancel={() => setConfirmTarget(null)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
     </section>
   )
 }

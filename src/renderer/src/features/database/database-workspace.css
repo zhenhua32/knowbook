@@ -458,12 +458,6 @@
 .dbw-dialog footer { justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--dbw-line); }
 .dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); }
 .dbw-create-record-dialog .dbw-record-form { max-height: calc(100vh - 210px); }
-.dbw-confirm-dialog { padding: 20px; }
-.dbw-confirm-dialog > header { justify-content: flex-start; padding: 0 0 14px; border: 0; }
-.dbw-danger-icon { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; background: #fff0f0; color: var(--dbw-danger); font-weight: 800; }
-.dbw-confirm-dialog > p { margin: 4px 0; color: #545967; overflow-wrap: anywhere; }
-.dbw-confirm-dialog .dbw-dialog-note { margin-top: 11px; color: var(--dbw-muted); font-size: 11px; }
-.dbw-confirm-dialog footer { margin-top: 18px; padding: 14px 0 0; }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }
 
 @media (max-width: 1320px) {
@@ -654,8 +648,7 @@
 .dbw-field-copy small,
 .dbw-field-options,
 .dbw-eyebrow,
-.dbw-dialog > label > span,
-.dbw-confirm-dialog .dbw-dialog-note {
+.dbw-dialog > label > span {
   font-size: var(--kb-type-caption);
   line-height: 18px;
 }

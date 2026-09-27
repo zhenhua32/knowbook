@@ -1,0 +1,37 @@
+.app-confirm-dialog {
+  box-sizing: border-box;
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--kb-line);
+  border-radius: 16px;
+  background: var(--kb-canvas);
+  color: var(--kb-text);
+  box-shadow: 0 20px 64px #0004;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.app-confirm-dialog::backdrop { background: #14182480; backdrop-filter: blur(3px); }
+.app-confirm-dialog > header { display: flex; align-items: flex-start; gap: 12px; padding: 24px 24px 12px; }
+.app-confirm-dialog h2 { margin: 2px 0 0; font-size: 18px; line-height: 1.5; }
+.app-confirm-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; font-weight: 700; color: var(--kb-danger); background: color-mix(in srgb, var(--kb-danger) 12%, transparent); }
+.app-confirm-warning .app-confirm-icon { color: var(--kb-accent-strong); background: var(--kb-accent-soft); }
+.app-confirm-body { padding: 0 24px 24px; }
+.app-confirm-body p { margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.app-confirm-body .app-confirm-note { margin-top: 12px; color: var(--kb-text-soft); }
+.app-confirm-body .app-confirm-error { margin-top: 16px; padding: 12px; border: 1px solid var(--kb-danger); border-radius: 8px; }
+.app-confirm-dialog fieldset { min-width: 0; margin: 16px 0 0; padding: 0; border: 0; }
+.app-confirm-dialog fieldset label { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 14px; line-height: 1.6; }
+.app-confirm-dialog input[type='radio'] { flex: 0 0 auto; width: auto; margin-top: 5px; }
+.app-confirm-dialog code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; color: var(--kb-text-soft); }
+.app-confirm-dialog > footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--kb-line); padding: 16px 24px; }
+.app-confirm-dialog footer > span { flex: 1; font-size: 12px; color: var(--kb-text-soft); }
+.app-confirm-dialog footer > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.app-confirm-dialog footer button { min-height: 36px; min-width: 76px; white-space: normal; }
+.app-confirm-dialog button:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 3px; }
+@media (max-width: 480px) {
+  .app-confirm-dialog > header { padding: 20px 20px 12px; }
+  .app-confirm-body { padding: 0 20px 20px; }
+  .app-confirm-dialog > footer { padding: 16px 20px; }
+}

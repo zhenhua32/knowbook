@@ -580,16 +580,13 @@ test.describe('System Plugin v3 @electron', () => {
       await expect(latestFailure).toContainText(failedRevision.artifactSha256)
       await expect(latestFailure).toContainText('activate')
       await expect(latestFailure).toContainText('Controlled Renderer upgrade failure')
-      await current.page.evaluate(() => {
-        window.confirm = () => true
-      })
       const uninstall = installedSystemPluginCard(current, 'Full Trust Lifecycle').getByRole(
         'button',
         { name: uiText('Uninstall', '卸载') }
       )
       await expect(uninstall).toBeEnabled()
       await uninstall.click()
-      const uninstallDialog = current.page.getByRole('dialog', { name: /Full Trust Lifecycle/ })
+      const uninstallDialog = current.page.getByRole('alertdialog', { name: /Full Trust Lifecycle/ })
       await uninstallDialog.getByRole('radio', { name: uiText('Also delete plugin data', '同时删除插件专属数据') }).check()
       await uninstallDialog.getByRole('button', { name: uiText('Confirm uninstall', '确认卸载') }).click()
       await expectSystemPluginState(current, lifecyclePluginId, {

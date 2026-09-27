@@ -1,6 +1,8 @@
 import { useRef } from 'react'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { ConfirmationDialog } from '../../../components/ConfirmationDialog'
+import '../../../components/confirmation-dialog.css'
 
 export function DatabaseFormDialog({
   description,
@@ -60,22 +62,9 @@ export function DatabaseConfirmDialog({
   text: DatabaseWorkspaceText
   title: string
   onCancel: () => void
-  onConfirm: () => void
+  onConfirm: () => void | Promise<void>
 }) {
-  const dialogRef = useRef<HTMLDivElement | null>(null)
-  const cancelRef = useRef<HTMLButtonElement | null>(null)
-  useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: cancelRef, onClose: onCancel, open })
   if (!open) return null
-
-  return (
-    <div className="dbw-modal-layer" role="presentation">
-      <button aria-label={text.close} className="dbw-modal-scrim" onClick={onCancel} type="button" />
-      <div aria-modal="true" className="dbw-dialog dbw-confirm-dialog" ref={dialogRef} role="alertdialog" tabIndex={-1}>
-        <header><span aria-hidden="true" className="dbw-danger-icon">!</span><h2>{title}</h2></header>
-        <p>{body}</p>
-        <p className="dbw-dialog-note">{text.dangerCannotUndo}</p>
-        <footer><button className="dbw-quiet-button" onClick={onCancel} ref={cancelRef} type="button">{text.cancel}</button><button className="dbw-danger-button" onClick={onConfirm} type="button">{confirmLabel}</button></footer>
-      </div>
-    </div>
-  )
+  return <ConfirmationDialog title={title} description={body} note={text.dangerCannotUndo} confirmLabel={confirmLabel}
+    onCancel={onCancel} onConfirm={onConfirm} />
 }

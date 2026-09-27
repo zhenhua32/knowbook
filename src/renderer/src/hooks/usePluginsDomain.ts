@@ -65,9 +65,7 @@ export function usePluginsDomain({
     onRecoverSystemPlugin: (plugin) => {
       void pluginState.recoverSystemPlugin(plugin)
     },
-    onUninstallSystemPlugin: (plugin, preserveData) => {
-      void pluginState.uninstallSystemPlugin(plugin, preserveData)
-    },
+    onUninstallSystemPlugin: (plugin, preserveData) => pluginState.uninstallSystemPlugin(plugin, preserveData),
     onRollbackSystemPlugin: (plugin, packageId) => {
       void pluginState.rollbackSystemPlugin(plugin, packageId)
     },

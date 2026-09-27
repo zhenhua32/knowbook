@@ -1,4 +1,5 @@
 import type { AppMessageHandler } from '../notify'
+import { confirmAction } from '../confirmAction'
 import { useCallback, useState } from 'react'
 import { getBoardDropFieldValue, type BoardDropTarget } from '@shared/board'
 import type {
@@ -164,19 +165,18 @@ export function useWorkspaceDocumentManagement({
   }, [onClearEditorSession, onDetailLoadingChange, onFlushPendingDocumentChanges, onHomeDataChange, onMessage, onMoveTargetIdChange, onSelectedDocumentChange, onSelectedDocumentIdChange, ui])
 
   const deleteDocumentById = useCallback(async (documentId: string, documentTitle: string) => {
-    const accepted = window.confirm(ui.confirmDeleteDocument(documentTitle))
-    if (!accepted) {
-      return
-    }
-
-    if (selectedDocumentId === documentId) {
-      onCancelPendingAutoSave()
-    }
-
-    await window.knowbook.deleteDocument(documentId)
-    const refreshed = await window.knowbook.getHomeData()
-    onHomeDataChange(refreshed)
-    await refreshSelectionAfterDocumentMutation(refreshed, documentId)
+    await confirmAction({
+      title: ui.language === 'zh-CN' ? '删除文档' : 'Delete document',
+      description: ui.confirmDeleteDocument(documentTitle),
+      note: ui.language === 'zh-CN' ? '文档内容将永久删除，此操作无法撤销。' : 'The document content will be permanently deleted. This cannot be undone.',
+      onConfirm: async () => {
+        if (selectedDocumentId === documentId) onCancelPendingAutoSave()
+        await window.knowbook.deleteDocument(documentId)
+        const refreshed = await window.knowbook.getHomeData()
+        onHomeDataChange(refreshed)
+        await refreshSelectionAfterDocumentMutation(refreshed, documentId)
+      }
+    })
   }, [onCancelPendingAutoSave, onHomeDataChange, refreshSelectionAfterDocumentMutation, selectedDocumentId, ui])
 
   const deleteSelectedDocument = useCallback(async () => {

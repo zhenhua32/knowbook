@@ -12,6 +12,8 @@ import { SystemPluginResources } from '../components/SystemPluginResources'
 import { SystemPluginRuntimeStatus } from '../components/SystemPluginRuntimeStatus'
 import { getSystemPluginFailureStages } from '@shared/system-plugin-state'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
+import { ConfirmationDialog } from '../components/ConfirmationDialog'
+import '../components/confirmation-dialog.css'
 import './plugins-section.css'
 
 type PluginFilter = 'all' | 'running' | 'disabled' | 'attention'
@@ -33,7 +35,7 @@ type PluginsSectionProps = {
   onRecoverPluginV2Installation: (pluginId: string) => void
   onSetSystemPluginEnabled: (plugin: SystemPluginSummary, enabled: boolean) => void
   onRecoverSystemPlugin: (plugin: SystemPluginSummary) => void
-  onUninstallSystemPlugin: (plugin: SystemPluginSummary, preserveData: boolean) => void
+  onUninstallSystemPlugin: (plugin: SystemPluginSummary, preserveData: boolean) => void | Promise<void>
   onRollbackSystemPlugin: (plugin: SystemPluginSummary, packageId: string) => void
   onStartSystemPluginService: (plugin: SystemPluginSummary) => void
   onStopSystemPluginService: (plugin: SystemPluginSummary) => void
@@ -146,7 +148,6 @@ export function PluginsSection({
   const [customizingPlugin, setCustomizingPlugin] = useState<PluginV2InstallationSummary | null>(null)
   const [uninstallTarget, setUninstallTarget] = useState<SystemPluginSummary | null>(null)
   const [preserveUninstallData, setPreserveUninstallData] = useState(true)
-  const uninstallDialogRef = useRef<HTMLElement>(null)
   const uninstallReturnFocusRef = useRef<HTMLElement | null>(null)
   const [customizerDrafts, setCustomizerDrafts] = useState<Record<string, string>>({})
   const [systemAcknowledgements, setSystemAcknowledgements] = useState<Record<string, boolean>>({})
@@ -263,23 +264,6 @@ export function PluginsSection({
       : null
     setCustomizingPlugin(plugin)
   }
-
-  useEffect(() => {
-    if (!uninstallTarget) return undefined
-    const dialog = uninstallDialogRef.current
-    if (!dialog) return undefined
-    const returnFocus = uninstallReturnFocusRef.current
-    dialog.querySelector<HTMLElement>('[data-uninstall-cancel]')?.focus()
-    const keydown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); setUninstallTarget(null); return }
-      trapFocusWithinDialog(event, dialog)
-    }
-    window.addEventListener('keydown', keydown)
-    return () => {
-      window.removeEventListener('keydown', keydown)
-      if (returnFocus?.isConnected) returnFocus.focus()
-    }
-  }, [uninstallTarget])
 
   return (
     <section className="plugins-page">
@@ -745,26 +729,15 @@ export function PluginsSection({
       ) : null}
 
       {uninstallTarget ? (
-        <div className="plugin-customizer-backdrop" onMouseDown={(event) => {
-          if (event.currentTarget === event.target) setUninstallTarget(null)
-        }}>
-          <aside className="plugin-customizer system-plugin-request system-plugin-uninstall-dialog" role="dialog" aria-modal="true"
-            aria-labelledby="system-plugin-uninstall-title" ref={uninstallDialogRef} tabIndex={-1}>
-            <h3 id="system-plugin-uninstall-title">{isZh ? `卸载“${uninstallTarget.name}”` : `Uninstall "${uninstallTarget.name}"`}</h3>
-            <p>{isZh ? '插件将立即停用，代码和日志在重启后清理。请选择如何处理插件专属数据。' : 'The plugin stops immediately; code and logs are removed after restart. Choose what happens to its private data.'}</p>
+        <ConfirmationDialog title={isZh ? `卸载“${uninstallTarget.name}”` : `Uninstall "${uninstallTarget.name}"`}
+          description={isZh ? '插件将立即停用，代码和日志在重启后清理。请选择如何处理插件专属数据。' : 'The plugin stops immediately; code and logs are removed after restart. Choose what happens to its private data.'}
+          note={isZh ? '知识库文档、任意设置及插件写到其他目录的文件不会自动撤销；数据库安全备份会保留。' : 'Workspace documents, arbitrary settings and files written elsewhere are not reverted. Database safety backups are retained.'}
+          confirmLabel={isZh ? '确认卸载' : 'Confirm uninstall'} returnFocus={uninstallReturnFocusRef.current}
+          onCancel={() => setUninstallTarget(null)} onConfirm={() => onUninstallSystemPlugin(uninstallTarget, preserveUninstallData)}>
             <code>{uninstallTarget.dataPath}</code>
             <label><input type="radio" name="system-plugin-uninstall-data" checked={preserveUninstallData} onChange={() => setPreserveUninstallData(true)} />{isZh ? '保留数据，重新安装时继续使用' : 'Keep data for a future reinstall'}</label>
             <label><input type="radio" name="system-plugin-uninstall-data" checked={!preserveUninstallData} onChange={() => setPreserveUninstallData(false)} />{isZh ? '同时删除插件专属数据' : 'Also delete plugin data'}</label>
-            <p>{isZh ? '知识库文档、任意设置及插件写到其他目录的文件不会自动撤销；数据库安全备份会保留。' : 'Workspace documents, arbitrary settings and files written elsewhere are not reverted. Database safety backups are retained.'}</p>
-            <div className="plugin-toolbar">
-              <button className="secondary-button" data-uninstall-cancel onClick={() => setUninstallTarget(null)} type="button">{isZh ? '取消' : 'Cancel'}</button>
-              <button className="danger-button" onClick={() => {
-                onUninstallSystemPlugin(uninstallTarget, preserveUninstallData)
-                setUninstallTarget(null)
-              }} type="button">{isZh ? '确认卸载' : 'Confirm uninstall'}</button>
-            </div>
-          </aside>
-        </div>
+        </ConfirmationDialog>
       ) : null}
 
       {customizingPlugin ? (

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { register } from 'node:module'
 import React, { act, Suspense, useState, type ReactNode } from 'react'
 import { JSDOM } from 'jsdom'
 import { ErrorBoundary } from '../src/renderer/src/components/ErrorBoundary'
@@ -11,10 +12,20 @@ import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEdi
 import { getUiText, setActiveUiLanguage } from '../src/renderer/src/i18n'
 import type { DocumentDetail, ElectronApi, GlobalSearchResult } from '../src/shared/contracts'
 
+register(`data:text/javascript,${encodeURIComponent(`
+  export async function load(url, context, nextLoad) {
+    if (url.endsWith('.css')) return { format: 'module', source: '', shortCircuit: true }
+    return nextLoad(url, context)
+  }
+`)}`, import.meta.url)
+await import('../src/renderer/src/components/showConfirmation')
+
 async function withRenderer(api: Partial<ElectronApi>, run: (context: {
   render: (node: ReactNode) => Promise<void>; document: Document; window: Window
 }) => Promise<void>) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' })
+  dom.window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
+  dom.window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
   const originals = new Map<string, PropertyDescriptor | undefined>()
   Object.defineProperty(dom.window, 'knowbook', { value: api })
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
@@ -81,18 +92,29 @@ test('recovery actions surface clipboard failure and honour cancellation before 
     writeClipboardText: async (text) => { if (failCopy) throw new Error('clipboard busy'); copied = text },
     restartInSystemPluginSafeMode: async () => { restarts++ }
   }, async ({ render, document, window }) => {
-    window.confirm = () => false
     await render(<RecoveryState title="Test recovery" error={new Error('diagnostic detail')} allowRestart />)
     const button = (label: string) => [...document.querySelectorAll('button')].find((item) => item.textContent === label)!
+    const waitForConfirmation = async () => {
+      for (let attempt = 0; attempt < 100 && !document.querySelector('[role="alertdialog"]'); attempt++) {
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+      }
+      assert.ok(document.querySelector('[role="alertdialog"]'))
+    }
     await act(async () => button('Copy diagnostics').click())
     assert.match(document.body.textContent!, /clipboard busy/)
     failCopy = false
     await act(async () => button('Copy diagnostics').click())
     assert.match(copied, /diagnostic detail/)
     await act(async () => button('Restart in safe mode').click())
+    await waitForConfirmation()
     assert.equal(restarts, 0)
-    window.confirm = () => true
+    assert.match(document.querySelector('[role="alertdialog"]')!.textContent!, /Unsaved changes may be lost/)
+    await act(async () => button('Cancel').click())
+    assert.equal(document.querySelector('[role="alertdialog"]'), null)
     await act(async () => button('Restart in safe mode').click())
+    await waitForConfirmation()
+    const confirm = document.querySelector<HTMLButtonElement>('[role="alertdialog"] .primary-button')!
+    await act(async () => confirm.click())
     assert.equal(restarts, 1)
   })
 })

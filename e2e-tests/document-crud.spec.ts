@@ -253,9 +253,9 @@ test.describe('Document CRUD Operations @electron', () => {
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
       await expect(getTreeButton(page, title)).toBeVisible()
 
-      page.once('dialog', (dialog) => dialog.accept())
       await page.getByRole('button', { name: uiText('More actions', '更多操作') }).click()
       await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Delete', '删除') }).click()
+      await page.getByRole('alertdialog').getByRole('button', { name: uiText('Delete document', '删除文档') }).click()
 
       await expect(getTreeButton(page, title)).toHaveCount(0)
       await expect.poll(() => page.evaluate(async (documentTitle) => {
@@ -285,9 +285,9 @@ test.describe('Document CRUD Operations @electron', () => {
       await expect(page.locator('.document-path')).toContainText(`${parentTitle}/${childTitle}`)
 
       await getTreeButton(page, parentTitle).click()
-      page.once('dialog', (dialog) => dialog.accept())
       await page.getByRole('button', { name: uiText('More actions', '更多操作') }).click()
       await page.locator('.document-header-action-menu').getByRole('button', { name: uiText('Delete', '删除') }).click()
+      await page.getByRole('alertdialog').getByRole('button', { name: uiText('Delete document', '删除文档') }).click()
 
       await expect(getTreeButton(page, parentTitle)).toHaveCount(0)
       await getTreeButton(page, childTitle).click()
