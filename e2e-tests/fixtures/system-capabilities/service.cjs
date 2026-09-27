@@ -6,6 +6,7 @@ const dataRoot = process.env.KNOWBOOK_SYSTEM_PLUGIN_DATA_ROOT
 const historyPath = path.join(dataRoot, 'service-history.json')
 const heartbeatPath = path.join(dataRoot, 'service-heartbeat.json')
 const crashPath = path.join(dataRoot, 'crash-service.json')
+const stopPath = path.join(dataRoot, 'stop-service.json')
 const startedAt = Date.now()
 let ticks = 0
 function write(file, value) {
@@ -28,6 +29,7 @@ void Promise.all([api.call('system.ping'), api.call('paths.get')]).then(([ping, 
   console.log(`CONTROLLED_CAPABILITY_SERVICE_START ${ping.revisionHash}`)
   api.ready({ rpc: true })
   const heartbeat = setInterval(() => {
+    if (fs.existsSync(stopPath)) { stop(); return }
     ticks += 1
     write(heartbeatPath, { pid: process.pid, startedAt, ticks, elapsedMs: Date.now() - startedAt })
     try { api.heartbeat({ ticks }) } catch (error) {

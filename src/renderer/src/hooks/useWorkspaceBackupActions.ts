@@ -37,9 +37,10 @@ export function useWorkspaceBackupActions({
     if (selectedDocumentId) {
       const detail = await window.knowbook.getDocumentDetail(selectedDocumentId)
       if (selection.current !== selectedDocumentId) return
-      if (detail) {
-        setSelectedDocument(detail)
-      } else {
+      // The document domain reloads a clean editor from catalog changes, updating
+      // its saved baseline and draft together. Replacing only the baseline here
+      // makes the old draft look edited and can save it over the imported blocks.
+      if (!detail) {
         setSelectedDocument(null)
         setSelectedDocumentId(refreshed.initialDocumentId)
       }

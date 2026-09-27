@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { cpSync, mkdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { withElectronApp, uiText } from './helpers/electron'
 
@@ -45,6 +45,7 @@ test('import report lists successful files, filters issues, locates saved blocks
     await report.press('Escape')
     await expect(report).toHaveCount(0)
     await expect(page.getByRole('button', { name: uiText('View latest import report', '查看最近导入报告') })).toBeFocused()
+    appendFileSync(join(input, '项目说明.md'), '\n\nImported revision must survive the next canceled import.\n')
     await page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Dashboard', '总览'))).click()
     await page.getByRole('button', { name: uiText('Import Markdown / restore backup', '导入 Markdown / 恢复备份'), exact: true }).click()
     await expect(report).toBeVisible()
@@ -57,10 +58,14 @@ test('import report lists successful files, filters issues, locates saved blocks
       }) as typeof dialog.showMessageBox
     })
     const beforeCancel = await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id)
+    expect(beforeCancel!.blocks.some(block => block.content.includes('Imported revision must survive'))).toBe(true)
     writeFileSync(join(input, '项目说明.md'), '# 项目说明\n\nThis should not be imported.\n')
     await page.getByRole('button', { name: uiText('Import Markdown / restore backup', '导入 Markdown / 恢复备份'), exact: true }).click()
     await expect.poll(() => app.evaluate(() => process.env.KNOWBOOK_TEST_IMPORT_CANCELED)).toBe('1')
     await expect.poll(async () => (await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))!.updatedAt).toBe(beforeCancel!.updatedAt)
+    expect((await page.evaluate((id) => window.knowbook.getDocumentDetail(id), id))!.blocks).toEqual(beforeCancel!.blocks)
+    await page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Documents', '文档'))).click()
+    await expect(page.locator('.block-editor-list')).toContainText('Imported revision must survive')
     await page.getByRole('button', { name: uiText('View latest import report', '查看最近导入报告') }).click()
     await expect(report.getByRole('status')).toContainText(/7/)
     expect(errors).toEqual([])

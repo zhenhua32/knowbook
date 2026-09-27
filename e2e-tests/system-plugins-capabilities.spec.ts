@@ -449,15 +449,21 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     await expect.poll(() => readJson(heartbeat).ticks).toBeGreaterThan(detachedBefore.ticks + 3)
     expect(readJson(heartbeat).pid).toBe(detachedBefore.pid)
     current = await launchElectronApp(env, { userDataRoot: profile })
+    const resumedHostPid = await current.app.evaluate(() => process.pid)
     await expect.poll(async () => {
       const plugin = await current!.page.evaluate(async id => (await window.knowbook.listSystemPlugins()).find(item => item.pluginId === id), pluginId)
-      return plugin?.status
-    }, { timeout: 30000 }).toBe('active')
+      return { status: plugin?.status, mainReady: plugin?.recentRuns.some(run => run.component === 'main' && run.status === 'ready' && run.pid === resumedHostPid) }
+    }, { timeout: 30000 }).toEqual({ status: 'active', mainReady: true })
     await expect.poll(async () => {
       const plugin = await current!.page.evaluate(async id => (await window.knowbook.listSystemPlugins()).find(item => item.pluginId === id), pluginId)
       return plugin?.recentRuns.find(run => run.component === 'detached' && run.status === 'ready')?.pid
     }).toBe(detachedBefore.pid)
-    await expect.poll(() => readJson(join(serviceData, 'service-reconnect.json')).ticks).toBeGreaterThan(detachedBefore.ticks + 4)
+    // Earlier app-lifetime runs share this marker and may have much higher tick
+    // counts. Wait for one reply proving both this revision/PID and fresh progress.
+    await expect.poll(() => {
+      const reply = readJson(join(serviceData, 'service-reconnect.json'))
+      return { pid: reply.pid, revisionHash: reply.ping.revisionHash, progressed: reply.ticks > detachedBefore.ticks + 4 }
+    }).toEqual({ pid: detachedBefore.pid, revisionHash: `sha256:${detachedRequest!.artifactSha256}`, progressed: true })
     const detachedAfter = readJson(join(serviceData, 'service-reconnect.json'))
     expect(detachedAfter).toMatchObject({ pid: detachedBefore.pid, ping: { pluginId, revisionHash: `sha256:${detachedRequest!.artifactSha256}` } })
     await current.page.evaluate(async id => window.knowbook.stopSystemPluginService({ pluginId: id }), pluginId)
@@ -594,15 +600,17 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
         await current.page.evaluate(async id => {
           const plugin = (await window.knowbook.listSystemPlugins()).find(item => item.pluginId === id)
           if (!plugin) return
-          if (plugin.enabled && plugin.status === 'active') await window.knowbook.stopSystemPluginService({ pluginId: id })
+          // Disable also cancels activation and stops verified persisted services;
+          // the active-service API can reject while startup adoption is in flight.
           if (plugin.enabled) await window.knowbook.setSystemPluginEnabled({ pluginId: id, enabled: false })
         }, pluginId)
       } catch (error) { cleanupErrors.push(`Plugin cleanup: ${String(error)}`) }
-      try { await closeElectronApp(current) } catch (error) { cleanupErrors.push(String(error)) }
+      try { await closeElectronApp(current, { preserveUserData: true }) } catch (error) { cleanupErrors.push(String(error)) }
     }
     if (ownedDetachedPid && processIsAlive(ownedDetachedPid)) {
       try {
-        execFileSync('taskkill.exe', ['/pid', String(ownedDetachedPid), '/T', '/F'], { windowsHide: true, stdio: 'pipe' })
+        // Ask only this isolated fixture to exit; a recycled PID must never be killed.
+        writeFileSync(join(profile!, 'system-plugins', 'data', pluginId, 'stop-service.json'), 'controlled cleanup')
         await expect.poll(() => processIsAlive(ownedDetachedPid!)).toBe(false)
       } catch (error) { cleanupErrors.push(`Owned detached process cleanup: ${String(error)}`) }
     }
@@ -629,7 +637,7 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
       matrix: capabilityMatrix(!failure && cleanupErrors.length === 0 && completedStages.includes('uninstall'))
     }, null, 2))
     await testInfo.attach('capabilities-evidence', { path: output, contentType: 'application/json' })
-    expect(cleanupErrors, 'The controlled URI handler and temporary profile must be removed.').toEqual([])
+    if (!failure) expect(cleanupErrors, 'The controlled URI handler and temporary profile must be removed.').toEqual([])
   }
 })
 
