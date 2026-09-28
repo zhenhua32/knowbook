@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import electron from 'electron'
 import { AttachmentStore } from './attachments'
 import { registerAttachmentHandlers } from './attachment-ipc'
+import { WebDavSyncService } from './sync/service'
 import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
 import type {
   AskAiInput,
@@ -376,6 +377,7 @@ let assistantAgent: AssistantAgentService
 let appUpdateManager: AppUpdateManager
 let servicesInitialized = false
 let restoreWorkflowInProgress = false
+let webdavSync: WebDavSyncService
 
 function preparePluginUi(input: PluginUiDocumentPreparation): Promise<void> {
   const window = mainWindow
@@ -573,6 +575,7 @@ function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistrat
 
 function initializeServices(): void {
   store = new KnowbookStore(databasePath)
+  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress)
   try {
     getDecryptedAiApiKey()
   } catch (error) {
@@ -1457,6 +1460,12 @@ async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise
 
 function registerIpcHandlers(): void {
   registerAttachmentHandlers(ipcMain, attachmentStore)
+  ipcMain.handle('knowbook:get-webdav-sync-status', () => webdavSync.getStatus())
+  ipcMain.handle('knowbook:save-webdav-sync-config', (_event, input: import('../shared/webdav-sync').SaveWebDavSyncConfig) => webdavSync.saveConfig(input))
+  ipcMain.handle('knowbook:test-webdav-connection', () => webdavSync.testConnection())
+  ipcMain.handle('knowbook:sync-webdav-now', () => webdavSync.sync())
+  ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
+  ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
   ipcMain.handle('knowbook:get-home-data', () => {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {
@@ -2103,6 +2112,7 @@ function registerIpcHandlers(): void {
 
     restoreWorkflowInProgress = true
     try {
+      await webdavSync.waitForIdle()
       await backupService.waitForIdle()
       const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
       let restoreRoot: string
@@ -2672,6 +2682,7 @@ async function shutdownServices(): Promise<void> {
     backupTimer = null
   }
   workspaceMutationNotifier.dispose()
+  await webdavSync.stop()
   pluginMutationNotifier.dispose()
   cancelAllDocumentSummaryGeneration()
 
@@ -2946,6 +2957,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     pluginStartupFallback = setTimeout(startPluginStartup, 5_000)
     pluginStartupFallback.unref()
     startBackupSchedule()
+    if (!restoredDatabaseSafeMode) webdavSync.start()
     appUpdateManager.scheduleStartupCheck()
     void webClipBridge.applyConfig(getStoredWebClipBridgeConfig()).catch((error) => {
       console.error('Web clip bridge startup failed.', error)

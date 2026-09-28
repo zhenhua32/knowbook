@@ -1,6 +1,8 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
+import { SyncRepository } from '../sync/repository'
+import type { SyncRecord } from '../sync/model'
 import { existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
@@ -1209,6 +1211,10 @@ export class KnowbookStore {
   }
 
   updateDocument(documentId: string, input: UpdateDocumentInput): string[] {
+    if (input.expectedUpdatedAt !== undefined) {
+      const current = this.db.prepare('SELECT updated_at FROM documents WHERE id = ?').get(documentId) as { updated_at: string } | undefined
+      if (current && current.updated_at !== input.expectedUpdatedAt) throw new Error('文档已被其他操作或同步更新，草稿仍保留。请复制草稿后重新打开文档，避免覆盖新版本。')
+    }
     const now = new Date().toISOString()
     const document = this.db.prepare(`
       SELECT id, title, path, parent_id, summary
@@ -2849,6 +2855,17 @@ export class KnowbookStore {
 
   runInTransaction<T>(operation: () => T): T {
     return this.db.transaction(operation)()
+  }
+
+  getSyncRecords(): Map<string, SyncRecord> {
+    return new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).snapshot()
+  }
+
+  applySyncRecords(records: SyncRecord[]): void {
+    this.runInBulkDocumentMutation(() => {
+      new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).apply(records)
+      this.deferredFullLinkResyncRequested = true
+    })
   }
 
   checkDocumentLinks(documentId: string, attachmentCheck: (url: string) => DocumentLinkIssueReason | null): DocumentLinkCheck {

@@ -773,6 +773,7 @@ export interface UpdateWebClipBridgeSettingsInput {
 }
 
 export interface UpdateDocumentInput {
+  expectedUpdatedAt?: string
   title: string
   summary: string
   blocks: DocumentBlockDraft[]
@@ -946,6 +947,12 @@ export interface ElectronApi {
   removeSystemPluginFramePolicy: (input: RemoveSystemPluginFramePolicyInput) => Promise<void>
   invokeSystemPluginMain: (input: InvokeSystemPluginMainInput) => Promise<SystemPluginServiceRpcJson>
   triggerBackup: () => Promise<BackupResult>
+  getWebDavSyncStatus: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  saveWebDavSyncConfig: (input: import('./webdav-sync').SaveWebDavSyncConfig) => Promise<import('./webdav-sync').WebDavSyncStatus>
+  testWebDavConnection: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  syncWebDavNow: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  cancelWebDavSync: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  resolveWebDavSyncConflict: (input: import('./webdav-sync').ResolveWebDavSyncConflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
   getBackupHealth: () => Promise<import('./backup-health').BackupHealth>
   onBackupHealth: (listener: (state: import('./backup-health').BackupHealth) => void) => () => void
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>

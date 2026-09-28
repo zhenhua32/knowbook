@@ -147,7 +147,7 @@ export function useDocumentEditorState({
       summary: selectedDocument.summary.trim(),
       blocks: normalizeDraftBlocks(selectedDocument.blocks.map(toDraftBlock))
     }
-  }, [normalizeDraftBlocks, selectedDocument, toDraftBlock])
+  }, [selectedDocument])
 
   const hasPendingDraftChanges = useMemo(() => Boolean(
     selectedDocumentId
@@ -169,7 +169,7 @@ export function useDocumentEditorState({
       const resolved = typeof next === 'function' ? next(previous) : next
       return normalizeDraftBlocks(resolved)
     })
-  }, [normalizeDraftBlocks])
+  }, [])
 
   const updateDraftBlock = useCallback((index: number, patch: Partial<DocumentBlockDraft>) => {
     setDraftBlocksState((previous) => {
@@ -189,7 +189,7 @@ export function useDocumentEditorState({
 
       return changesTreeShape ? normalizeDraftBlocks(nextBlocks) : nextBlocks
     })
-  }, [normalizeDraftBlocks])
+  }, [])
 
   const getDraftBlocks = useCallback(() => draftBlocksRef.current, [])
 
@@ -214,7 +214,7 @@ export function useDocumentEditorState({
     } else {
       clearHistoryState()
     }
-  }, [clearHistoryState, initializeHistoryState, normalizeDraftBlocks, toDraftBlock])
+  }, [clearHistoryState, initializeHistoryState])
 
   const clearEditorSession = useCallback(() => {
     resetEditorFromDocument(null, false)
@@ -356,6 +356,7 @@ export function useDocumentEditorState({
 
     try {
       const updateResult = await window.knowbook.updateDocument(persistedDocumentId, {
+        expectedUpdatedAt: selectedDocument.updatedAt,
         title: draftTitle,
         summary: draftSummary,
         blocks: normalizedDraftBlocks
@@ -402,7 +403,7 @@ export function useDocumentEditorState({
         setIsSaving(false)
       }
     }
-  }, [draftBlocksState, draftSummary, draftTitle, normalizeDraftBlocks, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, toDraftBlock, ui, validateBlockTreeStructure])
+  }, [draftBlocksState, draftSummary, draftTitle, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, ui])
 
   const saveDocument = useCallback(async () => {
     clearAutoSaveTimer()

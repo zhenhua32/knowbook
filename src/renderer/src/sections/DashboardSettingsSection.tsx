@@ -1,6 +1,8 @@
 import type { AppUpdateState, RecentDocument, WebClipBridgeStatus, WorkspaceSummary } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
 import './management-sections.css'
+import { lazy, Suspense } from 'react'
+const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type DashboardSettingsSectionProps = {
   ui: UiText
@@ -166,6 +168,7 @@ export function DashboardSettingsSection({
 
           {isSettingsPage ? (
             <div className="settings-groups">
+              <Suspense fallback={null}><WebDavSyncSettings isZh={isZh} /></Suspense>
               <section className="settings-group">
                 <div className="settings-group-heading">
                   <h4>{isZh ? '基础偏好' : 'General preferences'}</h4>

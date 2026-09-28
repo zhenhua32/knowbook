@@ -39,6 +39,7 @@ export function useDocumentTodoActions({
       )
 
       await window.knowbook.updateDocument(selectedDocument.id, {
+        expectedUpdatedAt: selectedDocument.updatedAt,
         title: selectedDocument.title,
         summary: selectedDocument.summary,
         blocks: nextBlocks.map(toDraftBlock)

@@ -112,6 +112,12 @@ ipcRenderer.on(PLUGIN_UI_PREPARE_CHANNEL, (_event, request: PluginUiPreparationR
 })
 
 const api: ElectronApi = {
+  getWebDavSyncStatus: () => ipcRenderer.invoke('knowbook:get-webdav-sync-status'),
+  saveWebDavSyncConfig: (input) => ipcRenderer.invoke('knowbook:save-webdav-sync-config', input),
+  testWebDavConnection: () => ipcRenderer.invoke('knowbook:test-webdav-connection'),
+  syncWebDavNow: () => ipcRenderer.invoke('knowbook:sync-webdav-now'),
+  cancelWebDavSync: () => ipcRenderer.invoke('knowbook:cancel-webdav-sync'),
+  resolveWebDavSyncConflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-sync-conflict', input),
   getHomeData: async () => {
     const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
     const documentCatalog = data.documentCatalog.map(decodeDocumentIndexEntry)
