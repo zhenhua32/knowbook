@@ -2,6 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { WebDavSyncConfig } from '../../shared/webdav-sync'
 
+export interface WebDavCapabilities { createMode: 'conditional' | 'move' }
+
+function usableEtag(etag: string | null): etag is string {
+  if (!etag || /^W\//i.test(etag)) return false
+  // Some DAV implementations return an opaque tag without the HTTP quote wrapper.
+  // Preserve it verbatim; the connection probe must still prove If-Match enforcement.
+  return /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(etag) || /^[A-Za-z0-9._:+/=-]{1,512}$/.test(etag)
+}
+
 export class WebDavHttpError extends Error {
   constructor(readonly status: number) {
     super(status === 401 || status === 403 ? 'WebDAV 登录失败或无访问权限，请检查用户名和应用密码。'
@@ -37,7 +46,9 @@ export class WebDavClient {
   private lastRequestAt = 0
   private readonly root: string
   private readonly authorization: string
-  constructor(private readonly config: WebDavSyncConfig, password: string, private readonly signal?: AbortSignal) {
+  private checkedConditionalGet = false
+  constructor(private readonly config: WebDavSyncConfig, password: string, private readonly signal?: AbortSignal,
+    private capabilities: WebDavCapabilities = { createMode: 'conditional' }) {
     this.root = config.url + config.directory.split('/').map(encodeURIComponent).join('/') + '/'
     this.authorization = `Basic ${Buffer.from(`${config.username}:${password}`).toString('base64')}`
   }
@@ -50,10 +61,18 @@ export class WebDavClient {
         if (remaining > 0) await delay(remaining, undefined, { signal: this.signal })
       }
       this.lastRequestAt = Date.now()
-      return await fetch(url, {
+      const response = await fetch(url, {
         method, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(45_000), ...(this.signal ? [this.signal] : [])]),
         headers: { Authorization: this.authorization, ...headers }, body: body ? new Uint8Array(body) : undefined
       })
+      const tag = headers?.['If-Match']
+      if (response.status === 412 && tag && usableEtag(tag) && !tag.startsWith('"')) {
+        await this.discard(response)
+        // A provider may expose a bare tag but require the RFC quote wrapper in requests.
+        // Retry the identical opaque value, never a different version or an unconditional write.
+        return await this.request(url, method, body, { ...headers, 'If-Match': `"${tag}"` })
+      }
+      return response
     } catch {
       throw new Error(this.signal?.aborted ? '同步已停止。' : '无法连接 WebDAV 或请求超时，请检查网络、地址和证书。')
     }
@@ -72,10 +91,14 @@ export class WebDavClient {
     if (response.status !== 200) throw new WebDavHttpError(response.status)
     return true
   }
-  async get(path: string, maxBytes = 16 * 1024 * 1024): Promise<{ bytes: Uint8Array; etag: string | null } | null> {
-    const response = await this.request(this.path(path), 'GET')
+  async get(path: string, maxBytes = 16 * 1024 * 1024, etag?: string): Promise<{ bytes: Uint8Array; etag: string | null } | null> {
+    const response = await this.request(this.path(path), 'GET', undefined, etag ? { 'If-Match': etag } : undefined)
     if (response.status === 404) { await this.discard(response); return null }
     if (response.status !== 200) { await this.discard(response); throw new WebDavHttpError(response.status) }
+    return { bytes: await this.readBytes(response, maxBytes), etag: response.headers.get('etag')?.trim() || null }
+  }
+
+  private async readBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
     if (Number(response.headers.get('content-length')) > maxBytes) { await this.discard(response); throw new Error('远端同步文件超过大小限制。') }
     const reader = response.body?.getReader()
     const chunks: Uint8Array[] = []
@@ -89,7 +112,70 @@ export class WebDavClient {
         chunks.push(result.value)
       }
     } catch (error) { await reader?.cancel(); throw error }
-    return { bytes: Buffer.concat(chunks), etag: response.headers.get('etag') }
+    return Buffer.concat(chunks)
+  }
+
+  /** A body and its version must describe the same server revision, even during a concurrent write. */
+  async getVersioned(path: string, maxBytes = 16 * 1024 * 1024): Promise<{ bytes: Uint8Array; etag: string } | null> {
+    const initial = await this.get(path, maxBytes)
+    if (!initial) return null
+    if (usableEtag(initial.etag)) return { ...initial, etag: initial.etag }
+    const etag = await this.metadataEtag(path)
+    requireStrongEtag(etag)
+    if (!this.checkedConditionalGet) {
+      const rejected = await this.request(this.path(path), 'GET', undefined, { 'If-Match': `"knowbook-missing-${randomUUID()}"` })
+      await this.discard(rejected)
+      if (rejected.status !== 412) {
+        if (rejected.status !== 200) throw new WebDavHttpError(rejected.status)
+        throw new Error('WebDAV 下载未提供 ETag，且不支持按版本读取，无法安全关联文件与版本。')
+      }
+      this.checkedConditionalGet = true
+    }
+    // Never pair the first GET's bytes with a later HEAD/PROPFIND tag: another device may have written between them.
+    const current = await this.get(path, maxBytes, etag)
+    if (!current) throw new WebDavHttpError(412)
+    if (usableEtag(current.etag) && current.etag.replace(/^"|"$/g, '') !== etag.replace(/^"|"$/g, '')) throw new WebDavHttpError(412)
+    return { bytes: current.bytes, etag }
+  }
+
+  private async metadataEtag(path: string): Promise<string | null> {
+    const response = await this.request(this.path(path), 'HEAD')
+    await this.discard(response)
+    if (response.status === 404) throw new WebDavHttpError(412)
+    if (![200, 405, 501].includes(response.status)) throw new WebDavHttpError(response.status)
+    const header = response.status === 200 ? response.headers.get('etag')?.trim() || null : null
+    if (usableEtag(header)) return header
+    const properties = await this.request(this.path(path), 'PROPFIND', Buffer.from(
+      '<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>'
+    ), { Depth: '0', 'Content-Type': 'application/xml; charset=utf-8' })
+    if (properties.status === 404) { await this.discard(properties); throw new WebDavHttpError(412) }
+    if ([405, 501].includes(properties.status)) { await this.discard(properties); return null }
+    if (properties.status !== 207) { await this.discard(properties); throw new WebDavHttpError(properties.status) }
+    const xml = Buffer.from(await this.readBytes(properties, 256 * 1024)).toString('utf8')
+    const { readWebDavEtag } = await import('./webdav-properties')
+    return readWebDavEtag(xml, this.path(path))
+  }
+
+  private async remove(path: string): Promise<void> {
+    const response = await this.request(this.path(path), 'DELETE')
+    await this.discard(response)
+    if (![200, 204, 404].includes(response.status)) throw new WebDavHttpError(response.status)
+  }
+
+  private async moveNew(source: string, destination: string): Promise<void> {
+    const response = await this.request(this.path(source), 'MOVE', undefined, { Destination: this.path(destination), Overwrite: 'F' })
+    await this.discard(response)
+    // Nutstore reports DuplicateName as 409 instead of 412. Only treat it as a
+    // publication race when the target exists; missing parents and other 409s remain errors.
+    if (response.status === 409 && await this.exists(destination)) throw new WebDavHttpError(412)
+    if (![201, 204].includes(response.status)) throw new WebDavHttpError(response.status)
+  }
+
+  async create(path: string, bytes: Uint8Array): Promise<void> {
+    if (this.capabilities.createMode === 'conditional') return this.put(path, bytes, { create: true })
+    const temporary = `objects/.pending-${randomUUID()}.json`
+    try { await this.put(temporary, bytes); await this.moveNew(temporary, path) }
+    finally { await this.remove(temporary).catch(() => {}) }
   }
 
   async put(path: string, bytes: Uint8Array, condition?: { etag: string } | { create: true }): Promise<void> {
@@ -114,30 +200,49 @@ export class WebDavClient {
     if (![201, 405].includes(response.status)) throw new WebDavHttpError(response.status)
   }
 
-  async test(): Promise<void> {
+  async test(): Promise<WebDavCapabilities> {
     await this.initialize()
     const path = `.probe-${randomUUID()}`
+    const cleanup = [path]
     try {
       await this.put(path, Buffer.from('knowbook-webdav-probe'), { create: true })
-      const original = await this.get(path, 1024)
+      const original = await this.getVersioned(path, 1024)
       if (!original || Buffer.from(original.bytes).toString() !== 'knowbook-webdav-probe') throw new Error('WebDAV 读写校验失败。')
       requireStrongEtag(original.etag)
-      for (const condition of [{ etag: '"knowbook-nonmatching-etag"' }, { create: true as const }]) {
-        let rejected = false
-        try { await this.put(path, Buffer.from('must-not-overwrite'), condition) }
-        catch (error) { if (error instanceof WebDavHttpError && error.status === 412) rejected = true; else throw error }
-        if (!rejected) throw new Error('该 WebDAV 服务不支持条件写入，无法安全处理多设备并发同步。')
+      const rejected = async (operation: () => Promise<unknown>): Promise<boolean> => {
+        try { await operation(); return false }
+        catch (error) { if (error instanceof WebDavHttpError && error.status === 412) return true; throw error }
       }
-      await this.put(path, Buffer.from('knowbook-probe-updated'), { etag: original.etag! })
-      const updated = await this.get(path, 1024)
+      if (!await rejected(() => this.put(path, Buffer.from('must-not-overwrite'), { etag: '"knowbook-nonmatching-etag"' }))) {
+        throw new Error('该 WebDAV 服务不支持条件写入，无法安全处理多设备并发同步。')
+      }
+      await this.put(path, Buffer.from('knowbook-probe-updated'), { etag: original.etag })
+      const updated = await this.getVersioned(path, 1024)
       if (!updated || Buffer.from(updated.bytes).toString() !== 'knowbook-probe-updated') throw new Error('WebDAV 条件写入校验失败。')
+      if (updated.etag === original.etag || !await rejected(() => this.put(path, Buffer.from('must-not-overwrite'), { etag: original.etag }))) {
+        throw new Error('WebDAV 未拒绝过期版本，无法安全进行并发同步。')
+      }
+      this.capabilities = { createMode: 'conditional' }
+      if (!await rejected(() => this.put(path, Buffer.from('create-condition-probe'), { create: true }))) {
+        // Some providers enforce If-Match but ignore If-None-Match. MOVE with Overwrite:F
+        // can still provide atomic first publication; prove both the reject and success paths.
+        cleanup.push(`${path}-source`, `${path}-destination`)
+        await this.put(`${path}-source`, Buffer.from('knowbook-move-probe'))
+        if (!await rejected(() => this.moveNew(`${path}-source`, path))) throw new Error('WebDAV 不支持安全的新建文件操作（条件写入和禁止覆盖移动均不可用）。')
+        const unchanged = await this.get(path, 1024)
+        if (!unchanged || Buffer.from(unchanged.bytes).toString() !== 'create-condition-probe') throw new Error('WebDAV 禁止覆盖移动未保护已有文件。')
+        await this.moveNew(`${path}-source`, `${path}-destination`)
+        const moved = await this.get(`${path}-destination`, 1024)
+        if (!moved || Buffer.from(moved.bytes).toString() !== 'knowbook-move-probe') throw new Error('WebDAV 新建文件移动校验失败。')
+        this.capabilities = { createMode: 'move' }
+      }
+      return { ...this.capabilities }
     } finally {
-      const response = await this.request(this.path(path), 'DELETE').catch(() => null)
-      if (response) await this.discard(response)
+      for (const temporary of cleanup) await this.remove(temporary).catch(() => {})
     }
   }
 }
 
 export function requireStrongEtag(etag: string | null): asserts etag is string {
-  if (!etag || !/^"[^"\r\n]+"$/.test(etag)) throw new Error('WebDAV 未返回有效的强 ETag，无法安全进行并发同步。')
+  if (!usableEtag(etag)) throw new Error('WebDAV 的 GET、HEAD 和文件属性均未提供可用的非弱 ETag，无法安全进行并发同步。')
 }

@@ -5,7 +5,7 @@ import { protectCredential, revealCredential, type SecureStringStorage } from '.
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus } from '../../shared/webdav-sync'
 import { SyncAssets } from './assets'
 import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument } from './model'
-import { normalizeWebDavConfig, requireStrongEtag, WebDavClient, WebDavHttpError } from './webdav-client'
+import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
 
 const CONFIG_KEY = 'sync.webdav.config'
 const PASSWORD_KEY = 'sync.webdav.password'
@@ -40,6 +40,7 @@ export class WebDavSyncService {
   private timer: ReturnType<typeof setInterval> | null = null
   private stopped = false
   private verifiedTarget: string | null = null
+  private capabilities: WebDavCapabilities | undefined
   private readonly assets: SyncAssets
   private readonly uploadedObjects = new Set<string>()
   private readonly uploadedAssets = new Set<string>()
@@ -89,6 +90,7 @@ export class WebDavSyncService {
     this.config = next
     if (targetChanged) { this.uploadedObjects.clear(); this.uploadedAssets.clear(); this.remoteObjects.clear(); this.remoteObjectBytes = 0 }
     this.verifiedTarget = null
+    this.capabilities = undefined
     this.message = '设置已保存。首次同步会合并两端已有内容。'
     this.phase = 'idle'
     this.schedule()
@@ -111,7 +113,7 @@ export class WebDavSyncService {
     let password: string
     try { password = revealCredential(stored, this.credentials).value }
     catch { throw new Error('无法解密 WebDAV 应用密码，请重新填写并保存。') }
-    return new WebDavClient(normalizeWebDavConfig(this.config), password, this.abort?.signal)
+    return new WebDavClient(normalizeWebDavConfig(this.config), password, this.abort?.signal, this.capabilities)
   }
 
   private async operation(phase: 'testing' | 'syncing', run: () => Promise<void>): Promise<WebDavSyncStatus> {
@@ -134,7 +136,9 @@ export class WebDavSyncService {
 
   testConnection(): Promise<WebDavSyncStatus> {
     return this.operation('testing', async () => {
-      await this.client().test()
+      this.verifiedTarget = null
+      this.capabilities = undefined
+      this.capabilities = await this.client().test()
       this.verifiedTarget = targetKey(this.config)
       this.message = '连接成功，读写与并发保护检查通过。'
     })
@@ -144,7 +148,7 @@ export class WebDavSyncService {
     return this.operation('syncing', async () => {
       const client = this.client()
       if (this.verifiedTarget !== targetKey(this.config)) {
-        await client.test()
+        this.capabilities = await client.test()
         this.verifiedTarget = targetKey(this.config)
       }
       this.uploaded = 0; this.downloaded = 0
@@ -160,9 +164,8 @@ export class WebDavSyncService {
     const raw = this.store.getSyncRecords()
     const local = new Map<string, SyncRecord>()
     for (const [key, record] of raw) local.set(key, await this.assets.portable(record))
-    const response = await client.get('manifest.json')
+    const response = await client.getVersioned('manifest.json')
     if (!response && state.workspaceId) throw new Error('远端同步清单丢失，已停止同步以保护本地数据。请恢复远端目录或改用新的同步目录。')
-    if (response) requireStrongEtag(response.etag)
     const manifest: SyncManifest = response ? parseManifest(response.bytes) : { version: 1, workspaceId: randomUUID(), entries: {} }
     if (state.workspaceId && state.workspaceId !== manifest.workspaceId) throw new Error('远端工作区已被替换，请使用新的同步目录以免合并错误的数据。')
     const next: SyncManifest = { ...manifest, entries: { ...manifest.entries } }
@@ -234,7 +237,8 @@ export class WebDavSyncService {
     if (changed) {
       const manifestBytes = Buffer.from(canonicalJson(next))
       if (manifestBytes.length > MAX_RECORD_BYTES) throw new Error('同步清单超过 16 MB。')
-      await client.put('manifest.json', manifestBytes, response ? { etag: response.etag! } : { create: true })
+      if (response) await client.put('manifest.json', manifestBytes, { etag: response.etag })
+      else await client.create('manifest.json', manifestBytes)
     }
     // Network waits can overlap local editing. Defer all incoming mutations in that case.
     const latest = this.store.getSyncRecords()

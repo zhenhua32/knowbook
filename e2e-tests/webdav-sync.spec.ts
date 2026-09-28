@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 
 test('WebDAV settings validate, sync, preserve passwords, and surface recoverable errors @electron', async ({}, testInfo) => {
   const server = await createWebDavServer()
+  server.setOptions({ etagHeaders: 'none', etagStyle: 'bare', ignoreIfNoneMatch: true, moveConflictStatus: 409 })
   try {
     await withElectronApp(async ({ page }) => {
       await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
@@ -23,6 +24,8 @@ test('WebDAV settings validate, sync, preserve passwords, and surface recoverabl
       await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
       await expect(section.getByRole('status')).toContainText('同步完成')
       expect(server.files.has('/KnowBook/manifest.json')).toBe(true)
+      expect(server.requests.some(request => request.method === 'PROPFIND')).toBe(true)
+      expect(server.requests.some(request => request.method === 'MOVE')).toBe(true)
       await page.screenshot({ path: testInfo.outputPath('webdav-settings.png') })
       await page.reload()
       await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()

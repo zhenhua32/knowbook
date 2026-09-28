@@ -14,6 +14,7 @@ import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
 import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord } from '../src/main/sync/model'
 import { normalizeWebDavConfig } from '../src/main/sync/webdav-client'
 import { createWebDavServer } from './helpers/webdav-server'
+import { readWebDavEtag } from '../src/main/sync/webdav-properties'
 
 async function fixture(run: (a: ReturnType<typeof device>, b: ReturnType<typeof device>, server: Awaited<ReturnType<typeof createWebDavServer>>) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-webdav-'))
@@ -150,6 +151,101 @@ test('corrupt objects and missing manifests stop safely without deleting local d
 test('unsafe WebDAV conditional-write implementations and weak ETags are rejected', async () => {
   await fixture(async (a, _b, server) => { server.ignoreConditions(); await assert.rejects(a.sync.testConnection(), /条件写入/); assert.ok(!server.files.has('/KnowBook/manifest.json')) })
   await fixture(async (a, _b, server) => { server.weakEtags(); await assert.rejects(a.sync.testConnection(), /ETag/); assert.ok(!server.files.has('/KnowBook/manifest.json')) })
+})
+
+test('opaque unquoted, HEAD-only and PROPFIND-only ETags support two-device sync', async context => {
+  for (const profile of [
+    { etagStyle: 'bare' as const },
+    { etagStyle: 'bare' as const, etagHeaders: 'none' as const, requireQuotedIfMatch: true },
+    { etagHeaders: 'head' as const },
+    { etagHeaders: 'none' as const }
+  ]) await context.test(JSON.stringify(profile), () => fixture(async (a, b, server) => {
+    server.setOptions(profile)
+    const id = a.store.createDocument(null); edit(a.store, id, 'first version')
+    await a.sync.testConnection(); await a.sync.sync(); await b.sync.sync()
+    assert.equal(content(b.store, id), 'first version')
+    edit(b.store, id, 'second version'); await b.sync.sync(); await a.sync.sync()
+    assert.equal(content(a.store, id), 'second version')
+    if ('etagHeaders' in profile) assert.ok(server.requests.some(request => request.method === 'HEAD'))
+    if (profile.etagHeaders === 'none') assert.ok(server.requests.some(request => request.method === 'PROPFIND'))
+  }))
+})
+
+test('metadata fallback never combines an old body with a newer version during a concurrent write', () => fixture(async (a, b, server) => {
+  server.setOptions({ etagHeaders: 'none' })
+  const id = a.store.createDocument(null); edit(a.store, id, 'base')
+  await a.sync.sync(); await b.sync.sync()
+  edit(a.store, id, 'remote edit after first GET')
+  let raced = false
+  server.setHook(async req => {
+    if (!raced && req.method === 'HEAD' && req.url!.endsWith('manifest.json')) { raced = true; await a.sync.sync() }
+  })
+  await b.sync.sync()
+  assert.ok(raced)
+  assert.equal(content(b.store, id), 'remote edit after first GET')
+}))
+
+test('metadata fallback rejects servers that ignore conditional GET', () => fixture(async (a, _b, server) => {
+  server.setOptions({ etagHeaders: 'none', ignoreConditionalGet: true })
+  await assert.rejects(a.sync.testConnection(), /按版本读取/)
+  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+}))
+
+test('MOVE without overwrite safely creates a manifest when If-None-Match is ignored, including a first-sync race', async context => {
+  for (const moveConflictStatus of [412, 409] as const) await context.test(`MOVE conflict ${moveConflictStatus}`, () => fixture(async (a, b, server) => {
+    server.setOptions({ ignoreIfNoneMatch: true, etagStyle: 'bare', etagHeaders: moveConflictStatus === 409 ? 'all' : 'none', moveConflictStatus })
+    const first = a.store.createDocument(null), second = b.store.createDocument(null)
+    edit(a.store, first, 'device A'); edit(b.store, second, 'device B')
+    await a.sync.testConnection(); await b.sync.testConnection()
+    let raced = false
+    server.setHook(async req => {
+      if (!raced && req.method === 'MOVE' && String(req.headers.destination).endsWith('/manifest.json')) { raced = true; await b.sync.sync() }
+    })
+    await a.sync.sync(); await b.sync.sync()
+    assert.ok(raced)
+    assert.equal(content(a.store, second), 'device B')
+    assert.equal(content(b.store, first), 'device A')
+    assert.ok(![...server.files.keys()].some(path => path.includes('.probe-') || path.includes('.pending-')))
+  }))
+})
+
+test('MOVE 409 without an existing target remains an error and does not publish or advance sync state', () => fixture(async (a, _b, server) => {
+  server.setOptions({ ignoreIfNoneMatch: true, moveConflictStatus: 409 })
+  const id = a.store.createDocument(null); edit(a.store, id, 'must remain local')
+  await a.sync.testConnection()
+  server.setHook(req => req.method === 'MOVE' && String(req.headers.destination).endsWith('/manifest.json') ? 409 : undefined)
+  await assert.rejects(a.sync.sync(), /HTTP 409/)
+  assert.equal(a.sync.getStatus().lastSyncAt, null)
+  assert.equal(content(a.store, id), 'must remain local')
+  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+  assert.equal(server.requests.filter(req => req.method === 'MOVE' && req.path.includes('.pending-')).length, 1)
+  assert.ok(![...server.files.keys()].some(path => path.includes('.probe-') || path.includes('.pending-')))
+}))
+
+test('an unsafe MOVE implementation is rejected when conditional create is unavailable', () => fixture(async (a, _b, server) => {
+  server.setOptions({ ignoreIfNoneMatch: true, ignoreMoveOverwrite: true })
+  await assert.rejects(a.sync.testConnection(), /安全的新建文件/)
+  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+}))
+
+test('a failed connection retest invalidates the previously accepted capabilities', () => fixture(async (a, _b, server) => {
+  await a.sync.testConnection()
+  server.ignoreConditions()
+  await assert.rejects(a.sync.testConnection(), /条件写入/)
+  await assert.rejects(a.sync.sync(), /条件写入/)
+  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+}))
+
+test('WebDAV properties respect namespaces, resource identity and per-property status', () => {
+  const target = 'https://example.com/dav/KnowBook/manifest.json'
+  const response = (href: string, status: string, tag: string, namespace = 'DAV:') => `<response xmlns="${namespace}"><href>${href}</href><propstat><prop><getetag>${tag}</getetag></prop><status>HTTP/1.1 ${status}</status></propstat></response>`
+  const document = (body: string) => `<multistatus xmlns="DAV:">${body}</multistatus>`
+  assert.equal(readWebDavEtag(document(response('/dav/KnowBook/manifest.json', '200 OK', '&quot;rev&amp;1&quot;')), target), '"rev&1"')
+  assert.equal(readWebDavEtag(document(response(target, '404 Not Found', '&quot;wrong&quot;')), target), null)
+  assert.throws(() => readWebDavEtag(document(response('/other.json', '200 OK', '&quot;wrong&quot;')), target), /当前文件/)
+  assert.throws(() => readWebDavEtag(document(response(target, '200 OK', '&quot;wrong&quot;', 'urn:not-dav')), target), /当前文件/)
+  assert.throws(() => readWebDavEtag('<!DOCTYPE multistatus [<!ENTITY x "boom">]>' + document(''), target), /XML 声明/)
+  assert.throws(() => readWebDavEtag(document(response(target, '200 OK', 'one') + response(target, '200 OK', 'two')), target), /唯一/)
 })
 
 test('unsafe config and malformed remote records are rejected', () => {
