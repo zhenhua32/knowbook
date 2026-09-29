@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import type { KnowbookStore } from '../database/store'
 import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
-import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus } from '../../shared/webdav-sync'
-import { SyncAssets } from './assets'
+import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress } from '../../shared/webdav-sync'
+import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
 import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument } from './model'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
 
@@ -35,6 +35,7 @@ export class WebDavSyncService {
   private message = ''
   private uploaded = 0
   private downloaded = 0
+  private progress: WebDavSyncProgress | null = null
   private busy: Promise<void> | null = null
   private abort: AbortController | null = null
   private timer: ReturnType<typeof setInterval> | null = null
@@ -66,9 +67,30 @@ export class WebDavSyncService {
     const state = this.state()
     return { config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)), phase: this.phase,
       lastSyncAt: state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded,
+      progress: this.progress ? { ...this.progress } : null,
       conflicts: Object.entries(state.conflicts).map(([key, conflict]) => ({ key,
         title: conflict.local.kind === 'document' ? conflict.local.content.title : conflict.remote.kind === 'document' ? conflict.remote.content.title : '数据库、属性和视图',
         localPreview: conflictPreview(conflict.local), remotePreview: conflictPreview(conflict.remote), canKeepBoth: conflict.local.kind === 'document' })) }
+  }
+
+  private stage(stage: WebDavSyncProgress['stage'], total: number | null = null, attachmentsTotal = 0): void {
+    if (!this.progress) return
+    this.progress = { ...this.progress, stage, total, completed: 0, attachmentsTotal, attachmentsCompleted: 0,
+      currentItem: null, currentAttachment: null }
+  }
+
+  private itemName(record: SyncRecord | undefined): string | null {
+    return record?.kind === 'document' ? record.content.title.slice(0, 160) : null
+  }
+
+  private assetProgress(): SyncAssetProgress {
+    const completed = new Set<string>()
+    return asset => {
+      if (!this.progress) return
+      this.progress.currentAttachment = asset.completed ? null : asset.name
+      if (asset.completed) completed.add(asset.key)
+      this.progress.attachmentsCompleted = completed.size
+    }
   }
 
   saveConfig(input: SaveWebDavSyncConfig): WebDavSyncStatus {
@@ -113,7 +135,11 @@ export class WebDavSyncService {
     let password: string
     try { password = revealCredential(stored, this.credentials).value }
     catch { throw new Error('无法解密 WebDAV 应用密码，请重新填写并保存。') }
-    return new WebDavClient(normalizeWebDavConfig(this.config), password, this.abort?.signal, this.capabilities)
+    return new WebDavClient(normalizeWebDavConfig(this.config), password, this.abort?.signal, this.capabilities, activity => {
+      if (!this.progress) return
+      this.progress.waitingUntil = activity.waitingUntil
+      if (activity.completed) this.progress.requestsCompleted++
+    })
   }
 
   private async operation(phase: 'testing' | 'syncing', run: () => Promise<void>): Promise<WebDavSyncStatus> {
@@ -122,6 +148,9 @@ export class WebDavSyncService {
     if (this.busy) throw new Error('已有同步或连接测试正在进行。')
     this.abort = new AbortController()
     this.phase = phase
+    this.uploaded = 0; this.downloaded = 0
+    this.progress = { stage: 'checking', total: null, completed: 0, attachmentsTotal: 0, attachmentsCompleted: 0,
+      currentItem: null, currentAttachment: null, startedAt: new Date().toISOString(), requestsCompleted: 0, waitingUntil: null }
     this.message = phase === 'testing' ? '正在验证连接和条件写入能力…' : '正在同步…'
     const work = Promise.resolve().then(run)
     this.busy = work
@@ -130,7 +159,7 @@ export class WebDavSyncService {
       this.phase = 'error'
       this.message = error instanceof Error ? error.message : '同步失败，下次将自动重试。'
       throw new Error(this.message)
-    } finally { this.busy = null; this.abort = null }
+    } finally { this.busy = null; this.abort = null; this.progress = null }
     return this.getStatus()
   }
 
@@ -163,7 +192,13 @@ export class WebDavSyncService {
     const state = this.state()
     const raw = this.store.getSyncRecords()
     const local = new Map<string, SyncRecord>()
-    for (const [key, record] of raw) local.set(key, await this.assets.portable(record))
+    this.stage('preparing', raw.size)
+    for (const [key, record] of raw) {
+      this.progress!.currentItem = this.itemName(record)
+      local.set(key, await this.assets.portable(record))
+      this.progress!.completed++
+    }
+    this.stage('comparing')
     const response = await client.getVersioned('manifest.json')
     if (!response && state.workspaceId) throw new Error('远端同步清单丢失，已停止同步以保护本地数据。请恢复远端目录或改用新的同步目录。')
     const manifest: SyncManifest = response ? parseManifest(response.bytes) : { version: 1, workspaceId: randomUUID(), entries: {} }
@@ -187,8 +222,12 @@ export class WebDavSyncService {
       }
       return record
     }
-    for (const key of new Set([...local.keys(), ...Object.keys(manifest.entries), ...Object.keys(state.baseline)])) {
+    const keys = [...new Set([...local.keys(), ...Object.keys(manifest.entries), ...Object.keys(state.baseline)])]
+    this.stage('comparing', keys.length)
+    for (const [index, key] of keys.entries()) {
       const current = local.get(key)
+      this.progress!.completed = index
+      this.progress!.currentItem = this.itemName(current)
       const localHash = current ? recordHash(current) : null
       const deletion: SyncRecord = { kind: 'deleted', id: key.slice(4) }
       const proposed = current ?? deletion
@@ -217,24 +256,35 @@ export class WebDavSyncService {
       else if (remoteChanged && remoteHash) incoming.set(key, await remoteRecord(key, remoteHash))
       else if (remoteHash) accepted.set(key, { localHash, remoteHash })
     }
+    this.stage('uploading', writes.size, new Set([...writes.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.hash))).size)
+    const uploadProgress = this.assetProgress()
     for (const [key, record] of writes) {
+      this.progress!.currentItem = this.itemName(record)
       const bytes = Buffer.from(canonicalJson(record))
       if (bytes.length > MAX_RECORD_BYTES) throw new Error('单篇文档或数据库同步数据超过 16 MB。')
       const hash = hashBytes(bytes)
-      await this.assets.upload(record, client, this.uploadedAssets)
+      await this.assets.upload(record, client, this.uploadedAssets, uploadProgress)
       if (!this.uploadedObjects.has(hash)) {
         await client.put(`objects/${hash}.json`, bytes)
         this.uploadedObjects.add(hash)
       }
       next.entries[key] = hash
       accepted.set(key, { localHash: record.kind === 'deleted' ? null : hash, remoteHash: hash })
+      this.progress!.completed++
     }
     // Assets must be verified and durable before any local document can reference them.
     const localized = new Map<string, SyncRecord>()
-    for (const [key, record] of incoming) localized.set(key, await this.assets.local(record, client))
+    this.stage('downloading', incoming.size, new Set([...incoming.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.url))).size)
+    const downloadProgress = this.assetProgress()
+    for (const [key, record] of incoming) {
+      this.progress!.currentItem = this.itemName(record)
+      localized.set(key, await this.assets.local(record, client, downloadProgress))
+      this.progress!.completed++
+    }
     if (this.abort?.signal.aborted) throw new Error('同步已停止。')
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
     if (changed) {
+      this.stage('publishing')
       const manifestBytes = Buffer.from(canonicalJson(next))
       if (manifestBytes.length > MAX_RECORD_BYTES) throw new Error('同步清单超过 16 MB。')
       if (response) await client.put('manifest.json', manifestBytes, { etag: response.etag })
@@ -243,6 +293,7 @@ export class WebDavSyncService {
     // Network waits can overlap local editing. Defer all incoming mutations in that case.
     const latest = this.store.getSyncRecords()
     const localUnchanged = canonicalJson([...latest]) === canonicalJson([...raw])
+    this.stage('applying')
     this.store.runInTransaction(() => {
       if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()])
       const after = this.store.getSyncRecords()

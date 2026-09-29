@@ -20,6 +20,20 @@ export interface WebDavSyncConflict {
   canKeepBoth: boolean
 }
 
+export interface WebDavSyncProgress {
+  stage: 'checking' | 'preparing' | 'comparing' | 'uploading' | 'downloading' | 'publishing' | 'applying'
+  /** Counts describe the current stage, not a predicted percentage of the whole sync. */
+  completed: number
+  total: number | null
+  attachmentsCompleted: number
+  attachmentsTotal: number
+  currentItem: string | null
+  currentAttachment: string | null
+  startedAt: string
+  requestsCompleted: number
+  waitingUntil: string | null
+}
+
 export interface WebDavSyncStatus {
   config: WebDavSyncConfig
   hasPassword: boolean
@@ -28,6 +42,7 @@ export interface WebDavSyncStatus {
   message: string
   uploaded: number
   downloaded: number
+  progress: WebDavSyncProgress | null
   conflicts: WebDavSyncConflict[]
 }
 

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type WebDavSyncConfig, type WebDavSyncStatus } from '@shared/webdav-sync'
+import WebDavSyncProgress from './WebDavSyncProgress'
 
 export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const [status, setStatus] = useState<WebDavSyncStatus | null>(null)
@@ -9,28 +10,47 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const statusRequest = useRef(0)
+  const action = useRef(0)
   const t = (zh: string, en: string) => isZh ? zh : en
 
   useEffect(() => {
     let mounted = true
-    window.knowbook.getWebDavSyncStatus().then(value => {
-      if (mounted) { setStatus(value); setConfig(value.config) }
-    }).catch(reason => { if (mounted) setError(String(reason)) })
-    const timer = setInterval(() => {
-      window.knowbook.getWebDavSyncStatus().then(value => { if (mounted) setStatus(value) }).catch(() => {})
-    }, 3000)
-    return () => { mounted = false; clearInterval(timer) }
+    let reading = false, initialized = false
+    const refresh = async () => {
+      if (reading) return
+      reading = true
+      const request = ++statusRequest.current
+      try {
+        const value = await window.knowbook.getWebDavSyncStatus()
+        if (mounted && request === statusRequest.current) {
+          setStatus(value)
+          if (!initialized) { setConfig(value.config); initialized = true }
+        }
+      } catch (reason) { if (mounted && !initialized) setError(String(reason)) }
+      finally { reading = false }
+    }
+    void refresh()
+    const timer = setInterval(() => { void refresh() }, 1000)
+    return () => { mounted = false; clearInterval(timer); statusRequest.current++ }
   }, [])
 
   const edit = (patch: Partial<WebDavSyncConfig>) => { setConfig(current => ({ ...current, ...patch })); setDirty(true) }
   const run = async (operation: () => Promise<WebDavSyncStatus>) => {
+    const id = ++action.current
+    statusRequest.current++
     setBusy(true); setError('')
-    try { setStatus(await operation()) }
+    try {
+      const value = await operation()
+      if (id === action.current) { statusRequest.current++; setStatus(value) }
+    }
     catch (reason) {
+      if (id !== action.current) return
       setError(reason instanceof Error ? reason.message : String(reason))
+      const request = ++statusRequest.current
       const fresh = await window.knowbook.getWebDavSyncStatus().catch(() => null)
-      if (fresh) setStatus(fresh)
-    } finally { setBusy(false) }
+      if (fresh && id === action.current && request === statusRequest.current) setStatus(fresh)
+    } finally { if (id === action.current) setBusy(false) }
   }
   const save = () => run(async () => {
     const value = await window.knowbook.saveWebDavSyncConfig({ ...config, ...(clearPassword ? { password: '' } : password ? { password } : {}) })
@@ -81,7 +101,9 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
     </fieldset>
     {working ? <button className="secondary-button" type="button" onClick={() => run(() => window.knowbook.cancelWebDavSync())}>{t('停止本次同步', 'Stop this sync')}</button> : null}
     {dirty ? <p className="mini-hint">{t('请先保存设置，再测试连接或同步。', 'Save your settings before testing or syncing.')}</p> : null}
-    <p role="status">{working ? t('正在处理…', 'Working…') : status?.message || t('尚未配置同步', 'Sync is not configured')}</p>
+    {status?.progress && (status.phase === 'syncing' || status.phase === 'testing')
+      ? <WebDavSyncProgress progress={status.progress} isZh={isZh} />
+      : <p role="status">{working ? t('正在启动操作…', 'Starting…') : status?.message || t('尚未配置同步', 'Sync is not configured')}</p>}
     {status?.lastSyncAt ? <p className="mini-hint">{t('上次同步：', 'Last sync: ')}{new Date(status.lastSyncAt).toLocaleString()}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     <p className="mini-hint">{t('密码由系统加密保存。AI 密钥、插件和本机设置不上传；历史与回收站保留在各设备。云端内容目前不提供端到端加密。', 'Passwords are protected by the OS. AI keys, plugins and device settings stay local; history and Trash remain on each device. Cloud content is not end-to-end encrypted.')}</p>

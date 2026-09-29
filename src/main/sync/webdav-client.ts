@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { WebDavSyncConfig } from '../../shared/webdav-sync'
 
 export interface WebDavCapabilities { createMode: 'conditional' | 'move' }
+export interface WebDavRequestActivity { waitingUntil: string | null; completed: boolean }
 
 function usableEtag(etag: string | null): etag is string {
   if (!etag || /^W\//i.test(etag)) return false
@@ -48,7 +49,8 @@ export class WebDavClient {
   private readonly authorization: string
   private checkedConditionalGet = false
   constructor(private readonly config: WebDavSyncConfig, password: string, private readonly signal?: AbortSignal,
-    private capabilities: WebDavCapabilities = { createMode: 'conditional' }) {
+    private capabilities: WebDavCapabilities = { createMode: 'conditional' },
+    private readonly onActivity?: (activity: WebDavRequestActivity) => void) {
     this.root = config.url + config.directory.split('/').map(encodeURIComponent).join('/') + '/'
     this.authorization = `Basic ${Buffer.from(`${config.username}:${password}`).toString('base64')}`
   }
@@ -58,13 +60,18 @@ export class WebDavClient {
       // Nutstore's free DAV tier allows 600 requests per 30 minutes.
       if (new URL(this.root).hostname === 'dav.jianguoyun.com') {
         const remaining = 3100 - (Date.now() - this.lastRequestAt)
-        if (remaining > 0) await delay(remaining, undefined, { signal: this.signal })
+        if (remaining > 0) {
+          this.onActivity?.({ waitingUntil: new Date(Date.now() + remaining).toISOString(), completed: false })
+          try { await delay(remaining, undefined, { signal: this.signal }) }
+          finally { this.onActivity?.({ waitingUntil: null, completed: false }) }
+        }
       }
       this.lastRequestAt = Date.now()
       const response = await fetch(url, {
         method, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(45_000), ...(this.signal ? [this.signal] : [])]),
         headers: { Authorization: this.authorization, ...headers }, body: body ? new Uint8Array(body) : undefined
       })
+      this.onActivity?.({ waitingUntil: null, completed: true })
       const tag = headers?.['If-Match']
       if (response.status === 412 && tag && usableEtag(tag) && !tag.startsWith('"')) {
         await this.discard(response)

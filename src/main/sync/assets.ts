@@ -33,6 +33,18 @@ function assetIdentity(url: string): { hash: string; name: string } {
   return { hash: parsed.hostname, name }
 }
 
+export function syncAssetReferences(record: SyncRecord): Array<{ url: string; hash: string; name: string }> {
+  const urls = new Set<string>()
+  rewriteRecord(record, url => {
+    if (url.startsWith('file:')) throw new Error('远端数据包含不可移植的本机文件路径。')
+    if (url.startsWith(SCHEME)) urls.add(url)
+    return undefined
+  })
+  return [...urls].map(url => ({ url, ...assetIdentity(url) }))
+}
+
+export type SyncAssetProgress = (asset: { key: string; name: string; completed: boolean }) => void
+
 export class SyncAssets {
   private readonly localCache = new Map<string, { signature: string; url: string }>()
   readonly uploads = new Map<string, string>()
@@ -72,11 +84,11 @@ export class SyncAssets {
     })
   }
 
-  async upload(record: SyncRecord, client: WebDavClient, uploaded: Set<string>): Promise<void> {
-    const hashes = new Set<string>()
-    rewriteRecord(record, url => { if (url.startsWith(SCHEME)) hashes.add(assetIdentity(url).hash); return undefined })
-    for (const hash of hashes) {
-      if (uploaded.has(hash)) continue
+  async upload(record: SyncRecord, client: WebDavClient, uploaded: Set<string>, onProgress?: SyncAssetProgress): Promise<void> {
+    const assets = new Map(syncAssetReferences(record).map(asset => [asset.hash, asset]))
+    for (const [hash, { name }] of assets) {
+      onProgress?.({ key: hash, name, completed: false })
+      if (uploaded.has(hash)) { onProgress?.({ key: hash, name, completed: true }); continue }
       if (!await client.exists(`assets/${hash}`)) {
         const path = this.uploads.get(hash)
         if (!path) throw new Error('待同步附件不可用，请重试。')
@@ -85,19 +97,15 @@ export class SyncAssets {
         await client.put(`assets/${hash}`, bytes)
       }
       uploaded.add(hash)
+      onProgress?.({ key: hash, name, completed: true })
     }
   }
 
-  async local(record: SyncRecord, client: WebDavClient): Promise<SyncRecord> {
-    const urls = new Set<string>()
-    rewriteRecord(record, url => {
-      if (url.startsWith('file:')) throw new Error('远端数据包含不可移植的本机文件路径。')
-      if (url.startsWith(SCHEME)) urls.add(url)
-      return undefined
-    })
+  async local(record: SyncRecord, client: WebDavClient, onProgress?: SyncAssetProgress): Promise<SyncRecord> {
+    const assets = syncAssetReferences(record)
     const replacements = new Map<string, string>()
-    for (const url of urls) {
-      const { hash, name } = assetIdentity(url)
+    for (const { url, hash, name } of assets) {
+      onProgress?.({ key: url, name, completed: false })
       let localUrl = this.downloaded.get(url)
       if (localUrl) {
         try { this.attachments.resolve(localUrl) } catch { localUrl = undefined }
@@ -111,6 +119,7 @@ export class SyncAssets {
       }
       replacements.set(url, localUrl)
       this.portableUrls.set(localUrl, url)
+      onProgress?.({ key: url, name, completed: true })
     }
     return rewriteRecord(record, url => replacements.get(url))
   }

@@ -1,0 +1,15 @@
+.webdav-sync-progress {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--kb-line);
+  border-radius: 12px;
+  background: var(--kb-canvas);
+  min-width: 0;
+}
+
+.webdav-sync-progress p { margin: 0; }
+.webdav-sync-progress [role='status'] { font-weight: 650; }
+.webdav-sync-progress progress { width: 100%; height: 12px; accent-color: var(--kb-accent); }
+.webdav-sync-progress-counts { display: flex; flex-wrap: wrap; gap: 8px 24px; font-variant-numeric: tabular-nums; }
+.webdav-sync-progress-item { overflow-wrap: anywhere; color: var(--kb-text-soft); }

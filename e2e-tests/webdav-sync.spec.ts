@@ -3,6 +3,53 @@ import { withElectronApp, uiText } from './helpers/electron'
 import { createWebDavServer } from '../tests/helpers/webdav-server'
 import { createHash } from 'node:crypto'
 
+test('sync shows live attachment progress, survives reopening settings, and clears after cancellation @electron', async ({}, testInfo) => {
+  const server = await createWebDavServer()
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let waiting = false
+  try {
+    await withElectronApp(async ({ page }) => {
+      await page.evaluate(async url => {
+        const [image, pdf] = await window.knowbook.importAttachments([
+          { name: 'first.png', bytes: new TextEncoder().encode('first-image') },
+          { name: 'second.pdf', bytes: new TextEncoder().encode('second-file') }
+        ])
+        const doc = await window.knowbook.createDocument(null)
+        await window.knowbook.updateDocument(doc.id, { title: 'Progress check', summary: '', blocks: [{ id: crypto.randomUUID(), type: 'paragraph',
+          content: `![first](${image.url})\n[second](${pdf.url})`, checked: false, depth: 0 }] })
+        await window.knowbook.saveWebDavSyncConfig({ enabled: false, url, username: 'test', password: 'app-secret', directory: 'KnowBook', intervalMinutes: 5, allowInsecureHttp: true })
+        await window.knowbook.testWebDavConnection()
+      }, server.url)
+      const asset = createHash('sha256').update('second-file').digest('hex')
+      server.setHook(async req => { if (req.method === 'PUT' && req.url!.endsWith(`/assets/${asset}`)) { waiting = true; await gate } })
+      await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
+      const section = page.getByRole('region', { name: uiText('WebDAV sync', 'WebDAV 同步') })
+      await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
+      await expect.poll(() => waiting).toBe(true)
+      await expect(section.getByRole('status')).toContainText(/正在上传|Uploading/)
+      await expect(section.locator('.webdav-sync-progress-counts')).toContainText('1 / 2')
+      await expect(section.locator('.webdav-sync-progress')).toContainText('second.pdf')
+      const bar = section.getByRole('progressbar')
+      await expect(bar).toBeVisible()
+      expect(Number(await bar.getAttribute('value'))).toBeGreaterThan(0)
+      await page.screenshot({ path: testInfo.outputPath('webdav-live-progress.png') })
+      await page.reload()
+      await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
+      await expect(section.getByRole('status')).toContainText(/正在上传|Uploading/)
+      await expect(section.locator('.webdav-sync-progress')).toContainText('second.pdf')
+      await section.getByRole('button', { name: uiText('Stop this sync', '停止本次同步') }).click()
+      await expect(section.getByRole('status')).toContainText('已停止')
+      await expect(bar).toHaveCount(0)
+      await expect(section.getByRole('button', { name: uiText('Sync now', '立即同步') })).toBeEnabled()
+      release(); server.setHook(undefined)
+      await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
+      await expect(section.getByRole('status')).toContainText('同步完成')
+      await expect(bar).toHaveCount(0)
+    })
+  } finally { release(); await server.close() }
+})
+
 test('WebDAV settings validate, sync, preserve passwords, and surface recoverable errors @electron', async ({}, testInfo) => {
   const server = await createWebDavServer()
   server.setOptions({ etagHeaders: 'none', etagStyle: 'bare', ignoreIfNoneMatch: true, moveConflictStatus: 409 })

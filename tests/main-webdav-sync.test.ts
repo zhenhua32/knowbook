@@ -12,7 +12,7 @@ import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 import { attachmentMarkdown } from '../src/shared/attachments'
 import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
 import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord } from '../src/main/sync/model'
-import { normalizeWebDavConfig } from '../src/main/sync/webdav-client'
+import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
 import { createWebDavServer } from './helpers/webdav-server'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
 
@@ -37,6 +37,74 @@ function edit(store: KnowbookStore, id: string, text: string, title?: string) {
   store.updateDocument(id, { ...old, title: title ?? old.title, blocks: [{ ...old.blocks[0], content: text }] })
 }
 function content(store: KnowbookStore, id: string) { return store.getDocumentDetail(id)!.blocks[0].content }
+
+test('live progress includes current attachments, deduplicated counts and publication before completion', () => fixture(async (a, b, server) => {
+  const first = a.store.createDocument(null), second = a.store.createDocument(null)
+  const [image, pdf] = await a.assets.import([{ name: 'shared.png', bytes: Buffer.from('shared-image') }, { name: 'second.pdf', bytes: Buffer.from('second-file') }])
+  edit(a.store, first, `${attachmentMarkdown(image)}\n${attachmentMarkdown(pdf)}`, 'Attachments')
+  edit(a.store, second, attachmentMarkdown(image), 'Shared attachment')
+  await a.sync.testConnection()
+  assert.equal(a.sync.getStatus().progress, null)
+  const target = `/assets/${hashBytes('second-file')}`
+  let enter!: () => void, release!: () => void
+  let entered = new Promise<void>(resolve => { enter = resolve })
+  let gate = new Promise<void>(resolve => { release = resolve })
+  let publishing = false
+  server.setHook(async req => {
+    if (req.method === 'PUT' && req.url!.endsWith(target)) { enter(); await gate }
+    if (req.method === 'PUT' && req.url!.endsWith('manifest.json')) publishing = a.sync.getStatus().progress?.stage === 'publishing'
+  })
+  const upload = a.sync.sync()
+  try {
+    await entered
+    const status = a.sync.getStatus(), progress = status.progress!
+    assert.equal(status.phase, 'syncing')
+    assert.equal(progress.stage, 'uploading')
+    assert.equal(progress.total, 3)
+    assert.equal(progress.attachmentsTotal, 2)
+    assert.equal(progress.attachmentsCompleted, 1)
+    assert.equal(progress.currentItem, 'Attachments')
+    assert.equal(progress.currentAttachment, 'second.pdf')
+    assert.ok(progress.requestsCompleted > 0)
+    release(); await upload
+    assert.equal(progress.attachmentsCompleted, 1, 'previous status snapshots must not mutate')
+    assert.equal(a.sync.getStatus().progress, null)
+    assert.ok(publishing)
+  } finally { release(); await upload.catch(() => {}) }
+
+  entered = new Promise<void>(resolve => { enter = resolve })
+  gate = new Promise<void>(resolve => { release = resolve })
+  server.setHook(async req => { if (req.method === 'GET' && req.url!.endsWith(target)) { enter(); await gate } })
+  const download = b.sync.sync()
+  try {
+    await entered
+    const progress = b.sync.getStatus().progress!
+    assert.equal(progress.stage, 'downloading')
+    assert.equal(progress.total, 2, 'the unchanged default database needs no download')
+    assert.equal(progress.attachmentsTotal, 2)
+    assert.equal(progress.attachmentsCompleted, 1)
+    assert.equal(progress.currentAttachment, 'second.pdf')
+    release(); await download
+    assert.equal(b.sync.getStatus().progress, null)
+  } finally { release(); await download.catch(() => {}) }
+}))
+
+test('Nutstore rate-limit waits are observable and clear immediately when cancelled', async context => {
+  let requests = 0
+  context.mock.method(globalThis, 'fetch', async () => { requests++; return new Response(null, { status: 200 }) })
+  const controller = new AbortController(), activity: WebDavRequestActivity[] = []
+  const client = new WebDavClient({ ...DEFAULT_WEBDAV_SYNC_CONFIG, url: 'https://dav.jianguoyun.com/dav/', username: 'test' },
+    'fixture-password', controller.signal, undefined, value => activity.push(value))
+  await client.exists('manifest.json')
+  const next = client.exists('manifest.json')
+  const waiting = activity.at(-1)!
+  assert.ok(waiting.waitingUntil && Date.parse(waiting.waitingUntil) > Date.now())
+  assert.equal(waiting.completed, false)
+  controller.abort()
+  await assert.rejects(next, /停止/)
+  assert.equal(requests, 1, 'cancelled throttle wait must not send another request')
+  assert.equal(activity.at(-1)!.waitingUntil, null)
+})
 
 test('two independent devices sync trees, stable IDs, attachments, and database fields with no-op incremental runs', () => fixture(async (a, b, server) => {
   const parent = a.store.createDocument(null), child = a.store.createDocument(parent)
@@ -103,6 +171,7 @@ test('failed uploads do not publish manifest or advance cursor; retry converges'
   const id = a.store.createDocument(null); edit(a.store, id, 'retry content')
   server.setHook(req => req.method === 'PUT' && req.url!.endsWith('manifest.json') ? 503 : undefined)
   await assert.rejects(a.sync.sync(), /503/)
+  assert.equal(a.sync.getStatus().progress, null)
   assert.equal(a.sync.getStatus().lastSyncAt, null)
   assert.ok(!server.files.has('/KnowBook/manifest.json'))
   server.setHook(undefined)
@@ -363,6 +432,7 @@ test('cancelling an in-flight upload preserves the cursor and permits a clean re
     await assert.rejects(a.sync.sync(), /正在进行/)
     await a.sync.cancel(); await rejected
     assert.equal(a.sync.getStatus().phase, 'idle')
+    assert.equal(a.sync.getStatus().progress, null)
     assert.equal(a.sync.getStatus().lastSyncAt, previousSync)
     assert.equal(content(b.store, id), 'before cancel')
   } finally { release(); server.setHook(undefined) }
