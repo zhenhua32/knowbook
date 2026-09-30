@@ -3,6 +3,7 @@ import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { PAGE_ORDER } from './useAppShellState'
 import type { DocumentsKeyboardState } from '../types/appDomains'
 import type { ShellPageState } from '../types/appShell'
+import { openQuickCapture } from '../documentCapture'
 
 type UseAppKeyboardShortcutsParams = {
   documents: DocumentsKeyboardState
@@ -24,6 +25,11 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
       if (key === 'f1') {
         event.preventDefault(); event.stopPropagation()
         if (!event.repeat) void import('../openShortcutHelp').then(({ openShortcutHelp }) => openShortcutHelp())
+        return
+      }
+      if (key === 'mod+shift+n') {
+        event.preventDefault(); event.stopPropagation()
+        if (!event.repeat && !documents.isGlobalSearchOpen) openQuickCapture()
         return
       }
       if (event.target instanceof Element && event.target.closest('.global-search-modal')) return

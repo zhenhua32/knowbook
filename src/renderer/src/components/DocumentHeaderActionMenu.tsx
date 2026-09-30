@@ -2,6 +2,7 @@ import type { UiText } from '../i18n'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
+import { openSaveDocumentTemplate } from '../documentCapture'
 
 type MoveOption = {
   id: string
@@ -90,6 +91,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
       >
         <div className="context-menu-section">
           <div className="context-menu-group">
+            <button className="context-menu-item" onClick={() => runAndClose(openSaveDocumentTemplate)} type="button">
+              {isZh ? '保存为模板' : 'Save as template'}
+            </button>
             {props.onOpenHistory && <button className="context-menu-item" onClick={() => runAndClose(props.onOpenHistory!)} type="button">
               {isZh ? '文档历史' : 'Document history'}
             </button>}

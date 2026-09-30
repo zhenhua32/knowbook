@@ -12,6 +12,10 @@ import type {
   CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
   CreateDocumentResult,
+  CreateDocumentFromTemplateInput,
+  CreateQuickNoteInput,
+  DocumentTemplate,
+  SaveDocumentTemplateInput,
   DatabaseSavedView,
   DocumentDatabase,
   DocumentCatalogEntry,
@@ -167,6 +171,11 @@ const api: ElectronApi = {
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,
+  listDocumentTemplates: (language?: 'zh-CN' | 'en-US') => ipcRenderer.invoke('knowbook:list-document-templates', language) as Promise<DocumentTemplate[]>,
+  saveDocumentTemplate: (input: SaveDocumentTemplateInput) => ipcRenderer.invoke('knowbook:save-document-template', input) as Promise<DocumentTemplate>,
+  deleteDocumentTemplate: (id: string) => ipcRenderer.invoke('knowbook:delete-document-template', id) as Promise<void>,
+  createDocumentFromTemplate: (input: CreateDocumentFromTemplateInput) => ipcRenderer.invoke('knowbook:create-document-from-template', input) as Promise<CreateDocumentResult>,
+  createQuickNote: (input: CreateQuickNoteInput) => ipcRenderer.invoke('knowbook:create-quick-note', input) as Promise<CreateDocumentResult>,
   getDocumentCatalog: async (databaseId?: string | null) => {
     const tuples = await ipcRenderer.invoke('knowbook:get-document-catalog', databaseId ?? null) as DocumentCatalogTuple[]
     return tuples.map(decodeDocumentCatalogEntry)

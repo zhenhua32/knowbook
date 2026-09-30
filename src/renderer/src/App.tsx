@@ -7,11 +7,13 @@ import { useDocumentsDomainState } from './hooks/useDocumentsDomainState'
 import { useWorkspaceOperations } from './hooks/useWorkspaceOperations'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { lazyWithRetry } from './utils/lazyWithRetry'
-import { WorkspaceShellSidebar } from './components/WorkspaceShellSidebar'
 import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
+import { useDocumentCapture } from './hooks/useDocumentCapture'
 
 const AppPageContent = lazyWithRetry(async () => ({ default: (await import('./components/AppPageContent')).AppPageContent }))
 const GlobalSearchPalette = lazyWithRetry(() => import('./components/GlobalSearchPalette'))
+const DocumentCaptureHost = lazyWithRetry(() => import('./components/DocumentCaptureHost'))
+const WorkspaceShellSidebar = lazyWithRetry(async () => ({ default: (await import('./components/WorkspaceShellSidebar')).WorkspaceShellSidebar }))
 
 export function App() {
   const resetAiSessionRef = useRef<() => void>(() => undefined)
@@ -24,6 +26,7 @@ export function App() {
     resetAiSession,
     shell
   })
+  const documentCapture = useDocumentCapture(documentsDomain, shell)
 
   const workspaceOperations = useWorkspaceOperations({
     documents: documentsDomain,
@@ -51,17 +54,24 @@ export function App() {
   return (
     <>
       <PluginUiPreparationHost />
+      {documentCapture.capture && <ErrorBoundary onNavigate={documentCapture.closeCapture} navigateLabel={shell.isZh ? '关闭' : 'Close'}>
+        <Suspense fallback={null}>
+          <DocumentCaptureHost state={documentCapture} documents={documentsDomain} shell={shell} />
+        </Suspense>
+      </ErrorBoundary>}
       {documentsDomain.isGlobalSearchOpen && <ErrorBoundary onNavigate={documentsDomain.closeGlobalSearch} navigateLabel={shell.isZh ? '关闭搜索' : 'Close search'}>
         <Suspense fallback={null}><GlobalSearchPalette documents={documentsDomain} shell={shell} workspace={workspaceOperations} /></Suspense>
       </ErrorBoundary>}
       <div className="shell" data-testid="shell">
         <div className={`sidebar${shell.isNavCollapsed ? ' collapsed' : ''}`}>
           <ErrorBoundary page>
+            <Suspense fallback={<p role="status">{shell.ui.common.loading}</p>}>
             <WorkspaceShellSidebar
               documents={documentsDomain}
               shell={shell}
               workspace={workspaceOperations}
             />
+            </Suspense>
           </ErrorBoundary>
         </div>
 

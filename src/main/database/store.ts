@@ -1,5 +1,5 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
-import { normalizeListStart } from '@shared/markdown'
+import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
 import type { SyncRecord } from '../sync/model'
@@ -15,6 +15,8 @@ import type {
   CreateDatabaseInput,
   CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
+  CreateDocumentFromTemplateInput,
+  CreateQuickNoteInput,
   DatabaseEntity,
   DatabaseSavedView,
   DatabaseSavedViewLayoutMode,
@@ -37,6 +39,7 @@ import type {
   DocumentIndexEntry,
   DocumentSuggestion,
   DocumentTreeNode,
+  DocumentTemplate,
   HomeData,
   HomeDataPayload,
   LinkedDocument,
@@ -59,7 +62,8 @@ import type {
   WorkspaceSummary,
   GlobalSearchResult,
   SearchSemanticNotesInput,
-  SemanticSearchResult
+  SemanticSearchResult,
+  SaveDocumentTemplateInput
 } from '@shared/contracts'
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
@@ -68,7 +72,10 @@ import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
 import { MarkdownLinkIndex, type MarkdownIndexedPathChange } from './markdown-link-index'
-import { getMarkdownHeadingTargets, getMarkdownHeadingRewrites } from '@shared/markdownLinkMaintenance'
+import { getMarkdownHeadingTargets, getMarkdownHeadingRewrites, rewriteDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
+import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
+import { parseWikiReference, rewriteWikiReference } from '@shared/markdownWiki'
+import { builtInDocumentTemplates, documentTemplateDate, expandDocumentTemplateVariables } from '@shared/documentTemplates'
 import {
   createLegacyDatabaseViewConfig,
   normalizeDatabaseViewConfig
@@ -364,6 +371,13 @@ export class KnowbookStore {
       this.createMigrationSafetyCopy(schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION)
     }
     this.db.exec(appSchema)
+    // Local templates are independent snapshots, with no source-document FK:
+    // deleting a source must not remove its template or attachment references.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS document_templates (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+      title TEXT NOT NULL, summary TEXT NOT NULL, blocks_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`)
     this.migrateDatabase(schemaVersion)
     if (this.readSetting('workspace.initialized') !== 'true') this.saveSetting('workspace.initialized', 'true')
     this.pluginPlatform = new SqlitePluginPlatformRepository(this.db)
@@ -1208,6 +1222,135 @@ export class KnowbookStore {
 
     transaction()
     return id
+  }
+
+  listDocumentTemplates(language: 'zh-CN' | 'en-US' = 'zh-CN'): DocumentTemplate[] {
+    if (language !== 'zh-CN' && language !== 'en-US') throw new Error('Unsupported template language.')
+    const rows = this.db.prepare(`SELECT id, name, description, title, summary, blocks_json
+      FROM document_templates ORDER BY created_at, id`).all() as Array<Omit<DocumentTemplate, 'blocks' | 'builtIn'> & { blocks_json: string }>
+    return [...builtInDocumentTemplates(language), ...rows.map(({ blocks_json, ...row }) => ({
+      ...row, blocks: JSON.parse(blocks_json) as DocumentBlockDraft[], builtIn: false
+    }))]
+  }
+
+  saveDocumentTemplate(input: SaveDocumentTemplateInput): DocumentTemplate {
+    if (!input || typeof input !== 'object') throw new Error('Invalid document template.')
+    const name = this.templateText(input.name, 'Template name', 200).trim()
+    if (!name) throw new Error('Template name is required.')
+    const description = this.templateText(input.description ?? '', 'Template description', 2000).trim()
+    const title = this.templateText(input.title, 'Template title', 500)
+    const summary = this.templateText(input.summary, 'Template summary', 100000)
+    const blocks = this.prepareTemplateBlocks(input.blocks)
+    const template: DocumentTemplate = { id: randomUUID(), name, description, title, summary, blocks, builtIn: false }
+    this.db.prepare(`INSERT INTO document_templates (id, name, description, title, summary, blocks_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(template.id, name, description, title, summary, JSON.stringify(blocks), new Date().toISOString())
+    return template
+  }
+
+  deleteDocumentTemplate(id: string): void {
+    this.templateText(id, 'Template ID', 200)
+    if (builtInDocumentTemplates().some((template) => template.id === id)) throw new Error('Built-in templates cannot be deleted.')
+    if (!this.db.prepare('DELETE FROM document_templates WHERE id = ?').run(id).changes) throw new Error('Document template not found.')
+  }
+
+  createDocumentFromTemplate(input: CreateDocumentFromTemplateInput): string {
+    if (!input || typeof input !== 'object') throw new Error('Invalid template creation request.')
+    this.templateText(input.templateId, 'Template ID', 200)
+    const template = this.listDocumentTemplates(input.language).find((candidate) => candidate.id === input.templateId)
+    if (!template) throw new Error('Document template not found.')
+    const requestedTitle = input.title === undefined ? template.title : this.templateText(input.title, 'Document title', 500).trim() || template.title
+    const date = documentTemplateDate()
+    const title = expandDocumentTemplateVariables(requestedTitle, template.name, date)
+    return this.createDocumentSnapshot(input.parentId, title, template.summary, template.blocks, date)
+  }
+
+  createQuickNote(input: CreateQuickNoteInput): string {
+    if (!input || typeof input !== 'object') throw new Error('Invalid quick note.')
+    const content = this.templateText(input.content, 'Quick note content', 4000000)
+    if (!content.trim()) throw new Error('Quick note content is required.')
+    const blocks = parseMarkdownBlocks(content).map((block) => ({ ...block, checked: Boolean(block.checked),
+      depth: block.depth ?? 0, language: block.language ?? undefined }))
+    const inferredLine = (blocks.find((block) => /^heading-[1-6]$/.test(block.type))?.content
+      ?? blocks.find((block) => block.content.trim())?.content ?? '快速记录').split(/\r?\n/)[0]
+      .replace(/[\\/\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
+    const inferredTitle = !inferredLine || inferredLine === '.' || inferredLine === '..' ? '快速记录' : inferredLine
+    const title = input.title === undefined ? inferredTitle : this.templateText(input.title, 'Document title', 500).trim() || inferredTitle
+    // Quick capture is ordinary Markdown: literal {{...}} text stays intact.
+    return this.createDocumentSnapshot(input.parentId ?? null, title, '', blocks)
+  }
+
+  private templateText(value: unknown, field: string, maxLength: number): string {
+    if (typeof value !== 'string' || value.length > maxLength || value.includes('\0')) throw new Error(`${field} is invalid or too long.`)
+    return value
+  }
+
+  private prepareTemplateBlocks(blocks: DocumentBlockDraft[]): Array<DocumentBlockDraft & { id: string; parentBlockId: string | null }> {
+    if (!Array.isArray(blocks) || blocks.length > 10000) throw new Error('Template must contain at most 10,000 blocks.')
+    let contentLength = 0
+    const ids = new Set<string>()
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object') throw new Error('Invalid template block.')
+      if (!this.templateText(block.type, 'Block type', 100).trim()) throw new Error('Block type is required.')
+      contentLength += this.templateText(block.content, 'Block content', 4000000).length
+      if (contentLength > 4000000) throw new Error('Template content is too large.')
+      if (typeof block.checked !== 'boolean' || !Number.isFinite(block.depth) || block.depth < 0 || block.depth > 6) throw new Error('Invalid block state.')
+      if (block.id !== undefined) {
+        const id = this.templateText(block.id, 'Block ID', 200)
+        if (!id.trim() || ids.has(id)) throw new Error('Template block IDs must be unique and non-empty.')
+      }
+      if (block.parentBlockId != null) {
+        this.templateText(block.parentBlockId, 'Parent block ID', 200)
+        if (!ids.has(block.parentBlockId)) throw new Error('Template parent must precede its child.')
+      }
+      if (block.id) ids.add(block.id)
+      if (block.tags !== undefined && (!Array.isArray(block.tags) || block.tags.length > 200 || block.tags.some((tag) => typeof tag !== 'string' || tag.length > 200))) throw new Error('Invalid block tags.')
+      if (block.language !== undefined) this.templateText(block.language, 'Code language', 200)
+      if (block.highlight !== undefined) this.templateText(block.highlight, 'Block highlight', 100)
+      if (block.listStart !== undefined && (!Number.isFinite(block.listStart) || block.listStart < 1)) throw new Error('Invalid list start.')
+    }
+    // JSON cloning ensures saving a draft never normalizes or mutates that draft.
+    return this.buildPersistedBlocks(this.normalizeBlocks(JSON.parse(JSON.stringify(blocks)) as DocumentBlockDraft[]))
+  }
+
+  private createDocumentSnapshot(parentId: string | null, requestedTitle: string, summary: string, sourceBlocks: DocumentBlockDraft[], date?: string): string {
+    if (parentId !== null) this.templateText(parentId, 'Parent document ID', 200)
+    const source = this.prepareTemplateBlocks(sourceBlocks)
+    return this.db.transaction(() => {
+      const parent = parentId ? this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined : undefined
+      if (parentId && !parent) throw new Error('Parent document not found.')
+      const title = this.generateSiblingTitle(parentId, this.normalizeDocumentTitle(requestedTitle))
+      const path = parent ? `${parent.path}/${title}` : title
+      const id = randomUUID()
+      const now = new Date().toISOString()
+      const mappedIds = new Map(source.map((block) => [block.id, randomUUID()]))
+      const expand = (value: string) => date === undefined ? value : expandDocumentTemplateVariables(value, title, date)
+      const copiedBlocks = source.map((block) => ({ ...block, id: mappedIds.get(block.id)!,
+        parentBlockId: block.parentBlockId ? mappedIds.get(block.parentBlockId)! : null, content: expand(block.content) }))
+      const blocks = rewriteDocumentMarkdownLinks(copiedBlocks, (link) => {
+        if (link.kind === 'wiki') {
+          const reference = parseWikiReference(link.url)
+          const bare = !reference.hasFragment && mappedIds.get(reference.target)
+          if (bare) return bare + (reference.alias === null ? '' : '|' + reference.alias)
+          const fragment = reference.fragment.startsWith('^') ? reference.fragment.slice(1) : reference.fragment
+          const mapped = reference.hasFragment && mappedIds.get(fragment)
+          return mapped ? rewriteWikiReference(reference, '', reference.fragment.startsWith('^') ? '^' + mapped : mapped) : null
+        }
+        const local = parseLocalMarkdownUrl(link.url)
+        const mapped = local && mappedIds.get(local.fragment)
+        return mapped ? '#' + mapped : null
+      })
+      const { sortOrder } = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS sortOrder FROM documents WHERE parent_id IS ?').get(parentId) as { sortOrder: number }
+      this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, title, `doc-${id}`, parentId, path, expand(summary).trim(), sortOrder, now, now)
+      const insert = this.db.prepare(`INSERT INTO blocks
+        (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, list_start, markdown_format_json, highlight, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      blocks.forEach((block, index) => insert.run(block.id, id, block.parentBlockId, index, block.type, block.content,
+        block.checked ? 1 : 0, block.depth, JSON.stringify(block.tags ?? []), block.language ?? null, block.listStart ?? null,
+        block.markdownFormat ? JSON.stringify(block.markdownFormat) : null, block.highlight ?? null, now, now))
+      this.resyncLinksForReferenceChanges([title, path, ...blocks.map((block) => block.id)], [id])
+      return id
+    })()
   }
 
   updateDocument(documentId: string, input: UpdateDocumentInput): string[] {

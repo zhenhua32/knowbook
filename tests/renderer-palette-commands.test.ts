@@ -15,5 +15,12 @@ test('palette command aliases work across UI languages and require every query t
     }
     assert.deepEqual(matchPaletteCommands(commands, '> save impossiblecommand'), [])
     assert.ok(matchPaletteCommands(commands, '> save current document')[0].disabledReason)
+    assert.ok(matchPaletteCommands(commands, '> save as template')[0].disabledReason)
+    for (const [query, id] of [['> quick capture', 'quick-capture'], ['> 快速 记录', 'quick-capture'],
+      ['> new template', 'new-from-template'], ['> 从模板新建', 'new-from-template']]) {
+      const command = matchPaletteCommands(commands, query).find((item) => item.id === id)
+      assert.ok(command, query)
+      assert.equal(command.disabledReason, undefined)
+    }
   }
 })

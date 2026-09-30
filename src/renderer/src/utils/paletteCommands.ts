@@ -2,6 +2,7 @@ import type { DocumentsDomainState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
 import type { WorkspaceOperationsState } from '../types/appComposition'
 import { openShortcutHelp } from '../openShortcutHelp'
+import { openDocumentTemplates, openQuickCapture, openSaveDocumentTemplate } from '../documentCapture'
 
 export type PaletteCommand = {
   id: string
@@ -31,6 +32,12 @@ export function createPaletteCommands(documents: DocumentsDomainState, shell: Ap
       keywords: 'keyboard shortcuts hotkeys help keys 快捷键 键盘 按键 帮助', shortcut: 'F1', run: openShortcutHelp },
     { id: 'new-document', title: zh ? '新建文档' : 'New document', description: zh ? '在根目录创建文档' : 'Create a document at the workspace root', keywords: 'new create document 新建 创建 文档', disabledReason: unavailable,
       run: async () => { await workspace.handleCreateDocument(null); shell.setActivePage('documents') } },
+    { id: 'new-from-template', title: zh ? '从模板新建' : 'New from template', description: zh ? '使用内置或自定义模板创建文档' : 'Create a document from a built-in or personal template',
+      keywords: 'new create document template 从模板新建 新建 创建 文档 模板', disabledReason: unavailable, run: () => openDocumentTemplates() },
+    { id: 'quick-capture', title: zh ? '快速记录' : 'Quick capture', description: zh ? '快速保存想法、待办或 Markdown' : 'Save an idea, task, or Markdown note',
+      keywords: 'quick capture note jot 快速记录 快速 记录 笔记 想法', shortcut: 'Ctrl/Cmd+Shift+N', disabledReason: unavailable, run: openQuickCapture },
+    { id: 'save-document-template', title: zh ? '保存为模板' : 'Save as template', description: currentTitle,
+      keywords: 'save as template reuse snapshot 保存为模板 保存 复用 草稿 模板', disabledReason: noDocument, run: openSaveDocumentTemplate },
     ...shell.pageItems.map((page, index) => ({ id: `page-${page.id}`, title: page.label, description: page.description,
       keywords: `go open page ${page.id} ${pageKeywords[page.id]} 跳转 页面 打开`, shortcut: `Ctrl/Cmd+${index + 1}`,
       run: () => shell.setActivePage(page.id) })),

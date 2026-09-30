@@ -7,6 +7,7 @@ import type { UiLanguage } from '../i18n'
 import { getUiText } from '../i18n'
 
 const DocumentTreeContextMenu = lazyWithRetry(async () => ({ default: (await import('./DocumentTreeContextMenu')).DocumentTreeContextMenu }))
+const SidebarCaptureActions = lazyWithRetry(() => import('./SidebarCaptureActions'))
 
 type PageNavWithWorkspaceTreeProps = {
   notificationControl?: ReactNode
@@ -144,8 +145,11 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
       {/* Compact Horizontal Navigation Rail */}
       <PageRail
-        notificationControl={<>{isNavCollapsed && <button type="button" className="nav-icon-btn" title={globalSearchTitle}
-          aria-label={globalSearchTitle} onClick={onOpenGlobalSearch}><SearchIcon /></button>}{props.notificationControl}</>}
+        notificationControl={<>{isNavCollapsed && <>
+          <button type="button" className="nav-icon-btn" title={globalSearchTitle}
+            aria-label={globalSearchTitle} onClick={onOpenGlobalSearch}><SearchIcon /></button>
+          <Suspense fallback={null}><SidebarCaptureActions isZh={isZh} disabled={Boolean(props.workspaceUnavailable)} collapsed /></Suspense>
+        </>}{props.notificationControl}</>}
         activePage={activePage}
         brandEyebrow={brandEyebrow}
         collapseTitle={collapseSidebarLabel}
@@ -187,6 +191,8 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
               <PlusIcon />
             </button>
           </div>
+
+          {!isNavCollapsed && <Suspense fallback={null}><SidebarCaptureActions isZh={isZh} disabled={Boolean(props.workspaceUnavailable)} /></Suspense>}
 
           <div
             className={`root-drop-zone-compact${dragOverRoot ? ' root-drop-zone-active' : ''}`}

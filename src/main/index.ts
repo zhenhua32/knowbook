@@ -21,6 +21,9 @@ import type {
   CreateDatabaseEntityInput,
   CreateDatabaseSavedViewInput,
   CreateDocumentDatabaseColumnInput,
+  CreateDocumentFromTemplateInput,
+  CreateQuickNoteInput,
+  SaveDocumentTemplateInput,
   DatabaseEntity,
   DatabaseSavedView,
   DeleteDatabaseEntityInput,
@@ -1539,6 +1542,27 @@ function registerIpcHandlers(): void {
     }
     return { id }
   })
+
+  ipcMain.handle('knowbook:list-document-templates', (_event, language?: 'zh-CN' | 'en-US') => store.listDocumentTemplates(language))
+  ipcMain.handle('knowbook:save-document-template', (_event, input: SaveDocumentTemplateInput) => store.saveDocumentTemplate(input))
+  ipcMain.handle('knowbook:delete-document-template', (_event, id: string) => store.deleteDocumentTemplate(id))
+  const finishCapturedDocument = async (id: string) => {
+    const document = store.getDocumentSnapshot(id)
+    if (document) {
+      try {
+        await workspaceEventBus.emit({ type: 'document.created', createdAt: new Date().toISOString(),
+          documentId: document.id, documentTitle: document.title, path: document.path, parentId: document.parentId })
+      } catch (error) {
+        console.warn('Document was created, but a workspace subscriber failed.', error)
+      }
+    }
+    notifyWorkspaceMutation()
+    return { id }
+  }
+  ipcMain.handle('knowbook:create-document-from-template', (_event, input: CreateDocumentFromTemplateInput) =>
+    finishCapturedDocument(store.createDocumentFromTemplate(input)))
+  ipcMain.handle('knowbook:create-quick-note', (_event, input: CreateQuickNoteInput) =>
+    finishCapturedDocument(store.createQuickNote(input)))
 
   ipcMain.handle('knowbook:get-document-database-columns', (_event, databaseId: string | null = null) => {
     const columns: DocumentDatabaseColumn[] = store.getDocumentDatabaseColumns(databaseId ?? undefined)

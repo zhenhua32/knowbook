@@ -727,6 +727,37 @@ export interface CreateDocumentResult {
   id: string
 }
 
+export interface DocumentTemplate {
+  id: string
+  name: string
+  description: string
+  title: string
+  summary: string
+  blocks: DocumentBlockDraft[]
+  builtIn: boolean
+}
+
+export interface SaveDocumentTemplateInput {
+  name: string
+  description?: string
+  title: string
+  summary: string
+  blocks: DocumentBlockDraft[]
+}
+
+export interface CreateDocumentFromTemplateInput {
+  templateId: string
+  parentId: string | null
+  title?: string
+  language?: 'zh-CN' | 'en-US'
+}
+
+export interface CreateQuickNoteInput {
+  content: string
+  title?: string
+  parentId?: string | null
+}
+
 export interface ClipWebPageInput {
   url: string
   parentId: string | null
@@ -882,6 +913,11 @@ export interface ElectronApi {
   getWebClipBridgeStatus: () => Promise<WebClipBridgeStatus>
   updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => Promise<WebClipBridgeStatus>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
+  listDocumentTemplates: (language?: 'zh-CN' | 'en-US') => Promise<DocumentTemplate[]>
+  saveDocumentTemplate: (input: SaveDocumentTemplateInput) => Promise<DocumentTemplate>
+  deleteDocumentTemplate: (id: string) => Promise<void>
+  createDocumentFromTemplate: (input: CreateDocumentFromTemplateInput) => Promise<CreateDocumentResult>
+  createQuickNote: (input: CreateQuickNoteInput) => Promise<CreateDocumentResult>
   getDocumentCatalog: (databaseId?: string | null) => Promise<DocumentCatalogEntry[]>
   getDocumentCatalogPage: (input: DocumentCatalogPageInput) => Promise<DocumentCatalogPage>
   getDocumentDatabaseColumns: (databaseId?: string | null) => Promise<DocumentDatabaseColumn[]>
