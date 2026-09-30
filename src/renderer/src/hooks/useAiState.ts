@@ -1,6 +1,6 @@
 import type { AppMessageHandler } from '../notify'
 import { confirmAction } from '../confirmAction'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -39,10 +39,8 @@ export function useAiState({
   const [aiContextSearching, setAiContextSearching] = useState(false)
   const [aiContextError, setAiContextError] = useState('')
   const selectedDocumentIdRef = useRef(selectedDocumentId)
-
-  useEffect(() => {
-    selectedDocumentIdRef.current = selectedDocumentId
-  }, [selectedDocumentId])
+  const aiAnswerRequestIdRef = useRef(0)
+  const aiContextRequestIdRef = useRef(0)
 
   useEffect(() => {
     setAiEnabledDraft(aiConfig.enabled)
@@ -60,10 +58,24 @@ export function useAiState({
    ])
 
   const resetAiSession = useCallback(() => {
+    aiAnswerRequestIdRef.current += 1
+    aiContextRequestIdRef.current += 1
     setAiAnswer('')
+    setAiAsking(false)
     setAiContextResults([])
+    setAiContextSearching(false)
     setAiContextError('')
   }, [])
+
+  useLayoutEffect(() => {
+    selectedDocumentIdRef.current = selectedDocumentId
+    resetAiSession()
+
+    return () => {
+      aiAnswerRequestIdRef.current += 1
+      aiContextRequestIdRef.current += 1
+    }
+  }, [resetAiSession, selectedDocumentId])
 
   const saveAiConfig = useCallback(async () => {
     setAiSaving(true)
@@ -134,50 +146,71 @@ export function useAiState({
   ])
 
   const findRelatedNotesForPrompt = useCallback(async () => {
-    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+    const requestedDocumentId = selectedDocumentId
+    if (!requestedDocumentId || requestedDocumentId !== selectedDocumentIdRef.current || !aiPromptDraft.trim()) {
       return
     }
 
+    const requestId = ++aiContextRequestIdRef.current
+    const isCurrentRequest = () => (
+      aiContextRequestIdRef.current === requestId && selectedDocumentIdRef.current === requestedDocumentId
+    )
     setAiContextSearching(true)
     setAiContextError('')
 
     try {
       const results = await window.knowbook.searchSemanticNotes({
         query: aiPromptDraft.trim(),
-        excludeDocumentId: selectedDocumentId,
+        excludeDocumentId: requestedDocumentId,
         limit: 4
       })
-      setAiContextResults(results)
+      if (isCurrentRequest()) {
+        setAiContextResults(results)
+      }
     } catch (error) {
-      const message = getErrorMessage(error, ui.semanticSearchFailed)
-      setAiContextResults([])
-      setAiContextError(message)
+      if (isCurrentRequest()) {
+        const message = getErrorMessage(error, ui.semanticSearchFailed)
+        setAiContextResults([])
+        setAiContextError(message)
+      }
     } finally {
-      setAiContextSearching(false)
+      if (isCurrentRequest()) {
+        setAiContextSearching(false)
+      }
     }
   }, [aiPromptDraft, selectedDocumentId, ui])
 
   const askAiOnSelectedDocument = useCallback(async () => {
-    if (!selectedDocumentId || !aiPromptDraft.trim()) {
+    const requestedDocumentId = selectedDocumentId
+    if (!requestedDocumentId || requestedDocumentId !== selectedDocumentIdRef.current || !aiPromptDraft.trim()) {
       return
     }
 
+    const requestId = ++aiAnswerRequestIdRef.current
+    const isCurrentRequest = () => (
+      aiAnswerRequestIdRef.current === requestId && selectedDocumentIdRef.current === requestedDocumentId
+    )
     setAiAsking(true)
     setAiContextError('')
     setAiContextResults([])
 
     try {
       const result = await window.knowbook.askAiAboutDocument({
-        documentId: selectedDocumentId,
+        documentId: requestedDocumentId,
         prompt: aiPromptDraft.trim()
       })
-      setAiAnswer(result.answer)
+      if (isCurrentRequest()) {
+        setAiAnswer(result.answer)
+      }
     } catch (error) {
-      const message = getErrorMessage(error, ui.aiRequestFailed)
-      setAiAnswer(message)
-      setAiContextResults([])
+      if (isCurrentRequest()) {
+        const message = getErrorMessage(error, ui.aiRequestFailed)
+        setAiAnswer(message)
+      }
     } finally {
-      setAiAsking(false)
+      if (isCurrentRequest()) {
+        setAiAsking(false)
+      }
     }
   }, [aiPromptDraft, selectedDocumentId, ui])
 

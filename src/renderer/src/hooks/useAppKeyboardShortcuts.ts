@@ -50,6 +50,12 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         event.preventDefault(); shell.setActivePage(PAGE_ORDER[Number(key.at(-1)) - 1]); return
       }
       if (shell.activePage !== 'documents') return
+      const actionKey = key === 'mod+shift+z' ? 'mod+y' : key
+      // Metadata and auxiliary inputs keep their own history. Only body editors
+      // share the document's block history, including Markdown table cells.
+      if ((actionKey === 'mod+z' || actionKey === 'mod+y') && event.target instanceof HTMLElement
+        && (event.target.matches('textarea, input:not([type="checkbox"]):not([type="radio"])') || event.target.isContentEditable)
+        && !event.target.matches('textarea.block-inline-textarea, .markdown-table-editor textarea')) return
       const actions: Record<string, (() => void) | undefined> = {
         'mod+f': documents.isBlockSearchOpen ? documents.closeBlockSearch : documents.openBlockSearch,
         'alt+arrowleft': documents.navBack,
@@ -58,7 +64,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         'mod+z': documents.isEditing ? documents.undoEdit : undefined,
         'mod+y': documents.isEditing ? documents.redoEdit : undefined
       }
-      const action = actions[key === 'mod+shift+z' ? 'mod+y' : key]
+      const action = actions[actionKey]
       if (action) { event.preventDefault(); action() }
     }
     const startComposition = (event: CompositionEvent) => { composingTarget.current = event.target }

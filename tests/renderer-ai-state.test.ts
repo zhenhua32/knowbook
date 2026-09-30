@@ -2,6 +2,11 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
+import { act, createElement } from 'react'
+import { JSDOM } from 'jsdom'
+import { useAiState } from '../src/renderer/src/hooks/useAiState'
+import { getUiText } from '../src/renderer/src/i18n'
+import type { AskAiInput, AskAiResult, ElectronApi, SearchSemanticNotesInput, SemanticSearchResult } from '../src/shared/contracts'
 
 const hookSource = readFileSync(
   join(process.cwd(), 'src/renderer/src/hooks/useAiState.ts'),
@@ -46,4 +51,233 @@ test('AI automations still refresh home data and report results when the selecti
   const messageIndex = source.indexOf('onMessage(ui.aiAutomationResult(result))')
   assert.ok(homeDataIndex !== -1, 'home data is global and should stay fresh')
   assert.ok(messageIndex !== -1, 'the automation result message should still be surfaced')
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function relatedNote(documentId: string): SemanticSearchResult {
+  return { documentId, title: documentId, path: documentId, summary: '', snippet: documentId, score: 1 }
+}
+
+async function withAiState(run: (context: {
+  state: () => ReturnType<typeof useAiState>
+  selectDocument: (id: string | null) => Promise<void>
+  answers: Array<ReturnType<typeof deferred<AskAiResult>> & { input: AskAiInput }>
+  searches: Array<ReturnType<typeof deferred<SemanticSearchResult[]>> & { input: SearchSemanticNotesInput }>
+}) => Promise<void>) {
+  const dom = new JSDOM('<div id="mount"></div>')
+  const originals = new Map<string, PropertyDescriptor | undefined>()
+  const answers: Array<ReturnType<typeof deferred<AskAiResult>> & { input: AskAiInput }> = []
+  const searches: Array<ReturnType<typeof deferred<SemanticSearchResult[]>> & { input: SearchSemanticNotesInput }> = []
+  const api: Partial<ElectronApi> = {
+    askAiAboutDocument: (input) => {
+      const request = { ...deferred<AskAiResult>(), input }
+      answers.push(request)
+      return request.promise
+    },
+    searchSemanticNotes: (input) => {
+      const request = { ...deferred<SemanticSearchResult[]>(), input }
+      searches.push(request)
+      return request.promise
+    }
+  }
+  Object.defineProperty(dom.window, 'knowbook', { value: api })
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    navigator: dom.window.navigator, IS_REACT_ACT_ENVIRONMENT: true })) {
+    originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(dom.window.document.getElementById('mount')!)
+  let state!: ReturnType<typeof useAiState>
+  const noop = () => undefined
+  const aiConfig = { enabled: true, baseUrl: '', model: '', autoSummaryOnSave: false, relatedNotesEnabled: true, hasApiKey: true }
+  function Harness({ id }: { id: string | null }) {
+    state = useAiState({ aiConfig, selectedDocumentId: id, ui: getUiText('zh-CN'),
+      onHomeDataChange: noop, onSelectedDocumentChange: noop, onDraftSummaryChange: noop, onMessage: noop })
+    return null
+  }
+  const selectDocument = async (id: string | null) => {
+    await act(async () => root.render(createElement(Harness, { id })))
+  }
+  try {
+    await selectDocument('a')
+    await act(async () => state.setAiPromptDraft('  查找资料  '))
+    await run({ state: () => state, selectDocument, answers, searches })
+  } finally {
+    await act(async () => root.unmount())
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+    dom.window.close()
+  }
+}
+
+function assertEmptySession(state: ReturnType<typeof useAiState>) {
+  assert.equal(state.aiAnswer, '')
+  assert.deepEqual(state.aiContextResults, [])
+  assert.equal(state.aiContextError, '')
+  assert.equal(state.aiAsking, false)
+  assert.equal(state.aiContextSearching, false)
+}
+
+for (const outcome of ['success', 'failure'] as const) {
+  for (const selection of [['b'], [null], ['b', 'a']]) {
+    test(`AI session ignores late ${outcome} after selecting ${selection.join(' then ') || 'no document'}`, async () => {
+      await withAiState(async ({ state, selectDocument, answers, searches }) => {
+        let answerPending!: Promise<void>
+        let searchPending!: Promise<void>
+        await act(async () => {
+          answerPending = state().askAiOnSelectedDocument()
+          searchPending = state().findRelatedNotesForPrompt()
+        })
+        assert.equal(state().aiAsking, true)
+        assert.equal(state().aiContextSearching, true)
+        assert.deepEqual(answers[0].input, { documentId: 'a', prompt: '查找资料' })
+        assert.deepEqual(searches[0].input, { query: '查找资料', excludeDocumentId: 'a', limit: 4 })
+        for (const id of selection) await selectDocument(id)
+        assertEmptySession(state())
+        await act(async () => {
+          if (outcome === 'success') {
+            answers[0].resolve({ answer: '旧文档回答', references: [] })
+            searches[0].resolve([relatedNote('旧文档资料')])
+          } else {
+            answers[0].reject(new Error('旧文档提问失败'))
+            searches[0].reject(new Error('旧文档检索失败'))
+          }
+          await Promise.all([answerPending, searchPending])
+        })
+        assertEmptySession(state())
+      })
+    })
+  }
+
+  test(`AI session reset discards old ${outcome} without finishing the new requests`, async () => {
+    await withAiState(async ({ state, answers, searches }) => {
+      let oldAnswer!: Promise<void>
+      let oldSearch!: Promise<void>
+      let newAnswer!: Promise<void>
+      let newSearch!: Promise<void>
+      await act(async () => {
+        oldAnswer = state().askAiOnSelectedDocument()
+        oldSearch = state().findRelatedNotesForPrompt()
+      })
+      await act(async () => state().resetAiSession())
+      assertEmptySession(state())
+      await act(async () => {
+        newAnswer = state().askAiOnSelectedDocument()
+        newSearch = state().findRelatedNotesForPrompt()
+      })
+      await act(async () => {
+        if (outcome === 'success') {
+          answers[0].resolve({ answer: '清空前的回答', references: [] })
+          searches[0].resolve([relatedNote('清空前的资料')])
+        } else {
+          answers[0].reject(new Error('清空前的提问失败'))
+          searches[0].reject(new Error('清空前的检索失败'))
+        }
+        await Promise.all([oldAnswer, oldSearch])
+      })
+      assert.equal(state().aiAsking, true)
+      assert.equal(state().aiContextSearching, true)
+      assert.equal(state().aiAnswer, '')
+      assert.deepEqual(state().aiContextResults, [])
+      assert.equal(state().aiContextError, '')
+      await act(async () => {
+        answers[1].resolve({ answer: '清空后的回答', references: [] })
+        searches[1].resolve([relatedNote('清空后的资料')])
+        await Promise.all([newAnswer, newSearch])
+      })
+      assert.equal(state().aiAnswer, '清空后的回答')
+      assert.deepEqual(state().aiContextResults, [relatedNote('清空后的资料')])
+      assert.equal(state().aiAsking, false)
+      assert.equal(state().aiContextSearching, false)
+    })
+  })
+
+  test(`AI requests keep the latest answer and notes when older requests finish with ${outcome}`, async () => {
+    await withAiState(async ({ state, answers, searches }) => {
+      let oldAnswer!: Promise<void>
+      let oldSearch!: Promise<void>
+      let newAnswer!: Promise<void>
+      let newSearch!: Promise<void>
+      await act(async () => {
+        oldAnswer = state().askAiOnSelectedDocument()
+        oldSearch = state().findRelatedNotesForPrompt()
+        newAnswer = state().askAiOnSelectedDocument()
+        newSearch = state().findRelatedNotesForPrompt()
+      })
+      await act(async () => {
+        answers[1].resolve({ answer: '新回答', references: [] })
+        searches[1].resolve([relatedNote('新资料')])
+        await Promise.all([newAnswer, newSearch])
+      })
+      await act(async () => {
+        if (outcome === 'success') {
+          answers[0].resolve({ answer: '旧回答', references: [] })
+          searches[0].resolve([relatedNote('旧资料')])
+        } else {
+          answers[0].reject(new Error('旧提问失败'))
+          searches[0].reject(new Error('旧检索失败'))
+        }
+        await Promise.all([oldAnswer, oldSearch])
+      })
+      assert.equal(state().aiAnswer, '新回答')
+      assert.deepEqual(state().aiContextResults, [relatedNote('新资料')])
+      assert.equal(state().aiContextError, '')
+      assert.equal(state().aiAsking, false)
+      assert.equal(state().aiContextSearching, false)
+    })
+  })
+}
+
+test('current AI errors still appear and finish their own loading states', async () => {
+  await withAiState(async ({ state, answers, searches }) => {
+    let answerPending!: Promise<void>
+    let searchPending!: Promise<void>
+    await act(async () => {
+      answerPending = state().askAiOnSelectedDocument()
+      searchPending = state().findRelatedNotesForPrompt()
+    })
+    await act(async () => {
+      answers[0].reject(new Error('当前提问失败'))
+      searches[0].reject(new Error('当前检索失败'))
+      await Promise.all([answerPending, searchPending])
+    })
+    assert.equal(state().aiAnswer, '当前提问失败')
+    assert.equal(state().aiContextError, '当前检索失败')
+    assert.deepEqual(state().aiContextResults, [])
+    assert.equal(state().aiAsking, false)
+    assert.equal(state().aiContextSearching, false)
+  })
+})
+
+test('a failed AI answer preserves related notes found while it was running', async () => {
+  await withAiState(async ({ state, answers, searches }) => {
+    let answerPending!: Promise<void>
+    let searchPending!: Promise<void>
+    await act(async () => {
+      answerPending = state().askAiOnSelectedDocument()
+      searchPending = state().findRelatedNotesForPrompt()
+    })
+    await act(async () => {
+      searches[0].resolve([relatedNote('已找到的资料')])
+      await searchPending
+    })
+    await act(async () => {
+      answers[0].reject(new Error('提问失败'))
+      await answerPending
+    })
+    assert.equal(state().aiAnswer, '提问失败')
+    assert.deepEqual(state().aiContextResults, [relatedNote('已找到的资料')])
+  })
 })

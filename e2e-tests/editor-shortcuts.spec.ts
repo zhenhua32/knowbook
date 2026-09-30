@@ -193,6 +193,54 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
     })
   })
 
+  test('keeps title, summary and AI prompt undo separate from body history', async () => {
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      const originalBody = await editor.inputValue()
+      const body = 'Body history must stay separate'
+      await editor.fill(body)
+      const title = page.locator('.document-summary-card .editor-input').first()
+      const summary = page.locator('.document-summary-card .editor-textarea').first()
+      const prompt = page.locator('.document-aux-sidebar-content textarea.editor-textarea')
+      if (!await prompt.isVisible()) await page.getByRole('button', { name: uiText('Show auxiliary', '展开辅助区') }).click()
+      for (const field of [title, summary, prompt]) {
+        const original = await field.inputValue()
+        await field.focus()
+        await field.press('End')
+        // One keypress gives the browser a single native undo transaction.
+        await field.pressSequentially('x')
+        await expect(field).toHaveValue(`${original}x`)
+        await field.press('Control+z')
+        await expect(field).toHaveValue(original)
+        await expect(editor).toHaveValue(body)
+        await field.press('Control+Shift+z')
+        await expect(field).toHaveValue(`${original}x`)
+        await expect(editor).toHaveValue(body)
+        await field.press('Control+z')
+        await expect(field).toHaveValue(original)
+      }
+      await editor.press('Control+z')
+      await expect(editor).toHaveValue(originalBody)
+      await editor.press('Control+y')
+      await expect(editor).toHaveValue(body)
+    })
+  })
+
+  test('keeps body undo and redo available from a focused task checkbox', async () => {
+    await withElectronApp(async ({ page }) => {
+      const editor = await createFreshDocumentEditor(page)
+      await editor.fill('- [ ] Checkbox history')
+      const checkbox = page.locator('.block-todo-checkbox').first()
+      await checkbox.focus()
+      await checkbox.press('Space')
+      await expect(checkbox).toBeChecked()
+      await checkbox.press('Control+z')
+      await expect(checkbox).not.toBeChecked()
+      await checkbox.press('Control+Shift+z')
+      await expect(checkbox).toBeChecked()
+    })
+  })
+
   test('dismisses a slash command without moving the cursor to trailing text', async () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
