@@ -63,7 +63,10 @@ export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText
       event.preventDefault()
       event.stopPropagation()
       onClose()
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      return
+    }
+    if (event.target !== inputRef.current) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       step(event.key === 'ArrowDown' ? 1 : -1)
     } else if (event.key === 'Enter') {
