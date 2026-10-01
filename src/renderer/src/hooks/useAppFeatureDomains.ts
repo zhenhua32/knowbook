@@ -61,6 +61,7 @@ export function useAppFeatureDomains({
     aiModelDraft: ai.aiModelDraft,
     aiSaving: ai.aiSaving,
     aiClearingApiKey: ai.aiClearingApiKey,
+    aiSaveError: ai.aiSaveError,
     isSettingsPage: shell.activePage === 'settings',
     isZh: shell.isZh,
     loading: shell.loading,

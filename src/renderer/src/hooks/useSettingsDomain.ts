@@ -17,6 +17,7 @@ type UseSettingsDomainParams = {
   aiModelDraft: string
   aiSaving: boolean
   aiClearingApiKey: boolean
+  aiSaveError: string
   isSettingsPage: boolean
   isZh: boolean
   loading: boolean
@@ -50,6 +51,7 @@ export function useSettingsDomain({
   aiModelDraft,
   aiSaving,
   aiClearingApiKey,
+  aiSaveError,
   isSettingsPage,
   isZh,
   loading,
@@ -88,6 +90,7 @@ export function useSettingsDomain({
     aiModelDraft,
     aiSaving,
     aiClearingApiKey,
+    aiSaveError,
     appUpdateRefreshing: settingsState.appUpdateRefreshing,
     appUpdateState: settingsState.appUpdateState,
     appUpdateLoading: settingsState.appUpdateLoading,
@@ -133,6 +136,7 @@ export function useSettingsDomain({
     webClipBridgePortError: settingsState.webClipBridgePortError,
     webClipBridgeSaving: settingsState.webClipBridgeSaving,
     webClipBridgeRegenerating: settingsState.webClipBridgeRegenerating,
+    webClipBridgeActionError: settingsState.webClipBridgeActionError,
     webClipBridgeLoading: settingsState.webClipBridgeLoading,
     webClipBridgeLoadError: settingsState.webClipBridgeLoadError,
     webClipBridgeStatus: settingsState.webClipBridgeStatus,

@@ -24,6 +24,7 @@ type Save = Read & { input: UpdateWebClipBridgeSettingsInput }
 type View = {
   status: WebClipBridgeStatus | null; enabled: boolean; port: string;
   loading: boolean; error: string | null; portError: string | null; saving: boolean;
+  actionError: State['webClipBridgeActionError'];
 }
 type Context = {
   state: () => State; view: () => View;
@@ -33,7 +34,7 @@ type Context = {
   edit: (enabled: boolean, port: string) => Promise<void>;
   settle: (action: () => void, completion?: Promise<void>) => Promise<void>;
   poll: () => Promise<void>;
-  render: (active?: boolean) => Promise<void>;
+  render: (active?: boolean, language?: 'zh-CN' | 'en-US') => Promise<void>;
   unmount: () => Promise<void>;
   timerCount: () => number;
 }
@@ -74,16 +75,19 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
   let hasRoot = true
   let state!: State
   let active = options.active ?? false
+  let language = options.language ?? 'zh-CN'
   const onMessage: AppMessageHandler = (message, level) => { messages.push([message, level]) }
   function Harness({ active }: { active: boolean }) {
-    state = useSettingsState({ isSettingsPageActive: active, ui: getUiText(options.language ?? 'zh-CN'), onMessage })
+    state = useSettingsState({ isSettingsPageActive: active, ui: getUiText(language), onMessage })
     const view: View = { status: state.webClipBridgeStatus, enabled: state.webClipBridgeEnabledDraft,
       port: state.webClipBridgePortDraft, loading: state.webClipBridgeLoading,
-      error: state.webClipBridgeLoadError, portError: state.webClipBridgePortError, saving: state.webClipBridgeSaving }
+      error: state.webClipBridgeLoadError, portError: state.webClipBridgePortError, saving: state.webClipBridgeSaving,
+      actionError: state.webClipBridgeActionError }
     return createElement('output', { 'data-testid': 'bridge-state' }, JSON.stringify(view))
   }
-  const render = async (nextActive = active) => {
+  const render = async (nextActive = active, nextLanguage = language) => {
     active = nextActive
+    language = nextLanguage
     if (!hasRoot) { root = createRoot(mount); hasRoot = true }
     const element = createElement(Harness, { active })
     await act(async () => root.render(options.strict ? createElement(StrictMode, null, element) : element))
@@ -117,7 +121,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
   for (const language of ['zh-CN', 'en-US'] as const) {
     await withBridge(async context => {
       assert.equal(context.reads.length, 1)
-      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, portError: null, saving: false })
+      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, portError: null, saving: false, actionError: null })
       await context.edit(true, '9999')
       await context.start(() => context.state().saveWebClipBridgeSettings())
       await context.start(() => context.state().saveWebClipBridgeSettings(true))
@@ -137,7 +141,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
       assert.equal(context.view().error, error, 'a pending retry keeps the existing failure available to its inline UI')
       const actual = status(4789)
       await context.settle(() => context.reads[1].resolve(actual), completion)
-      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false })
+      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null })
       const saved = await context.start(() => context.state().saveWebClipBridgeSettings())
       assert.deepEqual(context.saves[0].input, { enabled: true, port: 4789, regenerateToken: false })
       await context.settle(() => context.saves[0].resolve(actual), saved.completion)
@@ -346,8 +350,11 @@ test('token regeneration uses the latest saved status, survives a failure, and l
     assert.equal(context.view().enabled, true)
     assert.equal(context.view().port, '')
     assert.equal(context.view().portError, portError)
-    assert.deepEqual(context.messages.at(-1), [`${getUiText('zh-CN').webClipBridgeSaveFailed} write permission denied`, 'error'])
+    const actionError = { kind: 'regenerate', message: `${getUiText('zh-CN').webClipBridgeTokenRefreshFailed} write permission denied` }
+    assert.deepEqual(context.view().actionError, actionError)
+    assert.deepEqual(context.messages.at(-1), [actionError.message, 'error'])
     const retry = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+    assert.equal(context.view().actionError, null)
     assert.deepEqual(context.saves[1].input, { enabled: false, port: 5432, regenerateToken: true })
     const regenerated = { ...latest, token: 'new-disabled-token' }
     await context.settle(() => context.saves[1].resolve(regenerated), retry.completion)
@@ -355,6 +362,7 @@ test('token regeneration uses the latest saved status, survives a failure, and l
     assert.equal(context.view().enabled, true)
     assert.equal(context.view().port, '')
     assert.equal(context.view().portError, portError)
+    assert.equal(context.view().actionError, null)
     await context.edit(true, '5678')
     const save = await context.start(() => context.state().saveWebClipBridgeSettings())
     assert.deepEqual(context.saves[2].input, { enabled: true, port: 5678, regenerateToken: false })
@@ -391,7 +399,7 @@ test('saving blocks setters, duplicate writes and refreshes synchronously, then 
     assert.equal(context.view().port, '4789')
     const saved = status(4789)
     await context.settle(() => context.saves[0].resolve(saved), Promise.all([first, duplicate, refresh]).then(() => {}))
-    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false })
+    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null })
     assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeSaved(true), undefined]])
   }, { active: true })
 })
@@ -462,12 +470,15 @@ test('a failed save preserves known state and dirty drafts and can retry the sam
     assert.equal(context.view().port, '4789')
     assert.equal(context.view().saving, false)
     assert.deepEqual(context.messages.at(-1), [`${getUiText('zh-CN').webClipBridgeSaveFailed} write permission denied`, 'error'])
+    assert.deepEqual(context.view().actionError, { kind: 'save', message: context.messages.at(-1)![0] })
     const retry = await context.start(() => context.state().saveWebClipBridgeSettings())
+    assert.equal(context.view().actionError, null)
     assert.deepEqual(context.saves[1].input, context.saves[0].input)
     await context.settle(() => context.saves[1].resolve(status(4789)), retry.completion)
     assert.equal(context.view().status?.port, 4789)
     assert.equal(context.view().port, '4789')
     assert.equal(context.view().saving, false)
+    assert.equal(context.view().actionError, null)
   })
 })
 
@@ -526,4 +537,133 @@ test('StrictMode effect replay dispatches one valid read and can complete initia
     assert.equal(context.view().loading, false)
     assert.equal(context.view().error, null)
   }, { strict: true, active: true })
+})
+
+test('bridge mutation errors retain their operation through polling, reload and draft edits until a valid replacement action', async () => {
+  for (const regenerate of [false, true]) {
+    await withBridge(async context => {
+      const known = status()
+      await context.settle(() => context.reads[0].resolve(known))
+      await context.edit(false, regenerate ? '' : '4789')
+      const failed = await context.start(() => context.state().saveWebClipBridgeSettings(regenerate))
+      const reason = regenerate ? 'Token replacement could not be stored' : 'Settings could not be stored'
+      await context.settle(() => context.saves[0].reject(new Error(reason)), failed.completion)
+      const prefix = regenerate ? getUiText('zh-CN').webClipBridgeTokenRefreshFailed : getUiText('zh-CN').webClipBridgeSaveFailed
+      const owner = { kind: regenerate ? 'regenerate' : 'save', message: `${prefix} ${reason}` }
+      assert.deepEqual(context.view().actionError, owner)
+      assert.deepEqual(context.view().status, known)
+      await context.edit(false, 'bad-port')
+      assert.deepEqual(context.view().actionError, owner)
+      await context.poll()
+      await context.settle(() => context.reads[1].reject(new Error('Poll failed independently')))
+      assert.ok(context.view().error)
+      assert.deepEqual(context.view().actionError, owner)
+      const read = await context.start(() => context.state().reloadWebClipBridgeStatus())
+      const current = status(5678, 'current-native-token')
+      await context.settle(() => context.reads[2].resolve(current), read.completion)
+      assert.equal(context.view().error, null)
+      assert.deepEqual(context.view().actionError, owner)
+      assert.equal(context.view().enabled, false)
+      assert.equal(context.view().port, 'bad-port')
+      await context.start(() => context.state().saveWebClipBridgeSettings())
+      assert.equal(context.saves.length, 1)
+      assert.deepEqual(context.view().actionError, owner, 'invalid saving must not clear the previous accepted action failure')
+      let replacement!: Promise<void>
+      await act(async () => {
+        const state = context.state()
+        replacement = state.saveWebClipBridgeSettings(true)
+        void state.saveWebClipBridgeSettings(true)
+        void state.saveWebClipBridgeSettings()
+        void state.reloadWebClipBridgeStatus()
+      })
+      assert.equal(context.saves.length, 2)
+      assert.deepEqual(context.saves[1].input, { enabled: true, port: 5678, regenerateToken: true })
+      assert.equal(context.view().actionError, null)
+      assert.equal(context.view().saving, true)
+      await context.settle(() => context.saves[1].resolve({ ...current, token: 'replacement-token' }), replacement)
+      assert.equal(context.view().actionError, null)
+      assert.equal(context.view().status?.token, 'replacement-token')
+      assert.equal(context.view().enabled, false)
+      assert.equal(context.view().port, 'bad-port')
+    }, { active: true })
+  }
+})
+
+test('an invalidated old bridge read cannot erase a mutation error or finish its newer reconciliation read', async () => {
+  for (const outcome of ['success', 'failure'] as const) {
+    await withBridge(async context => {
+      const known = status()
+      await context.settle(() => context.reads[0].resolve(known))
+      await context.edit(false, '')
+      const oldRead = await context.start(() => context.state().reloadWebClipBridgeStatus())
+      const rotate = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+      await context.settle(() => context.saves[0].reject(new Error('Current rotation failed')), rotate.completion)
+      const owner = context.view().actionError
+      assert.equal(owner?.kind, 'regenerate')
+      const currentRead = await context.start(() => context.state().reloadWebClipBridgeStatus())
+      await context.settle(() => outcome === 'success' ? context.reads[1].resolve(status(9999, 'obsolete-token'))
+        : context.reads[1].reject(new Error('Obsolete read failed')), oldRead.completion)
+      assert.deepEqual(context.view().status, known)
+      assert.deepEqual(context.view().actionError, owner)
+      assert.equal(context.view().error, null)
+      assert.equal(context.view().loading, true)
+      assert.equal(context.view().port, '')
+      await context.settle(() => context.reads[2].resolve(known), currentRead.completion)
+      assert.deepEqual(context.view().actionError, owner)
+      assert.equal(context.view().loading, false)
+      assert.equal(context.messages.length, 1)
+    })
+  }
+})
+
+test('bridge save and token failures use the current language and keep their distinct owner when replacing a previous error', async () => {
+  for (const regenerate of [false, true]) {
+    await withBridge(async context => {
+      await context.settle(() => context.reads[0].resolve(status()))
+      const first = await context.start(() => context.state().saveWebClipBridgeSettings(regenerate))
+      await context.render(false, 'zh-CN')
+      const prefix = regenerate ? getUiText('zh-CN').webClipBridgeTokenRefreshFailed : getUiText('zh-CN').webClipBridgeSaveFailed
+      await context.settle(() => context.saves[0].reject(new Error("Error invoking remote method 'knowbook:update-web-clip-bridge-settings': Error: 本次写入失败")), first.completion)
+      assert.deepEqual(context.view().actionError, { kind: regenerate ? 'regenerate' : 'save', message: `${prefix} 本次写入失败` })
+      assert.deepEqual(context.messages.at(-1), [`${prefix} 本次写入失败`, 'error'])
+      const other = await context.start(() => context.state().saveWebClipBridgeSettings(!regenerate))
+      assert.equal(context.view().actionError, null)
+      await context.render(false, 'en-US')
+      const otherPrefix = regenerate ? getUiText('en-US').webClipBridgeSaveFailed : getUiText('en-US').webClipBridgeTokenRefreshFailed
+      await context.settle(() => context.saves[1].reject(new Error("Error invoking remote method 'knowbook:update-web-clip-bridge-settings': Error: ")), other.completion)
+      assert.deepEqual(context.view().actionError, { kind: regenerate ? 'save' : 'regenerate', message: otherPrefix })
+      assert.deepEqual(context.messages.at(-1), [otherPrefix, 'error'])
+      assert.equal(context.view().saving, false)
+    }, { language: 'en-US' })
+  }
+})
+
+test('late unmounted bridge mutations cannot overwrite or clear a new session operation error', async () => {
+  for (const regenerate of [false, true]) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withBridge(async context => {
+        await context.settle(() => context.reads[0].resolve(status()))
+        const old = await context.start(() => context.state().saveWebClipBridgeSettings(regenerate))
+        const oldRequest = context.saves[0]
+        await context.unmount()
+        await context.render()
+        const known = status(5678, 'new-session-token')
+        await context.settle(() => context.reads[1].resolve(known))
+        await context.edit(false, '6789')
+        const current = await context.start(() => context.state().saveWebClipBridgeSettings(!regenerate))
+        await context.settle(() => context.saves[1].reject(new Error('Current session mutation failed')), current.completion)
+        const owner = context.view().actionError
+        assert.equal(owner?.kind, regenerate ? 'save' : 'regenerate')
+        await context.settle(() => outcome === 'success' ? oldRequest.resolve(status(4321, 'old-session-token'))
+          : oldRequest.reject(new Error('Old session mutation failed')), old.completion)
+        assert.deepEqual(context.view().actionError, owner)
+        assert.deepEqual(context.view().status, known)
+        assert.equal(context.view().enabled, false)
+        assert.equal(context.view().port, '6789')
+        assert.equal(context.view().saving, false)
+        assert.equal(context.messages.length, 1)
+        assert.deepEqual(context.messages[0], [owner!.message, 'error'])
+      })
+    }
+  }
 })

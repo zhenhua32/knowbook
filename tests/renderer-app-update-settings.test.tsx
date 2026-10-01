@@ -32,12 +32,14 @@ function initialProps(isZh: boolean): Props {
     aiRelatedNotesEnabledDraft: false, onAiRelatedNotesEnabledChange: noop, aiBaseUrlDraft: '', onAiBaseUrlChange: noop,
     aiModelDraft: '', onAiModelChange: noop, aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop,
     aiSaving: false, aiClearingApiKey: false, onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
+    aiSaveError: '',
     appUpdateState: null, appUpdateRefreshing: false, appUpdateLoading: false, appUpdateLoadError: null,
     appUpdateCheckError: null, appUpdateCanCheck: false, onReloadAppUpdateState: async () => undefined,
     onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
     webClipBridgeStatus: null, webClipBridgeEnabledDraft: false, onWebClipBridgeEnabledChange: noop,
     webClipBridgePortDraft: '', webClipBridgePortError: null, onWebClipBridgePortChange: noop,
     webClipBridgeSaving: false, webClipBridgeRegenerating: false, webClipBridgeLoading: false, webClipBridgeLoadError: null,
+    webClipBridgeActionError: null,
     onReloadWebClipBridgeStatus: noop, onSaveWebClipBridgeSettings: noop, onRegenerateWebClipBridgeToken: noop,
     onCopyWebClipBridgeEndpoint: noop, onCopyWebClipBridgeToken: noop
   }

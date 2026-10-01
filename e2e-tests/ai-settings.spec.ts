@@ -89,7 +89,8 @@ async function expectDraft(fields: AiFields, draft: AiDraft) {
 }
 
 async function expectMutationLocked(panel: Locator, fields: AiFields, clearing: boolean) {
-  await expect(panel).toHaveAttribute('aria-busy', 'true')
+  await expect(panel.locator('.settings-form-fields')).toHaveAttribute('aria-busy', 'true')
+  await expect(panel).not.toHaveAttribute('aria-busy', 'true')
   for (const input of [fields.enabled, fields.autoSummary, fields.relatedNotes, fields.baseUrl, fields.model, fields.apiKey]) {
     await expect(input).toBeDisabled()
   }
@@ -97,9 +98,16 @@ async function expectMutationLocked(panel: Locator, fields: AiFields, clearing: 
   await expect(fields.clear).toBeDisabled()
   await expect(fields.save).toHaveAttribute('aria-busy', String(!clearing))
   await expect(fields.clear).toHaveAttribute('aria-busy', String(clearing))
-  await expect(panel.getByRole('status', { includeHidden: true })).toHaveText(clearing
+  const status = panel.getByRole('status', { includeHidden: true })
+  await expect(status).toHaveText(clearing
     ? uiText('Clearing the saved API key…', '正在清除已保存的 API Key…')
     : uiText('Saving AI settings…', '正在保存 AI 设置…'))
+  await expectNoBusyAncestor(status)
+}
+
+async function expectNoBusyAncestor(feedback: Locator) {
+  await expect(feedback).toHaveCount(1)
+  expect(await feedback.evaluate(element => element.closest('[aria-busy="true"]') !== null)).toBe(false)
 }
 
 async function dismissNotifications(page: Page) {
@@ -225,7 +233,11 @@ test('AI settings lock every draft during saving and retain the new key after fa
     await finishUpdate(app, 'Controlled AI settings save failure')
     await expect(fields.save).toBeEnabled()
     await expect(fields.clear).toBeEnabled()
-    await expect(panel).toHaveAttribute('aria-busy', 'false')
+    await expect(panel.locator('.settings-form-fields')).toHaveAttribute('aria-busy', 'false')
+    await expect(panel).not.toHaveAttribute('aria-busy', 'true')
+    const saveError = panel.locator('.settings-ai-save-error')
+    await expect(saveError).toHaveText('Controlled AI settings save failure')
+    await expectNoBusyAncestor(saveError)
     await expectDraft(fields, dirtyDraft)
     await expect(page.locator('.app-notifications')).toContainText('Controlled AI settings save failure')
     expect(await readStoredAiConfig(app)).toEqual(before)
@@ -297,7 +309,8 @@ test('clearing an AI key cancels safely, retries the saved configuration and pre
     await fields.clear.click()
     await expect(dialog).toBeVisible()
     await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused()
-    await expect(panel).toHaveAttribute('aria-busy', 'false')
+    await expect(panel.locator('.settings-form-fields')).toHaveAttribute('aria-busy', 'false')
+    await expect(panel).not.toHaveAttribute('aria-busy', 'true')
     // The confirmation session already owns the operation lock, even before the mutation starts.
     await fields.save.evaluate(button => (button as HTMLButtonElement).click())
     expect((await readProbe(app)).writes).toHaveLength(0)
@@ -338,6 +351,9 @@ test('clearing an AI key cancels safely, retries the saved configuration and pre
 
     await finishUpdate(app, 'Controlled API key clear failure')
     await expect(dialog.getByRole('alert')).toHaveText('Controlled API key clear failure')
+    await expect(panel.locator('.settings-form-fields')).toHaveAttribute('aria-busy', 'false')
+    await expect(panel).not.toHaveAttribute('aria-busy', 'true')
+    await expectNoBusyAncestor(dialog.getByRole('alert'))
     await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused()
     await expect(fields.apiKey).toHaveValue(dirtyDraft.apiKey)
     expect(await readStoredAiConfig(app)).toEqual(beforeClear)

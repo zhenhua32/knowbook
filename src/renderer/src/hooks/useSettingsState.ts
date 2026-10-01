@@ -22,6 +22,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const [webClipBridgePortDraft, setWebClipBridgePortDraft] = useState('3210')
   const [webClipBridgeSaving, setWebClipBridgeSaving] = useState(false)
   const [webClipBridgeRegenerating, setWebClipBridgeRegenerating] = useState(false)
+  const [webClipBridgeActionError, setWebClipBridgeActionError] = useState<{ kind: 'save' | 'regenerate'; message: string } | null>(null)
   const mounted = useRef(false)
   const session = useRef(0)
   const bridgeStatus = useRef<WebClipBridgeStatus | null>(null)
@@ -129,6 +130,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     setWebClipBridgeLoading(false)
     setWebClipBridgeSaving(true)
     setWebClipBridgeRegenerating(regenerateToken)
+    setWebClipBridgeActionError(null)
 
     try {
       const status = await window.knowbook.updateWebClipBridgeSettings({
@@ -148,7 +150,9 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     } catch (error) {
       if (!isCurrent()) return
       const detail = getErrorMessage(error, '')
-      const message = detail ? `${ui.webClipBridgeSaveFailed} ${detail}` : ui.webClipBridgeSaveFailed
+      const prefix = regenerateToken ? currentUi.current.webClipBridgeTokenRefreshFailed : currentUi.current.webClipBridgeSaveFailed
+      const message = detail ? `${prefix} ${detail}` : prefix
+      setWebClipBridgeActionError({ kind: regenerateToken ? 'regenerate' : 'save', message })
       onMessage(message, 'error')
     } finally {
       if (isCurrent()) {
@@ -210,6 +214,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     webClipBridgePortError,
     webClipBridgeSaving,
     webClipBridgeRegenerating,
+    webClipBridgeActionError,
     webClipBridgeLoading,
     webClipBridgeLoadError,
     webClipBridgeStatus

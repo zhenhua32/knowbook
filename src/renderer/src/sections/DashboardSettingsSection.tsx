@@ -32,6 +32,7 @@ type DashboardSettingsSectionProps = {
   onAiApiKeyChange: (value: string) => void
   onClearAiApiKey: () => void
   aiSaving: boolean
+  aiSaveError: string
   aiClearingApiKey: boolean
   onSaveAiConfig: () => void | Promise<void>
   onOpenPlugins: () => void
@@ -53,6 +54,7 @@ type DashboardSettingsSectionProps = {
   webClipBridgePortError: string | null
   onWebClipBridgePortChange: (value: string) => void
   webClipBridgeSaving: boolean
+  webClipBridgeActionError: { kind: 'save' | 'regenerate'; message: string } | null
   webClipBridgeRegenerating: boolean
   webClipBridgeLoading: boolean
   webClipBridgeLoadError: string | null
@@ -119,6 +121,7 @@ export function DashboardSettingsSection({
   onAiApiKeyChange,
   onClearAiApiKey,
   aiSaving,
+  aiSaveError,
   aiClearingApiKey,
   onSaveAiConfig,
   onOpenPlugins,
@@ -140,6 +143,7 @@ export function DashboardSettingsSection({
   webClipBridgePortError,
   onWebClipBridgePortChange,
   webClipBridgeSaving,
+  webClipBridgeActionError,
   webClipBridgeRegenerating,
   webClipBridgeLoading,
   webClipBridgeLoadError,
@@ -287,11 +291,13 @@ export function DashboardSettingsSection({
                 </label>
               </section>
 
-              <section ref={aiPanelRef} aria-busy={aiSaving} className="panel settings-category-panel settings-group" {...panelProps('ai')}>
+              <section ref={aiPanelRef} className="panel settings-category-panel settings-group settings-ai-panel" {...panelProps('ai')}>
                 <div className="settings-group-heading">
                   <h3>{isZh ? 'AI 能力' : 'AI capabilities'}</h3>
                   <p>{isZh ? '配置模型连接、自动摘要和相关笔记检索。' : 'Configure model access, automatic summaries, and related-note search.'}</p>
                 </div>
+                <div className="settings-editable-form">
+                <fieldset className="settings-form-fields" aria-busy={aiSaving} disabled={aiSaving}>
                 <div className="settings-toggle-list">
                   <label className="toggle-row">
                     <input checked={aiEnabledDraft} disabled={aiSaving} onChange={(event) => onAiEnabledChange(event.target.checked)} type="checkbox" />
@@ -321,7 +327,12 @@ export function DashboardSettingsSection({
                     <button aria-busy={aiClearingApiKey} className="secondary-button" disabled={aiSaving} onClick={onClearAiApiKey} type="button">{aiClearingApiKey ? (isZh ? '正在清除…' : 'Clearing…') : ui.clearAiApiKey}</button>
                   </div>
                 </div>
-                {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
+                </fieldset>
+                <div className={`settings-form-actions${aiSaving ? ' is-working' : ''}${aiSaveError ? ' has-error' : ''}`}>
+                <div className="settings-action-feedback">
+                  {aiSaveError && <p className="settings-ai-save-error" role="alert">{aiSaveError}</p>}
+                  {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
+                </div>
                 <div className="settings-actions">
                   <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={event => runAiAction(event.currentTarget, onSaveAiConfig)} type="button">
                     {aiSaving && !aiClearingApiKey ? ui.common.saving : ui.saveAiSettings}
@@ -330,14 +341,18 @@ export function DashboardSettingsSection({
                     {isZh ? '打开插件中心' : 'Open plugin center'}
                   </button>
                 </div>
+                </div>
+                </div>
               </section>
 
-              <section ref={bridgePanelRef} className="panel settings-category-panel" {...panelProps('clipping')}>
+              <section ref={bridgePanelRef} className="panel settings-category-panel settings-bridge-panel" {...panelProps('clipping')}>
                 <div>
                   <p className="panel-label">{ui.webClipBridgeLabel}</p>
                   <h3 className="settings-card-title">{ui.webClipBridgeTitle}</h3>
                   <p className="settings-card-description">{ui.webClipBridgeDescription}</p>
                 </div>
+                <div className="settings-editable-form">
+                <fieldset className="settings-form-fields" aria-busy={webClipBridgeSaving} disabled={!webClipBridgeStatus || webClipBridgeSaving}>
                 <label className="toggle-row">
                   <input checked={webClipBridgeEnabledDraft} disabled={!webClipBridgeStatus || webClipBridgeSaving} onChange={(event) => onWebClipBridgeEnabledChange(event.target.checked)} type="checkbox" />
                   <span>{ui.webClipBridgeEnabledLabel}</span>
@@ -347,6 +362,21 @@ export function DashboardSettingsSection({
                   <input ref={bridgePortRef} aria-describedby={webClipBridgePortError ? bridgePortErrorId : undefined} aria-invalid={Boolean(webClipBridgePortError)} className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} inputMode="numeric" onChange={(event) => onWebClipBridgePortChange(event.target.value)} pattern="[0-9]*" type="text" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
                 </label>
                 {webClipBridgePortError && <p className="settings-bridge-port-error" id={bridgePortErrorId} role="alert">{webClipBridgePortError}</p>}
+                </fieldset>
+                <div className={`settings-form-actions${webClipBridgeSaving ? ' is-working' : ''}${webClipBridgeActionError ? ' has-error' : ''}`}>
+                  <p className="mini-hint" id={bridgeTokenHintId}>{ui.webClipBridgeRegenerateHint}</p>
+                  <div className="settings-action-feedback">
+                    {webClipBridgeActionError && <p className="settings-bridge-action-error" data-action-kind={webClipBridgeActionError.kind} role="alert">{webClipBridgeActionError.message}</p>}
+                    {webClipBridgeSaving && <p className="mini-hint" role="status">{webClipBridgeRegenerating ? ui.webClipBridgeRegenerating : ui.webClipBridgeSaving}</p>}
+                  </div>
+                  <div className="settings-actions">
+                    <button aria-busy={webClipBridgeSaving && !webClipBridgeRegenerating} className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving || Boolean(webClipBridgePortError)} onClick={event => runBridgeAction(event.currentTarget, onSaveWebClipBridgeSettings)} type="button">
+                      {webClipBridgeSaving && !webClipBridgeRegenerating ? ui.common.saving : ui.webClipBridgeSave}
+                    </button>
+                    <button aria-busy={webClipBridgeRegenerating} aria-describedby={bridgeTokenHintId} className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={event => runBridgeAction(event.currentTarget, onRegenerateWebClipBridgeToken)} type="button">{ui.webClipBridgeRegenerateToken}</button>
+                  </div>
+                </div>
+                </div>
                 <label className="editor-label">
                   {ui.webClipBridgeTokenLabel}
                   <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.token ?? ''} />
@@ -374,13 +404,7 @@ export function DashboardSettingsSection({
                   </div>
                 </dl>
                 <p className="mini-hint">{ui.webClipBridgeHint}</p>
-                <p className="mini-hint" id={bridgeTokenHintId}>{ui.webClipBridgeRegenerateHint}</p>
-                {webClipBridgeSaving && <p className="mini-hint" role="status">{webClipBridgeRegenerating ? ui.webClipBridgeRegenerating : ui.webClipBridgeSaving}</p>}
                 <div className="settings-actions">
-                  <button aria-busy={webClipBridgeSaving && !webClipBridgeRegenerating} className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving || Boolean(webClipBridgePortError)} onClick={event => runBridgeAction(event.currentTarget, onSaveWebClipBridgeSettings)} type="button">
-                    {webClipBridgeSaving && !webClipBridgeRegenerating ? ui.common.saving : ui.webClipBridgeSave}
-                  </button>
-                  <button aria-busy={webClipBridgeRegenerating} aria-describedby={bridgeTokenHintId} className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={event => runBridgeAction(event.currentTarget, onRegenerateWebClipBridgeToken)} type="button">{ui.webClipBridgeRegenerateToken}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">{ui.webClipBridgeCopyEndpoint}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">{ui.webClipBridgeCopyToken}</button>
                 </div>

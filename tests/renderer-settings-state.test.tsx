@@ -59,7 +59,8 @@ async function withSettings(language: 'zh-CN' | 'en-US', run: (context: Context)
   const onMessage: AppMessageHandler = (message, level) => { messages.push([message, level]) }
   function Harness() {
     state = useSettingsState({ isSettingsPageActive: false, ui: getUiText(language), onMessage })
-    return createElement('div', { 'data-update-busy': String(state.appUpdateRefreshing), 'data-bridge-busy': String(state.webClipBridgeSaving) },
+    return createElement('div', { 'data-update-busy': String(state.appUpdateRefreshing), 'data-bridge-busy': String(state.webClipBridgeSaving),
+      'data-bridge-action-error': JSON.stringify(state.webClipBridgeActionError) },
       state.webClipBridgePortDraft)
   }
   try {
@@ -89,6 +90,8 @@ function operations(context: Context, ui: UiText) {
     { name: 'check-for-app-updates', prefix: ui.appUpdateCheckFailed, run: () => context.state().checkForAppUpdates(), request: () => context.calls.check.at(-1)! },
     { name: 'install-app-update', prefix: ui.appUpdateInstallFailed, run: () => context.state().installAppUpdate(), request: () => context.calls.install.at(-1)! },
     { name: 'update-web-clip-bridge-settings', prefix: ui.webClipBridgeSaveFailed, run: () => context.state().saveWebClipBridgeSettings(), request: () => context.calls.bridge.at(-1)! },
+    { name: 'update-web-clip-bridge-settings', prefix: ui.webClipBridgeTokenRefreshFailed, regenerateToken: true,
+      run: () => context.state().saveWebClipBridgeSettings(true), request: () => context.calls.bridge.at(-1)! },
     { name: 'copy-web-clip-endpoint', prefix: ui.copyFailed, run: () => context.state().copyWebClipBridgeEndpoint(), request: () => context.calls.clipboard.at(-1)! },
     { name: 'copy-web-clip-token', prefix: ui.copyFailed, run: () => context.state().copyWebClipBridgeToken(), request: () => context.calls.clipboard.at(-1)! }
   ]
@@ -103,11 +106,20 @@ test('settings failures append the clean reason after the localized prefix and p
         if (operation.name === 'check-for-app-updates') assert.equal(context.document.querySelector('[data-update-busy]')!.getAttribute('data-update-busy'), 'true')
         if (operation.name === 'update-web-clip-bridge-settings') {
           assert.equal(context.document.querySelector('[data-bridge-busy]')!.getAttribute('data-bridge-busy'), 'true')
-          assert.deepEqual(context.calls.bridge.at(-1)!.input, { enabled: false, port: 4321, regenerateToken: false })
+          const regenerate = 'regenerateToken' in operation && operation.regenerateToken
+          assert.deepEqual(context.calls.bridge.at(-1)!.input, { enabled: regenerate ? true : false,
+            port: regenerate ? 3210 : 4321, regenerateToken: Boolean(regenerate) })
+          assert.equal(context.state().webClipBridgeActionError, null)
         }
         const reason = 'Permission denied for C:/Notes/Error: Review.md\nCheck write permission.'
         await context.fail(operation.request(), new Error(`Error invoking remote method 'knowbook:${operation.name}': Error: ${reason}`), completion)
         assert.deepEqual(context.messages.at(-1), [`${operation.prefix} ${reason}`, 'error'])
+        if (operation.name === 'update-web-clip-bridge-settings') {
+          const expected = { kind: 'regenerateToken' in operation && operation.regenerateToken ? 'regenerate' : 'save',
+            message: `${operation.prefix} ${reason}` }
+          assert.deepEqual(context.state().webClipBridgeActionError, expected)
+          assert.deepEqual(JSON.parse(context.document.querySelector('[data-bridge-action-error]')!.getAttribute('data-bridge-action-error')!), expected)
+        }
         assert.equal(context.state().appUpdateRefreshing, false)
         assert.equal(context.state().webClipBridgeSaving, false)
         assert.equal(context.state().appUpdateState, updateState)
@@ -117,6 +129,7 @@ test('settings failures append the clean reason after the localized prefix and p
       }
       assert.deepEqual(context.calls.clipboard.map(request => request.text), [bridgeStatus.endpoint, bridgeStatus.token])
       const { completion } = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+      assert.equal(context.state().webClipBridgeActionError, null)
       assert.deepEqual(context.calls.bridge.at(-1)!.input, { enabled: true, port: 3210, regenerateToken: true })
       const saved = { ...bridgeStatus, token: 'new-local-token' }
       await act(async () => { context.calls.bridge.at(-1)!.resolve(saved); await completion })
@@ -124,6 +137,7 @@ test('settings failures append the clean reason after the localized prefix and p
       assert.equal(context.state().webClipBridgeEnabledDraft, false)
       assert.equal(context.state().webClipBridgePortDraft, '4321')
       assert.equal(context.state().webClipBridgeSaving, false)
+      assert.equal(context.state().webClipBridgeActionError, null)
       assert.deepEqual(context.messages.at(-1), [getUiText(language).webClipBridgeTokenRefreshed, undefined])
     })
   }
@@ -137,6 +151,11 @@ test('empty packaged exceptions and non-Error rejections use only the localized 
           const { completion } = await context.start(operation.run)
           await context.fail(operation.request(), error, completion)
           assert.deepEqual(context.messages.at(-1), [operation.prefix, 'error'])
+          if (operation.name === 'update-web-clip-bridge-settings') {
+            const expected = { kind: 'regenerateToken' in operation && operation.regenerateToken ? 'regenerate' : 'save', message: operation.prefix }
+            assert.deepEqual(context.state().webClipBridgeActionError, expected)
+            assert.deepEqual(JSON.parse(context.document.querySelector('[data-bridge-action-error]')!.getAttribute('data-bridge-action-error')!), expected)
+          }
           assert.equal(context.state().appUpdateRefreshing, false)
           assert.equal(context.state().webClipBridgeSaving, false)
         }

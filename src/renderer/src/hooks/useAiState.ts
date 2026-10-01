@@ -45,6 +45,8 @@ export function useAiState({
   const settingsMountedRef = useRef(false)
   const settingsLockedRef = useRef(false)
   const settingsRequestIdRef = useRef(0)
+  const settingsUiRef = useRef(ui)
+  settingsUiRef.current = ui
   const {
     enabled: aiEnabledDraft, baseUrl: aiBaseUrlDraft, model: aiModelDraft,
     autoSummaryOnSave: aiAutoSummaryOnSaveDraft, relatedNotesEnabled: aiRelatedNotesEnabledDraft,
@@ -52,6 +54,7 @@ export function useAiState({
   } = settingsDraft
   const [aiSaving, setAiSaving] = useState(false)
   const [aiClearingApiKey, setAiClearingApiKey] = useState(false)
+  const [aiSaveError, setAiSaveError] = useState('')
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAnsweredPrompt, setAiAnsweredPrompt] = useState('')
@@ -145,6 +148,7 @@ export function useAiState({
     const requestId = ++settingsRequestIdRef.current
     const isCurrentRequest = () => settingsMountedRef.current && settingsRequestIdRef.current === requestId
     setAiSaving(true)
+    setAiSaveError('')
 
     try {
       const savedConfig = await window.knowbook.updateAiConfig({ ...settingsDraftRef.current })
@@ -154,7 +158,11 @@ export function useAiState({
         onMessage(ui.aiSettingsSaved)
       }
     } catch (error) {
-      if (isCurrentRequest()) onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
+      if (isCurrentRequest()) {
+        const message = getErrorMessage(error, settingsUiRef.current.aiSettingsSaveFailed)
+        setAiSaveError(message)
+        onMessage(message, 'error')
+      }
     } finally {
       if (isCurrentRequest()) {
         settingsLockedRef.current = false
@@ -173,6 +181,7 @@ export function useAiState({
         note: ui.language === 'zh-CN' ? '仅清除已保存的 API Key，其他未保存的修改会保留。清除后，AI 请求需要重新配置 API Key。' : 'Only the saved API key will be cleared. Other unsaved changes will be kept. AI requests will require a new API key.',
         onConfirm: async () => {
           if (!isCurrentRequest()) return
+          setAiSaveError('')
           setAiSaving(true)
           setAiClearingApiKey(true)
           try {
@@ -327,6 +336,7 @@ export function useAiState({
     setAiApiKeyDraft,
     aiSaving,
     aiClearingApiKey,
+    aiSaveError,
     aiPromptDraft,
     setAiPromptDraft,
     aiAnswer,
