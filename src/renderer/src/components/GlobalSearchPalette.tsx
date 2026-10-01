@@ -6,6 +6,7 @@ import type { AppShellState } from '../types/appShell'
 import type { WorkspaceOperationsState } from '../types/appComposition'
 import { createPaletteCommands, matchPaletteCommands, type PaletteCommand } from '../utils/paletteCommands'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { RecoveryState } from './RecoveryState'
 import { SearchMatchText } from './SearchMatchText'
@@ -105,6 +106,10 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
         if (event.key === 'Escape') event.preventDefault()
         return
       }
+      if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        trapFocusWithinDialog(event.nativeEvent, event.currentTarget)
+        return
+      }
       const key = event.key.toLowerCase()
       if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'k') { event.preventDefault(); documents.closeGlobalSearch(); return }
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.shiftKey && key === 'p') { event.preventDefault(); updateQuery('>'); input.current?.focus(); return }
@@ -129,7 +134,7 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
         onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }} onBlur={() => { composing.current = false }} />
       <button aria-label={zh ? '关闭搜索' : 'Close search'} className="secondary-button" onClick={documents.closeGlobalSearch} type="button">✕</button>
     </div>
-    <div className="global-search-results">
+    <div className="global-search-results" tabIndex={-1}>
       {!commandsOnly && documents.globalSearchLoading && <p className="mini-hint" role="status">{shell.ui.globalSearchLoading}</p>}
       {!commandsOnly && documents.globalSearchError && <RecoveryState compact title={zh ? '搜索暂时不可用' : 'Search is unavailable'}
         description={zh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'} error={documents.globalSearchError} onRetry={documents.retryGlobalSearch} />}
@@ -159,7 +164,9 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
       <span className="palette-action-target" title={selected.result.documentPath}>{selected.result.documentPath}</span>
       <div><button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => execute(selected)}>{primaryLabel}</button>
         {selectedResult?.blockId && <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => execute(selected, true)}>{zh ? '打开文档' : 'Open document'}</button>}
-        <button type="button" className="secondary-button" disabled={Boolean(busy)} onClick={() => { void runResultAction(selected, 'copy') }}>{zh ? '复制文档链接' : 'Copy document link'}</button></div>
+        {/* Keep Copy focused while its synchronous execution lock rejects repeat activation. */}
+        <button type="button" className="secondary-button" disabled={busy === 'open'} aria-disabled={Boolean(busy)} aria-busy={busy === 'copy'}
+          onClick={() => { void runResultAction(selected, 'copy') }}>{zh ? '复制文档链接' : 'Copy document link'}</button></div>
     </div>}
     {(busy || (feedback && feedback.itemId === selected?.id)) && <p className="palette-action-feedback" role={feedback?.error && !busy ? 'alert' : 'status'}>
       {busy ? busy === 'open' ? (zh ? '正在打开…' : 'Opening…') : (zh ? '正在复制…' : 'Copying…') : feedback?.message}</p>}

@@ -147,6 +147,14 @@
 .palette-action-target { display: block; margin-bottom: 8px; color: var(--kb-text-soft); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .palette-result-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .palette-result-actions button { min-height: 32px; }
+.global-search-modal .palette-result-actions .secondary-button[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: .48;
+  transform: none;
+  border-color: var(--kb-line-strong);
+  background: var(--kb-canvas);
+  color: var(--kb-text-soft);
+}
 .palette-action-feedback { flex-shrink: 0; margin: 0; padding: 8px 16px; color: var(--kb-text); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .palette-action-feedback[role='alert'] { border-left: 3px solid var(--kb-danger); padding-left: 13px; background: color-mix(in srgb, var(--kb-danger) 8%, var(--kb-canvas)); }
 

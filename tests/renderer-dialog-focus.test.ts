@@ -11,9 +11,11 @@ test('dialog focus trap cycles in both directions and recovers focus from outsid
     '<!doctype html><html><body>',
     '<button id="outside">Outside</button>',
     '<aside id="dialog" tabindex="-1">',
+    '<button id="programmatic-first" tabindex="-1">Programmatic only</button>',
     '<button id="first">First</button>',
     '<button disabled>Disabled</button>',
     '<textarea id="last"></textarea>',
+    '<button id="programmatic-last" tabindex="-2">Also programmatic only</button>',
     '</aside>',
     '</body></html>'
   ].join(''), { pretendToBeVisual: true })

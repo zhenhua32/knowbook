@@ -11,7 +11,7 @@ const DIALOG_FOCUSABLE_SELECTOR = [
 
 export function getDialogFocusableElements(dialog: HTMLElement): HTMLElement[] {
   return [...dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)]
-    .filter((element) => element.getAttribute('aria-hidden') !== 'true')
+    .filter((element) => element.tabIndex >= 0 && element.getAttribute('aria-hidden') !== 'true')
 }
 
 export function trapFocusWithinDialog(event: KeyboardEvent, dialog: HTMLElement): boolean {
