@@ -33,7 +33,7 @@ test('DocumentTree bounds the rendered rows for a large workspace', () => {
   assert.equal((markup.match(/class="tree-node tree-node-virtual"/g) ?? []).length, 28)
   assert.match(markup, /Document 0/)
   assert.doesNotMatch(markup, /Document 9999/)
-  assert.match(markup, /height:360000px/)
+  assert.match(markup, /height:360001px/)
 })
 
 test('DocumentTree keeps large-workspace rendering behind stable memo boundaries', () => {

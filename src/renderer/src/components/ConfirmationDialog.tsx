@@ -29,6 +29,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   useEffect(() => {
     mounted.current = true
     const previous = returnFocus === undefined ? document.activeElement as HTMLElement | null : returnFocus
+    const previousTree = previous?.closest<HTMLElement>('[role="tree"]') ?? null
     const element = dialog.current!
     element.showModal()
     cancel.current?.focus()
@@ -51,13 +52,25 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     return () => {
       mounted.current = false
       window.removeEventListener('keydown', keydown, true)
+      const active = document.activeElement
+      const shouldRestore = active === document.body || active === previous || element.contains(active)
       element.close()
       const restore = () => {
-        if (previous?.isConnected && !previous.matches(':disabled')) previous.focus({ preventScroll: true })
+        const current = document.activeElement
+        // An action may navigate or open another dialog before this one unmounts.
+        if (!shouldRestore || (current !== document.body && current !== previous && !element.contains(current))) return
+        if (previous?.isConnected) {
+          if (!previous.matches(':disabled')) previous.focus({ preventScroll: true })
+          return
+        }
+        // Deleting a tree item removes its opener; return to the same tree's new keyboard entry.
+        if (!previousTree?.isConnected || previousTree.closest('[hidden], [inert], [aria-hidden="true"]')) return
+        const next = previousTree.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')
+        if (next && !next.closest('[hidden], [inert], [aria-hidden="true"]')) next.focus({ preventScroll: true })
       }
       restore()
       // The opener can remain disabled until the awaiting action has settled.
-      if (previous?.matches(':disabled')) window.requestAnimationFrame?.(restore)
+      if (shouldRestore && previous?.matches(':disabled')) window.requestAnimationFrame?.(restore)
     }
   }, [returnFocus])
 

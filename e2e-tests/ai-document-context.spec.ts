@@ -4,6 +4,8 @@ import { uiText, withElectronApp } from './helpers/electron'
 
 async function createDocuments(page: Page): Promise<{ a: string; b: string }> {
   const ids = await page.evaluate(async () => {
+    await window.knowbook.updateAiConfig({ enabled: true, apiKey: 'isolated-e2e-key', baseUrl: 'https://example.invalid/v1',
+      model: 'e2e-model', autoSummaryOnSave: false, relatedNotesEnabled: true })
     const create = async (title: string) => {
       const { id } = await window.knowbook.createDocument(null)
       await window.knowbook.updateDocument(id, {
@@ -82,7 +84,7 @@ async function expectBusyAndEmpty(page: Page): Promise<void> {
   const panel = assistantPanel(page)
   await expect(panel.getByRole('button', { name: uiText('Thinking...', '思考中...') })).toBeDisabled()
   await expect(panel.getByRole('button', { name: uiText('Searching...', '搜索中...') })).toBeDisabled()
-  await expect(panel.locator('.ai-answer, .ai-context-card, .ai-context-error')).toHaveCount(0)
+  await expect(panel.locator('.ai-answer, .ai-context-card, .ai-request-error, .document-aux-ai-search-error')).toHaveCount(0)
 }
 
 async function settleRequests(app: ElectronApplication, index: number, marker: string, fail = false): Promise<void> {
@@ -93,9 +95,9 @@ async function settleRequests(app: ElectronApplication, index: number, marker: s
 
 async function expectCurrentResults(page: Page, marker: string): Promise<void> {
   const panel = assistantPanel(page)
-  await expect(panel.locator('.ai-answer')).toHaveText(`${marker} answer`)
+  await expect(panel.locator('.ai-answer-content')).toHaveText(`${marker} answer`)
   await expect(panel.locator('.ai-context-title')).toHaveText(`${marker} related note`)
-  await expect(panel.locator('.ai-context-error')).toHaveCount(0)
+  await expect(panel.locator('.ai-request-error, .document-aux-ai-search-error')).toHaveCount(0)
   await expect(panel.getByRole('button', { name: uiText('Ask AI', '询问 AI') })).toBeEnabled()
   await expect(panel.getByRole('button', { name: uiText('Find related notes', '查找相关笔记') })).toBeEnabled()
 }

@@ -40,7 +40,7 @@ test('document action popovers support Escape, keyboard navigation and focus res
     await expect(page.locator('.document-header-title')).toHaveText(title)
     await page.keyboard.press('Escape')
     await expect(context).toHaveCount(0)
-    await expect(otherDocument).toBeFocused()
+    await expect(page.getByRole('treeitem').filter({ has: otherDocument })).toBeFocused()
   })
 })
 

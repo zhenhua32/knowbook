@@ -37,16 +37,6 @@
 .ai-thinking-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--kb-accent); box-shadow: 0 0 0 4px var(--kb-accent-soft); }
 .management-page .ai-document-workspace .ai-answer { padding: 20px; border: 1px solid var(--kb-line); border-radius: 10px; background: var(--kb-canvas); color: var(--kb-text); font-family: inherit; font-size: 14px; line-height: 1.8; letter-spacing: 0; white-space: normal; }
 .ai-answer-label { margin: 0 0 12px; color: var(--kb-text-muted); font-size: 12px; font-weight: 600; }
-.ai-answer-content { min-width: 0; overflow-wrap: anywhere; color: var(--kb-text); font-size: 14px; line-height: 1.8; }
-.ai-answer-content > :first-child { margin-top: 0; }
-.ai-answer-content > :last-child { margin-bottom: 0; }
-.ai-answer-content :is(h1, h2, h3, h4, h5, h6) { margin: 18px 0 8px; color: var(--kb-text); font-size: 18px; font-weight: 650; line-height: 1.5; }
-.ai-answer-content p { margin: 8px 0; white-space: normal; }
-.ai-answer-content :is(ul, ol) { margin: 8px 0; padding-left: 24px; }
-.ai-answer-content li + li { margin-top: 4px; }
-.ai-answer-content blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--kb-line-strong); color: var(--kb-text-soft); }
-.ai-answer-content pre { max-width: 100%; overflow-x: auto; margin: 12px 0; padding: 12px; border: 1px solid var(--kb-line); border-radius: 7px; background: var(--kb-bg); font-size: 12px; line-height: 1.7; white-space: pre; }
-.ai-answer-content .block-markdown-table { display: block; max-width: 100%; overflow-x: auto; margin-block: 12px; font-size: 13px; }
 .ai-related-notes { border-top: 1px solid var(--kb-line); padding-top: 12px; }
 .ai-related-notes > summary { min-height: 36px; width: fit-content; color: var(--kb-text-soft); font-size: 13px; font-weight: 500; cursor: pointer; }
 .ai-related-notes > summary span { margin-left: 8px; padding: 2px 6px; border-radius: 5px; background: var(--kb-accent-soft); color: var(--kb-accent-strong); font-size: 12px; }

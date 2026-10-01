@@ -4,9 +4,12 @@ import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
 import { AiTaskSwitcher } from '../components/AiTaskSwitcher'
 import { AiAnswerContent } from '../components/AiAnswerContent'
+import { AiRequestError } from '../components/AiRequestError'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import './management-sections.css'
 import './ai-workspace.css'
+import '../components/AiAnswerContent.css'
+import '../components/AiRequestError.css'
 
 type AISectionProps = {
   ui: UiText
@@ -32,6 +35,9 @@ type AISectionProps = {
   aiContextResults: SemanticSearchResult[]
   onOpenDocument: (documentId: string) => void
   aiAnswer: string
+  aiAnswerError: string
+  aiFailedPrompt: string
+  onRetryAi: () => void
   extensionTools?: ReactNode
   extensionMessageCards?: ReactNode
 }
@@ -40,7 +46,7 @@ export function AISection(props: AISectionProps) {
   const { ui, isZh, selectedDocument, documentOptions, contextDocumentId, contextDocumentLoading,
     onSelectContextDocument, onOpenAiSettings, aiPromptDraft, onAiPromptChange, aiAutomationsRunning,
     aiEnabled, hasApiKey, onRunEnabledAutomations, aiContextSearching, aiContextHasSearched, onFindRelatedNotes,
-    aiAsking, onAskAi, aiContextError, aiContextResults, onOpenDocument, aiAnswer, extensionTools, extensionMessageCards } = props
+    aiAsking, onAskAi, aiContextError, aiContextResults, onOpenDocument, aiAnswer, aiAnswerError, aiFailedPrompt, onRetryAi, extensionTools, extensionMessageCards } = props
   const promptId = useId()
   const contextId = useId()
   const composing = useRef(false)
@@ -105,7 +111,9 @@ export function AISection(props: AISectionProps) {
               onClick={onRunEnabledAutomations} type="button">{aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}</button>
           </div>
           {aiAsking ? <div className="ai-answer-pending" role="status"><span className="ai-thinking-dot" aria-hidden="true" />{isZh ? '正在结合文档思考…' : 'Thinking with your document…'}</div> : null}
-          {aiAnswer ? <section className="ai-answer" aria-label={isZh ? 'AI 回答' : 'AI answer'}>
+          {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
+            busy={aiAsking} canRetry={documentReady && canUseAi} onRetry={onRetryAi} /> : null}
+          {aiAnswer && !aiAnswerError && !aiAsking ? <section className="ai-answer" aria-label={isZh ? 'AI 回答' : 'AI answer'}>
             <p className="ai-answer-label">{isZh ? 'AI 回答' : 'AI answer'}</p><AiAnswerContent content={aiAnswer} />
           </section> : null}
           <details className="ai-related-notes" key={contextDocumentId ?? 'none'}>

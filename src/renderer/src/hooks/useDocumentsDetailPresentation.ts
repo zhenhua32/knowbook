@@ -21,11 +21,14 @@ export type DocumentsRelationGroup = {
 
 type UseDocumentsDetailPresentationParams = {
   aiAnswer: string
+  aiAnswerError: string
+  aiFailedPrompt: string
   aiAsking: boolean
   aiAutomationsRunning: boolean
   aiContextError: string
   aiContextResults: DocumentsAuxPanelProps['aiContextResults']
   aiContextSearching: boolean
+  aiContextHasSearched: boolean
   aiEnabled: boolean
   aiPromptDraft: string
   canRedo: boolean
@@ -47,6 +50,8 @@ type UseDocumentsDetailPresentationParams = {
   onAddChild: DocumentPreviewHeaderProps['onAddChild']
   onAiPromptChange: DocumentsAuxPanelProps['onAiPromptChange']
   onAskAi: DocumentsAuxPanelProps['onAskAi']
+  onRetryAi: DocumentsAuxPanelProps['onRetryAi']
+  onOpenAiSettings: DocumentsAuxPanelProps['onOpenAiSettings']
   onCopyMarkdown: DocumentPreviewHeaderProps['onCopyMarkdown']
   onDelete: DocumentPreviewHeaderProps['onDelete']
   onFindRelatedNotes: DocumentsAuxPanelProps['onFindRelatedNotes']
@@ -77,11 +82,14 @@ type UseDocumentsDetailPresentationParams = {
 
 export function useDocumentsDetailPresentation({
   aiAnswer,
+  aiAnswerError,
+  aiFailedPrompt,
   aiAsking,
   aiAutomationsRunning,
   aiContextError,
   aiContextResults,
   aiContextSearching,
+  aiContextHasSearched,
   aiEnabled,
   aiPromptDraft,
   canRedo,
@@ -103,6 +111,8 @@ export function useDocumentsDetailPresentation({
   onAddChild,
   onAiPromptChange,
   onAskAi,
+  onRetryAi,
+  onOpenAiSettings,
   onCopyMarkdown,
   onDelete,
   onFindRelatedNotes,
@@ -205,19 +215,25 @@ export function useDocumentsDetailPresentation({
   const auxPanelProps: DocumentsAuxPanelProps | null = selectedDocument
     ? {
         aiAnswer,
+        aiAnswerError,
+        aiFailedPrompt,
         aiAsking,
         aiAutomationsRunning,
         aiContextError,
         aiContextResults,
         aiContextSearching,
+        aiContextHasSearched,
         aiEnabled,
         aiPromptDraft,
         hasApiKey,
         isOpen: documentsAuxPanelOpen,
         isZh,
+        documentReady: !detailLoading && selectedDocument.id === selectedDocumentId,
         onClipWebPage,
         onAiPromptChange,
         onAskAi,
+        onRetryAi,
+        onOpenAiSettings,
         onFindRelatedNotes,
         onOpenDocument,
         onRunEnabledAutomations,

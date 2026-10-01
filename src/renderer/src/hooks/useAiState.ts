@@ -33,6 +33,8 @@ export function useAiState({
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
+  const [aiAnswerError, setAiAnswerError] = useState('')
+  const [aiFailedPrompt, setAiFailedPrompt] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
   const [aiAutomationsRunning, setAiAutomationsRunning] = useState(false)
   const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
@@ -62,6 +64,8 @@ export function useAiState({
     aiAnswerRequestIdRef.current += 1
     aiContextRequestIdRef.current += 1
     setAiAnswer('')
+    setAiAnswerError('')
+    setAiFailedPrompt('')
     setAiAsking(false)
     setAiContextResults([])
     setAiContextSearching(false)
@@ -184,9 +188,10 @@ export function useAiState({
     }
   }, [aiPromptDraft, selectedDocumentId, ui])
 
-  const askAiOnSelectedDocument = useCallback(async () => {
+  const askAiWithPrompt = useCallback(async (prompt: string) => {
     const requestedDocumentId = selectedDocumentId
-    if (!requestedDocumentId || requestedDocumentId !== selectedDocumentIdRef.current || !aiPromptDraft.trim()) {
+    const requestedPrompt = prompt.trim()
+    if (!requestedDocumentId || requestedDocumentId !== selectedDocumentIdRef.current || !requestedPrompt || !aiConfig.enabled || !aiConfig.hasApiKey) {
       return
     }
 
@@ -195,6 +200,9 @@ export function useAiState({
       aiAnswerRequestIdRef.current === requestId && selectedDocumentIdRef.current === requestedDocumentId
     )
     setAiAsking(true)
+    setAiAnswer('')
+    setAiAnswerError('')
+    setAiFailedPrompt('')
     setAiContextError('')
     setAiContextResults([])
     setAiContextHasSearched(false)
@@ -202,7 +210,7 @@ export function useAiState({
     try {
       const result = await window.knowbook.askAiAboutDocument({
         documentId: requestedDocumentId,
-        prompt: aiPromptDraft.trim()
+        prompt: requestedPrompt
       })
       if (isCurrentRequest()) {
         setAiAnswer(result.answer)
@@ -210,14 +218,18 @@ export function useAiState({
     } catch (error) {
       if (isCurrentRequest()) {
         const message = getErrorMessage(error, ui.aiRequestFailed)
-        setAiAnswer(message)
+        setAiAnswerError(message)
+        setAiFailedPrompt(requestedPrompt)
       }
     } finally {
       if (isCurrentRequest()) {
         setAiAsking(false)
       }
     }
-  }, [aiPromptDraft, selectedDocumentId, ui])
+  }, [aiConfig.enabled, aiConfig.hasApiKey, selectedDocumentId, ui])
+
+  const askAiOnSelectedDocument = useCallback(() => askAiWithPrompt(aiPromptDraft), [aiPromptDraft, askAiWithPrompt])
+  const retryFailedAiRequest = useCallback(() => askAiWithPrompt(aiFailedPrompt), [aiFailedPrompt, askAiWithPrompt])
 
   const runEnabledAiAutomationsOnSelectedDocument = useCallback(async () => {
     const requestedDocumentId = selectedDocumentId
@@ -266,6 +278,8 @@ export function useAiState({
     aiPromptDraft,
     setAiPromptDraft,
     aiAnswer,
+    aiAnswerError,
+    aiFailedPrompt,
     aiAsking,
     aiAutomationsRunning,
     aiContextResults,
@@ -276,6 +290,7 @@ export function useAiState({
     clearAiApiKey,
     findRelatedNotesForPrompt,
     askAiOnSelectedDocument,
+    retryFailedAiRequest,
     runEnabledAiAutomationsOnSelectedDocument,
     resetAiSession
   }

@@ -54,6 +54,8 @@ export function useAiDomain({
 
   const sectionProps: AISectionProps = {
     aiAnswer: aiState.aiAnswer,
+    aiAnswerError: aiState.aiAnswerError,
+    aiFailedPrompt: aiState.aiFailedPrompt,
     aiAsking: aiState.aiAsking,
     aiAutomationsRunning: aiState.aiAutomationsRunning,
     aiContextError: aiState.aiContextError,
@@ -68,6 +70,7 @@ export function useAiDomain({
     onAskAi: () => {
       void aiState.askAiOnSelectedDocument()
     },
+    onRetryAi: () => { void aiState.retryFailedAiRequest() },
     onFindRelatedNotes: () => {
       void aiState.findRelatedNotesForPrompt()
     },

@@ -1,6 +1,9 @@
-import type { ReactNode } from 'react'
+import { useId, useRef, type ReactNode } from 'react'
 import type { PluginDocumentAction, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { AiAnswerContent } from './AiAnswerContent'
+import { AiRequestError } from './AiRequestError'
 
 type DocumentsAuxPanelProps = {
   ui: UiText
@@ -22,6 +25,7 @@ type DocumentsAuxPanelProps = {
   hasApiKey: boolean
   onRunEnabledAutomations: () => void
   aiContextSearching: boolean
+  aiContextHasSearched: boolean
   onFindRelatedNotes: () => void
   aiAsking: boolean
   onAskAi: () => void
@@ -29,6 +33,11 @@ type DocumentsAuxPanelProps = {
   aiContextResults: SemanticSearchResult[]
   onOpenDocument: (documentId: string) => void
   aiAnswer: string
+  aiAnswerError: string
+  aiFailedPrompt: string
+  documentReady: boolean
+  onRetryAi: () => void
+  onOpenAiSettings: () => void
 }
 
 export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
@@ -52,14 +61,26 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
     hasApiKey,
     onRunEnabledAutomations,
     aiContextSearching,
+    aiContextHasSearched,
     onFindRelatedNotes,
     aiAsking,
     onAskAi,
     aiContextError,
     aiContextResults,
     onOpenDocument,
-    aiAnswer
+    aiAnswer,
+    aiAnswerError,
+    aiFailedPrompt,
+    documentReady,
+    onRetryAi,
+    onOpenAiSettings
   } = props
+  const promptId = useId()
+  const promptHintId = useId()
+  const composing = useRef(false)
+  const canUseAi = documentReady && aiEnabled && hasApiKey
+  const canAsk = canUseAi && !aiAsking && Boolean(aiPromptDraft.trim())
+  const canFindRelated = documentReady && !aiContextSearching && Boolean(aiPromptDraft.trim())
 
   if (!isOpen) {
     return (
@@ -126,56 +147,99 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
           </>
         ) : null}
 
-        <p className="panel-label">{ui.askAiLabel}</p>
-        <div className="ai-panel">
-          <textarea
-            className="editor-textarea"
-            onChange={(event) => onAiPromptChange(event.target.value)}
-            placeholder={ui.askAiPlaceholder}
-            rows={3}
-            value={aiPromptDraft}
-          />
-          <div className="toolbar-inline ai-actions">
-            <button
-              className="secondary-button"
-              disabled={aiAutomationsRunning || !aiEnabled || !hasApiKey}
-              onClick={onRunEnabledAutomations}
-              type="button"
-            >
-              {aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}
-            </button>
-            <button className="secondary-button" disabled={aiContextSearching || !aiPromptDraft.trim()} onClick={onFindRelatedNotes} type="button">
-              {aiContextSearching ? ui.searching : ui.findRelatedNotes}
-            </button>
-            <button className="secondary-button" disabled={aiAsking || !aiPromptDraft.trim()} onClick={onAskAi} type="button">
-              {aiAsking ? ui.thinking : ui.askAiLabel}
-            </button>
-          </div>
-          <p className="mini-hint">{ui.manualAiHint}</p>
-          {aiContextError ? <p className="mini-hint ai-context-error">{aiContextError}</p> : null}
-          {aiContextResults.length > 0 ? (
-            <div className="ai-context-list">
-              {aiContextResults.map((result) => (
-                <button
-                  className="ai-context-card"
-                  key={`${result.documentId}-${result.path}`}
-                  onClick={() => onOpenDocument(result.documentId)}
-                  type="button"
-                >
-                  <div className="ai-context-head">
-                    <strong className="ai-context-title">{result.title}</strong>
-                    <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
-                  </div>
-                  <span className="ai-context-path">{result.path}</span>
-                  <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
+        <section className="document-aux-ai-section" aria-label={isZh ? '文档 AI 助手' : 'Document AI assistant'}>
+          <p className="panel-label">{ui.askAiLabel}</p>
+          <div className="ai-panel document-aux-ai">
+            {!aiEnabled || !hasApiKey ? (
+              <div className="document-aux-ai-readiness" role="status">
+                <p>{isZh
+                  ? '启用 AI 并保存 API Key 后即可提问。相关笔记仍可在本地查找。'
+                  : 'Enable AI and save an API key to ask questions. Related-note search is available locally.'}</p>
+                <button className="secondary-button" onClick={onOpenAiSettings} type="button">
+                  {isZh ? '配置 AI' : 'Configure AI'}
                 </button>
-              ))}
+              </div>
+            ) : null}
+            {!documentReady ? <p className="mini-hint" role="status">{isZh ? '正在加载文档上下文…' : 'Loading document context…'}</p> : null}
+            <label className="document-aux-ai-prompt-label" htmlFor={promptId}>{isZh ? '文档问题' : 'Document question'}</label>
+            <textarea
+              id={promptId}
+              aria-describedby={promptHintId}
+              className="editor-textarea document-aux-ai-prompt"
+              disabled={!documentReady}
+              onChange={(event) => onAiPromptChange(event.target.value)}
+              onCompositionStart={() => { composing.current = true }}
+              onCompositionEnd={() => { composing.current = false }}
+              onBlur={() => { composing.current = false }}
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === 'Enter'
+                  && !isImeKeyboardEvent(event.nativeEvent, composing.current) && canAsk) {
+                  event.preventDefault()
+                  onAskAi()
+                }
+              }}
+              placeholder={ui.askAiPlaceholder}
+              rows={3}
+              value={aiPromptDraft}
+            />
+            <div className="toolbar-inline ai-actions document-aux-ai-actions">
+              <button className="primary-button" disabled={!canAsk} onClick={onAskAi} type="button" aria-keyshortcuts="Control+Enter Meta+Enter">
+                {aiAsking ? ui.thinking : ui.askAiLabel}
+              </button>
+              <button className="secondary-button" disabled={!canFindRelated} onClick={onFindRelatedNotes} type="button">
+                {aiContextSearching ? ui.searching : ui.findRelatedNotes}
+              </button>
+              <button
+                className="secondary-button"
+                disabled={aiAutomationsRunning || !canUseAi}
+                onClick={onRunEnabledAutomations}
+                type="button"
+              >
+                {aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}
+              </button>
             </div>
-          ) : aiPromptDraft.trim() ? (
-            <p className="mini-hint">{ui.semanticHint}</p>
-          ) : null}
-          {aiAnswer ? <pre className="ai-answer">{aiAnswer}</pre> : null}
-        </div>
+            <p className="mini-hint document-aux-ai-shortcut" id={promptHintId}>{isZh ? 'Ctrl / ⌘ + Enter 发送' : 'Ctrl / ⌘ + Enter to send'}</p>
+            {aiAsking ? <div className="document-aux-ai-pending" role="status">{isZh ? '正在结合文档思考…' : 'Thinking with your document…'}</div> : null}
+            {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
+              busy={aiAsking} canRetry={canUseAi} onRetry={onRetryAi} /> : null}
+            {aiAnswer && !aiAnswerError && !aiAsking ? (
+              <section className="ai-answer document-aux-ai-answer" aria-label={isZh ? 'AI 回答' : 'AI answer'}>
+                <p className="document-aux-ai-answer-label">{isZh ? 'AI 回答' : 'AI answer'}</p>
+                <AiAnswerContent content={aiAnswer} />
+              </section>
+            ) : null}
+            {aiContextSearching ? <p className="mini-hint" role="status">{isZh ? '正在检索本地笔记…' : 'Searching local notes…'}</p> : null}
+            {aiContextError ? <div className="document-aux-ai-search-error" role="alert">
+              <p>{aiContextError}</p>
+              <button className="secondary-button" disabled={!canFindRelated} onClick={onFindRelatedNotes} type="button">
+                {isZh ? '重试检索' : 'Retry search'}
+              </button>
+            </div> : null}
+            {aiContextResults.length > 0 ? (
+              <div className="ai-context-list">
+                {aiContextResults.map((result) => (
+                  <button
+                    className="ai-context-card"
+                    key={`${result.documentId}-${result.path}`}
+                    onClick={() => onOpenDocument(result.documentId)}
+                    type="button"
+                  >
+                    <div className="ai-context-head">
+                      <strong className="ai-context-title">{result.title}</strong>
+                      <span className="ai-context-score">{ui.matchPercent(Math.round(result.score * 100))}</span>
+                    </div>
+                    <span className="ai-context-path">{result.path}</span>
+                    <span className="ai-context-snippet">{result.snippet || result.summary || ui.common.noPreviewAvailable}</span>
+                  </button>
+                ))}
+              </div>
+            ) : !aiContextSearching && !aiContextError && aiPromptDraft.trim() ? (
+              <p className="mini-hint">{aiContextHasSearched
+                ? (isZh ? '没有找到相关笔记。试试更具体的关键词。' : 'No related notes found. Try more specific keywords.')
+                : ui.semanticHint}</p>
+            ) : null}
+          </div>
+        </section>
       </div>
     </div>
   )

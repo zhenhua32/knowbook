@@ -4339,7 +4339,8 @@ select:focus-visible {
   color: var(--kb-sidebar-text);
 }
 
-.tree-expand-toggle:focus-visible {
+.tree-expand-toggle:focus-visible,
+.tree-node:focus-visible {
   outline: 2px solid var(--kb-sidebar-text);
   outline-offset: -2px;
 }

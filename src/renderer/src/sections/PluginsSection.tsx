@@ -7,6 +7,7 @@ import type {
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
+import '../components/AiAnswerContent.css'
 import { PluginV2TechnicalDetails } from '../components/PluginV2TechnicalDetails'
 import { SystemPluginResources } from '../components/SystemPluginResources'
 import { SystemPluginRuntimeStatus } from '../components/SystemPluginRuntimeStatus'

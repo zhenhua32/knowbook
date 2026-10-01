@@ -3,6 +3,9 @@ import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from '../components/RecoveryState'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
+import '../components/AiAnswerContent.css'
+import '../components/AiRequestError.css'
+import '../components/documents-aux-ai.css'
 import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
@@ -194,11 +197,14 @@ export function DocumentsPage({
     summaryCardProps
   } = useDocumentsDetailPresentation({
     aiAnswer: ai.aiAnswer,
+    aiAnswerError: ai.aiAnswerError,
+    aiFailedPrompt: ai.aiFailedPrompt,
     aiAsking: ai.aiAsking,
     aiAutomationsRunning: ai.aiAutomationsRunning,
     aiContextError: ai.aiContextError,
     aiContextResults: ai.aiContextResults,
     aiContextSearching: ai.aiContextSearching,
+    aiContextHasSearched: ai.aiContextHasSearched,
     aiEnabled: aiConfig.enabled,
     aiPromptDraft: ai.aiPromptDraft,
     canRedo: documents.canRedo,
@@ -228,6 +234,8 @@ export function DocumentsPage({
     onAskAi: () => {
       void ai.askAiOnSelectedDocument()
     },
+    onRetryAi: () => { void ai.retryFailedAiRequest() },
+    onOpenAiSettings: ai.sectionProps.onOpenAiSettings,
     onCopyMarkdown: () => {
       void documents.copyDocumentAsMarkdown()
     },

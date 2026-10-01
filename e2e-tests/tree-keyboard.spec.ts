@@ -1,0 +1,162 @@
+import { expect, test, type Page } from '@playwright/test'
+import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+
+const treeRow = (page: Page, title: string) => page.getByRole('treeitem', { name: title, exact: true })
+
+test.describe('Document tree keyboard @electron', () => {
+  test.beforeEach(() => test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.'))
+
+  test('navigates hierarchy without switching documents, keeps native toggles and restores keyboard-menu focus', async () => {
+    await withElectronApp(async ({ page, app }) => {
+      await page.evaluate(async () => {
+        const create = async (title: string, parent: string | null) => {
+          const { id } = await window.knowbook.createDocument(parent)
+          await window.knowbook.updateDocument(id, { title, summary: '', blocks: [{ type: 'paragraph', content: `${title} body`, checked: false, depth: 0 }] })
+          return id
+        }
+        const parent = await create('Keyboard parent', null)
+        const child = await create('Keyboard child', parent)
+        await create('Keyboard leaf', child)
+        await create('Keyboard sibling', parent)
+      })
+      await page.reload()
+      const tree = page.getByRole('tree', { name: uiText('Document tree', '文档树'), exact: true })
+      const parent = treeRow(page, 'Keyboard parent'), child = treeRow(page, 'Keyboard child')
+      const leaf = treeRow(page, 'Keyboard leaf'), sibling = treeRow(page, 'Keyboard sibling')
+      const title = page.locator('.document-header-title')
+      await leaf.locator('.tree-button').click(); await expect(title).toHaveText('Keyboard leaf')
+      await expect(leaf).toBeFocused()
+      await expect(tree.locator('[tabindex="0"]')).toHaveCount(1)
+      expect(await tree.locator('button').evaluateAll(buttons => buttons.every(button => button.tabIndex === -1))).toBe(true)
+      await parent.focus()
+      await page.keyboard.press('Tab')
+      expect(await tree.evaluate(element => element.contains(document.activeElement))).toBe(false)
+      await page.keyboard.press('Shift+Tab'); await expect(parent).toBeFocused()
+      await page.keyboard.press('ArrowLeft'); await expect(child).toHaveCount(0)
+      await expect(title).toHaveText('Keyboard leaf')
+      await page.keyboard.press('ArrowRight'); await expect(parent).toBeFocused()
+      await page.keyboard.press('ArrowRight'); await expect(child).toBeFocused()
+      await page.keyboard.press('ArrowLeft'); await expect(leaf).toHaveCount(0)
+      await page.keyboard.press('ArrowLeft'); await expect(parent).toBeFocused()
+      await page.keyboard.press('ArrowDown'); await expect(child).toBeFocused()
+      await page.keyboard.press('ArrowRight'); await expect(child).toBeFocused()
+      await page.keyboard.press('ArrowDown'); await expect(leaf).toBeFocused()
+      await page.keyboard.press('ArrowDown'); await expect(sibling).toBeFocused()
+      await page.keyboard.press('ArrowUp'); await expect(leaf).toBeFocused()
+      await expect(title).toHaveText('Keyboard leaf')
+
+      const toggle = parent.locator('.tree-expand-toggle')
+      await toggle.press('Enter'); await expect(parent).toHaveAttribute('aria-expanded', 'false')
+      await toggle.press('Space'); await expect(parent).toHaveAttribute('aria-expanded', 'true')
+      await expect(title).toHaveText('Keyboard leaf')
+      await sibling.locator('.tree-button').click(); await expect(sibling).toBeFocused()
+      await expect(title).toHaveText('Keyboard sibling')
+      await page.keyboard.press('ArrowUp'); await expect(leaf).toBeFocused()
+      await page.keyboard.press('Shift+F10')
+      const menu = page.locator('.document-tree-context-menu')
+      await expect(menu).toBeVisible(); await expect(menu.locator('.context-menu-item').first()).toBeFocused()
+      await expect(menu).toContainText('Keyboard leaf'); await expect(title).toHaveText('Keyboard sibling')
+      await page.keyboard.press('Escape'); await expect(menu).toHaveCount(0); await expect(leaf).toBeFocused()
+      await page.keyboard.press('Enter'); await expect(title).toHaveText('Keyboard leaf')
+      await sibling.focus(); await page.keyboard.press('Space'); await expect(title).toHaveText('Keyboard sibling')
+
+      // Keyboard activation must still honor the document editor's failed-save guard.
+      await app.evaluate(({ ipcMain }) => {
+        ipcMain.removeHandler('knowbook:update-document')
+        ipcMain.handle('knowbook:update-document', () => { throw new Error('Tree keyboard save blocked') })
+      })
+      await ensureDocumentMetadataEditor(page)
+      await page.locator('.document-summary-card .editor-textarea').first().fill('Keep this unsaved tree draft')
+      await expect(page.locator('.document-save-status')).toHaveClass(/status-error/)
+      await leaf.focus(); await page.keyboard.press('Enter')
+      await expect(page.locator('.app-notifications')).toContainText('Tree keyboard save blocked')
+      await expect(title).toHaveText('Keyboard sibling'); await expect(leaf).toBeFocused()
+      await expect(leaf).toHaveAttribute('aria-selected', 'false')
+    })
+  })
+
+  test('crosses virtual windows, retains focus while wheeling, and recovers after removal, rename and move', async () => {
+    test.setTimeout(120_000)
+    await withElectronApp(async ({ page, app }) => {
+      const ids = await page.evaluate(async () => {
+        const create = async (title: string, parent: string | null = null) => {
+          const { id } = await window.knowbook.createDocument(parent)
+          await window.knowbook.updateDocument(id, { title, summary: '', blocks: [{ type: 'paragraph', content: `${title} body`, checked: false, depth: 0 }] })
+          return id
+        }
+        const destination = await create('AAA Keyboard destination')
+        for (let index = 0; index < 80; index++) await create(`Keyboard destination child ${String(index).padStart(3, '0')}`, destination)
+        const documents: string[] = []
+        for (let index = 0; index < 80; index++) documents.push(await create(`Keyboard ${String(index).padStart(3, '0')}`))
+        return { destination, documents }
+      })
+      await page.reload()
+      const tree = page.getByRole('tree', { name: uiText('Document tree', '文档树'), exact: true })
+      const scroll = page.locator('.tree-virtual-scroll')
+      // Main-process/plugin mutations notify the renderer separately from their IPC result.
+      const refreshTree = () => app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) window.webContents.send('knowbook:workspace-mutated')
+      })
+      const destination = treeRow(page, 'AAA Keyboard destination')
+      await tree.locator('[role="treeitem"][tabindex="0"]').focus()
+      await page.keyboard.press('Home')
+      await expect(destination).toBeFocused()
+      await destination.locator('.tree-button').click()
+      await expect(page.locator('.document-header-title')).toHaveText('AAA Keyboard destination')
+      const openedTitle = await page.locator('.document-header-title').innerText()
+      await destination.focus(); await page.keyboard.press('ArrowLeft')
+      await expect(destination).toHaveAttribute('aria-expanded', 'false')
+      await page.keyboard.press('End')
+      const last = treeRow(page, 'Keyboard 079')
+      await expect(last).toBeFocused(); await expect(last).toBeInViewport({ ratio: 1 })
+      const limit = await scroll.evaluate(element => Math.ceil(element.clientHeight / 36) + 16 + 1)
+      expect(await tree.getByRole('treeitem').count()).toBeLessThanOrEqual(limit)
+      await page.keyboard.press('Shift+F10'); await expect(page.locator('.document-tree-context-menu')).toBeVisible()
+      await page.keyboard.press('Escape'); await expect(last).toBeFocused()
+      await scroll.hover(); await page.mouse.wheel(0, -20_000)
+      await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(0)
+      await expect(last).toBeFocused(); await expect(last).not.toBeInViewport()
+      expect(await tree.getByRole('treeitem').count()).toBeLessThanOrEqual(limit)
+      await page.keyboard.press('ArrowUp')
+      await expect(treeRow(page, 'Keyboard 078')).toBeFocused(); await expect(treeRow(page, 'Keyboard 078')).toBeInViewport({ ratio: 1 })
+      await page.keyboard.press('Home')
+      await expect.poll(() => scroll.evaluate(element => element.scrollTop)).toBe(0)
+      await expect(tree.getByRole('treeitem').first()).toBeFocused()
+      await page.keyboard.press('End'); await expect(last).toBeFocused()
+      await page.evaluate(id => window.knowbook.deleteDocument(id), ids.documents[79])
+      await refreshTree()
+      await expect(last).toHaveCount(0); await expect(treeRow(page, 'Keyboard 078')).toBeFocused()
+      await page.evaluate(async id => {
+        const detail = await window.knowbook.getDocumentDetail(id)
+        if (!detail) throw new Error('Missing keyboard fixture')
+        await window.knowbook.updateDocument(id, { title: 'Keyboard renamed', summary: detail.summary, blocks: detail.blocks })
+      }, ids.documents[78])
+      await refreshTree()
+      const renamed = treeRow(page, 'Keyboard renamed')
+      await expect(renamed).toBeFocused()
+      await page.evaluate(({ id, parent }) => window.knowbook.moveDocument(id, parent), { id: ids.documents[78], parent: ids.destination })
+      await refreshTree()
+      await expect(renamed).toHaveCount(0); await expect(destination).toBeFocused()
+      await expect(destination).toHaveAttribute('aria-expanded', 'false')
+      await expect(tree.locator('[tabindex="0"]')).toHaveCount(1)
+      await expect(page.locator('.document-header-title')).toHaveText(openedTitle)
+      // Creating through the keyboard menu restores the parent focus before
+      // its asynchronous new child is selected far beyond the virtual window.
+      await page.keyboard.press('Shift+F10')
+      await page.locator('.document-tree-context-menu').getByRole('button', { name: uiText('Add child', '新增子文档'), exact: true }).click()
+      await expect(page.locator('.document-header-title')).toHaveText('Untitled')
+      const created = treeRow(page, 'Untitled')
+      await expect(created).toHaveAttribute('aria-selected', 'true')
+      await expect(created).toBeInViewport({ ratio: 1 })
+      await expect(destination).toBeFocused()
+      await expect(destination).toHaveAttribute('aria-expanded', 'true')
+      // A successful confirmation must return focus to the next row when its opener is deleted.
+      await created.focus(); await page.keyboard.press('Shift+F10')
+      await page.locator('.document-tree-context-menu').getByRole('button', { name: uiText('Delete', '删除'), exact: true }).click()
+      const deletion = page.getByRole('alertdialog', { name: uiText('Delete document', '删除文档'), exact: true })
+      await deletion.getByRole('button', { name: uiText('Delete document', '删除文档'), exact: true }).click()
+      await expect(deletion).toHaveCount(0); await expect(created).toHaveCount(0)
+      await expect(tree.locator('[role="treeitem"][tabindex="0"]')).toBeFocused()
+    })
+  })
+})

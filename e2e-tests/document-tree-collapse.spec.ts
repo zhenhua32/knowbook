@@ -37,7 +37,7 @@ test.describe('Document tree collapse @electron', () => {
       const ids = await seedTree(page)
       const parentToggle = treeRow(page, 'Tree parent').locator('.tree-expand-toggle')
       const childToggle = treeRow(page, 'Tree child').locator('.tree-expand-toggle')
-      const previewTitle = page.locator('.preview-panel .panel-head h3')
+      const previewTitle = page.locator('.document-header-title')
 
       await expect(parentToggle).toHaveAttribute('aria-expanded', 'true')
       await expect(treeRow(page, 'Tree leaf').locator('.tree-expand-toggle')).toHaveCount(0)
