@@ -44,7 +44,8 @@ export function getElectronLaunchTarget(executable = process.env.KNOWBOOK_E2E_EX
   args: string[]
   cwd: string
 } {
-  const args = ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu']
+  const args = ['--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu',
+    '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding']
   if (executable?.trim()) {
     const executablePath = resolve(repoRoot, executable.trim())
     if (!existsSync(executablePath) || !statSync(executablePath).isFile()) {
@@ -85,6 +86,7 @@ export async function launchElectronApp(
     KNOWBOOK_ALLOW_PRIVATE_WEB_CLIP: '1',
     KNOWBOOK_DISABLE_HARDWARE_ACCELERATION: '1',
     KNOWBOOK_E2E_EPHEMERAL_CREDENTIAL_STORAGE: '1',
+    KNOWBOOK_E2E_BACKGROUND: '1',
     KNOWBOOK_USER_DATA_DIR: tempRoot
   }
   delete env.ELECTRON_RUN_AS_NODE
@@ -114,6 +116,14 @@ export async function launchElectronApp(
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')
     await expect(page.locator('[data-testid="shell"]')).toBeVisible()
+    // Emulate renderer focus through CDP while the native window stays hidden.
+    const backgroundSession = await page.context().newCDPSession(page)
+    await backgroundSession.send('Emulation.setFocusEmulationEnabled', { enabled: true })
+    const nativeWindows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+      .map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
+    if (nativeWindows.some(window => window.visible || window.focused || window.focusable)) {
+      throw new Error(`Electron tests must remain in the background: ${JSON.stringify(nativeWindows)}`)
+    }
     childProcess.stdout?.off('data', captureStartupOutput)
     childProcess.stderr?.off('data', captureStartupOutput)
 

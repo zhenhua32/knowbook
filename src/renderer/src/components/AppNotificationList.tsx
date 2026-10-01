@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppNotificationAction } from '@shared/app-notification'
 import { appNotifications, type AppNotification } from '../app-notifications'
+import { getErrorMessage } from '../utils/errorMessage'
 import './app-notifications.css'
 
 type NotificationProps = {
@@ -72,6 +73,7 @@ function NotificationCenter({ history, onClose, ...props }: NotificationProps & 
 }
 
 function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete }: NotificationProps & { notification: AppNotification }) {
+  const actionLock = useRef(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [paused, setPaused] = useState(false)
@@ -85,7 +87,8 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
   }, [notification, onDismiss, paused, persistent, historyMode])
 
   const runAction = async (action: AppNotificationAction) => {
-    if (busy || action.disabled) return
+    if (actionLock.current || action.disabled) return
+    actionLock.current = true
     setBusy(true)
     setError('')
     try {
@@ -96,8 +99,9 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
       } else await action.run()
       if (action.closeNotificationCenter) onActionComplete?.()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : (isZh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
+      setError(getErrorMessage(cause, isZh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
     } finally {
+      actionLock.current = false
       setBusy(false)
     }
   }

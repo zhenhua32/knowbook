@@ -2,6 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useState } from 'react'
 import type { AppUpdateState, WebClipBridgeStatus } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type UseSettingsStateParams = {
   isSettingsPageActive: boolean
@@ -90,9 +91,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       setAppUpdateState(nextState)
       onMessage(ui.appUpdateCheckStarted)
     } catch (error) {
-      const message = error instanceof Error
-        ? `${ui.appUpdateCheckFailed} ${error.message}`
-        : ui.appUpdateCheckFailed
+      const detail = getErrorMessage(error, '')
+      const message = detail ? `${ui.appUpdateCheckFailed} ${detail}` : ui.appUpdateCheckFailed
       onMessage(message, 'error')
     } finally {
       setAppUpdateRefreshing(false)
@@ -103,9 +103,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     try {
       await window.knowbook.installAppUpdate()
     } catch (error) {
-      const message = error instanceof Error
-        ? `${ui.appUpdateInstallFailed} ${error.message}`
-        : ui.appUpdateInstallFailed
+      const detail = getErrorMessage(error, '')
+      const message = detail ? `${ui.appUpdateInstallFailed} ${detail}` : ui.appUpdateInstallFailed
       onMessage(message, 'error')
     }
   }, [onMessage, ui])
@@ -125,9 +124,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       setWebClipBridgePortDraft(status.port ? `${status.port}` : '3210')
       onMessage(regenerateToken ? ui.webClipBridgeTokenRefreshed : ui.webClipBridgeSaved(status.running))
     } catch (error) {
-      const message = error instanceof Error
-        ? `${ui.webClipBridgeSaveFailed} ${error.message}`
-        : ui.webClipBridgeSaveFailed
+      const detail = getErrorMessage(error, '')
+      const message = detail ? `${ui.webClipBridgeSaveFailed} ${detail}` : ui.webClipBridgeSaveFailed
       onMessage(message, 'error')
     } finally {
       setWebClipBridgeSaving(false)
@@ -143,7 +141,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       await window.knowbook.writeClipboardText(webClipBridgeStatus.endpoint)
       onMessage(ui.webClipBridgeEndpointCopied)
     } catch (error) {
-      const message = error instanceof Error ? `${ui.copyFailed} ${error.message}` : ui.copyFailed
+      const detail = getErrorMessage(error, '')
+      const message = detail ? `${ui.copyFailed} ${detail}` : ui.copyFailed
       onMessage(message, 'error')
     }
   }, [onMessage, ui, webClipBridgeStatus?.endpoint])
@@ -157,7 +156,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       await window.knowbook.writeClipboardText(webClipBridgeStatus.token)
       onMessage(ui.webClipBridgeTokenCopied)
     } catch (error) {
-      const message = error instanceof Error ? `${ui.copyFailed} ${error.message}` : ui.copyFailed
+      const detail = getErrorMessage(error, '')
+      const message = detail ? `${ui.copyFailed} ${detail}` : ui.copyFailed
       onMessage(message, 'error')
     }
   }, [onMessage, ui, webClipBridgeStatus?.token])

@@ -3,6 +3,7 @@ import type { BackupHealth } from '@shared/backup-health'
 import type { ElectronApi } from '@shared/contracts'
 import { appNotifications } from './app-notifications'
 import { getActiveUiText } from './i18n'
+import { normalizeErrorMessage } from './utils/errorMessage'
 
 export function connectBackupNotifications(api: Pick<ElectronApi, 'onBackupHealth' | 'getBackupHealth' | 'triggerBackup'>): () => void {
   let revision = -1
@@ -15,7 +16,8 @@ export function connectBackupNotifications(api: Pick<ElectronApi, 'onBackupHealt
     if (handle) handle.update(input)
     else handle = appNotifications.show(input)
   }
-  const failed = (message: string) => show({ title: isZh() ? '自动备份失败' : 'Automatic backup failed', message, level: 'error',
+  const failed = (message: string) => show({ title: isZh() ? '自动备份失败' : 'Automatic backup failed',
+    message: normalizeErrorMessage(message, isZh() ? '操作失败，请重试。' : 'Something went wrong. Please try again.'), level: 'error',
     actions: [{ label: isZh() ? '重试备份' : 'Retry backup', run: retry }] })
   async function retry() {
     if (busy || disposed) return

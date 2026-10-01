@@ -6,6 +6,7 @@ import type { DocumentsDomainState } from '../types/appDomains'
 import { importAttachmentFiles, insertAttachmentBlocks, type AttachmentInsertion } from '../utils/attachments'
 import { AttachmentCard } from '../components/AttachmentCard'
 import { notify } from '../notify'
+import { normalizeErrorMessage } from '../utils/errorMessage'
 import '../components/attachments.css'
 
 export function useDocumentAttachments(documents: DocumentsDomainState, zh: boolean) {
@@ -39,7 +40,9 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
       notify(zh ? `已插入 ${attachments.length} 个附件。` : `Inserted ${attachments.length} attachments.`)
     } catch (error) {
       if (active.current && latest.current.selectedDocumentId === documentId && !latest.current.detailLoading) {
-        setError(String(error)); notify(String(error), 'error')
+        const message = normalizeErrorMessage(error instanceof Error ? error.message : String(error),
+          zh ? '操作失败，请重试。' : 'Action failed. Please retry.')
+        setError(message); notify(message, 'error')
       }
     } finally {
       locked.current = false

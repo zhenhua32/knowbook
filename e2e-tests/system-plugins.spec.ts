@@ -348,11 +348,15 @@ test.describe('System Plugin v3 @electron', () => {
       expect(requests).toContain('/api')
       expect(requests).toContain('/socket')
 
-      await frame.locator('#request-permission').click()
+      expect(await restarted.page.evaluate(() => Notification.permission)).toBe('denied')
+      // Offscreen iframe controls receive trusted keyboard activation without native focus.
+      await frame.locator('#request-permission').focus()
+      await restarted.page.keyboard.press('Enter')
       await expect(frame.locator('#permission-result')).toHaveText('granted')
 
       const popupPromise = restarted.app.waitForEvent('window')
-      await frame.locator('#open-popup').click()
+      await frame.locator('#open-popup').focus()
+      await restarted.page.keyboard.press('Enter')
       const popup = await popupPromise
       await popup.waitForLoadState('domcontentloaded')
       await expect(popup.locator('#popup-ready')).toHaveText('popup-ready')
@@ -364,6 +368,11 @@ test.describe('System Plugin v3 @electron', () => {
       }))
       expect(popupRuntime.hasRequire).toBe(true)
       expect(popupRuntime.nodeVersion).toBeTruthy()
+      const nativeWindows = await restarted.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
+        .map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
+      expect(nativeWindows.length).toBeGreaterThanOrEqual(2)
+      expect(nativeWindows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
+      expect((await popup.screenshot()).length).toBeGreaterThan(1_000)
 
       await restarted.app.evaluate(({ session }) => {
         const target = globalThis as typeof globalThis & {
@@ -384,7 +393,8 @@ test.describe('System Plugin v3 @electron', () => {
           })
         })
       })
-      await frame.locator('#download-file').click()
+      await frame.locator('#download-file').focus()
+      await restarted.page.keyboard.press('Enter')
       const download = await restarted.app.evaluate(async () => {
         const target = globalThis as typeof globalThis & {
           __knowbookFullTrustDownloadProbe?: Promise<{
@@ -403,7 +413,8 @@ test.describe('System Plugin v3 @electron', () => {
         url: `http://127.0.0.1:${port}/download`
       })
 
-      await frame.locator('#navigate-frame').click()
+      await frame.locator('#navigate-frame').focus()
+      await restarted.page.keyboard.press('Enter')
       await expect(frame.locator('#page-kind')).toHaveText('navigated')
       expect(requests).toContain('/navigated')
 
@@ -845,6 +856,7 @@ socket.addEventListener('error', () => {
   if (result.textContent === 'pending') result.textContent = 'websocket-failed'
 })
 document.querySelector('#request-permission').addEventListener('click', async () => {
+  document.querySelector('#permission-result').textContent = 'checking'
   document.querySelector('#permission-result').textContent = await Notification.requestPermission()
 })
 document.querySelector('#open-popup').addEventListener('click', () => {

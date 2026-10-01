@@ -335,6 +335,8 @@ const userDataOverride = resolveKnowbookUserDataOverride(process.argv, process.e
 if (userDataOverride) {
   app.setPath('userData', resolve(userDataOverride))
 }
+// Only an explicitly requested, isolated test instance runs without native UI.
+const backgroundElectronTest = process.env['KNOWBOOK_E2E_BACKGROUND'] === '1' && Boolean(userDataOverride)
 
 let maintenanceArgumentError: unknown
 let databaseRestorePath: string | null = null
@@ -348,7 +350,7 @@ const maintenanceRequested = uninstallCleanupRequested || databaseRestoreRequest
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
   if (maintenanceRequested) {
-    if (databaseRestoreRequested) dialog.showErrorBox('KnowBook 数据库恢复未执行', '该工作区仍有 KnowBook 实例运行。请完全退出应用后重试，数据库未替换。')
+    if (databaseRestoreRequested && !backgroundElectronTest) dialog.showErrorBox('KnowBook 数据库恢复未执行', '该工作区仍有 KnowBook 实例运行。请完全退出应用后重试，数据库未替换。')
     app.exit(23)
   }
   else app.quit()
@@ -996,7 +998,12 @@ function createWindow(): ElectronBrowserWindow {
     minHeight: 760,
     backgroundColor: '#f3f5f9',
     title: 'KnowBook',
+    show: !backgroundElectronTest,
+    focusable: !backgroundElectronTest,
+    skipTaskbar: backgroundElectronTest,
     webPreferences: {
+      backgroundThrottling: !backgroundElectronTest,
+      offscreen: backgroundElectronTest,
       preload: join(app.getAppPath(), 'out', 'preload', 'index.cjs'),
       contextIsolation: true,
       sandbox: true,
@@ -1021,7 +1028,12 @@ function createWindow(): ElectronBrowserWindow {
         width: 960,
         height: 720,
         parent: mainWindow ?? undefined,
+        show: !backgroundElectronTest,
+        focusable: !backgroundElectronTest,
+        skipTaskbar: backgroundElectronTest,
         webPreferences: {
+          backgroundThrottling: !backgroundElectronTest,
+          offscreen: backgroundElectronTest,
           contextIsolation: false,
           sandbox: false,
           nodeIntegration: true
@@ -2898,7 +2910,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     const message = error instanceof AggregateError ? [error.message, ...error.errors.map(String)].join('\n') : String(error)
     console.error('KnowBook 数据库恢复失败。', message)
     try { writeFileSync(join(userDataRoot, 'database-restore-result.json'), JSON.stringify({ status: 'failed', error: message }, null, 2)) } catch { /* Native dialog still exposes the failure. */ }
-    dialog.showErrorBox('KnowBook 数据库恢复未完成', message)
+    if (!backgroundElectronTest) dialog.showErrorBox('KnowBook 数据库恢复未完成', message)
     app.exit(25)
   })
 } else if (hasSingleInstanceLock && uninstallCleanupRequested) {
@@ -2913,7 +2925,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
   })
 } else if (hasSingleInstanceLock) {
   app.on('second-instance', () => {
-    if (!mainWindow) {
+    if (!mainWindow || backgroundElectronTest) {
       return
     }
     if (mainWindow.isMinimized()) {
@@ -3009,7 +3021,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     })
   }).catch((error) => {
     console.error('KnowBook 启动前数据库检查失败。', error)
-    dialog.showErrorBox('KnowBook 无法安全打开数据库', String(error))
+    if (!backgroundElectronTest) dialog.showErrorBox('KnowBook 无法安全打开数据库', String(error))
     app.exit(26)
   })
 

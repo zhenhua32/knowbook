@@ -4,17 +4,18 @@ import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron
 test('unified backup notifications retain hidden progress, retry safely and persist history @electron', async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
   await withElectronApp(async ({ app, page }) => {
-    await app.evaluate(({ ipcMain }) => {
+    const failureReason = 'Cannot write C:/Backups/Error: Notes.md\nFree disk space and retry.'
+    await app.evaluate(({ ipcMain }, reason) => {
       let calls = 0
       ipcMain.removeHandler('knowbook:trigger-backup')
       ipcMain.handle('knowbook:trigger-backup', () => new Promise((resolve, reject) => {
         const attempt = ++calls
         ipcMain.once('knowbook:test-finish-backup', () => {
-          if (attempt === 1) reject(new Error('Notification test: disk full'))
+          if (attempt === 1) reject(new Error(`Error: ${reason}`))
           else resolve({ exported: 3, root: '/backup', at: new Date().toISOString() })
         })
       }))
-    })
+    }, failureReason)
     await page.getByTitle(uiText('Dashboard', '总览'), { exact: true }).click()
     await page.getByRole('button', { name: uiText('Run backup now', '立即执行备份') }).click()
     const toasts = page.locator('.app-notifications')
@@ -25,7 +26,8 @@ test('unified backup notifications retain hidden progress, retry safely and pers
     await expect(bell).toHaveAccessibleName(/1 unread|1 条未读/)
     await bell.click()
     const center = page.getByRole('dialog', { name: uiText('Notification center', '通知中心') })
-    await expect(center).toContainText('Notification test: disk full')
+    await expect(center.locator('.app-notification-message')).toHaveText(failureReason)
+    await page.screenshot({ path: testInfo.outputPath('notification-failure-reason.png') })
     const recordId = await center.locator('.app-notification').getAttribute('data-notification-id')
     await center.getByRole('button', { name: uiText('Retry', '重试') }).click()
     await expect(center.getByRole('progressbar')).toBeVisible()
@@ -59,13 +61,15 @@ test('automatic backup failures ignore stale snapshots and repeated events and r
     await app.evaluate(({ ipcMain, BrowserWindow }) => {
       ipcMain.removeHandler('knowbook:get-backup-health')
       ipcMain.handle('knowbook:get-backup-health', () => {
-        BrowserWindow.getAllWindows()[0].webContents.send('knowbook:backup-health', { revision: 3, error: 'Latest backup failure' })
+        BrowserWindow.getAllWindows()[0].webContents.send('knowbook:backup-health', { revision: 3,
+          error: "Error invoking remote method 'knowbook:trigger-backup': Error: Latest backup failure" })
         return { revision: 2, error: 'Stale backup failure' }
       })
     })
     await page.reload()
     const toasts = page.locator('.app-notifications')
     await expect(toasts).toContainText('Latest backup failure')
+    await expect(toasts.locator('.app-notification-message')).toHaveText('Latest backup failure')
     await page.clock.install()
     await page.clock.runFor(7_000)
     await expect(toasts.getByRole('alert')).toContainText('Latest backup failure')
@@ -85,6 +89,74 @@ test('automatic backup failures ignore stale snapshots and repeated events and r
     await expect(center).toContainText('New backup failure')
     await center.getByRole('button', { name: uiText('Retry backup', '重试备份') }).click()
     await expect(center.locator('.app-notification-success')).toContainText(/backup recovered|自动备份已恢复/)
+  })
+})
+
+test('failure history retains clean host reasons and original plugin content after reload @electron', async ({}, testInfo) => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
+  await withElectronApp(async ({ app, page }) => {
+    const reason = 'Cannot write C:/Backups/Error: Notes.md\nChoose a writable folder and retry.'
+    await app.evaluate(({ ipcMain }, message) => {
+      ipcMain.removeHandler('knowbook:trigger-backup')
+      ipcMain.handle('knowbook:trigger-backup', () => { throw new Error(`Error: TypeError: ${message}`) })
+    }, reason)
+    await page.getByTitle(uiText('Dashboard', '总览'), { exact: true }).click()
+    await page.getByRole('button', { name: uiText('Run backup now', '立即执行备份') }).click()
+    const toasts = page.locator('.app-notifications')
+    await expect(toasts.locator('.app-notification-message')).toHaveText(reason)
+    const pluginMessage = "Error invoking remote method 'plugin:example': Error: is the diagnostic text.\nKeep it exactly."
+    await app.evaluate(({ BrowserWindow }, message) => {
+      BrowserWindow.getAllWindows()[0].webContents.send('knowbook:plugin-notification', {
+        title: 'Plugin diagnostic', level: 'error', message
+      })
+    }, pluginMessage)
+    await expect(toasts.locator('.app-notification').filter({ hasText: 'Plugin diagnostic' }).locator('.app-notification-message')).toHaveText(pluginMessage)
+    const bell = page.getByRole('button', { name: /Notification center|通知中心/ })
+    await bell.click()
+    const center = page.getByRole('dialog', { name: uiText('Notification center', '通知中心') })
+    const pluginRecord = center.locator('.app-notification').filter({ hasText: 'Plugin diagnostic' })
+    const hostRecord = center.locator('.app-notification').filter({ hasNotText: 'Plugin diagnostic' })
+    await expect(hostRecord.locator('.app-notification-message')).toHaveText(reason)
+    await expect(pluginRecord.locator('.app-notification-message')).toHaveText(pluginMessage)
+    await page.reload()
+    await bell.click()
+    await expect(center.locator('.app-notification')).toHaveCount(2)
+    await expect(hostRecord.locator('.app-notification-message')).toHaveText(reason)
+    await expect(pluginRecord.locator('.app-notification-message')).toHaveText(pluginMessage)
+    await expect(center.getByRole('button', { name: uiText('Retry', '重试') })).toHaveCount(0)
+    await page.setViewportSize({ width: 420, height: 640 })
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    expect(await center.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+    await page.screenshot({ path: testInfo.outputPath('notification-failure-history-dark.png') })
+  })
+})
+
+test('Chinese settings failures keep the localized explanation and clean IPC reason @electron', async () => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
+  await withElectronApp(async ({ app, page }) => {
+    await page.evaluate(() => window.knowbook.saveSetting('ui.language', 'zh-CN'))
+    await app.evaluate(({ ipcMain }) => {
+      let attempts = 0
+      ipcMain.removeHandler('knowbook:get-app-update-state')
+      ipcMain.handle('knowbook:get-app-update-state', () => ({ status: 'idle', currentVersion: '1.0.0',
+        availableVersion: null, downloadedVersion: null, releaseName: null, releaseNotes: null,
+        checkedAt: null, progressPercent: null, message: '', error: null, updatesEnabled: true, canInstall: false }))
+      ipcMain.removeHandler('knowbook:check-for-app-updates')
+      ipcMain.handle('knowbook:check-for-app-updates', () => {
+        throw new Error(++attempts === 1 ? 'Error: 更新服务暂时无法连接。\n请稍后重试。' : 'Error: ')
+      })
+    })
+    await page.reload()
+    await page.getByTitle('配置中心', { exact: true }).click()
+    await page.getByRole('tab', { name: '更新', exact: true }).click()
+    const check = page.getByRole('button', { name: '检查更新', exact: true })
+    await check.click()
+    const toasts = page.locator('.app-notifications')
+    await expect(toasts.locator('.app-notification-message')).toHaveText('检查更新失败。 更新服务暂时无法连接。\n请稍后重试。')
+    await expect(check).toBeEnabled()
+    await toasts.getByRole('button', { name: '关闭通知', exact: true }).click()
+    await check.click()
+    await expect(toasts.locator('.app-notification-message')).toHaveText('检查更新失败。')
   })
 })
 
