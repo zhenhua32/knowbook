@@ -822,6 +822,9 @@ export interface ClipWebPageResult {
 export interface WebClipBridgeStatus {
   enabled: boolean
   running: boolean
+  /** Saved listening port, including while the service is stopped or unable to start. */
+  configuredPort: number
+  /** Actual listening port; null when the service is not running. */
   port: number | null
   token: string
   endpoint: string | null

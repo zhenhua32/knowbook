@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../notify'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppUpdateState, WebClipBridgeStatus } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -14,39 +14,82 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
   const [appUpdateRefreshing, setAppUpdateRefreshing] = useState(false)
   const [webClipBridgeStatus, setWebClipBridgeStatus] = useState<WebClipBridgeStatus | null>(null)
+  const [webClipBridgeLoading, setWebClipBridgeLoading] = useState(true)
+  const [webClipBridgeLoadError, setWebClipBridgeLoadError] = useState<string | null>(null)
   const [webClipBridgeEnabledDraft, setWebClipBridgeEnabledDraft] = useState(false)
   const [webClipBridgePortDraft, setWebClipBridgePortDraft] = useState('3210')
   const [webClipBridgeSaving, setWebClipBridgeSaving] = useState(false)
+  const mounted = useRef(false)
+  const session = useRef(0)
+  const bridgeStatus = useRef<WebClipBridgeStatus | null>(null)
+  const bridgeInitialized = useRef(false)
+  const bridgeReadGeneration = useRef(0)
+  const bridgeReadPromise = useRef<Promise<void> | null>(null)
+  const bridgeSaveGeneration = useRef(0)
+  const bridgeSaving = useRef(false)
+  const currentUi = useRef(ui)
+  currentUi.current = ui
 
-  const loadWebClipBridgeStatus = useCallback(async (syncDrafts: boolean) => {
-    const status = await window.knowbook.getWebClipBridgeStatus()
-    setWebClipBridgeStatus(status)
-    if (syncDrafts) {
-      setWebClipBridgeEnabledDraft(status.enabled)
-      setWebClipBridgePortDraft(status.port ? `${status.port}` : '3210')
-    }
-    return status
+  const reloadWebClipBridgeStatus = useCallback((): Promise<void> => {
+    if (!mounted.current || bridgeSaving.current) return Promise.resolve()
+    if (bridgeReadPromise.current) return bridgeReadPromise.current
+
+    const generation = ++bridgeReadGeneration.current
+    const readSession = session.current
+    const isCurrent = () => mounted.current && session.current === readSession && bridgeReadGeneration.current === generation
+    setWebClipBridgeLoading(true)
+    const request = Promise.resolve().then(async () => {
+      if (!isCurrent()) return
+      try {
+        const status = await window.knowbook.getWebClipBridgeStatus()
+        if (!isCurrent()) return
+        bridgeStatus.current = status
+        setWebClipBridgeStatus(status)
+        setWebClipBridgeLoadError(null)
+        if (!bridgeInitialized.current) {
+          bridgeInitialized.current = true
+          setWebClipBridgeEnabledDraft(status.enabled)
+          setWebClipBridgePortDraft(`${status.configuredPort}`)
+        }
+      } catch (error) {
+        if (!isCurrent()) return
+        const detail = getErrorMessage(error, '')
+        const prefix = currentUi.current.webClipBridgeLoadFailed
+        setWebClipBridgeLoadError(detail ? `${prefix} ${detail}` : prefix)
+      } finally {
+        if (isCurrent()) {
+          bridgeReadPromise.current = null
+          setWebClipBridgeLoading(false)
+        }
+      }
+    })
+    bridgeReadPromise.current = request
+    return request
   }, [])
 
   useEffect(() => {
-    let mounted = true
+    mounted.current = true
+    const loadSession = session.current
 
     window.knowbook.getAppUpdateState().then((state) => {
-      if (mounted) {
+      if (mounted.current && session.current === loadSession) {
         setAppUpdateState(state)
       }
     }).catch((error) => {
       console.warn('Failed to load app update state.', error)
     })
 
-    void loadWebClipBridgeStatus(true).catch((error) => {
-      console.warn('Failed to load web clip bridge status.', error)
-    })
+    void reloadWebClipBridgeStatus()
 
     return () => {
-      mounted = false
+      mounted.current = false
+      session.current++
+      bridgeReadGeneration.current++
+      bridgeSaveGeneration.current++
+      bridgeReadPromise.current = null
+      bridgeSaving.current = false
     }
-  }, [loadWebClipBridgeStatus])
+  }, [reloadWebClipBridgeStatus])
 
   useEffect(() => {
     if (!isSettingsPageActive) {
@@ -57,13 +100,9 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
 
     const refresh = async () => {
       try {
-        const [state, bridgeStatus] = await Promise.all([
-          window.knowbook.getAppUpdateState(),
-          window.knowbook.getWebClipBridgeStatus()
-        ])
+        const state = await window.knowbook.getAppUpdateState()
         if (!cancelled) {
           setAppUpdateState(state)
-          setWebClipBridgeStatus(bridgeStatus)
         }
       } catch (error) {
         if (!cancelled) {
@@ -73,15 +112,17 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     }
 
     void refresh()
+    void reloadWebClipBridgeStatus()
     const timer = setInterval(() => {
       void refresh()
+      void reloadWebClipBridgeStatus()
     }, 4000)
 
     return () => {
       cancelled = true
       clearInterval(timer)
     }
-  }, [isSettingsPageActive])
+  }, [isSettingsPageActive, reloadWebClipBridgeStatus])
 
   const checkForAppUpdates = useCallback(async () => {
     setAppUpdateRefreshing(true)
@@ -110,6 +151,15 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   }, [onMessage, ui])
 
   const saveWebClipBridgeSettings = useCallback(async (regenerateToken = false) => {
+    if (!mounted.current || !bridgeStatus.current || bridgeSaving.current) return
+    bridgeSaving.current = true
+    const generation = ++bridgeSaveGeneration.current
+    const saveSession = session.current
+    const isCurrent = () => mounted.current && session.current === saveSession && bridgeSaveGeneration.current === generation
+    // A read started before this mutation must not restore the previous configuration.
+    bridgeReadGeneration.current++
+    bridgeReadPromise.current = null
+    setWebClipBridgeLoading(false)
     setWebClipBridgeSaving(true)
 
     try {
@@ -119,18 +169,32 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
         port: Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65_535 ? parsedPort : 3210,
         regenerateToken
       })
+      if (!isCurrent()) return
+      bridgeStatus.current = status
+      setWebClipBridgeLoadError(null)
       setWebClipBridgeStatus(status)
       setWebClipBridgeEnabledDraft(status.enabled)
-      setWebClipBridgePortDraft(status.port ? `${status.port}` : '3210')
+      setWebClipBridgePortDraft(`${status.configuredPort}`)
       onMessage(regenerateToken ? ui.webClipBridgeTokenRefreshed : ui.webClipBridgeSaved(status.running))
     } catch (error) {
+      if (!isCurrent()) return
       const detail = getErrorMessage(error, '')
       const message = detail ? `${ui.webClipBridgeSaveFailed} ${detail}` : ui.webClipBridgeSaveFailed
       onMessage(message, 'error')
     } finally {
-      setWebClipBridgeSaving(false)
+      if (isCurrent()) {
+        bridgeSaving.current = false
+        setWebClipBridgeSaving(false)
+      }
     }
   }, [onMessage, ui, webClipBridgeEnabledDraft, webClipBridgePortDraft])
+
+  const changeWebClipBridgeEnabledDraft = useCallback((enabled: boolean) => {
+    if (mounted.current && bridgeStatus.current && !bridgeSaving.current) setWebClipBridgeEnabledDraft(enabled)
+  }, [])
+  const changeWebClipBridgePortDraft = useCallback((port: string) => {
+    if (mounted.current && bridgeStatus.current && !bridgeSaving.current) setWebClipBridgePortDraft(port)
+  }, [])
 
   const copyWebClipBridgeEndpoint = useCallback(async () => {
     if (!webClipBridgeStatus?.endpoint) {
@@ -169,12 +233,15 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     copyWebClipBridgeEndpoint,
     copyWebClipBridgeToken,
     installAppUpdate,
+    reloadWebClipBridgeStatus,
     saveWebClipBridgeSettings,
-    setWebClipBridgeEnabledDraft,
-    setWebClipBridgePortDraft,
+    setWebClipBridgeEnabledDraft: changeWebClipBridgeEnabledDraft,
+    setWebClipBridgePortDraft: changeWebClipBridgePortDraft,
     webClipBridgeEnabledDraft,
     webClipBridgePortDraft,
     webClipBridgeSaving,
+    webClipBridgeLoading,
+    webClipBridgeLoadError,
     webClipBridgeStatus
   }
 }

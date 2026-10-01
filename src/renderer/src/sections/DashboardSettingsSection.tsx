@@ -45,6 +45,9 @@ type DashboardSettingsSectionProps = {
   webClipBridgePortDraft: string
   onWebClipBridgePortChange: (value: string) => void
   webClipBridgeSaving: boolean
+  webClipBridgeLoading: boolean
+  webClipBridgeLoadError: string | null
+  onReloadWebClipBridgeStatus: () => void
   onSaveWebClipBridgeSettings: () => void
   onRegenerateWebClipBridgeToken: () => void
   onCopyWebClipBridgeEndpoint: () => void
@@ -121,6 +124,9 @@ export function DashboardSettingsSection({
   webClipBridgePortDraft,
   onWebClipBridgePortChange,
   webClipBridgeSaving,
+  webClipBridgeLoading,
+  webClipBridgeLoadError,
+  onReloadWebClipBridgeStatus,
   onSaveWebClipBridgeSettings,
   onRegenerateWebClipBridgeToken,
   onCopyWebClipBridgeEndpoint,
@@ -302,12 +308,12 @@ export function DashboardSettingsSection({
                   <p className="settings-card-description">{ui.webClipBridgeDescription}</p>
                 </div>
                 <label className="toggle-row">
-                  <input checked={webClipBridgeEnabledDraft} onChange={(event) => onWebClipBridgeEnabledChange(event.target.checked)} type="checkbox" />
+                  <input checked={webClipBridgeEnabledDraft} disabled={!webClipBridgeStatus || webClipBridgeSaving} onChange={(event) => onWebClipBridgeEnabledChange(event.target.checked)} type="checkbox" />
                   <span>{ui.webClipBridgeEnabledLabel}</span>
                 </label>
                 <label className="editor-label">
                   {ui.webClipBridgePortLabel}
-                  <input className="editor-input" onChange={(event) => onWebClipBridgePortChange(event.target.value)} type="number" value={webClipBridgePortDraft} />
+                  <input className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} onChange={(event) => onWebClipBridgePortChange(event.target.value)} type="number" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
                 </label>
                 <label className="editor-label">
                   {ui.webClipBridgeTokenLabel}
@@ -315,24 +321,32 @@ export function DashboardSettingsSection({
                 </label>
                 <label className="editor-label">
                   {ui.webClipBridgeEndpointLabel}
-                  <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.endpoint ?? ui.webClipBridgeUnavailable} />
+                  <input className="editor-input" readOnly type="text" value={webClipBridgeStatus ? (webClipBridgeStatus.endpoint ?? ui.webClipBridgeUnavailable) : (webClipBridgeLoading ? ui.webClipBridgeLoading : ui.webClipBridgeLoadUnknown)} />
                 </label>
+                {webClipBridgeLoading && <p className="mini-hint" role="status">{ui.webClipBridgeLoading}</p>}
+                {webClipBridgeLoadError && (
+                  <div className="settings-bridge-read-error">
+                    <p role="alert">{webClipBridgeLoadError}</p>
+                    {webClipBridgeStatus && <p className="mini-hint">{ui.webClipBridgeStaleHint}</p>}
+                    <button className="secondary-button" disabled={webClipBridgeLoading || webClipBridgeSaving} onClick={onReloadWebClipBridgeStatus} type="button">{ui.webClipBridgeReload}</button>
+                  </div>
+                )}
                 <dl className="meta-grid">
                   <div>
                     <dt>{ui.webClipBridgeStatusLabel}</dt>
-                    <dd>{webClipBridgeStatus?.running ? ui.webClipBridgeStatusRunning : ui.webClipBridgeStatusStopped}</dd>
+                    <dd>{webClipBridgeStatus ? (webClipBridgeStatus.running ? ui.webClipBridgeStatusRunning : ui.webClipBridgeStatusStopped) : ui.webClipBridgeLoadUnknown}</dd>
                   </div>
                   <div>
                     <dt>{ui.webClipBridgeErrorLabel}</dt>
-                    <dd>{webClipBridgeStatus?.lastError ?? ui.common.none}</dd>
+                    <dd>{webClipBridgeStatus ? (webClipBridgeStatus.lastError ?? ui.common.none) : ui.webClipBridgeLoadUnknown}</dd>
                   </div>
                 </dl>
                 <p className="mini-hint">{ui.webClipBridgeHint}</p>
                 <div className="settings-actions">
-                  <button className="primary-button" disabled={webClipBridgeSaving} onClick={onSaveWebClipBridgeSettings} type="button">
+                  <button className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onSaveWebClipBridgeSettings} type="button">
                     {webClipBridgeSaving ? ui.common.saving : ui.webClipBridgeSave}
                   </button>
-                  <button className="secondary-button" disabled={webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">{ui.webClipBridgeRegenerateToken}</button>
+                  <button className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">{ui.webClipBridgeRegenerateToken}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">{ui.webClipBridgeCopyEndpoint}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">{ui.webClipBridgeCopyToken}</button>
                 </div>

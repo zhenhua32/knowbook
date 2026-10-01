@@ -29,7 +29,7 @@ export class WebClipBridgeService {
     port: 3210,
     token: ''
   }
-  private status: WebClipBridgeStatus = {
+  private status: Omit<WebClipBridgeStatus, 'configuredPort'> = {
     enabled: false,
     running: false,
     port: null,
@@ -41,7 +41,7 @@ export class WebClipBridgeService {
   constructor(private readonly options: WebClipBridgeOptions) {}
 
   getStatus(): WebClipBridgeStatus {
-    return { ...this.status }
+    return { ...this.status, configuredPort: this.config.port }
   }
 
   async applyConfig(config: WebClipBridgeConfig): Promise<WebClipBridgeStatus> {
@@ -202,7 +202,7 @@ export class WebClipBridgeService {
     return timingSafeEqual(expected, provided)
   }
 
-  private updateStatus(nextStatus: WebClipBridgeStatus): void {
+  private updateStatus(nextStatus: Omit<WebClipBridgeStatus, 'configuredPort'>): void {
     this.status = { ...nextStatus }
     this.options.onStateChange?.(this.getStatus())
   }

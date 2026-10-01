@@ -120,6 +120,9 @@ export function useSettingsDomain({
     onSaveWebClipBridgeSettings: () => {
       void settingsState.saveWebClipBridgeSettings(false)
     },
+    onReloadWebClipBridgeStatus: () => {
+      void settingsState.reloadWebClipBridgeStatus()
+    },
     onUiLanguageChange,
     recentDocuments,
     summary,
@@ -128,6 +131,8 @@ export function useSettingsDomain({
     webClipBridgeEnabledDraft: settingsState.webClipBridgeEnabledDraft,
     webClipBridgePortDraft: settingsState.webClipBridgePortDraft,
     webClipBridgeSaving: settingsState.webClipBridgeSaving,
+    webClipBridgeLoading: settingsState.webClipBridgeLoading,
+    webClipBridgeLoadError: settingsState.webClipBridgeLoadError,
     webClipBridgeStatus: settingsState.webClipBridgeStatus,
     onWebClipBridgeEnabledChange: settingsState.setWebClipBridgeEnabledDraft,
     onWebClipBridgePortChange: settingsState.setWebClipBridgePortDraft

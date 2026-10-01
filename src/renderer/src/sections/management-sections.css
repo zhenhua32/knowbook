@@ -247,6 +247,22 @@
   width: min(100%, 700px);
 }
 
+.settings-bridge-read-error {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.settings-bridge-read-error p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.settings-bridge-read-error [role='alert'] {
+  color: color-mix(in srgb, var(--kb-danger) 90%, var(--kb-text));
+}
+
 .settings-group {
   display: grid;
   gap: 16px;
