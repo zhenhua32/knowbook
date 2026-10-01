@@ -2,7 +2,7 @@ import { useId, useRef, type ReactNode } from 'react'
 import type { PluginDocumentAction, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
-import { AiAnswerContent } from './AiAnswerContent'
+import { AiAnswerCard } from './AiAnswerCard'
 import { AiRequestError } from './AiRequestError'
 
 type DocumentsAuxPanelProps = {
@@ -33,6 +33,7 @@ type DocumentsAuxPanelProps = {
   aiContextResults: SemanticSearchResult[]
   onOpenDocument: (documentId: string) => void
   aiAnswer: string
+  aiAnsweredPrompt: string
   aiAnswerError: string
   aiFailedPrompt: string
   documentReady: boolean
@@ -69,6 +70,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
     aiContextResults,
     onOpenDocument,
     aiAnswer,
+    aiAnsweredPrompt,
     aiAnswerError,
     aiFailedPrompt,
     documentReady,
@@ -203,10 +205,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
             {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
               busy={aiAsking} canRetry={canUseAi} onRetry={onRetryAi} /> : null}
             {aiAnswer && !aiAnswerError && !aiAsking ? (
-              <section className="ai-answer document-aux-ai-answer" aria-label={isZh ? 'AI 回答' : 'AI answer'}>
-                <p className="document-aux-ai-answer-label">{isZh ? 'AI 回答' : 'AI answer'}</p>
-                <AiAnswerContent content={aiAnswer} />
-              </section>
+              <AiAnswerCard className="document-aux-ai-answer" content={aiAnswer} prompt={aiAnsweredPrompt} isZh={isZh} />
             ) : null}
             {aiContextSearching ? <p className="mini-hint" role="status">{isZh ? '正在检索本地笔记…' : 'Searching local notes…'}</p> : null}
             {aiContextError ? <div className="document-aux-ai-search-error" role="alert">

@@ -54,6 +54,7 @@ export function useAiDomain({
 
   const sectionProps: AISectionProps = {
     aiAnswer: aiState.aiAnswer,
+    aiAnsweredPrompt: aiState.aiAnsweredPrompt,
     aiAnswerError: aiState.aiAnswerError,
     aiFailedPrompt: aiState.aiFailedPrompt,
     aiAsking: aiState.aiAsking,

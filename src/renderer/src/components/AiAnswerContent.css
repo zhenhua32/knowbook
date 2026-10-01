@@ -1,3 +1,13 @@
+.ai-answer-question { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--kb-line); color: var(--kb-text-soft); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ai-answer-question > span { color: var(--kb-text-muted); font-size: 12px; font-weight: 600; }
+.ai-answer-question p { margin: 4px 0 0; white-space: pre-wrap; }
+.ai-answer-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 10px; }
+.ai-answer .ai-answer-label { margin: 0; color: var(--kb-text-muted); font-size: 12px; font-weight: 600; }
+.ai-answer-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px 10px; min-width: 0; max-width: 100%; }
+.ai-answer-copy-status { color: var(--kb-text-soft); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.ai-answer-copy-status:empty { display: none; }
+.ai-answer-copy-status.is-error { color: var(--kb-danger); }
+.ai-answer .ai-answer-copy { min-height: 36px; max-width: 100%; white-space: normal; }
 .ai-answer-content { min-width: 0; overflow-wrap: anywhere; color: var(--kb-text); font-size: 14px; line-height: 1.8; }
 .ai-answer-content > :first-child { margin-top: 0; }
 .ai-answer-content > :last-child { margin-bottom: 0; }
@@ -7,4 +17,7 @@
 .ai-answer-content li + li { margin-top: 4px; }
 .ai-answer-content blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--kb-line-strong); color: var(--kb-text-soft); }
 .ai-answer-content pre { max-width: 100%; overflow-x: auto; margin: 12px 0; padding: 12px; border: 1px solid var(--kb-line); border-radius: 7px; background: var(--kb-bg); font-size: 12px; line-height: 1.7; white-space: pre; }
+.ai-answer-content .inline-code { color: var(--kb-text); background: var(--kb-bg); overflow-wrap: anywhere; }
+.ai-answer-content .block-markdown-table :is(th, td) { color: var(--kb-text); border-color: var(--kb-line); }
+.ai-answer-content .block-markdown-table th { background: var(--kb-bg); }
 .ai-answer-content .block-markdown-table { display: block; max-width: 100%; overflow-x: auto; margin-block: 12px; font-size: 13px; }

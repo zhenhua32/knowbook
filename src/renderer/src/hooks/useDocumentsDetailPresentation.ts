@@ -21,6 +21,7 @@ export type DocumentsRelationGroup = {
 
 type UseDocumentsDetailPresentationParams = {
   aiAnswer: string
+  aiAnsweredPrompt: string
   aiAnswerError: string
   aiFailedPrompt: string
   aiAsking: boolean
@@ -82,6 +83,7 @@ type UseDocumentsDetailPresentationParams = {
 
 export function useDocumentsDetailPresentation({
   aiAnswer,
+  aiAnsweredPrompt,
   aiAnswerError,
   aiFailedPrompt,
   aiAsking,
@@ -215,6 +217,7 @@ export function useDocumentsDetailPresentation({
   const auxPanelProps: DocumentsAuxPanelProps | null = selectedDocument
     ? {
         aiAnswer,
+        aiAnsweredPrompt,
         aiAnswerError,
         aiFailedPrompt,
         aiAsking,

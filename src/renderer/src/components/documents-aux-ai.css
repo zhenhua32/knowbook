@@ -64,13 +64,6 @@
   white-space: normal;
 }
 
-.document-aux-ai-answer-label {
-  margin: 0 0 8px;
-  color: var(--kb-text-muted);
-  font-size: var(--kb-type-caption);
-  font-weight: 600;
-}
-
 .document-aux-ai-search-error {
   display: grid;
   justify-items: start;

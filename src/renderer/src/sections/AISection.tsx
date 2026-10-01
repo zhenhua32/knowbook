@@ -3,7 +3,7 @@ import type { DocumentDetail, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AssistantConversation } from '../components/AssistantConversation'
 import { AiTaskSwitcher } from '../components/AiTaskSwitcher'
-import { AiAnswerContent } from '../components/AiAnswerContent'
+import { AiAnswerCard } from '../components/AiAnswerCard'
 import { AiRequestError } from '../components/AiRequestError'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import './management-sections.css'
@@ -35,6 +35,7 @@ type AISectionProps = {
   aiContextResults: SemanticSearchResult[]
   onOpenDocument: (documentId: string) => void
   aiAnswer: string
+  aiAnsweredPrompt: string
   aiAnswerError: string
   aiFailedPrompt: string
   onRetryAi: () => void
@@ -46,7 +47,7 @@ export function AISection(props: AISectionProps) {
   const { ui, isZh, selectedDocument, documentOptions, contextDocumentId, contextDocumentLoading,
     onSelectContextDocument, onOpenAiSettings, aiPromptDraft, onAiPromptChange, aiAutomationsRunning,
     aiEnabled, hasApiKey, onRunEnabledAutomations, aiContextSearching, aiContextHasSearched, onFindRelatedNotes,
-    aiAsking, onAskAi, aiContextError, aiContextResults, onOpenDocument, aiAnswer, aiAnswerError, aiFailedPrompt, onRetryAi, extensionTools, extensionMessageCards } = props
+    aiAsking, onAskAi, aiContextError, aiContextResults, onOpenDocument, aiAnswer, aiAnsweredPrompt, aiAnswerError, aiFailedPrompt, onRetryAi, extensionTools, extensionMessageCards } = props
   const promptId = useId()
   const contextId = useId()
   const composing = useRef(false)
@@ -113,9 +114,7 @@ export function AISection(props: AISectionProps) {
           {aiAsking ? <div className="ai-answer-pending" role="status"><span className="ai-thinking-dot" aria-hidden="true" />{isZh ? '正在结合文档思考…' : 'Thinking with your document…'}</div> : null}
           {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
             busy={aiAsking} canRetry={documentReady && canUseAi} onRetry={onRetryAi} /> : null}
-          {aiAnswer && !aiAnswerError && !aiAsking ? <section className="ai-answer" aria-label={isZh ? 'AI 回答' : 'AI answer'}>
-            <p className="ai-answer-label">{isZh ? 'AI 回答' : 'AI answer'}</p><AiAnswerContent content={aiAnswer} />
-          </section> : null}
+          {aiAnswer && !aiAnswerError && !aiAsking ? <AiAnswerCard content={aiAnswer} prompt={aiAnsweredPrompt} isZh={isZh} /> : null}
           <details className="ai-related-notes" key={contextDocumentId ?? 'none'}>
             <summary>{isZh ? '相关笔记' : 'Related notes'}{aiContextResults.length > 0 ? <span>{aiContextResults.length}</span> : null}</summary>
             <div className="ai-related-notes-content">

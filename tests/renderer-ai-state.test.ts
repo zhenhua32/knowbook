@@ -124,6 +124,7 @@ async function withAiState(run: (context: {
 
 function assertEmptySession(state: ReturnType<typeof useAiState>) {
   assert.equal(state.aiAnswer, '')
+  assert.equal(state.aiAnsweredPrompt, '')
   assert.equal(state.aiAnswerError, '')
   assert.equal(state.aiFailedPrompt, '')
   assert.deepEqual(state.aiContextResults, [])
@@ -317,6 +318,7 @@ test('retry uses the failed document and question without replacing a newer draf
     assert.equal(state().aiAsking, true)
     await act(async () => { answers[1].resolve({ answer: '**重新回答**', references: [] }); await request })
     assert.equal(state().aiAnswer, '**重新回答**')
+    assert.equal(state().aiAnsweredPrompt, '查找资料')
     assert.equal(state().aiAnswerError, '')
     assert.equal(state().aiFailedPrompt, '')
     assert.equal(state().aiPromptDraft, '正在准备的下一条问题')
@@ -336,6 +338,7 @@ test('starting another question clears the previous answer and failure state', a
     assert.equal(state().aiAnswer, '')
     assert.equal(state().aiAnswerError, '')
     assert.equal(state().aiFailedPrompt, '')
+    assert.equal(state().aiAnsweredPrompt, '')
     await act(async () => { answers[1].reject(new Error('新的提问失败')); await request })
     assert.equal(state().aiAnswer, '')
     assert.equal(state().aiAnswerError, '新的提问失败')

@@ -16,7 +16,7 @@ function auxProps(isZh = true): AuxProps {
     aiPromptDraft: '查找计划中的资料', onAiPromptChange: noop, aiAutomationsRunning: false,
     aiEnabled: true, hasApiKey: true, onRunEnabledAutomations: noop, aiContextSearching: false,
     aiContextHasSearched: false, onFindRelatedNotes: noop, aiAsking: false, onAskAi: noop,
-    aiContextError: '', aiContextResults: [], onOpenDocument: noop, aiAnswer: '', aiAnswerError: '',
+    aiContextError: '', aiContextResults: [], onOpenDocument: noop, aiAnswer: '', aiAnsweredPrompt: '', aiAnswerError: '',
     aiFailedPrompt: '', documentReady: true, onRetryAi: noop, onOpenAiSettings: noop }
 }
 

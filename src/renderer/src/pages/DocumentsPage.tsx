@@ -197,6 +197,7 @@ export function DocumentsPage({
     summaryCardProps
   } = useDocumentsDetailPresentation({
     aiAnswer: ai.aiAnswer,
+    aiAnsweredPrompt: ai.aiAnsweredPrompt,
     aiAnswerError: ai.aiAnswerError,
     aiFailedPrompt: ai.aiFailedPrompt,
     aiAsking: ai.aiAsking,

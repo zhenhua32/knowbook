@@ -33,6 +33,7 @@ export function useAiState({
   const [aiSaving, setAiSaving] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
+  const [aiAnsweredPrompt, setAiAnsweredPrompt] = useState('')
   const [aiAnswerError, setAiAnswerError] = useState('')
   const [aiFailedPrompt, setAiFailedPrompt] = useState('')
   const [aiAsking, setAiAsking] = useState(false)
@@ -64,6 +65,7 @@ export function useAiState({
     aiAnswerRequestIdRef.current += 1
     aiContextRequestIdRef.current += 1
     setAiAnswer('')
+    setAiAnsweredPrompt('')
     setAiAnswerError('')
     setAiFailedPrompt('')
     setAiAsking(false)
@@ -201,6 +203,7 @@ export function useAiState({
     )
     setAiAsking(true)
     setAiAnswer('')
+    setAiAnsweredPrompt('')
     setAiAnswerError('')
     setAiFailedPrompt('')
     setAiContextError('')
@@ -214,6 +217,7 @@ export function useAiState({
       })
       if (isCurrentRequest()) {
         setAiAnswer(result.answer)
+        setAiAnsweredPrompt(requestedPrompt)
       }
     } catch (error) {
       if (isCurrentRequest()) {
@@ -278,6 +282,7 @@ export function useAiState({
     aiPromptDraft,
     setAiPromptDraft,
     aiAnswer,
+    aiAnsweredPrompt,
     aiAnswerError,
     aiFailedPrompt,
     aiAsking,

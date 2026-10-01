@@ -26,6 +26,13 @@ async function installDeferredAnswers(app: ElectronApplication) {
     type Request = { input: { documentId: string; prompt: string }; resolve: (value: unknown) => void; reject: (error: Error) => void }
     const requests: Request[] = []
     process.env.KNOWBOOK_AI_RETRY_REQUESTS = '[]'
+    process.env.KNOWBOOK_AI_COPIED_ANSWER = ''
+    let failCopy = true
+    ipcMain.removeHandler('knowbook:write-clipboard-text')
+    ipcMain.handle('knowbook:write-clipboard-text', (_event, text: string) => {
+      if (failCopy) { failCopy = false; throw new Error('Clipboard busy for isolated verification') }
+      process.env.KNOWBOOK_AI_COPIED_ANSWER = text
+    })
     ipcMain.removeHandler('knowbook:ask-ai-about-document')
     ipcMain.handle('knowbook:ask-ai-about-document', (_event, input: Request['input']) => new Promise((resolve, reject) => {
       requests.push({ input, resolve, reject })
@@ -35,7 +42,11 @@ async function installDeferredAnswers(app: ElectronApplication) {
       const request = requests[input.index]
       if (!request) throw new Error(`Missing retry request ${input.index}`)
       if (input.fail) request.reject(new Error('The provider is temporarily unavailable. Try again shortly.'))
-      else request.resolve({ answer: '## Retry completed\n\n**The original question was retried.**\n\n- The new draft is preserved\n- This answer uses the selected document\n\n| Field | Value |\n| --- | --- |\n| Request | Retried |\n\n```ts\nconst retried = true\nconst context = "' + 'long-document-context-'.repeat(20) + '"\n```\n\n<script>window.aiRetryUnsafe = true</script>\n\n<img src="https://example.invalid/image" onerror="window.aiRetryUnsafe=true">\n\n![Remote image](https://example.invalid/image.png)\n\n[Unsafe](javascript:alert(1))', references: [] })
+      else {
+        const answer = '## Retry completed\n\n**The original question was retried.**\n\nUse `documentId` for context.\n\n- The new draft is preserved\n- This answer uses the selected document\n\n| Field | Value |\n| --- | --- |\n| Request | Retried |\n\n```ts\nconst retried = true\nconst context = "' + 'long-document-context-'.repeat(20) + '"\n```\n\n<script>window.aiRetryUnsafe = true</script>\n\n<img src="https://example.invalid/image" onerror="window.aiRetryUnsafe=true">\n\n![Remote image](https://example.invalid/image.png)\n\n[Unsafe](javascript:alert(1))'
+        process.env.KNOWBOOK_AI_RETRY_ANSWER = answer
+        request.resolve({ answer, references: [] })
+      }
     })
   })
 }
@@ -100,6 +111,38 @@ for (const surface of ['workspace', 'auxiliary'] as const) {
       expect(await page.evaluate(() => 'aiRetryUnsafe' in window)).toBe(false)
       await expect(prompt).toHaveValue(newDraft)
       await answer.screenshot({ path: testInfo.outputPath(`${surface}-ai-markdown.png`) })
+      const card = panel.locator('.ai-answer')
+      await expect(card.locator('.ai-answer-question p')).toHaveText(originalQuestion)
+      const copy = card.getByRole('button', { name: uiText('Copy answer', '复制回答'), exact: true })
+      await copy.focus()
+      await page.keyboard.press('Enter')
+      await expect(card.getByRole('status')).toHaveText(uiText('Could not copy. Try again.', '复制失败，请重试'))
+      await expect(card).not.toContainText('Clipboard busy for isolated verification')
+      await copy.click()
+      await expect(card.getByRole('status')).toHaveText(uiText('Copied', '已复制'))
+      expect(await app.evaluate(() => process.env.KNOWBOOK_AI_COPIED_ANSWER)).toBe(await app.evaluate(() => process.env.KNOWBOOK_AI_RETRY_ANSWER))
+      await expect(prompt).toHaveValue(newDraft)
+      for (const theme of ['light', 'dark']) {
+        await page.evaluate(value => { document.documentElement.setAttribute('data-theme', value) }, theme)
+        expect(await card.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+        for (const selector of ['.inline-code', 'table th']) {
+          const contrast = await card.locator(selector).first().evaluate(element => {
+            const style = getComputedStyle(element)
+            const luminance = (color: string) => {
+              const channels = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(value => {
+                const channel = value / 255
+                return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4
+              })
+              return channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722
+            }
+            const text = luminance(style.color), background = luminance(style.backgroundColor)
+            return (Math.max(text, background) + .05) / (Math.min(text, background) + .05)
+          })
+          expect(contrast).toBeGreaterThanOrEqual(4.5)
+        }
+        expect((await copy.boundingBox())!.height).toBeGreaterThanOrEqual(36)
+        await card.screenshot({ path: testInfo.outputPath(`${surface}-ai-answer-${theme}.png`), animations: 'disabled' })
+      }
       // A new failed request captures the new question, then document selection invalidates its retry target.
       await panel.getByRole('button', { name: uiText('Ask AI', '询问 AI'), exact: true }).click()
       sent.push({ documentId: ids.a, prompt: newDraft })
