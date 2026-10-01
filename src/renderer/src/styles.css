@@ -1440,36 +1440,39 @@ dt,
 
 .block-markdown-table th,
 .block-markdown-table td {
-  border: 1px solid rgba(91, 72, 44, 0.2);
+  border: 1px solid var(--kb-line);
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
 }
 
 .block-markdown-table th {
-  background: rgba(91, 72, 44, 0.06);
+  background: var(--kb-bg);
   font-weight: 600;
   font-size: 0.88em;
-  color: rgba(31, 29, 25, 0.72);
+  color: var(--kb-text);
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
 
 .block-markdown-table tbody tr:nth-child(even) {
-  background: rgba(91, 72, 44, 0.02);
+  background: var(--kb-bg);
 }
 
 .block-markdown-table tbody tr:hover {
-  background: rgba(91, 72, 44, 0.05);
+  background: var(--kb-accent-soft);
 }
 
 .block-code-language-badge {
   display: inline-block;
-  font-size: 0.72em;
-  color: rgba(91, 72, 44, 0.5);
-  padding: 2px 8px;
+  min-height: 28px;
+  cursor: pointer;
+  font-size: var(--kb-type-caption);
+  color: var(--kb-text-soft);
+  padding: 3px 8px;
+  border: 1px solid var(--kb-line);
   border-radius: 4px;
-  background: rgba(246, 240, 228, 0.6);
+  background: var(--kb-bg);
   margin-bottom: 2px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1880,8 +1883,8 @@ dt,
 .inline-code {
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(82, 66, 39, 0.08);
-  color: #2a241b;
+  background: var(--kb-bg);
+  color: var(--kb-text);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
   font-size: 0.88em;
 }

@@ -14,7 +14,7 @@ function getTitleInput(page: Page): Locator {
 }
 
 function getPreviewTitle(page: Page): Locator {
-  return page.locator('.preview-panel .panel-head h3')
+  return page.locator('.document-header-title')
 }
 
 function getBodyEditor(page: Page, bodyIndex: number): Locator {

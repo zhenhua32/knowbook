@@ -45,6 +45,7 @@ export function CodeBlockLanguageSelector(props: CodeBlockLanguageSelectorProps)
   return (
     <select
       className="code-block-language-selector"
+      aria-label={isZh ? '代码语言' : 'Code language'}
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlur}
       value={currentLanguage || ''}

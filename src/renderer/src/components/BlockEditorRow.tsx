@@ -503,18 +503,19 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   isZh={isZh}
                 />
               ) : (
-                <span
+                <button
                   className="block-code-language-badge"
+                  type="button"
+                  aria-label={isZh ? '修改代码语言' : 'Edit code language'}
                   onClick={() => setEditingLanguage(true)}
                   onContextMenu={(e) => {
                     e.preventDefault()
                     setEditingLanguage(true)
                   }}
-                  role="button"
                   title={isZh ? '点击修改语言' : 'Click to edit language'}
                 >
                   {effectiveCodeLanguage || (isZh ? '自动检测' : 'Auto detect')}
-                </span>
+                </button>
               )
             )}
 

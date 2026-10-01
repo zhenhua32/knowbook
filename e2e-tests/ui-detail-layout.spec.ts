@@ -172,6 +172,72 @@ test.describe('UI detail layout @electron', () => {
     })
   })
 
+  test('ordinary Markdown stays readable in both themes and code language is editable with the keyboard', async ({}, testInfo) => {
+    await withElectronApp(async ({ page }) => {
+      const title = 'Markdown theme sample'
+      const id = await page.evaluate(async title => {
+        await window.knowbook.saveSetting('appearance.theme', 'light')
+        const { id } = await window.knowbook.createDocument(null)
+        await window.knowbook.updateDocument(id, { title, summary: '', blocks: [
+          { id: `${id}-p`, type: 'paragraph', content: 'Run `npm test` before publishing.', checked: false, depth: 0 },
+          { id: `${id}-t`, type: 'table', content: '| Field | Value |\n| --- | --- |\n| Theme | Readable |', checked: false, depth: 0 },
+          { id: `${id}-c`, type: 'code', language: 'typescript', content: 'const readable = true', checked: false, depth: 0 }
+        ] })
+        return id
+      }, title)
+      await page.reload()
+
+      for (const theme of ['light', 'dark']) {
+        if (theme === 'dark') await useDarkTheme(page)
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+        await page.locator('.tree-button').filter({ has: page.locator('.tree-document-title', { hasText: title }) }).first().click()
+        await expect(page.locator('.document-header-title')).toHaveText(title)
+        const auxiliary = page.locator('.document-header-aux-button')
+        if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+        const toggle = page.locator('.document-view-toggle')
+        if (await toggle.getAttribute('aria-pressed') === 'true') await toggle.click()
+
+        const tableHeader = page.locator(`.block-editor-row[data-block-id="${id}-t"] .markdown-table-editor th`).first()
+        await tableHeader.click()
+        const headerEditor = tableHeader.locator('textarea')
+        await expect(headerEditor).toHaveValue('Field')
+        await expectReadable(headerEditor, `${theme} editable table header`)
+        await headerEditor.press('Escape')
+
+        const codeRow = page.locator(`.block-editor-row[data-block-id="${id}-c"]`)
+        const badge = codeRow.getByRole('button', { name: uiText('Edit code language', '修改代码语言'), exact: true })
+        await expect(badge).toHaveClass(/block-code-language-badge/)
+        expect(await badge.evaluate(element => element.tagName)).toBe('BUTTON')
+        await expectReadable(badge, `${theme} editable code language badge`)
+        expect((await badge.boundingBox())!.height).toBeGreaterThanOrEqual(28)
+        await badge.focus()
+        await page.keyboard.press('Enter')
+        const language = codeRow.getByRole('combobox', { name: uiText('Code language', '代码语言'), exact: true })
+        await expect(language).toBeFocused()
+        await language.selectOption('javascript')
+        await page.keyboard.press('Tab')
+        await expect(language).toHaveCount(0)
+        await expect(badge).toHaveText('javascript')
+        await expect.poll(async () => (await page.evaluate(id => window.knowbook.getDocumentDetail(id), id))
+          ?.blocks.find(block => block.id === `${id}-c`)?.language).toBe('javascript')
+
+        await toggle.click()
+        await expect(page.locator('.preview-panel')).toHaveClass(/preview-panel-reading/)
+        const inlineCode = page.locator(`.document-reading-row[data-block-id="${id}-p"] .inline-code`)
+        await expect(inlineCode).toHaveText('npm test')
+        await expectReadable(inlineCode, `${theme} document inline code`)
+        const table = page.locator(`.document-reading-row[data-block-id="${id}-t"] .block-markdown-table`)
+        await expect(table.locator('th')).toHaveText(['Field', 'Value'])
+        for (let index = 0; index < 2; index++) await expectReadable(table.locator('th').nth(index), `${theme} document table header ${index}`)
+        const readingCode = page.locator(`.document-reading-row[data-block-id="${id}-c"]`)
+        await expect(readingCode.locator('.block-code-language')).toHaveText('javascript')
+        await expectReadable(readingCode.locator('.block-code-language'), `${theme} fixed dark code preview language`)
+        await expect(readingCode.locator('pre code')).toHaveText('const readable = true')
+        await page.locator('.preview-panel').screenshot({ path: testInfo.outputPath(`markdown-reading-${theme}.png`), animations: 'disabled' })
+      }
+    })
+  })
+
   test('reading summary aligns with normal and wide content while copy feedback stays inside the header', async ({}, testInfo) => {
     await withElectronApp(async ({ page, app }) => {
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000))
