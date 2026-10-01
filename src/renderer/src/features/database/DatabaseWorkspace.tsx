@@ -86,6 +86,9 @@ export function DatabaseWorkspace({
   const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? sources[0]
   const currentSourceIdRef = useRef(currentSource?.id)
   currentSourceIdRef.current = currentSource?.id
+  const fieldSourceSessionRef = useRef({ id: currentSource?.id })
+  if (fieldSourceSessionRef.current.id !== currentSource?.id) fieldSourceSessionRef.current = { id: currentSource?.id }
+  const fieldSourceSession = fieldSourceSessionRef.current
   const [fieldDrawerOpen, setFieldDrawerOpen] = useState(false)
   const [createRecordOpen, setCreateRecordOpen] = useState(false)
   const [openRecordId, setOpenRecordId] = useState<string | null>(null)
@@ -199,6 +202,24 @@ export function DatabaseWorkspace({
     }
   }
   const refresh = (preferredViewId?: string) => onRefresh(currentSource.id, preferredViewId)
+  const runFieldMutation = async <T,>(mutate: () => Promise<T>, onSaved?: (result: T) => void) => {
+    let result: T
+    try {
+      result = await mutate()
+    } catch {
+      return false
+    }
+    // The field already exists on disk; a failed refresh must not make a
+    // second creation look like a retry of the original mutation.
+    if (fieldSourceSessionRef.current !== fieldSourceSession) return true
+    try {
+      onSaved?.(result)
+      await refresh(activeViewId)
+    } catch {
+      if (fieldSourceSessionRef.current === fieldSourceSession) onMessage(text.fieldsSavedRefreshFailed, 'error')
+    }
+    return true
+  }
 
   const switchSource = (databaseId: string) => {
     onSelectedRecordIdsChange([])
@@ -532,27 +553,28 @@ export function DatabaseWorkspace({
       </main>
 
       <DatabaseFieldDrawer
+        key={`fields-${currentSource.id}`}
+        sourceSessionKey={currentSource.id}
         fieldOrder={draft.fieldOrder}
         fields={fields}
         onClose={() => setFieldDrawerOpen(false)}
         onCreateField={async (name, type, options) => {
-          await run(async () => {
-            const created = await window.knowbook.createDocumentDatabaseColumn({ databaseId: currentSource.id, name, type, options })
+          return runFieldMutation(() => window.knowbook.createDocumentDatabaseColumn({ databaseId: currentSource.id, name, type, options }), (created) => {
+            const createdId = created.id
             updateDraft((current) => ({
               ...current,
-              visibleFieldIds: [...current.visibleFieldIds, created.id],
-              fieldOrder: [...current.fieldOrder, created.id],
-              cardFieldIds: [...current.cardFieldIds, created.id].slice(0, 4)
+              visibleFieldIds: [...current.visibleFieldIds, createdId],
+              fieldOrder: [...current.fieldOrder, createdId],
+              cardFieldIds: [...current.cardFieldIds, createdId].slice(0, 4)
             }))
-            await refresh(activeViewId)
           })
         }}
         onDeleteField={(field) => setConfirmTarget({ kind: 'field', id: field.id, name: field.name })}
         onMoveField={moveField}
-        onMoveDatabaseField={async (fieldId, direction) => { await run(async () => { await window.knowbook.moveDocumentDatabaseColumn({ columnId: fieldId, direction }); await refresh(activeViewId) }) }}
-        onRenameField={async (fieldId, name) => { await run(async () => { await window.knowbook.renameDocumentDatabaseColumn({ columnId: fieldId, name }); await refresh(activeViewId) }) }}
+        onMoveDatabaseField={(fieldId, direction) => runFieldMutation(() => window.knowbook.moveDocumentDatabaseColumn({ columnId: fieldId, direction }))}
+        onRenameField={(fieldId, name) => runFieldMutation(() => window.knowbook.renameDocumentDatabaseColumn({ columnId: fieldId, name }))}
         onToggleField={toggleField}
-        onUpdateOptions={async (fieldId, options) => { await run(async () => { await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId: fieldId, options }); await refresh(activeViewId) }) }}
+        onUpdateOptions={(fieldId, options) => runFieldMutation(() => window.knowbook.updateDocumentDatabaseColumnOptions({ columnId: fieldId, options }))}
         open={fieldDrawerOpen}
         text={text}
         visibleFieldIds={draft.visibleFieldIds}

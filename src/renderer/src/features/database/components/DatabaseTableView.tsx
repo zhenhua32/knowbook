@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import type { DatabaseField, DatabaseRecord, DatabaseSourceKind, DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 import { DATABASE_SYSTEM_FIELD_IDS } from '@shared/database-workspace'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
@@ -36,18 +36,27 @@ export function DatabaseTableView({
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
+  const [headerHeight, setHeaderHeight] = useState(0)
   const rowHeight = 64
   const tableWidth = 44 + fields.reduce((width, field) => width + (columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180)), 0)
   const overscan = 8
-  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan)
+  // Keep data edits and reordering at the current position; only limit scrolling
+  // when the result set or available viewport can no longer contain it.
+  const maximumScrollTop = Math.max(0, headerHeight + records.length * rowHeight - viewportHeight)
+  const boundedScrollTop = Math.max(0, Math.min(scrollTop, maximumScrollTop))
+  const startIndex = Math.min(Math.max(0, records.length - 1),
+    Math.max(0, Math.floor(Math.max(0, boundedScrollTop - headerHeight) / rowHeight) - overscan))
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
   const endIndex = Math.min(records.length, startIndex + visibleCount)
   const visibleRecords = records.slice(startIndex, endIndex)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node) return
-    const update = () => setViewportHeight(node.clientHeight || 600)
+    const update = () => {
+      setViewportHeight(node.clientHeight || 600)
+      setHeaderHeight(node.querySelector('thead')?.getBoundingClientRect().height ?? 0)
+    }
     update()
     if (typeof ResizeObserver === 'undefined') {
       window.addEventListener('resize', update)
@@ -57,6 +66,16 @@ export function DatabaseTableView({
     observer.observe(node)
     return () => observer.disconnect()
   }, [])
+
+  useLayoutEffect(() => {
+    const node = scrollRef.current
+    if (!node) return
+    const maximum = node.clientHeight > 0 && node.scrollHeight > 0
+      ? Math.max(0, node.scrollHeight - node.clientHeight) : maximumScrollTop
+    const nextScrollTop = Math.min(boundedScrollTop, maximum)
+    if (node.scrollTop !== nextScrollTop) node.scrollTop = nextScrollTop
+    if (scrollTop !== node.scrollTop) setScrollTop(node.scrollTop)
+  }, [boundedScrollTop, maximumScrollTop, scrollTop])
 
   return (
     <div className="dbw-table-scroll" data-testid="database-table-view" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} ref={scrollRef}>

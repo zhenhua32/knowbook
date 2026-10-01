@@ -344,3 +344,41 @@ test('adding a new rule retains an existing OR group and each rule applies indep
     assert.deepEqual(results(), ['a', 'b', 'c', 'd', 'e'])
   })
 })
+
+test('clearing and re-entering a numeric condition keeps number semantics for scientific notation and saved reloads', async () => {
+  await withToolbar({ config: view([{ id: 'numeric', fieldId: 'score', operator: 'greater-than', value: 5 }]), records: [
+    record('a', 'Low', { score: 3 }), record('b', 'Near', { score: 999 }), record('c', 'High', { score: 1001 })
+  ] }, async ({ row, fill, config, results, click, button, text, saved, reload }) => {
+    await fill(valueControl(row()) as HTMLInputElement, '')
+    assert.equal((valueControl(row()) as HTMLInputElement).type, 'number')
+    assert.equal(rule(config()).value, undefined)
+    await fill(valueControl(row()) as HTMLInputElement, '1e3')
+    assert.equal(rule(config()).value, 1000)
+    assert.deepEqual(results(), ['c'])
+    await click(button(text.saveChanges))
+    assert.equal(rule(saved()).value, 1000)
+    await reload()
+    assert.equal((valueControl(row()) as HTMLInputElement).type, 'number')
+    assert.equal(rule(config()).value, 1000)
+    assert.deepEqual(results(), ['c'])
+  })
+})
+
+test('numeric edits accept decimal boundaries and switching fields resets the editor to the new value kind', async () => {
+  await withToolbar({ config: view([{ id: 'numeric', fieldId: 'score', operator: 'greater-than', value: 5 }]), records: [
+    record('a', 'Alpha', { score: 2.4 }), record('b', 'Beta', { score: 2.6 }), record('c', 'Gamma', { score: 3 })
+  ] }, async ({ row, fill, config, results, select }) => {
+    await fill(valueControl(row()) as HTMLInputElement, '')
+    await fill(valueControl(row()) as HTMLInputElement, '2.5')
+    assert.equal(rule(config()).value, 2.5)
+    assert.equal((valueControl(row()) as HTMLInputElement).step, 'any')
+    assert.deepEqual(results(), ['b', 'c'])
+    await fill(valueControl(row()) as HTMLInputElement, '')
+    await select(fieldSelect(row()), '__title__')
+    const input = valueControl(row()) as HTMLInputElement
+    assert.equal(input.type, 'text')
+    await fill(input, 'Beta')
+    assert.equal(rule(config()).value, 'Beta')
+    assert.deepEqual(results(), ['b'])
+  })
+})

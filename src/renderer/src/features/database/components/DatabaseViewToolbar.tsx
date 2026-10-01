@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import type {
   DatabaseField,
   DatabaseFilterOperator,
@@ -31,6 +32,7 @@ export function DatabaseViewToolbar({
   onSave: () => void
   onSaveAs: () => void
 }) {
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const filterRules = config.filters.rules.filter((rule): rule is DatabaseFilterRule => !('rules' in rule))
   const groupableFields = fields.filter((field) => field.role !== 'title' && field.id !== '__created_at__' && field.id !== '__updated_at__')
 
@@ -40,12 +42,16 @@ export function DatabaseViewToolbar({
         <span aria-hidden="true">⌕</span>
         <input
           aria-label={text.search}
+          ref={searchInputRef}
           onChange={(event) => onChange((current) => ({ ...current, query: event.target.value }))}
           placeholder={text.search}
           value={config.query}
         />
         {config.query ? (
-          <button aria-label={text.clearSearch} onClick={() => onChange((current) => ({ ...current, query: '' }))} type="button">×</button>
+          <button aria-label={text.clearSearch} onClick={() => {
+            onChange((current) => ({ ...current, query: '' }))
+            searchInputRef.current?.focus()
+          }} type="button">×</button>
         ) : null}
       </label>
 
@@ -212,7 +218,7 @@ function FilterRuleRow({
       <select aria-label={`${text.operator} ${index + 1}`} onChange={(event) => onChange(changeFilterOperator(rule, field, event.target.value as DatabaseFilterOperator))} value={rule.operator}>
         {operators.map(([operator, label]) => <option key={operator} value={operator}>{label}</option>)}
       </select>
-      {needsValue ? <FilterRuleValue field={field} label={valueLabel} onChange={value => onChange({ ...rule, value })} rule={rule} text={text} /> : null}
+      {needsValue ? <FilterRuleValue field={field} key={JSON.stringify([rule.id, rule.fieldId, rule.operator])} label={valueLabel} onChange={value => onChange({ ...rule, value })} rule={rule} text={text} /> : null}
       <button aria-label={text.delete} onClick={onDelete} type="button">×</button>
     </div>
   )
@@ -225,6 +231,10 @@ function FilterRuleValue({ field, label, onChange, rule, text }: {
   rule: DatabaseFilterRule
   text: DatabaseWorkspaceText
 }) {
+  // Clearing a numeric value is still the same numeric edit. Explicit value
+  // kinds and a changed rule context select their own editor again.
+  const numericMode = useRef(typeof rule.value === 'number')
+  if (rule.value !== undefined) numericMode.current = typeof rule.value === 'number'
   if (rule.operator === 'between') {
     const validPair = Array.isArray(rule.value) && rule.value.length === 2
     const pair = validPair ? rule.value as [string, string] : ['', '']
@@ -253,8 +263,11 @@ function FilterRuleValue({ field, label, onChange, rule, text }: {
     return <input aria-label={label} checked={rule.value} className="dbw-filter-value" onChange={event => onChange(event.target.checked)} type="checkbox" />
   }
 
-  if (typeof rule.value === 'number') {
-    return <input aria-label={label} className="dbw-filter-value" onChange={event => onChange(event.target.value === '' ? undefined : Number(event.target.value))} type="number" value={rule.value} />
+  if (numericMode.current) {
+    return <input aria-label={label} className="dbw-filter-value" onChange={event => {
+      const value = event.target.value === '' ? undefined : Number(event.target.value)
+      onChange(value !== undefined && Number.isFinite(value) ? value : undefined)
+    }} step="any" type="number" value={rule.value === undefined ? '' : String(rule.value)} />
   }
 
   const value = typeof rule.value === 'string' ? rule.value : ''

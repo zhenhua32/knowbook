@@ -429,7 +429,7 @@
 .dbw-drawer-header h2 { margin: 0; font-family: inherit; font-size: 18px; }
 .dbw-drawer-header p { margin: 4px 0 0; color: var(--dbw-muted); font-size: 11px; }
 .dbw-field-list { flex: 1; overflow: auto; padding: 8px 12px; }
-.dbw-field-row { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px; border-bottom: 1px solid #f0f1f4; }
+.dbw-field-row { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px; border-bottom: 1px solid var(--dbw-line); }
 .dbw-field-row.is-hidden { opacity: .62; }
 .dbw-field-grip { color: #adb1bd; cursor: grab; }
 .dbw-field-copy { min-width: 0; flex: 1; }
@@ -447,6 +447,17 @@
 .dbw-field-create-form { display: grid; gap: 8px; }
 .dbw-field-create-form > input,
 .dbw-field-create-form > select { width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid var(--dbw-line); border-radius: 8px; background: #fff; }
+.dbw-field-operation-status { margin: 0; padding: 10px 20px; color: var(--kb-text-soft); font-size: var(--kb-type-label); line-height: 1.6; }
+.dbw-field-submit-error { margin: 6px 0 0; color: var(--dbw-danger); font-size: var(--kb-type-label); line-height: 1.6; overflow-wrap: anywhere; }
+.dbw-field-create-form > .dbw-field-submit-error { margin: 0; }
+.dbw-field-submit { min-height: var(--kb-control-height-compact); margin-top: 6px; padding: 5px 10px; border: 1px solid var(--dbw-line); border-radius: 7px; background: var(--dbw-bg); color: var(--dbw-accent); cursor: pointer; font-size: var(--kb-type-label); line-height: 20px; }
+.dbw-field-submit:not(:disabled):hover { border-color: var(--dbw-accent); background: var(--dbw-accent-soft); }
+.dbw-field-drawer[aria-busy='true'] :is(input, select) { cursor: wait; }
+.dbw-drawer:focus-visible,
+.dbw-dialog:focus-visible { outline: 2px solid var(--dbw-accent); outline-offset: -2px; }
+@media (min-width: 901px) {
+  body:has(.dbw-field-drawer) .app-notifications { right: 404px; max-width: calc(100vw - 428px); }
+}
 .dbw-inline-actions { justify-content: flex-end; gap: 7px; }
 
 .dbw-record-form { display: grid; align-content: start; gap: 15px; min-height: 0; min-inline-size: 0; flex: 1; overflow: auto; margin: 0; padding: 20px; border: 0; }

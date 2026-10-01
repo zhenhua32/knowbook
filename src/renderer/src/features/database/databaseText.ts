@@ -12,6 +12,7 @@ export function getDatabaseWorkspaceText(locale: string) {
     editDatabase: '编辑数据库', rename: '重命名', delete: '删除', description: '描述', name: '名称',
     manageFields: '字段管理', visibleFields: (visible: number, total: number) => `显示 ${visible} / 共 ${total} 个字段`,
     addField: '新增字段', fieldType: '字段类型', options: '选项（逗号分隔）', hide: '隐藏', show: '显示',
+    typeText: '文本', typeSelect: '单选', typeMultiSelect: '多选', typeDate: '日期', typeCheckbox: '勾选',
     moveUp: '上移', moveDown: '下移', close: '关闭', title: '标题', linkedDocument: '关联文档',
     noLinkedDocument: '不关联文档', recordDetails: '记录详情', createRecord: '新建记录',
     deleteRecord: '删除记录', deleteField: '删除字段', deleteView: '删除视图', deleteDatabase: '删除数据库',
@@ -26,7 +27,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     catalogDescription: '工作区中的全部文档，可使用字段进行分类和组织。',
     createAndContinue: '创建并继续添加', databaseSettings: '数据库设置', viewMenu: '视图菜单',
     saveAsView: '另存为新视图', resetView: '重置更改', failed: '操作失败，请重试。', saving: '正在保存…', creating: '正在创建…',
-    savedRefreshFailed: '记录已保存，但列表刷新失败，请刷新数据库。'
+    savedRefreshFailed: '记录已保存，但列表刷新失败，请刷新数据库。',
+    fieldsSavedRefreshFailed: '字段已保存，但列表刷新失败，请刷新数据库。'
   } : {
     workspace: 'Database workspace', allDocuments: 'All documents', system: 'System', custom: 'Custom databases',
     searchDatabase: 'Search databases…', noDatabases: 'No matching databases', newDatabase: 'New database', newDocument: 'New document', newRecord: 'New record',
@@ -39,6 +41,7 @@ export function getDatabaseWorkspaceText(locale: string) {
     editDatabase: 'Edit database', rename: 'Rename', delete: 'Delete', description: 'Description', name: 'Name',
     manageFields: 'Manage fields', visibleFields: (visible: number, total: number) => `${visible} of ${total} fields shown`,
     addField: 'Add field', fieldType: 'Field type', options: 'Options (comma separated)', hide: 'Hide', show: 'Show',
+    typeText: 'Text', typeSelect: 'Select', typeMultiSelect: 'Multi-select', typeDate: 'Date', typeCheckbox: 'Checkbox',
     moveUp: 'Move up', moveDown: 'Move down', close: 'Close', title: 'Title', linkedDocument: 'Linked document',
     noLinkedDocument: 'No linked document', recordDetails: 'Record details', createRecord: 'Create record',
     deleteRecord: 'Delete record', deleteField: 'Delete field', deleteView: 'Delete view', deleteDatabase: 'Delete database',
@@ -53,7 +56,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     catalogDescription: 'All workspace documents, organized with structured fields.',
     createAndContinue: 'Create and add another', databaseSettings: 'Database settings', viewMenu: 'View menu',
     saveAsView: 'Save as new view', resetView: 'Reset changes', failed: 'Something went wrong. Please try again.', saving: 'Saving…', creating: 'Creating…',
-    savedRefreshFailed: 'The record was saved, but the list could not be refreshed. Refresh the database.'
+    savedRefreshFailed: 'The record was saved, but the list could not be refreshed. Refresh the database.',
+    fieldsSavedRefreshFailed: 'Field changes were saved, but the list could not be refreshed. Refresh the database.'
   }
 }
 

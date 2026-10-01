@@ -38,15 +38,16 @@ async function withRenameDrawer(run: (context: {
     const [fields, updateFields] = useState([owner, stage])
     setFields = updateFields
     return createElement(DatabaseFieldDrawer, {
-      fields, fieldOrder: ['owner', 'stage'], open: true, text: getDatabaseWorkspaceText(locale), visibleFieldIds: ['owner', 'stage'],
-      onClose: () => closeCount++, onCreateField: async () => {}, onDeleteField: () => {}, onMoveField: () => {},
-      onMoveDatabaseField: async () => {}, onToggleField: () => {}, onUpdateOptions: async () => {},
+      fields, fieldOrder: ['owner', 'stage'], open: true, sourceSessionKey: 'test-source', text: getDatabaseWorkspaceText(locale), visibleFieldIds: ['owner', 'stage'],
+      onClose: () => closeCount++, onCreateField: async () => true, onDeleteField: () => {}, onMoveField: () => {},
+      onMoveDatabaseField: async () => true, onToggleField: () => {}, onUpdateOptions: async () => true,
       onRenameField: async (fieldId, name) => {
         renames.push({ fieldId, name })
         const delay = nextRenameDelay
         nextRenameDelay = null
         if (delay) await delay
         setFields(previous => previous.map(field => field.id === fieldId ? { ...field, name } : field))
+        return true
       }
     })
   }
@@ -154,7 +155,7 @@ test('ordinary Escape cancels before its synchronous blur, keeps the drawer open
   })
 })
 
-test('ordinary Enter commits the current DOM name once and restores a usable button even before a later refresh', async () => {
+test('ordinary Enter keeps its editor locked until submission succeeds, then restores the refreshed name button', async () => {
   await withRenameDrawer(async ({ document, window, renames, closes, edit, key, delayNextRename }) => {
     const input = await edit()
     const finishRename = delayNextRename()
@@ -165,13 +166,15 @@ test('ordinary Enter commits the current DOM name once and restores a usable but
     await key(input, 'Enter')
     assert.equal(blurCount, 1)
     assert.deepEqual(renames, [{ fieldId: 'owner', name: 'Accepted name' }])
-    assert.equal(document.activeElement, nameButton(document))
-    assert.equal(nameButton(document).disabled, false)
-    assert.equal(nameButton(document).textContent, 'Owner', 'focus returns before the asynchronous field refresh')
+    assert.equal(document.querySelector('.dbw-field-row .dbw-field-copy')?.contains(input), true, 'the submitted editor remains visible until success')
+    assert.equal(input.disabled, true)
+    assert.equal(input.value, '  Accepted name  ')
+    assert.equal(drawer(document)?.getAttribute('aria-busy'), 'true')
     assert.equal(closes(), 0)
     await act(async () => finishRename())
     assert.equal(document.activeElement, nameButton(document), 'refresh preserves the focused name button')
     assert.equal(nameButton(document).textContent, 'Accepted name')
+    assert.equal(nameButton(document).disabled, false)
     assert.equal((await edit()).value, 'Accepted name')
   })
 })

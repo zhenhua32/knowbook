@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../notify'
-import { useCallback } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 import '../features/database/database-workspace.css'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
@@ -43,39 +43,80 @@ export function DatabasePage({
   onOpenDocument,
   ui
 }: DatabasePageProps) {
+  const latest = useRef({ database, onCatalogColumnsChange, onCatalogDocumentsChange, onHomeDataChange })
+  latest.current = { database, onCatalogColumnsChange, onCatalogDocumentsChange, onHomeDataChange }
+  const mounted = useRef(true)
+  const refreshGeneration = useRef(0)
+  const sourceSession = useRef({ renderedId: database.databaseEntityDatabaseId, currentId: database.databaseEntityDatabaseId, generation: 0 })
+  if (sourceSession.current.renderedId !== database.databaseEntityDatabaseId) {
+    sourceSession.current.renderedId = database.databaseEntityDatabaseId
+    if (sourceSession.current.currentId !== database.databaseEntityDatabaseId) {
+      sourceSession.current.currentId = database.databaseEntityDatabaseId
+      sourceSession.current.generation++
+      refreshGeneration.current++
+    }
+  }
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; sourceSession.current.generation++; refreshGeneration.current++ }
+  }, [])
+
+  const changeCurrentDatabase = useCallback((databaseId: string) => {
+    if (sourceSession.current.currentId !== databaseId) {
+      sourceSession.current.currentId = databaseId
+      sourceSession.current.generation++
+      refreshGeneration.current++
+    }
+    latest.current.database.setDatabaseEntityDatabaseId(databaseId)
+  }, [])
+
   const refreshWorkspace = useCallback(async (
-    targetDatabaseId: string = database.databaseEntityDatabaseId,
+    targetDatabaseId?: string,
     preferredViewId?: string
   ) => {
-    const targetDatabase = database.databases.find((candidate) => candidate.id === targetDatabaseId)
-    const [home, documents, databases, columns, entities, views] = await Promise.all([
-      window.knowbook.getHomeData(),
-      collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage),
-      window.knowbook.getDatabases(),
-      targetDatabaseId ? window.knowbook.getDocumentDatabaseColumns(targetDatabaseId) : Promise.resolve([]),
-      targetDatabaseId ? window.knowbook.getDatabaseEntities(targetDatabaseId) : Promise.resolve([]),
-      targetDatabaseId ? window.knowbook.getDatabaseSavedViews(targetDatabaseId) : Promise.resolve([])
-    ])
-    const refreshedTarget = databases.find((candidate) => candidate.id === targetDatabaseId) ?? targetDatabase
-    onHomeDataChange(home)
-    onCatalogDocumentsChange(documents)
-    database.setDatabases(databases)
-    database.setSelectedDatabaseColumns(columns)
-    database.setDatabaseEntities(entities)
-    database.setDatabaseSavedViews(views)
-    if (refreshedTarget?.kind === 'document-catalog') {
-      onCatalogColumnsChange(columns)
+    if (!mounted.current) return
+    const targetId = targetDatabaseId ?? sourceSession.current.currentId
+    const requestId = ++refreshGeneration.current
+    const sessionId = sourceSession.current.generation
+    const isCurrentRequest = () => mounted.current && requestId === refreshGeneration.current && sessionId === sourceSession.current.generation
+    const isCurrentSource = () => isCurrentRequest() && targetId === sourceSession.current.currentId
+    const targetDatabase = latest.current.database.databases.find((candidate) => candidate.id === targetId)
+    let result
+    try {
+      result = await Promise.all([
+        window.knowbook.getHomeData(),
+        collectDocumentCatalogPages(window.knowbook.getDocumentCatalogPage),
+        window.knowbook.getDatabases(),
+        targetId ? window.knowbook.getDocumentDatabaseColumns(targetId) : Promise.resolve([]),
+        targetId ? window.knowbook.getDatabaseEntities(targetId) : Promise.resolve([]),
+        targetId ? window.knowbook.getDatabaseSavedViews(targetId) : Promise.resolve([])
+      ])
+    } catch (error) {
+      if (isCurrentRequest()) throw error
+      return
     }
-    database.setActiveDatabaseSavedViewId((current) => {
+    if (!isCurrentRequest()) return
+    const [home, documents, databases, columns, entities, views] = result
+    const refreshedTarget = databases.find((candidate) => candidate.id === targetId) ?? targetDatabase
+    const current = latest.current
+    // Creating or deleting a database refreshes the shared catalog before the
+    // workspace switches sources. Target data must wait for its own source.
+    current.onHomeDataChange(home)
+    current.onCatalogDocumentsChange(documents)
+    current.database.setDatabases(databases)
+    if (refreshedTarget?.kind === 'document-catalog') {
+      current.onCatalogColumnsChange(columns)
+    }
+    if (!isCurrentSource()) return
+    current.database.setSelectedDatabaseColumns(previous => isCurrentSource() ? columns : previous)
+    current.database.setDatabaseEntities(previous => isCurrentSource() ? entities : previous)
+    current.database.setDatabaseSavedViews(previous => isCurrentSource() ? views : previous)
+    current.database.setActiveDatabaseSavedViewId((current) => {
+      if (!isCurrentSource()) return current
       const candidateId = preferredViewId ?? current
       return views.some((view) => view.id === candidateId) ? candidateId : views[0]?.id ?? ''
     })
-  }, [
-    database,
-    onCatalogColumnsChange,
-    onCatalogDocumentsChange,
-    onHomeDataChange
-  ])
+  }, [])
 
   const error = catalogError ?? database.databaseError
   const ready = catalogReady && database.databaseReady
@@ -100,7 +141,7 @@ export function DatabasePage({
       entities={database.databaseEntities}
       locale={ui.locale}
       onActiveViewIdChange={database.setActiveDatabaseSavedViewId}
-      onCurrentDatabaseIdChange={database.setDatabaseEntityDatabaseId}
+      onCurrentDatabaseIdChange={changeCurrentDatabase}
       onMessage={onMessage}
       onOpenDocument={onOpenDocument}
       onRefresh={refreshWorkspace}
