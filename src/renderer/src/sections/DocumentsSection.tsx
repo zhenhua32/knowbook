@@ -19,6 +19,7 @@ import { BlockReadingRow } from '../components/BlockReadingRow'
 import { DocumentNavigationBar } from '../components/DocumentNavigationBar'
 import { useDocumentViewport } from '../hooks/useDocumentViewport'
 import { matchingOpeningTitleIndex } from '../utils/documentReadingTitle'
+import { openShortcutHelp } from '../openShortcutHelp'
 const MarkdownReadingList = lazy(() => import('../components/MarkdownReadingList').then((module) => ({ default: module.MarkdownReadingList })))
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
@@ -52,7 +53,6 @@ type DocumentsSectionProps = {
   onAuxPanelWidthChange: (value: number) => void
   addBlockLabel: string
   linkSuggestionPanelProps: ComponentProps<typeof LinkSuggestionPanel> | null
-  editorHelpText: string
   floatingSlashCommandPanelProps: ComponentProps<typeof FloatingSlashCommandPanel> | null
   documentsAuxPanelProps: Omit<ComponentProps<typeof DocumentsAuxPanel>, 'relationContent'> | null
   selectionAiContent?: ReactNode
@@ -119,7 +119,6 @@ export function DocumentsSection({
   onAuxPanelWidthChange,
   addBlockLabel,
   linkSuggestionPanelProps,
-  editorHelpText,
   floatingSlashCommandPanelProps,
   documentsAuxPanelProps,
   selectionAiContent,
@@ -296,10 +295,10 @@ export function DocumentsSection({
           <>
             {summaryCardProps && !outlinePanelProps?.focusedHeadingId ? isReadingMode
               ? openingTitleIndex === null ? <div className="document-reading-summary"><h1>{summaryCardProps.title.trim() || 'Untitled'}</h1>{readingSummary ? <p>{readingSummary}</p> : null}</div> : null
-              : <DocumentSummaryCard key={selectedDocument.id} {...summaryCardProps} /> : null}
+              : <DocumentSummaryCard key={selectedDocument.id} {...summaryCardProps}
+                compactTitleLabel={openingTitleIndex !== null ? (previewHeaderProps.isZh ? '文档名称' : 'Document name') : undefined} /> : null}
 
-              <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} ref={viewport.contentRef}>
-                {!isReadingMode ? <p className="panel-label">{blocksPanelLabel}</p> : null}
+              <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} role="region" aria-label={blocksPanelLabel} ref={viewport.contentRef}>
                <MarkdownReferencesContext.Provider value={blockEditorRowSharedProps?.markdownReferences}>
                <MarkdownDocumentProvider key={selectedDocument.id} documentId={selectedDocument.id}
                  model={blockEditorRowSharedProps?.markdownDocument} isZh={previewHeaderProps.isZh}
@@ -353,7 +352,13 @@ export function DocumentsSection({
                 {isReadingMode ? null : linkSuggestionPanelProps ? (
                   <LinkSuggestionPanel {...linkSuggestionPanelProps} />
                 ) : (
-                  <p className="mini-hint">{editorHelpText}</p>
+                  <div className="document-editor-help">
+                    <span>{previewHeaderProps.isZh ? '输入 / 插入内容 · [[ 链接文档' : 'Type / to insert · [[ to link a document'}</span>
+                    <button type="button" className="document-editor-help-button" aria-keyshortcuts="F1"
+                      onClick={() => { void openShortcutHelp() }}>
+                      {previewHeaderProps.isZh ? '快捷键帮助' : 'Keyboard shortcuts'} <kbd>F1</kbd>
+                    </button>
+                  </div>
                 )}
               </div>
               </MarkdownDocumentProvider>

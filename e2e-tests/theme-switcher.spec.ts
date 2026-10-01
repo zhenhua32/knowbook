@@ -20,6 +20,7 @@ async function openPage(page: Page, en: string, zh: string): Promise<void> {
   const button = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText(en, zh))).first()
   await button.click()
   await expect(button).toHaveClass(/active/)
+  if (en === 'Settings') await page.getByRole('tab', { name: uiText('Appearance', '外观') }).click()
 }
 
 async function waitForActivePlugin(page: Page): Promise<void> {
@@ -47,10 +48,10 @@ async function invokeMain(page: Page, method: string, input?: { themeId: string 
 
 async function readSurfaces(page: Page): Promise<Record<string, string>> {
   await expect(page.locator('.management-page-header')).toBeVisible()
-  await expect(page.locator('.settings-group').first()).toBeVisible()
+  await expect(page.locator('.settings-category-panel:not([hidden])')).toBeVisible()
   return page.evaluate(() => {
     const surfaces: Record<string, string> = {}
-    for (const selector of ['body', '.shell', '.content', '.sidebar', '.management-page-header', '.settings-group']) {
+    for (const selector of ['body', '.shell', '.content', '.sidebar', '.management-page-header', '.settings-category-panel:not([hidden])']) {
       const element = document.querySelector(selector)
       if (!element) throw new Error(`Missing host surface: ${selector}`)
       const style = getComputedStyle(element)

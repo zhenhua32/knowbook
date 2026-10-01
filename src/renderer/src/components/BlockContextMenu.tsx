@@ -1,5 +1,6 @@
 import type { DocumentBlock } from '@shared/contracts'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
+import { usePopupKeyboard } from '../hooks/usePopupKeyboard'
 
 type BlockContextMenuProps = {
   x: number
@@ -17,6 +18,7 @@ type BlockContextMenuProps = {
 export function BlockContextMenu(props: BlockContextMenuProps) {
   const { x, y, blockType, onTypeChange, onDuplicate, onDelete, onClose, typeOptions, ui, isZh } = props
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
+  usePopupKeyboard(menuRef, onClose)
 
   return (
     <>
@@ -30,6 +32,11 @@ export function BlockContextMenu(props: BlockContextMenuProps) {
       {/* 菜单面板 */}
       <div
         className="block-context-menu"
+        role="dialog"
+        aria-modal="true"
+        data-block-shortcuts
+        aria-label={isZh ? '内容块操作' : 'Block actions'}
+        tabIndex={-1}
         ref={menuRef}
         onContextMenu={(e) => e.preventDefault()}
         style={menuStyle}

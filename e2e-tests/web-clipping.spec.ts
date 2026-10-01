@@ -125,6 +125,7 @@ async function openSettingsPage(page: Page): Promise<void> {
   const navigationButton = page.locator('button.nav-icon-btn').and(page.getByTitle(uiText('Settings', '配置中心'))).first()
   await navigationButton.click()
   await expect(navigationButton).toHaveClass(/active/)
+  await page.getByRole('tab', { name: uiText('Web clipping', '网页剪藏') }).click()
 }
 
 async function openDocumentsPage(page: Page): Promise<void> {

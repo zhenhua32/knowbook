@@ -57,7 +57,7 @@ test('DocumentStatsBar SSR shows optional counters when non-zero', () => {
   assert.equal(html.includes('3</strong> todos'), true)
 })
 
-test('DocumentSummaryCard SSR renders compact metadata before editing', () => {
+test('DocumentSummaryCard SSR exposes the title while keeping properties collapsed', () => {
   const html = renderToStaticMarkup(
     <DocumentSummaryCard
       path="Home/Product"
@@ -74,12 +74,12 @@ test('DocumentSummaryCard SSR renders compact metadata before editing', () => {
   )
 
   assert.equal(html.includes('Home/Product'), true)
-  assert.equal(html.includes('Title'), false)
-  assert.equal(html.includes('Summary'), true)
-  assert.equal(html.includes('Updated now'), true)
+  assert.equal(html.includes('aria-label="Title"'), true)
+  assert.equal(html.includes('Updated now'), false)
   assert.equal(html.includes('Edit properties'), true)
-  assert.equal(html.includes('value="Product"'), false)
-  assert.equal(html.includes('Summary text'), true)
+  assert.equal(html.includes('value="Product"'), true)
+  assert.equal(html.includes('Summary text'), false)
+  assert.equal(html.includes('aria-expanded="false"'), true)
 })
 
 test('BlockEditToolbar SSR renders manual highlight controls when enabled', () => {

@@ -55,6 +55,7 @@ export function useWorkspaceDocumentManagement({
   onUpdateDocumentDatabaseValue
 }: UseWorkspaceDocumentManagementParams) {
   const [draggingDocumentId, setDraggingDocumentId] = useState<string | null>(null)
+  const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
   const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
 
@@ -91,6 +92,7 @@ export function useWorkspaceDocumentManagement({
 
   const endDrag = useCallback(() => {
     setDraggingDocumentId(null)
+    setDragOverDocumentId(null)
     setDragOverBoardColumnId(null)
     setDragOverRoot(false)
   }, [])
@@ -221,6 +223,7 @@ export function useWorkspaceDocumentManagement({
 
   const beginDrag = useCallback((documentId: string) => {
     setDraggingDocumentId(documentId)
+    setDragOverDocumentId(null)
   }, [])
 
   const dropOnDocument = useCallback(async (targetId: string) => {
@@ -297,6 +300,7 @@ export function useWorkspaceDocumentManagement({
   const handleRootDragOver = useCallback(() => {
     if (draggingDocumentId) {
       setDragOverRoot(true)
+      setDragOverDocumentId(null)
     }
   }, [draggingDocumentId])
 
@@ -305,10 +309,20 @@ export function useWorkspaceDocumentManagement({
   }, [])
 
   const handleTreeNodeDragOver = useCallback((documentId: string) => {
+    if (draggingDocumentId === documentId) {
+      setDragOverDocumentId(null)
+      setDragOverRoot(false)
+      return
+    }
     if (draggingDocumentId && draggingDocumentId !== documentId) {
+      setDragOverDocumentId(documentId)
       setDragOverRoot(false)
     }
   }, [draggingDocumentId])
+
+  const handleTreeNodeDragLeave = useCallback((documentId: string) => {
+    setDragOverDocumentId((previous) => previous === documentId ? null : previous)
+  }, [])
 
   const handleBoardColumnDragOver = useCallback((columnId: string) => {
     if (draggingDocumentId) {
@@ -319,6 +333,7 @@ export function useWorkspaceDocumentManagement({
 
   return {
     beginDrag,
+    dragOverDocumentId,
     copyDocumentMarkdown,
     deleteDocumentById,
     deleteSelectedDocument,
@@ -336,6 +351,7 @@ export function useWorkspaceDocumentManagement({
     handleRootDragLeave,
     handleRootDragOver,
     handleTreeNodeDragOver,
+    handleTreeNodeDragLeave,
     moveSelectedDocument
   }
 }

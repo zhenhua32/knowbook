@@ -27,6 +27,85 @@ test.describe('Document title layout @electron', () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
   })
 
+  test('the inline title autosaves committed IME text while metadata and help stay optional', async ({}, testInfo) => {
+    await withElectronApp(async ({ app, page }) => {
+      const title = '直接编辑文档标题'
+      const summary = '摘要默认收起，内容仍完整保留。'
+      const id = await openDocument(page, title, summary, [
+        { id: 'inline-title-body', type: 'paragraph', content: '开始写作，正文保持靠近标题。', checked: false, depth: 0 }
+      ])
+      const titleInput = page.locator('.document-title-input')
+      const properties = page.locator('.document-summary-edit-button')
+      const auxiliary = page.locator('.document-header-aux-button')
+      if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+      await expect(titleInput).toHaveValue(title)
+      await expect(properties).toHaveAttribute('aria-expanded', 'false')
+      await expect(page.locator('.document-summary-card .editor-textarea')).toHaveCount(0)
+      await expect(page.locator('.document-updated')).toHaveCount(0)
+      await expect(page.locator('.document-summary-card')).not.toContainText(summary)
+
+      await titleInput.focus()
+      await titleInput.press('End')
+      const cdp = await page.context().newCDPSession(page)
+      try {
+        await cdp.send('Input.imeSetComposition', { text: 'zhongwen', selectionStart: 8, selectionEnd: 8 })
+        await expect(titleInput).toHaveValue(`${title}zhongwen`)
+        await page.waitForTimeout(1000)
+        expect((await page.evaluate(id => window.knowbook.getDocumentDetail(id), id))?.title).toBe(title)
+        await cdp.send('Input.insertText', { text: '中文' })
+        await expect(titleInput).toHaveValue(`${title}中文`)
+        await expect(page.locator('.document-save-status')).toHaveClass(/status-saved/)
+        await expect.poll(async () => {
+          const detail = await page.evaluate(id => window.knowbook.getDocumentDetail(id), id)
+          return { title: detail?.title, summary: detail?.summary }
+        }).toEqual({ title: `${title}中文`, summary })
+      } finally {
+        await cdp.detach()
+      }
+
+      await properties.click()
+      const summaryInput = page.locator('.document-summary-card .editor-textarea')
+      await expect(summaryInput).toBeFocused()
+      await expect(summaryInput).toHaveValue(summary)
+      await expect(page.locator('.document-updated')).toBeVisible()
+      await summaryInput.press('Escape')
+      await expect(properties).toBeFocused()
+      await expect(titleInput).toBeVisible()
+
+      const helpButton = page.locator('.document-editor-help-button')
+      await helpButton.click()
+      await expect(page.locator('.shortcut-help-dialog')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(helpButton).toBeFocused()
+      await helpButton.evaluate((button: HTMLButtonElement) => button.blur())
+
+      for (const layout of ['normal', 'dark', 'narrow']) {
+        await app.evaluate(({ BrowserWindow }, narrow) => BrowserWindow.getAllWindows()[0].setSize(narrow ? 1000 : 1600, narrow ? 820 : 1000), layout === 'narrow')
+        const theme = layout === 'dark' ? 'dark' : 'light'
+        if (await page.locator('html').getAttribute('data-theme') !== theme) {
+          await page.evaluate(theme => window.knowbook.saveSetting('appearance.theme', theme), theme)
+          await page.reload()
+          await page.locator('.tree-button').filter({ has: page.locator('.tree-document-title', { hasText: `${title}中文` }) }).first().click()
+          await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+          if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+        }
+        await expect(titleInput).toBeInViewport()
+        await expect(page.locator('[data-block-id="inline-title-body"]')).toBeInViewport()
+        const dimensions = await titleInput.evaluate(input => {
+          const body = document.querySelector('[data-block-id="inline-title-body"]')!.getBoundingClientRect()
+          const navigation = document.querySelector('.document-navigation')!.getBoundingClientRect()
+          const panel = document.querySelector('.preview-panel')!
+          return { fontSize: parseFloat(getComputedStyle(input).fontSize), gap: body.top - navigation.bottom, overflow: panel.scrollWidth - panel.clientWidth }
+        })
+        expect(dimensions.fontSize).toBeGreaterThanOrEqual(24)
+        expect(dimensions.gap).toBeGreaterThanOrEqual(0)
+        expect(dimensions.gap).toBeLessThan(170)
+        expect(dimensions.overflow).toBeLessThanOrEqual(1)
+        await page.screenshot({ path: testInfo.outputPath(`inline-title-${layout}.png`), animations: 'disabled' })
+      }
+    })
+  })
+
   test('an imported article starts with one main title and no placeholder summary at normal, wide and narrow widths', async ({}, testInfo) => {
     await withElectronApp(async ({ app, page }) => {
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000))
@@ -36,8 +115,13 @@ test.describe('Document title layout @electron', () => {
         { id: 'article-source', type: 'paragraph', content: '来源：中国新闻网；正文内容从这里开始。', checked: false, depth: 0 }
       ]
       const id = await openDocument(page, title, defaultSummary, blocks)
+      const documentName = page.getByRole('textbox', { name: uiText('Document name', '文档名称') })
+      await expect(documentName).toHaveValue(title)
+      expect(await documentName.evaluate(input => parseFloat(getComputedStyle(input).fontSize))).toBe(16)
+      expect(await page.locator('[data-block-id="article-title"] textarea').evaluate(input => parseFloat(getComputedStyle(input).fontSize))).toBeGreaterThanOrEqual(25)
       const auxiliary = page.locator('.document-header-aux-button')
       if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+      await page.screenshot({ path: testInfo.outputPath('article-editing-title.png'), animations: 'disabled' })
       await readDocument(page)
 
       for (const layout of ['normal', 'wide', 'narrow']) {
@@ -113,8 +197,12 @@ test.describe('Document title layout @electron', () => {
       const editedSummary = '更新后的真实摘要'
       const editedBody = '更新后的正文仍保持原块标识'
       await titleInput.fill(editedTitle)
+      await expect(titleInput).toBeFocused()
+      await expect(page.locator('.document-title-field-compact')).toHaveCount(0)
+      expect(await titleInput.evaluate(input => parseFloat(getComputedStyle(input).fontSize))).toBeGreaterThanOrEqual(24)
       await summaryInput.fill(editedSummary)
       await page.locator('[data-block-id="summary-title"] textarea').fill(editedTitle)
+      await expect(page.locator('.document-title-field-compact')).toBeVisible()
       await page.locator('[data-block-id="summary-body"] textarea').fill(editedBody)
       await page.locator('.document-header-save-button').click()
       await expect(page.locator('.document-save-status')).toHaveClass(/status-saved/)
@@ -144,6 +232,8 @@ test.describe('Document title layout @electron', () => {
           { id: openingId, type: sample.type, content: sample.content, checked: false, depth: 0 },
           { id: bodyId, type: 'paragraph', content: '后续正文', checked: false, depth: 0 }
         ])
+        await expect(page.locator('.document-title-field-compact')).toHaveCount(0)
+        expect(await page.locator('.document-title-input').evaluate(input => parseFloat(getComputedStyle(input).fontSize))).toBeGreaterThanOrEqual(24)
         await readDocument(page)
         await expect(page.locator('.document-reading-summary h1')).toHaveText(sample.title)
         await expect(page.locator('.document-reading-summary p')).toHaveCount(0)
@@ -170,6 +260,7 @@ test.describe('Document title layout @electron', () => {
           { id: headingId, type: sample.type, content: sample.content, checked: false, depth: 0 },
           { id: `formatted-body-${index}`, type: 'paragraph', content: '格式化标题下的正文保持完整。', checked: false, depth: 0 }
         ])
+        await expect(page.locator('.document-title-field-compact')).toHaveCount(sample.type === 'heading-1' ? 1 : 0)
         await readDocument(page)
         const heading = page.locator(`.document-reading-row[data-block-id="${headingId}"]`)
         await expect(heading.locator(sample.type === 'heading-1' ? 'h1' : 'h2')).toHaveText(sample.title)

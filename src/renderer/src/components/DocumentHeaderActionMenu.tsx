@@ -2,6 +2,7 @@ import type { UiText } from '../i18n'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
+import { usePopupKeyboard } from '../hooks/usePopupKeyboard'
 import { openSaveDocumentTemplate } from '../documentCapture'
 
 type MoveOption = {
@@ -74,6 +75,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
   }
 
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
+  usePopupKeyboard(menuRef, onClose)
 
   return createPortal((
     <>
@@ -85,6 +87,11 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
 
       <div
         className="block-context-menu document-header-action-menu"
+        role="dialog"
+        aria-modal="true"
+        data-block-shortcuts
+        aria-label={isZh ? '文档操作' : 'Document actions'}
+        tabIndex={-1}
         ref={menuRef}
         onContextMenu={(event) => event.preventDefault()}
         style={menuStyle}
@@ -146,6 +153,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
           <p className="context-menu-label">{ui.common.move}</p>
           <div className="document-header-menu-move">
             <select
+              aria-label={ui.common.move}
               className="editor-select compact-select document-header-menu-select"
               onChange={(event) => onMoveTargetChange(event.target.value)}
               value={moveTargetId}

@@ -57,10 +57,9 @@ export function AISection({
         <article className="panel large-panel">
           <div className="panel-head">
             <div>
-              <p className="panel-label">{isZh ? '插件优先' : 'Plugin first'}</p>
-              <h3>{isZh ? '对话工作台' : 'Conversation workspace'}</h3>
+              <p className="panel-label">{isZh ? '扩展与自动化' : 'Extensions & automation'}</p>
+              <h3>{isZh ? '应用助手' : 'App assistant'}</h3>
             </div>
-            <span className="pill">QuickJS / WASM</span>
           </div>
           <AssistantConversation
             activeDocumentId={selectedDocument?.id ?? null}

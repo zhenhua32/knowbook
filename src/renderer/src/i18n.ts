@@ -208,23 +208,25 @@ function createUiText(language: UiLanguage) {
     appUpdateCheckStarted: zh ? '已开始检查更新。' : 'Started checking for updates.',
     appUpdateCheckFailed: zh ? '检查更新失败。' : 'Failed to check for updates.',
     appUpdateInstallFailed: zh ? '安装更新失败。' : 'Failed to install the downloaded update.',
-    automationFeedLabel: zh ? '自动化事件流' : 'Automation feed',
-    recentEventsTitle: zh ? '最近事件' : 'Recent events',
-    noAutomationEvents: zh ? '还没有自动化事件。' : 'No automation events yet.',
+    automationFeedLabel: zh ? '工作区动态' : 'Workspace activity',
+    recentEventsTitle: zh ? '最近活动' : 'Recent activity',
+    noAutomationEvents: zh ? '创建或编辑文档后，活动会显示在这里。' : 'Create or edit a document to see activity here.',
     pluginsTitle: zh ? '工作区扩展' : 'Workspace extensions',
     noDynamicPlugins: zh ? '暂未安装动态插件。' : 'No dynamic plugins installed yet.',
     workspaceStatusEyebrow: zh ? '工作区状态' : 'Workspace status',
-    workspaceStatusTitle: zh ? '工作区导航已打通' : 'Workspace navigation is alive',
+    workspaceStatusTitle: zh ? '你的知识工作区' : 'Your knowledge workspace',
     workspaceStatusBody: zh
-      ? 'SQLite 仍是单一事实源，Markdown 备份会导出为树形目录，renderer 现在已经可以经由 preload bridge 浏览文档层级并检查文档关系。'
-      : 'SQLite remains the source of truth, markdown backups export into a nested tree, and the renderer can now browse document hierarchy and inspect document relationships over the preload bridge.',
+      ? '回顾最近记录、查看知识库状态，并为重要内容保留一份备份。你的文档保存在本机，随时可以导出为 Markdown。'
+      : 'Revisit recent notes, check your workspace, and back up what matters. Your documents stay on this device and can be exported as Markdown.',
     runBackupNow: zh ? '立即执行备份' : 'Run backup now',
     restoreBackup: zh ? '导入 Markdown / 恢复备份' : 'Import Markdown / restore backup',
     documentsLabel: zh ? '文档数' : 'Documents',
     blocksLabel: zh ? '块数' : 'Blocks',
     linksLabel: zh ? '链接数' : 'Links',
     aiLabel: 'AI',
-    aiReadyState: (enabled: boolean) => enabled ? (zh ? 'API 已就绪' : 'API ready') : (zh ? '已禁用' : 'Disabled'),
+    aiReadyState: (enabled: boolean, hasApiKey: boolean) => !enabled
+      ? (zh ? '未启用' : 'Disabled')
+      : hasApiKey ? (zh ? '已配置' : 'Configured') : (zh ? '待配置密钥' : 'API key needed'),
     pluginCardLabel: zh ? '插件卡片' : 'Plugin card',
     treeView: zh ? '树视图' : 'Tree view',
     databaseViewLabel: zh ? '数据库视图' : 'Database view',

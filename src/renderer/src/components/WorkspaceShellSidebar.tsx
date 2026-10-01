@@ -5,6 +5,7 @@ import type { DocumentsSidebarState, WorkspaceSidebarActions } from '../types/ap
 import type { AppShellState } from '../types/appShell'
 import { PageNavWithWorkspaceTree } from './PageNavWithWorkspaceTree'
 import { PluginSlot } from './PluginSlot'
+import './sidebar-navigation.css'
 const AppNotificationHost = lazy(async () => ({ default: (await import('./AppNotificationHost')).AppNotificationHost }))
 const SidebarFooterControls = lazy(() => import('./SidebarFooterControls'))
 
@@ -50,6 +51,8 @@ export function WorkspaceShellSidebar({
       newRootLabel={shell.ui.newRoot}
       dropToRootLabel={shell.ui.dropToRoot}
       dragOverRoot={workspace.dragOverRoot}
+      draggingDocumentId={workspace.draggingDocumentId}
+      dragOverDocumentId={workspace.dragOverDocumentId}
       onRootDragOver={workspace.handleRootDragOver}
       onRootDragLeave={workspace.handleRootDragLeave}
       onDropToRoot={() => {
@@ -87,6 +90,7 @@ export function WorkspaceShellSidebar({
       onDragStart={workspace.beginDrag}
       onDragEnd={workspace.endDrag}
       onDragOverNode={workspace.handleTreeNodeDragOver}
+      onDragLeaveNode={workspace.handleTreeNodeDragLeave}
       onDropOnNode={workspace.dropOnDocument}
       uiLanguage={shell.uiLanguage}
       isNavCollapsed={shell.isNavCollapsed}

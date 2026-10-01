@@ -92,6 +92,8 @@ test('undo and redo preserve input history outside the body while retaining bloc
     title.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true }))
     const dialog = dom.window.document.createElement('dialog')
     dialog.setAttribute('data-block-shortcuts', '')
+    // jsdom has no layout; model a visible blocking dialog.
+    Object.defineProperty(dialog, 'getClientRects', { value: () => [new dom.window.DOMRect(0, 0, 200, 100)] })
     dom.window.document.body.append(dialog)
     assert.equal(press('body', 's').defaultPrevented, false)
     dialog.remove()
@@ -107,6 +109,70 @@ test('undo and redo preserve input history outside the body while retaining bloc
     documents.selectedDocumentId = 'still-loading'
     assert.equal(press('body', 's').defaultPrevented, true)
     assert.equal(calls.length, 13, 'composition, blocking dialogs, search, other pages, and unloaded documents cannot save')
+  } finally {
+    await act(async () => root.unmount())
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+    dom.window.close()
+  }
+})
+
+test('retained hidden settings panels do not block global shortcuts, while visible editors still do', async () => {
+  const dom = new JSDOM('<div id="mount"></div><button id="navigation">Navigation</button><section id="sync-panel"><div id="merge-editor" data-block-shortcuts><textarea>Retained merge draft</textarea></div></section>')
+  const originals = new Map<string, PropertyDescriptor | undefined>()
+  for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
+    navigator: dom.window.navigator, Element: dom.window.Element, HTMLElement: dom.window.HTMLElement,
+    AbortController: dom.window.AbortController, IS_REACT_ACT_ENVIRONMENT: true })) {
+    originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(dom.window.document.getElementById('mount')!)
+  const calls: string[] = []
+  const noop = () => {}
+  const documents: DocumentsKeyboardState = {
+    isEditing: false, isReadingMode: false, isGlobalSearchOpen: false, isBlockSearchOpen: false,
+    detailLoading: false, documentLoadError: null, selectedDocumentId: null, selectedDocument: null,
+    saveDocument: async () => {}, globalSearchQuery: '', selectedBlockRange: null, navBack: noop, navForward: noop,
+    openGlobalSearch: () => { calls.push('search') }, closeGlobalSearch: noop, openBlockSearch: noop, closeBlockSearch: noop,
+    undoEdit: noop, redoEdit: noop
+  }
+  const shell: ShellPageState = { activePage: 'settings', setActivePage: (page) => {
+    calls.push(typeof page === 'function' ? page(shell.activePage) : page)
+  }, openWorkspaceSearch: noop }
+  function Harness() {
+    useAppKeyboardShortcuts({ documents, shell, onClearBlockRangeSelection: noop })
+    return null
+  }
+  const panel = dom.window.document.getElementById('sync-panel')!
+  const editor = dom.window.document.getElementById('merge-editor')!
+  let hasLayout = true
+  // Model layout independently of hidden/inert so each visibility guard is exercised.
+  Object.defineProperty(editor, 'getClientRects', { value: () => hasLayout ? [new dom.window.DOMRect(0, 0, 200, 100)] : [] })
+  const pressShortcuts = () => {
+    calls.length = 0
+    for (const key of ['k', '2']) dom.window.document.getElementById('navigation')!.dispatchEvent(new dom.window.KeyboardEvent('keydown', {
+      key, ctrlKey: true, bubbles: true, cancelable: true
+    }))
+    return [...calls]
+  }
+  try {
+    await act(async () => root.render(createElement(Harness)))
+    assert.deepEqual(pressShortcuts(), [], 'a visible conflict editor blocks search and page navigation')
+    panel.hidden = true
+    assert.deepEqual(pressShortcuts(), ['search', 'dashboard'], 'switching away from Sync restores global shortcuts')
+    assert.equal(editor.querySelector('textarea')!.value, 'Retained merge draft', 'the hidden merge draft stays mounted')
+    panel.hidden = false
+    assert.deepEqual(pressShortcuts(), [], 'returning to the editor restores its shortcut protection')
+    panel.setAttribute('inert', '')
+    assert.deepEqual(pressShortcuts(), ['search', 'dashboard'], 'an inactive surface does not block workspace navigation')
+    panel.removeAttribute('inert')
+    hasLayout = false
+    assert.deepEqual(pressShortcuts(), ['search', 'dashboard'], 'CSS-hidden and closed-details editors without layout do not block shortcuts')
+    hasLayout = true
+    assert.deepEqual(pressShortcuts(), [], 'revealing the same retained editor blocks shortcuts again')
   } finally {
     await act(async () => root.unmount())
     for (const [key, descriptor] of originals) {

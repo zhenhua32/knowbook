@@ -33,6 +33,7 @@ function publishRemote(server: Awaited<ReturnType<typeof createWebDavServer>>, i
 
 async function settings(page: Page) {
   await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
+  await page.getByRole('tab', { name: uiText('Sync', '同步') }).click()
   const section = page.getByRole('region', { name: uiText('WebDAV sync', 'WebDAV 同步') })
   await expect(section).toBeVisible()
   return section

@@ -12,6 +12,7 @@ type DocumentTreeProps = {
   onDragStart: (documentId: string) => void
   onDragEnd: () => void
   onDragOverNode: (documentId: string) => void
+  onDragLeaveNode?: (documentId: string) => void
   onDropOnNode: (documentId: string) => Promise<void>
 }
 
@@ -51,6 +52,7 @@ export const DocumentTree = memo(function DocumentTree({
   onDragStart,
   onDragEnd,
   onDragOverNode,
+  onDragLeaveNode,
   onDropOnNode
 }: DocumentTreeProps) {
   const ui = getActiveUiText()
@@ -180,7 +182,7 @@ export const DocumentTree = memo(function DocumentTree({
                 </button>
               ) : <span aria-hidden="true" className="tree-expand-placeholder" />}
               <button
-                className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}${dragOverDocumentId === node.id ? ' tree-button-drag-over' : ''}`}
+                className={`tree-button${selectedDocumentId === node.id ? ' tree-button-active' : ''}${dragOverDocumentId === node.id ? ' tree-button-drag-over' : ''}${draggingDocumentId === node.id ? ' tree-button-dragging' : ''}`}
                 onClick={() => onSelect(node.id)}
                 type="button"
                 draggable
@@ -196,8 +198,11 @@ export const DocumentTree = memo(function DocumentTree({
                 onDragEnd={onDragEnd}
                 onDragOver={(event) => {
                   event.preventDefault()
-                  if (draggingDocumentId !== node.id) {
-                    onDragOverNode(node.id)
+                  onDragOverNode(node.id)
+                }}
+                onDragLeave={(event) => {
+                  if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+                    onDragLeaveNode?.(node.id)
                   }
                 }}
                 onDrop={async (event) => {

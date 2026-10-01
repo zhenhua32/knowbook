@@ -79,7 +79,7 @@ test('table format undo restores the cell selection and keeps subsequent typing 
   })
 })
 
-test('properties open at the title, follow the draft heading, and reset for another document @electron', async () => {
+test('the title stays editable while properties open at the summary and reset for another document @electron', async () => {
   await withElectronApp(async ({ page }) => {
     await createSample(page, '属性一致性一')
     await createSample(page, '属性一致性二')
@@ -87,7 +87,7 @@ test('properties open at the title, follow the draft heading, and reset for anot
     await openSample(page, '属性一致性一')
     await ensureDocumentMetadataEditor(page)
     const title = page.locator('.document-summary-card .editor-input')
-    await expect(title).toBeFocused()
+    await expect(page.locator('.document-summary-card .editor-textarea')).toBeFocused()
     await title.fill('当前草稿标题')
     await expect(page.locator('.document-header-title')).toHaveText('当前草稿标题')
     await title.press('Escape')

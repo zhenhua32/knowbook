@@ -1,0 +1,58 @@
+import { expect, test } from '@playwright/test'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+
+test('document action popovers support Escape, keyboard navigation and focus restoration @electron', async () => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+  await withElectronApp(async ({ page }) => {
+    const trigger = page.locator('.document-header-more-button')
+    await trigger.click()
+    const actions = page.getByRole('dialog', { name: uiText('Document actions', '文档操作') })
+    const first = actions.locator('.context-menu-item').first()
+    const second = actions.locator('.context-menu-item').nth(1)
+    const last = actions.locator('.context-menu-item-danger').last()
+    await expect(first).toBeFocused()
+    await page.keyboard.press('Control+k')
+    await expect(page.locator('.global-search-modal')).toHaveCount(0)
+    await expect(actions).toBeVisible()
+    await page.keyboard.press('ArrowDown')
+    await expect(second).toBeFocused()
+    await page.keyboard.press('End')
+    await expect(last).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(first).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(last).toBeFocused()
+
+    const move = actions.locator('select')
+    await move.focus()
+    await page.keyboard.press('ArrowDown')
+    await expect(move).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(actions).toHaveCount(0)
+    await expect(trigger).toBeFocused()
+
+    const title = await page.locator('.document-header-title').innerText()
+    const otherDocument = page.locator('.tree-button').filter({ has: page.locator('.tree-document-title', { hasText: /^Product$/ }) }).first()
+    await otherDocument.click({ button: 'right' })
+    const context = page.locator('.document-tree-context-menu')
+    await expect(context).toBeVisible()
+    await expect(context.locator('.context-menu-item').first()).toBeFocused()
+    await expect(page.locator('.document-header-title')).toHaveText(title)
+    await page.keyboard.press('Escape')
+    await expect(context).toHaveCount(0)
+    await expect(otherDocument).toBeFocused()
+  })
+})
+
+test('workspace status reflects a missing AI key and uses product guidance @electron', async () => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+  await withElectronApp(async ({ page }) => {
+    await expect(page.locator('.preview-panel')).not.toContainText('bootstrap')
+    await expect(page.locator('.preview-panel')).not.toContainText('Electron, React')
+    await page.getByTitle(uiText('Dashboard', '总览')).click()
+    await expect(page.locator('.stats-grid').getByText(uiText('API key needed', '待配置密钥'))).toBeVisible()
+    await expect(page.locator('.hero')).not.toContainText('preload bridge')
+    await page.getByTitle(uiText('AI Assistant', 'AI 助手')).click()
+    await expect(page.locator('.assistant-workbench').getByText(uiText('Enable AI and save an API key in Settings first.', '请先在设置中启用 AI 并保存 API Key。'))).toBeVisible()
+  })
+})

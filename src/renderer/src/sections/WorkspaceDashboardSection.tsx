@@ -4,6 +4,7 @@ import './management-sections.css'
 
 type WorkspaceDashboardSectionProps = {
   isAiEnabled: boolean
+  hasAiApiKey: boolean
   onBackupNow: () => void
   onOpenDocument: (documentId: string) => void
   onRestoreBackup: () => void
@@ -15,6 +16,7 @@ type WorkspaceDashboardSectionProps = {
 
 export function WorkspaceDashboardSection({
   isAiEnabled,
+  hasAiApiKey,
   onBackupNow,
   onOpenDocument,
   onRestoreBackup,
@@ -56,7 +58,7 @@ export function WorkspaceDashboardSection({
         </article>
         <article className="stat-card">
           <span className="stat-label">{ui.aiLabel}</span>
-          <strong>{ui.aiReadyState(isAiEnabled)}</strong>
+          <strong>{ui.aiReadyState(isAiEnabled, hasAiApiKey)}</strong>
         </article>
       </section>
 

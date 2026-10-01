@@ -340,7 +340,6 @@ export function DocumentsPage({
         blocksPanelLabel={ui.blocksPanelLabel}
         documentStatsBarProps={statsBarProps}
         documentsAuxPanelProps={auxPanelProps}
-        editorHelpText={ui.editorHelpText}
         emptyDocumentStateText={ui.emptyDocumentState}
         floatingSlashCommandPanelProps={floatingSlashCommandPanelProps}
         isWideMode={documents.documentsWideMode}

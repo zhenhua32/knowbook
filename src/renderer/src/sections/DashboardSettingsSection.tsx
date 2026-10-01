@@ -1,8 +1,10 @@
 import type { AppUpdateState, RecentDocument, WebClipBridgeStatus, WorkspaceSummary } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
 import './management-sections.css'
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
+
+type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
 
 type DashboardSettingsSectionProps = {
   ui: UiText
@@ -47,6 +49,8 @@ type DashboardSettingsSectionProps = {
   onRegenerateWebClipBridgeToken: () => void
   onCopyWebClipBridgeEndpoint: () => void
   onCopyWebClipBridgeToken: () => void
+  appearanceContent?: ReactNode
+  recoveryContent?: ReactNode
 }
 
 function getAppUpdateStatusText(state: AppUpdateState | null, ui: UiText): string {
@@ -118,29 +122,81 @@ export function DashboardSettingsSection({
   onSaveWebClipBridgeSettings,
   onRegenerateWebClipBridgeToken,
   onCopyWebClipBridgeEndpoint,
-  onCopyWebClipBridgeToken
+  onCopyWebClipBridgeToken,
+  appearanceContent,
+  recoveryContent
 }: DashboardSettingsSectionProps) {
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
+  const [syncMounted, setSyncMounted] = useState(false)
+  const tabsId = useId()
+  const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
+  const categories: { id: SettingsCategory; label: string }[] = [
+    { id: 'general', label: isZh ? '通用' : 'General' },
+    { id: 'ai', label: 'AI' },
+    { id: 'sync', label: isZh ? '同步' : 'Sync' },
+    { id: 'storage', label: isZh ? '存储与恢复' : 'Storage & recovery' },
+    { id: 'clipping', label: isZh ? '网页剪藏' : 'Web clipping' },
+    { id: 'updates', label: isZh ? '更新' : 'Updates' },
+    { id: 'appearance', label: isZh ? '外观' : 'Appearance' }
+  ]
+  const selectCategory = (category: SettingsCategory) => {
+    if (category === 'sync') setSyncMounted(true)
+    setActiveCategory(category)
+  }
+  const navigateCategory = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % categories.length
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') nextIndex = (index - 1 + categories.length) % categories.length
+    else if (event.key === 'Home') nextIndex = 0
+    else if (event.key === 'End') nextIndex = categories.length - 1
+    else return
+    event.preventDefault()
+    const category = categories[nextIndex].id
+    selectCategory(category)
+    tabRefs.current[category]?.focus()
+  }
+  const panelProps = (category: SettingsCategory) => ({
+    id: `${tabsId}-panel-${category}`,
+    'aria-labelledby': `${tabsId}-tab-${category}`,
+    role: 'tabpanel' as const,
+    hidden: activeCategory !== category
+  })
   return (
     <>
       {isSettingsPage ? (
         <header className="management-page-header settings-page-header">
           <div className="management-page-heading">
-            <p className="management-page-kicker">{isZh ? '系统与偏好' : 'System & preferences'}</p>
             <h2>{isZh ? '配置中心' : 'Settings'}</h2>
             <p className="management-page-description">
-              {isZh ? '集中管理存储、AI、网页剪藏、应用更新与备份。' : 'Manage storage, AI, web clipping, updates, and backups in one place.'}
+              {isZh ? '按类别调整偏好、连接与工作区设置。' : 'Manage preferences, connections, and your workspace by category.'}
             </p>
-          </div>
-          <div className="settings-actions">
-            <button className="secondary-button" onClick={onRestoreBackup} type="button">{ui.restoreBackup}</button>
-            <button className="primary-button" onClick={onBackupNow} type="button">{ui.runBackupNow}</button>
           </div>
         </header>
       ) : null}
 
       <section className={`detail-grid${isSettingsPage ? ' settings-layout' : ''}`}>
-        <article className="panel large-panel">
-          <div className="panel-head">
+        {isSettingsPage ? (
+          <nav className="settings-category-nav" aria-label={isZh ? '设置分类' : 'Settings categories'}>
+            <div role="tablist" aria-label={isZh ? '设置分类' : 'Settings categories'} aria-orientation="vertical">
+              {categories.map((category, index) => (
+                <button
+                  aria-controls={`${tabsId}-panel-${category.id}`}
+                  aria-selected={activeCategory === category.id}
+                  id={`${tabsId}-tab-${category.id}`}
+                  key={category.id}
+                  onClick={() => selectCategory(category.id)}
+                  onKeyDown={(event) => navigateCategory(event, index)}
+                  ref={(element) => { if (element) tabRefs.current[category.id] = element }}
+                  role="tab"
+                  tabIndex={activeCategory === category.id ? 0 : -1}
+                  type="button"
+                >{category.label}</button>
+              ))}
+            </div>
+          </nav>
+        ) : null}
+        <article className={isSettingsPage ? 'settings-category-content' : 'panel large-panel'}>
+          {!isSettingsPage ? <><div className="panel-head">
             <div>
               <p className="panel-label">{ui.storageLabel}</p>
               <h3>{ui.storageTitle}</h3>
@@ -164,28 +220,30 @@ export function DashboardSettingsSection({
               <dt>{ui.aiEndpoint}</dt>
               <dd>{aiEndpoint}</dd>
             </div>
-          </dl>
+          </dl></> : null}
 
           {isSettingsPage ? (
-            <div className="settings-groups">
-              <Suspense fallback={null}><WebDavSyncSettings isZh={isZh} /></Suspense>
-              <section className="settings-group">
+            <>
+              <section className="panel settings-category-panel" {...panelProps('sync')}>
+                {syncMounted ? <Suspense fallback={<p role="status">{ui.common.loading}</p>}><WebDavSyncSettings isZh={isZh} /></Suspense> : null}
+              </section>
+              <section className="panel settings-category-panel settings-group" {...panelProps('general')}>
                 <div className="settings-group-heading">
-                  <h4>{isZh ? '基础偏好' : 'General preferences'}</h4>
+                  <h3>{isZh ? '基础偏好' : 'General preferences'}</h3>
                   <p>{isZh ? '设置界面语言和基础交互偏好。' : 'Set the interface language and general preferences.'}</p>
                 </div>
                 <label className="editor-label">
                   {ui.languageSwitchLabel}
-                  <select className="editor-input" onChange={(event) => onUiLanguageChange(event.target.value as UiLanguage)} value={uiLanguage}>
+                  <select aria-label={ui.languageSwitchLabel} className="editor-input" onChange={(event) => onUiLanguageChange(event.target.value as UiLanguage)} value={uiLanguage}>
                     <option value="zh-CN">{ui.languageOptionZh}</option>
                     <option value="en-US">{ui.languageOptionEn}</option>
                   </select>
                 </label>
               </section>
 
-              <section className="settings-group">
+              <section className="panel settings-category-panel settings-group" {...panelProps('ai')}>
                 <div className="settings-group-heading">
-                  <h4>{isZh ? 'AI 能力' : 'AI capabilities'}</h4>
+                  <h3>{isZh ? 'AI 能力' : 'AI capabilities'}</h3>
                   <p>{isZh ? '配置模型连接、自动摘要和相关笔记检索。' : 'Configure model access, automatic summaries, and related-note search.'}</p>
                 </div>
                 <div className="settings-toggle-list">
@@ -227,7 +285,7 @@ export function DashboardSettingsSection({
                 </div>
               </section>
 
-              <section className="settings-card">
+              <section className="panel settings-category-panel" {...panelProps('clipping')}>
                 <div>
                   <p className="panel-label">{ui.webClipBridgeLabel}</p>
                   <h3 className="settings-card-title">{ui.webClipBridgeTitle}</h3>
@@ -270,7 +328,7 @@ export function DashboardSettingsSection({
                 </div>
               </section>
 
-              <section className="settings-card">
+              <section className="panel settings-category-panel" {...panelProps('updates')}>
                 <div>
                   <p className="panel-label">{ui.appUpdateLabel}</p>
                   <h3 className="settings-card-title">{ui.appUpdateTitle}</h3>
@@ -310,7 +368,33 @@ export function DashboardSettingsSection({
                   <button className="primary-button" disabled={!appUpdateState?.canInstall} onClick={onInstallAppUpdate} type="button">{ui.installUpdateNow}</button>
                 </div>
               </section>
-            </div>
+              <section className="panel settings-category-panel settings-group" {...panelProps('storage')}>
+                <div className="settings-group-heading">
+                  <h3>{isZh ? '存储与恢复' : 'Storage & recovery'}</h3>
+                  <p>{isZh ? '管理本地存储与备份，找回需要的内容。' : 'Manage local storage and backups, and recover your content.'}</p>
+                </div>
+                <dl className="meta-grid">
+                  <div><dt>{ui.databasePath}</dt><dd>{summary.databasePath || ui.initializing}</dd></div>
+                  <div><dt>{ui.backupRoot}</dt><dd>{summary.backupRoot || ui.initializing}</dd></div>
+                  <div><dt>{ui.lastBackup}</dt><dd>{summary.lastBackupAt ? new Date(summary.lastBackupAt).toLocaleString(ui.locale) : ui.notYetExported}</dd></div>
+                </dl>
+                <div className="settings-actions">
+                  <button className="primary-button" onClick={onBackupNow} type="button">{ui.runBackupNow}</button>
+                  <button className="secondary-button" onClick={onRestoreBackup} type="button">{ui.restoreBackup}</button>
+                </div>
+                {recoveryContent}
+              </section>
+              <section className="panel settings-category-panel settings-group" {...panelProps('appearance')}>
+                <div className="settings-group-heading">
+                  <h3>{isZh ? '外观' : 'Appearance'}</h3>
+                  <p>{isZh ? '调整主题与界面外观。更多选项可从插件中心添加。' : 'Customize your theme and appearance. Add more options from the plugin center.'}</p>
+                </div>
+                {appearanceContent}
+                <div className="settings-actions">
+                  <button className="secondary-button" onClick={onOpenPlugins} type="button">{isZh ? '打开插件中心' : 'Open plugin center'}</button>
+                </div>
+              </section>
+            </>
           ) : null}
         </article>
 

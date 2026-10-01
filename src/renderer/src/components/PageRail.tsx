@@ -38,9 +38,12 @@ export function PageRail(props: PageRailProps) {
   } = props
 
   const toggleTitle = isCollapsed ? expandTitle : collapseTitle
+  const primaryIds = ['documents', 'search', 'database']
+  const primaryItems = primaryIds.flatMap((id) => pageItems.filter((item) => item.id === id))
+  const secondaryItems = pageItems.filter((item) => !primaryIds.includes(item.id))
 
   return (
-    <div className="rail-horizontal">
+    <div className="rail-horizontal sidebar-workspace-rail">
       <div className="brand-mini" title={brandEyebrow}>
         <span className="brand-mark-mini">KB</span>
         <span className="brand-mini-copy">
@@ -60,22 +63,38 @@ export function PageRail(props: PageRailProps) {
           </button>
         ) : null}
       </div>
-      <nav aria-label={navLabel} className="page-nav-horizontal">
-        {pageItems.map((item) => (
-          <button
-            className={`nav-icon-btn ${activePage === item.id ? 'active' : ''}`}
-            key={item.id}
-            onClick={() => onSelectPage(item.id)}
-            title={item.label}
-            type="button"
-          >
-            <span className="nav-icon"><PageIcon pageId={item.id} /></span>
-            <span className="nav-item-label">{item.label}</span>
-          </button>
-        ))}
+      <nav aria-label={navLabel} className="page-nav-horizontal sidebar-page-navigation">
+        <PageNavigationItems activePage={activePage} items={primaryItems} onSelectPage={onSelectPage} className="sidebar-primary-navigation" />
+        <PageNavigationItems activePage={activePage} items={secondaryItems} onSelectPage={onSelectPage} className="sidebar-secondary-navigation" />
       </nav>
     </div>
   )
+}
+
+export function PageNavigationItems({ activePage, items, onSelectPage, className }: {
+  activePage: string
+  items: RailPageItem[]
+  onSelectPage: (pageId: string) => void
+  className: string
+}) {
+  if (!items.length) return null
+  return <div className={className}>
+    {items.map((item) => (
+      <button
+        className={`nav-icon-btn ${activePage === item.id ? 'active' : ''}`}
+        aria-label={item.label}
+        aria-current={activePage === item.id ? 'page' : undefined}
+        data-page-id={item.id}
+        key={item.id}
+        onClick={() => onSelectPage(item.id)}
+        title={item.label}
+        type="button"
+      >
+        <span className="nav-icon"><PageIcon pageId={item.id} /></span>
+        <span className="nav-item-label">{item.label}</span>
+      </button>
+    ))}
+  </div>
 }
 
 function PageIcon({ pageId }: { pageId: string }) {

@@ -113,7 +113,7 @@ test('dark management surfaces keep primary text readable and use one coherent d
       { en: 'Dashboard', zh: '总览', ready: '.hero', selectors: ['.hero h2', '.stat-card strong', '.panel-head h3', '.plugin-dashboard-card p:last-child'] },
       { en: 'AI Assistant', zh: 'AI 助手', ready: '.management-page-header', selectors: ['.management-page-heading h2', '.panel-head h3'] },
       { en: 'Plugins', zh: '插件中心', ready: '.plugins-page', selectors: ['.plugin-page-heading h3', '.plugin-card-title-row > strong', '.plugin-status-running', '.plugin-inspector h4'] },
-      { en: 'Settings', zh: '配置中心', ready: '.settings-layout', selectors: ['.management-page-heading h2', '.panel-head h3', '.settings-group-heading h4'] },
+      { en: 'Settings', zh: '配置中心', ready: '.settings-layout', selectors: ['.management-page-heading h2', '.settings-category-nav [role="tab"][aria-selected="true"]', '.settings-category-panel:not([hidden]) .settings-group-heading h3'] },
       { en: 'Database', zh: '数据库', ready: '[data-testid="database-grid"]', selectors: ['.dbw-source-trigger', '.dbw-table th', '.dbw-record-title strong'] }
     ]
 

@@ -75,6 +75,8 @@ export type WorkspaceSidebarActions = Pick<WorkspaceDocumentManagementState,
   'beginDrag'
   | 'copyDocumentMarkdown'
   | 'deleteDocumentById'
+  | 'draggingDocumentId'
+  | 'dragOverDocumentId'
   | 'dragOverRoot'
   | 'dropOnDocument'
   | 'dropToRoot'
@@ -84,6 +86,7 @@ export type WorkspaceSidebarActions = Pick<WorkspaceDocumentManagementState,
   | 'handleRootDragLeave'
   | 'handleRootDragOver'
   | 'handleTreeNodeDragOver'
+  | 'handleTreeNodeDragLeave'
 >
 
 export type DatabaseWorkspaceBoardState = Pick<WorkspaceDocumentManagementState,

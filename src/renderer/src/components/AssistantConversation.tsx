@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import type {
   AssistantApprovalId,
   AssistantEvent,
@@ -218,8 +219,8 @@ export function AssistantConversation({
         {projection.items.length === 0 ? (
           <p className="mini-hint">
             {isZh
-              ? '告诉助手你想怎样改变 KnowBook。它会检查平台能力、生成不可变插件 revision，并在激活前请求你的批准。'
-              : 'Describe how you want to change KnowBook. The assistant will define an immutable plugin revision and ask before activation.'}
+              ? '描述你想添加的功能，例如整理文档、生成首页卡片或自动处理笔记。助手会准备扩展，并在启用前让你确认。'
+              : 'Describe a feature you need, such as organizing notes or adding a dashboard card. The assistant will prepare an extension for you to review before enabling it.'}
           </p>
         ) : projection.items.map((item) => (
           item.kind === 'message' ? (
@@ -281,7 +282,7 @@ export function AssistantConversation({
           disabled={!canUseAi}
           onChange={(event) => commitDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !isImeKeyboardEvent(event.nativeEvent)) {
               event.preventDefault()
               void send()
             }

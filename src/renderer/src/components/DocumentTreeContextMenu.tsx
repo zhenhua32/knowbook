@@ -1,5 +1,6 @@
 import type { UiText } from '../i18n'
 import { useViewportMenuPosition } from '../hooks/useViewportMenuPosition'
+import { usePopupKeyboard } from '../hooks/usePopupKeyboard'
 
 type DocumentTreeContextMenuProps = {
   x: number
@@ -44,6 +45,7 @@ export function DocumentTreeContextMenu(props: DocumentTreeContextMenuProps) {
   }
 
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
+  usePopupKeyboard(menuRef, onClose)
 
   return (
     <>
@@ -55,6 +57,11 @@ export function DocumentTreeContextMenu(props: DocumentTreeContextMenuProps) {
 
       <div
         className="block-context-menu document-tree-context-menu"
+        role="dialog"
+        aria-modal="true"
+        data-block-shortcuts
+        aria-label={isZh ? `${documentTitle}的操作` : `Actions for ${documentTitle}`}
+        tabIndex={-1}
         ref={menuRef}
         onContextMenu={(event) => event.preventDefault()}
         style={menuStyle}

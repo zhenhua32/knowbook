@@ -6315,11 +6315,12 @@ select:focus-visible {
 }
 
 .management-page :is(.hero, .management-page-header) {
+  flex-shrink: 0;
   align-items: center;
-  min-height: 144px;
-  padding: 28px 30px;
+  min-height: 112px;
+  padding: 20px 24px;
   border: 1px solid #dfe3ff;
-  border-radius: 22px;
+  border-radius: 16px;
   background:
     radial-gradient(circle at 88% 4%, rgba(255, 255, 255, 0.94), transparent 28%),
     linear-gradient(115deg, #f7f7ff 0%, #eef0ff 58%, #f8f4ff 100%);

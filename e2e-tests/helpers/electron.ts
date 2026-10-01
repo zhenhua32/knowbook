@@ -61,12 +61,14 @@ export function uiText(en: string, zh: string): RegExp {
 
 export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
   const titleInput = page.locator('.document-summary-card .editor-input').first()
-  if (!await titleInput.isVisible().catch(() => false)) {
+  const summaryInput = page.locator('.document-summary-card .editor-textarea').first()
+  if (!await summaryInput.isVisible().catch(() => false)) {
     const editButton = page.locator('.document-summary-edit-button')
     await expect(editButton).toBeVisible()
     await editButton.click()
   }
   await expect(titleInput).toBeVisible()
+  await expect(summaryInput).toBeVisible()
 }
 
 export async function launchElectronApp(

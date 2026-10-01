@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useState, type ReactNode } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
-import { PageRail } from './PageRail'
+import { PageNavigationItems, PageRail } from './PageRail'
 import { DocumentTree } from './DocumentTree'
 import { lazyWithRetry } from '../utils/lazyWithRetry'
 import type { UiLanguage } from '../i18n'
@@ -35,6 +35,8 @@ type PageNavWithWorkspaceTreeProps = {
   newRootLabel: string
   dropToRootLabel: string
   dragOverRoot: boolean
+  draggingDocumentId?: string | null
+  dragOverDocumentId?: string | null
   onRootDragOver: () => void
   onRootDragLeave: () => void
   onDropToRoot: () => void
@@ -64,6 +66,7 @@ type PageNavWithWorkspaceTreeProps = {
   onDragStart: (documentId: string) => void
   onDragEnd: () => void
   onDragOverNode: (documentId: string) => void
+  onDragLeaveNode?: (documentId: string) => void
   onDropOnNode: (documentId: string) => Promise<void>
   uiLanguage: UiLanguage
   isNavCollapsed?: boolean
@@ -91,6 +94,8 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     newRootLabel,
     dropToRootLabel,
     dragOverRoot,
+    draggingDocumentId = null,
+    dragOverDocumentId = null,
     onRootDragOver,
     onRootDragLeave,
     onDropToRoot,
@@ -111,6 +116,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
     onDragStart,
     onDragEnd,
     onDragOverNode,
+    onDragLeaveNode,
     onDropOnNode,
     documentTreeNodes,
     navCanGoBack,
@@ -128,11 +134,12 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
   const isZh = uiLanguage === 'zh-CN'
   const collapseSidebarLabel = isZh ? '收起左侧栏' : 'Collapse sidebar'
   const expandSidebarLabel = isZh ? '展开左侧栏' : 'Expand sidebar'
+  const managementItems = pageItems.filter((item) => item.id === 'plugins' || item.id === 'settings')
+  const workspaceItems = pageItems.filter((item) => item.id !== 'plugins' && item.id !== 'settings')
 
   const handleTreeContextMenu = useCallback((node: DocumentTreeNode, x: number, y: number) => {
-    onSelectDocument(node.id)
     setTreeContextMenu({ node, x, y })
-  }, [onSelectDocument])
+  }, [])
 
   const canSaveContextDocument = Boolean(
     treeContextMenu
@@ -142,7 +149,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
   )
 
   return (
-    <div className={`sidebar-combined ${isNavCollapsed ? 'collapsed' : ''}`}>
+    <div className={`sidebar-combined sidebar-workspace-navigation ${isNavCollapsed ? 'collapsed' : ''}`}>
       {/* Compact Horizontal Navigation Rail */}
       <PageRail
         notificationControl={<>{isNavCollapsed && <>
@@ -160,7 +167,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         navLabel={navLabel}
         onToggleCollapse={onToggleNavCollapse}
         pageDescription={pageDescription}
-        pageItems={pageItems}
+        pageItems={workspaceItems}
         pageTitle={pageTitle}
         onSelectPage={onSelectPage}
       />
@@ -170,10 +177,10 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         <div className="tree-nav-section">
           <div className="tree-toolbar-compact">
             <div className="tree-history-actions">
-              <button className="icon-btn nav-btn" disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">
+              <button className="icon-btn nav-btn" aria-label={backTitle} disabled={!navCanGoBack} onClick={onNavBack} title={backTitle} type="button">
                 <ArrowIcon direction="left" />
               </button>
-              <button className="icon-btn nav-btn" disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">
+              <button className="icon-btn nav-btn" aria-label={forwardTitle} disabled={!navCanGoForward} onClick={onNavForward} title={forwardTitle} type="button">
                 <ArrowIcon direction="right" />
               </button>
             </div>
@@ -187,20 +194,24 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
           <div className="sidebar-section-heading">
             <span>{isZh ? '我的文档' : 'My documents'}</span>
             <span className="sidebar-section-count">{totalDocumentsCount ?? 0}</span>
-            <button className="sidebar-create-button" disabled={Boolean(props.workspaceUnavailable)} onClick={onCreateRoot} title={newRootLabel} type="button">
+            <button className="sidebar-create-button" aria-label={newRootLabel} disabled={Boolean(props.workspaceUnavailable)} onClick={onCreateRoot} title={newRootLabel} type="button">
               <PlusIcon />
             </button>
           </div>
 
           {!isNavCollapsed && <Suspense fallback={null}><SidebarCaptureActions isZh={isZh} disabled={Boolean(props.workspaceUnavailable)} /></Suspense>}
 
-          <div
+          {draggingDocumentId && <div
             className={`root-drop-zone-compact${dragOverRoot ? ' root-drop-zone-active' : ''}`}
             onDragOver={(event) => {
               event.preventDefault()
               onRootDragOver()
             }}
-            onDragLeave={onRootDragLeave}
+            onDragLeave={(event) => {
+              if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+                onRootDragLeave()
+              }
+            }}
             onDrop={(event) => {
               event.preventDefault()
               onDropToRoot()
@@ -208,7 +219,7 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
           >
             <DropIcon />
             {dropToRootLabel}
-          </div>
+          </div>}
 
           {pinnedDocuments.length > 0 && (
             <div className="pinned-section-shell">
@@ -237,11 +248,12 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
                 selectedDocumentId={selectedDocumentId}
                 onSelect={onSelectDocument}
                 onOpenContextMenu={handleTreeContextMenu}
-                draggingDocumentId={null}
-                dragOverDocumentId={null}
+                draggingDocumentId={draggingDocumentId}
+                dragOverDocumentId={dragOverDocumentId}
                 onDragStart={onDragStart}
                 onDragEnd={onDragEnd}
                 onDragOverNode={onDragOverNode}
+                onDragLeaveNode={onDragLeaveNode}
                 onDropOnNode={onDropOnNode}
               />
             ) : (
@@ -253,7 +265,12 @@ export function PageNavWithWorkspaceTree(props: PageNavWithWorkspaceTreeProps) {
         </div>
       </div>
 
-      {props.footerControl}
+      <div className="sidebar-management-footer">
+        <nav aria-label={isZh ? '工作区管理' : 'Workspace management'}>
+          <PageNavigationItems activePage={activePage} items={managementItems} onSelectPage={onSelectPage} className="sidebar-management-navigation" />
+        </nav>
+        <div className="sidebar-utility-controls">{props.footerControl}</div>
+      </div>
       {treeContextMenu ? (
         <Suspense fallback={null}>
         <DocumentTreeContextMenu

@@ -4538,16 +4538,16 @@ export class KnowbookStore {
 
     const seedTransaction = this.db.transaction(() => {
       const now = new Date().toISOString()
-      insertDocument.run(homeId, 'Home', 'home', null, 'Home', 'Workspace bootstrap document.', 0, now, now)
-      insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', 'Product discovery and planning.', 0, now, now)
-      insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', 'Implementation milestones for the desktop client.', 0, now, now)
+      insertDocument.run(homeId, 'Home', 'home', null, 'Home', '从第一篇记录开始，建立属于你的知识库。', 0, now, now)
+      insertDocument.run(productId, 'Product', 'product', homeId, 'Home/Product', '一个项目笔记示例：整理想法、目标和下一步。', 0, now, now)
+      insertDocument.run(roadmapId, 'Roadmap', 'roadmap', productId, 'Home/Product/Roadmap', '用子文档拆分计划，让每一步都有清晰的去处。', 0, now, now)
 
-      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'KnowBook bootstrap workspace', 0, 0, '[]', null, null, now, now)
-      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', 'Electron, React, TypeScript, and SQLite are wired together in the first implementation slice.', 0, 0, '[]', null, null, now, now)
-      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product principles', 0, 0, '[]', null, null, now, now)
-      insertBlock.run(randomUUID(), productId, null, 1, 'todo', 'Prioritize local-first data ownership and keep [[Roadmap]] aligned with implementation milestones.', 0, 0, '[]', null, null, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Phase 1', 0, 0, '[]', null, null, now, now)
-      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', 'Ship the Electron shell, bootstrap SQLite schema, and generate nested markdown backups.', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 0, 'heading-1', 'Home', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), homeId, null, 1, 'paragraph', '欢迎使用 KnowBook。点击侧栏的 + 新建文档，或用“快速记录”保存一个想法。输入 / 插入标题、列表和待办，用 Ctrl/Cmd+K 查找记录。内容会自动保存到本机；这些示例文档可以自由修改或删除。', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), productId, null, 0, 'heading-1', 'Product', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), productId, null, 1, 'todo', '写下项目目标，并在 [[Roadmap]] 中列出下一步。', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 0, 'heading-1', 'Roadmap', 0, 0, '[]', null, null, now, now)
+      insertBlock.run(randomUUID(), roadmapId, null, 1, 'paragraph', '从一个小目标开始，把进展、问题和决定记录在这里。你可以拖动侧栏中的文档调整层级，也可以在设置的“存储与恢复”中导出 Markdown 备份。', 0, 0, '[]', null, null, now, now)
 
       this.saveSetting('ai.enabled', 'true')
       this.saveSetting('ai.baseUrl', 'https://api.openai.com/v1')

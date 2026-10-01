@@ -110,6 +110,7 @@ export function AppPageContent({
           <>
           <WorkspaceDashboardSection
             isAiEnabled={shell.homeData.aiConfig.enabled}
+            hasAiApiKey={shell.homeData.aiConfig.hasApiKey}
             onBackupNow={workspace.handleBackup}
             onOpenDocument={documents.openDocumentInDocumentsPage}
             onRestoreBackup={workspace.handleRestoreBackup}
@@ -183,14 +184,21 @@ export function AppPageContent({
         {shell.activePage === 'plugins' ? <PluginsSection {...features.plugins.sectionProps} /> : null}
 
         {shell.activePage === 'dashboard' || shell.activePage === 'settings' ? (
-          <><DashboardSettingsSection {...features.settingsSectionProps} />{shell.activePage === 'settings' ? <PluginSlot contributions={pluginUiContributions} slot="settings.sections" /> : null}</>
+          <DashboardSettingsSection
+            {...features.settingsSectionProps}
+            appearanceContent={<PluginSlot contributions={pluginUiContributions} slot="settings.sections" />}
+            recoveryContent={
+              <section className="settings-group">
+                <h3>{shell.isZh ? '数据恢复' : 'Data recovery'}</h3>
+                <p>{shell.isZh ? '找回删除的文档，或查看并恢复自动保留的备份版本。单篇文档历史可从文档右上角菜单打开。' : 'Recover deleted documents or restore retained backups. Document history is available from each document’s action menu.'}</p>
+                <div className="settings-actions">
+                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'trash' })}>{shell.isZh ? '打开回收站' : 'Open Trash'}</button>
+                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'backups' })}>{shell.isZh ? '查看备份版本' : 'View backup versions'}</button>
+                </div>
+              </section>
+            }
+          />
         ) : null}
-        {shell.activePage === 'settings' && onOpenRecovery && <section className="panel">
-          <h3>{shell.isZh ? '数据恢复' : 'Data recovery'}</h3>
-          <p>{shell.isZh ? '找回删除的文档，或查看并恢复自动保留的备份版本。单篇文档历史可从文档右上角菜单打开。' : 'Recover deleted documents or restore retained backups. Document history is available from each document’s action menu.'}</p>
-          <div className="settings-actions"><button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'trash' })}>{shell.isZh ? '打开回收站' : 'Open Trash'}</button>
-            <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'backups' })}>{shell.isZh ? '查看备份版本' : 'View backup versions'}</button></div>
-        </section>}
       </Suspense>
     </main>
   )

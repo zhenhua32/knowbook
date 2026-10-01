@@ -14,8 +14,9 @@ type UseAppKeyboardShortcutsParams = {
 export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection, shell }: UseAppKeyboardShortcutsParams) {
   const composingTarget = useRef<EventTarget | null>(null)
   useEffect(() => {
-    // Blocking surfaces only stay mounted while active. Source and palette allow nested help.
-    const blocked = (event: KeyboardEvent) => document.querySelector('[data-block-shortcuts]')
+    // Settings retain hidden panels and their drafts. Only visible surfaces block shortcuts.
+    const blocked = (event: KeyboardEvent) => Array.from(document.querySelectorAll<HTMLElement>('[data-block-shortcuts]'))
+      .some((surface) => !surface.closest('[hidden], [inert]') && surface.getClientRects().length > 0)
       || isImeKeyboardEvent(event, composingTarget.current !== null && composingTarget.current === event.target)
     const chord = (event: KeyboardEvent) => [event.ctrlKey || event.metaKey ? 'mod' : '', event.altKey ? 'alt' : '',
       event.shiftKey ? 'shift' : '', event.key.toLowerCase()].filter(Boolean).join('+')

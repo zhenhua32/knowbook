@@ -194,7 +194,7 @@ export function useDocumentsDetailPresentation({
         path: selectedDocument.path,
         summary: draftSummary,
         summaryLabel: ui.common.summary,
-        editLabel: isZh ? '编辑属性' : 'Edit properties',
+        editLabel: isZh ? '摘要与属性' : 'Summary & properties',
         collapseLabel: isZh ? '收起属性' : 'Collapse properties',
         title: draftTitle,
         titleLabel: ui.common.title,
