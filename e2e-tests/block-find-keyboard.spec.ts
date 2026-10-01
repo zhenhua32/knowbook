@@ -4,7 +4,7 @@ import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type FindFocusCall = { preventScroll: boolean; beforeScroll: number | null; afterScroll: number | null }
-type FindFocusProbe = { element: HTMLButtonElement; calls: FindFocusCall[] }
+type FindFocusProbe = { element: HTMLButtonElement; panelId: string | null; calls: FindFocusCall[] }
 type ProbeWindow = Window & { __knowbookFindFocusProbes?: FindFocusProbe[] }
 
 const needle = 'KeyboardNeedle'
@@ -34,7 +34,7 @@ async function watchFindFocus(page: Page) {
   return findEntry(page).evaluate(element => {
     const entry = element as HTMLButtonElement
     const probes = (window as ProbeWindow).__knowbookFindFocusProbes ??= []
-    const probe: FindFocusProbe = { element: entry, calls: [] }
+    const probe: FindFocusProbe = { element: entry, panelId: entry.getAttribute('aria-controls'), calls: [] }
     const nativeFocus = entry.focus
     // Observe this real DOM object's focus calls and delegate to its native
     // implementation. No keyboard, navigation or focus behavior is replaced.
@@ -55,12 +55,52 @@ async function focusProbe(page: Page, index: number) {
   }, index)
 }
 
+async function expectFindState(page: Page, opened: boolean) {
+  const entry = findEntry(page)
+  await expect(page.locator('.document-navigation-bar').getByRole('button', {
+    name: uiText('Find', '查找'), exact: true, expanded: opened
+  })).toHaveCount(1)
+  await expect(entry).toHaveAttribute('aria-expanded', String(opened))
+  const state = await entry.evaluate(element => {
+    const button = element as HTMLButtonElement
+    const panel = document.querySelector<HTMLElement>('.block-find-panel')
+    const panelId = button.getAttribute('aria-controls')
+    const probe = (window as ProbeWindow).__knowbookFindFocusProbes?.find(probe => probe.element === button)
+    // Resolve the existing theme token through the browser, rather than
+    // comparing source declarations or assuming a particular color syntax.
+    const colorProbe = document.createElement('span')
+    colorProbe.hidden = true
+    colorProbe.style.backgroundColor = 'var(--kb-accent-soft)'
+    button.append(colorProbe)
+    const accentSoft = getComputedStyle(colorProbe).backgroundColor
+    colorProbe.remove()
+    return { panelId, originalPanelId: probe?.panelId, actualPanelId: panel?.id ?? null,
+      matchingIds: panelId ? Array.from(document.querySelectorAll('[id]')).filter(node => node.id === panelId).length : 0,
+      controlsActualPanel: Boolean(panelId && panel && document.getElementById(panelId) === panel),
+      background: getComputedStyle(button).backgroundColor, accentSoft }
+  })
+  expect(state.panelId).toBeTruthy()
+  expect(state.panelId).toBe(state.originalPanelId)
+  if (opened) {
+    await expect(controls(page).panel).toHaveCount(1)
+    expect(state.actualPanelId).toBe(state.panelId)
+    expect(state.matchingIds).toBe(1)
+    expect(state.controlsActualPanel).toBe(true)
+    expect(state.background).toBe(state.accentSoft)
+    expect(state.accentSoft).not.toBe('rgba(0, 0, 0, 0)')
+  } else {
+    await expect(controls(page).panel).toHaveCount(0)
+    expect(state.matchingIds).toBe(0)
+  }
+}
+
 async function closeInside(page: Page, probeIndex: number, key: string,
   snapshot?: { app: ElectronApplication; testInfo: TestInfo; phase: string }) {
   const beforeCalls = (await focusProbe(page, probeIndex)).calls.length
   await page.keyboard.press(key)
   if (snapshot) await record(page, snapshot.app, snapshot.testInfo, snapshot.phase)
   await expect(controls(page).panel).toHaveCount(0)
+  await expectFindState(page, false)
   await expect(findEntry(page)).toBeFocused()
   await expect.poll(async () => (await focusProbe(page, probeIndex)).calls.length).toBe(beforeCalls + 1)
   const call = (await focusProbe(page, probeIndex)).calls.at(-1)!
@@ -73,12 +113,15 @@ async function settleFrames(page: Page) {
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 
-async function openFind(page: Page, query = needle) {
+async function openFind(page: Page, query = needle,
+  snapshot?: { app: ElectronApplication; testInfo: TestInfo; phase: string }) {
   const current = controls(page)
   await expect(current.panel).toHaveCount(0)
   await page.keyboard.press('Control+f')
   await expect(current.input).toBeFocused()
   await expect(current.input).toHaveAccessibleName(uiText('Search blocks (Cmd+F to close)...', '搜索块内容（按 Cmd/Ctrl+F 关闭）...'))
+  if (snapshot) await record(page, snapshot.app, snapshot.testInfo, snapshot.phase)
+  await expectFindState(page, true)
   await current.input.fill(query)
   return current
 }
@@ -109,12 +152,20 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
   })))
   expect(windows.length).toBeGreaterThan(0)
   expect(windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
-  const state = await page.evaluate(() => ({ count: document.querySelector('.block-find-count')?.textContent ?? null,
+  const state = await page.evaluate(() => {
+    const entry = Array.from(document.querySelectorAll<HTMLButtonElement>('.document-navigation-bar button'))
+      .find(button => ['Find', '查找'].includes(button.textContent?.trim() ?? ''))
+    return { count: document.querySelector('.block-find-count')?.textContent ?? null,
     activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'),
     activeResult: document.querySelector('.block-find-result-active')?.getAttribute('data-result-index') ?? null,
     findOpen: Boolean(document.querySelector('.block-find-panel')),
+    findState: { expanded: entry?.getAttribute('aria-expanded') ?? null,
+      controls: entry?.getAttribute('aria-controls') ?? null,
+      panelId: document.querySelector('.block-find-panel')?.id ?? null,
+      background: entry ? getComputedStyle(entry).backgroundColor : null },
     scrollTop: document.querySelector<HTMLElement>('[data-testid="document-scroll-region"]')?.scrollTop ?? null,
-    focusProbes: (window as ProbeWindow).__knowbookFindFocusProbes?.map(probe => ({ connected: probe.element.isConnected, calls: probe.calls })) ?? [] }))
+    focusProbes: (window as ProbeWindow).__knowbookFindFocusProbes?.map(probe => ({ connected: probe.element.isConnected, panelId: probe.panelId, calls: probe.calls })) ?? [] }
+  })
   await testInfo.attach(phase, { body: JSON.stringify({ windows, state }, null, 2), contentType: 'application/json' })
   await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
 }
@@ -148,9 +199,9 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(before).not.toBeNull()
       let probeIndex = await watchFindFocus(page)
 
-      // Save the actual post-Enter state before asserting restored focus, so
-      // the old-build run provides evidence of the missing return path.
-      let current = await openFind(page)
+      // Capture the real open panel before the new accessible-state assertions,
+      // so an old build retains evidence of its missing expanded/controls state.
+      let current = await openFind(page, needle, { app, testInfo, phase: 'shortcut-opens-find-before-state' })
       await expect(current.count).toHaveText('1 / 3')
       await expect(current.panel.locator('.block-find-result')).toHaveCount(3)
       await page.keyboard.press('Tab'); await expect(current.previous).toBeFocused()
@@ -236,6 +287,23 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       current = await openFind(page)
       await closeInside(page, probeIndex, 'Control+f')
 
+      // These openings use the real Find button's native Enter/Space activation,
+      // independently of the global shortcut. The same panel ID must survive.
+      await expect(findEntry(page)).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect(controls(page).input).toBeFocused()
+      await expectFindState(page, true)
+      await controls(page).input.fill(needle)
+      await expect(controls(page).count).toHaveText('1 / 3')
+      await closeInside(page, probeIndex, 'Escape')
+      await page.keyboard.press('Space')
+      await expect(controls(page).input).toBeFocused()
+      await expectFindState(page, true)
+      await controls(page).input.fill(needle)
+      await expect(controls(page).count).toHaveText('1 / 3')
+      await record(page, app, testInfo, 'native-find-space-open-state')
+      await closeInside(page, probeIndex, 'Control+f')
+
       // Outside focus is an intentional move: Ctrl+F closes the still-open
       // panel while the body editor retains focus.
       current = await openFind(page)
@@ -246,6 +314,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(current.panel).toBeVisible()
       await page.keyboard.press('Control+f')
       await expect(current.panel).toHaveCount(0)
+      await expectFindState(page, false)
       await settleFrames(page)
       await expect(editor).toBeFocused()
       expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
@@ -261,6 +330,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(current.panel).toBeVisible()
       await page.keyboard.press('Control+f')
       await expect(current.panel).toHaveCount(0)
+      await expectFindState(page, false)
       await settleFrames(page)
       await expect(page.locator('body')).toBeFocused()
       expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
@@ -296,6 +366,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.evaluate(() => window.dispatchEvent(new Event('blur')))
       await page.keyboard.press('Escape')
       await expect(current.panel).toHaveCount(0)
+      await expectFindState(page, false)
       await settleFrames(page)
       expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
       await expect(findEntry(page)).not.toBeFocused()

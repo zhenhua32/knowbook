@@ -3,6 +3,7 @@ import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type BlockSearchItem = { index: number; type: string; contentPreview: string }
 type BlockSearchPanelProps = {
+  id?: string
   isOpen: boolean
   isZh?: boolean
   query: string
@@ -25,7 +26,7 @@ function isVisible(element: HTMLElement): boolean {
   return element.isConnected && !isHidden(element) && element.getClientRects().length > 0
 }
 
-export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText, items, onQueryChange, onClose, onSelect, returnFocusRef }: BlockSearchPanelProps) {
+export function BlockSearchPanel({ id, isOpen, isZh, query, placeholder, noMatchText, items, onQueryChange, onClose, onSelect, returnFocusRef }: BlockSearchPanelProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -115,7 +116,7 @@ export function BlockSearchPanel({ isOpen, isZh, query, placeholder, noMatchText
   }
 
   if (!isOpen) return null
-  return <div ref={panelRef} className="block-find-panel" onKeyDown={(event) => {
+  return <div id={id} ref={panelRef} className="block-find-panel" onKeyDown={(event) => {
     if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
       event.stopPropagation()
       return

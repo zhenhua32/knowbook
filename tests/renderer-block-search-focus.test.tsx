@@ -28,7 +28,7 @@ type Context = {
   reveal: () => Promise<void>
 }
 
-async function withNavigation(run: (context: Context) => Promise<void>, options: { open?: boolean; strict?: boolean; isZh?: boolean; suspense?: boolean } = {}) {
+async function withNavigation(run: (context: Context) => Promise<void>, options: { open?: boolean; strict?: boolean; isZh?: boolean; suspense?: boolean; secondNavigation?: boolean } = {}) {
   const dom = new JSDOM('<div id="mount"></div><input id="outside" aria-label="Other field"><div id="blank">Outside pointer target</div>', { url: 'http://localhost' })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   const focusCalls: FocusCall[] = [], selected: number[] = []
@@ -93,6 +93,7 @@ async function withNavigation(run: (context: Context) => Promise<void>, options:
     const props: Props = { outline: null, activeIndex: null, progress: 37, reading: false, isZh,
       onToggleReading: () => {}, onOpenSearch: () => { isOpen = true; render() },
       search: { isOpen, isZh, query, placeholder: isZh ? '查找文档内容' : 'Find in document',
+        id: options.secondNavigation ? 'caller-search-panel' : undefined,
         noMatchText: isZh ? '没有匹配内容' : 'No matching blocks',
         items: [
           { index: 4, type: 'paragraph', contentPreview: 'first matching block' },
@@ -103,9 +104,11 @@ async function withNavigation(run: (context: Context) => Promise<void>, options:
       }
     }
     const navigation = visible ? createElement(DocumentNavigationBar, { ...props, key: documentId }) : null
+    const navigations = options.secondNavigation && visible ? [navigation,
+      createElement(DocumentNavigationBar, { ...props, key: `${documentId}-secondary` })] : navigation
     const content = options.suspense ? createElement(Suspense, {
       fallback: createElement('p', { id: 'navigation-loading' }, 'Loading another page')
-    }, navigation, createElement(SuspenseGate)) : navigation
+    }, navigations, createElement(SuspenseGate)) : navigations
     root.render(options.strict ? createElement(StrictMode, null, content) : content)
   }
   const unmount = async () => { if (mounted) { await act(async () => root.unmount()); mounted = false } }
@@ -154,7 +157,7 @@ async function withNavigation(run: (context: Context) => Promise<void>, options:
   }
 }
 
-const findButton = (document: Document) => document.querySelector<HTMLButtonElement>('.document-navigation-bar button[title]')!
+const findButton = (document: Document) => document.querySelector<HTMLButtonElement>('.document-navigation-bar > button[title]')!
 const input = (document: Document) => document.querySelector<HTMLInputElement>('.block-find-input')!
 const closeButton = (document: Document) => document.querySelector<HTMLButtonElement>('.block-find-close')!
 const callsTo = (context: Context, target: HTMLElement) => context.focusCalls.filter(call => call.element === target)
@@ -165,7 +168,15 @@ test('Escape, the close handler and an external close transition return focus to
       await withNavigation(async context => {
         const { document } = context
         const find = findButton(document)
+        const panelId = find.getAttribute('aria-controls')
+        assert.ok(panelId, 'Find names its controlled panel even while closed')
+        assert.equal(find.getAttribute('aria-expanded'), 'false')
+        assert.equal(document.querySelectorAll('.block-find-panel').length, 0)
         await context.open()
+        assert.equal(find.getAttribute('aria-expanded'), 'true')
+        assert.equal(find.getAttribute('aria-controls'), panelId)
+        assert.equal(document.querySelector('.block-find-panel')?.id, panelId)
+        assert.equal([...document.querySelectorAll('[id]')].filter(element => element.id === panelId).length, 1)
         assert.equal(document.activeElement, input(document))
         const before = callsTo(context, find).length
         if (method === 'escape') assert.equal((await context.key(input(document), 'Escape')).defaultPrevented, true)
@@ -174,6 +185,8 @@ test('Escape, the close handler and an external close transition return focus to
         // Ctrl/Cmd+F closes the shared state directly; it reaches this same prop transition.
         else await context.setOpen(false)
         assert.equal(document.querySelector('.block-find-panel'), null)
+        assert.equal(find.getAttribute('aria-expanded'), 'false')
+        assert.equal(find.getAttribute('aria-controls'), panelId)
         assert.equal(document.activeElement, find)
         assert.equal(callsTo(context, find).length, before + 1)
         assert.deepEqual(callsTo(context, find).at(-1)!.options, { preventScroll: true })
@@ -189,18 +202,66 @@ test('opening, query changes and match selection never restore Find before the p
     const { document } = context
     const find = findButton(document)
     await context.open()
+    const panelId = find.getAttribute('aria-controls')
+    assert.ok(panelId)
     const before = callsTo(context, find).length
     await context.setQuery('updated')
+    assert.equal(document.querySelector('.block-find-panel')?.id, panelId)
+    assert.equal(find.getAttribute('aria-controls'), panelId)
     assert.equal(document.activeElement, input(document))
     assert.equal(callsTo(context, find).length, before)
+    await context.setLanguage(true)
+    assert.equal(find.textContent, '查找')
+    assert.equal(input(document).getAttribute('aria-label'), '查找文档内容')
+    assert.equal(find.getAttribute('aria-controls'), panelId)
+    assert.equal(document.querySelector('.block-find-panel')?.id, panelId)
     assert.equal((await context.key(input(document), 'Enter')).defaultPrevented, true)
     assert.deepEqual(context.selected, [4])
+    assert.equal((await context.key(input(document), 'ArrowDown')).defaultPrevented, true)
+    assert.deepEqual(context.selected, [4, 17])
+    assert.equal(document.querySelector('.block-find-result-active')?.getAttribute('data-result-index'), '1')
+    assert.equal(find.getAttribute('aria-expanded'), 'true')
+    assert.equal(find.getAttribute('aria-controls'), panelId)
+    assert.equal(document.querySelector('.block-find-panel')?.id, panelId)
     assert.equal(document.activeElement, input(document))
     assert.equal(callsTo(context, find).length, before)
     await context.setOpen(false)
     assert.equal(document.activeElement, find)
     assert.equal(callsTo(context, find).length, before + 1)
+    assert.equal(find.getAttribute('aria-expanded'), 'false')
+    assert.equal(find.getAttribute('aria-controls'), panelId)
+    assert.equal(document.querySelectorAll('.block-find-panel').length, 0)
+    await context.open()
+    assert.equal(find.getAttribute('aria-expanded'), 'true')
+    assert.equal(find.getAttribute('aria-controls'), panelId)
+    assert.equal(document.querySelector('.block-find-panel')?.id, panelId)
+    await context.setOpen(false)
   }, { open: false, strict: true })
+})
+
+test('simultaneous navigation instances control their own unique panels even when callers reuse a panel ID', async () => {
+  await withNavigation(async context => {
+    const { document } = context
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('.document-navigation-bar > button[title]')]
+    assert.equal(buttons.length, 2)
+    const ids = buttons.map(button => button.getAttribute('aria-controls'))
+    assert.ok(ids.every(Boolean))
+    assert.equal(new Set(ids).size, 2)
+    assert.equal(document.querySelectorAll('.block-find-panel').length, 0)
+    await context.open()
+    for (const [index, button] of buttons.entries()) {
+      const panel = button.closest('.document-navigation')!.querySelector('.block-find-panel')
+      assert.equal(button.getAttribute('aria-expanded'), 'true')
+      assert.equal(panel?.id, ids[index])
+      assert.equal(document.getElementById(ids[index]!) === panel, true)
+    }
+    assert.equal(document.querySelectorAll('.block-find-panel').length, 2)
+    assert.equal(document.getElementById('caller-search-panel') === null, true)
+    await context.setOpen(false)
+    assert.deepEqual(buttons.map(button => button.getAttribute('aria-expanded')), ['false', 'false'])
+    assert.deepEqual(buttons.map(button => button.getAttribute('aria-controls')), ids)
+    assert.equal(document.querySelectorAll('.block-find-panel').length, 0)
+  }, { open: false, secondNavigation: true, strict: true })
 })
 
 test('external focus and pointer interactions revoke ownership even when focus later becomes body or stays in the input', async () => {
