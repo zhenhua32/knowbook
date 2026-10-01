@@ -11,7 +11,7 @@ type Context = {
   window: JSDOM['window']
   focusCalls: FocusCall[]
   selected: number[]
-  open: () => Promise<void>
+  open: (afterClick?: () => void) => Promise<void>
   setOpen: (open: boolean) => Promise<void>
   setQuery: (query: string) => Promise<void>
   setLanguage: (isZh: boolean) => Promise<void>
@@ -115,7 +115,10 @@ async function withNavigation(run: (context: Context) => Promise<void>, options:
   try {
     await act(async () => render())
     await run({ document: dom.window.document, window: dom.window, focusCalls, selected,
-      open: async () => { await act(async () => { const button = findButton(dom.window.document); button.focus(); button.click() }) },
+      open: async afterClick => { await act(async () => {
+        const button = findButton(dom.window.document)
+        button.focus(); button.click(); afterClick?.()
+      }) },
       setOpen: async value => { await act(async () => { isOpen = value; if (!value) query = ''; render() }) },
       setQuery: async value => { await act(async () => { query = value; render() }) },
       setLanguage: async value => { await act(async () => { isZh = value; render() }) },
@@ -435,5 +438,109 @@ test('a Suspense-hidden navigation cannot restore old find ownership when a pend
       assert.equal(callsTo(context, find).length, 0, 'A close pending across Suspense hiding must not replay stale focus ownership')
       assert.equal(document.activeElement, expected)
     }, { suspense: true })
+  }
+})
+
+test('activating an already open Find immediately returns to its unchanged query and continues the current match cycle', async () => {
+  for (const isZh of [false, true]) {
+    await withNavigation(async context => {
+      const { document } = context
+      await context.open()
+      const find = findButton(document), search = input(document)
+      const panel = document.querySelector('.block-find-panel')!, panelId = panel.id
+      await context.key(search, 'ArrowDown')
+      assert.equal(document.querySelector('.block-find-count')?.textContent, '2 / 2')
+      assert.deepEqual(context.selected, [17])
+      const before = callsTo(context, search).length
+      // The fixture focuses Find and explicitly clicks its handler; native keyboard
+      // activation is covered by Electron E2E. Inspect before React flushes effects.
+      await context.open(() => {
+        assert.equal(document.activeElement === search, true, 'Repeated activation must refocus the existing input synchronously')
+        assert.equal(callsTo(context, search).length, before + 1)
+        assert.deepEqual(callsTo(context, search).at(-1)!.options, { preventScroll: true })
+      })
+      assert.equal(document.querySelector('.block-find-panel') === panel, true)
+      assert.equal(input(document) === search, true)
+      assert.equal(search.value, 'matching')
+      assert.equal(find.getAttribute('aria-controls'), panelId)
+      assert.equal(find.getAttribute('aria-expanded'), 'true')
+      assert.equal(document.querySelector('.block-find-count')?.textContent, '2 / 2')
+      assert.equal(document.querySelector('.block-find-result-active')?.getAttribute('data-result-index'), '1')
+      assert.deepEqual(context.selected, [17], 'Refocusing must not select or navigate a match')
+      await context.key(search, 'Enter')
+      assert.deepEqual(context.selected, [17, 4])
+      assert.equal(document.querySelector('.block-find-count')?.textContent, '1 / 2')
+      assert.equal((await context.key(search, 'Escape')).defaultPrevented, true)
+      assert.equal(document.activeElement === find, true)
+      assert.deepEqual(callsTo(context, find).at(-1)!.options, { preventScroll: true })
+      assert.equal(find.getAttribute('aria-expanded'), 'false')
+      assert.equal(find.getAttribute('aria-controls'), panelId)
+      assert.equal(document.querySelectorAll('.block-find-panel').length, 0)
+    }, { open: false, isZh, strict: isZh })
+  }
+})
+
+test('each already open Find refocuses only its own panel when multiple navigation instances are mounted', async () => {
+  await withNavigation(async context => {
+    const { document } = context
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('.document-navigation-bar > button[title]')]
+    const searches = buttons.map(button => document.getElementById(button.getAttribute('aria-controls')!)!
+      .querySelector<HTMLInputElement>('.block-find-input')!)
+    for (const [index, button] of buttons.entries()) {
+      const otherIndex = 1 - index
+      const before = callsTo(context, searches[index]).length, otherBefore = callsTo(context, searches[otherIndex]).length
+      await context.focus(button)
+      await context.click(button)
+      assert.equal(document.activeElement === searches[index], true)
+      assert.equal(callsTo(context, searches[index]).length, before + 1)
+      assert.deepEqual(callsTo(context, searches[index]).at(-1)!.options, { preventScroll: true })
+      assert.equal(callsTo(context, searches[otherIndex]).length, otherBefore)
+      assert.equal(searches[index].value, 'matching')
+      assert.deepEqual(context.selected, [])
+    }
+  }, { secondNavigation: true, strict: true })
+})
+
+test('repeated Find cannot focus unavailable inputs or bypass a modal and cannot defer focus until they return', async () => {
+  for (const unavailable of ['background', 'hidden', 'inert', 'no-rect', 'disabled', 'visibility', 'modal', 'unmounted'] as const) {
+    await withNavigation(async context => {
+      const { document } = context
+      const find = findButton(document), search = input(document)
+      const panel = document.querySelector<HTMLElement>('.block-find-panel')!
+      const outside = document.getElementById('outside')!
+      const modal = unavailable === 'modal' ? document.createElement('div') : null
+      await context.focus(outside)
+      if (unavailable === 'background') context.setForeground(false)
+      else if (unavailable === 'hidden') panel.hidden = true
+      else if (unavailable === 'inert') panel.setAttribute('inert', '')
+      else if (unavailable === 'no-rect') search.setAttribute('data-no-rect', '')
+      else if (unavailable === 'disabled') search.disabled = true
+      else if (unavailable === 'visibility') search.style.visibility = 'hidden'
+      else if (modal) {
+        modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); document.body.append(modal)
+      }
+      else await context.unmount()
+      const before = context.focusCalls.length
+      await context.click(find)
+      assert.equal(context.focusCalls.length, before)
+      assert.equal(document.activeElement === outside, true)
+      if (unavailable === 'unmounted') {
+        assert.equal(search.isConnected, false)
+        return
+      }
+      context.setForeground(true)
+      panel.hidden = false; panel.removeAttribute('inert'); search.removeAttribute('data-no-rect')
+      search.disabled = false; search.style.visibility = ''
+      if (modal) modal.hidden = true
+      await context.setLanguage(true)
+      assert.equal(context.focusCalls.length, before, 'Returning to a visible foreground view must not replay the old activation')
+      assert.equal(document.activeElement === outside, true)
+      if (modal) {
+        await context.click(find)
+        assert.equal(document.activeElement === search, true, 'A new explicit activation is allowed after the modal is hidden')
+        assert.equal(context.focusCalls.length, before + 1)
+        assert.deepEqual(callsTo(context, search).at(-1)!.options, { preventScroll: true })
+      }
+    })
   }
 })

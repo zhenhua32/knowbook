@@ -5,7 +5,10 @@ import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron
 
 type FindFocusCall = { preventScroll: boolean; beforeScroll: number | null; afterScroll: number | null }
 type FindFocusProbe = { element: HTMLButtonElement; panelId: string | null; calls: FindFocusCall[] }
-type ProbeWindow = Window & { __knowbookFindFocusProbes?: FindFocusProbe[] }
+type InputSelection = { start: number | null; end: number | null; direction: string | null }
+type QueryFocusCall = FindFocusCall & { beforeSelection: InputSelection; afterSelection: InputSelection }
+type QueryFocusProbe = { element: HTMLInputElement; panel: HTMLElement; panelId: string; calls: QueryFocusCall[] }
+type ProbeWindow = Window & { __knowbookFindFocusProbes?: FindFocusProbe[]; __knowbookQueryFocusProbes?: QueryFocusProbe[] }
 
 const needle = 'KeyboardNeedle'
 const contents = [
@@ -52,6 +55,40 @@ async function focusProbe(page: Page, index: number) {
   return page.evaluate(index => {
     const probe = (window as ProbeWindow).__knowbookFindFocusProbes![index]
     return { connected: probe.element.isConnected, calls: probe.calls }
+  }, index)
+}
+
+async function watchQueryFocus(page: Page) {
+  return controls(page).input.evaluate(element => {
+    const input = element as HTMLInputElement
+    const panel = input.closest<HTMLElement>('.block-find-panel')!
+    const probes = (window as ProbeWindow).__knowbookQueryFocusProbes ??= []
+    const probe: QueryFocusProbe = { element: input, panel, panelId: panel.id, calls: [] }
+    const nativeFocus = input.focus
+    const selection = (): InputSelection => ({ start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection })
+    // Delegate to this existing input's native focus implementation, retaining
+    // real browser selection and scrolling behavior throughout the activation.
+    input.focus = options => {
+      const canvas = input.closest<HTMLElement>('.preview-panel')
+      const beforeScroll = canvas?.scrollTop ?? null
+      const beforeSelection = selection()
+      nativeFocus.call(input, options)
+      probe.calls.push({ preventScroll: options?.preventScroll === true, beforeScroll,
+        afterScroll: canvas?.scrollTop ?? null, beforeSelection, afterSelection: selection() })
+    }
+    return probes.push(probe) - 1
+  })
+}
+
+async function queryProbe(page: Page, index: number) {
+  return page.evaluate(index => {
+    const probe = (window as ProbeWindow).__knowbookQueryFocusProbes![index]
+    return { samePanel: document.querySelector('.block-find-panel') === probe.panel,
+      sameInput: document.querySelector('.block-find-input') === probe.element,
+      panelId: probe.panel.id, originalPanelId: probe.panelId, query: probe.element.value,
+      selection: { start: probe.element.selectionStart, end: probe.element.selectionEnd, direction: probe.element.selectionDirection },
+      scrollTop: probe.element.closest<HTMLElement>('.preview-panel')?.scrollTop ?? null,
+      calls: probe.calls }
   }, index)
 }
 
@@ -164,7 +201,13 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
       panelId: document.querySelector('.block-find-panel')?.id ?? null,
       background: entry ? getComputedStyle(entry).backgroundColor : null },
     scrollTop: document.querySelector<HTMLElement>('[data-testid="document-scroll-region"]')?.scrollTop ?? null,
-    focusProbes: (window as ProbeWindow).__knowbookFindFocusProbes?.map(probe => ({ connected: probe.element.isConnected, panelId: probe.panelId, calls: probe.calls })) ?? [] }
+    focusProbes: (window as ProbeWindow).__knowbookFindFocusProbes?.map(probe => ({ connected: probe.element.isConnected, panelId: probe.panelId, calls: probe.calls })) ?? [],
+    queryProbes: (window as ProbeWindow).__knowbookQueryFocusProbes?.map(probe => ({
+      samePanel: document.querySelector('.block-find-panel') === probe.panel,
+      sameInput: document.querySelector('.block-find-input') === probe.element,
+      panelId: probe.panel.id, originalPanelId: probe.panelId, query: probe.element.value,
+      selection: { start: probe.element.selectionStart, end: probe.element.selectionEnd, direction: probe.element.selectionDirection },
+      calls: probe.calls })) ?? [] }
   })
   await testInfo.attach(phase, { body: JSON.stringify({ windows, state }, null, 2), contentType: 'application/json' })
   await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
@@ -211,6 +254,64 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.keyboard.press('Tab'); await expect(current.close).toBeFocused()
       await record(page, app, testInfo, 'close-with-results-focused')
       await closeInside(page, probeIndex, 'Enter', { app, testInfo, phase: 'close-with-results-after-enter' })
+
+      // Re-activate the already-expanded Find entry through real keyboard and
+      // pointer paths. Neither the panel nor its current match may be reset.
+      for (const activation of ['Enter', 'Space', 'pointer'] as const) {
+        current = await openFind(page)
+        await page.keyboard.press('Enter'); await expectMatch(page, 0)
+        await page.keyboard.press('Enter'); await expectMatch(page, 1)
+        // Use a real partial selection; re-entry must not select or rewrite the
+        // query. Record the range before and after native blur separately.
+        await page.keyboard.press('Home')
+        await page.keyboard.press('Shift+ArrowRight')
+        await page.keyboard.press('Shift+ArrowRight')
+        await page.keyboard.press('Shift+ArrowRight')
+        const queryProbeIndex = await watchQueryFocus(page)
+        const selected = await queryProbe(page, queryProbeIndex)
+        expect(selected.selection.start).toBe(0)
+        expect(selected.selection.end).toBe(3)
+        if (activation !== 'pointer') {
+          await page.keyboard.press('Shift+Tab')
+          await expect(page.locator('.document-navigation-bar .document-view-toggle')).toBeFocused()
+          await page.keyboard.press('Shift+Tab')
+          await expect(findEntry(page)).toBeFocused()
+        }
+        const beforeActivation = await queryProbe(page, queryProbeIndex)
+        await testInfo.attach(`expanded-find-${activation}-before-activation`, {
+          body: JSON.stringify({ selected, beforeActivation }, null, 2), contentType: 'application/json'
+        })
+        if (activation === 'pointer') await findEntry(page).click()
+        else await page.keyboard.press(activation)
+        // Capture before the focus assertion so the old build leaves evidence
+        // of Find retaining focus instead of returning to its existing input.
+        await record(page, app, testInfo, `expanded-find-${activation}-reentry-before-focus`)
+        await expect(current.input).toBeFocused()
+        await expectFindState(page, true)
+        await expect(current.input).toHaveValue(needle)
+        await expect(current.count).toHaveText('2 / 3')
+        await expect(current.result(1)).toHaveClass(/block-find-result-active/)
+        const afterActivation = await queryProbe(page, queryProbeIndex)
+        expect(afterActivation.samePanel).toBe(true)
+        expect(afterActivation.sameInput).toBe(true)
+        expect(afterActivation.panelId).toBe(selected.panelId)
+        expect(afterActivation.panelId).toBe(afterActivation.originalPanelId)
+        expect(afterActivation.query).toBe(selected.query)
+        expect(afterActivation.selection).toEqual(beforeActivation.selection)
+        expect(afterActivation.scrollTop).toBe(selected.scrollTop)
+        expect(afterActivation.scrollTop).toBe(beforeActivation.scrollTop)
+        expect(afterActivation.calls).toHaveLength(1)
+        const focusCall = afterActivation.calls[0]
+        expect(focusCall.preventScroll).toBe(true)
+        expect(focusCall.beforeScroll).not.toBeNull()
+        expect(focusCall.afterScroll).toBe(focusCall.beforeScroll)
+        expect(focusCall.afterSelection).toEqual(focusCall.beforeSelection)
+        await expectMatch(page, 1)
+        // Continuing to the third match proves the prior hasNavigated state
+        // survived re-entry, rather than restarting from the selected match.
+        await page.keyboard.press('Enter'); await expectMatch(page, 2)
+        await closeInside(page, probeIndex, activation === 'Space' ? 'Control+f' : 'Escape')
+      }
 
       current = await openFind(page, 'ThisQueryHasNoMatchingBlocks')
       await expect(current.previous).toBeDisabled()

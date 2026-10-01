@@ -3,6 +3,12 @@ import { DocumentOutlinePanel } from './DocumentOutlinePanel'
 import { BlockSearchPanel } from './BlockSearchPanel'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
+function isVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
+}
+
 export function DocumentNavigationBar({ outline, search, activeIndex, progress, reading, isZh, onToggleReading, onOpenSearch }: {
   outline: ComponentProps<typeof DocumentOutlinePanel> | null
   search: ComponentProps<typeof BlockSearchPanel>
@@ -65,7 +71,17 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
       </div>
       <span className="document-current-heading" title={outlineTitle}>{outlineTitle}</span>
       <span className="document-reading-progress" aria-label={isZh ? `阅读进度 ${progress}%` : `Reading progress ${progress}%`}>{progress}%</span>
-      <button ref={findButtonRef} className="document-navigation-button" type="button" onClick={onOpenSearch}
+      <button ref={findButtonRef} className="document-navigation-button" type="button" onClick={(event) => {
+        const trigger = event.currentTarget, scope = trigger.closest<HTMLElement>('.document-navigation')
+        const document = trigger.ownerDocument
+        onOpenSearch()
+        if (!search.isOpen || !scope || trigger.ownerDocument !== document || !document.hasFocus()) return
+        const input = document.getElementById(searchPanelId)?.querySelector<HTMLInputElement>('.block-find-input')
+        if (!input || !scope.contains(input) || !isVisible(trigger) || !isVisible(input)
+          || input.matches(':disabled') || input.getAttribute('aria-disabled') === 'true') return
+        const modalOpen = [...document.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')].some(isVisible)
+        if (!modalOpen) input.focus({ preventScroll: true })
+      }}
         aria-expanded={search.isOpen} aria-controls={searchPanelId}
         title={isZh ? '文内查找 (Ctrl/Cmd+F)' : 'Find in document (Ctrl/Cmd+F)'}>{isZh ? '查找' : 'Find'}</button>
       <button className="document-navigation-button document-view-toggle" type="button" aria-pressed={reading}
