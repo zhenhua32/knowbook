@@ -3,10 +3,12 @@ import type { DatabaseField, DatabaseRecord, DatabaseSourceKind, DocumentCatalog
 import { DATABASE_SYSTEM_FIELD_IDS } from '@shared/database-workspace'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
 
 export function DatabaseTableView({
   documents,
   fields,
+  locale = 'en-US',
   columnWidths,
   records,
   selectedIds,
@@ -21,6 +23,7 @@ export function DatabaseTableView({
 }: {
   documents: DocumentCatalogEntry[]
   fields: DatabaseField[]
+  locale?: string
   columnWidths: Record<string, number>
   records: DatabaseRecord[]
   selectedIds: Set<string>
@@ -156,7 +159,7 @@ export function DatabaseTableView({
                       onChangeValue={(value) => onUpdateValue(record, field, value)}
                       value={toDocumentValue(record.fieldValues[field.id])}
                     />
-                  ) : <ReadOnlyValue field={field} record={record} />}
+                  ) : <ReadOnlyValue field={field} locale={locale} record={record} />}
                 </td>
               ))}
             </tr>
@@ -168,14 +171,13 @@ export function DatabaseTableView({
   )
 }
 
-function ReadOnlyValue({ field, record }: { field: DatabaseField; record: DatabaseRecord }) {
+function ReadOnlyValue({ field, locale, record }: { field: DatabaseField; locale: string; record: DatabaseRecord }) {
   const value = field.role === 'title' ? record.title : record.fieldValues[field.id]
   if (value === null || value === undefined || value === '') return <span className="dbw-empty-value">—</span>
   if (typeof value === 'boolean') return <span>{value ? '✓' : '—'}</span>
   if (Array.isArray(value)) return <div className="dbw-tag-list">{value.map((item) => <span className="dbw-tag" key={item}>{item}</span>)}</div>
   if (field.type === 'date') {
-    const date = new Date(String(value))
-    return <span>{Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString()}</span>
+    return <span>{formatDatabaseValueDisplay(field, value, locale)}</span>
   }
   return <span className="dbw-readonly-value" title={String(value)}>{String(value)}</span>
 }

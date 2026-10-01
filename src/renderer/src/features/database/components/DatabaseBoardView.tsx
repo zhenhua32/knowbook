@@ -40,7 +40,7 @@ export function DatabaseBoardView({
             if (record) void onMoveRecord(record, field, group.id)
           }}
         >
-          <header><span className="dbw-board-dot" /><strong>{group.label}</strong><b>{group.records.length}</b></header>
+          <header><span className="dbw-board-dot" /><strong title={group.label}>{group.label}</strong><b>{group.records.length}</b></header>
           <div className="dbw-board-stack">
             {group.records.slice(0, groupLimits[group.id] ?? 60).map((record) => (
               <article
@@ -51,8 +51,8 @@ export function DatabaseBoardView({
                 onDragStart={() => setDraggingId(record.id)}
               >
                 <button onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
-                  <strong>{record.title}</strong>
-                  <small>{field ? `${field.name} · ${group.label}` : text.noGrouping}</small>
+                  <strong title={record.title}>{record.title}</strong>
+                  <small title={field ? `${field.name} · ${group.label}` : text.noGrouping}>{field ? `${field.name} · ${group.label}` : text.noGrouping}</small>
                 </button>
               </article>
             ))}
