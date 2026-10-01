@@ -127,6 +127,7 @@ const api: ElectronApi = {
   syncWebDavNow: () => ipcRenderer.invoke('knowbook:sync-webdav-now'),
   cancelWebDavSync: () => ipcRenderer.invoke('knowbook:cancel-webdav-sync'),
   resolveWebDavSyncConflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-sync-conflict', input),
+  getWebDavSyncConflictDetails: (input) => ipcRenderer.invoke('knowbook:get-webdav-sync-conflict-details', input),
   getHomeData: async () => {
     const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
     const documentCatalog = data.documentCatalog.map(decodeDocumentIndexEntry)

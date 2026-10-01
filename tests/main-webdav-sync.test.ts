@@ -37,6 +37,10 @@ function edit(store: KnowbookStore, id: string, text: string, title?: string) {
   store.updateDocument(id, { ...old, title: title ?? old.title, blocks: [{ ...old.blocks[0], content: text }] })
 }
 function content(store: KnowbookStore, id: string) { return store.getDocumentDetail(id)!.blocks[0].content }
+function resolveConflict(sync: WebDavSyncService, input: { key: string; choice: 'local' | 'remote' | 'both' }) {
+  const version = sync.getStatus().conflicts.find(conflict => conflict.key === input.key)!
+  return sync.resolveConflict({ ...input, localHash: version.localHash, remoteHash: version.remoteHash })
+}
 
 test('live progress includes current attachments, deduplicated counts and publication before completion', () => fixture(async (a, b, server) => {
   const first = a.store.createDocument(null), second = a.store.createDocument(null)
@@ -147,7 +151,7 @@ test('concurrent edits keep both versions until resolved, and keep-both copies u
   assert.equal(content(b.store, id), 'B offline')
   const conflicts = b.sync.getStatus().conflicts
   assert.equal(conflicts.length, 1); assert.match(conflicts[0].remotePreview, /A offline/)
-  b.sync.resolveConflict({ key: `doc:${id}`, choice: 'both' })
+  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'both' })
   await b.sync.sync(); await a.sync.sync()
   assert.equal(b.sync.getStatus().conflicts.length, 0)
   assert.equal(content(b.store, id), 'A offline')
@@ -336,7 +340,7 @@ test('sync state survives service restart, including offline deletion and unreso
   await b.sync.sync(); assert.equal(b.sync.getStatus().conflicts.length, 1)
   await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
   assert.match(b.sync.getStatus().conflicts[0].localPreview, /local offline/)
-  b.sync.resolveConflict({ key: `doc:${id}`, choice: 'local' }); await b.sync.sync(); await a.sync.sync()
+  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'local' }); await b.sync.sync(); await a.sync.sync()
   assert.equal(content(a.store, id), 'local offline')
   b.store.deleteDocument(id)
   await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
@@ -349,10 +353,10 @@ test('delete versus edit conflicts preserve the edit and stale resolutions are r
   a.store.deleteDocument(id); edit(b.store, id, 'unsynced change')
   await a.sync.sync(); await b.sync.sync()
   assert.match(b.sync.getStatus().conflicts[0].remotePreview, /已删除/)
-  b.sync.resolveConflict({ key: `doc:${id}`, choice: 'remote' })
+  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'remote' })
   edit(b.store, id, 'changed after choosing')
   await b.sync.sync(); assert.equal(content(b.store, id), 'changed after choosing'); assert.equal(b.sync.getStatus().conflicts.length, 1)
-  b.sync.resolveConflict({ key: `doc:${id}`, choice: 'both' }); await b.sync.sync(); await a.sync.sync()
+  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'both' }); await b.sync.sync(); await a.sync.sync()
   assert.equal(b.store.getDocumentSnapshot(id), null)
   assert.ok(a.store.getExportDocuments().some(doc => doc.blocks[0].content === 'changed after choosing'))
 }))
@@ -372,7 +376,7 @@ test('database schema conflicts are explicit and custom records and views round-
   b.store.renameDocumentDatabaseColumn({ columnId: column.id, name: 'B field' })
   await a.sync.sync(); await b.sync.sync()
   assert.equal(b.sync.getStatus().conflicts[0].key, 'databases')
-  b.sync.resolveConflict({ key: 'databases', choice: 'remote' }); await b.sync.sync()
+  resolveConflict(b.sync, { key: 'databases', choice: 'remote' }); await b.sync.sync()
   assert.equal(b.store.getDocumentDatabaseColumns(database.id)[0].name, 'A field')
 }))
 

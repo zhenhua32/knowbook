@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { UpdateDocumentInput } from '../../shared/contracts'
+import type { WebDavSyncMergeChoice, WebDavSyncMergePart, WebDavSyncResolutionChoice } from '../../shared/webdav-sync'
 
 export interface SyncDocument {
   kind: 'document'
@@ -33,12 +34,21 @@ export interface SyncDeletion { kind: 'deleted'; id: string }
 export type SyncRecord = SyncDocument | SyncDatabases | SyncDeletion
 export interface SyncManifest { version: 1; workspaceId: string; entries: Record<string, string> }
 export interface SyncBaseline { localHash: string | null; remoteHash: string }
-export interface StoredConflict { local: SyncRecord; remote: SyncRecord; localHash: string; remoteHash: string }
+export interface StoredConflict {
+  local: SyncRecord
+  remote: SyncRecord
+  localHash: string
+  remoteHash: string
+  /** Local file URLs are stable across restarts even when the asset cache is empty. */
+  localRawHash?: string
+  base?: SyncDocument
+  mergeFields?: Array<Pick<WebDavSyncMergePart, 'id' | 'field' | 'blockId'>>
+}
 export interface SyncState {
   workspaceId?: string
   baseline: Record<string, SyncBaseline>
   conflicts: Record<string, StoredConflict>
-  resolutions: Record<string, { localHash: string; remoteHash: string; choice: 'local' | 'remote' | 'both' }>
+  resolutions: Record<string, { localHash: string; remoteHash: string; choice: WebDavSyncResolutionChoice; merged?: SyncDocument; mergeChoices?: Record<string, WebDavSyncMergeChoice> }>
   lastSyncAt: string | null
 }
 export const emptySyncState = (): SyncState => ({ baseline: {}, conflicts: {}, resolutions: {}, lastSyncAt: null })
@@ -108,8 +118,8 @@ export function validateRecord(value: SyncRecord, key: string): SyncRecord {
   return value
 }
 
-export function conflictPreview(record: SyncRecord): string {
+export function conflictPreview(record: SyncRecord, maxLength = 12_000): string {
   if (record.kind === 'deleted') return '（已删除）'
-  if (record.kind === 'document') return [record.content.title, record.content.summary, ...record.content.blocks.map(block => block.content)].join('\n\n').slice(0, 12_000)
-  return JSON.stringify(record.tables, null, 2).slice(0, 12_000)
+  if (record.kind === 'document') return [record.content.title, record.content.summary, ...record.content.blocks.map(block => block.content)].join('\n\n').slice(0, maxLength)
+  return JSON.stringify(record.tables, null, 2).slice(0, maxLength)
 }

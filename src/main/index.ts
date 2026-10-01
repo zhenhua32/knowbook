@@ -1474,6 +1474,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:sync-webdav-now', () => webdavSync.sync())
   ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
   ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
+  ipcMain.handle('knowbook:get-webdav-sync-conflict-details', (_event, input: import('../shared/webdav-sync').WebDavSyncConflictDetailsInput) => webdavSync.getConflictDetails(input))
   ipcMain.handle('knowbook:get-home-data', () => {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {

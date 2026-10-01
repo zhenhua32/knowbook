@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type WebDavSyncConfig, type WebDavSyncStatus } from '@shared/webdav-sync'
 import WebDavSyncProgress from './WebDavSyncProgress'
+import WebDavSyncConflictCard from './WebDavSyncConflictCard'
 
 export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const [status, setStatus] = useState<WebDavSyncStatus | null>(null)
@@ -42,15 +43,16 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
     setBusy(true); setError('')
     try {
       const value = await operation()
-      if (id === action.current) { statusRequest.current++; setStatus(value) }
+      if (id === action.current) { statusRequest.current++; setStatus(value); return true }
     }
     catch (reason) {
-      if (id !== action.current) return
+      if (id !== action.current) return false
       setError(reason instanceof Error ? reason.message : String(reason))
       const request = ++statusRequest.current
       const fresh = await window.knowbook.getWebDavSyncStatus().catch(() => null)
       if (fresh && id === action.current && request === statusRequest.current) setStatus(fresh)
     } finally { if (id === action.current) setBusy(false) }
+    return false
   }
   const save = () => run(async () => {
     const value = await window.knowbook.saveWebDavSyncConfig({ ...config, ...(clearPassword ? { password: '' } : password ? { password } : {}) })
@@ -63,7 +65,7 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   return <section className="settings-group" aria-label={t('WebDAV 同步', 'WebDAV sync')}>
     <div className="settings-group-heading">
       <h4>{t('WebDAV 跨设备同步', 'WebDAV device sync')}</h4>
-      <p>{t('同步文档、目录、图片附件和数据库。首次连接合并两端内容；遇到冲突保留双方版本。', 'Sync documents, folders, attachments and databases. First sync merges both workspaces; conflicts retain both versions.')}</p>
+      <p>{t('同步文档、目录、图片附件和数据库。独立改动自动合并；重叠改动保留双方版本，供逐项处理。', 'Sync documents, folders, attachments and databases. Independent changes merge automatically; overlapping changes retain both versions for review.')}</p>
     </div>
     <fieldset disabled={working || !status} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
       <label className="editor-label">{t('WebDAV 服务地址', 'WebDAV URL')}
@@ -108,17 +110,10 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
     {error ? <p role="alert">{error}</p> : null}
     <p className="mini-hint">{t('密码由系统加密保存。AI 密钥、插件和本机设置不上传；历史与回收站保留在各设备。云端内容目前不提供端到端加密。', 'Passwords are protected by the OS. AI keys, plugins and device settings stay local; history and Trash remain on each device. Cloud content is not end-to-end encrypted.')}</p>
     {status?.conflicts.length ? <div>
-      <h4>{t('待处理冲突', 'Conflicts to resolve')} ({status.conflicts.length})</h4>
-      {status.conflicts.map(conflict => <details key={conflict.key}>
-        <summary>{conflict.title}</summary>
-        <p>{t('本地版本', 'Local version')}</p><pre style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{conflict.localPreview}</pre>
-        <p>{t('远端版本', 'Remote version')}</p><pre style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>{conflict.remotePreview}</pre>
-        <div className="settings-actions">
-          {conflict.canKeepBoth ? <button className="primary-button" type="button" disabled={working || dirty} onClick={() => resolve({ key: conflict.key, choice: 'both' })}>{t('两份都保留', 'Keep both')}</button> : null}
-          <button className="secondary-button" type="button" disabled={working || dirty} onClick={() => resolve({ key: conflict.key, choice: 'local' })}>{t('使用本地版本', 'Use local version')}</button>
-          <button className="secondary-button" type="button" disabled={working || dirty} onClick={() => resolve({ key: conflict.key, choice: 'remote' })}>{t('使用远端版本', 'Use remote version')}</button>
-        </div>
-      </details>)}
+      <h4>{t('待处理冲突', 'Conflicts to resolve')} ({status.conflicts.filter(conflict => !conflict.resolution).length}) · {t('待同步应用', 'Pending sync')} ({status.conflicts.filter(conflict => conflict.resolution).length})</h4>
+      {status.conflicts.map(conflict => <WebDavSyncConflictCard
+        key={JSON.stringify([status.config.url, status.config.username, status.config.directory, conflict.key, conflict.localHash, conflict.remoteHash])}
+        conflict={conflict} isZh={isZh} disabled={Boolean(working || dirty)} onResolve={resolve} />)}
     </div> : null}
   </section>
 }

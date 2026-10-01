@@ -13,3 +13,39 @@
 .webdav-sync-progress progress { width: 100%; height: 12px; accent-color: var(--kb-accent); }
 .webdav-sync-progress-counts { display: flex; flex-wrap: wrap; gap: 8px 24px; font-variant-numeric: tabular-nums; }
 .webdav-sync-progress-item { overflow-wrap: anywhere; color: var(--kb-text-soft); }
+
+.webdav-conflict-card {
+  margin-top: 12px;
+  border: 1px solid var(--kb-line);
+  border-radius: 12px;
+  min-width: 0;
+}
+.webdav-conflict-card > summary { padding: 14px 16px; cursor: pointer; overflow-wrap: anywhere; }
+.webdav-conflict-card > summary strong { margin-right: 12px; }
+.webdav-conflict-body { display: grid; gap: 12px; padding: 0 16px 16px; min-width: 0; }
+.webdav-conflict-body p, .webdav-conflict-body h5 { margin: 0; }
+.webdav-conflict-pending { color: var(--kb-accent); font-size: 13px; }
+.webdav-conflict-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.webdav-conflict-version { min-width: 0; }
+.webdav-conflict-version h5 { margin-bottom: 8px; }
+.webdav-conflict-card pre {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--kb-line);
+  border-radius: 8px;
+  background: var(--kb-canvas);
+  color: var(--kb-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 300px;
+  overflow: auto;
+  font-size: 13px;
+}
+.webdav-conflict-base > summary { cursor: pointer; color: var(--kb-text-soft); font-size: 13px; margin-bottom: 8px; }
+.webdav-conflict-merge { display: grid; gap: 12px; border-top: 1px solid var(--kb-line); padding-top: 16px; }
+.webdav-conflict-merge fieldset { display: grid; gap: 12px; padding: 12px; margin: 0; min-width: 0; border: 1px solid var(--kb-line); border-radius: 8px; }
+.webdav-conflict-merge legend { padding: 0 6px; font-weight: 650; }
+.webdav-conflict-options { display: flex; gap: 12px 20px; flex-wrap: wrap; }
+.webdav-conflict-options label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.webdav-conflict-card .webdav-conflict-result { margin-top: 8px; max-height: 450px; }
+@media (max-width: 850px) { .webdav-conflict-comparison { grid-template-columns: minmax(0, 1fr); } }

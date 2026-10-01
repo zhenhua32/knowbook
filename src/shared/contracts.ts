@@ -1008,6 +1008,7 @@ export interface ElectronApi {
   syncWebDavNow: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   cancelWebDavSync: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   resolveWebDavSyncConflict: (input: import('./webdav-sync').ResolveWebDavSyncConflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
+  getWebDavSyncConflictDetails: (input: import('./webdav-sync').WebDavSyncConflictDetailsInput) => Promise<import('./webdav-sync').WebDavSyncConflictDetails>
   getBackupHealth: () => Promise<import('./backup-health').BackupHealth>
   onBackupHealth: (listener: (state: import('./backup-health').BackupHealth) => void) => () => void
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>

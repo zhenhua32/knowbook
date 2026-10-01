@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import type { KnowbookStore } from '../database/store'
 import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
-import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress } from '../../shared/webdav-sync'
+import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice } from '../../shared/webdav-sync'
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
-import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument } from './model'
+import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
+import { mergeSyncDocument } from './merge'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
 
 const CONFIG_KEY = 'sync.webdav.config'
@@ -35,6 +36,7 @@ export class WebDavSyncService {
   private message = ''
   private uploaded = 0
   private downloaded = 0
+  private merged = 0
   private progress: WebDavSyncProgress | null = null
   private busy: Promise<void> | null = null
   private abort: AbortController | null = null
@@ -66,11 +68,18 @@ export class WebDavSyncService {
   getStatus(): WebDavSyncStatus {
     const state = this.state()
     return { config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)), phase: this.phase,
-      lastSyncAt: state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded,
+      lastSyncAt: state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded, merged: this.merged,
       progress: this.progress ? { ...this.progress } : null,
       conflicts: Object.entries(state.conflicts).map(([key, conflict]) => ({ key,
         title: conflict.local.kind === 'document' ? conflict.local.content.title : conflict.remote.kind === 'document' ? conflict.remote.content.title : '数据库、属性和视图',
-        localPreview: conflictPreview(conflict.local), remotePreview: conflictPreview(conflict.remote), canKeepBoth: conflict.local.kind === 'document' })) }
+        localPreview: conflictPreview(conflict.local), remotePreview: conflictPreview(conflict.remote), canKeepBoth: conflict.local.kind === 'document' || conflict.remote.kind === 'document',
+        localHash: conflict.localHash, remoteHash: conflict.remoteHash,
+        localDeleted: conflict.local.kind === 'deleted', remoteDeleted: conflict.remote.kind === 'deleted',
+        reason: conflict.local.kind === 'databases' ? 'database' : conflict.local.kind === 'deleted' || conflict.remote.kind === 'deleted' ? 'delete-edit' : conflict.base ? 'overlap' : 'no-base',
+        canMerge: Boolean(conflict.base && conflict.local.kind === 'document' && conflict.remote.kind === 'document'),
+        mergeFields: conflict.mergeFields ?? [],
+        resolution: state.resolutions[key]?.localHash === conflict.localHash && state.resolutions[key]?.remoteHash === conflict.remoteHash
+          ? state.resolutions[key].choice : null })) }
   }
 
   private stage(stage: WebDavSyncProgress['stage'], total: number | null = null, attachmentsTotal = 0): void {
@@ -148,7 +157,7 @@ export class WebDavSyncService {
     if (this.busy) throw new Error('已有同步或连接测试正在进行。')
     this.abort = new AbortController()
     this.phase = phase
-    this.uploaded = 0; this.downloaded = 0
+    this.uploaded = 0; this.downloaded = 0; this.merged = 0
     this.progress = { stage: 'checking', total: null, completed: 0, attachmentsTotal: 0, attachmentsCompleted: 0,
       currentItem: null, currentAttachment: null, startedAt: new Date().toISOString(), requestsCompleted: 0, waitingUntil: null }
     this.message = phase === 'testing' ? '正在验证连接和条件写入能力…' : '正在同步…'
@@ -180,7 +189,7 @@ export class WebDavSyncService {
         this.capabilities = await client.test()
         this.verifiedTarget = targetKey(this.config)
       }
-      this.uploaded = 0; this.downloaded = 0
+      this.uploaded = 0; this.downloaded = 0; this.merged = 0
       for (let attempt = 0; attempt < 3; attempt++) {
         try { await this.exchange(client); return }
         catch (error) { if (!(error instanceof WebDavHttpError && error.status === 412) || attempt === 2) throw error }
@@ -208,6 +217,22 @@ export class WebDavSyncService {
     const writes = new Map<string, SyncRecord>()
     const accepted = new Map<string, { localHash: string | null; remoteHash: string }>()
     const conflicts: SyncState['conflicts'] = {}
+    const mergingKeys = new Set<string>()
+    let mergedCount = 0
+    const conflictCopy = (record: SyncDocument, salt: string): SyncDocument => {
+      const occupied = new Set([...local.keys(), ...Object.keys(manifest.entries), ...Object.keys(state.baseline), ...writes.keys(), ...incoming.keys()])
+      for (let nonce = 0; nonce <= occupied.size; nonce++) {
+        const copy = documentCopy(record, nonce ? `${salt}:copy:${nonce}` : salt)
+        const key = recordKey(copy), hash = recordHash(copy)
+        // Stable IDs make retries idempotent, but a previously edited or deleted
+        // conflict copy must never be replaced when the same pair recurs.
+        if (state.baseline[key] && !local.has(key)) continue
+        if (manifest.entries[key] && manifest.entries[key] !== hash) continue
+        if ([local.get(key), writes.get(key), incoming.get(key)].some(existing => existing && recordHash(existing) !== hash)) continue
+        return copy
+      }
+      throw new Error('无法分配冲突副本，请重新同步后重试。')
+    }
     const remoteRecord = async (key: string, hash: string): Promise<SyncRecord> => {
       if (this.remoteObjects.has(hash)) return validateRecord(this.remoteObjects.get(hash)!, key)
       const object = await client.get(`objects/${hash}.json`, MAX_RECORD_BYTES)
@@ -243,15 +268,56 @@ export class WebDavSyncService {
         const resolution = state.resolutions[key]
         if (resolution?.localHash === proposedHash && resolution.remoteHash === remoteHash) {
           if (resolution.choice === 'local') writes.set(key, proposed)
+          else if (resolution.choice === 'merge' && resolution.merged) {
+            const merged = validateRecord(resolution.merged, key)
+            writes.set(key, merged)
+            incoming.set(key, merged)
+            mergingKeys.add(key)
+            mergedCount++
+          } else if (resolution.choice === 'both' && proposed.kind === 'deleted' && remote.kind === 'document') {
+            const copy = conflictCopy(remote, `${proposedHash}:${remoteHash}`)
+            writes.set(key, proposed)
+            writes.set(recordKey(copy), copy)
+            incoming.set(recordKey(copy), copy)
+          }
           else {
             incoming.set(key, remote)
             if (resolution.choice === 'both' && proposed.kind === 'document') {
-              const copy = documentCopy(proposed, `${proposedHash}:${remoteHash}`)
+              const copy = conflictCopy(proposed, `${proposedHash}:${remoteHash}`)
               writes.set(recordKey(copy), copy)
               incoming.set(recordKey(copy), copy)
             }
           }
-        } else conflicts[key] = { local: proposed, remote, localHash: proposedHash, remoteHash }
+        } else {
+          let base: SyncDocument | undefined
+          let plan: ReturnType<typeof mergeSyncDocument> | undefined
+          // Only equal local/remote baselines are a shared ancestor. Local
+          // normalization may otherwise have produced a different document.
+          if (proposed.kind === 'document' && remote.kind === 'document' && baseline
+            && baseline.localHash === baseline.remoteHash && validHash(baseline.remoteHash)) {
+            try {
+              const ancestor = await remoteRecord(key, baseline.remoteHash)
+              if (ancestor.kind === 'document') {
+                plan = mergeSyncDocument(ancestor, proposed, remote)
+                base = ancestor
+              }
+            } catch (error) {
+              if (this.abort?.signal.aborted) throw error
+              // Missing, incompatible or damaged ancestors cannot justify
+              // overwriting either current version; keep an explicit conflict.
+            }
+          }
+          if (plan && !plan.unresolved.length) {
+            validateRecord(plan.document, key)
+            syncAssetReferences(plan.document)
+            writes.set(key, plan.document)
+            incoming.set(key, plan.document)
+            mergingKeys.add(key)
+            mergedCount++
+          } else conflicts[key] = { local: proposed, remote, localHash: proposedHash, remoteHash,
+            localRawHash: recordHash(raw.get(key) ?? deletion), base,
+            mergeFields: plan?.conflicts.map(({ id, field, blockId }) => ({ id, field, blockId })) }
+        }
       } else if (localChanged || !remoteHash && current) writes.set(key, proposed)
       else if (remoteChanged && remoteHash) incoming.set(key, await remoteRecord(key, remoteHash))
       else if (remoteHash) accepted.set(key, { localHash, remoteHash })
@@ -282,6 +348,20 @@ export class WebDavSyncService {
       this.progress!.completed++
     }
     if (this.abort?.signal.aborted) throw new Error('同步已停止。')
+    // A merge contains the local snapshot we just read. Publishing that snapshot
+    // after newer editing would make our own intermediate result a competing
+    // remote edit on the next run. Leave those keys at their original versions.
+    const mergeDeferred = mergingKeys.size > 0 && canonicalJson([...this.store.getSyncRecords()]) !== canonicalJson([...raw])
+    if (mergeDeferred) {
+      for (const key of mergingKeys) {
+        next.entries[key] = manifest.entries[key]
+        writes.delete(key)
+        incoming.delete(key)
+        localized.delete(key)
+        accepted.delete(key)
+      }
+      mergedCount = 0
+    }
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
     if (changed) {
       this.stage('publishing')
@@ -310,25 +390,88 @@ export class WebDavSyncService {
       state.conflicts = conflicts
       // Keep resolutions until incoming changes were actually applied.
       if (localUnchanged) state.resolutions = {}
+      else {
+        // A deferred apply must never resurrect a decision for a newer pair.
+        for (const [key, resolution] of Object.entries(state.resolutions)) {
+          const conflict = conflicts[key]
+          if (conflict && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete state.resolutions[key]
+        }
+      }
       state.lastSyncAt = new Date().toISOString()
       this.saveState(state)
     })
     this.uploaded = writes.size
     this.downloaded = localUnchanged ? localized.size : 0
+    this.merged = localUnchanged ? mergedCount : 0
     const count = Object.keys(conflicts).length
     this.message = count ? `已同步其他内容；${count} 项冲突已保留双方版本，请选择处理方式。`
-      : !localUnchanged && localized.size ? '本地正在编辑，远端更新将在下次同步时应用。'
-      : `同步完成：上传 ${this.uploaded} 项，下载 ${this.downloaded} 项。`
+      : mergeDeferred || !localUnchanged && localized.size ? '本地正在编辑，远端更新将在下次同步时应用。'
+      : `同步完成：上传 ${this.uploaded} 项，下载 ${this.downloaded} 项${this.merged ? `，合并 ${this.merged} 篇文档` : ''}。`
     if (this.downloaded) this.onChanged()
+  }
+
+  private boundConflict(input: WebDavSyncConflictVersion, checkLocal = true): { state: SyncState; conflict: StoredConflict } {
+    if (!input || typeof input.key !== 'string' || !validHash(input.localHash) || !validHash(input.remoteHash)) throw new Error('冲突版本参数无效，请重新同步后查看。')
+    const state = this.state(), conflict = state.conflicts[input.key]
+    if (!conflict) throw new Error('该冲突已不存在，请刷新。')
+    if (conflict.localHash !== input.localHash || conflict.remoteHash !== input.remoteHash) throw new Error('冲突版本已变化，请重新查看双方内容后选择。')
+    if (checkLocal) {
+      let currentHash: string
+      try {
+        const current = this.store.getSyncRecords().get(input.key) ?? { kind: 'deleted', id: input.key.slice(4) } as const
+        currentHash = recordHash(conflict.localRawHash ? current : this.assets.portableKnown(current))
+      } catch { throw new Error('本地内容已变化，请重新同步后处理冲突。') }
+      if (currentHash !== (conflict.localRawHash ?? conflict.localHash)) throw new Error('本地内容已变化，请重新同步后处理冲突。')
+    }
+    return { state, conflict }
+  }
+
+  private documentMerge(conflict: StoredConflict, choices?: Record<string, WebDavSyncMergeChoice>): ReturnType<typeof mergeSyncDocument> {
+    if (!conflict.base || conflict.local.kind !== 'document' || conflict.remote.kind !== 'document') throw new Error('该冲突没有可用的共同版本，请选择保留本地、远端或双方版本。')
+    if (choices !== undefined && (!choices || typeof choices !== 'object' || Array.isArray(choices))) throw new Error('合并选项无效。')
+    const plan = mergeSyncDocument(conflict.base, conflict.local, conflict.remote, choices)
+    const known = new Set(plan.conflicts.map(part => part.id))
+    if (Object.keys(choices ?? {}).some(id => !known.has(id))) throw new Error('合并字段已变化，请重新查看冲突。')
+    return plan
+  }
+
+  getConflictDetails(input: WebDavSyncConflictDetailsInput): WebDavSyncConflictDetails {
+    if (this.busy) throw new Error('请等待同步结束后查看冲突。')
+    const { state, conflict } = this.boundConflict(input)
+    const canMerge = conflict.base && conflict.local.kind === 'document' && conflict.remote.kind === 'document'
+    const resolution = state.resolutions[input.key]
+    const savedChoices = resolution?.choice === 'merge' && resolution.localHash === input.localHash && resolution.remoteHash === input.remoteHash
+      ? resolution.mergeChoices : undefined
+    const plan = canMerge ? this.documentMerge(conflict, input.mergeChoices ?? savedChoices) : null
+    if (!canMerge && input.mergeChoices) throw new Error('该冲突不支持逐项合并。')
+    return { key: input.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash,
+      localPreview: conflictPreview(conflict.local, Infinity), remotePreview: conflictPreview(conflict.remote, Infinity),
+      basePreview: conflict.base ? conflictPreview(conflict.base, Infinity) : null, savedChoices,
+      merge: plan ? { document: plan.document.content, conflicts: plan.conflicts, unresolvedIds: plan.unresolved.map(part => part.id) } : null }
   }
 
   resolveConflict(input: ResolveWebDavSyncConflict): WebDavSyncStatus {
     if (this.busy) throw new Error('请等待同步结束后处理冲突。')
-    if (!input || typeof input.key !== 'string' || !['local', 'remote', 'both'].includes(input.choice)) throw new Error('冲突处理参数无效。')
-    const state = this.state(), conflict = state.conflicts[input.key]
-    if (!conflict) throw new Error('该冲突已不存在，请刷新。')
-    if (input.choice === 'both' && conflict.local.kind !== 'document') throw new Error('该冲突不支持创建文档副本。')
-    state.resolutions[input.key] = { localHash: conflict.localHash, remoteHash: conflict.remoteHash, choice: input.choice }
+    if (!input || !['local', 'remote', 'both', 'merge', 'clear'].includes(input.choice)) throw new Error('冲突处理参数无效。')
+    const { state, conflict } = this.boundConflict(input, input.choice !== 'clear')
+    if (input.choice === 'clear') {
+      delete state.resolutions[input.key]
+      this.saveState(state)
+      this.message = '已取消处理方式，双方版本仍保留。'
+      return this.getStatus()
+    }
+    if (input.choice === 'both' && conflict.local.kind !== 'document' && conflict.remote.kind !== 'document') throw new Error('该冲突不支持创建文档副本。')
+    let merged: SyncDocument | undefined
+    if (input.choice === 'merge') {
+      const plan = this.documentMerge(conflict, input.mergeChoices)
+      if (plan.unresolved.length) throw new Error('请处理全部冲突字段，并检查自定义内容后再保存合并。')
+      validateRecord(plan.document, input.key)
+      syncAssetReferences(plan.document)
+      if (Buffer.byteLength(canonicalJson(plan.document)) > MAX_RECORD_BYTES) throw new Error('合并后的文档超过 16 MB，请缩小内容后重试。')
+      merged = plan.document
+    } else if (input.mergeChoices !== undefined) throw new Error('当前处理方式不接受合并选项。')
+    state.resolutions[input.key] = { localHash: conflict.localHash, remoteHash: conflict.remoteHash, choice: input.choice, merged,
+      mergeChoices: input.choice === 'merge' ? input.mergeChoices : undefined }
     this.saveState(state)
     this.message = '处理方式已保存，点击立即同步以应用；若任一版本变化，将重新提示冲突。'
     return this.getStatus()
