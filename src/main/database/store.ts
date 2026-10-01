@@ -58,6 +58,7 @@ import type {
   UpdateDocumentInput,
   UpdateDocumentResult,
   WorkspaceEventRecord,
+  WorkspaceEventDetails,
   WorkspaceEventType,
   WorkspaceSummary,
   GlobalSearchResult,
@@ -72,6 +73,7 @@ import type {
 } from '@shared/contracts'
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
 import { WorkspaceSearchRepository } from './workspace-search'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
@@ -271,6 +273,7 @@ interface WorkspaceEventRow {
   description: string
   document_id: string | null
   created_at: string
+  details_json: string | null
 }
 
 interface SemanticSearchDocumentRow {
@@ -485,6 +488,13 @@ export class KnowbookStore {
         this.db.pragma('user_version = 19')
       }
       if (schemaVersion < 20) this.db.pragma('user_version = 20')
+      if (schemaVersion < 21) {
+        const columns = this.db.pragma('table_info(workspace_events)') as Array<{ name: string }>
+        if (!columns.some((column) => column.name === 'details_json')) {
+          this.db.exec('ALTER TABLE workspace_events ADD COLUMN details_json TEXT')
+        }
+        this.db.pragma('user_version = 21')
+      }
     })
   }
 
@@ -2640,18 +2650,21 @@ export class KnowbookStore {
     description: string
     documentId?: string | null
     createdAt?: string
+    details?: WorkspaceEventDetails
   }): void {
     const now = input.createdAt ?? new Date().toISOString()
+    const details = parseWorkspaceEventDetails(input.details)
     this.db.prepare(`
-      INSERT INTO workspace_events (id, type, title, description, document_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO workspace_events (id, type, title, description, document_id, created_at, details_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       input.type,
       input.title.trim(),
       input.description.trim(),
       input.documentId ?? null,
-      now
+      now,
+      details ? JSON.stringify(details) : null
     )
 
     this.db.prepare(`
@@ -2760,20 +2773,27 @@ export class KnowbookStore {
 
   private getRecentWorkspaceEvents(limit = 8): WorkspaceEventRecord[] {
     const rows = this.db.prepare(`
-      SELECT id, type, title, description, document_id, created_at
+      SELECT id, type, title, description, document_id, created_at, details_json
       FROM workspace_events
       ORDER BY created_at DESC
       LIMIT ?
     `).all(limit) as WorkspaceEventRow[]
 
-    return rows.map((row) => ({
-      id: row.id,
-      type: row.type,
-      title: row.title,
-      description: row.description,
-      documentId: row.document_id ?? null,
-      createdAt: row.created_at
-    }))
+    return rows.map((row) => {
+      let details: WorkspaceEventDetails | undefined
+      if (row.details_json) {
+        try { details = parseWorkspaceEventDetails(JSON.parse(row.details_json)) } catch { /* Keep legacy activity readable. */ }
+      }
+      return {
+        id: row.id,
+        type: row.type,
+        title: row.title,
+        description: row.description,
+        documentId: row.document_id ?? null,
+        createdAt: row.created_at,
+        ...(details ? { details } : {})
+      }
+    })
   }
 
   private getHomeDocumentCatalogRows(): HomeDocumentCatalogRow[] {

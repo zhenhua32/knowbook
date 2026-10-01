@@ -1,7 +1,7 @@
 import type { AppUpdateState, RecentDocument, WebClipBridgeStatus, WorkspaceSummary } from '@shared/contracts'
 import type { UiLanguage, UiText } from '../i18n'
 import './management-sections.css'
-import { lazy, Suspense, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
@@ -51,6 +51,8 @@ type DashboardSettingsSectionProps = {
   onCopyWebClipBridgeToken: () => void
   appearanceContent?: ReactNode
   recoveryContent?: ReactNode
+  requestedCategory?: SettingsCategory | null
+  onCategoryRequestHandled?: () => void
 }
 
 function getAppUpdateStatusText(state: AppUpdateState | null, ui: UiText): string {
@@ -124,7 +126,9 @@ export function DashboardSettingsSection({
   onCopyWebClipBridgeEndpoint,
   onCopyWebClipBridgeToken,
   appearanceContent,
-  recoveryContent
+  recoveryContent,
+  requestedCategory,
+  onCategoryRequestHandled
 }: DashboardSettingsSectionProps) {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
   const [syncMounted, setSyncMounted] = useState(false)
@@ -143,6 +147,12 @@ export function DashboardSettingsSection({
     if (category === 'sync') setSyncMounted(true)
     setActiveCategory(category)
   }
+  useLayoutEffect(() => {
+    if (!isSettingsPage || !requestedCategory) return
+    if (requestedCategory === 'sync') setSyncMounted(true)
+    setActiveCategory(requestedCategory)
+    onCategoryRequestHandled?.()
+  }, [isSettingsPage, requestedCategory, onCategoryRequestHandled])
   const navigateCategory = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex: number
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % categories.length

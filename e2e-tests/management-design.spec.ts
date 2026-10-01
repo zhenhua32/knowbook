@@ -62,7 +62,7 @@ test('management layouts use the available minimum-window space without compress
 
     await openManagementPage(page, 'Dashboard', '总览', '.hero')
     const dashboardLayout = await page.locator('.detail-grid').first().evaluate((grid) => {
-      const panel = grid.querySelector<HTMLElement>('.large-panel')
+      const panel = grid.querySelector<HTMLElement>('.dashboard-activity-panel')
       const gridRect = grid.getBoundingClientRect()
       const panelRect = panel?.getBoundingClientRect()
       return {
@@ -76,6 +76,8 @@ test('management layouts use the available minimum-window space without compress
     expect(dashboardLayout.panelHeight).toBeLessThanOrEqual(200)
 
     await openManagementPage(page, 'AI Assistant', 'AI 助手', '.management-page-header')
+    await page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') }).click()
+    await expect(page.locator('.assistant-transcript.is-empty')).toBeVisible()
     const emptyTranscriptHeight = await page.locator('.assistant-transcript.is-empty').evaluate((element) => element.getBoundingClientRect().height)
     expect(emptyTranscriptHeight).toBeLessThanOrEqual(180)
 
@@ -111,7 +113,7 @@ test('dark management surfaces keep primary text readable and use one coherent d
 
     const samples = [
       { en: 'Dashboard', zh: '总览', ready: '.hero', selectors: ['.hero h2', '.stat-card strong', '.panel-head h3', '.plugin-dashboard-card p:last-child'] },
-      { en: 'AI Assistant', zh: 'AI 助手', ready: '.management-page-header', selectors: ['.management-page-heading h2', '.panel-head h3'] },
+      { en: 'AI Assistant', zh: 'AI 助手', ready: '.management-page-header', selectors: ['.management-page-heading h2', '.ai-task-switcher [aria-selected="true"]', '.ai-prompt-label'] },
       { en: 'Plugins', zh: '插件中心', ready: '.plugins-page', selectors: ['.plugin-page-heading h3', '.plugin-card-title-row > strong', '.plugin-status-running', '.plugin-inspector h4'] },
       { en: 'Settings', zh: '配置中心', ready: '.settings-layout', selectors: ['.management-page-heading h2', '.settings-category-nav [role="tab"][aria-selected="true"]', '.settings-category-panel:not([hidden]) .settings-group-heading h3'] },
       { en: 'Database', zh: '数据库', ready: '[data-testid="database-grid"]', selectors: ['.dbw-source-trigger', '.dbw-table th', '.dbw-record-title strong'] }

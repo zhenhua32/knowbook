@@ -17,6 +17,11 @@ type UseAiDomainParams = {
   onSelectedDocumentChange: Dispatch<SetStateAction<DocumentDetail | null>>
   selectedDocument: DocumentDetail | null
   selectedDocumentId: string | null
+  documentOptions: AISectionProps['documentOptions']
+  contextDocumentId: string | null
+  contextDocumentLoading: boolean
+  onSelectContextDocument: AISectionProps['onSelectContextDocument']
+  onOpenAiSettings: AISectionProps['onOpenAiSettings']
   ui: UiText
 }
 
@@ -30,6 +35,11 @@ export function useAiDomain({
   onSelectedDocumentChange,
   selectedDocument,
   selectedDocumentId,
+  documentOptions,
+  contextDocumentId,
+  contextDocumentLoading,
+  onSelectContextDocument,
+  onOpenAiSettings,
   ui
 }: UseAiDomainParams) {
   const aiState = useAiState({
@@ -49,6 +59,7 @@ export function useAiDomain({
     aiContextError: aiState.aiContextError,
     aiContextResults: aiState.aiContextResults,
     aiContextSearching: aiState.aiContextSearching,
+    aiContextHasSearched: aiState.aiContextHasSearched,
     aiEnabled: aiConfig.enabled,
     aiPromptDraft: aiState.aiPromptDraft,
     hasApiKey: aiConfig.hasApiKey,
@@ -65,6 +76,11 @@ export function useAiDomain({
       void aiState.runEnabledAiAutomationsOnSelectedDocument()
     },
     selectedDocument,
+    documentOptions,
+    contextDocumentId,
+    contextDocumentLoading,
+    onSelectContextDocument,
+    onOpenAiSettings,
     ui
   }
 

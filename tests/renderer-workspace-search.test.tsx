@@ -297,6 +297,7 @@ test('search page exposes usable filters and pagination, safely highlights text,
     assert.match(document.querySelector('.workspace-search-snippet')!.textContent!, /<script>alert\(1\)<\/script>/)
     await act(async () => button('Next page').click()); await tick()
     assert.equal(requests.at(-1)?.page, 2); assert.match(document.querySelector('.workspace-search-pagination')!.textContent!, /Page 2 of 2/)
+    await act(async () => document.querySelector<HTMLButtonElement>('.workspace-search-filter-toggle')!.click())
     await changeSelect('Folder', 'folder'); await changeSelect('Tag', 'review'); await changeSelect('Block type', 'todo'); await changeSelect('Match mode', 'any'); await tick()
     assert.equal(requests.at(-1)?.page, 1); assert.equal(requests.at(-1)?.folderId, 'folder'); assert.equal(requests.at(-1)?.tag, 'review'); assert.equal(requests.at(-1)?.blockType, 'todo')
     await act(async () => button('Go to block').click())
@@ -306,6 +307,96 @@ test('search page exposes usable filters and pagination, safely highlights text,
     assert.deepEqual(copied, ['[Result 1](/Folder/Result.md)']); assert.match(document.querySelector('.workspace-search-action-feedback')!.textContent!, /Document link copied/)
     await act(async () => button('Clear filters').click()); await tick()
     assert.equal(control('Tag').value, ''); assert.equal(control('Folder').value, ''); assert.equal(control('Keywords').value, 'needle')
+  })
+})
+
+test('collapsed filters remain applied and removable without losing the query, page size or keyboard focus', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const requests: WorkspaceSearchInput[] = []
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 }, onOpenDocument: () => false, onOpenBlock: () => false }
+  await withRenderer(api({ searchWorkspace: async (input) => { requests.push(input); return searchPage(input, 130) } }), async ({ render, document, window }) => {
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    await render(<SearchPage {...common} />); await tick()
+    const toggle = document.querySelector<HTMLButtonElement>('.workspace-search-filter-toggle')!
+    const advanced = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    assert.equal(toggle.getAttribute('aria-expanded'), 'false'); assert.equal(advanced.hidden, true)
+    assert.equal(advanced.contains(document.querySelector('[data-testid="workspace-search-results"]')), false)
+    await act(async () => toggle.click())
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true'); assert.equal(advanced.hidden, false)
+    const change = async (suffix: string, value: string) => act(async () => {
+      const select = document.querySelector<HTMLSelectElement>(`select[id$="-${suffix}"]`)!
+      select.value = value; select.dispatchEvent(new window.Event('change', { bubbles: true }))
+    })
+    await change('scope', 'blocks'); await change('tag', 'review'); await change('page-size', '50'); await tick()
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Next page')!.click()); await tick()
+    assert.equal(requests.at(-1)?.page, 2)
+    await act(async () => toggle.click())
+    assert.equal(advanced.hidden, true); assert.equal(requests.at(-1)?.tag, 'review')
+    assert.equal(document.querySelectorAll('.workspace-search-filter-chip').length, 2)
+    const removeTag = document.querySelector<HTMLButtonElement>('[aria-label="Remove tag filter: review"]')!
+    await act(async () => { removeTag.focus(); removeTag.click() }); await tick()
+    assert.equal(requests.at(-1)?.tag, ''); assert.equal(requests.at(-1)?.scope, 'blocks')
+    assert.equal(requests.at(-1)?.query, 'needle'); assert.equal(requests.at(-1)?.page, 1); assert.equal(requests.at(-1)?.pageSize, 50)
+    assert.equal(document.activeElement, toggle, 'Removing a focused condition returns focus to its stable disclosure')
+    await render(<SearchPage {...common} isZh />); await tick()
+    assert.equal(toggle.getAttribute('aria-label'), '筛选'); assert.equal(advanced.hidden, true)
+    assert.match(document.querySelector('.workspace-search-filter-chip')!.textContent!, /范围: 仅内容块/)
+    await act(async () => toggle.click())
+    assert.equal(document.querySelector<HTMLSelectElement>('select[id$="-scope"]')!.value, 'blocks')
+    assert.equal(document.querySelector<HTMLSelectElement>('select[id$="-tag"]')!.value, '')
+  })
+})
+
+test('empty results offer direct recovery while an empty workspace gives an appropriate first step', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const requests: WorkspaceSearchInput[] = []
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'missing words', sequence: 1 }, onOpenDocument: () => false, onOpenBlock: () => false }
+  await withRenderer(api({ searchWorkspace: async (input) => { requests.push(input); return searchPage(input, input.query || input.tag ? 0 : 26) } }), async ({ render, document, window }) => {
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === label)!
+    await render(<SearchPage {...common} />); await tick()
+    assert.match(document.querySelector('.workspace-search-empty')!.textContent!, /No matching results/)
+    await act(async () => button('Match any word').click()); await tick()
+    assert.equal(requests.at(-1)?.matchMode, 'any'); assert.equal(requests.at(-1)?.query, 'missing words')
+    await act(async () => document.querySelector<HTMLButtonElement>('.workspace-search-filter-toggle')!.click())
+    await act(async () => {
+      const select = document.querySelector<HTMLSelectElement>('select[id$="-tag"]')!
+      select.value = 'review'; select.dispatchEvent(new window.Event('change', { bubbles: true }))
+    }); await tick()
+    await act(async () => button('Search without filters').click()); await tick()
+    assert.equal(requests.at(-1)?.tag, ''); assert.equal(requests.at(-1)?.matchMode, 'all'); assert.equal(requests.at(-1)?.query, 'missing words')
+    await act(async () => button('Browse all content').click()); await tick()
+    assert.equal(requests.at(-1)?.query, ''); assert.equal(requests.at(-1)?.page, 1)
+    assert.equal(document.querySelector('.workspace-search-empty'), null)
+    assert.equal(document.activeElement, document.querySelector('input[type="search"]'))
+  })
+  await withRenderer(api({ searchWorkspace: async (input) => searchPage(input, 0) }), async ({ render, document }) => {
+    await render(<SearchPage {...common} request={null} />); await act(async () => t.mock.timers.tick(200))
+    assert.match(document.querySelector('.workspace-search-empty')!.textContent!, /No searchable content yet.*Add a document/)
+    assert.equal(document.querySelector('.workspace-search-empty-actions')!.childElementCount, 0)
+  })
+})
+
+test('IME confirmation cannot submit the query, while a subsequent ordinary Enter can search', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requests = 0
+  await withRenderer(api({ searchWorkspace: async (input) => { requests++; return searchPage(input) } }), async ({ render, document, window }) => {
+    await render(<SearchPage isActive isZh documentTree={[]} request={null} onOpenDocument={() => false} onOpenBlock={() => false} />)
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    await tick(); assert.equal(requests, 1)
+    const input = document.querySelector<HTMLInputElement>('input[type="search"]')!, form = input.closest('form')!
+    const confirmation = new window.KeyboardEvent('keydown', { key: 'Enter', isComposing: true, keyCode: 229, bubbles: true, cancelable: true })
+    await act(async () => input.dispatchEvent(confirmation))
+    assert.equal(confirmation.defaultPrevented, true)
+    await act(async () => {
+      input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+      form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+    }); await tick(); assert.equal(requests, 1, 'The form also rejects submission while composition is active')
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+    const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => input.dispatchEvent(enter)); assert.equal(enter.defaultPrevented, false)
+    await act(async () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })))
+    await tick(); assert.equal(requests, 2)
   })
 })
 

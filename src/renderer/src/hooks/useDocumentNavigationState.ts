@@ -49,6 +49,13 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     })
   }, [onActivePageChange, prepareNavigation])
 
+  const selectDocumentContext = useCallback(async (documentId: string, shouldContinue?: () => boolean) => {
+    if (!await prepareNavigation(documentId, shouldContinue)) return false
+    setPendingBlockNavigationTarget(null)
+    setSelectedDocumentId(documentId)
+    return true
+  }, [prepareNavigation])
+
   const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string, shouldContinue?: () => boolean) => {
     return prepareNavigation(documentId, shouldContinue).then((allowed) => {
       if (!allowed) {
@@ -174,6 +181,7 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     openDocumentBlockInDocumentsPage,
     openDocumentAnchorInDocumentsPage,
     openDocumentInDocumentsPage,
+    selectDocumentContext,
     pendingBlockNavigationTarget,
     pinnedDocumentIds,
     selectedDocument,

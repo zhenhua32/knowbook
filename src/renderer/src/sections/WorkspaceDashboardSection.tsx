@@ -1,6 +1,8 @@
 import type { PluginDashboardCard, WorkspaceEventRecord, WorkspaceSummary } from '@shared/contracts'
 import type { UiText } from '../i18n'
+import { formatWorkspaceEvent, formatWorkspaceEventTime, type WorkspaceActivityIcon } from './workspace-event-presentation'
 import './management-sections.css'
+import './workspace-dashboard.css'
 
 type WorkspaceDashboardSectionProps = {
   isAiEnabled: boolean
@@ -12,6 +14,26 @@ type WorkspaceDashboardSectionProps = {
   recentEvents: WorkspaceEventRecord[]
   summary: WorkspaceSummary
   ui: UiText
+}
+
+function ActivityIcon({ kind }: { kind: WorkspaceActivityIcon }) {
+  return (
+    <span className="dashboard-activity-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        {kind === 'ai' || kind === 'summary' ? (
+          <path d="m12 3 2.8 6.2L21 12l-6.2 2.8L12 21l-2.8-6.2L3 12l6.2-2.8L12 3Z" />
+        ) : kind === 'move' ? (
+          <><path d="M3 7h7l2 3h9v9H3Z" /><path d="M13 5h7m-3-3 3 3-3 3" /></>
+        ) : kind === 'delete' ? (
+          <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6" /></>
+        ) : kind === 'plugin' ? (
+          <><rect x="4" y="4" width="6" height="6" rx="1" /><rect x="14" y="4" width="6" height="6" rx="1" /><rect x="4" y="14" width="6" height="6" rx="1" /><rect x="14" y="14" width="6" height="6" rx="1" /></>
+        ) : (
+          <><path d="M6 3h8l4 4v14H6ZM14 3v5h4M9 12h6M9 16h6" /></>
+        )}
+      </svg>
+    </span>
+  )
 }
 
 export function WorkspaceDashboardSection({
@@ -63,7 +85,7 @@ export function WorkspaceDashboardSection({
       </section>
 
       <section className="detail-grid single-column">
-        <article className={`panel large-panel${recentEvents.length === 0 ? ' dashboard-events-empty' : ''}`}>
+        <article className={`panel dashboard-activity-panel${recentEvents.length === 0 ? ' dashboard-events-empty' : ''}`}>
           <div className="panel-head">
             <div>
               <p className="panel-label">{ui.automationFeedLabel}</p>
@@ -71,29 +93,36 @@ export function WorkspaceDashboardSection({
             </div>
           </div>
           {recentEvents.length > 0 ? (
-            <div className="event-feed">
-              {recentEvents.map((event) => (
-                <button
-                  className="event-feed-item"
-                  disabled={!event.documentId}
-                  key={event.id}
-                  onClick={() => {
-                    if (event.documentId) {
-                      onOpenDocument(event.documentId)
-                    }
-                  }}
-                  type="button"
-                >
-                  <div className="event-feed-head">
-                    <strong>{event.title}</strong>
-                    <span>{new Date(event.createdAt).toLocaleTimeString(ui.locale, { hour: '2-digit', minute: '2-digit' })}</span>
-                  </div>
-                  <span className="event-feed-description">{event.description}</span>
-                </button>
-              ))}
-            </div>
+            <ol className="dashboard-activity-list" aria-label={ui.recentEventsTitle}>
+              {recentEvents.map((event) => {
+                const activity = formatWorkspaceEvent(event, ui.locale)
+                const time = formatWorkspaceEventTime(event.createdAt, ui.locale)
+                const documentId = event.documentId
+                const openLabel = ui.locale === 'zh-CN' ? '打开文档' : 'Open document'
+                return (
+                  <li className="dashboard-activity-row" key={event.id}>
+                    <ActivityIcon kind={activity.icon} />
+                    <div className="dashboard-activity-copy">
+                      <div className="dashboard-activity-heading">
+                        <strong>{activity.title}</strong>
+                        {time.dateTime ? (
+                          <time className="dashboard-activity-time" dateTime={time.dateTime} title={time.title}>{time.text}</time>
+                        ) : <span className="dashboard-activity-time">{time.text}</span>}
+                      </div>
+                      {activity.description ? <p className="dashboard-activity-description">{activity.description}</p> : null}
+                      {activity.path ? <p className="dashboard-activity-path">{activity.path}</p> : null}
+                    </div>
+                    {documentId ? (
+                      <button className="dashboard-activity-open" type="button"
+                        aria-label={activity.documentTitle ? `${openLabel}${ui.locale === 'zh-CN' ? '：' : ': '}${activity.documentTitle}` : openLabel}
+                        onClick={() => onOpenDocument(documentId)}>{openLabel}</button>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ol>
           ) : (
-            <p className="mini-hint">{ui.noAutomationEvents}</p>
+            <p className="dashboard-activity-empty">{ui.noAutomationEvents}</p>
           )}
         </article>
       </section>

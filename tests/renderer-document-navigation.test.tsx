@@ -151,3 +151,57 @@ test('a cancelled same-document jump preserves the existing target without savin
     assert.deepEqual(pageChanges, [])
   })
 })
+
+test('AI context selection waits for saving and changes the document without leaving its page', async () => {
+  const saving = deferred<boolean>()
+  await withNavigation(() => saving.promise, async ({ current, pageChanges }) => {
+    const selection = current().selectDocumentContext('document-b')
+    assert.equal(current().selectedDocumentId, 'document-a')
+    let outcome!: boolean
+    await act(async () => { saving.resolve(true); outcome = await selection })
+    assert.equal(outcome, true)
+    assert.equal(current().selectedDocumentId, 'document-b')
+    assert.equal(current().pendingBlockNavigationTarget, null)
+    assert.deepEqual(pageChanges, [])
+  })
+})
+
+test('leaving the AI page during a pending save cancels its context selection', async () => {
+  const saving = deferred<boolean>()
+  await withNavigation(() => saving.promise, async ({ current, pageChanges }) => {
+    let isAiPage = true
+    const target = current().pendingBlockNavigationTarget
+    const selection = current().selectDocumentContext('document-b', () => isAiPage)
+    isAiPage = false
+    let outcome!: boolean
+    await act(async () => { saving.resolve(true); outcome = await selection })
+    assert.equal(outcome, false)
+    assert.equal(current().selectedDocumentId, 'document-a')
+    assert.deepEqual(current().pendingBlockNavigationTarget, target)
+    assert.deepEqual(pageChanges, [])
+  })
+})
+
+test('a blocked save preserves the AI context and a later normal navigation wins over context selection', async () => {
+  await withNavigation(async () => false, async ({ current, pageChanges }) => {
+    const target = current().pendingBlockNavigationTarget
+    let outcome!: boolean
+    await act(async () => { outcome = await current().selectDocumentContext('document-b') })
+    assert.equal(outcome, false)
+    assert.equal(current().selectedDocumentId, 'document-a')
+    assert.deepEqual(current().pendingBlockNavigationTarget, target)
+    assert.deepEqual(pageChanges, [])
+  })
+  const olderSave = deferred<boolean>(), newerSave = deferred<boolean>()
+  await withNavigation((id) => id === 'document-b' ? olderSave.promise : newerSave.promise, async ({ current, pageChanges }) => {
+    const context = current().selectDocumentContext('document-b')
+    const navigation = current().openDocumentInDocumentsPage('document-c')
+    let first!: boolean, last!: boolean
+    await act(async () => { newerSave.resolve(true); last = await navigation })
+    await act(async () => { olderSave.resolve(true); first = await context })
+    assert.equal(first, false)
+    assert.equal(last, true)
+    assert.equal(current().selectedDocumentId, 'document-c')
+    assert.deepEqual(pageChanges, ['documents'])
+  })
+})

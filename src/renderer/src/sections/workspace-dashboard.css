@@ -1,0 +1,128 @@
+.dashboard-activity-panel .panel-head {
+  margin-bottom: 12px;
+}
+
+.dashboard-activity-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dashboard-activity-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--kb-line);
+}
+
+.dashboard-activity-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.dashboard-activity-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--kb-accent-soft);
+  color: var(--kb-accent-strong);
+}
+
+.dashboard-activity-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.dashboard-activity-copy,
+.dashboard-activity-heading {
+  min-width: 0;
+}
+
+.dashboard-activity-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+}
+
+.dashboard-activity-heading strong {
+  flex: 1 1 220px;
+  color: var(--kb-text);
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-activity-time {
+  color: var(--kb-text-muted);
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.dashboard-activity-description,
+.dashboard-activity-path {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-activity-description {
+  color: var(--kb-text-soft);
+  font-size: var(--kb-type-label);
+  line-height: 20px;
+}
+
+.dashboard-activity-path {
+  color: var(--kb-text-muted);
+  font-size: var(--kb-type-caption);
+  line-height: 18px;
+}
+
+.dashboard-activity-open {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--kb-line);
+  border-radius: 8px;
+  background: var(--kb-canvas);
+  color: var(--kb-accent-strong);
+  cursor: pointer;
+  font-size: var(--kb-type-label);
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.dashboard-activity-open:hover {
+  border-color: var(--kb-line-strong);
+  background: var(--kb-accent-soft);
+}
+
+.dashboard-activity-empty {
+  margin: 0;
+  padding: 16px 0;
+  color: var(--kb-text-muted);
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+@media (max-width: 720px) {
+  .dashboard-activity-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .dashboard-activity-open {
+    grid-column: 2;
+    justify-self: start;
+  }
+}

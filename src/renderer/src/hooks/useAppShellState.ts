@@ -72,6 +72,12 @@ export function useAppShellState() {
   const reloadRef = useRef<() => void>(() => undefined)
   const retryWorkspace = useCallback(() => reloadRef.current(), [])
   const [activePage, setActivePage] = useState<PageId>('documents')
+  const [settingsCategoryRequest, setSettingsCategoryRequest] = useState<'ai' | null>(null)
+  const openAiSettings = useCallback(() => {
+    setSettingsCategoryRequest('ai')
+    setActivePage('settings')
+  }, [])
+  const clearSettingsCategoryRequest = useCallback(() => setSettingsCategoryRequest(null), [])
   const [searchRequest, setSearchRequest] = useState<{ query: string; sequence: number } | null>(null)
   const searchSequenceRef = useRef(0)
   const openWorkspaceSearch = useCallback((query?: string) => {
@@ -247,6 +253,9 @@ export function useAppShellState() {
 
   return {
     activePage,
+    settingsCategoryRequest,
+    openAiSettings,
+    clearSettingsCategoryRequest,
     searchRequest,
     openWorkspaceSearch,
     catalogColumns,

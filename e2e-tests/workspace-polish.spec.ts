@@ -53,6 +53,7 @@ test('workspace status reflects a missing AI key and uses product guidance @elec
     await expect(page.locator('.stats-grid').getByText(uiText('API key needed', '待配置密钥'))).toBeVisible()
     await expect(page.locator('.hero')).not.toContainText('preload bridge')
     await page.getByTitle(uiText('AI Assistant', 'AI 助手')).click()
-    await expect(page.locator('.assistant-workbench').getByText(uiText('Enable AI and save an API key in Settings first.', '请先在设置中启用 AI 并保存 API Key。'))).toBeVisible()
+    await expect(page.locator('.ai-readiness')).toContainText(/API Key|API key/)
+    await expect(page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手') })).toHaveAttribute('aria-selected', 'true')
   })
 })

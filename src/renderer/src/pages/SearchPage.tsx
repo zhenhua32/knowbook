@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
-import type { WorkspaceSearchResult } from '@shared/workspace-search'
-import { useWorkspaceSearch, type WorkspaceSearchRequest } from '../hooks/useWorkspaceSearch'
+import type { WorkspaceSearchInput, WorkspaceSearchResult } from '@shared/workspace-search'
+import { defaultWorkspaceSearchInput, useWorkspaceSearch, type WorkspaceSearchRequest } from '../hooks/useWorkspaceSearch'
 import { getUiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
 import { searchResultDocumentLink } from '../utils/searchResultLink'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import './workspace-search.css'
 
 export type SearchPageProps = {
@@ -32,10 +33,12 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
   const search = useWorkspaceSearch({ isActive, isZh, request })
   const { input, result, loading } = search
   const id = useId(), queryInput = useRef<HTMLInputElement>(null)
+  const filterToggle = useRef<HTMLButtonElement>(null), composing = useRef(false)
   const mounted = useRef(false), actionLock = useRef(false), actionSequence = useRef(0)
   const active = useRef(isActive)
   active.current = isActive
   const [busy, setBusy] = useState(false)
+  const [filtersExpanded, setFiltersExpanded] = useState(false)
   const [feedback, setFeedback] = useState<{ message: string; error: boolean } | null>(null)
   const choose = (zh: string, en: string) => isZh ? zh : en
   const folders = flattenTree(documentTree)
@@ -45,6 +48,23 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
   const from = result && result.total > 0 ? (result.page - 1) * result.pageSize + 1 : 0
   const to = result ? Math.min(result.page * result.pageSize, result.total) : 0
   const terms = result?.queryTerms ?? []
+  const appliedFilters: { key: string; label: string; value: string; reset: Partial<WorkspaceSearchInput> }[] = []
+  if (input.scope !== 'all') appliedFilters.push({ key: 'scope', label: choose('范围', 'Scope'), value: input.scope === 'documents' ? choose('仅文档', 'Documents only') : choose('仅内容块', 'Blocks only'), reset: { scope: 'all' } })
+  if (input.matchMode !== 'all') appliedFilters.push({ key: 'match', label: choose('匹配', 'Match'), value: input.matchMode === 'any' ? choose('任意词', 'Any word') : choose('完整短语', 'Exact phrase'), reset: { matchMode: 'all' } })
+  if (input.folderId) appliedFilters.push({ key: 'folder', label: choose('目录', 'Folder'), value: folders.find((folder) => folder.id === input.folderId)?.path ?? choose('目录已移除', 'Folder removed'), reset: { folderId: null } })
+  if (input.tag) appliedFilters.push({ key: 'tag', label: choose('标签', 'Tag'), value: input.tag, reset: { tag: '' } })
+  if (input.blockType) appliedFilters.push({ key: 'type', label: choose('类型', 'Type'), value: blockLabels[input.blockType] || input.blockType, reset: { blockType: '' } })
+  if (input.updatedFrom) appliedFilters.push({ key: 'from', label: choose('开始日期', 'From'), value: input.updatedFrom, reset: { updatedFrom: '' } })
+  if (input.updatedTo) appliedFilters.push({ key: 'to', label: choose('结束日期', 'To'), value: input.updatedTo, reset: { updatedTo: '' } })
+  const hasCriteria = appliedFilters.length > 0
+  const clearCriteria = () => {
+    search.clearFilters()
+    filterToggle.current?.focus({ preventScroll: true })
+  }
+  const browseAll = () => {
+    search.updateInput({ ...defaultWorkspaceSearchInput, pageSize: input.pageSize })
+    queryInput.current?.focus({ preventScroll: true })
+  }
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; actionSequence.current++ } }, [])
   useEffect(() => { actionSequence.current++; setFeedback(null) }, [isActive, input])
@@ -74,24 +94,46 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
   return <div className="workspace-search-page">
     <header className="management-page-header">
       <div className="management-page-heading">
-        <p className="management-page-kicker">{choose('知识库', 'Knowledge workspace')}</p>
         <h2>{choose('搜索', 'Search')}</h2>
-        <p className="management-page-description">{choose('查找文档与内容，按目录、标签或更新时间缩小范围，并保存常用检索。', 'Find documents and content, narrow by folder, tag or update date, and save searches you use often.')}</p>
+        <p className="management-page-description">{choose('搜索整个知识库，快速定位文档和内容块。', 'Find documents and blocks across your knowledge workspace.')}</p>
       </div>
     </header>
 
     <section className="panel workspace-search-filter-panel" aria-label={choose('搜索条件', 'Search filters')}>
-      <form onSubmit={(event) => { event.preventDefault(); search.retry() }}>
+      <form onSubmit={(event) => { event.preventDefault(); if (!composing.current) search.retry() }}>
         <div className="workspace-search-query-row">
           <label className="workspace-search-field workspace-search-query" htmlFor={`${id}-query`}>
             <span className="editor-label" id={`${id}-query-label`}>{choose('关键词', 'Keywords')}</span>
-            <input ref={queryInput} id={`${id}-query`} aria-labelledby={`${id}-query-label`} type="search" className="editor-input" value={input.query}
+            <span className="workspace-search-query-input">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+              <input ref={queryInput} id={`${id}-query`} aria-labelledby={`${id}-query-label`} aria-describedby={`${id}-query-hint`} type="search" className="editor-input" value={input.query}
               placeholder={choose('搜索标题、摘要和正文…', 'Search titles, summaries and content…')} autoComplete="off"
+              onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
+              onKeyDown={(event) => { if (event.key === 'Enter' && isImeKeyboardEvent(event.nativeEvent, composing.current)) event.preventDefault() }}
               onChange={(event) => search.updateInput({ query: event.target.value })} />
+            </span>
           </label>
           <button type="submit" className="primary-button">{choose('搜索', 'Search')}</button>
-          <button type="button" className="secondary-button" onClick={search.clearFilters}>{choose('清空筛选', 'Clear filters')}</button>
         </div>
+        <div className="workspace-search-query-tools">
+          <button ref={filterToggle} type="button" className={`secondary-button workspace-search-filter-toggle${filtersExpanded ? ' is-expanded' : ''}`}
+            aria-label={choose('筛选', 'Filters')} aria-description={choose(`已启用 ${appliedFilters.length} 项筛选`, `${appliedFilters.length} filters applied`)}
+            aria-expanded={filtersExpanded} aria-controls={`${id}-filters`} onClick={() => setFiltersExpanded((value) => !value)}>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M7 12h10M10 17h4" /></svg>
+            {choose('筛选', 'Filters')}{appliedFilters.length > 0 && <span className="workspace-search-filter-count" aria-hidden="true">{appliedFilters.length}</span>}
+            <svg className="workspace-search-filter-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
+          </button>
+          <p className="workspace-search-query-hint" id={`${id}-query-hint`}>{choose('留空浏览全部内容 · Enter 立即搜索', 'Leave empty to browse all content · Enter to search now')}</p>
+          {hasCriteria && <button type="button" className="secondary-button workspace-search-clear" onClick={clearCriteria}>{choose('清空筛选', 'Clear filters')}</button>}
+        </div>
+        {appliedFilters.length > 0 && <div className="workspace-search-applied-filters" role="group" aria-label={choose('已启用筛选', 'Applied filters')}>
+          {appliedFilters.map((filter) => <button key={filter.key} type="button" className="workspace-search-filter-chip"
+            aria-label={choose(`移除${filter.label}筛选：${filter.value}`, `Remove ${filter.label.toLowerCase()} filter: ${filter.value}`)}
+            title={`${filter.label}: ${filter.value}`} onClick={() => { search.updateInput(filter.reset); filterToggle.current?.focus({ preventScroll: true }) }}>
+            <span>{filter.label}: {filter.value}</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+          </button>)}
+        </div>}
+        <div id={`${id}-filters`} className="workspace-search-advanced" hidden={!filtersExpanded}>
         <div className="workspace-search-filters">
           <label className="workspace-search-field" htmlFor={`${id}-scope`}><span className="editor-label" id={`${id}-scope-label`}>{choose('搜索范围', 'Search scope')}</span>
             <select id={`${id}-scope`} aria-labelledby={`${id}-scope-label`} className="editor-select" value={input.scope} onChange={(event) => search.updateInput({ scope: event.target.value as typeof input.scope })}>
@@ -123,12 +165,9 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
             <input id={`${id}-from`} aria-labelledby={`${id}-from-label`} type="date" className="editor-input" value={input.updatedFrom || ''} onChange={(event) => search.updateInput({ updatedFrom: event.target.value })} /></label>
           <label className="workspace-search-field" htmlFor={`${id}-to`}><span className="editor-label" id={`${id}-to-label`}>{choose('更新结束日期', 'Updated to')}</span>
             <input id={`${id}-to`} aria-labelledby={`${id}-to-label`} type="date" className="editor-input" value={input.updatedTo || ''} min={input.updatedFrom || undefined} onChange={(event) => search.updateInput({ updatedTo: event.target.value })} /></label>
-          <label className="workspace-search-field" htmlFor={`${id}-sort`}><span className="editor-label" id={`${id}-sort-label`}>{choose('排序', 'Sort')}</span>
-            <select id={`${id}-sort`} aria-labelledby={`${id}-sort-label`} className="editor-select" value={input.sort} onChange={(event) => search.updateInput({ sort: event.target.value as typeof input.sort })}>
-              <option value="relevance">{choose('相关度', 'Relevance')}</option><option value="updated-desc">{choose('最近更新优先', 'Recently updated first')}</option><option value="updated-asc">{choose('较早更新优先', 'Oldest updated first')}</option>
-            </select></label>
         </div>
-        <p className="mini-hint">{choose('留空关键词可浏览内容。目录包含所选文档及其子文档，日期按本地日期计算。标签来自内容块；同时筛选标签与类型时，两项需在同一内容块上匹配。', 'Leave keywords empty to browse. Folders include descendants; dates use your local calendar. Tags belong to blocks. A tag and type filter must match the same block.')}</p>
+        <p className="mini-hint">{choose('目录包含所选文档及其子文档，日期按本地日期计算。标签来自内容块；同时筛选标签与类型时，两项需在同一内容块上匹配。', 'Folders include descendants; dates use your local calendar. Tags belong to blocks. A tag and type filter must match the same block.')}</p>
+        </div>
       </form>
       {search.facetError && <div className="workspace-search-inline-error" role="alert"><p>{search.facetError}</p><button type="button" className="secondary-button" onClick={search.refreshFacets}>{choose('重试加载筛选', 'Retry loading filters')}</button></div>}
     </section>
@@ -169,16 +208,30 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
           <p data-testid="workspace-search-total" data-total-number={result?.total ?? 0} role="status" aria-live="polite">
             {loading ? choose('正在搜索…', 'Searching…') : search.error ? choose('搜索未完成', 'Search did not complete') : result ? choose(`共 ${result.total} 条结果`, `${result.total} results`) : choose('准备搜索', 'Ready to search')}
           </p></div>
+        <div className="workspace-search-result-options">
+        <label className="workspace-search-field workspace-search-sort" htmlFor={`${id}-sort`}><span className="editor-label" id={`${id}-sort-label`}>{choose('排序', 'Sort')}</span>
+          <select id={`${id}-sort`} aria-labelledby={`${id}-sort-label`} className="editor-select" value={input.sort} onChange={(event) => search.updateInput({ sort: event.target.value as typeof input.sort })}>
+            <option value="relevance">{choose('相关度', 'Relevance')}</option><option value="updated-desc">{choose('最近更新优先', 'Recently updated first')}</option><option value="updated-asc">{choose('较早更新优先', 'Oldest updated first')}</option>
+          </select></label>
         <label className="workspace-search-field workspace-search-page-size" htmlFor={`${id}-page-size`}><span className="editor-label" id={`${id}-page-size-label`}>{choose('每页结果', 'Results per page')}</span>
           <select id={`${id}-page-size`} aria-labelledby={`${id}-page-size-label`} className="editor-select" value={input.pageSize} onChange={(event) => search.updateInput({ pageSize: Number(event.target.value) })}>
             <option value="25">25</option><option value="50">50</option><option value="100">100</option>
           </select></label>
+        </div>
       </div>
       {search.error ? <div className="workspace-search-empty" role="alert"><h4>{choose('搜索暂时不可用', 'Search is unavailable')}</h4>
         <p>{search.error}</p><p>{choose('关键词和筛选已保留，可以重试。', 'Your keywords and filters are preserved. Try again.')}</p>
         <button type="button" className="primary-button" onClick={search.retry}>{choose('重试搜索', 'Retry search')}</button></div>
-        : result && result.total === 0 && !loading ? <div className="workspace-search-empty" role="status"><h4>{choose('未找到匹配结果', 'No matching results')}</h4>
-          <p>{choose('尝试减少关键词、改为任意词匹配，或清空筛选。', 'Try fewer keywords, match any word, or clear the filters.')}</p></div>
+        : result && result.total === 0 && !loading ? <div className="workspace-search-empty" role="status">
+          <svg className="workspace-search-empty-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
+          <h4>{input.query.trim() || appliedFilters.length ? choose('未找到匹配结果', 'No matching results') : choose('暂无可搜索内容', 'No searchable content yet')}</h4>
+          <p>{input.query.trim() || appliedFilters.length ? choose('试试更少的关键词，或放宽当前筛选范围。', 'Try fewer keywords or broaden your current filters.') : choose('文档和内容块会显示在这里。添加文档后即可搜索。', 'Your documents and blocks will appear here. Add a document to start searching.')}</p>
+          <div className="workspace-search-empty-actions">
+            {appliedFilters.length > 0 && <button type="button" className="primary-button" onClick={clearCriteria}>{choose('清空筛选再试', 'Search without filters')}</button>}
+            {input.query.trim().split(/\s+/).length > 1 && input.matchMode !== 'any' && <button type="button" className="secondary-button" onClick={() => search.updateInput({ matchMode: 'any' })}>{choose('改为任意词匹配', 'Match any word')}</button>}
+            {input.query.trim() && <button type="button" className="secondary-button" onClick={browseAll}>{choose('浏览全部内容', 'Browse all content')}</button>}
+          </div>
+        </div>
           : <div className={`workspace-search-results${loading ? ' is-loading' : ''}`} data-testid="workspace-search-results">
             {result?.items.map((item) => <article className="workspace-search-result" key={`${item.documentId}:${item.blockId || 'document'}`}
               data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''}>

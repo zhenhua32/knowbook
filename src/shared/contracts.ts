@@ -474,6 +474,17 @@ export type WorkspaceEventType =
   | 'plugin.action.executed'
   | 'plugin.action.failed'
 
+export interface WorkspaceEventDetails {
+  schemaVersion: 1
+  documentTitle?: string
+  path?: string
+  previousPath?: string
+  affectedDocumentCount?: number
+  pathChanged?: boolean
+  model?: string
+  aiEnabled?: boolean
+}
+
 export interface WorkspaceEventRecord {
   id: string
   type: WorkspaceEventType
@@ -481,6 +492,7 @@ export interface WorkspaceEventRecord {
   description: string
   documentId: string | null
   createdAt: string
+  details?: WorkspaceEventDetails
 }
 
 export interface PluginDashboardCard {

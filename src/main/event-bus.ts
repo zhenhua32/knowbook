@@ -1,4 +1,4 @@
-import type { WorkspaceEventRecord, WorkspaceEventType } from '@shared/contracts'
+import type { WorkspaceEventDetails, WorkspaceEventRecord, WorkspaceEventType } from '@shared/contracts'
 
 export interface WorkspaceEventMetadata {
   originPluginId?: string
@@ -83,28 +83,35 @@ export class WorkspaceEventBus {
 export function createWorkspaceEventRecord(event: WorkspaceEvent): Omit<WorkspaceEventRecord, 'id'> {
   switch (event.type) {
     case 'document.created':
-      return buildRecord(event.type, 'Document created', `Created "${event.documentTitle}" at ${event.path}.`, event.documentId, event.createdAt)
+      return buildRecord(event.type, 'Document created', `Created "${event.documentTitle}" at ${event.path}.`, event.documentId, event.createdAt,
+        { schemaVersion: 1, documentTitle: event.documentTitle, path: event.path })
     case 'document.updated': {
       const descendantCount = Math.max(event.affectedDocumentIds.length - 1, 0)
       const description = event.pathChanged
         ? `Saved "${event.documentTitle}" and refreshed ${descendantCount} descendant path${descendantCount === 1 ? '' : 's'}.`
         : `Saved changes to "${event.documentTitle}".`
-      return buildRecord(event.type, 'Document saved', description, event.documentId, event.createdAt)
+      return buildRecord(event.type, 'Document saved', description, event.documentId, event.createdAt,
+        { schemaVersion: 1, documentTitle: event.documentTitle, path: event.path, pathChanged: event.pathChanged, affectedDocumentCount: descendantCount })
     }
     case 'document.summary.generated':
-      return buildRecord(event.type, 'Summary generated', `Generated an AI summary for "${event.documentTitle}".`, event.documentId, event.createdAt)
+      return buildRecord(event.type, 'Summary generated', `Generated an AI summary for "${event.documentTitle}".`, event.documentId, event.createdAt,
+        { schemaVersion: 1, documentTitle: event.documentTitle, path: event.path })
     case 'document.moved':
-      return buildRecord(event.type, 'Document moved', `Moved "${event.documentTitle}" to ${event.newPath}.`, event.documentId, event.createdAt)
+      return buildRecord(event.type, 'Document moved', `Moved "${event.documentTitle}" to ${event.newPath}.`, event.documentId, event.createdAt,
+        { schemaVersion: 1, documentTitle: event.documentTitle, previousPath: event.oldPath, path: event.newPath,
+          affectedDocumentCount: Math.max(0, event.affectedDocumentIds.length - 1) })
     case 'document.deleted': {
       const descendantCount = event.affectedDocumentIds.length
       const description = descendantCount > 0
         ? `Deleted "${event.documentTitle}" and reparented ${descendantCount} descendant document${descendantCount === 1 ? '' : 's'}.`
         : `Deleted "${event.documentTitle}" from ${event.oldPath}.`
-      return buildRecord(event.type, 'Document deleted', description, null, event.createdAt)
+      return buildRecord(event.type, 'Document deleted', description, null, event.createdAt,
+        { schemaVersion: 1, documentTitle: event.documentTitle, path: event.oldPath, affectedDocumentCount: descendantCount })
     }
     case 'ai.config.updated': {
       const description = `Saved AI settings for chat model ${event.model}.`
-      return buildRecord(event.type, 'AI settings updated', description, null, event.createdAt)
+      return buildRecord(event.type, 'AI settings updated', description, null, event.createdAt,
+        { schemaVersion: 1, model: event.model, aiEnabled: event.aiEnabled })
     }
   }
 }
@@ -114,13 +121,15 @@ function buildRecord(
   title: string,
   description: string,
   documentId: string | null,
-  createdAt: string
+  createdAt: string,
+  details: WorkspaceEventDetails
 ): Omit<WorkspaceEventRecord, 'id'> {
   return {
     type,
     title,
     description,
     documentId,
-    createdAt
+    createdAt,
+    details
   }
 }

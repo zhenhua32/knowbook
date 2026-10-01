@@ -38,6 +38,7 @@ export function useAiState({
   const [aiContextResults, setAiContextResults] = useState<SemanticSearchResult[]>([])
   const [aiContextSearching, setAiContextSearching] = useState(false)
   const [aiContextError, setAiContextError] = useState('')
+  const [aiContextHasSearched, setAiContextHasSearched] = useState(false)
   const selectedDocumentIdRef = useRef(selectedDocumentId)
   const aiAnswerRequestIdRef = useRef(0)
   const aiContextRequestIdRef = useRef(0)
@@ -65,6 +66,7 @@ export function useAiState({
     setAiContextResults([])
     setAiContextSearching(false)
     setAiContextError('')
+    setAiContextHasSearched(false)
   }, [])
 
   useLayoutEffect(() => {
@@ -166,12 +168,14 @@ export function useAiState({
       })
       if (isCurrentRequest()) {
         setAiContextResults(results)
+        setAiContextHasSearched(true)
       }
     } catch (error) {
       if (isCurrentRequest()) {
         const message = getErrorMessage(error, ui.semanticSearchFailed)
         setAiContextResults([])
         setAiContextError(message)
+        setAiContextHasSearched(true)
       }
     } finally {
       if (isCurrentRequest()) {
@@ -193,6 +197,7 @@ export function useAiState({
     setAiAsking(true)
     setAiContextError('')
     setAiContextResults([])
+    setAiContextHasSearched(false)
 
     try {
       const result = await window.knowbook.askAiAboutDocument({
@@ -266,6 +271,7 @@ export function useAiState({
     aiContextResults,
     aiContextSearching,
     aiContextError,
+    aiContextHasSearched,
     saveAiConfig,
     clearAiApiKey,
     findRelatedNotesForPrompt,

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { AiAnswerContent } from './AiAnswerContent'
 import type {
   AssistantApprovalId,
   AssistantEvent,
@@ -15,6 +16,7 @@ type AssistantConversationProps = {
   initialDraft?: string
   newSessionTitle?: string
   onDraftChange?: (draft: string) => void
+  showConfigurationHint?: boolean
 }
 
 export function AssistantConversation({
@@ -24,7 +26,8 @@ export function AssistantConversation({
   isZh,
   initialDraft = '',
   newSessionTitle,
-  onDraftChange
+  onDraftChange,
+  showConfigurationHint = true
 }: AssistantConversationProps) {
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<AssistantSessionId | null>(null)
@@ -37,6 +40,14 @@ export function AssistantConversation({
   const keepTranscriptPinnedRef = useRef(true)
   const draftRef = useRef(initialDraft)
   const onDraftChangeRef = useRef(onDraftChange)
+  const selectedIdRef = useRef(selectedId)
+  const eventsRequestId = useRef(0)
+  const sessionsRequestId = useRef(0)
+  const selectionVersion = useRef(0)
+  if (selectedIdRef.current !== selectedId) {
+    selectedIdRef.current = selectedId
+    selectionVersion.current += 1
+  }
 
   useEffect(() => {
     onDraftChangeRef.current = onDraftChange
@@ -49,16 +60,29 @@ export function AssistantConversation({
   }, [])
 
   const refreshSessions = useCallback(async () => {
-    const next = await window.knowbook.listAssistantSessions()
-    setSessions(next)
-    setSelectedId((current) => current && next.some((session) => session.id === current)
-      ? current
-      : next[0]?.id ?? null)
+    const requestId = ++sessionsRequestId.current
+    try {
+      const next = await window.knowbook.listAssistantSessions()
+      if (sessionsRequestId.current !== requestId) return
+      setSessions(next)
+      setSelectedId((current) => current && next.some((session) => session.id === current)
+        ? current
+        : next[0]?.id ?? null)
+    } catch (reason) {
+      if (sessionsRequestId.current === requestId) throw reason
+    }
   }, [])
 
   const refreshEvents = useCallback(async (sessionId: AssistantSessionId) => {
-    const next = await window.knowbook.getAssistantSessionEvents(sessionId, 0, 1_000)
-    setEvents(next)
+    if (selectedIdRef.current !== sessionId) return
+    const requestId = ++eventsRequestId.current
+    const isCurrent = () => selectedIdRef.current === sessionId && eventsRequestId.current === requestId
+    try {
+      const next = await window.knowbook.getAssistantSessionEvents(sessionId, 0, 1_000)
+      if (isCurrent()) setEvents(next)
+    } catch (reason) {
+      if (isCurrent()) throw reason
+    }
   }, [])
 
   useEffect(() => {
@@ -77,8 +101,9 @@ export function AssistantConversation({
 
   useEffect(() => {
     keepTranscriptPinnedRef.current = true
+    setEvents([])
+    setError('')
     if (!selectedId) {
-      setEvents([])
       return
     }
     void refreshEvents(selectedId).catch((reason) => setError(errorMessage(reason)))
@@ -104,13 +129,19 @@ export function AssistantConversation({
 
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
     keepTranscriptPinnedRef.current = true
+    // An initial list request must not replace a newly created session.
+    sessionsRequestId.current += 1
     const created = await window.knowbook.createAssistantSession({
       activeDocumentId,
       ...(newSessionTitle ? { title: newSessionTitle } : {})
     })
+    sessionsRequestId.current += 1
+    selectedIdRef.current = created.id
+    selectionVersion.current += 1
     setSelectedId(created.id)
     setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
-    setEvents(await window.knowbook.getAssistantSessionEvents(created.id, 0, 1_000))
+    setLoading(false)
+    setEvents([])
     return created
   }, [activeDocumentId, newSessionTitle])
 
@@ -121,17 +152,24 @@ export function AssistantConversation({
     setBusy(true)
     setError('')
     commitDraft('')
+    let sessionId = selected?.id ?? null
+    let version = selectionVersion.current
+    const isCurrent = () => selectedIdRef.current === sessionId && selectionVersion.current === version
     try {
       const session = selected ?? await createSession()
+      sessionId = session.id
+      version = selectionVersion.current
       const request = window.knowbook.sendAssistantMessage({ sessionId: session.id, text, mode: 'auto' })
       setBusy(false)
       void request
         .then(() => Promise.all([refreshSessions(), refreshEvents(session.id)]))
         .catch((reason) => {
+          if (!isCurrent()) return
           if (!draftRef.current) commitDraft(text)
           setError(errorMessage(reason))
         })
     } catch (reason) {
+      if (!isCurrent()) return
       if (!draftRef.current) commitDraft(text)
       setError(errorMessage(reason))
       setBusy(false)
@@ -145,13 +183,16 @@ export function AssistantConversation({
     if (!selectedId || busy) return
     setBusy(true)
     setError('')
+    const version = selectionVersion.current
+    const isCurrent = () => selectedIdRef.current === selectedId && selectionVersion.current === version
     try {
       const request = window.knowbook.resolveAssistantApproval({ sessionId: selectedId, approvalId, decision })
       setBusy(false)
       void request
         .then(() => Promise.all([refreshSessions(), refreshEvents(selectedId)]))
-        .catch((reason) => setError(errorMessage(reason)))
+        .catch((reason) => { if (isCurrent()) setError(errorMessage(reason)) })
     } catch (reason) {
+      if (!isCurrent()) return
       setError(errorMessage(reason))
       setBusy(false)
     }
@@ -161,13 +202,15 @@ export function AssistantConversation({
     if (!selectedId || busy) return
     setBusy(true)
     setError('')
+    const version = selectionVersion.current
+    const isCurrent = () => selectedIdRef.current === selectedId && selectionVersion.current === version
     try {
       await window.knowbook.cancelAssistantTurn(selectedId)
       await Promise.all([refreshSessions(), refreshEvents(selectedId)])
     } catch (reason) {
-      setError(errorMessage(reason))
+      if (isCurrent()) setError(errorMessage(reason))
     } finally {
-      setBusy(false)
+      if (isCurrent()) setBusy(false)
     }
   }, [busy, refreshEvents, refreshSessions, selectedId])
 
@@ -180,7 +223,10 @@ export function AssistantConversation({
           disabled={busy || loading}
           onChange={(event) => {
             keepTranscriptPinnedRef.current = true
-            setSelectedId((event.target.value || null) as AssistantSessionId | null)
+            const next = (event.target.value || null) as AssistantSessionId | null
+            if (selectedIdRef.current !== next) selectionVersion.current += 1
+            selectedIdRef.current = next
+            setSelectedId(next)
           }}
           value={selectedId ?? ''}
         >
@@ -226,7 +272,7 @@ export function AssistantConversation({
           item.kind === 'message' ? (
             <div className={`assistant-message assistant-message-${item.role}`} key={item.key}>
               <span>{item.role === 'user' ? (isZh ? '你' : 'You') : 'KnowBook AI'}</span>
-              <p>{item.text}</p>
+              {item.role === 'assistant' ? <AiAnswerContent content={item.text} /> : <p>{item.text}</p>}
             </div>
           ) : item.kind === 'tool' ? (
             <div className="assistant-tool-event" key={item.key}>
@@ -270,7 +316,7 @@ export function AssistantConversation({
         </div>
       ))}
 
-      {!canUseAi ? (
+      {!canUseAi && showConfigurationHint ? (
         <p className="mini-hint ai-context-error">
           {isZh ? '请先在设置中启用 AI 并保存 API Key。' : 'Enable AI and save an API key in Settings first.'}
         </p>

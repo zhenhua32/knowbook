@@ -104,6 +104,7 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     parentId: null
   })
   assert.equal(created.title, 'Document created')
+  assert.deepEqual(created.details, { schemaVersion: 1, documentTitle: 'Alpha', path: 'Root/Alpha' })
 
   const updatedPathChanged = createWorkspaceEventRecord({
     type: 'document.updated',
@@ -115,6 +116,8 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     pathChanged: true
   })
   assert.equal(updatedPathChanged.description.includes('2 descendant paths'), true)
+  assert.equal(updatedPathChanged.details?.affectedDocumentCount, 2)
+  assert.equal(updatedPathChanged.details?.pathChanged, true)
 
   const updatedNoPathChange = createWorkspaceEventRecord({
     type: 'document.updated',
@@ -136,6 +139,7 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     summary: 'Summary text'
   })
   assert.equal(summary.title, 'Summary generated')
+  assert.equal(summary.details?.documentTitle, 'Alpha')
 
   const moved = createWorkspaceEventRecord({
     type: 'document.moved',
@@ -147,6 +151,8 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     affectedDocumentIds: ['doc-1']
   })
   assert.equal(moved.description, 'Moved "Alpha" to New/Alpha.')
+  assert.equal(moved.details?.previousPath, 'Old/Alpha')
+  assert.equal(moved.details?.path, 'New/Alpha')
 
   const deletedWithoutDescendants = createWorkspaceEventRecord({
     type: 'document.deleted',
@@ -167,6 +173,7 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     affectedDocumentIds: ['doc-2']
   })
   assert.equal(deletedWithDescendants.description.includes('reparented 1 descendant document'), true)
+  assert.equal(deletedWithDescendants.details?.affectedDocumentCount, 1)
 
   const aiConfigChanged = createWorkspaceEventRecord({
     type: 'ai.config.updated',
@@ -175,4 +182,5 @@ test('createWorkspaceEventRecord maps all event payloads to display records', ()
     aiEnabled: true
   })
   assert.equal(aiConfigChanged.description, 'Saved AI settings for chat model gpt-4o-mini.')
+  assert.deepEqual(aiConfigChanged.details, { schemaVersion: 1, model: 'gpt-4o-mini', aiEnabled: true })
 })

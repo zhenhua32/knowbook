@@ -220,7 +220,8 @@ CREATE TABLE IF NOT EXISTS workspace_events (
   title TEXT NOT NULL,
   description TEXT NOT NULL,
   document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  details_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspace_events_created_at ON workspace_events(created_at);

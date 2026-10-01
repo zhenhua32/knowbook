@@ -1,5 +1,6 @@
 import type { DocumentsFeatureState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
+import { useRef } from 'react'
 import { useAiDomain } from './useAiDomain'
 import { usePluginsDomain } from './usePluginsDomain'
 import { useSettingsDomain } from './useSettingsDomain'
@@ -17,15 +18,22 @@ export function useAppFeatureDomains({
   documents,
   shell
 }: UseAppFeatureDomainsParams) {
+  const activePageRef = useRef(shell.activePage)
+  activePageRef.current = shell.activePage
   const ai = useAiDomain({
     aiConfig: shell.homeData.aiConfig,
+    documentOptions: shell.homeData.documentCatalog,
+    contextDocumentId: documents.selectedDocumentId,
+    contextDocumentLoading: documents.detailLoading,
     isZh: shell.isZh,
     onDraftSummaryChange: documents.setDraftSummary,
     onHomeDataChange: shell.setHomeData,
     onMessage: shell.notify,
     onOpenDocument: documents.openDocumentInDocumentsPage,
+    onSelectContextDocument: (id) => { void documents.selectDocumentContext(id, () => activePageRef.current === 'ai') },
+    onOpenAiSettings: shell.openAiSettings,
     onSelectedDocumentChange: documents.setSelectedDocument,
-    selectedDocument: documents.selectedDocument,
+    selectedDocument: !documents.detailLoading && documents.selectedDocument?.id === documents.selectedDocumentId ? documents.selectedDocument : null,
     selectedDocumentId: documents.selectedDocumentId,
     ui: shell.ui
   })

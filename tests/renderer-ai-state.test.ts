@@ -128,6 +128,7 @@ function assertEmptySession(state: ReturnType<typeof useAiState>) {
   assert.equal(state.aiContextError, '')
   assert.equal(state.aiAsking, false)
   assert.equal(state.aiContextSearching, false)
+  assert.equal(state.aiContextHasSearched, false)
 }
 
 for (const outcome of ['success', 'failure'] as const) {
@@ -279,5 +280,19 @@ test('a failed AI answer preserves related notes found while it was running', as
     })
     assert.equal(state().aiAnswer, '提问失败')
     assert.deepEqual(state().aiContextResults, [relatedNote('已找到的资料')])
+  })
+})
+
+test('related note search distinguishes an unsearched prompt from a completed empty search', async () => {
+  await withAiState(async ({ state, searches, selectDocument }) => {
+    assert.equal(state().aiContextHasSearched, false)
+    let search!: Promise<void>
+    await act(async () => { search = state().findRelatedNotesForPrompt() })
+    assert.equal(state().aiContextSearching, true)
+    await act(async () => { searches[0].resolve([]); await search })
+    assert.equal(state().aiContextHasSearched, true)
+    assert.deepEqual(state().aiContextResults, [])
+    await selectDocument('b')
+    assert.equal(state().aiContextHasSearched, false)
   })
 })

@@ -179,13 +179,19 @@ export function AppPageContent({
           </>
         ) : null}
 
-        {shell.activePage === 'ai' ? <><PluginSlot contributions={pluginUiContributions} slot="assistant.tools" /><AISection {...features.ai.sectionProps} /><PluginSlot contributions={pluginUiContributions} slot="assistant.message.cards" /></> : null}
+        {shell.activePage === 'ai' ? (
+          <AISection {...features.ai.sectionProps}
+            extensionTools={<PluginSlot contributions={pluginUiContributions} slot="assistant.tools" />}
+            extensionMessageCards={<PluginSlot contributions={pluginUiContributions} slot="assistant.message.cards" />} />
+        ) : null}
 
         {shell.activePage === 'plugins' ? <PluginsSection {...features.plugins.sectionProps} /> : null}
 
         {shell.activePage === 'dashboard' || shell.activePage === 'settings' ? (
           <DashboardSettingsSection
             {...features.settingsSectionProps}
+            requestedCategory={shell.settingsCategoryRequest}
+            onCategoryRequestHandled={shell.clearSettingsCategoryRequest}
             appearanceContent={<PluginSlot contributions={pluginUiContributions} slot="settings.sections" />}
             recoveryContent={
               <section className="settings-group">

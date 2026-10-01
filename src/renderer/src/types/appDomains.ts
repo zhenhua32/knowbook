@@ -65,6 +65,8 @@ export type DocumentsWorkspaceState = Pick<DocumentsDomainState,
 
 export type DocumentsFeatureState = Pick<DocumentsDomainState,
   'openDocumentInDocumentsPage'
+  | 'selectDocumentContext'
+  | 'detailLoading'
   | 'selectedDocument'
   | 'selectedDocumentId'
   | 'setDraftSummary'

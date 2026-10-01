@@ -18,6 +18,12 @@ async function openSearchPage(page: Page): Promise<void> {
   await expect(field(page, 'Keywords', '关键词')).toBeVisible()
 }
 
+async function openSearchFilters(page: Page): Promise<void> {
+  const toggle = page.getByRole('button', { name: uiText('Filters', '筛选'), exact: true })
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  await expect(field(page, 'Search scope', '搜索范围')).toBeVisible()
+}
+
 async function openSavedSearchControls(page: Page): Promise<void> {
   await page.locator('.workspace-search-page summary').filter({
     hasText: uiText('Save and load searches', '保存与加载检索')
@@ -137,6 +143,66 @@ test.describe('Complete workspace search @electron', () => {
     test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
   })
 
+  test('keeps results visible first, preserves collapsed filters and offers direct empty-result recovery', async () => {
+    await withElectronApp(async context => {
+      const { page } = context
+      await seedModeDocuments(context)
+      await page.setViewportSize({ width: 1280, height: 800 })
+      await openSearchPage(page)
+      const query = field(page, 'Keywords', '关键词')
+      const toggle = page.getByRole('button', { name: uiText('Filters', '筛选'), exact: true })
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      await expect(field(page, 'Tag', '标签')).toBeHidden()
+      await query.fill('amber')
+      await searchCount(page, 3)
+      await expect(results(page).first()).toBeInViewport({ ratio: 1 })
+      await page.screenshot({ path: 'test-results/workspace-search-default.png' })
+      await page.keyboard.press('Tab')
+      await expect(page.locator('.workspace-search-query-row').getByRole('button', { name: uiText('Search', '搜索'), exact: true })).toBeFocused()
+      await page.keyboard.press('Tab'); await expect(toggle).toBeFocused()
+      await page.keyboard.press('Space'); await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      const scope = field(page, 'Search scope', '搜索范围')
+      await scope.focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter')
+      await expect(scope).toHaveValue('documents')
+      await scope.selectOption('blocks')
+      await field(page, 'Tag', '标签').selectOption('research')
+      await searchCount(page, 3)
+      await toggle.click()
+      await expect(scope).toBeHidden()
+      await expect(page.locator('.workspace-search-filter-chip')).toHaveCount(2)
+      await page.getByRole('button', { name: uiText('Remove tag filter: research', '移除标签筛选：research'), exact: true }).click()
+      await expect(toggle).toBeFocused()
+      await expect(page.locator('.workspace-search-filter-chip')).toHaveCount(1)
+      await searchCount(page, 3)
+      await expect(scope).toHaveValue('blocks')
+      await query.fill('no-such-workspace-entry')
+      await searchCount(page, 0)
+      await page.getByRole('button', { name: uiText('Search without filters', '清空筛选再试'), exact: true }).click()
+      await expect(query).toHaveValue('no-such-workspace-entry')
+      await expect(page.locator('.workspace-search-filter-chip')).toHaveCount(0)
+      await page.getByRole('button', { name: uiText('Browse all content', '浏览全部内容'), exact: true }).click()
+      await expect(query).toHaveValue(''); await expect(query).toBeFocused()
+      await expect.poll(() => results(page).count()).toBeGreaterThan(0)
+      await expect(scope).toHaveValue('all')
+
+      // Simulate the composition lifecycle with a real browser Enter. Confirming
+      // an IME candidate must not trigger the form's native submit event.
+      await query.fill('amber'); await searchCount(page, 3)
+      await query.evaluate(element => {
+        const form = element.closest('form')!
+        form.dataset.submits = '0'
+        form.addEventListener('submit', () => { form.dataset.submits = String(Number(form.dataset.submits) + 1) })
+        element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '中' }))
+      })
+      await page.keyboard.press('Enter')
+      await expect(page.locator('.workspace-search-filter-panel form')).toHaveAttribute('data-submits', '0')
+      await query.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '中' })))
+      await page.keyboard.press('Enter')
+      await expect(page.locator('.workspace-search-filter-panel form')).toHaveAttribute('data-submits', '1')
+      await searchCount(page, 3)
+    })
+  })
+
   test('pages every document and block without omissions, then combines folder, tag, type and date filters', async () => {
     test.setTimeout(120_000)
     await withElectronApp(async context => {
@@ -176,6 +242,7 @@ test.describe('Complete workspace search @electron', () => {
       await searchCount(page, 93, 18)
       expect(await resultKeys(page)).toEqual(lastPageKeys)
 
+      await openSearchFilters(page)
       await field(page, 'Search scope', '搜索范围').selectOption('documents')
       await searchCount(page, 31)
       await expect(results(page).first()).toHaveAttribute('data-document-id', fixture.documents[0])
@@ -206,6 +273,7 @@ test.describe('Complete workspace search @electron', () => {
       const ids = await seedModeDocuments(context)
       await page.keyboard.press('Control+Shift+f')
       await expect(field(page, 'Keywords', '关键词')).toBeFocused()
+      await openSearchFilters(page)
       await field(page, 'Search scope', '搜索范围').selectOption('blocks')
       await field(page, 'Keywords', '关键词').fill('amber bridge')
       await searchCount(page, 2)
@@ -232,6 +300,7 @@ test.describe('Complete workspace search @electron', () => {
       await seedModeDocuments(context)
       let page = context.page
       await openSearchPage(page)
+      await openSearchFilters(page)
       await field(page, 'Search scope', '搜索范围').selectOption('blocks')
       await field(page, 'Keywords', '关键词').fill('amber bridge')
       await field(page, 'Match mode', '匹配方式').selectOption('any')
