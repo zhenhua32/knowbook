@@ -4038,9 +4038,12 @@ select:focus-visible {
 
 .sidebar.collapsed .rail-horizontal {
   display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
   gap: 12px;
   height: auto;
+  overflow-y: auto;
   padding: 14px 8px;
   border-bottom: 0;
 }

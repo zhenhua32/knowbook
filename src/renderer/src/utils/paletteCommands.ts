@@ -3,6 +3,7 @@ import type { AppShellState } from '../types/appShell'
 import type { WorkspaceOperationsState } from '../types/appComposition'
 import { openShortcutHelp } from '../openShortcutHelp'
 import { openDocumentTemplates, openQuickCapture, openSaveDocumentTemplate } from '../documentCapture'
+import { PAGE_ORDER } from '../hooks/useAppShellState'
 
 export type PaletteCommand = {
   id: string
@@ -26,7 +27,7 @@ export function createPaletteCommands(documents: DocumentsDomainState, shell: Ap
   const noDocument = unavailable || (documents.selectedDocument?.id === documents.selectedDocumentId && !documents.detailLoading && !documents.documentLoadError
     ? undefined : (zh ? '请先打开一个文档' : 'Open a document first'))
   const currentTitle = documents.draftTitle || documents.selectedDocument?.title || ''
-  const pageKeywords = { documents: '文档', dashboard: '总览 仪表盘', database: '数据库', ai: 'assistant chat 助手 问答', plugins: '插件 中心', settings: 'preferences 配置 设置' }
+  const pageKeywords = { documents: '文档', dashboard: '总览 仪表盘', database: '数据库', ai: 'assistant chat 助手 问答', plugins: '插件 中心', settings: 'preferences 配置 设置', search: 'full search find filters saved 完整搜索 检索 筛选 保存' }
   return [
     { id: 'shortcut-help', title: zh ? '快捷键帮助' : 'Keyboard shortcuts', description: zh ? '搜索按键、操作名称和适用场景' : 'Find key combinations, actions, and where they work',
       keywords: 'keyboard shortcuts hotkeys help keys 快捷键 键盘 按键 帮助', shortcut: 'F1', run: openShortcutHelp },
@@ -38,8 +39,9 @@ export function createPaletteCommands(documents: DocumentsDomainState, shell: Ap
       keywords: 'quick capture note jot 快速记录 快速 记录 笔记 想法', shortcut: 'Ctrl/Cmd+Shift+N', disabledReason: unavailable, run: openQuickCapture },
     { id: 'save-document-template', title: zh ? '保存为模板' : 'Save as template', description: currentTitle,
       keywords: 'save as template reuse snapshot 保存为模板 保存 复用 草稿 模板', disabledReason: noDocument, run: openSaveDocumentTemplate },
-    ...shell.pageItems.map((page, index) => ({ id: `page-${page.id}`, title: page.label, description: page.description,
-      keywords: `go open page ${page.id} ${pageKeywords[page.id]} 跳转 页面 打开`, shortcut: `Ctrl/Cmd+${index + 1}`,
+    ...shell.pageItems.map((page) => ({ id: `page-${page.id}`, title: page.label, description: page.description,
+      keywords: `go open page ${page.id} ${pageKeywords[page.id]} 跳转 页面 打开`,
+      shortcut: page.id === 'search' ? 'Ctrl/Cmd+Shift+F' : `Ctrl/Cmd+${PAGE_ORDER.indexOf(page.id) + 1}`,
       run: () => shell.setActivePage(page.id) })),
     { id: 'save-document', title: zh ? '保存当前文档' : 'Save current document', description: currentTitle, keywords: 'save current document 保存 当前 文档',
       disabledReason: noDocument || (documents.isSaving ? (zh ? '正在保存' : 'Saving') : undefined), run: documents.saveDocument },

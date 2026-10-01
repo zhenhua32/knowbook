@@ -45,7 +45,7 @@ const emptyState: HomeData = {
   systemPluginInstallRequests: []
 }
 
-export type PageId = 'dashboard' | 'documents' | 'database' | 'ai' | 'plugins' | 'settings'
+export type PageId = 'dashboard' | 'documents' | 'database' | 'ai' | 'plugins' | 'settings' | 'search'
 
 export const PAGE_ORDER: PageId[] = ['documents', 'dashboard', 'database', 'ai', 'plugins', 'settings']
 
@@ -72,6 +72,12 @@ export function useAppShellState() {
   const reloadRef = useRef<() => void>(() => undefined)
   const retryWorkspace = useCallback(() => reloadRef.current(), [])
   const [activePage, setActivePage] = useState<PageId>('documents')
+  const [searchRequest, setSearchRequest] = useState<{ query: string; sequence: number } | null>(null)
+  const searchSequenceRef = useRef(0)
+  const openWorkspaceSearch = useCallback((query?: string) => {
+    if (query !== undefined) setSearchRequest({ query, sequence: ++searchSequenceRef.current })
+    setActivePage('search')
+  }, [])
   const [isNavCollapsed, setIsNavCollapsed] = useState(false)
 
   useEffect(() => {
@@ -226,6 +232,11 @@ export function useAppShellState() {
       id: 'settings',
       label: isZh ? '配置中心' : 'Settings',
       description: isZh ? '语言、AI、备份' : 'Language, AI, backup'
+    },
+    {
+      id: 'search',
+      label: isZh ? '搜索' : 'Search',
+      description: isZh ? '完整结果、筛选与保存检索' : 'All results, filters, and saved searches'
     }
   ], [isZh])
 
@@ -236,6 +247,8 @@ export function useAppShellState() {
 
   return {
     activePage,
+    searchRequest,
+    openWorkspaceSearch,
     catalogColumns,
     catalogDocuments,
     catalogLoading,

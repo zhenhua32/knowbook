@@ -4,16 +4,18 @@ import { ensureDocumentMetadataEditor, uiText, withElectronApp } from './helpers
 
 test('search and command shortcuts work on every page and restore focus @electron', async () => {
   await withElectronApp(async ({ page }) => {
-    for (const [en, zh] of [['Documents', '文档'], ['Dashboard', '总览'], ['Database', '数据库'], ['AI Assistant', 'AI 助手'], ['Plugins', '插件中心'], ['Settings', '配置中心']]) {
+    for (const [en, zh] of [['Documents', '文档'], ['Dashboard', '总览'], ['Database', '数据库'], ['AI Assistant', 'AI 助手'], ['Plugins', '插件中心'], ['Settings', '配置中心'], ['Search', '搜索']]) {
       const nav = page.getByTitle(uiText(en, zh), { exact: true })
       await nav.click()
+      const focusTarget = en === 'Search' ? page.getByRole('searchbox', { name: uiText('Keywords', '关键词') }) : nav
+      await expect(focusTarget).toBeFocused()
       await page.keyboard.press('Control+k')
       const palette = page.getByRole('dialog', { name: uiText('Search and commands', '搜索与命令') })
       await expect(palette.getByRole('combobox')).toBeFocused()
       await expect(palette.getByRole('option').first()).toBeVisible()
       await page.keyboard.press('Escape')
       await expect(palette).toHaveCount(0)
-      await expect(nav).toBeFocused()
+      await expect(focusTarget).toBeFocused()
       await page.keyboard.press('Control+Shift+p')
       await expect(palette.getByRole('combobox')).toHaveValue('>')
       await page.keyboard.press('Control+k')

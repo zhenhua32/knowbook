@@ -28,11 +28,14 @@ test('undo and redo preserve input history outside the body while retaining bloc
   const noop = () => {}
   const documents: DocumentsKeyboardState = {
     isEditing: true, isReadingMode: false, isGlobalSearchOpen: false, isBlockSearchOpen: false,
+    globalSearchQuery: '',
     selectedBlockRange: null, navBack: noop, navForward: noop,
     openGlobalSearch: noop, closeGlobalSearch: noop, openBlockSearch: noop, closeBlockSearch: noop,
     undoEdit: () => { calls.push('undo') }, redoEdit: () => { calls.push('redo') }
   }
-  const shell = { activePage: 'documents' } as ShellPageState
+  const fullSearchQueries: Array<string | undefined> = []
+  const shell: ShellPageState = { activePage: 'documents', setActivePage: noop,
+    openWorkspaceSearch: (query) => { fullSearchQueries.push(query) } }
   function Harness() {
     useAppKeyboardShortcuts({ documents, shell, onClearBlockRangeSelection: () => {} })
     return null
@@ -62,6 +65,14 @@ test('undo and redo preserve input history outside the body while retaining bloc
       }
     }
     assert.deepEqual(calls, Array.from({ length: 10 }, () => ['undo', 'redo', 'redo']).flat())
+    assert.equal(press('title', 'f', true).defaultPrevented, true)
+    assert.deepEqual(fullSearchQueries, [undefined], 'full search can open from a metadata input without taking over its history')
+    documents.isGlobalSearchOpen = true
+    documents.globalSearchQuery = 'research notes'
+    assert.equal(press('search', 'f', true).defaultPrevented, true)
+    documents.globalSearchQuery = '> settings'
+    assert.equal(press('search', 'f', true).defaultPrevented, true)
+    assert.deepEqual(fullSearchQueries, [undefined, 'research notes', undefined], 'search carries palette keywords, while commands retain the current full search')
   } finally {
     await act(async () => root.unmount())
     for (const [key, descriptor] of originals) {

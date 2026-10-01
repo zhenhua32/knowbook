@@ -25,7 +25,7 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
   const isNavJumpRef = useRef<boolean>(false)
   const navigationSequenceRef = useRef(0)
 
-  const prepareNavigation = useCallback(async (documentId: string): Promise<boolean> => {
+  const prepareNavigation = useCallback(async (documentId: string, shouldContinue?: () => boolean): Promise<boolean> => {
     const sequence = ++navigationSequenceRef.current
     if (documentId !== selectedDocumentId) {
       const allowed = await onBeforeOpenDocument?.(documentId)
@@ -34,11 +34,11 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
       }
     }
 
-    return sequence === navigationSequenceRef.current
+    return sequence === navigationSequenceRef.current && (shouldContinue?.() ?? true)
   }, [onBeforeOpenDocument, selectedDocumentId])
 
-  const openDocumentInDocumentsPage = useCallback((documentId: string) => {
-    return prepareNavigation(documentId).then((allowed) => {
+  const openDocumentInDocumentsPage = useCallback((documentId: string, shouldContinue?: () => boolean) => {
+    return prepareNavigation(documentId, shouldContinue).then((allowed) => {
       if (!allowed) {
         return false
       }
@@ -49,8 +49,8 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     })
   }, [onActivePageChange, prepareNavigation])
 
-  const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string) => {
-    return prepareNavigation(documentId).then((allowed) => {
+  const openDocumentBlockInDocumentsPage = useCallback((documentId: string, blockId: string, shouldContinue?: () => boolean) => {
+    return prepareNavigation(documentId, shouldContinue).then((allowed) => {
       if (!allowed) {
         return false
       }

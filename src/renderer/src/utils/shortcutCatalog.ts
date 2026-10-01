@@ -21,6 +21,7 @@ const pageShortcuts = [
 export const shortcuts: Shortcut[] = [
   { id: 'help', group: 'global', title: ['打开或关闭快捷键帮助', 'Open or close keyboard shortcuts'], keys: [['F1']] },
   { id: 'search', group: 'global', title: ['打开或关闭全局搜索', 'Toggle global search'], keys: [['Mod', 'K']] },
+  { id: 'workspace-search', group: 'global', title: ['打开完整搜索', 'Open full search'], keys: [['Mod', 'Shift', 'F']] },
   { id: 'commands', group: 'global', title: ['打开命令面板', 'Open command palette'], keys: [['Mod', 'Shift', 'P']] },
   { id: 'quick-capture', group: 'global', title: ['打开快速记录', 'Open quick capture'], keys: [['Mod', 'Shift', 'N']] },
   { id: 'quick-capture-save', group: 'global', title: ['保存快速记录', 'Save quick capture'], keys: [['Mod', 'Enter']], note: ['快速记录弹窗内；输入法组合输入时暂停。', 'In the quick capture dialog; paused during IME composition.'] },

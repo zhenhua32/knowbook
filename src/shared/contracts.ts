@@ -37,6 +37,25 @@ import type {
   SystemPluginFramePolicyInput
 } from './system-plugin'
 import type { SystemPluginServiceRpcJson } from '../main/system-plugin/service-rpc'
+import type {
+  SaveWorkspaceSearchInput,
+  SavedWorkspaceSearch,
+  WorkspaceSearchFacets,
+  WorkspaceSearchInput,
+  WorkspaceSearchPage
+} from './workspace-search'
+
+export type {
+  SaveWorkspaceSearchInput,
+  SavedWorkspaceSearch,
+  WorkspaceSearchFacets,
+  WorkspaceSearchInput,
+  WorkspaceSearchMatchMode,
+  WorkspaceSearchPage,
+  WorkspaceSearchResult,
+  WorkspaceSearchScope,
+  WorkspaceSearchSort
+} from './workspace-search'
 
 export type {
   PluginUiContribution,
@@ -1017,6 +1036,11 @@ export interface ElectronApi {
   deleteDatabaseEntities: (input: DeleteDatabaseEntitiesInput) => Promise<void>
   getDatabaseEntities: (databaseId: string) => Promise<DatabaseEntity[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
+  searchWorkspace: (input: WorkspaceSearchInput) => Promise<WorkspaceSearchPage>
+  getSearchFacets: () => Promise<WorkspaceSearchFacets>
+  listSavedSearches: () => Promise<SavedWorkspaceSearch[]>
+  saveSearch: (input: SaveWorkspaceSearchInput) => Promise<SavedWorkspaceSearch>
+  deleteSavedSearch: (id: string) => Promise<void>
   getBlockReference: (documentPath: string, blockId: string) => Promise<BlockReferenceResult | null>
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => Promise<DocumentSuggestion[]>
 }

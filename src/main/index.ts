@@ -37,6 +37,11 @@ import type {
   DocumentDetail,
   DocumentSuggestion,
   GlobalSearchResult,
+  WorkspaceSearchInput,
+  WorkspaceSearchPage,
+  WorkspaceSearchFacets,
+  SavedWorkspaceSearch,
+  SaveWorkspaceSearchInput,
   GetPluginV2DetailsInput,
   HomeData,
   HomeDataIpcPayload,
@@ -2220,6 +2225,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:search-documents', (_event, query: string): GlobalSearchResult[] => {
     return store.searchDocuments(query)
   })
+  ipcMain.handle('knowbook:search-workspace', (_event, input: WorkspaceSearchInput): WorkspaceSearchPage => {
+    return store.searchWorkspace(input)
+  })
+  ipcMain.handle('knowbook:get-search-facets', (): WorkspaceSearchFacets => store.getSearchFacets())
+  ipcMain.handle('knowbook:list-saved-searches', (): SavedWorkspaceSearch[] => store.listSavedSearches())
+  ipcMain.handle('knowbook:save-search', (_event, input: SaveWorkspaceSearchInput): SavedWorkspaceSearch => {
+    return store.saveSearch(input)
+  })
+  ipcMain.handle('knowbook:delete-saved-search', (_event, id: string): void => store.deleteSavedSearch(id))
 
   ipcMain.handle('knowbook:get-setting', (_event, key: string): string | null => {
     if (!RENDERER_SETTING_KEYS.has(key)) {

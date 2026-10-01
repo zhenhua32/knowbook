@@ -32,6 +32,16 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         if (!event.repeat && !documents.isGlobalSearchOpen) openQuickCapture()
         return
       }
+      if (key === 'mod+shift+f') {
+        event.preventDefault(); event.stopPropagation()
+        if (!event.repeat) {
+          const query = documents.isGlobalSearchOpen && !documents.globalSearchQuery.trimStart().startsWith('>')
+            ? documents.globalSearchQuery : undefined
+          documents.closeGlobalSearch()
+          shell.openWorkspaceSearch(query)
+        }
+        return
+      }
       if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
       if (key !== 'mod+k' && key !== 'mod+shift+p') return
       event.preventDefault(); event.stopPropagation()

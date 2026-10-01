@@ -163,6 +163,13 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     </div>}
     {(busy || (feedback && feedback.itemId === selected?.id)) && <p className="palette-action-feedback" role={feedback?.error && !busy ? 'alert' : 'status'}>
       {busy ? busy === 'open' ? (zh ? '正在打开…' : 'Opening…') : (zh ? '正在复制…' : 'Copying…') : feedback?.message}</p>}
+    {!commandsOnly && <div className="palette-footer">
+      <span>{zh ? '快速搜索显示部分匹配，完整搜索可查看全部结果并筛选。' : 'Quick search shows a selection of matches. Full search includes all results and filters.'}</span>
+      <button type="button" className="secondary-button" disabled={!shell.workspaceReady || Boolean(busy)} onClick={() => {
+        documents.closeGlobalSearch()
+        shell.openWorkspaceSearch(query)
+      }}>{zh ? '查看全部结果' : 'View all results'}</button>
+    </div>}
     <footer id={hintId} className="palette-footer"><span>{selectedResult?.blockId
       ? (zh ? '↑↓ 选择 · Enter 定位 · Ctrl/⌘ Enter 打开文档 · Esc 关闭' : '↑↓ Choose · Enter Go to block · Ctrl/⌘ Enter Open document · Esc Close')
       : (zh ? '↑↓ 选择 · Enter 执行 · Esc 关闭' : '↑↓ Choose · Enter Run · Esc Close')}</span>

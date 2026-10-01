@@ -61,6 +61,11 @@ import type {
   WorkspaceEventType,
   WorkspaceSummary,
   GlobalSearchResult,
+  WorkspaceSearchInput,
+  WorkspaceSearchPage,
+  WorkspaceSearchFacets,
+  SavedWorkspaceSearch,
+  SaveWorkspaceSearchInput,
   SearchSemanticNotesInput,
   SemanticSearchResult,
   SaveDocumentTemplateInput
@@ -68,6 +73,7 @@ import type {
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { DocumentRecoveryRepository } from './document-recovery'
+import { WorkspaceSearchRepository } from './workspace-search'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
@@ -2326,6 +2332,26 @@ export class KnowbookStore {
       normalizedQuery,
       prefixQuery
     ) as DocumentSuggestion[]
+  }
+
+  searchWorkspace(input: WorkspaceSearchInput): WorkspaceSearchPage {
+    return new WorkspaceSearchRepository(this.db).search(input)
+  }
+
+  getSearchFacets(): WorkspaceSearchFacets {
+    return new WorkspaceSearchRepository(this.db).facets()
+  }
+
+  listSavedSearches(): SavedWorkspaceSearch[] {
+    return new WorkspaceSearchRepository(this.db).listSaved()
+  }
+
+  saveSearch(input: SaveWorkspaceSearchInput): SavedWorkspaceSearch {
+    return new WorkspaceSearchRepository(this.db).save(input)
+  }
+
+  deleteSavedSearch(id: string): void {
+    new WorkspaceSearchRepository(this.db).deleteSaved(id)
   }
 
   searchDocuments(query: string): GlobalSearchResult[] {

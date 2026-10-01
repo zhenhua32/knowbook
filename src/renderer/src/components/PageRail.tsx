@@ -80,6 +80,12 @@ export function PageRail(props: PageRailProps) {
 
 function PageIcon({ pageId }: { pageId: string }) {
   const icons: Record<string, ReactNode> = {
+    search: (
+      <>
+        <circle cx="10" cy="10" r="6" />
+        <path d="m14.5 14.5 5 5" />
+      </>
+    ),
     documents: (
       <>
         <path d="M5 4.5h4l1.5 1.8H19v10.2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-10a2 2 0 0 1 2-2Z" />

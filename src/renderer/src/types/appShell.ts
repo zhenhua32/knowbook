@@ -5,4 +5,5 @@ export type AppShellState = ReturnType<typeof useAppShellState>
 export type ShellPageState = Pick<AppShellState,
   'activePage'
   | 'setActivePage'
+  | 'openWorkspaceSearch'
 >

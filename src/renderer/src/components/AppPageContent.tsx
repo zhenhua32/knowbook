@@ -2,6 +2,7 @@ import { Suspense, useEffect, useState } from 'react'
 import type { DataRecoveryTarget } from './DataRecoveryDialog'
 import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from './RecoveryState'
+import { ErrorBoundary } from './ErrorBoundary'
 import type { AppFeatureDomainsState, WorkspaceOperationsState } from '../types/appComposition'
 import type { DatabaseDomainState, DocumentsDomainState } from '../types/appDomains'
 import type { AppShellState } from '../types/appShell'
@@ -13,6 +14,7 @@ const DocumentsPage = lazy(async () => {
 })
 const MarkdownImportReportDialog = lazy(() => import('./MarkdownImportReportDialog'))
 const DataRecoveryHost = lazy(() => import('./DataRecoveryHost'))
+const SearchPage = lazy(() => import('../pages/SearchPage'))
 
 const DatabasePage = lazy(async () => {
   const module = await import('../pages/DatabasePage')
@@ -54,6 +56,8 @@ export function AppPageContent({
   shell,
   workspace
 }: AppPageContentProps) {
+  const [searchMounted, setSearchMounted] = useState(false)
+  useEffect(() => { if (shell.activePage === 'search') setSearchMounted(true) }, [shell.activePage])
   const [recoveryTarget, onOpenRecovery] = useState<DataRecoveryTarget | null>(null)
   useEffect(() => {
     const open = () => onOpenRecovery({ kind: 'trash' })
@@ -91,6 +95,16 @@ export function AppPageContent({
           }} />
       </Suspense>}
 
+      {(searchMounted || shell.activePage === 'search') && <div hidden={shell.activePage !== 'search'}>
+        <ErrorBoundary page onNavigate={() => shell.setActivePage('documents')}
+          navigateLabel={shell.isZh ? '返回文档' : 'Return to documents'}>
+        <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
+          <SearchPage isActive={shell.activePage === 'search'} isZh={shell.isZh} documentTree={shell.homeData.documentTree}
+            request={shell.searchRequest} onOpenDocument={documents.openDocumentInDocumentsPage}
+            onOpenBlock={documents.openDocumentBlockInDocumentsPage} />
+        </Suspense>
+        </ErrorBoundary>
+      </div>}
       <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
         {shell.activePage === 'dashboard' ? (
           <>
