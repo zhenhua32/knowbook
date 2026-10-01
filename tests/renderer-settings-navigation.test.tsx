@@ -27,7 +27,7 @@ function settingsProps(isZh: boolean): SettingsProps {
     aiAutoSummaryOnSaveDraft: false, onAiAutoSummaryOnSaveChange: noop,
     aiRelatedNotesEnabledDraft: false, onAiRelatedNotesEnabledChange: noop,
     aiBaseUrlDraft: '', onAiBaseUrlChange: noop, aiModelDraft: '', onAiModelChange: noop,
-    aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop, aiSaving: false,
+    aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop, aiSaving: false, aiClearingApiKey: false,
     onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
     appUpdateState: null, appUpdateRefreshing: false, onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
     webClipBridgeStatus: { enabled: false, running: false, port: null, configuredPort: 3030, token: 'fixture-token', endpoint: null, lastError: null }, webClipBridgeEnabledDraft: false, onWebClipBridgeEnabledChange: noop,

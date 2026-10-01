@@ -852,6 +852,7 @@ export interface UpdateAiConfigInput {
   autoSummaryOnSave: boolean
   relatedNotesEnabled: boolean
   apiKey?: string
+  /** Clear only the saved API key; preserve the current saved non-key settings. */
   clearApiKey?: boolean
 }
 
@@ -974,7 +975,7 @@ export interface ElectronApi {
   listBackupVersions: () => Promise<import('./document-recovery').BackupVersion[]>
   restoreBackupVersion: (versionId: string) => Promise<BackupRestoreResult | null>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
-  updateAiConfig: (input: UpdateAiConfigInput) => Promise<void>
+  updateAiConfig: (input: UpdateAiConfigInput) => Promise<AiConfig>
   listAssistantSessions: () => Promise<AssistantSessionSummary[]>
   createAssistantSession: (input?: CreateAssistantSessionRequest) => Promise<AssistantSessionSummary>
   getAssistantSessionEvents: (

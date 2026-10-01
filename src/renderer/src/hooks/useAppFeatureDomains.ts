@@ -60,6 +60,7 @@ export function useAppFeatureDomains({
      aiEndpoint: shell.homeData.aiConfig.baseUrl,
     aiModelDraft: ai.aiModelDraft,
     aiSaving: ai.aiSaving,
+    aiClearingApiKey: ai.aiClearingApiKey,
     isSettingsPage: shell.activePage === 'settings',
     isZh: shell.isZh,
     loading: shell.loading,

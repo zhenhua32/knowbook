@@ -1,6 +1,6 @@
 import type { AppMessageHandler } from '../notify'
-import type { ComponentProps, Dispatch, SetStateAction } from 'react'
-import type { DocumentDetail, HomeData } from '@shared/contracts'
+import { useCallback, type ComponentProps, type Dispatch, type SetStateAction } from 'react'
+import type { AiConfig, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { AISection } from '../sections/AISection'
 import { useAiState } from './useAiState'
@@ -42,11 +42,15 @@ export function useAiDomain({
   onOpenAiSettings,
   ui
 }: UseAiDomainParams) {
+  const onAiConfigChange = useCallback((config: AiConfig) => {
+    onHomeDataChange((current) => ({ ...current, aiConfig: config }))
+  }, [onHomeDataChange])
   const aiState = useAiState({
     aiConfig,
     selectedDocumentId,
     ui,
     onHomeDataChange,
+    onAiConfigChange,
     onSelectedDocumentChange,
     onDraftSummaryChange,
     onMessage

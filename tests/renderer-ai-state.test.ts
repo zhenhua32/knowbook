@@ -102,7 +102,7 @@ async function withAiState(run: (context: {
   const aiConfig = { ...availability, baseUrl: '', model: '', autoSummaryOnSave: false, relatedNotesEnabled: true }
   function Harness({ id }: { id: string | null }) {
     state = useAiState({ aiConfig, selectedDocumentId: id, ui: getUiText('zh-CN'),
-      onHomeDataChange: noop, onSelectedDocumentChange: noop, onDraftSummaryChange: noop, onMessage: noop })
+      onHomeDataChange: noop, onAiConfigChange: noop, onSelectedDocumentChange: noop, onDraftSummaryChange: noop, onMessage: noop })
     return null
   }
   const selectDocument = async (id: string | null) => {

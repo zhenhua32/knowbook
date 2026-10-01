@@ -1800,20 +1800,22 @@ function registerIpcHandlers(): void {
       ? protectAiApiKey(normalizeAiApiKey(input.apiKey))
       : undefined
     store.updateAiConfig({
-      ...input,
-      apiKey: protectedApiKey
+      ...(input.clearApiKey ? store.getAiConfigPublic() : input),
+      apiKey: protectedApiKey,
+      clearApiKey: input.clearApiKey
     })
-    if (!input.enabled || !input.autoSummaryOnSave) {
+    const savedConfig = store.getAiConfigPublic()
+    if (!savedConfig.enabled || !savedConfig.autoSummaryOnSave) {
       cancelAllDocumentSummaryGeneration()
     }
-    const nextModel = input.model.trim() || 'gpt-4.1-mini'
 
     await workspaceEventBus.emit({
       type: 'ai.config.updated',
       createdAt: new Date().toISOString(),
-      model: nextModel,
-      aiEnabled: input.enabled
+      model: savedConfig.model,
+      aiEnabled: savedConfig.enabled
     })
+    return savedConfig
   })
 
   ipcMain.handle('knowbook:list-assistant-sessions', () => assistantAgent.listSessions())

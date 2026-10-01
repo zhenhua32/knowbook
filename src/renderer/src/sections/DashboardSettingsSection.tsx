@@ -31,6 +31,7 @@ type DashboardSettingsSectionProps = {
   onAiApiKeyChange: (value: string) => void
   onClearAiApiKey: () => void
   aiSaving: boolean
+  aiClearingApiKey: boolean
   onSaveAiConfig: () => void
   onOpenPlugins: () => void
   onRestoreBackup: () => void
@@ -112,6 +113,7 @@ export function DashboardSettingsSection({
   onAiApiKeyChange,
   onClearAiApiKey,
   aiSaving,
+  aiClearingApiKey,
   onSaveAiConfig,
   onOpenPlugins,
   onRestoreBackup,
@@ -263,43 +265,44 @@ export function DashboardSettingsSection({
                 </label>
               </section>
 
-              <section className="panel settings-category-panel settings-group" {...panelProps('ai')}>
+              <section aria-busy={aiSaving} className="panel settings-category-panel settings-group" {...panelProps('ai')}>
                 <div className="settings-group-heading">
                   <h3>{isZh ? 'AI 能力' : 'AI capabilities'}</h3>
                   <p>{isZh ? '配置模型连接、自动摘要和相关笔记检索。' : 'Configure model access, automatic summaries, and related-note search.'}</p>
                 </div>
                 <div className="settings-toggle-list">
                   <label className="toggle-row">
-                    <input checked={aiEnabledDraft} onChange={(event) => onAiEnabledChange(event.target.checked)} type="checkbox" />
+                    <input checked={aiEnabledDraft} disabled={aiSaving} onChange={(event) => onAiEnabledChange(event.target.checked)} type="checkbox" />
                     <span>{ui.enableAiFeatures}</span>
                   </label>
                   <label className="toggle-row">
-                    <input checked={aiAutoSummaryOnSaveDraft} onChange={(event) => onAiAutoSummaryOnSaveChange(event.target.checked)} type="checkbox" />
+                    <input checked={aiAutoSummaryOnSaveDraft} disabled={aiSaving} onChange={(event) => onAiAutoSummaryOnSaveChange(event.target.checked)} type="checkbox" />
                     <span>{ui.autoSummaryWhenEmpty}</span>
                   </label>
                   <label className="toggle-row">
-                    <input checked={aiRelatedNotesEnabledDraft} onChange={(event) => onAiRelatedNotesEnabledChange(event.target.checked)} type="checkbox" />
+                    <input checked={aiRelatedNotesEnabledDraft} disabled={aiSaving} onChange={(event) => onAiRelatedNotesEnabledChange(event.target.checked)} type="checkbox" />
                     <span>{ui.relatedNotesOnAsk}</span>
                   </label>
                 </div>
                 <label className="editor-label">
                   {ui.baseUrl}
-                  <input className="editor-input" onChange={(event) => onAiBaseUrlChange(event.target.value)} type="text" value={aiBaseUrlDraft} />
+                  <input className="editor-input" disabled={aiSaving} onChange={(event) => onAiBaseUrlChange(event.target.value)} type="text" value={aiBaseUrlDraft} />
                 </label>
                 <label className="editor-label">
                   {ui.model}
-                  <input className="editor-input" onChange={(event) => onAiModelChange(event.target.value)} type="text" value={aiModelDraft} />
+                  <input className="editor-input" disabled={aiSaving} onChange={(event) => onAiModelChange(event.target.value)} type="text" value={aiModelDraft} />
                 </label>
                 <div className="editor-label">
                   <label htmlFor="ai-api-key">{ui.apiKeyLabel}</label>
                   <div className="settings-inline-field">
-                    <input id="ai-api-key" className="editor-input" onChange={(event) => onAiApiKeyChange(event.target.value)} type="password" value={aiApiKeyDraft} />
-                    <button className="secondary-button" disabled={aiSaving} onClick={onClearAiApiKey} type="button">{ui.clearAiApiKey}</button>
+                    <input autoComplete="new-password" id="ai-api-key" className="editor-input" disabled={aiSaving} onChange={(event) => onAiApiKeyChange(event.target.value)} type="password" value={aiApiKeyDraft} />
+                    <button aria-busy={aiClearingApiKey} className="secondary-button" disabled={aiSaving} onClick={onClearAiApiKey} type="button">{aiClearingApiKey ? (isZh ? '正在清除…' : 'Clearing…') : ui.clearAiApiKey}</button>
                   </div>
                 </div>
+                {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
                 <div className="settings-actions">
-                  <button className="primary-button" disabled={aiSaving} onClick={onSaveAiConfig} type="button">
-                    {aiSaving ? ui.common.saving : ui.saveAiSettings}
+                  <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={onSaveAiConfig} type="button">
+                    {aiSaving && !aiClearingApiKey ? ui.common.saving : ui.saveAiSettings}
                   </button>
                   <button className="secondary-button" onClick={onOpenPlugins} type="button">
                     {isZh ? '打开插件中心' : 'Open plugin center'}

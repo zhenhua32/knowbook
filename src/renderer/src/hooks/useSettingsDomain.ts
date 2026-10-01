@@ -16,6 +16,7 @@ type UseSettingsDomainParams = {
   aiEndpoint: string
   aiModelDraft: string
   aiSaving: boolean
+  aiClearingApiKey: boolean
   isSettingsPage: boolean
   isZh: boolean
   loading: boolean
@@ -48,6 +49,7 @@ export function useSettingsDomain({
   aiEndpoint,
   aiModelDraft,
   aiSaving,
+  aiClearingApiKey,
   isSettingsPage,
   isZh,
   loading,
@@ -85,6 +87,7 @@ export function useSettingsDomain({
     aiEndpoint,
     aiModelDraft,
     aiSaving,
+    aiClearingApiKey,
     appUpdateRefreshing: settingsState.appUpdateRefreshing,
     appUpdateState: settingsState.appUpdateState,
     isSettingsPage,

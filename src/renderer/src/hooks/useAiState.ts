@@ -1,6 +1,6 @@
 import type { AppMessageHandler } from '../notify'
 import { confirmAction } from '../confirmAction'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, type SetStateAction } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -10,9 +10,23 @@ type UseAiStateParams = {
   selectedDocumentId: string | null
   ui: UiText
   onHomeDataChange: (homeData: HomeData) => void
+  onAiConfigChange: (config: AiConfig) => void
   onSelectedDocumentChange: (detail: DocumentDetail | null) => void
   onDraftSummaryChange: (summary: string) => void
   onMessage: AppMessageHandler
+}
+
+type AiSettingsDraft = Omit<AiConfig, 'hasApiKey'> & { apiKey: string }
+
+function createAiSettingsDraft(config: AiConfig): AiSettingsDraft {
+  return {
+    enabled: config.enabled,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    autoSummaryOnSave: config.autoSummaryOnSave,
+    relatedNotesEnabled: config.relatedNotesEnabled,
+    apiKey: ''
+  }
 }
 
 export function useAiState({
@@ -20,17 +34,24 @@ export function useAiState({
   selectedDocumentId,
   ui,
   onHomeDataChange,
+  onAiConfigChange,
   onSelectedDocumentChange,
   onDraftSummaryChange,
   onMessage
 }: UseAiStateParams) {
-  const [aiEnabledDraft, setAiEnabledDraft] = useState(aiConfig.enabled)
-  const [aiBaseUrlDraft, setAiBaseUrlDraft] = useState(aiConfig.baseUrl)
-  const [aiModelDraft, setAiModelDraft] = useState(aiConfig.model)
-  const [aiAutoSummaryOnSaveDraft, setAiAutoSummaryOnSaveDraft] = useState(aiConfig.autoSummaryOnSave)
-  const [aiRelatedNotesEnabledDraft, setAiRelatedNotesEnabledDraft] = useState(aiConfig.relatedNotesEnabled)
-  const [aiApiKeyDraft, setAiApiKeyDraft] = useState('')
+  const [settingsDraft, setSettingsDraft] = useState(() => createAiSettingsDraft(aiConfig))
+  const settingsDraftRef = useRef(settingsDraft)
+  const savedConfigRef = useRef(aiConfig)
+  const settingsMountedRef = useRef(false)
+  const settingsLockedRef = useRef(false)
+  const settingsRequestIdRef = useRef(0)
+  const {
+    enabled: aiEnabledDraft, baseUrl: aiBaseUrlDraft, model: aiModelDraft,
+    autoSummaryOnSave: aiAutoSummaryOnSaveDraft, relatedNotesEnabled: aiRelatedNotesEnabledDraft,
+    apiKey: aiApiKeyDraft
+  } = settingsDraft
   const [aiSaving, setAiSaving] = useState(false)
+  const [aiClearingApiKey, setAiClearingApiKey] = useState(false)
   const [aiPromptDraft, setAiPromptDraft] = useState('')
   const [aiAnswer, setAiAnswer] = useState('')
   const [aiAnsweredPrompt, setAiAnsweredPrompt] = useState('')
@@ -46,20 +67,53 @@ export function useAiState({
   const aiAnswerRequestIdRef = useRef(0)
   const aiContextRequestIdRef = useRef(0)
 
-  useEffect(() => {
-    setAiEnabledDraft(aiConfig.enabled)
-    setAiBaseUrlDraft(aiConfig.baseUrl)
-    setAiModelDraft(aiConfig.model)
-     setAiAutoSummaryOnSaveDraft(aiConfig.autoSummaryOnSave)
-     setAiRelatedNotesEnabledDraft(aiConfig.relatedNotesEnabled)
-     setAiApiKeyDraft('')
-   }, [
-     aiConfig.autoSummaryOnSave,
-     aiConfig.baseUrl,
-     aiConfig.enabled,
-     aiConfig.model,
-     aiConfig.relatedNotesEnabled
-   ])
+  useLayoutEffect(() => {
+    settingsMountedRef.current = true
+    return () => {
+      settingsMountedRef.current = false
+      settingsLockedRef.current = false
+      settingsRequestIdRef.current += 1
+    }
+  }, [])
+
+  const applyAiConfig = useCallback((config: AiConfig, mode: 'save' | 'clear' | 'external') => {
+    const draft = settingsDraftRef.current
+    const previous = savedConfigRef.current
+    const next = mode === 'save' ? createAiSettingsDraft(config) : {
+      enabled: draft.enabled === previous.enabled ? config.enabled : draft.enabled,
+      baseUrl: draft.baseUrl === previous.baseUrl ? config.baseUrl : draft.baseUrl,
+      model: draft.model === previous.model ? config.model : draft.model,
+      autoSummaryOnSave: draft.autoSummaryOnSave === previous.autoSummaryOnSave ? config.autoSummaryOnSave : draft.autoSummaryOnSave,
+      relatedNotesEnabled: draft.relatedNotesEnabled === previous.relatedNotesEnabled ? config.relatedNotesEnabled : draft.relatedNotesEnabled,
+      apiKey: mode === 'clear' ? '' : draft.apiKey
+    }
+    savedConfigRef.current = config
+    if ((Object.keys(next) as Array<keyof AiSettingsDraft>).some((key) => next[key] !== draft[key])) {
+      settingsDraftRef.current = next
+      setSettingsDraft(next)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    applyAiConfig(aiConfig, 'external')
+  }, [aiConfig.autoSummaryOnSave, aiConfig.baseUrl, aiConfig.enabled, aiConfig.hasApiKey,
+    aiConfig.model, aiConfig.relatedNotesEnabled, applyAiConfig])
+
+  const updateAiDraft = useCallback(<K extends keyof AiSettingsDraft>(key: K, value: SetStateAction<AiSettingsDraft[K]>) => {
+    if (!settingsMountedRef.current || settingsLockedRef.current) return
+    const previous = settingsDraftRef.current
+    const resolved = typeof value === 'function' ? value(previous[key]) : value
+    if (resolved === previous[key]) return
+    const next = { ...previous, [key]: resolved }
+    settingsDraftRef.current = next
+    setSettingsDraft(next)
+  }, [])
+  const setAiEnabledDraft = useCallback((value: SetStateAction<boolean>) => updateAiDraft('enabled', value), [updateAiDraft])
+  const setAiBaseUrlDraft = useCallback((value: SetStateAction<string>) => updateAiDraft('baseUrl', value), [updateAiDraft])
+  const setAiModelDraft = useCallback((value: SetStateAction<string>) => updateAiDraft('model', value), [updateAiDraft])
+  const setAiAutoSummaryOnSaveDraft = useCallback((value: SetStateAction<boolean>) => updateAiDraft('autoSummaryOnSave', value), [updateAiDraft])
+  const setAiRelatedNotesEnabledDraft = useCallback((value: SetStateAction<boolean>) => updateAiDraft('relatedNotesEnabled', value), [updateAiDraft])
+  const setAiApiKeyDraft = useCallback((value: SetStateAction<string>) => updateAiDraft('apiKey', value), [updateAiDraft])
 
   const resetAiSession = useCallback(() => {
     aiAnswerRequestIdRef.current += 1
@@ -86,72 +140,65 @@ export function useAiState({
   }, [resetAiSession, selectedDocumentId])
 
   const saveAiConfig = useCallback(async () => {
+    if (!settingsMountedRef.current || settingsLockedRef.current) return
+    settingsLockedRef.current = true
+    const requestId = ++settingsRequestIdRef.current
+    const isCurrentRequest = () => settingsMountedRef.current && settingsRequestIdRef.current === requestId
     setAiSaving(true)
 
     try {
-       await window.knowbook.updateAiConfig({
-         enabled: aiEnabledDraft,
-         baseUrl: aiBaseUrlDraft,
-         model: aiModelDraft,
-         autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-         relatedNotesEnabled: aiRelatedNotesEnabledDraft,
-         apiKey: aiApiKeyDraft
-       })
-
-      const refreshed = await window.knowbook.getHomeData()
-      onHomeDataChange(refreshed)
-      onMessage(ui.aiSettingsSaved)
+      const savedConfig = await window.knowbook.updateAiConfig({ ...settingsDraftRef.current })
+      if (isCurrentRequest()) {
+        applyAiConfig(savedConfig, 'save')
+        onAiConfigChange(savedConfig)
+        onMessage(ui.aiSettingsSaved)
+      }
     } catch (error) {
-      const message = getErrorMessage(error, ui.aiRequestFailed)
-      onMessage(message, 'error')
+      if (isCurrentRequest()) onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
     } finally {
-      setAiSaving(false)
+      if (isCurrentRequest()) {
+        settingsLockedRef.current = false
+        setAiSaving(false)
+      }
     }
-  }, [
-    aiAutoSummaryOnSaveDraft,
-    aiApiKeyDraft,
-    aiBaseUrlDraft,
-    aiEnabledDraft,
-    aiModelDraft,
-     aiRelatedNotesEnabledDraft,
-     onHomeDataChange,
-     onMessage,
-     ui
-   ])
+  }, [applyAiConfig, onAiConfigChange, onMessage, ui])
 
   const clearAiApiKey = useCallback(async () => {
-    await confirmAction({ title: ui.clearAiApiKey, description: ui.confirmClearAiApiKey,
-      note: ui.language === 'zh-CN' ? '清除后，AI 请求需要重新配置 API Key。' : 'AI requests will require a new API key.',
-      onConfirm: async () => {
-        setAiSaving(true)
-        try {
-          await window.knowbook.updateAiConfig({
-            enabled: aiEnabledDraft,
-            baseUrl: aiBaseUrlDraft,
-            model: aiModelDraft,
-            autoSummaryOnSave: aiAutoSummaryOnSaveDraft,
-            relatedNotesEnabled: aiRelatedNotesEnabledDraft,
-            clearApiKey: true
-          })
-          const refreshed = await window.knowbook.getHomeData()
-          setAiApiKeyDraft('')
-          onHomeDataChange(refreshed)
-          onMessage(ui.aiApiKeyCleared)
-        } finally {
-          setAiSaving(false)
+    if (!settingsMountedRef.current || settingsLockedRef.current) return
+    settingsLockedRef.current = true
+    const requestId = ++settingsRequestIdRef.current
+    const isCurrentRequest = () => settingsMountedRef.current && settingsRequestIdRef.current === requestId
+    try {
+      await confirmAction({ title: ui.clearAiApiKey, description: ui.confirmClearAiApiKey,
+        note: ui.language === 'zh-CN' ? '仅清除已保存的 API Key，其他未保存的修改会保留。清除后，AI 请求需要重新配置 API Key。' : 'Only the saved API key will be cleared. Other unsaved changes will be kept. AI requests will require a new API key.',
+        onConfirm: async () => {
+          if (!isCurrentRequest()) return
+          setAiSaving(true)
+          setAiClearingApiKey(true)
+          try {
+            const { hasApiKey: _hasApiKey, ...savedSettings } = savedConfigRef.current
+            const savedConfig = await window.knowbook.updateAiConfig({ ...savedSettings, clearApiKey: true })
+            if (isCurrentRequest()) {
+              applyAiConfig(savedConfig, 'clear')
+              onAiConfigChange(savedConfig)
+              onMessage(ui.aiApiKeyCleared)
+            }
+          } catch (error) {
+            if (isCurrentRequest()) throw error
+          } finally {
+            if (isCurrentRequest()) {
+              setAiSaving(false)
+              setAiClearingApiKey(false)
+            }
+          }
         }
-      }
-    })
-  }, [
-    aiAutoSummaryOnSaveDraft,
-    aiBaseUrlDraft,
-    aiEnabledDraft,
-    aiModelDraft,
-    aiRelatedNotesEnabledDraft,
-    onHomeDataChange,
-    onMessage,
-    ui
-  ])
+      })
+    } catch (error) {
+      if (isCurrentRequest()) onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
+    } finally {
+      if (isCurrentRequest()) settingsLockedRef.current = false
+    }
+  }, [applyAiConfig, onAiConfigChange, onMessage, ui])
 
   const findRelatedNotesForPrompt = useCallback(async () => {
     const requestedDocumentId = selectedDocumentId
@@ -279,6 +326,7 @@ export function useAiState({
      aiApiKeyDraft,
     setAiApiKeyDraft,
     aiSaving,
+    aiClearingApiKey,
     aiPromptDraft,
     setAiPromptDraft,
     aiAnswer,

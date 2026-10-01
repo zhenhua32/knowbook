@@ -1,6 +1,7 @@
 import electron from 'electron'
 import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
+  AiConfig,
   AppUpdateState,
   AskAiInput,
   AskAiResult,
@@ -212,7 +213,7 @@ const api: ElectronApi = {
   listBackupVersions: () => ipcRenderer.invoke('knowbook:list-backup-versions'),
   restoreBackupVersion: (versionId: string) => ipcRenderer.invoke('knowbook:restore-backup-version', versionId),
   moveDocument: (documentId: string, newParentId: string | null) => ipcRenderer.invoke('knowbook:move-document', documentId, newParentId) as Promise<void>,
-  updateAiConfig: (input: UpdateAiConfigInput) => ipcRenderer.invoke('knowbook:update-ai-config', input) as Promise<void>,
+  updateAiConfig: (input: UpdateAiConfigInput) => ipcRenderer.invoke('knowbook:update-ai-config', input) as Promise<AiConfig>,
   listAssistantSessions: () => ipcRenderer.invoke('knowbook:list-assistant-sessions') as Promise<AssistantSessionSummary[]>,
   createAssistantSession: (input: CreateAssistantSessionRequest = {}) => ipcRenderer.invoke('knowbook:create-assistant-session', input) as Promise<AssistantSessionSummary>,
   getAssistantSessionEvents: (sessionId: AssistantSessionId, afterSeq = 0, limit = 500) => ipcRenderer.invoke('knowbook:get-assistant-session-events', sessionId, afterSeq, limit) as Promise<AssistantEvent[]>,
