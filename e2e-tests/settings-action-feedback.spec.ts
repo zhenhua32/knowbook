@@ -135,11 +135,26 @@ async function dismissButKeepHistory(page: Page, reason: string, localError: Loc
 
 async function record(page: Page, app: ElectronApplication, panel: Locator, testInfo: TestInfo, phase: string) {
   const geometry = await panel.evaluate(element => {
-    const describe = (target: Element) => {
+    const describeRect = (target: Element) => {
       const rect = target.getBoundingClientRect()
-      return { text: target.textContent, top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right }
+      const style = getComputedStyle(target)
+      return { tag: target.tagName, className: target.className, top: rect.top, bottom: rect.bottom,
+        left: rect.left, right: rect.right, position: style.position, bottomOffset: style.bottom,
+        notificationId: target.getAttribute('data-notification-id') }
     }
+    const describe = (target: Element) => ({ ...describeRect(target), text: target.textContent })
+    const scrollers: Element[] = []
+    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (/(?:auto|scroll|overlay)/.test(getComputedStyle(ancestor).overflowY)
+        && ancestor.scrollHeight > ancestor.clientHeight) scrollers.push(ancestor)
+    }
+    if (document.scrollingElement && !scrollers.includes(document.scrollingElement)) scrollers.push(document.scrollingElement)
     return { viewport: { width: innerWidth, height: innerHeight },
+      editableForms: [...element.querySelectorAll('.settings-editable-form')].map(describeRect),
+      formActions: [...element.querySelectorAll('.settings-form-actions')].map(describeRect),
+      scrollers: scrollers.map(target => ({ ...describeRect(target), scrollTop: target.scrollTop,
+        clientHeight: target.clientHeight, scrollHeight: target.scrollHeight })),
+      notifications: [...document.querySelectorAll('.app-notifications, .app-notifications .app-notification')].map(describeRect),
       feedback: [...element.querySelectorAll('.settings-action-feedback')].map(describe),
       buttons: [...element.querySelectorAll('.settings-form-actions button')].map(describe),
       activeTag: document.activeElement?.tagName,
@@ -296,6 +311,10 @@ test('bridge save and token failures retain their owner across reads and invalid
     await finish(app)
     await expect(save).toBeEnabled()
     await expect(error).toHaveCount(0)
+    const savedToast = page.locator('.app-notifications .app-notification-success').filter({ hasText: '网页剪藏桥接设置已保存。' })
+    await expect(savedToast).toHaveCount(1)
+    const savedToastId = await savedToast.getAttribute('data-notification-id')
+    expect(Boolean(savedToastId)).toBe(true)
     expect(await page.evaluate(() => window.knowbook.getWebClipBridgeStatus())).toMatchObject({ enabled: false, configuredPort: 5432, running: false, port: null, endpoint: null })
 
     await enabled.check()
@@ -312,9 +331,17 @@ test('bridge save and token failures retain their owner across reads and invalid
     await expect(port).toHaveValue('1e4')
     await expect(enabled).toBeChecked()
     await expect(token).toHaveValue(originalToken)
+    const rotationErrorToast = page.locator('.app-notifications .app-notification-error').filter({ hasText: 'Controlled token rotation failure' })
+    await expect(rotationErrorToast).toHaveCount(1)
+    const rotationErrorToastId = await rotationErrorToast.getAttribute('data-notification-id')
+    expect(Boolean(rotationErrorToastId)).toBe(true)
+    await expect(savedToast).toHaveCount(1)
+    await expect(savedToast).toHaveAttribute('data-notification-id', savedToastId!)
     await expectFeedback(feedback, buttons)
-    await expectHit(rotate)
     await record(page, app, panel, testInfo, 'bridge-rotate-failure')
+    await expect(savedToast).toHaveAttribute('data-notification-id', savedToastId!)
+    await expect(rotationErrorToast).toHaveAttribute('data-notification-id', rotationErrorToastId!)
+    await expectHit(rotate)
     await dismissButKeepHistory(page, 'Controlled token rotation failure', error)
     const callCount = (await counts(app)).calls
     await save.evaluate(button => (button as HTMLButtonElement).click())
@@ -350,10 +377,11 @@ test('bridge save and token failures retain their owner across reads and invalid
     await rotatedToast.getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true }).click()
     await expect(rotatedToast).toHaveCount(0)
     const copyToken = panel.getByRole('button', { name: uiText('Copy token', '复制令牌'), exact: true })
-    await copyToken.scrollIntoViewIfNeeded()
+    const tokenField = panel.locator('.settings-bridge-copy-field[data-copy-kind="token"]')
+    await tokenField.scrollIntoViewIfNeeded()
     await expect(copyToken).toBeEnabled()
     await expectHit(copyToken)
-    await expect(copyToken.locator('..')).toBeInViewport({ ratio: 1 })
+    await expect(tokenField).toBeInViewport({ ratio: 1 })
     await record(page, app, panel, testInfo, 'bridge-rotate-retry-and-readable-service')
     await page.clock.resume()
   })

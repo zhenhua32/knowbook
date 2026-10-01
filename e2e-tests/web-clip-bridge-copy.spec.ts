@@ -97,7 +97,9 @@ function bridgeControls(page: Page) {
   const panel = page.locator('.settings-bridge-panel')
   const copyActions = panel.locator('.settings-bridge-copy-actions')
   return { panel, copyActions, feedback: copyActions.locator('.settings-bridge-copy-feedback'),
-    copyButtons: copyActions.locator('.settings-actions'),
+    tokenField: copyActions.locator('.settings-bridge-copy-field[data-copy-kind="token"]'),
+    endpointField: copyActions.locator('.settings-bridge-copy-field[data-copy-kind="endpoint"]'),
+    copyButtons: copyActions.locator('.settings-bridge-copy-button'),
     copyEndpoint: copyActions.getByRole('button', { name: uiText('Copy endpoint', '复制提交地址'), exact: true }),
     copyToken: copyActions.getByRole('button', { name: uiText('Copy token', '复制令牌'), exact: true }),
     save: panel.locator('.settings-form-actions').getByRole('button', { name: /^(?:Save bridge settings|保存桥接设置|Saving\.\.\.|保存中\.\.\.)$/ }),
@@ -141,27 +143,32 @@ async function enter(page: Page, control: Locator) {
 }
 
 async function expectCopying(controls: BridgeControls, kind: 'endpoint' | 'token') {
-  const buttons = controls.copyButtons.getByRole('button')
+  const buttons = controls.copyButtons
   await expect(buttons).toHaveCount(2)
   for (const button of await buttons.all()) await expect(button).toBeDisabled()
-  const current = controls.copyButtons.getByRole('button', { name: uiText('Copying…', '正在复制…'), exact: true })
+  await expect(controls.tokenField.locator('.settings-bridge-token-visibility')).toBeEnabled()
+  const field = kind === 'endpoint' ? controls.endpointField : controls.tokenField
+  const actions = field.locator('.settings-actions')
+  const feedback = field.locator('.settings-bridge-copy-feedback')
+  const current = field.getByRole('button', { name: uiText('Copying…', '正在复制…'), exact: true })
   await expect(current).toHaveAttribute('aria-busy', 'true')
-  await expect(controls.copyButtons.locator('button[aria-busy="false"]')).toHaveCount(1)
-  const status = controls.feedback.getByRole('status')
+  await expect(controls.copyActions.locator('.settings-bridge-copy-button[aria-busy="false"]')).toHaveCount(1)
+  const status = feedback.getByRole('status')
   await expect(status).toHaveText(kind === 'endpoint'
     ? uiText('Copying the web clip bridge endpoint…', '正在复制网页剪藏提交地址…')
     : uiText('Copying the web clip bridge token…', '正在复制网页剪藏令牌…'))
   expect(await status.evaluate(element => Boolean(element.closest('[aria-busy="true"]')))).toBe(false)
-  await expect(controls.feedback).toBeInViewport({ ratio: 1 })
-  await expect(controls.copyButtons).toBeInViewport({ ratio: 1 })
-  const before = await controls.feedback.boundingBox(), after = await controls.copyButtons.boundingBox()
+  await expect(field).toBeInViewport({ ratio: 1 })
+  await expect(feedback).toBeInViewport({ ratio: 1 })
+  await expect(actions).toBeInViewport({ ratio: 1 })
+  const before = await actions.boundingBox(), after = await feedback.boundingBox()
   expect(before).not.toBeNull(); expect(after).not.toBeNull()
   expect(before!.y + before!.height).toBeLessThanOrEqual(after!.y + 1)
   expect(after!.y - before!.y - before!.height).toBeLessThan(48)
 }
 
 async function expectMutationBlocksCopy(controls: BridgeControls, app: ElectronApplication, expectedCopies: number) {
-  const buttons = controls.copyButtons.getByRole('button')
+  const buttons = controls.copyButtons
   await expect(buttons).toHaveCount(2)
   for (const button of await buttons.all()) await expect(button).toBeDisabled()
   await buttons.evaluateAll(elements => elements.forEach(element => (element as HTMLButtonElement).click()))
@@ -240,7 +247,8 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await controls.copyEndpoint.evaluate(button => {
         ;(button as HTMLButtonElement).click()
         ;(button as HTMLButtonElement).click()
-        ;(button.parentElement!.querySelectorAll('button')[1] as HTMLButtonElement).click()
+        ;(button.closest('.settings-bridge-copy-actions')!
+          .querySelector('.settings-bridge-copy-field[data-copy-kind="token"] .settings-bridge-copy-button') as HTMLButtonElement).click()
       })
       await expect.poll(async () => (await counts(app)).pendingCopies).toBe(1)
       expect((await counts(app)).copies).toBe(3)
@@ -348,7 +356,7 @@ test('copy acknowledgements respect user focus changes and become silent after a
     await expect(controls.rotate).toBeEnabled()
     await expect(controls.rotate).toBeFocused()
     await expect.poll(() => controls.token.inputValue()).not.toBe(originalToken)
-    await expect(controls.copyButtons.getByRole('button', { name: 'Copying…', exact: true })).toBeDisabled()
+    await expect(controls.copyActions.getByRole('button', { name: 'Copying…', exact: true })).toBeDisabled()
     await expect(controls.port).toHaveValue('1e4')
     await expect(controls.enabled).not.toBeChecked()
     expect((await counts(app)).writes).toEqual([{ enabled: false, port: 4321, regenerateToken: true }])

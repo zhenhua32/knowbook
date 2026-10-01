@@ -161,9 +161,13 @@ export function DashboardSettingsSection({
 }: DashboardSettingsSectionProps) {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
   const [syncMounted, setSyncMounted] = useState(false)
+  const [visibleBridgeToken, setVisibleBridgeToken] = useState<string | null>(null)
   const tabsId = useId()
   const bridgePortErrorId = useId()
   const bridgeTokenHintId = useId()
+  const bridgeTokenInputId = useId()
+  const bridgeToken = webClipBridgeStatus?.token ?? ''
+  const bridgeTokenVisible = Boolean(bridgeToken && visibleBridgeToken === bridgeToken && isSettingsPage && activeCategory === 'clipping')
   const aiPanelRef = useRef<HTMLElement>(null)
   const bridgePanelRef = useRef<HTMLElement>(null)
   const updatesPanelRef = useRef<HTMLElement>(null)
@@ -190,7 +194,11 @@ export function DashboardSettingsSection({
     setActiveCategory(category)
   }
   useLayoutEffect(() => {
+    setVisibleBridgeToken(null)
+  }, [bridgeToken, activeCategory, isSettingsPage])
+  useLayoutEffect(() => {
     if (!isSettingsPage || !requestedCategory) return
+    setVisibleBridgeToken(null)
     if (requestedCategory === 'sync') setSyncMounted(true)
     setActiveCategory(requestedCategory)
     onCategoryRequestHandled?.()
@@ -379,14 +387,33 @@ export function DashboardSettingsSection({
                   </div>
                 </div>
                 </div>
-                <label className="editor-label">
-                  {ui.webClipBridgeTokenLabel}
-                  <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.token ?? ''} />
-                </label>
-                <label className="editor-label">
-                  {ui.webClipBridgeEndpointLabel}
-                  <input className="editor-input" readOnly type="text" value={webClipBridgeStatus ? (webClipBridgeStatus.endpoint ?? ui.webClipBridgeUnavailable) : (webClipBridgeLoading ? ui.webClipBridgeLoading : ui.webClipBridgeLoadUnknown)} />
-                </label>
+                <div className="settings-bridge-copy-actions">
+                  <div className="settings-bridge-copy-field" data-copy-kind="token">
+                    <label className="editor-label" htmlFor={bridgeTokenInputId}>
+                      {ui.webClipBridgeTokenLabel}
+                      <input autoComplete="off" className="editor-input" id={bridgeTokenInputId} readOnly type={bridgeTokenVisible ? 'text' : 'password'} value={bridgeToken} />
+                    </label>
+                    <div className="settings-actions">
+                      <button aria-controls={bridgeTokenInputId} className="secondary-button settings-bridge-token-visibility" disabled={!bridgeToken} onClick={() => setVisibleBridgeToken(bridgeTokenVisible ? null : bridgeToken)} type="button">{bridgeTokenVisible ? ui.webClipBridgeHideToken : ui.webClipBridgeShowToken}</button>
+                      <button aria-busy={webClipBridgeCopying === 'token'} className="secondary-button settings-bridge-copy-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !bridgeToken} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeToken)} type="button">{webClipBridgeCopying === 'token' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyToken}</button>
+                    </div>
+                    <div className="settings-action-feedback settings-bridge-copy-feedback">
+                      {webClipBridgeCopying === 'token' && <p className="mini-hint" role="status">{ui.webClipBridgeCopyingToken}</p>}
+                    </div>
+                  </div>
+                  <div className="settings-bridge-copy-field" data-copy-kind="endpoint">
+                    <label className="editor-label">
+                      {ui.webClipBridgeEndpointLabel}
+                      <input className="editor-input" readOnly type="text" value={webClipBridgeStatus ? (webClipBridgeStatus.endpoint ?? ui.webClipBridgeUnavailable) : (webClipBridgeLoading ? ui.webClipBridgeLoading : ui.webClipBridgeLoadUnknown)} />
+                    </label>
+                    <div className="settings-actions">
+                      <button aria-busy={webClipBridgeCopying === 'endpoint'} className="secondary-button settings-bridge-copy-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !webClipBridgeStatus?.endpoint} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeEndpoint)} type="button">{webClipBridgeCopying === 'endpoint' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyEndpoint}</button>
+                    </div>
+                    <div className="settings-action-feedback settings-bridge-copy-feedback">
+                      {webClipBridgeCopying === 'endpoint' && <p className="mini-hint" role="status">{ui.webClipBridgeCopyingEndpoint}</p>}
+                    </div>
+                  </div>
+                </div>
                 {webClipBridgeLoading && <p className="mini-hint" role="status">{ui.webClipBridgeLoading}</p>}
                 {webClipBridgeLoadError && (
                   <div className="settings-bridge-read-error">
@@ -405,15 +432,14 @@ export function DashboardSettingsSection({
                     <dd>{webClipBridgeStatus ? (webClipBridgeStatus.lastError ?? ui.common.none) : ui.webClipBridgeLoadUnknown}</dd>
                   </div>
                 </dl>
-                <p className="mini-hint">{ui.webClipBridgeHint}</p>
-                <div className="settings-bridge-copy-actions">
-                <div className="settings-action-feedback settings-bridge-copy-feedback">
-                  {webClipBridgeCopying && <p className="mini-hint" role="status">{webClipBridgeCopying === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken}</p>}
-                </div>
-                <div className="settings-actions">
-                  <button aria-busy={webClipBridgeCopying === 'endpoint'} className="secondary-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !webClipBridgeStatus?.endpoint} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeEndpoint)} type="button">{webClipBridgeCopying === 'endpoint' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyEndpoint}</button>
-                  <button aria-busy={webClipBridgeCopying === 'token'} className="secondary-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !webClipBridgeStatus?.token} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeToken)} type="button">{webClipBridgeCopying === 'token' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyToken}</button>
-                </div>
+                <div className="settings-bridge-setup">
+                  <h4>{ui.webClipBridgeSetupTitle}</h4>
+                  <ol>
+                    <li>{ui.webClipBridgeSetupEnable}</li>
+                    <li>{ui.webClipBridgeSetupExtension}</li>
+                    <li>{ui.webClipBridgeSetupClip}</li>
+                  </ol>
+                  <p className="mini-hint">{ui.webClipBridgeHint}</p>
                 </div>
               </section>
 

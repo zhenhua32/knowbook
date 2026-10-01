@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppNotificationAction } from '@shared/app-notification'
 import { appNotifications, type AppNotification } from '../app-notifications'
@@ -21,6 +21,33 @@ export default function AppNotificationList({ notifications, history, open, onCl
 }) {
   const listRef = useRef<HTMLElement>(null)
   const newestId = notifications.at(-1)?.id
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    const rootStyle = document.documentElement.style
+    const property = '--kb-notification-clearance'
+    const previousValue = rootStyle.getPropertyValue(property)
+    const previousPriority = rootStyle.getPropertyPriority(property)
+    let active = true
+    const updateClearance = () => {
+      if (!active) return
+      const bounds = list.getBoundingClientRect()
+      const clearance = list.isConnected && list.childElementCount > 0 && bounds.height > 0
+        ? Math.max(0, Math.ceil(window.innerHeight - bounds.top + 12)) : 0
+      rootStyle.setProperty(property, `${clearance}px`)
+    }
+    updateClearance()
+    const observer = typeof window.ResizeObserver === 'undefined' ? null : new window.ResizeObserver(updateClearance)
+    observer?.observe(list)
+    window.addEventListener('resize', updateClearance)
+    return () => {
+      active = false
+      observer?.disconnect()
+      window.removeEventListener('resize', updateClearance)
+      if (previousValue) rootStyle.setProperty(property, previousValue, previousPriority)
+      else rootStyle.removeProperty(property)
+    }
+  }, [open, notifications])
   useEffect(() => {
     const list = listRef.current
     if (list) list.scrollTop = list.scrollHeight

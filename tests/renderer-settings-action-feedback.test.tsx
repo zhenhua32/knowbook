@@ -98,6 +98,46 @@ function button(scope: ParentNode, label: string, selector = 'button'): HTMLButt
 }
 function assertFocused(document: Document, expected: Element) { assert.ok(document.activeElement === expected, `Unexpected focus ${document.activeElement?.tagName}#${document.activeElement?.id}`) }
 
+function copyField(bridge: ParentNode, kind: 'endpoint' | 'token') {
+  const fields = bridge.querySelectorAll<HTMLElement>(`.settings-bridge-copy-actions .settings-bridge-copy-field[data-copy-kind="${kind}"]`)
+  assert.equal(fields.length, 1, `Expected one ${kind} field with its own copy control`)
+  return fields[0]
+}
+
+function copyButton(bridge: ParentNode, kind: 'endpoint' | 'token') {
+  const controls = copyField(bridge, kind).querySelectorAll<HTMLButtonElement>('.settings-bridge-copy-button')
+  assert.equal(controls.length, 1)
+  return controls[0]
+}
+
+function tokenControls(bridge: ParentNode) {
+  const field = copyField(bridge, 'token')
+  const input = field.querySelector<HTMLInputElement>('input')!
+  const toggle = field.querySelector<HTMLButtonElement>('.settings-bridge-token-visibility')!
+  assert.ok(input)
+  assert.ok(toggle)
+  return { field, input, toggle }
+}
+
+function runningBridgeStatus(token: string): NonNullable<Props['webClipBridgeStatus']> {
+  return { enabled: true, configuredPort: 4321, port: 4321, running: true,
+    endpoint: 'http://127.0.0.1:4321/clip', token, lastError: null }
+}
+
+function assertTokenOnlyInInputValue(bridge: HTMLElement, token: string) {
+  for (const element of [bridge, ...bridge.querySelectorAll('*')]) {
+    for (const attribute of element.attributes) {
+      if (attribute.name === 'title' || attribute.name.startsWith('aria-')) {
+        assert.equal(attribute.value.includes(token), false, `The raw token must not appear in ${attribute.name}`)
+      }
+    }
+  }
+  for (const live of bridge.querySelectorAll('[role="status"], [role="alert"], [aria-live]')) {
+    assert.equal(live.textContent!.includes(token), false, 'The raw token must not enter an announcement')
+  }
+  assert.equal(bridge.textContent!.includes(token), false, 'Token visibility belongs to its input rather than surrounding text')
+}
+
 test('localized AI and bridge action failures stay by their actions outside busy ancestors and service errors remain separate', async () => {
   for (const isZh of [true, false]) {
     await withSettings(isZh, async context => {
@@ -266,7 +306,23 @@ test('copy controls require their actual saved values and lock for mutations or 
       const { bridge, ui, patch } = context
       await context.select(isZh ? '网页剪藏' : 'Web clipping')
       const group = bridge.querySelector('.settings-bridge-copy-actions')!
-      const [endpoint, token] = [...group.querySelectorAll<HTMLButtonElement>('button')]
+      assert.equal(bridge.querySelectorAll('.settings-bridge-copy-actions').length, 1)
+      assert.equal(group.querySelectorAll('.settings-bridge-copy-button').length, 2)
+      const endpoint = copyButton(bridge, 'endpoint'), token = copyButton(bridge, 'token')
+      const fields = { endpoint: copyField(bridge, 'endpoint'), token: copyField(bridge, 'token') }
+      const feedback = { endpoint: fields.endpoint.querySelector('.settings-bridge-copy-feedback')!,
+        token: fields.token.querySelector('.settings-bridge-copy-feedback')! }
+      for (const kind of ['endpoint', 'token'] as const) {
+        const input = fields[kind].querySelector<HTMLInputElement>('input')!
+        assert.ok(input.labels?.length)
+        assert.ok(input.labels![0].textContent!.includes(kind === 'endpoint' ? ui.webClipBridgeEndpointLabel : ui.webClipBridgeTokenLabel))
+        assert.equal(input.readOnly, true)
+        assert.ok(fields[kind].contains(copyButton(bridge, kind)))
+        assert.ok(feedback[kind])
+        assert.equal(feedback[kind].textContent, '')
+        assert.equal(feedback[kind].querySelector('[role="status"]'), null)
+        assert.equal(feedback[kind].closest('[aria-busy="true"]'), null)
+      }
       assert.equal(endpoint.disabled, true)
       assert.equal(token.disabled, false)
       await patch({ webClipBridgeStatus: null })
@@ -289,8 +345,13 @@ test('copy controls require their actual saved values and lock for mutations or 
         assert.equal(endpoint.getAttribute('aria-busy'), String(kind === 'endpoint'))
         assert.equal(token.getAttribute('aria-busy'), String(kind === 'token'))
         assert.equal((kind === 'endpoint' ? endpoint : token).textContent, ui.webClipBridgeCopying)
-        assert.equal(group.querySelector('[role="status"]')!.textContent, kind === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken)
-        assert.equal(group.querySelector('[role="status"]')!.closest('[aria-busy="true"]'), null)
+        assert.equal(group.querySelectorAll('[role="status"]').length, 1)
+        assert.equal(feedback[kind].querySelector('[role="status"]')!.textContent, kind === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken)
+        assert.equal(feedback[kind].querySelector('[role="status"]')!.closest('[aria-busy="true"]'), null)
+        const other = kind === 'endpoint' ? 'token' : 'endpoint'
+        assert.equal(feedback[other].textContent, '')
+        assert.equal(feedback[other].querySelector('[role="status"]'), null)
+        assert.equal(fields[kind].querySelector('.settings-bridge-copy-feedback'), feedback[kind], 'Each field keeps its feedback slot while its contents change')
         assert.equal(button(bridge, ui.webClipBridgeSave).disabled, false, 'Copying must not lock configuration editing or saving')
         assert.equal(button(bridge, ui.webClipBridgeRegenerateToken).disabled, false)
         assert.equal(bridge.querySelector<HTMLInputElement>('input[inputmode="numeric"]')!.disabled, false)
@@ -299,6 +360,8 @@ test('copy controls require their actual saved values and lock for mutations or 
       assert.equal(group.querySelector('[role="status"]'), null)
       assert.equal(endpoint.textContent, ui.webClipBridgeCopyEndpoint)
       assert.equal(token.textContent, ui.webClipBridgeCopyToken)
+      assert.equal(fields.endpoint.querySelector('.settings-bridge-copy-feedback'), feedback.endpoint)
+      assert.equal(fields.token.querySelector('.settings-bridge-copy-feedback'), feedback.token)
     })
   }
 })
@@ -319,13 +382,18 @@ test('copy buttons consume their actual deferred handlers and recover focus afte
           onCopyWebClipBridgeEndpoint: () => copy('endpoint'), onCopyWebClipBridgeToken: () => copy('token') })
         await context.select('Web clipping')
         const group = bridge.querySelector('.settings-bridge-copy-actions')!
-        const trigger = button(group, kind === 'endpoint' ? ui.webClipBridgeCopyEndpoint : ui.webClipBridgeCopyToken)
-        const other = button(group, kind === 'endpoint' ? ui.webClipBridgeCopyToken : ui.webClipBridgeCopyEndpoint)
+        const trigger = copyButton(bridge, kind)
+        const otherKind = kind === 'endpoint' ? 'token' : 'endpoint'
+        const other = copyButton(bridge, otherKind)
         await context.activate(trigger)
         assert.equal(calls[kind], 1)
         assertFocused(context.document, context.document.body)
         assert.equal(trigger.getAttribute('aria-busy'), 'true')
         assert.equal(other.getAttribute('aria-busy'), 'false')
+        assert.equal(copyField(bridge, kind).querySelector('.settings-bridge-copy-feedback [role="status"]')!.textContent,
+          kind === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken)
+        assert.equal(copyField(bridge, otherKind).querySelector('.settings-bridge-copy-feedback [role="status"]'), null)
+        assert.equal(group.querySelector('[role="status"]')!.closest('[aria-busy="true"]'), null)
         await act(async () => { trigger.click(); other.click() })
         assert.deepEqual(calls, kind === 'endpoint' ? { endpoint: 1, token: 0 } : { endpoint: 0, token: 1 })
         await act(async () => outcome === 'success' ? pending.resolve() : pending.reject(new Error('The action provider handled the clipboard error')))
@@ -348,8 +416,8 @@ test('copy completion preserves a readonly input or category focus after the use
         return pending.promise.finally(() => patchNow({ webClipBridgeCopying: null }))
       } })
       await context.select('Web clipping')
-      await context.activate(button(bridge.querySelector('.settings-bridge-copy-actions')!, ui.webClipBridgeCopyToken))
-      const target = destination === 'readonly-input' ? bridge.querySelector<HTMLInputElement>('input[readonly]')!
+      await context.activate(copyButton(bridge, 'token'))
+      const target = destination === 'readonly-input' ? tokenControls(bridge).input
         : button(context.document, 'General', '[role="tab"]')
       await act(async () => { target.focus(); if (destination === 'category') (target as HTMLButtonElement).click() })
       await act(async () => pending.resolve())
@@ -357,5 +425,208 @@ test('copy completion preserves a readonly input or category focus after the use
       if (destination === 'category') assert.equal(bridge.hidden, true)
       assert.equal(bridge.querySelector('.settings-bridge-copy-feedback [role="status"]'), null)
     })
+  }
+})
+
+test('token visibility starts masked and localized Show or Hide only changes its readonly input presentation', async () => {
+  for (const isZh of [true, false]) {
+    await withSettings(isZh, async context => {
+      const { bridge, ui } = context
+      const token = 'kb-full-token-presentation-47d6b8'
+      let configCalls = 0, copyCalls = 0
+      const saved = runningBridgeStatus(token)
+      await context.patch({ webClipBridgeStatus: saved,
+        onSaveWebClipBridgeSettings: () => { configCalls++ }, onRegenerateWebClipBridgeToken: () => { configCalls++ },
+        onWebClipBridgeEnabledChange: () => { configCalls++ }, onWebClipBridgePortChange: () => { configCalls++ },
+        onCopyWebClipBridgeToken: () => { copyCalls++ }, onCopyWebClipBridgeEndpoint: () => { copyCalls++ } })
+      await context.select(isZh ? '网页剪藏' : 'Web clipping')
+      const { input, toggle } = tokenControls(bridge)
+      assert.equal(input.type, 'password')
+      assert.equal(input.readOnly, true)
+      assert.equal(input.value, token)
+      assert.ok(input.id)
+      assert.equal(toggle.getAttribute('aria-controls'), input.id)
+      assert.equal(context.document.getElementById(toggle.getAttribute('aria-controls')!), input)
+      assert.equal(toggle.textContent, ui.webClipBridgeShowToken)
+      assert.equal(toggle.disabled, false)
+      assertTokenOnlyInInputValue(bridge, token)
+      await context.activate(toggle)
+      assert.equal(input.type, 'text')
+      assert.equal(input.readOnly, true)
+      assert.equal(input.value, token)
+      assert.equal(toggle.textContent, ui.webClipBridgeHideToken)
+      assertFocused(context.document, toggle)
+      assertTokenOnlyInInputValue(bridge, token)
+      await context.activate(toggle)
+      assert.equal(input.type, 'password')
+      assert.equal(input.value, token)
+      assert.equal(toggle.textContent, ui.webClipBridgeShowToken)
+      assert.equal(copyField(bridge, 'endpoint').querySelector<HTMLInputElement>('input')!.type, 'text')
+      assert.equal(copyField(bridge, 'endpoint').querySelector<HTMLInputElement>('input')!.value, saved.endpoint)
+      assert.equal(configCalls, 0)
+      assert.equal(copyCalls, 0)
+      assertTokenOnlyInInputValue(bridge, token)
+    })
+  }
+})
+
+test('same-token status refreshes preserve an explicit reveal but changing or returning to an old token stays masked', async () => {
+  await withSettings(false, async context => {
+    const original = runningBridgeStatus('original-known-token')
+    await context.patch({ webClipBridgeStatus: original })
+    await context.select('Web clipping')
+    const { input, toggle } = tokenControls(context.bridge)
+    await context.activate(toggle)
+    assert.equal(input.type, 'text')
+    await context.patch({ webClipBridgeLoading: true })
+    assert.equal(input.type, 'text')
+    await context.patch({ webClipBridgeStatus: { ...original, configuredPort: 5432, port: 5432,
+      endpoint: 'http://127.0.0.1:5432/clip' }, webClipBridgeLoading: false })
+    assert.equal(input.type, 'text', 'A status poll with the same token must not undo the user reveal')
+    assert.equal(input.value, original.token)
+    await context.patch({ webClipBridgeStatus: { ...original, token: 'replacement-known-token' } })
+    assert.equal(input.value, 'replacement-known-token')
+    assert.equal(input.type, 'password')
+    assert.equal(toggle.textContent, context.ui.webClipBridgeShowToken)
+    await context.patch({ webClipBridgeStatus: { ...original } })
+    assert.equal(input.value, original.token)
+    assert.equal(input.type, 'password', 'An old value returning later must not resurrect its previous reveal')
+    await context.activate(toggle)
+    assert.equal(input.type, 'text')
+    await context.patch({ webClipBridgeStatus: { ...original, token: 'another-known-token' } })
+    await context.patch({ webClipBridgeStatus: { ...original } })
+    assert.equal(input.type, 'password')
+  })
+})
+
+test('unknown or empty tokens disable Show and recover to a masked value when a known token returns', async () => {
+  await withSettings(false, async context => {
+    await context.select('Web clipping')
+    const { input, toggle } = tokenControls(context.bridge)
+    await context.activate(toggle)
+    assert.equal(input.type, 'text')
+    await context.patch({ webClipBridgeStatus: null })
+    assert.equal(input.value, '')
+    assert.equal(input.type, 'password')
+    assert.equal(toggle.disabled, true)
+    assert.equal(toggle.textContent, context.ui.webClipBridgeShowToken)
+    await act(async () => toggle.click())
+    assert.equal(input.type, 'password')
+    const known = runningBridgeStatus('known-token-after-read')
+    await context.patch({ webClipBridgeStatus: known })
+    assert.equal(input.type, 'password')
+    assert.equal(input.value, known.token)
+    assert.equal(toggle.disabled, false)
+    await context.activate(toggle)
+    await context.patch({ webClipBridgeStatus: { ...known, token: '' } })
+    assert.equal(input.type, 'password')
+    assert.equal(input.value, '')
+    assert.equal(toggle.disabled, true)
+    await act(async () => toggle.click())
+    await context.patch({ webClipBridgeStatus: { ...known } })
+    assert.equal(input.type, 'password')
+    assert.equal(toggle.disabled, false)
+  })
+})
+
+test('user category navigation and external requests reopen clipping with a masked token and preserved drafts', async () => {
+  for (const path of ['click', 'keyboard', 'external-other', 'external-current', 'settings-page'] as const) {
+    await withSettings(false, async context => {
+      await context.select('Web clipping')
+      const initial = tokenControls(context.bridge)
+      await context.activate(initial.toggle)
+      assert.equal(initial.input.type, 'text')
+      if (path === 'click') {
+        await context.select('AI')
+        await context.select('Web clipping')
+      } else if (path === 'keyboard') {
+        const clipping = button(context.document, 'Web clipping', '[role="tab"]')
+        await act(async () => clipping.dispatchEvent(new context.window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })))
+        const storage = button(context.document, 'Storage & recovery', '[role="tab"]')
+        assertFocused(context.document, storage)
+        await act(async () => storage.dispatchEvent(new context.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+      } else if (path === 'external-other') {
+        let handled = 0
+        const onHandled = () => { handled++ }
+        await context.patch({ requestedCategory: 'ai', onCategoryRequestHandled: onHandled })
+        assert.equal(context.bridge.hidden, true)
+        await context.patch({ requestedCategory: undefined })
+        await context.patch({ requestedCategory: 'clipping' })
+        assert.equal(handled, 2)
+        await context.patch({ requestedCategory: undefined })
+      } else if (path === 'external-current') {
+        let handled = 0
+        await context.patch({ requestedCategory: 'clipping', onCategoryRequestHandled: () => { handled++ } })
+        assert.equal(handled, 1, 'A new external request can reopen the current category')
+        await context.patch({ requestedCategory: undefined })
+      } else {
+        await context.patch({ isSettingsPage: false })
+        assert.equal(context.document.querySelector('.settings-bridge-panel'), null)
+        await context.patch({ isSettingsPage: true })
+      }
+      const currentBridge = context.document.querySelector<HTMLElement>('.settings-bridge-panel')!
+      assert.ok(currentBridge)
+      assert.equal(currentBridge.hidden, false)
+      const reopened = tokenControls(currentBridge)
+      assert.equal(reopened.input.type, 'password', `${path} must not carry over a reveal`)
+      assert.equal(reopened.input.value, 'saved-token')
+      assert.equal(reopened.toggle.textContent, context.ui.webClipBridgeShowToken)
+      assert.equal(currentBridge.querySelector<HTMLInputElement>('input[inputmode="numeric"]')!.value, '5432')
+      assert.equal(currentBridge.querySelector<HTMLInputElement>('fieldset input[type="checkbox"]')!.checked, true)
+      await context.activate(reopened.toggle)
+      assert.equal(reopened.input.type, 'text', 'A consumed navigation request must allow a new explicit reveal')
+    })
+  }
+})
+
+test('visibility remains independent of pending copies and copy completion preserves focus on the visibility button', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withSettings(false, async context => {
+        const pending = deferred(), token = 'pending-copy-display-token'
+        const copies = { endpoint: 0, token: 0 }
+        let configCalls = 0
+        const copy = (selected: 'endpoint' | 'token') => {
+          copies[selected]++
+          context.patchNow({ webClipBridgeCopying: selected })
+          return pending.promise.then(() => context.patchNow({ webClipBridgeCopying: null }),
+            () => context.patchNow({ webClipBridgeCopying: null }))
+        }
+        await context.patch({ webClipBridgeStatus: runningBridgeStatus(token),
+          onSaveWebClipBridgeSettings: () => { configCalls++ }, onRegenerateWebClipBridgeToken: () => { configCalls++ },
+          onCopyWebClipBridgeToken: () => copy('token'), onCopyWebClipBridgeEndpoint: () => copy('endpoint') })
+        await context.select('Web clipping')
+        const { input, toggle } = tokenControls(context.bridge)
+        await context.activate(toggle)
+        assert.equal(input.type, 'text')
+        const trigger = copyButton(context.bridge, kind)
+        await context.activate(trigger)
+        assert.equal(input.type, 'text', 'Starting a copy must not hide the unchanged revealed token')
+        assert.equal(toggle.disabled, false)
+        assert.equal(copyButton(context.bridge, 'endpoint').disabled, true)
+        assert.equal(copyButton(context.bridge, 'token').disabled, true)
+        assert.equal(context.bridge.querySelectorAll('.settings-bridge-copy-actions .settings-bridge-copy-button').length, 2)
+        assert.equal(context.bridge.querySelectorAll('.settings-bridge-copy-actions button').length, 3)
+        await context.activate(toggle)
+        assert.equal(input.type, 'password')
+        await context.activate(toggle)
+        assert.equal(input.type, 'text')
+        assert.equal(input.value, token)
+        assert.equal(input.readOnly, true)
+        assertFocused(context.document, toggle)
+        assert.equal(copyField(context.bridge, kind).querySelector('.settings-bridge-copy-feedback [role="status"]')!.closest('[aria-busy="true"]'), null)
+        assertTokenOnlyInInputValue(context.bridge, token)
+        assert.deepEqual(copies, kind === 'endpoint' ? { endpoint: 1, token: 0 } : { endpoint: 0, token: 1 })
+        assert.equal(configCalls, 0)
+        await act(async () => outcome === 'success' ? pending.resolve() : pending.reject(new Error('Handled clipboard failure')))
+        assertFocused(context.document, toggle)
+        assert.equal(input.type, 'text')
+        assert.equal(context.bridge.querySelector('.settings-bridge-copy-feedback [role="status"]'), null)
+        assert.equal(copyButton(context.bridge, 'endpoint').disabled, false)
+        assert.equal(copyButton(context.bridge, 'token').disabled, false)
+        assert.deepEqual(copies, kind === 'endpoint' ? { endpoint: 1, token: 0 } : { endpoint: 0, token: 1 })
+        assert.equal(configCalls, 0)
+      })
+    }
   }
 })

@@ -282,10 +282,45 @@
 .settings-form-fields,
 .settings-form-actions,
 .settings-bridge-copy-actions,
+.settings-bridge-copy-field,
 .settings-action-feedback {
   display: grid;
   gap: 16px;
   min-width: 0;
+}
+
+.settings-bridge-copy-field {
+  gap: 10px;
+}
+
+.settings-bridge-copy-field .editor-label,
+.settings-bridge-copy-field .editor-input {
+  min-width: 0;
+  width: 100%;
+}
+
+.settings-bridge-setup {
+  display: grid;
+  gap: 10px;
+  color: var(--kb-text-soft);
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+
+.settings-bridge-setup :is(h4, ol, p) {
+  margin: 0;
+}
+
+.settings-bridge-setup h4 {
+  color: var(--kb-text);
+  font-size: inherit;
+}
+
+.settings-bridge-setup ol {
+  display: grid;
+  gap: 8px;
+  padding-inline-start: 22px;
 }
 
 .settings-form-fields {
@@ -311,7 +346,7 @@
 
 .settings-form-actions:is(.is-working, .has-error) {
   position: sticky;
-  bottom: 12px;
+  bottom: max(12px, var(--kb-notification-clearance, 0px));
   z-index: 1;
   padding: 12px;
   border: 1px solid var(--kb-line);
