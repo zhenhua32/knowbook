@@ -1,7 +1,8 @@
-import { useState, useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { findBlockSearchTextRanges, type BlockSearchTextRange } from '../utils/blockSearch'
 
-type BlockSearchItem = { index: number; type: string; contentPreview: string }
+type BlockSearchItem = { index: number; type: string; contentPreview: string; previewMatchRange?: BlockSearchTextRange | null }
 type BlockSearchPanelProps = {
   id?: string
   isOpen: boolean
@@ -24,6 +25,21 @@ function isHidden(element: HTMLElement): boolean {
 
 function isVisible(element: HTMLElement): boolean {
   return element.isConnected && !isHidden(element) && element.getClientRects().length > 0
+}
+
+function renderPreview(item: BlockSearchItem, query: string): ReactNode {
+  const content = item.contentPreview
+  if (!query.trim()) return content
+  const ranges = item.previewMatchRange === undefined ? findBlockSearchTextRanges(content, query)
+    : item.previewMatchRange ? [item.previewMatchRange] : []
+  const parts: ReactNode[] = []
+  let offset = 0
+  for (const { start, end } of ranges) {
+    parts.push(content.slice(offset, start), <mark key={start}>{content.slice(start, end)}</mark>)
+    offset = end
+  }
+  parts.push(content.slice(offset))
+  return parts
 }
 
 export function BlockSearchPanel({ id, isOpen, isZh, query, placeholder, noMatchText, items, onQueryChange, onClose, onSelect, returnFocusRef }: BlockSearchPanelProps) {
@@ -97,10 +113,11 @@ export function BlockSearchPanel({ id, isOpen, isZh, query, placeholder, noMatch
     const container = resultsRef.current
     const child = container?.querySelector<HTMLElement>(`[data-result-index="${safeIndex}"]`)
     if (!container || !child) return
-    const top = child.offsetTop - container.offsetTop
+    const childRect = child.getBoundingClientRect(), containerRect = container.getBoundingClientRect()
+    const top = childRect.top - containerRect.top + container.scrollTop - container.clientTop
     if (top < container.scrollTop) container.scrollTop = top
-    else if (top + child.offsetHeight > container.scrollTop + container.clientHeight) {
-      container.scrollTop = top + child.offsetHeight - container.clientHeight
+    else if (top + childRect.height > container.scrollTop + container.clientHeight) {
+      container.scrollTop = top + childRect.height - container.clientHeight
     }
   }, [safeIndex, windowStart])
 
@@ -156,7 +173,7 @@ export function BlockSearchPanel({ id, isOpen, isZh, query, placeholder, noMatch
         return <button className={`block-find-result${index === safeIndex ? ' block-find-result-active' : ''}`}
           key={item.index} type="button" data-result-index={index} onClick={() => select(index)}>
           <span className="block-find-result-index">{item.index + 1}</span>
-          <span className="block-find-result-preview">{item.contentPreview}</span>
+          <span className="block-find-result-preview">{renderPreview(item, query)}</span>
         </button>
       })}
     </div> : null}

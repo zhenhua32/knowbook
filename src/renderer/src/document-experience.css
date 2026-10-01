@@ -104,9 +104,9 @@
 .document-navigation .block-find-results { position: relative; max-height: min(22vh, 170px); background: var(--kb-bg); overscroll-behavior: contain; }
 .document-navigation .block-find-result { width: 100%; text-align: left; color: var(--kb-text-soft); border: 0; border-radius: 0; background: transparent; }
 .document-navigation .block-find-result-active { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
-.document-navigation .block-find-result-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-navigation .block-find-result-preview { min-width: 0; overflow: visible; white-space: normal; overflow-wrap: anywhere; color: inherit; }
+.document-navigation .block-find-result-preview mark { background: transparent; color: inherit; font-weight: 700; text-decoration: underline; }
 .document-navigation :is(.block-find-count, .block-find-empty, .block-find-result-index, .block-find-close) { color: var(--kb-text-muted); }
-.document-navigation .block-find-result-preview { color: inherit; }
 .document-navigation .block-find-nav-btn { flex-shrink: 0; color: var(--kb-text-soft); background: var(--kb-canvas); border-color: var(--kb-line); }
 .document-navigation .block-find-close { flex-shrink: 0; }
 .document-navigation :is(.block-find-nav-btn:hover:not(:disabled), .block-find-close:hover) { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
