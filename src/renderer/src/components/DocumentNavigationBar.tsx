@@ -16,6 +16,7 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
   const [outlineOpen, setOutlineOpen] = useState(false)
   const outlineRef = useRef<HTMLDivElement>(null)
   const outlineButtonRef = useRef<HTMLButtonElement>(null)
+  const findButtonRef = useRef<HTMLButtonElement>(null)
   const focusedHeading = outline?.items.find((item) => item.id === outline.focusedHeadingId)
   const effectiveActiveIndex = activeIndex ?? focusedHeading?.index ?? null
   const activeHeading = outline?.items.find((item) => item.index === effectiveActiveIndex)
@@ -61,7 +62,7 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
       </div>
       <span className="document-current-heading" title={outlineTitle}>{outlineTitle}</span>
       <span className="document-reading-progress" aria-label={isZh ? `阅读进度 ${progress}%` : `Reading progress ${progress}%`}>{progress}%</span>
-      <button className="document-navigation-button" type="button" onClick={onOpenSearch}
+      <button ref={findButtonRef} className="document-navigation-button" type="button" onClick={onOpenSearch}
         title={isZh ? '文内查找 (Ctrl/Cmd+F)' : 'Find in document (Ctrl/Cmd+F)'}>{isZh ? '查找' : 'Find'}</button>
       <button className="document-navigation-button document-view-toggle" type="button" aria-pressed={reading}
         onClick={onToggleReading}>{reading ? (isZh ? '编辑' : 'Edit') : (isZh ? '阅读' : 'Read')}</button>
@@ -71,6 +72,6 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
       <button type="button" onClick={outline?.onExitFocus}>{isZh ? '显示全文' : 'Show full document'}</button>
     </div> : null}
     <div className="document-progress-track" aria-hidden="true"><span style={{ width: `${progress}%` }} /></div>
-    <BlockSearchPanel {...search} />
+    <BlockSearchPanel {...search} returnFocusRef={findButtonRef} />
   </div>
 }

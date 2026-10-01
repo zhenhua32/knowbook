@@ -3,6 +3,10 @@ import type { ElectronApplication } from 'playwright'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
+type FindFocusCall = { preventScroll: boolean; beforeScroll: number | null; afterScroll: number | null }
+type FindFocusProbe = { element: HTMLButtonElement; calls: FindFocusCall[] }
+type ProbeWindow = Window & { __knowbookFindFocusProbes?: FindFocusProbe[] }
+
 const needle = 'KeyboardNeedle'
 const contents = [
   `${needle} — first matching paragraph / 第一处匹配`,
@@ -20,6 +24,53 @@ function controls(page: Page) {
     next: panel.getByRole('button', { name: uiText('Next match', '下一个匹配'), exact: true }),
     close: panel.getByRole('button', { name: uiText('Close find', '关闭查找'), exact: true }),
     result: (index: number) => panel.locator(`.block-find-result[data-result-index="${index}"]`) }
+}
+
+function findEntry(page: Page) {
+  return page.locator('.document-navigation-bar').getByRole('button', { name: uiText('Find', '查找'), exact: true })
+}
+
+async function watchFindFocus(page: Page) {
+  return findEntry(page).evaluate(element => {
+    const entry = element as HTMLButtonElement
+    const probes = (window as ProbeWindow).__knowbookFindFocusProbes ??= []
+    const probe: FindFocusProbe = { element: entry, calls: [] }
+    const nativeFocus = entry.focus
+    // Observe this real DOM object's focus calls and delegate to its native
+    // implementation. No keyboard, navigation or focus behavior is replaced.
+    entry.focus = options => {
+      const canvas = entry.closest<HTMLElement>('.preview-panel')
+      const beforeScroll = canvas?.scrollTop ?? null
+      nativeFocus.call(entry, options)
+      probe.calls.push({ preventScroll: options?.preventScroll === true, beforeScroll, afterScroll: canvas?.scrollTop ?? null })
+    }
+    return probes.push(probe) - 1
+  })
+}
+
+async function focusProbe(page: Page, index: number) {
+  return page.evaluate(index => {
+    const probe = (window as ProbeWindow).__knowbookFindFocusProbes![index]
+    return { connected: probe.element.isConnected, calls: probe.calls }
+  }, index)
+}
+
+async function closeInside(page: Page, probeIndex: number, key: string,
+  snapshot?: { app: ElectronApplication; testInfo: TestInfo; phase: string }) {
+  const beforeCalls = (await focusProbe(page, probeIndex)).calls.length
+  await page.keyboard.press(key)
+  if (snapshot) await record(page, snapshot.app, snapshot.testInfo, snapshot.phase)
+  await expect(controls(page).panel).toHaveCount(0)
+  await expect(findEntry(page)).toBeFocused()
+  await expect.poll(async () => (await focusProbe(page, probeIndex)).calls.length).toBe(beforeCalls + 1)
+  const call = (await focusProbe(page, probeIndex)).calls.at(-1)!
+  expect(call.preventScroll).toBe(true)
+  expect(call.beforeScroll).not.toBeNull()
+  expect(call.afterScroll).toBe(call.beforeScroll)
+}
+
+async function settleFrames(page: Page) {
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 
 async function openFind(page: Page, query = needle) {
@@ -61,7 +112,9 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
   const state = await page.evaluate(() => ({ count: document.querySelector('.block-find-count')?.textContent ?? null,
     activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'),
     activeResult: document.querySelector('.block-find-result-active')?.getAttribute('data-result-index') ?? null,
-    findOpen: Boolean(document.querySelector('.block-find-panel')) }))
+    findOpen: Boolean(document.querySelector('.block-find-panel')),
+    scrollTop: document.querySelector<HTMLElement>('[data-testid="document-scroll-region"]')?.scrollTop ?? null,
+    focusProbes: (window as ProbeWindow).__knowbookFindFocusProbes?.map(probe => ({ connected: probe.element.isConnected, calls: probe.calls })) ?? [] }))
   await testInfo.attach(phase, { body: JSON.stringify({ windows, state }, null, 2), contentType: 'application/json' })
   await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
 }
@@ -71,14 +124,19 @@ for (const language of ['en-US', 'zh-CN'] as const) {
     test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
     await withElectronApp(async ({ page, app }) => {
       const title = language === 'zh-CN' ? '文内查找键盘样本' : 'Document find keyboard sample'
+      const otherTitle = language === 'zh-CN' ? '另一个焦点样本' : 'Another focus sample'
       const blocks: DocumentBlockDraft[] = contents.map(content => ({ type: 'paragraph', content, checked: false, depth: 0 }))
-      const id = await page.evaluate(async ({ title, blocks, language }) => {
+      const id = await page.evaluate(async ({ title, otherTitle, blocks, language }) => {
         await window.knowbook.saveSetting('ui.language', language)
         await window.knowbook.saveSetting('appearance.theme', language === 'zh-CN' ? 'dark' : 'light')
         const { id } = await window.knowbook.createDocument(null)
         await window.knowbook.updateDocument(id, { title, summary: 'Three separated matches / 三个分散匹配', blocks })
+        const other = await window.knowbook.createDocument(null)
+        await window.knowbook.updateDocument(other.id, { title: otherTitle, summary: '', blocks: [
+          { type: 'paragraph', content: 'Other document keeps its own focus.', checked: false, depth: 0 }
+        ] })
         return id
-      }, { title, blocks, language })
+      }, { title, otherTitle, blocks, language })
       await page.reload()
       await expect(page.getByTestId('shell')).toBeVisible()
       await page.setViewportSize({ width: 1080, height: 850 })
@@ -88,9 +146,10 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(page.locator('.block-editor-row')).toHaveCount(contents.length)
       const before = await page.evaluate(id => window.knowbook.getDocumentDetail(id), id)
       expect(before).not.toBeNull()
+      let probeIndex = await watchFindFocus(page)
 
-      // The old container handler prevents Enter on Close and selects a match.
-      // Save the actual post-Enter state before asserting, for the old-build run.
+      // Save the actual post-Enter state before asserting restored focus, so
+      // the old-build run provides evidence of the missing return path.
       let current = await openFind(page)
       await expect(current.count).toHaveText('1 / 3')
       await expect(current.panel.locator('.block-find-result')).toHaveCount(3)
@@ -100,9 +159,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.keyboard.press('Shift+Tab'); await expect(current.next).toBeFocused()
       await page.keyboard.press('Tab'); await expect(current.close).toBeFocused()
       await record(page, app, testInfo, 'close-with-results-focused')
-      await page.keyboard.press('Enter')
-      await record(page, app, testInfo, 'close-with-results-after-enter')
-      await expect(current.panel).toHaveCount(0)
+      await closeInside(page, probeIndex, 'Enter', { app, testInfo, phase: 'close-with-results-after-enter' })
 
       current = await openFind(page, 'ThisQueryHasNoMatchingBlocks')
       await expect(current.previous).toBeDisabled()
@@ -112,9 +169,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.keyboard.press('Tab'); await expect(current.close).toBeFocused()
       await page.keyboard.press('Shift+Tab'); await expect(current.input).toBeFocused()
       await page.keyboard.press('Tab'); await expect(current.close).toBeFocused()
-      await page.keyboard.press('Enter')
-      await record(page, app, testInfo, 'close-with-no-results-after-enter')
-      await expect(current.panel).toHaveCount(0)
+      await closeInside(page, probeIndex, 'Enter', { app, testInfo, phase: 'close-with-no-results-after-enter' })
 
       current = await openFind(page)
       await page.keyboard.press('Tab'); await expect(current.previous).toBeFocused()
@@ -128,8 +183,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.keyboard.press('Space'); await expectMatch(page, 1)
       await page.keyboard.press('Tab'); await expect(current.previous).toBeFocused()
       await page.keyboard.press('Space'); await expectMatch(page, 0)
-      await page.keyboard.press('Escape')
-      await expect(current.panel).toHaveCount(0)
+      await closeInside(page, probeIndex, 'Escape')
 
       // Choose a non-active result via actual forward/backward Tab navigation.
       current = await openFind(page)
@@ -143,8 +197,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(current.result(1)).not.toHaveClass(/block-find-result-active/)
       await page.keyboard.press('Enter'); await expectMatch(page, 1)
       await record(page, app, testInfo, 'specific-result-enter-selected-second-block')
-      await page.keyboard.press('Escape')
-      await expect(current.panel).toHaveCount(0)
+      await closeInside(page, probeIndex, 'Escape')
 
       current = await openFind(page)
       await page.keyboard.press('Enter'); await expectMatch(page, 0)
@@ -178,8 +231,92 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.keyboard.press('Tab'); await expect(current.previous).toBeFocused()
       await page.keyboard.press('Tab'); await expect(current.next).toBeFocused()
       await page.keyboard.press('Tab'); await expect(current.close).toBeFocused()
-      await page.keyboard.press('Space')
+      await closeInside(page, probeIndex, 'Space')
+
+      current = await openFind(page)
+      await closeInside(page, probeIndex, 'Control+f')
+
+      // Outside focus is an intentional move: Ctrl+F closes the still-open
+      // panel while the body editor retains focus.
+      current = await openFind(page)
+      let callsBefore = (await focusProbe(page, probeIndex)).calls.length
+      const editor = page.locator('.block-editor-row[data-block-index="2"] textarea')
+      await editor.focus()
+      await expect(editor).toBeFocused()
+      await expect(current.panel).toBeVisible()
+      await page.keyboard.press('Control+f')
       await expect(current.panel).toHaveCount(0)
+      await settleFrames(page)
+      await expect(editor).toBeFocused()
+      expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
+
+      // An actual pointer gesture on a non-focusable area also abandons the
+      // return target, even though no other form control takes ownership.
+      current = await openFind(page)
+      callsBefore = (await focusProbe(page, probeIndex)).calls.length
+      const headingText = page.locator('.document-current-heading')
+      expect(await headingText.evaluate(element => (element as HTMLElement).tabIndex)).toBe(-1)
+      await headingText.click()
+      await expect(page.locator('body')).toBeFocused()
+      await expect(current.panel).toBeVisible()
+      await page.keyboard.press('Control+f')
+      await expect(current.panel).toHaveCount(0)
+      await settleFrames(page)
+      await expect(page.locator('body')).toBeFocused()
+      expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
+
+      // Global page shortcuts really unmount this Find entry. Its observed
+      // native focus implementation must not be called during or after teardown.
+      current = await openFind(page)
+      const oldProbe = probeIndex
+      callsBefore = (await focusProbe(page, oldProbe)).calls.length
+      await page.keyboard.press('Control+6')
+      await expect(page.locator('[data-page-id="settings"]')).toHaveAttribute('aria-current', 'page')
+      await expect(page.getByRole('tab', { name: uiText('General', '通用'), exact: true })).toBeVisible()
+      await expect(page.getByRole('heading', { name: uiText('General preferences', '基础偏好'), exact: true })).toBeVisible()
+      await expect(findEntry(page)).toHaveCount(0)
+      await settleFrames(page)
+      expect((await focusProbe(page, oldProbe)).connected).toBe(false)
+      expect((await focusProbe(page, oldProbe)).calls.length).toBe(callsBefore)
+      await page.keyboard.press('Control+1')
+      await expect(page.locator('[data-page-id="documents"]')).toHaveAttribute('aria-current', 'page')
+      await expect(page.getByTestId('document-scroll-region')).toBeVisible()
+      await expect(findEntry(page)).toBeVisible()
+      await expect(page.locator('.block-editor-row')).toHaveCount(contents.length)
+      await settleFrames(page)
+      expect((await focusProbe(page, oldProbe)).calls.length).toBe(callsBefore)
+      probeIndex = await watchFindFocus(page)
+
+      // Playwright forces renderer focus; native windows stay hidden/unfocused.
+      // These controlled window events test ownership cancellation and replay,
+      // not a real operating-system focus change (getter=false is unit-covered).
+      current = await openFind(page)
+      callsBefore = (await focusProbe(page, probeIndex)).calls.length
+      expect(await page.evaluate(() => document.hasFocus())).toBe(true)
+      await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+      await page.keyboard.press('Escape')
+      await expect(current.panel).toHaveCount(0)
+      await settleFrames(page)
+      expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
+      await expect(findEntry(page)).not.toBeFocused()
+      await record(page, app, testInfo, 'controlled-window-blur-closes-without-restoring')
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+      await settleFrames(page)
+      expect((await focusProbe(page, probeIndex)).calls.length).toBe(callsBefore)
+      await expect(findEntry(page)).not.toBeFocused()
+
+      // A genuine keyboard document selection also discards the old entry.
+      current = await openFind(page)
+      callsBefore = (await focusProbe(page, probeIndex)).calls.length
+      const otherDocument = page.locator('.tree-button', { hasText: otherTitle }).first()
+      await otherDocument.focus()
+      await page.keyboard.press('Enter')
+      await expect(page.locator('.block-editor-row')).toHaveCount(1)
+      await expect(page.locator('.block-editor-row textarea')).toHaveValue('Other document keeps its own focus.')
+      await settleFrames(page)
+      const discarded = await focusProbe(page, probeIndex)
+      expect(discarded.connected).toBe(false)
+      expect(discarded.calls.length).toBe(callsBefore)
 
       const after = await page.evaluate(id => window.knowbook.getDocumentDetail(id), id)
       expect(after).not.toBeNull()
