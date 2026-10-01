@@ -3,6 +3,7 @@ import type { UiLanguage, UiText } from '../i18n'
 import './management-sections.css'
 import { lazy, Suspense, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
+import { WebClipExtensionSetup } from '../components/WebClipExtensionSetup'
 const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
@@ -434,6 +435,7 @@ export function DashboardSettingsSection({
                 </dl>
                 <div className="settings-bridge-setup">
                   <h4>{ui.webClipBridgeSetupTitle}</h4>
+                  <WebClipExtensionSetup isZh={isZh} active={isSettingsPage && activeCategory === 'clipping'} />
                   <ol>
                     <li>{ui.webClipBridgeSetupEnable}</li>
                     <li>{ui.webClipBridgeSetupExtension}</li>

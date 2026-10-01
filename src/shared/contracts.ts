@@ -838,6 +838,11 @@ export interface UpdateWebClipBridgeSettingsInput {
   regenerateToken?: boolean
 }
 
+export interface WebClipExtensionExportResult {
+  directory: string
+  version: string
+}
+
 export interface UpdateDocumentInput {
   expectedUpdatedAt?: string
   title: string
@@ -948,6 +953,8 @@ export interface ElectronApi {
   clipWebPage: (input: ClipWebPageInput) => Promise<ClipWebPageResult>
   getWebClipBridgeStatus: () => Promise<WebClipBridgeStatus>
   updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => Promise<WebClipBridgeStatus>
+  exportWebClipExtension: () => Promise<WebClipExtensionExportResult | null>
+  openWebClipExtensionDirectory: () => Promise<void>
   createDocument: (parentId: string | null) => Promise<CreateDocumentResult>
   listDocumentTemplates: (language?: 'zh-CN' | 'en-US') => Promise<DocumentTemplate[]>
   saveDocumentTemplate: (input: SaveDocumentTemplateInput) => Promise<DocumentTemplate>

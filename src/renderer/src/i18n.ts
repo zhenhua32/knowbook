@@ -428,7 +428,7 @@ function createUiText(language: UiLanguage) {
     webClipBridgeErrorLabel: zh ? '最近错误' : 'Last error',
     webClipBridgeSetupTitle: zh ? '接入浏览器扩展' : 'Connect the browser extension',
     webClipBridgeSetupEnable: zh ? '在此启用桥接服务，并保存桥接设置。' : 'Enable the bridge service above and save its settings.',
-    webClipBridgeSetupExtension: zh ? '在 Chrome/Edge 扩展管理页启用开发者模式，手动加载 web-clip-extension 文件夹。' : 'In Chrome or Edge, enable developer mode in the extension manager and load the web-clip-extension folder.',
+    webClipBridgeSetupExtension: zh ? '导出并保留扩展文件夹，在 Chrome/Edge 扩展管理页启用开发者模式，通过“加载已解压的扩展”选择该文件夹。' : 'Export and keep the extension folder. In Chrome or Edge, enable developer mode in the extension manager and choose that folder with “Load unpacked”.',
     webClipBridgeSetupClip: zh ? '将地址和令牌复制到扩展的“提交地址”和“Bearer Token”，点击“保存配置”后剪藏当前页。' : 'Paste the copied endpoint and token into the extension, save its configuration, then clip the current page.',
     webClipBridgeHint: zh ? '修改端口或重新生成令牌后，请同步更新扩展中的地址和令牌。' : 'After changing the port or regenerating the token, update the endpoint and token in the extension.',
     webClipBridgeSave: zh ? '保存桥接设置' : 'Save bridge settings',

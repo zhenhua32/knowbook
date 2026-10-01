@@ -1,0 +1,23 @@
+.web-clip-extension-setup {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--kb-line);
+  border-radius: 12px;
+  background: var(--kb-canvas);
+  color: var(--kb-text-soft);
+  font-size: var(--kb-type-body);
+  line-height: 22px;
+}
+
+.web-clip-extension-setup[hidden] { display: none; }
+.web-clip-extension-setup p { margin: 0; }
+.web-clip-extension-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.web-clip-extension-actions button { min-height: 36px; max-width: 100%; white-space: normal; }
+.web-clip-extension-feedback { min-height: 22px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.web-clip-extension-error { color: var(--kb-danger); }
+.web-clip-extension-result { display: grid; gap: 8px; min-width: 0; margin: 0; }
+.web-clip-extension-result div { min-width: 0; }
+.web-clip-extension-result dt { color: var(--kb-text-muted); font-size: var(--kb-type-caption); }
+.web-clip-extension-result dd { margin: 0; color: var(--kb-text); overflow-wrap: anywhere; }

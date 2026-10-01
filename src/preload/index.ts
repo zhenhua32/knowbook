@@ -88,7 +88,8 @@ import type {
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
   UpdateDocumentResult,
-  WebClipBridgeStatus
+  WebClipBridgeStatus,
+  WebClipExtensionExportResult
 } from '@shared/contracts'
 import type {
   AssistantEvent,
@@ -175,6 +176,8 @@ const api: ElectronApi = {
   clipWebPage: (input: ClipWebPageInput) => ipcRenderer.invoke('knowbook:clip-web-page', input) as Promise<ClipWebPageResult>,
   getWebClipBridgeStatus: () => ipcRenderer.invoke('knowbook:get-web-clip-bridge-status') as Promise<WebClipBridgeStatus>,
   updateWebClipBridgeSettings: (input: UpdateWebClipBridgeSettingsInput) => ipcRenderer.invoke('knowbook:update-web-clip-bridge-settings', input) as Promise<WebClipBridgeStatus>,
+  exportWebClipExtension: () => ipcRenderer.invoke('knowbook:export-web-clip-extension') as Promise<WebClipExtensionExportResult | null>,
+  openWebClipExtensionDirectory: () => ipcRenderer.invoke('knowbook:open-web-clip-extension-directory') as Promise<void>,
   getDocumentSuggestions: (query: string, excludeDocumentId?: string | null) => ipcRenderer.invoke('knowbook:get-document-suggestions', query, excludeDocumentId ?? null) as Promise<DocumentSuggestion[]>,
   getBlockReference: (documentPath: string, blockId: string) => ipcRenderer.invoke('knowbook:get-block-reference', documentPath, blockId) as Promise<BlockReferenceResult | null>,
   createDocument: (parentId: string | null) => ipcRenderer.invoke('knowbook:create-document', parentId) as Promise<CreateDocumentResult>,

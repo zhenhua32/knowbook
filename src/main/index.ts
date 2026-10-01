@@ -87,7 +87,8 @@ import type {
   UpdateDocumentDatabaseValueInput,
   UpdateDocumentInput,
   UpdateDocumentResult,
-  WebClipBridgeStatus
+  WebClipBridgeStatus,
+  WebClipExtensionExportResult
 } from '@shared/contracts'
 import type {
   AssistantSessionChangedEvent,
@@ -133,6 +134,7 @@ import { PLUGIN_IFRAME_CSP } from './plugin-platform/ui-materializer'
 import { AssistantAgentService } from './assistant/agent-service'
 import { AppUpdateManager } from './update-manager'
 import { WebClipBridgeService } from './web-clip-bridge'
+import { getWebClipExtensionSourceDirectory, WebClipExtensionExportService } from './web-clip-extension-export'
 import { WebClipperService } from './web-clipper'
 import { WebClipExtractionWorkerRunner } from './web-clip-extract-worker-client'
 import { CoalescedNotifier } from './coalesced-notifier'
@@ -1480,6 +1482,27 @@ async function runV2DocumentAction(input: RunPluginDocumentActionInput): Promise
 }
 
 function registerIpcHandlers(): void {
+  const webClipExtensionExport = new WebClipExtensionExportService({
+    sourceDirectory: getWebClipExtensionSourceDirectory({
+      isPackaged: app.isPackaged,
+      appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath
+    }),
+    openDirectory: directory => shell.openPath(directory)
+  })
+  ipcMain.handle('knowbook:export-web-clip-extension', (event): Promise<WebClipExtensionExportResult | null> => webClipExtensionExport.export(async () => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined
+    const isZh = (store.getSettingPublic('ui.language') ?? app.getLocale()).toLowerCase().startsWith('zh')
+    const options: OpenDialogOptions = {
+      title: isZh ? '选择浏览器扩展导出位置' : 'Choose extension export location',
+      buttonLabel: isZh ? '导出到此处' : 'Export here',
+      defaultPath: app.getPath('documents'),
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const result = targetWindow ? await dialog.showOpenDialog(targetWindow, options) : await dialog.showOpenDialog(options)
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  }))
+  ipcMain.handle('knowbook:open-web-clip-extension-directory', () => webClipExtensionExport.openDirectory())
   registerAttachmentHandlers(ipcMain, attachmentStore)
   ipcMain.handle('knowbook:get-webdav-sync-status', () => webdavSync.getStatus())
   ipcMain.handle('knowbook:save-webdav-sync-config', (_event, input: import('../shared/webdav-sync').SaveWebDavSyncConfig) => webdavSync.saveConfig(input))

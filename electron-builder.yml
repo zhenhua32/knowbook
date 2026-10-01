@@ -6,6 +6,15 @@ directories:
 files:
   - out/**/*
   - package.json
+extraResources:
+  - from: web-clip-extension
+    to: web-clip-extension
+    filter:
+      - manifest.json
+      - popup.html
+      - popup.js
+      - page-collector.js
+      - README.md
 asarUnpack:
   - node_modules/better-sqlite3/**/*
 publish:
