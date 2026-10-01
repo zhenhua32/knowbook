@@ -23,7 +23,7 @@ type Read = ReturnType<typeof deferred<WebClipBridgeStatus>>
 type Save = Read & { input: UpdateWebClipBridgeSettingsInput }
 type View = {
   status: WebClipBridgeStatus | null; enabled: boolean; port: string;
-  loading: boolean; error: string | null; saving: boolean;
+  loading: boolean; error: string | null; portError: string | null; saving: boolean;
 }
 type Context = {
   state: () => State; view: () => View;
@@ -79,7 +79,7 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
     state = useSettingsState({ isSettingsPageActive: active, ui: getUiText(options.language ?? 'zh-CN'), onMessage })
     const view: View = { status: state.webClipBridgeStatus, enabled: state.webClipBridgeEnabledDraft,
       port: state.webClipBridgePortDraft, loading: state.webClipBridgeLoading,
-      error: state.webClipBridgeLoadError, saving: state.webClipBridgeSaving }
+      error: state.webClipBridgeLoadError, portError: state.webClipBridgePortError, saving: state.webClipBridgeSaving }
     return createElement('output', { 'data-testid': 'bridge-state' }, JSON.stringify(view))
   }
   const render = async (nextActive = active) => {
@@ -117,7 +117,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
   for (const language of ['zh-CN', 'en-US'] as const) {
     await withBridge(async context => {
       assert.equal(context.reads.length, 1)
-      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, saving: false })
+      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, portError: null, saving: false })
       await context.edit(true, '9999')
       await context.start(() => context.state().saveWebClipBridgeSettings())
       await context.start(() => context.state().saveWebClipBridgeSettings(true))
@@ -137,7 +137,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
       assert.equal(context.view().error, error, 'a pending retry keeps the existing failure available to its inline UI')
       const actual = status(4789)
       await context.settle(() => context.reads[1].resolve(actual), completion)
-      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, saving: false })
+      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false })
       const saved = await context.start(() => context.state().saveWebClipBridgeSettings())
       assert.deepEqual(context.saves[0].input, { enabled: true, port: 4789, regenerateToken: false })
       await context.settle(() => context.saves[0].resolve(actual), saved.completion)
@@ -227,6 +227,146 @@ test('known refresh failures retain the last status and dirty drafts through a l
   })
 })
 
+test('invalid decimal port drafts report an inline error without saving, and correcting them permits an explicit configuration save', async () => {
+  for (const language of ['zh-CN', 'en-US'] as const) {
+    await withBridge(async context => {
+      const known = status()
+      await context.settle(() => context.reads[0].resolve(known))
+      assert.equal(context.view().portError, null)
+      for (const draft of ['', '   ', '0', '65536', '-1', '+4321', '4321.9', '1e4', '0x10', '4321notes', '4 321', '４３２１']) {
+        await context.edit(false, draft)
+        const portError = context.view().portError
+        assert.ok(portError, `the ${JSON.stringify(draft)} draft must expose a validation error`)
+        assert.equal(portError, getUiText(language).webClipBridgePortInvalid)
+        const { completion } = await context.start(() => context.state().saveWebClipBridgeSettings())
+        await completion
+        assert.equal(context.saves.length, 0, `invalid ${JSON.stringify(draft)} must never reach persistence`)
+        assert.equal(context.view().saving, false)
+        assert.deepEqual(context.view().status, known)
+        assert.equal(context.view().enabled, false)
+        assert.equal(context.view().port, draft, 'invalid input stays available to correct instead of silently replacing it')
+        assert.equal(context.view().portError, portError)
+      }
+      assert.deepEqual(context.messages, [], 'validation stays inline instead of emitting a success or error notification')
+      for (const [draft, port] of [['1', 1], ['65535', 65535], [' \t04321\n ', 4321]] as const) {
+        await context.edit(false, draft)
+        assert.equal(context.view().portError, null, 'the error clears as soon as the input becomes valid')
+        const { completion } = await context.start(() => context.state().saveWebClipBridgeSettings())
+        assert.deepEqual(context.saves.at(-1)!.input, { enabled: false, port, regenerateToken: false })
+        const saved = { ...status(port), enabled: false, running: false, port: null, endpoint: null }
+        await context.settle(() => context.saves.at(-1)!.resolve(saved), completion)
+        assert.equal(context.view().port, String(port), 'only an explicit successful settings save synchronizes the draft')
+        assert.equal(context.view().portError, null)
+      }
+      assert.equal(context.saves.length, 3)
+    }, { language })
+  }
+})
+
+test('an invalid settings save does not invalidate an already pending status read or clear its loading state', async () => {
+  await withBridge(async context => {
+    await context.settle(() => context.reads[0].resolve(status()))
+    await context.edit(false, '65536')
+    const portError = context.view().portError
+    assert.ok(portError)
+    const read = await context.start(() => context.state().reloadWebClipBridgeStatus())
+    const save = await context.start(() => context.state().saveWebClipBridgeSettings())
+    await save.completion
+    assert.equal(context.view().loading, true)
+    assert.equal(context.view().saving, false)
+    assert.equal(context.saves.length, 0)
+    const latest = status(6789)
+    await context.settle(() => context.reads[1].resolve(latest), read.completion)
+    assert.deepEqual(context.view().status, latest)
+    assert.equal(context.view().loading, false)
+    assert.equal(context.view().enabled, false)
+    assert.equal(context.view().port, '65536')
+    assert.equal(context.view().portError, portError)
+    assert.deepEqual(context.messages, [])
+  })
+})
+
+test('token regeneration preserves valid or invalid unsaved drafts and blocks duplicate writes while updating only the saved configuration', async () => {
+  for (const port of ['5432', ''] as const) {
+    await withBridge(async context => {
+      const known = status()
+      await context.settle(() => context.reads[0].resolve(known))
+      await context.edit(false, port)
+      const portError = context.view().portError
+      assert.equal(portError, port === '' ? getUiText('zh-CN').webClipBridgePortInvalid : null)
+      let first!: Promise<void>
+      let duplicate!: Promise<void>
+      let refresh!: Promise<void>
+      await act(async () => {
+        const current = context.state()
+        first = current.saveWebClipBridgeSettings(true)
+        current.setWebClipBridgeEnabledDraft(true)
+        current.setWebClipBridgePortDraft('9999')
+        duplicate = current.saveWebClipBridgeSettings(true)
+        refresh = current.reloadWebClipBridgeStatus()
+      })
+      await context.poll()
+      assert.equal(context.saves.length, 1)
+      assert.equal(context.reads.length, 1)
+      assert.deepEqual(context.saves[0].input, { enabled: true, port: 4321, regenerateToken: true })
+      assert.equal(context.view().saving, true)
+      assert.equal(context.state().webClipBridgeRegenerating, true)
+      assert.equal(context.view().enabled, false)
+      assert.equal(context.view().port, port)
+      const regenerated = { ...known, token: 'new-token' }
+      await context.settle(() => context.saves[0].resolve(regenerated), Promise.all([first, duplicate, refresh]).then(() => {}))
+      assert.deepEqual(context.view().status, regenerated)
+      assert.equal(context.view().enabled, false, 'refreshing a credential must not apply or discard the unsaved enabled setting')
+      assert.equal(context.view().port, port)
+      assert.equal(context.view().portError, portError)
+      assert.equal(context.view().saving, false)
+      assert.equal(context.state().webClipBridgeRegenerating, false)
+      assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeTokenRefreshed, undefined]])
+    }, { active: true })
+  }
+})
+
+test('token regeneration uses the latest saved status, survives a failure, and leaves an invalid draft for a later explicit save', async () => {
+  await withBridge(async context => {
+    await context.settle(() => context.reads[0].resolve(status()))
+    await context.edit(true, '')
+    const portError = context.view().portError
+    const read = await context.start(() => context.state().reloadWebClipBridgeStatus())
+    const latest = { ...status(5432), enabled: false, running: false, port: null, endpoint: null }
+    await context.settle(() => context.reads[1].resolve(latest), read.completion)
+    assert.equal(context.view().enabled, true)
+    assert.equal(context.view().port, '')
+    const failed = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+    assert.equal(context.state().webClipBridgeRegenerating, true)
+    assert.deepEqual(context.saves[0].input, { enabled: false, port: 5432, regenerateToken: true })
+    await context.settle(() => context.saves[0].reject(new Error("Error invoking remote method 'knowbook:update-web-clip-bridge-settings': Error: write permission denied")), failed.completion)
+    assert.deepEqual(context.view().status, latest)
+    assert.equal(context.view().saving, false)
+    assert.equal(context.state().webClipBridgeRegenerating, false)
+    assert.equal(context.view().enabled, true)
+    assert.equal(context.view().port, '')
+    assert.equal(context.view().portError, portError)
+    assert.deepEqual(context.messages.at(-1), [`${getUiText('zh-CN').webClipBridgeSaveFailed} write permission denied`, 'error'])
+    const retry = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+    assert.deepEqual(context.saves[1].input, { enabled: false, port: 5432, regenerateToken: true })
+    const regenerated = { ...latest, token: 'new-disabled-token' }
+    await context.settle(() => context.saves[1].resolve(regenerated), retry.completion)
+    assert.deepEqual(context.view().status, regenerated)
+    assert.equal(context.view().enabled, true)
+    assert.equal(context.view().port, '')
+    assert.equal(context.view().portError, portError)
+    await context.edit(true, '5678')
+    const save = await context.start(() => context.state().saveWebClipBridgeSettings())
+    assert.deepEqual(context.saves[2].input, { enabled: true, port: 5678, regenerateToken: false })
+    assert.equal(context.state().webClipBridgeRegenerating, false)
+    const saved = status(5678, 'new-disabled-token')
+    await context.settle(() => context.saves[2].resolve(saved), save.completion)
+    assert.deepEqual(context.view().status, saved)
+    assert.equal(context.view().port, '5678')
+    assert.equal(context.view().portError, null)
+  })
+})
+
 test('saving blocks setters, duplicate writes and refreshes synchronously, then synchronizes drafts from the saved response', async () => {
   await withBridge(async context => {
     await context.settle(() => context.reads[0].resolve(status()))
@@ -236,7 +376,7 @@ test('saving blocks setters, duplicate writes and refreshes synchronously, then 
     let refresh!: Promise<void>
     await act(async () => {
       const current = context.state()
-      first = current.saveWebClipBridgeSettings(true)
+      first = current.saveWebClipBridgeSettings()
       current.setWebClipBridgeEnabledDraft(false)
       current.setWebClipBridgePortDraft('9999')
       duplicate = current.saveWebClipBridgeSettings()
@@ -245,14 +385,14 @@ test('saving blocks setters, duplicate writes and refreshes synchronously, then 
     await context.poll()
     assert.equal(context.saves.length, 1)
     assert.equal(context.reads.length, 1)
-    assert.deepEqual(context.saves[0].input, { enabled: true, port: 4789, regenerateToken: true })
+    assert.deepEqual(context.saves[0].input, { enabled: true, port: 4789, regenerateToken: false })
     assert.equal(context.view().saving, true)
     assert.equal(context.view().enabled, true)
     assert.equal(context.view().port, '4789')
-    const saved = status(4789, 'regenerated-token')
+    const saved = status(4789)
     await context.settle(() => context.saves[0].resolve(saved), Promise.all([first, duplicate, refresh]).then(() => {}))
-    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, saving: false })
-    assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeTokenRefreshed, undefined]])
+    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false })
+    assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeSaved(true), undefined]])
   }, { active: true })
 })
 
@@ -277,6 +417,36 @@ test('a pre-save read arriving after save cannot overwrite saved data, raise an 
       await context.settle(() => context.reads[2].resolve(saved), freshRead.completion)
       assert.equal(context.view().loading, false)
       assert.equal(context.view().status?.token, 'saved-token')
+    })
+  }
+})
+
+test('a read started before token regeneration cannot restore the old token or discard unsaved invalid drafts', async () => {
+  for (const outcome of ['success', 'failure'] as const) {
+    await withBridge(async context => {
+      const known = status()
+      await context.settle(() => context.reads[0].resolve(known))
+      await context.edit(false, '')
+      const portError = context.view().portError
+      const oldRead = await context.start(() => context.state().reloadWebClipBridgeStatus())
+      const regeneration = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+      assert.deepEqual(context.saves[0].input, { enabled: true, port: 4321, regenerateToken: true })
+      const regenerated = { ...known, token: 'new-token' }
+      await context.settle(() => context.saves[0].resolve(regenerated), regeneration.completion)
+      const freshRead = await context.start(() => context.state().reloadWebClipBridgeStatus())
+      await context.settle(() => outcome === 'success' ? context.reads[1].resolve(known)
+        : context.reads[1].reject(new Error('late pre-regeneration read failed')), oldRead.completion)
+      assert.deepEqual(context.view().status, regenerated)
+      assert.equal(context.view().enabled, false)
+      assert.equal(context.view().port, '')
+      assert.equal(context.view().portError, portError)
+      assert.equal(context.view().error, null)
+      assert.equal(context.view().loading, true)
+      assert.equal(context.messages.length, 1)
+      await context.settle(() => context.reads[2].resolve(regenerated), freshRead.completion)
+      assert.equal(context.view().status?.token, 'new-token')
+      assert.equal(context.view().loading, false)
+      assert.equal(context.view().port, '')
     })
   }
 })

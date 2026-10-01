@@ -117,10 +117,11 @@ test('settings failures append the clean reason after the localized prefix and p
       }
       assert.deepEqual(context.calls.clipboard.map(request => request.text), [bridgeStatus.endpoint, bridgeStatus.token])
       const { completion } = await context.start(() => context.state().saveWebClipBridgeSettings(true))
-      assert.deepEqual(context.calls.bridge.at(-1)!.input, { enabled: false, port: 4321, regenerateToken: true })
-      const saved = { ...bridgeStatus, enabled: false, running: false, port: null, configuredPort: 4321, token: 'new-local-token' }
+      assert.deepEqual(context.calls.bridge.at(-1)!.input, { enabled: true, port: 3210, regenerateToken: true })
+      const saved = { ...bridgeStatus, token: 'new-local-token' }
       await act(async () => { context.calls.bridge.at(-1)!.resolve(saved); await completion })
       assert.equal(context.state().webClipBridgeStatus, saved)
+      assert.equal(context.state().webClipBridgeEnabledDraft, false)
       assert.equal(context.state().webClipBridgePortDraft, '4321')
       assert.equal(context.state().webClipBridgeSaving, false)
       assert.deepEqual(context.messages.at(-1), [getUiText(language).webClipBridgeTokenRefreshed, undefined])

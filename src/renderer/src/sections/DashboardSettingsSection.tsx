@@ -43,8 +43,10 @@ type DashboardSettingsSectionProps = {
   webClipBridgeEnabledDraft: boolean
   onWebClipBridgeEnabledChange: (value: boolean) => void
   webClipBridgePortDraft: string
+  webClipBridgePortError: string | null
   onWebClipBridgePortChange: (value: string) => void
   webClipBridgeSaving: boolean
+  webClipBridgeRegenerating: boolean
   webClipBridgeLoading: boolean
   webClipBridgeLoadError: string | null
   onReloadWebClipBridgeStatus: () => void
@@ -122,8 +124,10 @@ export function DashboardSettingsSection({
   webClipBridgeEnabledDraft,
   onWebClipBridgeEnabledChange,
   webClipBridgePortDraft,
+  webClipBridgePortError,
   onWebClipBridgePortChange,
   webClipBridgeSaving,
+  webClipBridgeRegenerating,
   webClipBridgeLoading,
   webClipBridgeLoadError,
   onReloadWebClipBridgeStatus,
@@ -139,6 +143,8 @@ export function DashboardSettingsSection({
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
   const [syncMounted, setSyncMounted] = useState(false)
   const tabsId = useId()
+  const bridgePortErrorId = useId()
+  const bridgeTokenHintId = useId()
   const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'general', label: isZh ? '通用' : 'General' },
@@ -313,8 +319,9 @@ export function DashboardSettingsSection({
                 </label>
                 <label className="editor-label">
                   {ui.webClipBridgePortLabel}
-                  <input className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} onChange={(event) => onWebClipBridgePortChange(event.target.value)} type="number" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
+                  <input aria-describedby={webClipBridgePortError ? bridgePortErrorId : undefined} aria-invalid={Boolean(webClipBridgePortError)} className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} inputMode="numeric" onChange={(event) => onWebClipBridgePortChange(event.target.value)} pattern="[0-9]*" type="text" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
                 </label>
+                {webClipBridgePortError && <p className="settings-bridge-port-error" id={bridgePortErrorId} role="alert">{webClipBridgePortError}</p>}
                 <label className="editor-label">
                   {ui.webClipBridgeTokenLabel}
                   <input className="editor-input" readOnly type="text" value={webClipBridgeStatus?.token ?? ''} />
@@ -342,11 +349,13 @@ export function DashboardSettingsSection({
                   </div>
                 </dl>
                 <p className="mini-hint">{ui.webClipBridgeHint}</p>
+                <p className="mini-hint" id={bridgeTokenHintId}>{ui.webClipBridgeRegenerateHint}</p>
+                {webClipBridgeRegenerating && <p className="mini-hint" role="status">{ui.webClipBridgeRegenerating}</p>}
                 <div className="settings-actions">
-                  <button className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onSaveWebClipBridgeSettings} type="button">
-                    {webClipBridgeSaving ? ui.common.saving : ui.webClipBridgeSave}
+                  <button className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving || Boolean(webClipBridgePortError)} onClick={onSaveWebClipBridgeSettings} type="button">
+                    {webClipBridgeSaving && !webClipBridgeRegenerating ? ui.common.saving : ui.webClipBridgeSave}
                   </button>
-                  <button className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">{ui.webClipBridgeRegenerateToken}</button>
+                  <button aria-busy={webClipBridgeRegenerating} aria-describedby={bridgeTokenHintId} className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">{ui.webClipBridgeRegenerateToken}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">{ui.webClipBridgeCopyEndpoint}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">{ui.webClipBridgeCopyToken}</button>
                 </div>

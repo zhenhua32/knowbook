@@ -3,6 +3,7 @@ import { rm as removePath } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
 import electron from 'electron'
 import { AttachmentStore } from './attachments'
 import { registerAttachmentHandlers } from './attachment-ipc'
@@ -2353,14 +2354,19 @@ function getStoredWebClipBridgeConfig(): { enabled: boolean; port: number; token
 }
 
 async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInput): Promise<WebClipBridgeStatus> {
+  if (!input || typeof input !== 'object' || typeof input.enabled !== 'boolean' || !isWebClipBridgePort(input.port)
+    || (input.regenerateToken !== undefined && typeof input.regenerateToken !== 'boolean')) {
+    throw new TypeError('Invalid bridge settings. Enter an integer port between 1 and 65535.')
+  }
   const current = getStoredWebClipBridgeConfig()
-  const nextPort = Number.isInteger(input.port) && input.port > 0 && input.port <= 65_535
-    ? input.port
-    : DEFAULT_WEB_CLIP_BRIDGE_PORT
+  const nextPort = input.regenerateToken ? current.port : input.port
+  const nextEnabled = input.regenerateToken ? current.enabled : input.enabled
   const nextToken = input.regenerateToken ? randomUUID().replace(/-/g, '') : current.token
 
-  store.saveSetting(WEB_CLIP_BRIDGE_ENABLED_KEY, input.enabled ? 'true' : 'false')
-  store.saveSetting(WEB_CLIP_BRIDGE_PORT_KEY, `${nextPort}`)
+  if (!input.regenerateToken) {
+    store.saveSetting(WEB_CLIP_BRIDGE_ENABLED_KEY, nextEnabled ? 'true' : 'false')
+    store.saveSetting(WEB_CLIP_BRIDGE_PORT_KEY, `${nextPort}`)
+  }
   try {
     persistWebClipBridgeToken(protectWebClipBridgeToken(nextToken))
   } catch (error) {
@@ -2372,7 +2378,7 @@ async function updateWebClipBridgeSettings(input: UpdateWebClipBridgeSettingsInp
   }
 
   return webClipBridge.applyConfig({
-    enabled: input.enabled,
+    enabled: nextEnabled,
     port: nextPort,
     token: nextToken
   })

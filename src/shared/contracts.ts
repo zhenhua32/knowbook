@@ -834,6 +834,7 @@ export interface WebClipBridgeStatus {
 export interface UpdateWebClipBridgeSettingsInput {
   enabled: boolean
   port: number
+  /** Rotate only the token using persisted settings; do not change enabled or port. */
   regenerateToken?: boolean
 }
 

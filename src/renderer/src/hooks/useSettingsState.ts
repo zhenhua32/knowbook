@@ -1,6 +1,7 @@
 import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppUpdateState, WebClipBridgeStatus } from '@shared/contracts'
+import { parseWebClipBridgePortDraft } from '@shared/web-clip-bridge-settings'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
 
@@ -19,6 +20,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const [webClipBridgeEnabledDraft, setWebClipBridgeEnabledDraft] = useState(false)
   const [webClipBridgePortDraft, setWebClipBridgePortDraft] = useState('3210')
   const [webClipBridgeSaving, setWebClipBridgeSaving] = useState(false)
+  const [webClipBridgeRegenerating, setWebClipBridgeRegenerating] = useState(false)
   const mounted = useRef(false)
   const session = useRef(0)
   const bridgeStatus = useRef<WebClipBridgeStatus | null>(null)
@@ -29,6 +31,9 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const bridgeSaving = useRef(false)
   const currentUi = useRef(ui)
   currentUi.current = ui
+  const webClipBridgePortError = webClipBridgeStatus && parseWebClipBridgePortDraft(webClipBridgePortDraft) === null
+    ? ui.webClipBridgePortInvalid
+    : null
 
   const reloadWebClipBridgeStatus = useCallback((): Promise<void> => {
     if (!mounted.current || bridgeSaving.current) return Promise.resolve()
@@ -152,6 +157,9 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
 
   const saveWebClipBridgeSettings = useCallback(async (regenerateToken = false) => {
     if (!mounted.current || !bridgeStatus.current || bridgeSaving.current) return
+    const savedSettings = bridgeStatus.current
+    const port = regenerateToken ? savedSettings.configuredPort : parseWebClipBridgePortDraft(webClipBridgePortDraft)
+    if (port === null) return
     bridgeSaving.current = true
     const generation = ++bridgeSaveGeneration.current
     const saveSession = session.current
@@ -161,20 +169,22 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     bridgeReadPromise.current = null
     setWebClipBridgeLoading(false)
     setWebClipBridgeSaving(true)
+    setWebClipBridgeRegenerating(regenerateToken)
 
     try {
-      const parsedPort = Number.parseInt(webClipBridgePortDraft, 10)
       const status = await window.knowbook.updateWebClipBridgeSettings({
-        enabled: webClipBridgeEnabledDraft,
-        port: Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65_535 ? parsedPort : 3210,
+        enabled: regenerateToken ? savedSettings.enabled : webClipBridgeEnabledDraft,
+        port,
         regenerateToken
       })
       if (!isCurrent()) return
       bridgeStatus.current = status
       setWebClipBridgeLoadError(null)
       setWebClipBridgeStatus(status)
-      setWebClipBridgeEnabledDraft(status.enabled)
-      setWebClipBridgePortDraft(`${status.configuredPort}`)
+      if (!regenerateToken) {
+        setWebClipBridgeEnabledDraft(status.enabled)
+        setWebClipBridgePortDraft(`${status.configuredPort}`)
+      }
       onMessage(regenerateToken ? ui.webClipBridgeTokenRefreshed : ui.webClipBridgeSaved(status.running))
     } catch (error) {
       if (!isCurrent()) return
@@ -185,6 +195,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       if (isCurrent()) {
         bridgeSaving.current = false
         setWebClipBridgeSaving(false)
+        setWebClipBridgeRegenerating(false)
       }
     }
   }, [onMessage, ui, webClipBridgeEnabledDraft, webClipBridgePortDraft])
@@ -239,7 +250,9 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     setWebClipBridgePortDraft: changeWebClipBridgePortDraft,
     webClipBridgeEnabledDraft,
     webClipBridgePortDraft,
+    webClipBridgePortError,
     webClipBridgeSaving,
+    webClipBridgeRegenerating,
     webClipBridgeLoading,
     webClipBridgeLoadError,
     webClipBridgeStatus

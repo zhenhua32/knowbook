@@ -32,6 +32,8 @@ function settingsProps(isZh: boolean): SettingsProps {
     appUpdateState: null, appUpdateRefreshing: false, onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
     webClipBridgeStatus: { enabled: false, running: false, port: null, configuredPort: 3030, token: 'fixture-token', endpoint: null, lastError: null }, webClipBridgeEnabledDraft: false, onWebClipBridgeEnabledChange: noop,
     webClipBridgePortDraft: '3030', onWebClipBridgePortChange: noop, webClipBridgeSaving: false,
+    webClipBridgePortError: null,
+    webClipBridgeRegenerating: false,
     webClipBridgeLoading: false, webClipBridgeLoadError: null, onReloadWebClipBridgeStatus: noop,
     onSaveWebClipBridgeSettings: noop, onRegenerateWebClipBridgeToken: noop,
     onCopyWebClipBridgeEndpoint: noop, onCopyWebClipBridgeToken: noop,
@@ -101,7 +103,7 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
     const model = panel('AI').querySelectorAll<HTMLInputElement>('input[type="text"]')[1]
     await editInput(model, 'unsaved-model')
     await select('网页剪藏')
-    const port = panel('网页剪藏').querySelector<HTMLInputElement>('input[type="number"]')!
+    const port = panel('网页剪藏').querySelector<HTMLInputElement>('input[inputmode="numeric"]')!
     await editInput(port, '4040')
     await select('AI')
     assert.equal(model.value, 'unsaved-model')

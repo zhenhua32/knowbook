@@ -259,8 +259,14 @@
   overflow-wrap: anywhere;
 }
 
-.settings-bridge-read-error [role='alert'] {
+.settings-bridge-read-error [role='alert'],
+.settings-bridge-port-error {
   color: color-mix(in srgb, var(--kb-danger) 90%, var(--kb-text));
+}
+
+.settings-category-panel > .settings-bridge-port-error {
+  margin: -12px 0 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-group {
