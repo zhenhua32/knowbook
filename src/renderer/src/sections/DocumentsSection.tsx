@@ -274,7 +274,7 @@ export function DocumentsSection({
         ref={viewport.scrollRef}
       >
         <div className="document-sticky-header" ref={viewport.headerRef}>
-          <DocumentPreviewHeader {...previewHeaderProps} canUndo={!isReadingMode && previewHeaderProps.canUndo} canRedo={!isReadingMode && previewHeaderProps.canRedo} />
+          <DocumentPreviewHeader {...previewHeaderProps} />
           {documentReady ? <DocumentNavigationBar key={selectedDocument?.id}
             outline={outlinePanelProps} search={blockSearchPanelProps}
             activeIndex={viewport.activeHeadingIndex} progress={viewport.progress}
@@ -289,8 +289,8 @@ export function DocumentsSection({
         {selectedDocument && documentReady ? (
           <>
             {summaryCardProps && !outlinePanelProps?.focusedHeadingId ? isReadingMode
-              ? <div className="document-reading-summary"><h1>{summaryCardProps.title}</h1><p>{summaryCardProps.summary}</p></div>
-              : <DocumentSummaryCard {...summaryCardProps} /> : null}
+              ? <div className="document-reading-summary"><h1>{summaryCardProps.title.trim() || 'Untitled'}</h1><p>{summaryCardProps.summary}</p></div>
+              : <DocumentSummaryCard key={selectedDocument.id} {...summaryCardProps} /> : null}
 
               <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} ref={viewport.contentRef}>
                 {!isReadingMode ? <p className="panel-label">{blocksPanelLabel}</p> : null}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 import { getUiText, type UiLanguage } from '../i18n'
@@ -53,6 +53,7 @@ export function useEditorAssistState({
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
   const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
   const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
+  const pendingLinkFocus = useRef<{ index: number; documentId: string | null; content: string; position: number } | null>(null)
   const blockSlashCommands = useMemo(() => buildBlockSlashCommands(uiLanguage), [uiLanguage])
 
   const clearEditorAssistSuggestions = useCallback(() => {
@@ -65,6 +66,18 @@ export function useEditorAssistState({
     setActiveCursorPosition(element.selectionStart ?? element.value.length)
   }, [setActiveBlockIndex, setActiveCursorPosition])
 
+  useLayoutEffect(() => {
+    const pending = pendingLinkFocus.current
+    if (!pending) return
+    if (pending.documentId !== selectedDocumentId) { pendingLinkFocus.current = null; return }
+    const textarea = blockTextareaRefs.current[pending.index]
+    if (!textarea || textarea.value !== pending.content) return
+    pendingLinkFocus.current = null
+    textarea.focus()
+    textarea.setSelectionRange(pending.position, pending.position)
+    captureBlockCursor(pending.index, textarea)
+  })
+
   const activeLinkContext = useMemo(() => {
     return activeBlockIndex !== null
       ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
@@ -74,6 +87,14 @@ export function useEditorAssistState({
   const insertAssistReplacement = useCallback((replacement: string) => {
     if (activeBlockIndex === null || !activeLinkContext) {
       return
+    }
+
+    const current = draftBlocks[activeBlockIndex]
+    if (!current) return
+    pendingLinkFocus.current = {
+      index: activeBlockIndex, documentId: selectedDocumentId,
+      content: `${current.content.slice(0, activeLinkContext.start)}${replacement}${current.content.slice(activeCursorPosition)}`,
+      position: activeLinkContext.start + replacement.length
     }
 
     setDraftBlocks((previous) =>
@@ -95,6 +116,8 @@ export function useEditorAssistState({
     activeCursorPosition,
     activeLinkContext,
     clearEditorAssistSuggestions,
+    draftBlocks,
+    selectedDocumentId,
     setActiveCursorPosition,
     setDraftBlocks
   ])

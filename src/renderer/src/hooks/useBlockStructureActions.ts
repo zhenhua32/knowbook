@@ -78,8 +78,6 @@ export function useBlockStructureActions({
       return
     }
 
-    clearBlockSelection()
-
     const childType = getDefaultChildBlockType(currentBlock.type)
     const childDepth = currentBlock.depth + 1
     if (!isNestableBlock(childType) || childDepth > 6) {
@@ -87,6 +85,9 @@ export function useBlockStructureActions({
     }
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+
+    pushToHistory(draftBlocks)
+    clearBlockSelection()
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -113,6 +114,7 @@ export function useBlockStructureActions({
     getBlockSubtreeEndIndex,
     getDefaultChildBlockType,
     isNestableBlock,
+    pushToHistory,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
@@ -120,12 +122,12 @@ export function useBlockStructureActions({
   ])
 
   const duplicateDraftBlock = useCallback((index: number, contentOverride?: string) => {
-    pushToHistory(draftBlocks)
     const currentBlock = draftBlocks[index]
     if (!currentBlock) {
       return
     }
 
+    pushToHistory(draftBlocks)
     clearBlockSelection()
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -184,6 +186,7 @@ export function useBlockStructureActions({
       return
     }
 
+    pushToHistory(draftBlocks)
     clearBlockSelection()
 
     const safeStart = Math.max(0, Math.min(selectionStart, currentBlock.content.length))
@@ -218,6 +221,7 @@ export function useBlockStructureActions({
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
+    pushToHistory,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,

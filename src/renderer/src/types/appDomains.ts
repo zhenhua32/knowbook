@@ -40,6 +40,11 @@ export type DocumentsKeyboardState = Pick<DocumentsDomainState,
   | 'openBlockSearch'
   | 'openGlobalSearch'
   | 'redoEdit'
+  | 'saveDocument'
+  | 'detailLoading'
+  | 'documentLoadError'
+  | 'selectedDocument'
+  | 'selectedDocumentId'
   | 'selectedBlockRange'
   | 'undoEdit'
 >

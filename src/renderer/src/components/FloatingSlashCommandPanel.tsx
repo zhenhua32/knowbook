@@ -45,6 +45,7 @@ export function FloatingSlashCommandPanel(props: FloatingSlashCommandPanelProps)
             <button
               className={`slash-command-item${activeCommandId === command.id ? ' slash-command-item-active' : ''}`}
               key={`slash-${command.id}`}
+              onMouseDown={(event) => event.preventDefault()}
               onClick={() => onSelectCommand(command)}
               onMouseEnter={() => onHoverCommand(commandIndex)}
               type="button"

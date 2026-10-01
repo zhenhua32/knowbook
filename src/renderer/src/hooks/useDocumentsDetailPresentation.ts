@@ -6,6 +6,7 @@ import { DocumentPreviewHeader } from '../components/DocumentPreviewHeader'
 import { DocumentsAuxPanel } from '../components/DocumentsAuxPanel'
 import { DocumentStatsBar } from '../components/DocumentStatsBar'
 import { DocumentSummaryCard } from '../components/DocumentSummaryCard'
+import { normalizeComparableDocumentTitle } from '../utils/documentDraftComparison'
 
 type DocumentsAuxPanelProps = Omit<ComponentProps<typeof DocumentsAuxPanel>, 'relationContent'>
 type DocumentPreviewHeaderProps = ComponentProps<typeof DocumentPreviewHeader>
@@ -265,7 +266,7 @@ export function useDocumentsDetailPresentation({
     onTogglePin,
     onUndo,
     selectedDocumentId,
-    selectedDocumentTitle: selectedDocument?.title ?? null,
+    selectedDocumentTitle: selectedDocument ? normalizeComparableDocumentTitle(draftTitle) : null,
     ui
   }
 

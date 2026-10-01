@@ -3,7 +3,7 @@ import { getHeadingLevel } from '@shared/markdownEngine'
 import { getMarkdownListNumbers } from '@shared/markdown'
 import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
 import type { MarkdownHeading } from '@shared/markdownAdvanced'
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
@@ -17,7 +17,7 @@ import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
-type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'draftBlockCount' | 'getDraftBlocks' | 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex'> & {
+type SharedBlockEditorRowBaseProps = Omit<SharedBlockEditorRowProps, 'draftBlockCount' | 'getDraftBlocks' | 'isHighlighted' | 'selectedDocument' | 'setSelectedSlashCommandIndex' | 'handleLinkSuggestionKeyDown'> & {
   setSelectedSlashCommandIndex: Dispatch<SetStateAction<number>>
 }
 type OutlinePanelProps = ComponentProps<typeof DocumentOutlinePanel>
@@ -26,7 +26,7 @@ type LinkSuggestionPanelProps = ComponentProps<typeof LinkSuggestionPanel>
 type FloatingSlashCommandPanelProps = ComponentProps<typeof FloatingSlashCommandPanel>
 
 type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps & {
-  activeLinkContext: { query: string } | null
+  activeLinkContext: { query: string; start: number } | null
   blockSearchQuery: string
   blockSuggestions: DocumentBlockDraft[]
   canMoveSelectionDown: boolean
@@ -157,6 +157,42 @@ export function useDocumentsBlockEditorPresentation({
   updateBlockHighlight,
   updateDraftBlock
 }: UseDocumentsBlockEditorPresentationParams) {
+  const [selectedLinkSuggestionKey, setSelectedLinkSuggestionKey] = useState<string | null>(null)
+  const [dismissedLinkContextKey, setDismissedLinkContextKey] = useState<string | null>(null)
+  const linkContextKey = activeLinkContext
+    ? JSON.stringify([selectedDocument?.id, activeBlockIndex, activeLinkContext.start, activeLinkContext.query]) : null
+  useEffect(() => {
+    setSelectedLinkSuggestionKey(null)
+    setDismissedLinkContextKey(null)
+  }, [linkContextKey])
+  const linkCandidates = [
+    ...blockSuggestions.filter((block) => block.id).map((block) => ({ key: `block-${block.id}`, select: () => insertBlockSuggestion(block) })),
+    ...linkSuggestions.map((suggestion) => ({ key: `document-${suggestion.id}`, select: () => insertLinkSuggestion(suggestion) }))
+  ]
+  const activeLinkCandidate = linkCandidates.find((candidate) => candidate.key === selectedLinkSuggestionKey) ?? linkCandidates[0]
+  const selectLinkCandidate = (select: () => void) => { checkpointDraft?.(); select() }
+  const handleLinkSuggestionKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!activeLinkContext || dismissedLinkContextKey === linkContextKey || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation()
+      setDismissedLinkContextKey(linkContextKey)
+      return true
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault(); event.stopPropagation()
+      if (linkCandidates.length) {
+        const currentIndex = linkCandidates.indexOf(activeLinkCandidate)
+        setSelectedLinkSuggestionKey(linkCandidates[(currentIndex + (event.key === 'ArrowDown' ? 1 : -1) + linkCandidates.length) % linkCandidates.length].key)
+      }
+      return true
+    }
+    if ((event.key === 'Enter' || event.key === 'Tab') && activeLinkCandidate) {
+      event.preventDefault(); event.stopPropagation()
+      selectLinkCandidate(activeLinkCandidate.select)
+      return true
+    }
+    return false
+  }
   const markdownDocument = useMemo(() => parseMarkdownDocumentBlocks(draftBlocks, selectedDocument?.title), [draftBlocks, selectedDocument?.title])
   const markdownReferences = markdownDocument.environment.references
   const visibleEditorRows = useMemo<VisibleEditorRow[]>(() => {
@@ -306,15 +342,17 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
-  const linkSuggestionPanelProps: LinkSuggestionPanelProps | null = activeLinkContext
+  const linkSuggestionPanelProps: LinkSuggestionPanelProps | null = activeLinkContext && dismissedLinkContextKey !== linkContextKey
     ? {
         blockSuggestions,
         blocksLabel: ui.blocksInDocument,
         linkedDocsLabel: ui.linkedDocuments,
         linkSuggestions,
         noMatchingLabel: ui.noMatchingSuggestions,
-        onSelectBlockSuggestion: insertBlockSuggestion,
-        onSelectLinkSuggestion: insertLinkSuggestion,
+        onSelectBlockSuggestion: (block) => selectLinkCandidate(() => insertBlockSuggestion(block)),
+        onSelectLinkSuggestion: (suggestion) => selectLinkCandidate(() => insertLinkSuggestion(suggestion)),
+        activeSuggestionKey: activeLinkCandidate?.key,
+        onHoverSuggestion: setSelectedLinkSuggestionKey,
         query: activeLinkContext.query,
         queryLabel: ui.linkQuery
       }
@@ -363,6 +401,7 @@ export function useDocumentsBlockEditorPresentation({
     getMultiBlockOperationRange,
     getVisibleBlockCountInRange,
     handleBlockContentChange,
+    handleLinkSuggestionKeyDown,
     handleBlockMouseEnter,
     handleBlockPaste,
     insertDraftBlockAt,

@@ -68,6 +68,8 @@ export function useDocumentsDomainState({
   } | null>(null)
   const [activeCursorPosition, setActiveCursorPosition] = useState<number>(0)
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
+  const historyRevealBlockRef = useRef<((id: string) => void) | null>(null)
+  const revealHistoryBlock = useCallback((id: string) => historyRevealBlockRef.current?.(id), [])
   const flushPendingDocumentChangesRef = useRef<() => Promise<boolean>>(async () => true)
 
   const {
@@ -166,6 +168,7 @@ export function useDocumentsDomainState({
     updateDraftBlock,
     undoEdit
   } = useDocumentEditorState({
+    onRevealHistoryBlock: revealHistoryBlock,
     isReadingMode,
     onHomeDataChange,
     onMessage: onNotification,
@@ -188,7 +191,7 @@ export function useDocumentsDomainState({
 
     let cancelled = false
     void window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
-      if (cancelled || !detail) {
+      if (cancelled || !detail || detail.updatedAt === selectedDocument.updatedAt) {
         return
       }
       setSelectedDocument(detail)
@@ -223,6 +226,7 @@ export function useDocumentsDomainState({
     draftBlocks,
     documentId: !detailLoading && selectedDocument?.id === selectedDocumentId ? selectedDocumentId : null
   })
+  historyRevealBlockRef.current = revealBlockAncestors
   const {
     activeLinkContext,
     activeSlashCommand,

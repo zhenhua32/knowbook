@@ -10,6 +10,8 @@ type LinkSuggestionPanelProps = {
   noMatchingLabel: string
   onSelectBlockSuggestion: (block: DocumentBlockDraft) => void
   onSelectLinkSuggestion: (suggestion: DocumentSuggestion) => void
+  activeSuggestionKey?: string
+  onHoverSuggestion?: (key: string) => void
 }
 
 export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
@@ -22,7 +24,9 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
     queryLabel,
     noMatchingLabel,
     onSelectBlockSuggestion,
-    onSelectLinkSuggestion
+    onSelectLinkSuggestion,
+    activeSuggestionKey,
+    onHoverSuggestion
   } = props
 
   return (
@@ -35,8 +39,11 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
             <p className="panel-label link-helper-section-label">{blocksLabel}</p>
             {blockSuggestions.map((block) => (
               <button
-                className="relation-chip"
+                className={`relation-chip${activeSuggestionKey === `block-${block.id}` ? ' relation-chip-active' : ''}`}
                 key={`block-suggestion-${block.id}`}
+                aria-current={activeSuggestionKey === `block-${block.id}` ? 'true' : undefined}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => onHoverSuggestion?.(`block-${block.id}`)}
                 onClick={() => onSelectBlockSuggestion(block)}
                 type="button"
               >
@@ -51,8 +58,11 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
             <p className="panel-label link-helper-section-label">{linkedDocsLabel}</p>
             {linkSuggestions.map((suggestion) => (
               <button
-                className="relation-chip"
+                className={`relation-chip${activeSuggestionKey === `document-${suggestion.id}` ? ' relation-chip-active' : ''}`}
                 key={`suggestion-${suggestion.id}`}
+                aria-current={activeSuggestionKey === `document-${suggestion.id}` ? 'true' : undefined}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => onHoverSuggestion?.(`document-${suggestion.id}`)}
                 onClick={() => onSelectLinkSuggestion(suggestion)}
                 type="button"
               >

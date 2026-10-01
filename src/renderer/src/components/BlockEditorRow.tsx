@@ -99,6 +99,7 @@ export type BlockEditorRowProps = {
   setSelectedSlashCommandIndex: (fn: (prev: number) => number) => void
   applySlashCommand: (command: any) => void
   dismissSlashCommand: () => void
+  handleLinkSuggestionKeyDown?: (event: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   adjustSelectedBlocksDepth: (delta: -1 | 1, index: number, cursorPos: number) => void
   adjustBlockDepth: (index: number, delta: -1 | 1, cursorPos: number) => void
   deleteSelectedBlocks: () => void
@@ -180,6 +181,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     setSelectedSlashCommandIndex,
     applySlashCommand,
     dismissSlashCommand,
+    handleLinkSuggestionKeyDown,
     adjustSelectedBlocksDepth,
     adjustBlockDepth,
     deleteSelectedBlocks,
@@ -291,6 +293,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   }, [block.content, block.type])
 
   const handleBlockTypeChange = (newType: string) => {
+    if (newType === block.type) return
+    props.checkpointDraft?.()
     if (newType === 'divider') {
       updateDraftBlock(index, { type: newType, content: '' })
     } else {
@@ -410,7 +414,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
            block={block}
            index={index}
            isActive={showBlockToolbar}
-           onHighlightChange={(highlight) => updateBlockHighlight(index, highlight)}
+           onHighlightChange={(highlight) => { if (highlight !== block.highlight) { props.checkpointDraft?.(); updateBlockHighlight(index, highlight) } }}
            onTypeChange={handleBlockTypeChange}
            onDuplicate={() => duplicateDraftBlock(index)}
            onDelete={handleDeleteBlock}
@@ -490,7 +494,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               editingLanguage ? (
                 <CodeBlockLanguageSelector
                   currentLanguage={block.language ?? effectiveCodeLanguage ?? undefined}
-                  onChange={(lang) => updateDraftBlock(index, { language: lang, markdownFormat: { ...block.markdownFormat, codeInfo: lang } })}
+                  onChange={(lang) => {
+                    if (lang === block.language && lang === block.markdownFormat?.codeInfo) return
+                    props.checkpointDraft?.()
+                    updateDraftBlock(index, { language: lang, markdownFormat: { ...block.markdownFormat, codeInfo: lang } })
+                  }}
                   onBlur={() => setEditingLanguage(false)}
                   isZh={isZh}
                 />
@@ -694,6 +702,28 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   event.currentTarget.closest('.block-editor-input-column')?.querySelector<HTMLButtonElement>('.markdown-format-toolbar button')?.focus()
                   return
                 }
+                if (activeBlockIndex === index && handleLinkSuggestionKeyDown?.(event)) return
+                // Suggestions own unmodified navigation before block boundaries.
+                // Modified arrows and Shift+Enter retain their editor meaning.
+                if (activeBlockIndex === index && activeSlashContext && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault(); event.stopPropagation()
+                    const delta = event.key === 'ArrowDown' ? 1 : -1
+                    setSelectedSlashCommandIndex((previous) => filteredSlashCommands.length === 0
+                      ? 0 : (previous + delta + filteredSlashCommands.length) % filteredSlashCommands.length)
+                    return
+                  }
+                  if ((event.key === 'Enter' || event.key === 'Tab') && activeSlashCommand) {
+                    event.preventDefault(); event.stopPropagation()
+                    applySlashCommand(activeSlashCommand as any)
+                    return
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault(); event.stopPropagation()
+                    dismissSlashCommand()
+                    return
+                  }
+                }
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
                   const el = event.currentTarget
@@ -777,37 +807,6 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   }
                   return
                 }
-
-                // Slash command navigation
-                if (activeBlockIndex === index && activeSlashContext) {
-                  if (event.key === 'ArrowDown') {
-                    event.preventDefault()
-                    setSelectedSlashCommandIndex((p) =>
-                      filteredSlashCommands.length === 0 ? 0 : (p + 1) % filteredSlashCommands.length
-                    )
-                    return
-                  }
-                  if (event.key === 'ArrowUp') {
-                    event.preventDefault()
-                    setSelectedSlashCommandIndex((p) =>
-                      filteredSlashCommands.length === 0 ? 0 : (p - 1 + filteredSlashCommands.length) % filteredSlashCommands.length
-                    )
-                    return
-                  }
-                  if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
-                    if (activeSlashCommand) {
-                      event.preventDefault()
-                      applySlashCommand(activeSlashCommand as any)
-                      return
-                    }
-                  }
-                  if (event.key === 'Escape') {
-                    event.preventDefault()
-                    dismissSlashCommand()
-                    return
-                  }
-                }
-
 
                 // Lists retain Tab nesting. Shift+Tab in other text blocks returns to the format toolbar.
                 if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey) {

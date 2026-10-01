@@ -44,7 +44,7 @@ export function createPaletteCommands(documents: DocumentsDomainState, shell: Ap
       shortcut: page.id === 'search' ? 'Ctrl/Cmd+Shift+F' : `Ctrl/Cmd+${PAGE_ORDER.indexOf(page.id) + 1}`,
       run: () => shell.setActivePage(page.id) })),
     { id: 'save-document', title: zh ? '保存当前文档' : 'Save current document', description: currentTitle, keywords: 'save current document 保存 当前 文档',
-      disabledReason: noDocument || (documents.isSaving ? (zh ? '正在保存' : 'Saving') : undefined), run: documents.saveDocument },
+      shortcut: 'Ctrl/Cmd+S', disabledReason: noDocument || (documents.isSaving ? (zh ? '正在保存' : 'Saving') : undefined), run: documents.saveDocument },
     { id: 'copy-markdown', title: zh ? '复制文档 Markdown' : 'Copy document Markdown', description: currentTitle, keywords: 'copy document clipboard markdown 复制 文档 剪贴板', disabledReason: noDocument, run: documents.copyDocumentAsMarkdown },
     { id: 'export-markdown', title: zh ? '导出文档 Markdown' : 'Export document Markdown', description: currentTitle, keywords: 'export document markdown file 导出 文档 文件', disabledReason: noDocument, run: documents.saveDocumentAsMarkdown },
     { id: 'backup', title: zh ? '立即备份工作区' : 'Back up workspace now', description: zh ? '导出所有文档，进度显示在通知中' : 'Export all documents; follow progress in notifications', keywords: 'backup back up workspace now export 备份 导出 工作区', disabledReason: unavailable, run: workspace.handleBackup },

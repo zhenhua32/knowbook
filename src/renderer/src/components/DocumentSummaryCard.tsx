@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useId, useRef, useState } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type DocumentSummaryCardProps = {
   path: string
@@ -27,21 +28,35 @@ export function DocumentSummaryCard(props: DocumentSummaryCardProps) {
     onSummaryChange
   } = props
   const [isEditing, setIsEditing] = useState(false)
+  const fieldsId = useId()
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  const composingRef = useRef(false)
 
   return (
     <div className={`document-summary-card${isEditing ? ' document-summary-card-editing' : ''}`}>
       <div className="document-summary-card-head">
         <p className="document-path">{path}</p>
-        <button className="document-summary-edit-button" onClick={() => setIsEditing((current) => !current)} type="button">
+        <button aria-expanded={isEditing} aria-controls={isEditing ? fieldsId : undefined} ref={toggleRef}
+          className="document-summary-edit-button" onClick={() => setIsEditing((current) => !current)} type="button">
           <EditIcon />
           {isEditing ? collapseLabel : editLabel}
         </button>
       </div>
       {isEditing ? (
-        <div className="editor-fields">
+        <div className="editor-fields" id={fieldsId}
+          onCompositionStart={() => { composingRef.current = true }}
+          onCompositionEnd={() => { composingRef.current = false }}
+          onBlur={() => { composingRef.current = false }}
+          onKeyDown={(event) => {
+            if (event.key !== 'Escape' || isImeKeyboardEvent(event.nativeEvent, composingRef.current)) return
+            event.preventDefault()
+            event.stopPropagation()
+            setIsEditing(false)
+            toggleRef.current?.focus()
+          }}>
           <label className="editor-label">
             {titleLabel}
-            <input className="editor-input" onChange={(event) => onTitleChange(event.target.value)} type="text" value={title} />
+            <input autoFocus className="editor-input" onChange={(event) => onTitleChange(event.target.value)} type="text" value={title} />
           </label>
           <label className="editor-label">
             {summaryLabel}

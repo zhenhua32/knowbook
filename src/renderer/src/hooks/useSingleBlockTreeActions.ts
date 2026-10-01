@@ -76,6 +76,7 @@ export function useSingleBlockTreeActions({
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
 
+    pushToHistory(draftBlocks)
     setDraftBlocks((previous) => {
       const subtreeBlocks = previous.slice(index, subtreeEndIndex + 1)
       const rootId = getNormalizedBlockId(previous[index])
@@ -95,6 +96,7 @@ export function useSingleBlockTreeActions({
     getBlockSubtreeEndIndex,
     isNestableBlock,
     normalizeBlockDepth,
+    pushToHistory,
     resolveDraftInsertionPlacement,
     setActiveBlockIndex,
     setActiveCursorPosition,
@@ -115,6 +117,7 @@ export function useSingleBlockTreeActions({
         return
       }
 
+      pushToHistory(draftBlocks)
       updateDraftBlock(index, buildBlockTypePatch('paragraph', '', false, currentBlock.depth, currentBlock.parentBlockId ?? null))
       setActiveBlockIndex(index)
       setActiveCursorPosition(0)
@@ -126,7 +129,7 @@ export function useSingleBlockTreeActions({
       const nextType = getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type
       splitDraftBlock(index, selectionStart, selectionEnd, nextType)
     }
-  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, splitDraftBlock, updateDraftBlock])
+  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, splitDraftBlock, updateDraftBlock])
 
   const downgradeBlockAt = useCallback((index: number) => {
     const currentBlock = draftBlocks[index]
@@ -143,11 +146,12 @@ export function useSingleBlockTreeActions({
       return
     }
 
+    pushToHistory(draftBlocks)
     updateDraftBlock(index, buildBlockTypePatch('paragraph', currentBlock.content, false, currentBlock.depth, currentBlock.parentBlockId ?? null))
     setActiveBlockIndex(index)
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(index)
-  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, updateDraftBlock])
+  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, updateDraftBlock])
 
   const mergeWithPreviousBlock = useCallback((index: number) => {
     if (index === 0) {

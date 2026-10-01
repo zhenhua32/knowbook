@@ -34,6 +34,7 @@ export const shortcuts: Shortcut[] = [
   { id: 'search-document', group: 'search', title: ['打开结果所在文档', 'Open the result’s document'], keys: [['Mod', 'Enter']], note: ['适用于文档和内容块结果。', 'For document and block results.'] },
   { id: 'search-close', group: 'search', title: ['关闭搜索', 'Close search'], keys: [['Esc']] },
   { id: 'document-find', group: 'document', title: ['打开或关闭文档内搜索', 'Toggle search within the document'], keys: [['Mod', 'F']] },
+  { id: 'document-save', group: 'document', title: ['保存当前文档', 'Save current document'], keys: [['Mod', 'S']], note: ['标题、摘要、正文和阅读模式共用保存操作；输入法组合输入时暂停。', 'Shared by title, summary, body, and reading mode; paused during IME composition.'] },
   { id: 'document-back', group: 'document', title: ['后退到上一篇文档', 'Go back to the previous document'], keys: [['Alt', '←']] },
   { id: 'document-forward', group: 'document', title: ['前进到下一篇文档', 'Go forward to the next document'], keys: [['Alt', '→']] },
   { id: 'document-undo', group: 'document', title: ['撤销编辑', 'Undo edits'], keys: [['Mod', 'Z']], note: ['文档处于编辑模式时。', 'While editing a document.'] },

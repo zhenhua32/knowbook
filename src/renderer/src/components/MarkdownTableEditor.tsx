@@ -6,6 +6,7 @@ import { MarkdownNodes } from './MarkdownContent'
 import { MarkdownFormatToolbar } from './MarkdownFormatToolbar'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { restoreTableHistoryFocusEvent, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import '../styles/markdown-editing.css'
 
 type Cell = { row: number; column: number }
@@ -22,10 +23,23 @@ export function MarkdownTableEditor({ content, onChange, onBeginEdit, isZh }: {
   const [editing, setEditing] = useState<(Cell & { value: string }) | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const editor = useRef<HTMLTextAreaElement>(null)
-  const pendingFocus = useRef<{ cell: Cell; edit: boolean; selectAll?: boolean; range?: { start: number; end: number } } | null>(null)
+  const pendingFocus = useRef<{ cell: Cell; edit: boolean; selectAll?: boolean; range?: { start: number; end: number; direction?: EditorHistoryBookmark['direction'] } } | null>(null)
   const lastEmitted = useRef<string | undefined>(undefined)
   const composing = useRef(false)
   const cellValue = (model: MarkdownTableEdit, cell: Cell) => (cell.row ? model.rows[cell.row - 1] : model.headers)?.[cell.column] ?? ''
+  useLayoutEffect(() => {
+    const element = container.current
+    const restore = (event: Event) => {
+      const bookmark = (event as CustomEvent<EditorHistoryBookmark>).detail
+      if (!table || !bookmark.cell) return
+      const cell = { row: Math.min(bookmark.cell.row, table.rows.length), column: Math.min(bookmark.cell.column, table.headers.length - 1) }
+      pendingFocus.current = { cell, edit: bookmark.cell.editing, range: { start: bookmark.start, end: bookmark.end, direction: bookmark.direction } }
+      setSelected(cell)
+      setEditing(bookmark.cell.editing ? { ...cell, value: cellValue(table, cell) } : null)
+    }
+    element?.addEventListener(restoreTableHistoryFocusEvent, restore)
+    return () => element?.removeEventListener(restoreTableHistoryFocusEvent, restore)
+  }, [table])
   useLayoutEffect(() => {
     const pending = pendingFocus.current
     if (!pending) return
@@ -38,7 +52,7 @@ export function MarkdownTableEditor({ content, onChange, onBeginEdit, isZh }: {
     // can run after the next Tab/shortcut and steal focus or use a stale range.
     if (document.activeElement !== target) target.focus()
     if (pending.edit && editor.current) {
-      if (pending.range) editor.current.setSelectionRange(pending.range.start, pending.range.end)
+      if (pending.range) editor.current.setSelectionRange(pending.range.start, pending.range.end, pending.range.direction)
       else if (pending.selectAll) editor.current.select()
     }
   })

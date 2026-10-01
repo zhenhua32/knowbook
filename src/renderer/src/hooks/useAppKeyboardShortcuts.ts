@@ -27,6 +27,15 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         if (!event.repeat) void import('../openShortcutHelp').then(({ openShortcutHelp }) => openShortcutHelp())
         return
       }
+      // Source owns an unapplied draft. Only nested shortcut help may open
+      // over it; switching pages would unmount the dialog and lose that draft.
+      if (document.querySelector('dialog.document-markdown-source[open]')) {
+        if (['mod+k', 'mod+shift+p', 'mod+shift+f', 'mod+shift+n', 'alt+arrowleft', 'alt+arrowright'].includes(key)
+          || /^mod\+[1-6]$/.test(key)) {
+          event.preventDefault(); event.stopPropagation()
+        }
+        return
+      }
       if (key === 'mod+shift+n') {
         event.preventDefault(); event.stopPropagation()
         if (!event.repeat && !documents.isGlobalSearchOpen) openQuickCapture()
@@ -60,6 +69,13 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         event.preventDefault(); shell.setActivePage(PAGE_ORDER[Number(key.at(-1)) - 1]); return
       }
       if (shell.activePage !== 'documents') return
+      if (key === 'mod+s') {
+        event.preventDefault()
+        if (!event.repeat && documents.isEditing && !documents.detailLoading
+          && documents.selectedDocumentId && documents.selectedDocument?.id === documents.selectedDocumentId
+          && !documents.documentLoadError) void documents.saveDocument()
+        return
+      }
       const actionKey = key === 'mod+shift+z' ? 'mod+y' : key
       // Metadata and auxiliary inputs keep their own history. Only body editors
       // share the document's block history, including Markdown table cells.

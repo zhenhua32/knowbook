@@ -150,14 +150,26 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
     }) })
     editor.current = view
     view.focus()
-    return () => { editor.current = null; view.destroy(); returnFocus?.focus() }
+    return () => {
+      editor.current = null
+      // Layout cleanup runs before React removes the modal. Close it first so
+      // the background trigger is no longer inert when restoring its focus.
+      dialog.current?.close()
+      view.destroy()
+      returnFocus?.focus({ preventScroll: true })
+    }
   }, [])
 
   return createPortal(<dialog ref={dialog} className="document-markdown-source" aria-labelledby={labelId} aria-describedby={hintId}
     onPasteCapture={event => { if (event.clipboardData.files.length) { event.preventDefault(); event.stopPropagation(); void insertFiles(Array.from(event.clipboardData.files)) } }}
     onDragOverCapture={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation() } }}
     onDropCapture={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); void insertFiles(Array.from(event.dataTransfer.files), editor.current?.posAtCoords({ x: event.clientX, y: event.clientY }) ?? undefined) } }}
-    onKeyDown={event => event.stopPropagation()} onCancel={event => { event.preventDefault(); if (!composing.current) onClose() }}>
+    onKeyDown={event => {
+      event.stopPropagation()
+      // CodeMirror handles editor events first. Dialog controls use the same
+      // commands without replaying an already handled editor transaction.
+      if (!event.defaultPrevented && handlers.current.keydown(event.nativeEvent)) event.preventDefault()
+    }} onCancel={event => { event.preventDefault(); if (!composing.current) onClose() }}>
     <header><h3 id={labelId}>{isZh ? '编辑 Markdown 源码' : 'Edit Markdown source'}</h3>
       <button type="button" className="secondary-button" disabled={isComposing} onClick={onClose}>{isZh ? '取消' : 'Cancel'}</button></header>
     <p id={hintId}>{isZh ? '在完整正文中连续选择和编辑；应用后自动保存。' : 'Select and edit across the complete body. Changes autosave after applying.'}</p>

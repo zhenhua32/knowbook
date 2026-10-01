@@ -28,6 +28,9 @@ test('undo and redo preserve input history outside the body while retaining bloc
   const noop = () => {}
   const documents: DocumentsKeyboardState = {
     isEditing: true, isReadingMode: false, isGlobalSearchOpen: false, isBlockSearchOpen: false,
+    detailLoading: false, documentLoadError: null,
+    selectedDocumentId: 'current', selectedDocument: { id: 'current' } as DocumentsKeyboardState['selectedDocument'],
+    saveDocument: async () => { calls.push('save') },
     globalSearchQuery: '',
     selectedBlockRange: null, navBack: noop, navForward: noop,
     openGlobalSearch: noop, closeGlobalSearch: noop, openBlockSearch: noop, closeBlockSearch: noop,
@@ -40,9 +43,9 @@ test('undo and redo preserve input history outside the body while retaining bloc
     useAppKeyboardShortcuts({ documents, shell, onClearBlockRangeSelection: () => {} })
     return null
   }
-  const press = (id: string, key: string, shiftKey = false, metaKey = false) => {
+  const press = (id: string, key: string, shiftKey = false, metaKey = false, repeat = false) => {
     const event = new dom.window.KeyboardEvent('keydown', {
-      key, shiftKey, metaKey, ctrlKey: !metaKey, bubbles: true, cancelable: true
+      key, shiftKey, metaKey, repeat, ctrlKey: !metaKey, bubbles: true, cancelable: true
     })
     dom.window.document.getElementById(id)!.dispatchEvent(event)
     return event
@@ -73,6 +76,37 @@ test('undo and redo preserve input history outside the body while retaining bloc
     documents.globalSearchQuery = '> settings'
     assert.equal(press('search', 'f', true).defaultPrevented, true)
     assert.deepEqual(fullSearchQueries, [undefined, 'research notes', undefined], 'search carries palette keywords, while commands retain the current full search')
+    documents.isGlobalSearchOpen = false
+    calls.length = 0
+    for (const id of ['title', 'summary', 'body', 'cell', 'toolbar', 'todo']) {
+      for (const metaKey of [false, true]) assert.equal(press(id, 's', false, metaKey).defaultPrevented, true)
+    }
+    documents.isReadingMode = true
+    assert.equal(press('todo', 's').defaultPrevented, true)
+    assert.equal(calls.filter(call => call === 'save').length, 13, 'metadata, body, tables, and reading tasks share Save')
+    assert.equal(press('body', 's', false, false, true).defaultPrevented, true)
+    assert.equal(calls.length, 13, 'holding Save does not repeat writes')
+    const title = dom.window.document.getElementById('title')!
+    title.dispatchEvent(new dom.window.CompositionEvent('compositionstart', { bubbles: true }))
+    assert.equal(press('title', 's').defaultPrevented, false)
+    title.dispatchEvent(new dom.window.CompositionEvent('compositionend', { bubbles: true }))
+    const dialog = dom.window.document.createElement('dialog')
+    dialog.setAttribute('data-block-shortcuts', '')
+    dom.window.document.body.append(dialog)
+    assert.equal(press('body', 's').defaultPrevented, false)
+    dialog.remove()
+    documents.isGlobalSearchOpen = true
+    assert.equal(press('search', 's').defaultPrevented, false)
+    documents.isGlobalSearchOpen = false
+    shell.activePage = 'search'
+    assert.equal(press('search', 's').defaultPrevented, false)
+    shell.activePage = 'documents'
+    documents.detailLoading = true
+    assert.equal(press('title', 's').defaultPrevented, true)
+    documents.detailLoading = false
+    documents.selectedDocumentId = 'still-loading'
+    assert.equal(press('body', 's').defaultPrevented, true)
+    assert.equal(calls.length, 13, 'composition, blocking dialogs, search, other pages, and unloaded documents cannot save')
   } finally {
     await act(async () => root.unmount())
     for (const [key, descriptor] of originals) {

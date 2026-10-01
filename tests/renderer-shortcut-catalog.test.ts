@@ -31,6 +31,6 @@ test('help agrees with page navigation and the actual Markdown formatting bindin
       key: keys.at(-1)!, ctrlKey: !mac, metaKey: mac, altKey: false, shiftKey: keys.includes('Shift')
     }), item.id.replace('format-', ''))
   }
-  assert.deepEqual(filterShortcuts('Ctrl+S').map((item) => item.id), ['source-apply'], 'Do not advertise a global save binding that does not exist')
+  assert.deepEqual(filterShortcuts('Ctrl+S').map((item) => item.id), ['document-save', 'source-apply'])
   assert.equal(new Set(shortcuts.map((item) => item.id)).size, shortcuts.length)
 })
