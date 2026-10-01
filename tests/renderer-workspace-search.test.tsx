@@ -4,7 +4,7 @@ import { register } from 'node:module'
 import React, { act, type ReactNode } from 'react'
 import { JSDOM } from 'jsdom'
 import type { ElectronApi } from '../src/shared/contracts'
-import type { SavedWorkspaceSearch, WorkspaceSearchInput, WorkspaceSearchPage } from '../src/shared/workspace-search'
+import type { SavedWorkspaceSearch, WorkspaceSearchInput, WorkspaceSearchPage, WorkspaceSearchResult } from '../src/shared/workspace-search'
 import { useWorkspaceSearch, type WorkspaceSearchRequest } from '../src/renderer/src/hooks/useWorkspaceSearch'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -442,5 +442,250 @@ test('saved search controls use a collapsed native disclosure and retain their d
     await act(async () => summary.click()); assert.equal(details.open, true); assert.equal(name.value, 'Draft search name')
     await render(<SearchPage {...common} isZh />)
     assert.equal(summary.textContent, '保存与加载检索'); assert.equal(details.open, true); assert.equal(name.value, 'Draft search name')
+  })
+})
+
+function actionResult(blockId?: string): WorkspaceSearchResult {
+  return { documentId: 'owner-doc', documentTitle: 'Shared result', documentPath: 'Folder/Shared result',
+    matchType: blockId ? 'block' : 'title', snippet: 'needle in the result', updatedAt: '2026-09-30T04:00:00Z',
+    tags: ['review'], ...(blockId ? { blockId, blockType: 'paragraph' } : {}) }
+}
+
+function actionPage(input: WorkspaceSearchInput, items: WorkspaceSearchResult[]): WorkspaceSearchPage {
+  return { page: input.page ?? 1, pageSize: input.pageSize ?? 25, total: 26,
+    queryTerms: input.query.trim().split(/\s+/).filter(Boolean), items }
+}
+
+function actionRow(document: Document, blockId: string | null, documentId = 'owner-doc'): HTMLElement {
+  const row = [...document.querySelectorAll<HTMLElement>('[data-testid="workspace-search-result"]')]
+    .find((element) => element.dataset.documentId === documentId && element.dataset.blockId === (blockId ?? ''))
+  assert.ok(row, 'The intended document/block result is present')
+  return row
+}
+
+function resultAction(row: HTMLElement, kind: 'open' | 'document' | 'copy'): HTMLButtonElement {
+  const buttons = [...row.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')]
+  const button = kind === 'copy' ? buttons.at(-1) : kind === 'document' ? buttons[1] : buttons[0]
+  assert.ok(button, 'The intended result action is present')
+  return button
+}
+
+function ownerFeedback(document: Document, row: HTMLElement, role: 'status' | 'alert'): HTMLElement {
+  const feedback = document.querySelector<HTMLElement>('.workspace-search-action-feedback')
+  assert.equal(document.querySelectorAll('.workspace-search-action-feedback').length, 1, 'Only one operation is announced')
+  assert.equal(row.contains(feedback), true, 'Feedback belongs to the document/block row that started the action')
+  assert.equal(feedback?.getAttribute('role'), role)
+  assert.ok(feedback?.id, 'The feedback can be referenced by the action that produced it')
+  return feedback!
+}
+
+function assertDescribedBy(button: HTMLButtonElement, feedback: HTMLElement): void {
+  assert.equal((button.getAttribute('aria-describedby') ?? '').split(/\s+/).includes(feedback.id), true,
+    'The action exposes its own progress or result to assistive technology')
+}
+
+test('result copy feedback stays with the exact row, retains its action, and rejects same-frame duplicate operations', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const items = [actionResult(), actionResult('document'), actionResult('block-a'), actionResult('block-b')]
+  const copies: { text: string; response: ReturnType<typeof deferred<void>> }[] = []
+  let opened = 0
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+    onOpenDocument: () => { opened++; return false }, onOpenBlock: () => { opened++; return false } }
+  await withRenderer(api({ searchWorkspace: async (input) => actionPage(input, items), writeClipboardText: (text) => {
+    const response = deferred<void>(); copies.push({ text, response }); return response.promise
+  } }), async ({ render, document }) => {
+    await render(<SearchPage {...common} />); await act(async () => t.mock.timers.tick(200))
+    const row = actionRow(document, 'block-a'), copy = resultAction(row, 'copy')
+    await act(async () => {
+      copy.focus(); copy.click(); copy.click()
+      resultAction(row, 'open').click(); resultAction(actionRow(document, 'block-b'), 'copy').click()
+    })
+    assert.equal(copies.length, 1); assert.equal(opened, 0)
+    assert.equal(copies[0].text, '[Shared result](/Folder/Shared%20result.md)')
+    assert.equal(copy.disabled, false, 'The pending Copy action remains a native keyboard focus target')
+    assert.equal(copy.getAttribute('aria-disabled'), 'true')
+    assert.equal(document.activeElement === copy, true)
+    const progress = ownerFeedback(document, row, 'status')
+    assert.match(progress.textContent!, /copy/i); assertDescribedBy(copy, progress)
+    for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+      if (button !== copy) assert.equal(button.disabled, true, 'Other result operations retain the global busy lock')
+    }
+    await act(async () => copies[0].response.reject(new Error('Clipboard unavailable')))
+    const failure = ownerFeedback(document, row, 'alert')
+    assert.match(failure.textContent!, /Clipboard unavailable/); assertDescribedBy(copy, failure)
+    assert.equal(copy.disabled, false); assert.notEqual(copy.getAttribute('aria-disabled'), 'true')
+    await act(async () => copy.click())
+    assert.equal(copies.length, 2)
+    assert.equal(document.querySelectorAll('.workspace-search-action-feedback[role="alert"]').length, 0)
+    ownerFeedback(document, row, 'status')
+    await act(async () => copies[1].response.resolve())
+    assert.match(ownerFeedback(document, row, 'status').textContent!, /Document link copied/)
+
+    const collisionRow = actionRow(document, 'document'), titleRow = actionRow(document, null)
+    const collisionCopy = resultAction(collisionRow, 'copy')
+    await act(async () => collisionCopy.click())
+    assert.equal(copies.length, 3)
+    assertDescribedBy(collisionCopy, ownerFeedback(document, collisionRow, 'status'))
+    assert.equal(titleRow.querySelectorAll('.workspace-search-action-feedback').length, 0,
+      'A block literally named document cannot share feedback with its document-title result')
+    await act(async () => copies[2].response.resolve())
+    ownerFeedback(document, collisionRow, 'status')
+    assert.equal(row.querySelectorAll('.workspace-search-action-feedback').length, 0)
+  })
+})
+
+test('result navigation feedback preserves filters on rejection, permits retry, and tolerates a draft-triggered workspace refresh', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let listener: () => void = () => undefined
+  let reversed = false, blockResponse = deferred<boolean>()
+  const documentResponse = deferred<boolean>(), requests: WorkspaceSearchInput[] = []
+  const blockOpens: { documentId: string; blockId: string; guard?: () => boolean }[] = []
+  const documentOpens: string[] = []
+  const items = [actionResult(), actionResult('block-a'), actionResult('block-b')]
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+    onOpenBlock: (documentId: string, blockId: string, guard?: () => boolean) => {
+      blockOpens.push({ documentId, blockId, guard }); return blockResponse.promise
+    }, onOpenDocument: (documentId: string) => { documentOpens.push(documentId); return documentResponse.promise } }
+  await withRenderer(api({ onWorkspaceMutated: (callback) => { listener = callback; return () => undefined },
+    searchWorkspace: async (input) => { requests.push(input); return actionPage(input, reversed ? [...items].reverse() : items) }
+  }), async ({ render, document, window }) => {
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    await render(<SearchPage {...common} />); await tick()
+    await act(async () => {
+      const select = document.querySelector<HTMLSelectElement>('select[id$="-tag"]')!
+      select.value = 'review'; select.dispatchEvent(new window.Event('change', { bubbles: true }))
+    }); await tick()
+    let row = actionRow(document, 'block-a')
+    await act(async () => resultAction(row, 'open').click())
+    assert.equal(blockOpens.length, 1); assert.equal(blockOpens[0].guard?.(), true)
+    assertDescribedBy(resultAction(row, 'open'), ownerFeedback(document, row, 'status'))
+    for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+      assert.equal(button.disabled, true, 'Opening keeps native disabling for every result action')
+    }
+    reversed = true
+    await act(async () => listener()); await tick()
+    assert.equal(blockOpens[0].guard?.(), true, 'A save-triggered refresh must not cancel an otherwise current document jump')
+    row = actionRow(document, 'block-a')
+    await act(async () => blockResponse.resolve(false))
+    assert.match(ownerFeedback(document, row, 'alert').textContent!, /Your search is preserved/)
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="search"]')!.value, 'needle')
+    assert.equal(document.querySelector<HTMLSelectElement>('select[id$="-tag"]')!.value, 'review')
+    assert.equal(requests.at(-1)?.tag, 'review')
+
+    const documentRow = actionRow(document, 'block-b')
+    await act(async () => resultAction(documentRow, 'document').click())
+    assert.deepEqual(documentOpens, ['owner-doc'])
+    assert.equal(row.querySelectorAll('.workspace-search-action-feedback').length, 0)
+    await act(async () => documentResponse.reject(new Error('Navigation failed')))
+    const failure = ownerFeedback(document, documentRow, 'alert')
+    assert.match(failure.textContent!, /Navigation failed/)
+    assertDescribedBy(resultAction(documentRow, 'document'), failure)
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="search"]')!.value, 'needle')
+    assert.equal(document.querySelector<HTMLSelectElement>('select[id$="-tag"]')!.value, 'review')
+    blockResponse = deferred<boolean>()
+    await act(async () => resultAction(row, 'open').click())
+    assert.equal(blockOpens.length, 2)
+    assert.equal(documentRow.querySelectorAll('.workspace-search-action-feedback').length, 0)
+    ownerFeedback(document, row, 'status')
+    await act(async () => blockResponse.resolve(true))
+    assert.equal(document.querySelectorAll('.workspace-search-action-feedback').length, 0)
+  })
+})
+
+test('pending result acknowledgements expire on unsubmitted query edits, pagination, hiding and unmount without releasing the live lock early', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const copies: ReturnType<typeof deferred<void>>[] = [], requests: WorkspaceSearchInput[] = []
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+    onOpenDocument: () => false, onOpenBlock: () => false }
+  await withRenderer(api({ searchWorkspace: async (input) => {
+    requests.push(input); return actionPage(input, [actionResult('block-a')])
+  }, writeClipboardText: () => { const response = deferred<void>(); copies.push(response); return response.promise }
+  }), async ({ render, document, window }) => {
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    const copy = () => resultAction(actionRow(document, 'block-a'), 'copy')
+    const noFeedback = () => assert.equal(document.querySelectorAll('.workspace-search-action-feedback').length, 0)
+    await render(<SearchPage {...common} />); await tick()
+    await act(async () => copy().click())
+    const input = document.querySelector<HTMLInputElement>('input[type="search"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, 'new query')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'new query', inputType: 'insertText' }))
+    })
+    assert.equal(input.value, 'new query'); assert.equal(requests.length, 1, 'The changed query has not reached the debounced IPC yet')
+    noFeedback()
+    await tick()
+    await act(async () => copy().click())
+    assert.equal(copies.length, 1, 'The invalidated owner does not release a still-pending clipboard operation')
+    await act(async () => copies[0].reject(new Error('Old query failure')))
+    noFeedback()
+
+    await act(async () => copy().click()); assert.equal(copies.length, 2)
+    await act(async () => document.querySelector<HTMLButtonElement>('.workspace-search-pagination button:last-child')!.click())
+    noFeedback()
+    await act(async () => copies[1].resolve())
+    noFeedback(); await tick(); assert.equal(requests.at(-1)?.page, 2)
+
+    await act(async () => copy().click()); assert.equal(copies.length, 3)
+    await render(<SearchPage {...common} isActive={false} />)
+    noFeedback()
+    await act(async () => copies[2].reject(new Error('Hidden page failure')))
+    await render(<SearchPage {...common} />); await tick()
+    noFeedback()
+    assert.equal(document.querySelector<HTMLInputElement>('input[type="search"]')!.value, 'new query')
+
+    await act(async () => copy().click()); assert.equal(copies.length, 4)
+    await render(null)
+    await render(<SearchPage {...common} />); await tick()
+    await act(async () => copy().click()); assert.equal(copies.length, 5)
+    await act(async () => copies[3].reject(new Error('Unmounted owner failure')))
+    const row = actionRow(document, 'block-a')
+    ownerFeedback(document, row, 'status')
+    assert.equal(copy().getAttribute('aria-disabled'), 'true', 'An old instance cannot release the new instance action')
+    await act(async () => copies[4].resolve())
+    assert.match(ownerFeedback(document, row, 'status').textContent!, /Document link copied/)
+  })
+})
+
+test('same-query refresh keeps feedback with reordered identities but suppresses obsolete copied links and removed owners', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let listener: () => void = () => undefined
+  let items = [actionResult(), actionResult('block-a'), actionResult('block-b')]
+  const copies: { text: string; response: ReturnType<typeof deferred<void>> }[] = []
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+    onOpenDocument: () => false, onOpenBlock: () => false }
+  await withRenderer(api({ onWorkspaceMutated: (callback) => { listener = callback; return () => undefined },
+    searchWorkspace: async (input) => actionPage(input, items.map((item) => ({ ...item }))),
+    writeClipboardText: (text) => { const response = deferred<void>(); copies.push({ text, response }); return response.promise }
+  }), async ({ render, document }) => {
+    const refresh = async () => { await act(async () => listener()); await act(async () => t.mock.timers.tick(200)) }
+    const noFeedback = () => assert.equal(document.querySelectorAll('.workspace-search-action-feedback').length, 0)
+    await render(<SearchPage {...common} />); await act(async () => t.mock.timers.tick(200))
+    await act(async () => resultAction(actionRow(document, 'block-a'), 'copy').click())
+    items = [...items].reverse(); await refresh()
+    await act(async () => copies[0].response.resolve())
+    ownerFeedback(document, actionRow(document, 'block-a'), 'status')
+    assert.equal(actionRow(document, null).querySelectorAll('.workspace-search-action-feedback').length, 0)
+
+    await act(async () => resultAction(actionRow(document, null), 'copy').click())
+    items = items.map((item) => ({ ...item, documentTitle: 'Renamed result', documentPath: 'Moved/Renamed result' }))
+    await refresh(); noFeedback()
+    await act(async () => copies[1].response.resolve())
+    noFeedback()
+    assert.equal(copies[1].text, '[Shared result](/Folder/Shared%20result.md)', 'The old native write cannot be undone by a refresh')
+    await act(async () => resultAction(actionRow(document, 'block-a'), 'copy').click())
+    assert.equal(copies[2].text, '[Renamed result](/Moved/Renamed%20result.md)')
+    items = items.map((item) => ({ ...item, snippet: 'Updated content without a changed link', tags: ['new-tag'] }))
+    await refresh()
+    await act(async () => copies[2].response.resolve())
+    assert.match(ownerFeedback(document, actionRow(document, 'block-a'), 'status').textContent!, /Document link copied/,
+      'Replacing the result object alone does not invalidate an unchanged copied link')
+
+    await act(async () => resultAction(actionRow(document, 'block-b'), 'copy').click())
+    const removed = items.find((item) => item.blockId === 'block-b')!
+    items = items.filter((item) => item !== removed); await refresh(); noFeedback()
+    await act(async () => copies[3].response.reject(new Error('Removed row failure')))
+    noFeedback()
+    items = [...items, removed]; await refresh()
+    noFeedback()
   })
 })

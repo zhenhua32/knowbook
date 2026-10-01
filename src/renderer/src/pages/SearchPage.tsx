@@ -17,6 +17,20 @@ export type SearchPageProps = {
   onOpenBlock: (documentId: string, blockId: string, shouldContinue?: () => boolean) => boolean | void | Promise<boolean | void>
 }
 
+type SearchAction = 'open' | 'document' | 'copy'
+type SearchActionContext = {
+  item: WorkspaceSearchResult
+  action: SearchAction
+  input: WorkspaceSearchInput
+  requestSequence: number | undefined
+  sequence: number
+}
+
+function matchesActionResult(context: SearchActionContext, item: WorkspaceSearchResult): boolean {
+  return context.item.documentId === item.documentId && (context.item.blockId ?? null) === (item.blockId ?? null)
+    && (context.action !== 'copy' || (context.item.documentTitle === item.documentTitle && context.item.documentPath === item.documentPath))
+}
+
 function flattenTree(nodes: DocumentTreeNode[]): DocumentTreeNode[] {
   return nodes.flatMap((node) => [node, ...flattenTree(node.children)])
 }
@@ -35,11 +49,11 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
   const id = useId(), queryInput = useRef<HTMLInputElement>(null)
   const filterToggle = useRef<HTMLButtonElement>(null), composing = useRef(false)
   const mounted = useRef(false), actionLock = useRef(false), actionSequence = useRef(0)
-  const active = useRef(isActive)
-  active.current = isActive
-  const [busy, setBusy] = useState(false)
+  const current = useRef({ isActive, input, result, requestSequence: request?.sequence })
+  current.current = { isActive, input, result, requestSequence: request?.sequence }
+  const [busy, setBusy] = useState<SearchActionContext | null>(null)
   const [filtersExpanded, setFiltersExpanded] = useState(false)
-  const [feedback, setFeedback] = useState<{ message: string; error: boolean } | null>(null)
+  const [feedback, setFeedback] = useState<{ context: SearchActionContext; message: string; error: boolean } | null>(null)
   const choose = (zh: string, en: string) => isZh ? zh : en
   const folders = flattenTree(documentTree)
   const blockLabels = getUiText(isZh ? 'zh-CN' : 'en-US').blockTypeBadges
@@ -65,30 +79,41 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
     search.updateInput({ ...defaultWorkspaceSearchInput, pageSize: input.pageSize })
     queryInput.current?.focus({ preventScroll: true })
   }
+  const isCurrentAction = (context: SearchActionContext) => current.current.isActive
+    && context.input === current.current.input && context.requestSequence === current.current.requestSequence
+    && context.sequence === actionSequence.current
+  const hasActionOwner = (context: SearchActionContext) => current.current.result?.items.some((item) => matchesActionResult(context, item)) ?? false
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; actionSequence.current++ } }, [])
-  useEffect(() => { actionSequence.current++; setFeedback(null) }, [isActive, input])
+  useEffect(() => { actionSequence.current++; setFeedback(null) }, [isActive, input, request?.sequence])
+  useEffect(() => {
+    // A save can refresh and reorder results while navigation is still pending.
+    // Only copying an obsolete link invalidates that in-flight action.
+    if (busy?.action === 'copy' && isCurrentAction(busy) && !hasActionOwner(busy)) actionSequence.current++
+    setFeedback((previous) => previous && !hasActionOwner(previous.context) ? null : previous)
+  }, [result])
   useEffect(() => { if (isActive) queryInput.current?.focus({ preventScroll: true }) }, [isActive, request?.sequence])
 
-  const runAction = async (item: WorkspaceSearchResult, action: 'open' | 'document' | 'copy') => {
+  const runAction = async (item: WorkspaceSearchResult, action: SearchAction) => {
     if (actionLock.current || loading) return
-    actionLock.current = true; setBusy(true); setFeedback(null)
-    const sequence = ++actionSequence.current
+    actionLock.current = true
+    const context: SearchActionContext = { item, action, input, requestSequence: request?.sequence, sequence: ++actionSequence.current }
+    setBusy(context); setFeedback(null)
     const report = (message: string, error = false) => {
-      if (mounted.current && sequence === actionSequence.current) setFeedback({ message, error })
+      if (mounted.current && isCurrentAction(context) && hasActionOwner(context)) setFeedback({ context, message, error })
     }
     try {
       if (action === 'copy') {
         await window.knowbook.writeClipboardText(searchResultDocumentLink(item))
         report(choose('文档链接已复制，可粘贴到其他文档。', 'Document link copied. Paste it into another document.'))
       } else {
-        const shouldContinue = () => mounted.current && active.current && sequence === actionSequence.current
+        const shouldContinue = () => mounted.current && isCurrentAction(context)
         const opened = action === 'open' && item.blockId ? await onOpenBlock(item.documentId, item.blockId, shouldContinue) : await onOpenDocument(item.documentId, shouldContinue)
         if (opened === false) report(choose('未能切换文档，搜索已保留。请处理保存错误后重试。', 'Could not switch documents. Your search is preserved. Resolve the save error and retry.'), true)
       }
     } catch (cause) {
       report(getErrorMessage(cause, action === 'copy' ? choose('复制失败，请重试。', 'Copy failed. Please retry.') : choose('打开失败，请重试。', 'Could not open the result. Please retry.')), true)
-    } finally { actionLock.current = false; if (mounted.current) setBusy(false) }
+    } finally { actionLock.current = false; if (mounted.current) setBusy(null) }
   }
 
   return <div className="workspace-search-page">
@@ -233,7 +258,13 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
           </div>
         </div>
           : <div className={`workspace-search-results${loading ? ' is-loading' : ''}`} data-testid="workspace-search-results">
-            {result?.items.map((item) => <article className="workspace-search-result" key={`${item.documentId}:${item.blockId || 'document'}`}
+            {result?.items.map((item, index) => {
+              const pending = busy && isCurrentAction(busy) && matchesActionResult(busy, item) ? busy : null
+              const completed = feedback && isCurrentAction(feedback.context) && matchesActionResult(feedback.context, item) ? feedback : null
+              const rowAction = pending ?? completed?.context
+              const feedbackId = rowAction ? `${id}-action-${index}` : undefined
+              const copyPending = pending?.action === 'copy'
+              return <article className="workspace-search-result" key={JSON.stringify([item.documentId, item.blockId ?? null])}
               data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''}>
               <div className="workspace-search-result-head"><div className="workspace-search-result-heading">
                 <h4><MatchText text={item.documentTitle} terms={terms} /></h4>
@@ -244,14 +275,17 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
                 <div className="workspace-search-result-meta"><time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString(isZh ? 'zh-CN' : 'en-US')}>{choose('更新于 ', 'Updated ')}{new Date(item.updatedAt).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
                   {item.tags.map((tag) => <span className="workspace-search-tag" key={tag}>#{tag}</span>)}</div>
                 <div className="workspace-search-result-actions">
-                  <button type="button" className="primary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
-                  {item.blockId && <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
-                  <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
+                  <button type="button" className="primary-button" disabled={Boolean(busy) || loading} aria-describedby={rowAction?.action === 'open' ? feedbackId : undefined} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
+                  {item.blockId && <button type="button" className="secondary-button" disabled={Boolean(busy) || loading} aria-describedby={rowAction?.action === 'document' ? feedbackId : undefined} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
+                  <button type="button" className="secondary-button" disabled={(Boolean(busy) && !copyPending) || loading} aria-disabled={copyPending} aria-busy={copyPending}
+                    aria-describedby={rowAction?.action === 'copy' ? feedbackId : undefined} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
                 </div>
               </div>
-            </article>)}
+              {rowAction && <p id={feedbackId} className="workspace-search-action-feedback" role={!pending && completed?.error ? 'alert' : 'status'}>
+                {pending ? pending.action === 'copy' ? choose('正在复制…', 'Copying…') : choose('正在打开…', 'Opening…') : completed?.message}
+              </p>}
+            </article>})}
           </div>}
-      {(busy || feedback) && <p className="workspace-search-action-feedback" role={feedback?.error && !busy ? 'alert' : 'status'}>{busy ? choose('正在处理…', 'Working…') : feedback?.message}</p>}
       <nav className="workspace-search-pagination" aria-label={choose('搜索分页', 'Search pagination')}>
         <span>{result && result.total > 0 ? choose(`${from}–${to} / ${result.total} 条 · 第 ${page} / ${pages} 页`, `${from}–${to} of ${result.total} · Page ${page} of ${pages}`) : choose('第 1 页', 'Page 1')}</span>
         <div><button type="button" className="secondary-button" disabled={loading || Boolean(search.error) || page <= 1} onClick={() => search.updateInput({ page: page - 1 })}>{choose('上一页', 'Previous page')}</button>
