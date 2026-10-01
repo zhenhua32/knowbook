@@ -1,3 +1,24 @@
+.webdav-settings-read-error {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--kb-danger) 35%, var(--kb-line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--kb-danger) 5%, var(--kb-canvas));
+}
+.webdav-settings-read-error p { margin: 0; }
+.webdav-settings-read-error button { justify-self: start; }
+.webdav-settings-read-error [role='alert'],
+.webdav-settings-interval-error,
+.webdav-settings-action-error {
+  color: color-mix(in srgb, var(--kb-danger) 90%, var(--kb-text));
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.webdav-settings-interval-error { margin: -8px 0 0; }
+.webdav-settings .editor-input[aria-invalid='true'] { border-color: var(--kb-danger); }
+
 .webdav-sync-progress {
   display: grid;
   gap: 10px;
