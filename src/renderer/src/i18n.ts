@@ -422,6 +422,7 @@ function createUiText(language: UiLanguage) {
     webClipBridgeErrorLabel: zh ? '最近错误' : 'Last error',
     webClipBridgeHint: zh ? '扩展需要把 Bearer Token 和提交地址一起配置。修改端口或重新生成令牌后，记得同步更新扩展。' : 'Configure the extension with both the Bearer token and the endpoint. If you change the port or regenerate the token, update the extension too.',
     webClipBridgeSave: zh ? '保存桥接设置' : 'Save bridge settings',
+    webClipBridgeSaving: zh ? '正在保存桥接设置…' : 'Saving bridge settings…',
     webClipBridgeRegenerateToken: zh ? '重新生成令牌' : 'Regenerate token',
     webClipBridgeRegenerating: zh ? '正在生成令牌…' : 'Regenerating token…',
     webClipBridgeRegenerateHint: zh ? '重新生成令牌只更新已保存配置，未保存的修改会保留。' : 'Regenerating the token uses saved settings and preserves unsaved changes.',

@@ -84,9 +84,7 @@ export function useAppFeatureDomains({
     onRestoreBackup: () => {
       void handleRestoreBackup()
     },
-    onSaveAiConfig: () => {
-      void ai.saveAiConfig()
-    },
+    onSaveAiConfig: ai.saveAiConfig,
     onUiLanguageChange: shell.setUiLanguage,
     recentDocuments: shell.homeData.recentDocuments,
     summary: shell.homeData.summary,

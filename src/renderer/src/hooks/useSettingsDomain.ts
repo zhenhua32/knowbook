@@ -32,7 +32,7 @@ type UseSettingsDomainParams = {
   onOpenDocument: (documentId: string) => void
   onOpenPlugins: () => void
   onRestoreBackup: () => void
-  onSaveAiConfig: () => void
+  onSaveAiConfig: () => void | Promise<void>
   onUiLanguageChange: (language: UiLanguage) => void
   recentDocuments: RecentDocument[]
   summary: WorkspaceSummary
@@ -117,15 +117,9 @@ export function useSettingsDomain({
     onOpenPlugins,
     onRestoreBackup,
     onSaveAiConfig,
-    onRegenerateWebClipBridgeToken: () => {
-      void settingsState.saveWebClipBridgeSettings(true)
-    },
-    onSaveWebClipBridgeSettings: () => {
-      void settingsState.saveWebClipBridgeSettings(false)
-    },
-    onReloadWebClipBridgeStatus: () => {
-      void settingsState.reloadWebClipBridgeStatus()
-    },
+    onRegenerateWebClipBridgeToken: () => settingsState.saveWebClipBridgeSettings(true),
+    onSaveWebClipBridgeSettings: () => settingsState.saveWebClipBridgeSettings(false),
+    onReloadWebClipBridgeStatus: settingsState.reloadWebClipBridgeStatus,
     onUiLanguageChange,
     recentDocuments,
     summary,

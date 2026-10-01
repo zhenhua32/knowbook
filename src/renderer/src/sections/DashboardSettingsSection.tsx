@@ -2,6 +2,7 @@ import type { AppUpdateState, RecentDocument, WebClipBridgeStatus, WorkspaceSumm
 import type { UiLanguage, UiText } from '../i18n'
 import './management-sections.css'
 import { lazy, Suspense, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
 const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
@@ -32,7 +33,7 @@ type DashboardSettingsSectionProps = {
   onClearAiApiKey: () => void
   aiSaving: boolean
   aiClearingApiKey: boolean
-  onSaveAiConfig: () => void
+  onSaveAiConfig: () => void | Promise<void>
   onOpenPlugins: () => void
   onRestoreBackup: () => void
   onBackupNow: () => void
@@ -50,9 +51,9 @@ type DashboardSettingsSectionProps = {
   webClipBridgeRegenerating: boolean
   webClipBridgeLoading: boolean
   webClipBridgeLoadError: string | null
-  onReloadWebClipBridgeStatus: () => void
-  onSaveWebClipBridgeSettings: () => void
-  onRegenerateWebClipBridgeToken: () => void
+  onReloadWebClipBridgeStatus: () => void | Promise<void>
+  onSaveWebClipBridgeSettings: () => void | Promise<void>
+  onRegenerateWebClipBridgeToken: () => void | Promise<void>
   onCopyWebClipBridgeEndpoint: () => void
   onCopyWebClipBridgeToken: () => void
   appearanceContent?: ReactNode
@@ -147,6 +148,11 @@ export function DashboardSettingsSection({
   const tabsId = useId()
   const bridgePortErrorId = useId()
   const bridgeTokenHintId = useId()
+  const aiPanelRef = useRef<HTMLElement>(null)
+  const bridgePanelRef = useRef<HTMLElement>(null)
+  const bridgePortRef = useRef<HTMLInputElement>(null)
+  const runAiAction = useAsyncActionFocus(aiPanelRef)
+  const runBridgeAction = useAsyncActionFocus(bridgePanelRef)
   const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'general', label: isZh ? '通用' : 'General' },
@@ -265,7 +271,7 @@ export function DashboardSettingsSection({
                 </label>
               </section>
 
-              <section aria-busy={aiSaving} className="panel settings-category-panel settings-group" {...panelProps('ai')}>
+              <section ref={aiPanelRef} aria-busy={aiSaving} className="panel settings-category-panel settings-group" {...panelProps('ai')}>
                 <div className="settings-group-heading">
                   <h3>{isZh ? 'AI 能力' : 'AI capabilities'}</h3>
                   <p>{isZh ? '配置模型连接、自动摘要和相关笔记检索。' : 'Configure model access, automatic summaries, and related-note search.'}</p>
@@ -301,7 +307,7 @@ export function DashboardSettingsSection({
                 </div>
                 {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
                 <div className="settings-actions">
-                  <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={onSaveAiConfig} type="button">
+                  <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={event => runAiAction(event.currentTarget, onSaveAiConfig)} type="button">
                     {aiSaving && !aiClearingApiKey ? ui.common.saving : ui.saveAiSettings}
                   </button>
                   <button className="secondary-button" onClick={onOpenPlugins} type="button">
@@ -310,7 +316,7 @@ export function DashboardSettingsSection({
                 </div>
               </section>
 
-              <section className="panel settings-category-panel" {...panelProps('clipping')}>
+              <section ref={bridgePanelRef} className="panel settings-category-panel" {...panelProps('clipping')}>
                 <div>
                   <p className="panel-label">{ui.webClipBridgeLabel}</p>
                   <h3 className="settings-card-title">{ui.webClipBridgeTitle}</h3>
@@ -322,7 +328,7 @@ export function DashboardSettingsSection({
                 </label>
                 <label className="editor-label">
                   {ui.webClipBridgePortLabel}
-                  <input aria-describedby={webClipBridgePortError ? bridgePortErrorId : undefined} aria-invalid={Boolean(webClipBridgePortError)} className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} inputMode="numeric" onChange={(event) => onWebClipBridgePortChange(event.target.value)} pattern="[0-9]*" type="text" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
+                  <input ref={bridgePortRef} aria-describedby={webClipBridgePortError ? bridgePortErrorId : undefined} aria-invalid={Boolean(webClipBridgePortError)} className="editor-input" disabled={!webClipBridgeStatus || webClipBridgeSaving} inputMode="numeric" onChange={(event) => onWebClipBridgePortChange(event.target.value)} pattern="[0-9]*" type="text" value={webClipBridgeStatus ? webClipBridgePortDraft : ''} />
                 </label>
                 {webClipBridgePortError && <p className="settings-bridge-port-error" id={bridgePortErrorId} role="alert">{webClipBridgePortError}</p>}
                 <label className="editor-label">
@@ -338,7 +344,7 @@ export function DashboardSettingsSection({
                   <div className="settings-bridge-read-error">
                     <p role="alert">{webClipBridgeLoadError}</p>
                     {webClipBridgeStatus && <p className="mini-hint">{ui.webClipBridgeStaleHint}</p>}
-                    <button className="secondary-button" disabled={webClipBridgeLoading || webClipBridgeSaving} onClick={onReloadWebClipBridgeStatus} type="button">{ui.webClipBridgeReload}</button>
+                    <button className="secondary-button" disabled={webClipBridgeLoading || webClipBridgeSaving} onClick={event => runBridgeAction(event.currentTarget, onReloadWebClipBridgeStatus, () => bridgePortRef.current)} type="button">{ui.webClipBridgeReload}</button>
                   </div>
                 )}
                 <dl className="meta-grid">
@@ -353,12 +359,12 @@ export function DashboardSettingsSection({
                 </dl>
                 <p className="mini-hint">{ui.webClipBridgeHint}</p>
                 <p className="mini-hint" id={bridgeTokenHintId}>{ui.webClipBridgeRegenerateHint}</p>
-                {webClipBridgeRegenerating && <p className="mini-hint" role="status">{ui.webClipBridgeRegenerating}</p>}
+                {webClipBridgeSaving && <p className="mini-hint" role="status">{webClipBridgeRegenerating ? ui.webClipBridgeRegenerating : ui.webClipBridgeSaving}</p>}
                 <div className="settings-actions">
-                  <button className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving || Boolean(webClipBridgePortError)} onClick={onSaveWebClipBridgeSettings} type="button">
+                  <button aria-busy={webClipBridgeSaving && !webClipBridgeRegenerating} className="primary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving || Boolean(webClipBridgePortError)} onClick={event => runBridgeAction(event.currentTarget, onSaveWebClipBridgeSettings)} type="button">
                     {webClipBridgeSaving && !webClipBridgeRegenerating ? ui.common.saving : ui.webClipBridgeSave}
                   </button>
-                  <button aria-busy={webClipBridgeRegenerating} aria-describedby={bridgeTokenHintId} className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={onRegenerateWebClipBridgeToken} type="button">{ui.webClipBridgeRegenerateToken}</button>
+                  <button aria-busy={webClipBridgeRegenerating} aria-describedby={bridgeTokenHintId} className="secondary-button" disabled={!webClipBridgeStatus || webClipBridgeSaving} onClick={event => runBridgeAction(event.currentTarget, onRegenerateWebClipBridgeToken)} type="button">{ui.webClipBridgeRegenerateToken}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">{ui.webClipBridgeCopyEndpoint}</button>
                   <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">{ui.webClipBridgeCopyToken}</button>
                 </div>
