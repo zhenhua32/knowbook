@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps } from 'react'
 import { DocumentOutlinePanel } from './DocumentOutlinePanel'
 import { BlockSearchPanel } from './BlockSearchPanel'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 export function DocumentNavigationBar({ outline, search, activeIndex, progress, reading, isZh, onToggleReading, onOpenSearch }: {
   outline: ComponentProps<typeof DocumentOutlinePanel> | null
@@ -32,7 +33,9 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
   return <div className="document-navigation">
     <div className="document-navigation-bar">
       <div className="document-outline-control" ref={outlineRef} onKeyDown={(event) => {
+        if (event.defaultPrevented || isImeKeyboardEvent(event.nativeEvent)) return
         if (event.key === 'Escape' && outlineOpen) {
+          event.preventDefault()
           event.stopPropagation()
           setOutlineOpen(false)
           outlineButtonRef.current?.focus()

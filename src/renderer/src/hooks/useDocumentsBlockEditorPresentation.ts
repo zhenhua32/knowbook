@@ -48,6 +48,10 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   insertLinkSuggestion: LinkSuggestionPanelProps['onSelectLinkSuggestion']
   isBlockSelected: (index: number) => boolean
   linkSuggestions: LinkSuggestionPanelProps['linkSuggestions']
+  linkSuggestionContextKey: string | null
+  linkSuggestionsLoading: boolean
+  linkSuggestionsError: string | null
+  retryLinkSuggestions: () => void
   onSelectOutlineBlock: (blockIndex: number) => void
   blockHasChildren: (index: number) => boolean
   focusedHeadingId: string | null
@@ -128,6 +132,10 @@ export function useDocumentsBlockEditorPresentation({
   isSelectionCoherent,
   isZh,
   linkSuggestions,
+  linkSuggestionContextKey,
+  linkSuggestionsLoading,
+  linkSuggestionsError,
+  retryLinkSuggestions,
   mergeWithPreviousBlock,
   moveDraftBlockBySibling,
   moveSelectedBlocks,
@@ -159,15 +167,15 @@ export function useDocumentsBlockEditorPresentation({
 }: UseDocumentsBlockEditorPresentationParams) {
   const [selectedLinkSuggestionKey, setSelectedLinkSuggestionKey] = useState<string | null>(null)
   const [dismissedLinkContextKey, setDismissedLinkContextKey] = useState<string | null>(null)
-  const linkContextKey = activeLinkContext
-    ? JSON.stringify([selectedDocument?.id, activeBlockIndex, activeLinkContext.start, activeLinkContext.query]) : null
+  const linkContextKey = linkSuggestionContextKey
   useEffect(() => {
     setSelectedLinkSuggestionKey(null)
     setDismissedLinkContextKey(null)
   }, [linkContextKey])
   const linkCandidates = [
     ...blockSuggestions.filter((block) => block.id).map((block) => ({ key: `block-${block.id}`, select: () => insertBlockSuggestion(block) })),
-    ...linkSuggestions.map((suggestion) => ({ key: `document-${suggestion.id}`, select: () => insertLinkSuggestion(suggestion) }))
+    ...linkSuggestions.map((suggestion) => ({ key: `document-${suggestion.id}`, select: () => insertLinkSuggestion(suggestion) })),
+    ...(linkSuggestionsError ? [{ key: 'retry', select: retryLinkSuggestions }] : [])
   ]
   const activeLinkCandidate = linkCandidates.find((candidate) => candidate.key === selectedLinkSuggestionKey) ?? linkCandidates[0]
   const selectLinkCandidate = (select: () => void) => { checkpointDraft?.(); select() }
@@ -188,7 +196,8 @@ export function useDocumentsBlockEditorPresentation({
     }
     if ((event.key === 'Enter' || event.key === 'Tab') && activeLinkCandidate) {
       event.preventDefault(); event.stopPropagation()
-      selectLinkCandidate(activeLinkCandidate.select)
+      if (activeLinkCandidate.key === 'retry') activeLinkCandidate.select()
+      else selectLinkCandidate(activeLinkCandidate.select)
       return true
     }
     return false
@@ -342,12 +351,18 @@ export function useDocumentsBlockEditorPresentation({
       }
     : null
 
-  const linkSuggestionPanelProps: LinkSuggestionPanelProps | null = activeLinkContext && dismissedLinkContextKey !== linkContextKey
+  const linkSuggestionPanelProps: LinkSuggestionPanelProps | null = activeLinkContext && linkContextKey && dismissedLinkContextKey !== linkContextKey
     ? {
         blockSuggestions,
         blocksLabel: ui.blocksInDocument,
         linkedDocsLabel: ui.linkedDocuments,
+        titleLabel: ui.linkSuggestionsLabel,
         linkSuggestions,
+        linkSuggestionsLoading,
+        linkSuggestionsError,
+        loadingLabel: ui.linkSuggestionsLoading,
+        retryLabel: ui.retryLinkSuggestions,
+        onRetry: retryLinkSuggestions,
         noMatchingLabel: ui.noMatchingSuggestions,
         onSelectBlockSuggestion: (block) => selectLinkCandidate(() => insertBlockSuggestion(block)),
         onSelectLinkSuggestion: (suggestion) => selectLinkCandidate(() => insertLinkSuggestion(suggestion)),

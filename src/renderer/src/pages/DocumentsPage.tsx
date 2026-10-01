@@ -6,6 +6,7 @@ import '../document-experience.css'
 import '../components/AiAnswerContent.css'
 import '../components/AiRequestError.css'
 import '../components/documents-aux-ai.css'
+import '../components/link-suggestions.css'
 import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
@@ -166,6 +167,10 @@ export function DocumentsPage({
     isSelectionCoherent: documents.isSelectionCoherent,
     isZh,
     linkSuggestions: documents.linkSuggestions,
+    linkSuggestionContextKey: documents.linkSuggestionContextKey,
+    linkSuggestionsLoading: documents.linkSuggestionsLoading,
+    linkSuggestionsError: documents.linkSuggestionsError,
+    retryLinkSuggestions: documents.retryLinkSuggestions,
     mergeWithPreviousBlock: documents.mergeWithPreviousBlock,
     moveDraftBlockBySibling: documents.moveDraftBlockBySibling,
     moveSelectedBlocks: documents.moveSelectedBlocks,

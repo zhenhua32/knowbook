@@ -37,6 +37,13 @@ type UseEditorAssistStateParams = {
   uiLanguage: UiLanguage
 }
 
+type LinkSuggestionState = {
+  contextKey: string | null
+  requestId: number
+  status: 'idle' | 'pending' | 'success' | 'error'
+  items: DocumentSuggestion[]
+}
+
 export function useEditorAssistState({
   activeBlockIndex,
   activeCursorPosition,
@@ -51,15 +58,15 @@ export function useEditorAssistState({
   uiLanguage
 }: UseEditorAssistStateParams) {
   const [selectedSlashCommandIndex, setSelectedSlashCommandIndex] = useState(0)
-  const [linkSuggestions, setLinkSuggestions] = useState<DocumentSuggestion[]>([])
-  const [blockSuggestions, setBlockSuggestions] = useState<DocumentBlockDraft[]>([])
+  const [linkSuggestionState, setLinkSuggestionState] = useState<LinkSuggestionState>({
+    contextKey: null, requestId: 0, status: 'idle', items: []
+  })
+  const [linkSuggestionRetryRevision, setLinkSuggestionRetryRevision] = useState(0)
+  const linkSuggestionRequestId = useRef(0)
+  const currentLinkSuggestionContextKey = useRef<string | null>(null)
+  const linkSuggestionTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLinkFocus = useRef<{ index: number; documentId: string | null; content: string; position: number } | null>(null)
   const blockSlashCommands = useMemo(() => buildBlockSlashCommands(uiLanguage), [uiLanguage])
-
-  const clearEditorAssistSuggestions = useCallback(() => {
-    setLinkSuggestions([])
-    setBlockSuggestions([])
-  }, [])
 
   const captureBlockCursor = useCallback((index: number, element: HTMLTextAreaElement) => {
     setActiveBlockIndex(index)
@@ -84,8 +91,81 @@ export function useEditorAssistState({
       : null
   }, [activeBlockIndex, activeCursorPosition, draftBlocks, getOpenLinkContext])
 
+  const linkSuggestionQuery = activeLinkContext?.query ?? ''
+  const activeLinkBlock = activeBlockIndex !== null ? draftBlocks[activeBlockIndex] : undefined
+  const linkSuggestionContextKey = isEditing && selectedDocumentPresent && selectedDocumentId && activeLinkContext && activeLinkBlock
+    ? JSON.stringify([selectedDocumentId, activeLinkBlock.id ?? null, activeBlockIndex, activeLinkContext.start, linkSuggestionQuery])
+    : null
+  const hasCurrentLinkSuggestionState = linkSuggestionState.contextKey === linkSuggestionContextKey
+    && linkSuggestionState.requestId === linkSuggestionRequestId.current
+  const linkSuggestions = hasCurrentLinkSuggestionState && linkSuggestionState.status === 'success'
+    ? linkSuggestionState.items : []
+  const linkSuggestionsLoading = linkSuggestionContextKey !== null
+    && (!hasCurrentLinkSuggestionState || linkSuggestionState.status === 'pending')
+  const linkSuggestionsError = hasCurrentLinkSuggestionState && linkSuggestionState.status === 'error'
+    ? (uiLanguage === 'zh-CN' ? '无法加载文档建议，请重试。' : 'Could not load document suggestions. Please retry.')
+    : null
+  const suggestionsCleared = hasCurrentLinkSuggestionState && linkSuggestionState.status === 'idle'
+  const blockSuggestions = useMemo(() => {
+    if (!linkSuggestionContextKey || suggestionsCleared) return []
+    const query = linkSuggestionQuery.toLowerCase()
+    return (query
+      ? draftBlocks.filter(block => block.content.toLowerCase().includes(query) || block.type.toLowerCase().includes(query))
+      : draftBlocks).slice(0, 5)
+  }, [draftBlocks, linkSuggestionContextKey, linkSuggestionQuery, suggestionsCleared])
+
+  const clearEditorAssistSuggestions = useCallback(() => {
+    const requestId = ++linkSuggestionRequestId.current
+    if (linkSuggestionTimer.current !== null) clearTimeout(linkSuggestionTimer.current)
+    linkSuggestionTimer.current = null
+    setLinkSuggestionState({ contextKey: currentLinkSuggestionContextKey.current, requestId, status: 'idle', items: [] })
+  }, [])
+
+  const retryLinkSuggestions = useCallback(() => {
+    if (!linkSuggestionContextKey || currentLinkSuggestionContextKey.current !== linkSuggestionContextKey
+      || linkSuggestionState.requestId !== linkSuggestionRequestId.current) return
+    const requestId = ++linkSuggestionRequestId.current
+    if (linkSuggestionTimer.current !== null) clearTimeout(linkSuggestionTimer.current)
+    linkSuggestionTimer.current = null
+    setLinkSuggestionState({ contextKey: linkSuggestionContextKey, requestId, status: 'pending', items: [] })
+    setLinkSuggestionRetryRevision(previous => previous + 1)
+  }, [linkSuggestionContextKey, linkSuggestionState.requestId])
+
+  useLayoutEffect(() => {
+    const requestId = ++linkSuggestionRequestId.current
+    currentLinkSuggestionContextKey.current = linkSuggestionContextKey
+    setLinkSuggestionState({ contextKey: linkSuggestionContextKey, requestId,
+      status: linkSuggestionContextKey ? 'pending' : 'idle', items: [] })
+    const isCurrentRequest = () => linkSuggestionRequestId.current === requestId
+      && currentLinkSuggestionContextKey.current === linkSuggestionContextKey
+
+    if (linkSuggestionContextKey) {
+      linkSuggestionTimer.current = setTimeout(() => {
+        linkSuggestionTimer.current = null
+        if (!isCurrentRequest()) return
+        void (async () => {
+          try {
+            const items = await window.knowbook.getDocumentSuggestions(linkSuggestionQuery, selectedDocumentId)
+            if (isCurrentRequest()) setLinkSuggestionState({ contextKey: linkSuggestionContextKey, requestId, status: 'success', items })
+          } catch {
+            if (isCurrentRequest()) setLinkSuggestionState({ contextKey: linkSuggestionContextKey, requestId, status: 'error', items: [] })
+          }
+        })()
+      }, 120)
+    }
+
+    return () => {
+      ++linkSuggestionRequestId.current
+      currentLinkSuggestionContextKey.current = null
+      if (linkSuggestionTimer.current !== null) clearTimeout(linkSuggestionTimer.current)
+      linkSuggestionTimer.current = null
+    }
+  }, [linkSuggestionContextKey, linkSuggestionQuery, selectedDocumentId, linkSuggestionRetryRevision])
+
   const insertAssistReplacement = useCallback((replacement: string) => {
-    if (activeBlockIndex === null || !activeLinkContext) {
+    if (activeBlockIndex === null || !activeLinkContext || !linkSuggestionContextKey
+      || currentLinkSuggestionContextKey.current !== linkSuggestionContextKey
+      || linkSuggestionState.requestId !== linkSuggestionRequestId.current) {
       return
     }
 
@@ -117,14 +197,18 @@ export function useEditorAssistState({
     activeLinkContext,
     clearEditorAssistSuggestions,
     draftBlocks,
+    linkSuggestionContextKey,
+    linkSuggestionState.requestId,
     selectedDocumentId,
     setActiveCursorPosition,
     setDraftBlocks
   ])
 
   const insertLinkSuggestion = useCallback((suggestion: DocumentSuggestion) => {
+    if (linkSuggestionState.status !== 'success' || linkSuggestionState.contextKey !== linkSuggestionContextKey
+      || !linkSuggestions.some(item => item.id === suggestion.id && item.path === suggestion.path)) return
     insertAssistReplacement(`[[${suggestion.path}]]`)
-  }, [insertAssistReplacement])
+  }, [insertAssistReplacement, linkSuggestionContextKey, linkSuggestionState, linkSuggestions])
 
   const insertBlockSuggestion = useCallback((block: DocumentBlockDraft) => {
     if (!block.id) {
@@ -167,47 +251,6 @@ export function useEditorAssistState({
     setSelectedSlashCommandIndex(0)
   }, [activeBlockIndex, activeSlashContext?.query, filteredSlashCommands.length])
 
-  useEffect(() => {
-    if (!isEditing || !activeLinkContext) {
-      clearEditorAssistSuggestions()
-      return
-    }
-
-    let mounted = true
-    const suggestionTimer = setTimeout(() => {
-      window.knowbook.getDocumentSuggestions(activeLinkContext.query, selectedDocumentId).then((suggestions) => {
-        if (mounted) {
-          setLinkSuggestions(suggestions)
-        }
-      }).catch((error) => {
-        if (mounted) {
-          setLinkSuggestions([])
-          console.warn('Failed to load document link suggestions.', error)
-        }
-      })
-    }, 120)
-
-    if (selectedDocumentPresent) {
-      const query = activeLinkContext.query.trim().toLowerCase()
-      const blockSuggs = !query || draftBlocks.length === 0
-        ? draftBlocks.slice(0, 5)
-        : draftBlocks.filter((block) => {
-          const content = block.content.toLowerCase()
-          const type = block.type.toLowerCase()
-          return content.includes(query) || type.includes(query)
-        }).slice(0, 5)
-
-      if (mounted) {
-        setBlockSuggestions(blockSuggs)
-      }
-    }
-
-    return () => {
-      mounted = false
-      clearTimeout(suggestionTimer)
-    }
-  }, [activeLinkContext, draftBlocks, isEditing, selectedDocumentId, selectedDocumentPresent])
-
   const slashPanelPos = useMemo(() => {
     if (!activeSlashContext || activeBlockIndex === null) {
       return null
@@ -236,7 +279,11 @@ export function useEditorAssistState({
     filteredSlashCommands,
     insertBlockSuggestion,
     insertLinkSuggestion,
+    linkSuggestionContextKey,
     linkSuggestions,
+    linkSuggestionsLoading,
+    linkSuggestionsError,
+    retryLinkSuggestions,
     selectedSlashCommandIndex,
     setSelectedSlashCommandIndex,
     slashPanelPos

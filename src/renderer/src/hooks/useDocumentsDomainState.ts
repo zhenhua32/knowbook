@@ -239,6 +239,10 @@ export function useDocumentsDomainState({
     insertBlockSuggestion,
     insertLinkSuggestion,
     linkSuggestions,
+    linkSuggestionContextKey,
+    linkSuggestionsLoading,
+    linkSuggestionsError,
+    retryLinkSuggestions,
     setSelectedSlashCommandIndex,
     slashPanelPos
   } = useEditorAssistState({
@@ -660,6 +664,10 @@ export function useDocumentsDomainState({
     isSaving,
     isSelectionCoherent,
     linkSuggestions,
+    linkSuggestionContextKey,
+    linkSuggestionsLoading,
+    linkSuggestionsError,
+    retryLinkSuggestions,
     mdCopyFlash,
     mergeWithPreviousBlock,
     moveDraftBlockBySibling,

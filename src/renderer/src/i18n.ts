@@ -386,6 +386,8 @@ function createUiText(language: UiLanguage) {
     blocksInDocument: zh ? '当前文档中的块' : 'Blocks in this document',
     linkedDocuments: zh ? '可链接文档' : 'Linked documents',
     noMatchingSuggestions: zh ? '没有匹配的建议。' : 'No matching suggestions.',
+    linkSuggestionsLoading: zh ? '正在查找文档…' : 'Finding documents…',
+    retryLinkSuggestions: zh ? '重试' : 'Retry',
     blockReferenceNotFound: zh ? '未找到引用目标。' : 'Reference target not found.',
     editorHelpText: zh
       ? '输入 / 可打开块命令；支持 # / ## / > / - / 1. / - [ ] / - [x] / $$ / --- / ``` 等 Markdown 快捷写法；粘贴多行文本会自动拆成多个块，也可以直接覆盖当前选区；先 Select 再 Shift + Select 可以选中连续块范围；可用工具栏把整段选区转换为同一块类型、复制块或纯文本、剪切/删除/复制整段；也支持 Ctrl/Cmd + C/X/Shift + D、Delete/Backspace、Alt + ArrowUp/ArrowDown、Tab / Shift+Tab 进行块级复制、剪切、复制副本、删除、键盘移动和层级调整；使用 /child 或 Child 按钮可插入子块；Enter 会续写标题/列表/待办；拖拽块时左右移动可预览新的父级与深度；在块首按 Backspace 可降级格式；Alt + Enter 可在光标处分裂块；使用 [[文档名]]、[[路径]] 或 [[路径#块ID]] 创建引用；按住 Ctrl/Cmd 并点击引用可跳转；Ctrl/Cmd + Enter 可在下方插入新块。'

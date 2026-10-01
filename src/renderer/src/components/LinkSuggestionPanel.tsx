@@ -8,6 +8,12 @@ type LinkSuggestionPanelProps = {
   linkedDocsLabel: string
   queryLabel: (query: string) => string
   noMatchingLabel: string
+  titleLabel?: string
+  linkSuggestionsLoading?: boolean
+  linkSuggestionsError?: string | null
+  loadingLabel?: string
+  retryLabel?: string
+  onRetry?: () => void
   onSelectBlockSuggestion: (block: DocumentBlockDraft) => void
   onSelectLinkSuggestion: (suggestion: DocumentSuggestion) => void
   activeSuggestionKey?: string
@@ -23,6 +29,12 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
     linkedDocsLabel,
     queryLabel,
     noMatchingLabel,
+    titleLabel = linkedDocsLabel,
+    linkSuggestionsLoading = false,
+    linkSuggestionsError,
+    loadingLabel,
+    retryLabel,
+    onRetry,
     onSelectBlockSuggestion,
     onSelectLinkSuggestion,
     activeSuggestionKey,
@@ -31,7 +43,7 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
 
   return (
     <div className="link-helper-panel">
-      <p className="panel-label">{linkedDocsLabel}</p>
+      <p className="panel-label">{titleLabel}</p>
       <p className="mini-hint">{queryLabel(query)}</p>
       <div className="relation-list">
         {blockSuggestions.length > 0 && (
@@ -72,7 +84,21 @@ export function LinkSuggestionPanel(props: LinkSuggestionPanelProps) {
             ))}
           </>
         )}
-        {blockSuggestions.length === 0 && linkSuggestions.length === 0 && (
+        {linkSuggestionsLoading && <p className="mini-hint" role="status">{loadingLabel}</p>}
+        {linkSuggestionsError && (
+          <div className="link-helper-feedback">
+            <p className="mini-hint" role="alert">{linkSuggestionsError}</p>
+            {onRetry && <button
+              className={`secondary-button link-suggestions-retry${activeSuggestionKey === 'retry' ? ' relation-chip-active' : ''}`}
+              aria-current={activeSuggestionKey === 'retry' ? 'true' : undefined}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => onHoverSuggestion?.('retry')}
+              onClick={onRetry}
+              type="button"
+            >{retryLabel}</button>}
+          </div>
+        )}
+        {!linkSuggestionsLoading && !linkSuggestionsError && blockSuggestions.length === 0 && linkSuggestions.length === 0 && (
           <p className="empty-text">{noMatchingLabel}</p>
         )}
       </div>

@@ -214,7 +214,7 @@
 :root[data-theme='dark'] :is(.floating-slash-command-panel, .block-edit-toolbar) { background: var(--kb-canvas); border-color: var(--kb-line); }
 :root[data-theme='dark'] .slash-command-search { background: var(--kb-bg); border-color: var(--kb-line); }
 :root[data-theme='dark'] :is(.block-editor-row:hover, .block-hover-add:hover, .block-drag-handle:hover) { background: var(--kb-bg); }
-:root[data-theme='dark'] :is(.block-editor-row-selected:hover, .block-selection-toolbar, .ai-selection-panel, .link-helper-panel) { background: var(--kb-accent-soft); }
+:root[data-theme='dark'] :is(.block-editor-row-selected:hover, .block-selection-toolbar, .ai-selection-panel) { background: var(--kb-accent-soft); }
 :root[data-theme='dark'] :is(.block-media-source-toggle, .block-rich-media-link) { background: var(--kb-canvas); }
 :root[data-theme='dark'] :is(.block-media-source-toggle:hover, .block-rich-media-link:hover, .block-media-source-toggle-icon) { background: var(--kb-accent-soft); }
 :root[data-theme='dark'] :is(.block-media-source-toggle-copy strong, .block-rich-media-link-copy strong) { color: var(--kb-text); }

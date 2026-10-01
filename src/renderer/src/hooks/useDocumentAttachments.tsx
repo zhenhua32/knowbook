@@ -38,7 +38,9 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
       editor.checkpointDraft(); editor.clearBlockSelection(); editor.setIsReadingMode(false); editor.setDraftBlocks(next)
       notify(zh ? `已插入 ${attachments.length} 个附件。` : `Inserted ${attachments.length} attachments.`)
     } catch (error) {
-      if (active.current) { setError(String(error)); notify(String(error), 'error') }
+      if (active.current && latest.current.selectedDocumentId === documentId && !latest.current.detailLoading) {
+        setError(String(error)); notify(String(error), 'error')
+      }
     } finally {
       locked.current = false
       if (active.current) setBusy(false)

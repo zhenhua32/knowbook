@@ -1,5 +1,6 @@
 import type { HeadingLevel } from '@shared/markdownEngine'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type DocumentOutlineItem = {
   id?: string
@@ -37,6 +38,7 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
   const { title, items, emptyHeadingTitleLevel1, emptyHeadingTitleLevel2, onSelect, activeIndex, filterPlaceholder, noMatchText } = props
   const isZh = props.isZh ?? true
   const [query, setQuery] = useState('')
+  const composingRef = useRef(false)
   const filteredItems = useMemo(() => {
     const term = query.trim().toLocaleLowerCase()
     if (!term) return items
@@ -107,7 +109,14 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
         <button type="button" disabled={activeIndex == null} onClick={() => { if (activeIndex != null) props.onFocusSection?.(activeIndex) }}>{isZh ? '只看本章' : 'Focus current'}</button>
       </div> : null}
       {filterPlaceholder ? <input className="outline-filter" type="search" value={query}
-        aria-label={filterPlaceholder} placeholder={filterPlaceholder} onChange={(event) => setQuery(event.target.value)} /> : null}
+        aria-label={filterPlaceholder} placeholder={filterPlaceholder}
+        onCompositionStart={() => { composingRef.current = true }}
+        onCompositionEnd={() => { composingRef.current = false }}
+        onBlur={() => { composingRef.current = false }}
+        onKeyDown={(event) => {
+          if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) event.stopPropagation()
+        }}
+        onChange={(event) => setQuery(event.target.value)} /> : null}
       {filteredItems.length === 0 ? <p className="empty-text">{noMatchText}</p> : null}
       <nav aria-label={title}>
         <ol className="toc-list">

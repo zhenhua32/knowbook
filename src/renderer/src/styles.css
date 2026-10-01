@@ -1715,12 +1715,6 @@ dt,
   overflow: auto;
 }
 
-.link-helper-panel {
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(240, 247, 255, 0.78);
-}
-
 .block-preview {
   padding: 14px 16px;
   border-radius: 16px;
@@ -6063,11 +6057,6 @@ select:focus-visible {
   color: var(--kb-sidebar-muted);
   font-size: 13px;
   text-align: center;
-}
-
-.link-helper-section-label {
-  margin-top: 12px;
-  font-size: 12px;
 }
 
 * {
