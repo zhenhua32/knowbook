@@ -33,7 +33,9 @@ export function DocumentNavigationBar({ outline, search, activeIndex, progress, 
 
   return <div className="document-navigation">
     <div className="document-navigation-bar">
-      <div className="document-outline-control" ref={outlineRef} onKeyDown={(event) => {
+      <div className="document-outline-control" ref={outlineRef} onBlur={(event) => {
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOutlineOpen(false)
+      }} onKeyDown={(event) => {
         if (event.defaultPrevented || isImeKeyboardEvent(event.nativeEvent)) return
         if (event.key === 'Escape' && outlineOpen) {
           event.preventDefault()
