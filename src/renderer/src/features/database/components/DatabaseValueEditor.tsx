@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import type { DocumentDatabaseColumn, DocumentDatabaseFieldValue } from '@shared/contracts'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 
 export function DatabaseValueEditor({
   column,
@@ -15,6 +16,9 @@ export function DatabaseValueEditor({
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(formatDraft(value))
   const [multiDraft, setMultiDraft] = useState<string[]>(Array.isArray(value) ? value : [])
+  const composing = useRef(false)
+  const cancelBlurCommit = useRef(false)
+  const focusValue = useRef(value)
   const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(column.type === 'multi-select' && isEditing)
 
   useEffect(() => {
@@ -62,12 +66,30 @@ export function DatabaseValueEditor({
     <input
       aria-label={column.name}
       className="catalog-cell-input"
-      onBlur={() => { setIsEditing(false); if (textCommitMode === 'blur') commit(draft) }}
+      onBlur={(event) => {
+        composing.current = false
+        setIsEditing(false)
+        if (textCommitMode === 'blur' && !cancelBlurCommit.current) commit(event.currentTarget.value)
+        cancelBlurCommit.current = false
+      }}
       onChange={(event) => { setDraft(event.target.value); if (textCommitMode === 'change') commit(event.target.value) }}
-      onFocus={() => setIsEditing(true)}
+      onFocus={() => { focusValue.current = value; cancelBlurCommit.current = false; setIsEditing(true) }}
+      onCompositionStart={() => { composing.current = true }}
+      onCompositionEnd={() => { composing.current = false }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter') event.currentTarget.blur()
-        if (event.key === 'Escape') { setDraft(formatDraft(value)); event.currentTarget.blur() }
+        if (isImeKeyboardEvent(event.nativeEvent, composing.current)) {
+          event.stopPropagation()
+          return
+        }
+        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          event.stopPropagation()
+          cancelBlurCommit.current = true
+          setDraft(formatDraft(focusValue.current))
+          if (textCommitMode === 'change') void onChangeValue(focusValue.current)
+          event.currentTarget.blur()
+        }
       }}
       value={draft}
     />

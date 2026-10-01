@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../../notify'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
   DatabaseEntity,
   DatabaseField,
@@ -84,6 +84,8 @@ export function DatabaseWorkspace({
   const text = useMemo(() => getDatabaseWorkspaceText(locale), [locale])
   const sources = useMemo(() => adaptDatabaseSources(databases), [databases])
   const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? sources[0]
+  const currentSourceIdRef = useRef(currentSource?.id)
+  currentSourceIdRef.current = currentSource?.id
   const [fieldDrawerOpen, setFieldDrawerOpen] = useState(false)
   const [createRecordOpen, setCreateRecordOpen] = useState(false)
   const [openRecordId, setOpenRecordId] = useState<string | null>(null)
@@ -190,8 +192,10 @@ export function DatabaseWorkspace({
     try {
       await action()
       if (successMessage) onMessage(successMessage)
+      return true
     } catch (error) {
       reportError(error)
+      return false
     }
   }
   const refresh = (preferredViewId?: string) => onRefresh(currentSource.id, preferredViewId)
@@ -312,29 +316,37 @@ export function DatabaseWorkspace({
     })
   }
 
-  const createRecord = async (recordDraft: { title: string; documentId: string; fieldValues: Record<string, DocumentDatabaseFieldValue> }, continueAdding: boolean) => {
-    await run(async () => {
+  const refreshAfterRecordSave = async () => {
+    if (currentSourceIdRef.current !== currentSource.id) return
+    try {
+      await refresh(activeViewId)
+    } catch {
+      // The mutation already succeeded; retrying creation would duplicate it.
+      onMessage(text.savedRefreshFailed, 'error')
+    }
+  }
+
+  const createRecord = async (recordDraft: { title: string; documentId: string; fieldValues: Record<string, DocumentDatabaseFieldValue> }) => {
+    return run(async () => {
       await window.knowbook.createDatabaseEntity({
         databaseId: currentSource.id,
         title: recordDraft.title,
         documentId: recordDraft.documentId || undefined,
         fieldValues: recordDraft.fieldValues
       })
-      await refresh(activeViewId)
-      if (!continueAdding) setCreateRecordOpen(false)
+      await refreshAfterRecordSave()
     })
   }
 
   const saveRecord = async (record: DatabaseRecord, recordDraft: { title: string; documentId: string; fieldValues: Record<string, DocumentDatabaseFieldValue> }) => {
-    await run(async () => {
+    return run(async () => {
       await window.knowbook.updateDatabaseEntity({
         entityId: record.id,
         title: recordDraft.title,
         documentId: recordDraft.documentId || null,
         fieldValues: recordDraft.fieldValues
       })
-      await refresh(activeViewId)
-      setOpenRecordId(null)
+      await refreshAfterRecordSave()
     })
   }
 
@@ -507,28 +519,30 @@ export function DatabaseWorkspace({
         fieldOrder={draft.fieldOrder}
         fields={fields}
         onClose={() => setFieldDrawerOpen(false)}
-        onCreateField={async (name, type, options) => run(async () => {
-          const created = await window.knowbook.createDocumentDatabaseColumn({ databaseId: currentSource.id, name, type, options })
-          updateDraft((current) => ({
-            ...current,
-            visibleFieldIds: [...current.visibleFieldIds, created.id],
-            fieldOrder: [...current.fieldOrder, created.id],
-            cardFieldIds: [...current.cardFieldIds, created.id].slice(0, 4)
-          }))
-          await refresh(activeViewId)
-        })}
+        onCreateField={async (name, type, options) => {
+          await run(async () => {
+            const created = await window.knowbook.createDocumentDatabaseColumn({ databaseId: currentSource.id, name, type, options })
+            updateDraft((current) => ({
+              ...current,
+              visibleFieldIds: [...current.visibleFieldIds, created.id],
+              fieldOrder: [...current.fieldOrder, created.id],
+              cardFieldIds: [...current.cardFieldIds, created.id].slice(0, 4)
+            }))
+            await refresh(activeViewId)
+          })
+        }}
         onDeleteField={(field) => setConfirmTarget({ kind: 'field', id: field.id, name: field.name })}
         onMoveField={moveField}
-        onMoveDatabaseField={(fieldId, direction) => run(async () => { await window.knowbook.moveDocumentDatabaseColumn({ columnId: fieldId, direction }); await refresh(activeViewId) })}
-        onRenameField={(fieldId, name) => run(async () => { await window.knowbook.renameDocumentDatabaseColumn({ columnId: fieldId, name }); await refresh(activeViewId) })}
+        onMoveDatabaseField={async (fieldId, direction) => { await run(async () => { await window.knowbook.moveDocumentDatabaseColumn({ columnId: fieldId, direction }); await refresh(activeViewId) }) }}
+        onRenameField={async (fieldId, name) => { await run(async () => { await window.knowbook.renameDocumentDatabaseColumn({ columnId: fieldId, name }); await refresh(activeViewId) }) }}
         onToggleField={toggleField}
-        onUpdateOptions={(fieldId, options) => run(async () => { await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId: fieldId, options }); await refresh(activeViewId) })}
+        onUpdateOptions={async (fieldId, options) => { await run(async () => { await window.knowbook.updateDocumentDatabaseColumnOptions({ columnId: fieldId, options }); await refresh(activeViewId) }) }}
         open={fieldDrawerOpen}
         text={text}
         visibleFieldIds={draft.visibleFieldIds}
       />
-      <CreateRecordDialog documents={catalogDocuments} fields={visibleFields} onCancel={() => setCreateRecordOpen(false)} onCreate={createRecord} open={createRecordOpen} text={text} />
-      <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
+      <CreateRecordDialog documents={catalogDocuments} fields={visibleFields} key={`create-${currentSource.id}`} onCancel={() => setCreateRecordOpen(false)} onCreate={createRecord} open={createRecordOpen} text={text} />
+      <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} key={`record-${currentSource.id}`} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
       <DatabaseFormDialog description={formDescription} name={formName} onCancel={() => setFormMode(null)} onDescriptionChange={setFormDescription} onNameChange={setFormName} onSubmit={() => void submitForm()} open={formMode !== null} submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text} title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView} withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
       <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} onCancel={() => setConfirmTarget(null)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
     </section>

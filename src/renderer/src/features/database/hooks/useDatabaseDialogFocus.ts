@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 
 const FOCUSABLE_SELECTOR = [
   'button:not([disabled])',
@@ -31,6 +32,7 @@ export function useDatabaseDialogFocus({
       ;(initialFocusRef?.current ?? firstFocusable ?? containerRef.current)?.focus()
     })
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isImeKeyboardEvent(event)) return
       if (event.key === 'Escape') {
         event.preventDefault()
         closeHandlerRef.current()
@@ -49,7 +51,7 @@ export function useDatabaseDialogFocus({
       if (event.shiftKey && (active === first || !containerRef.current?.contains(active))) {
         event.preventDefault()
         last.focus()
-      } else if (!event.shiftKey && active === last) {
+      } else if (!event.shiftKey && (active === last || !containerRef.current?.contains(active))) {
         event.preventDefault()
         first.focus()
       }
@@ -66,6 +68,7 @@ export function useDatabaseDialogFocus({
 function focusableElements(container: HTMLElement | null): HTMLElement[] {
   if (!container) return []
   return [...container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((element) => {
+    if (element.matches(':disabled')) return false
     const style = window.getComputedStyle(element)
     return style.visibility !== 'hidden' && style.display !== 'none'
   })
