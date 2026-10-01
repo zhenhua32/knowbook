@@ -3,11 +3,12 @@ export const shortcutGroups = [
   { id: 'global', title: ['全局与导航', 'Global and navigation'], scope: ['主界面；确认弹窗内暂停', 'Main interface; paused in confirmation dialogs'] },
   { id: 'search', title: ['搜索与命令', 'Search and commands'], scope: ['全局搜索输入框内', 'In the global search input'] },
   { id: 'document', title: ['文档', 'Documents'], scope: ['文档页面', 'On the Documents page'] },
+  { id: 'tree', title: ['文档树', 'Document tree'], scope: ['焦点位于侧栏文档树；方向键移动焦点，不切换正文', 'With focus in the sidebar document tree; arrow keys move focus without opening a document'] },
   { id: 'block', title: ['块编辑', 'Block editing'], scope: ['焦点位于正文块编辑框内', 'When a block editor has focus'] },
   { id: 'format', title: ['文字格式', 'Text formatting'], scope: ['可格式化正文、表格单元格或 Markdown 源码中', 'In formattable text, table cells, or Markdown source'] },
   { id: 'source', title: ['Markdown 源码', 'Markdown source'], scope: ['Markdown 源码弹窗内', 'In the Markdown source dialog'] },
   { id: 'database', title: ['数据库', 'Database'], scope: ['数据库工作台内', 'In the database workspace'] },
-  { id: 'assistant', title: ['AI 对话', 'AI conversations'], scope: ['AI 对话输入框内', 'In an AI conversation input'] }
+  { id: 'assistant', title: ['AI 问答与对话', 'AI questions and conversations'], scope: ['文档问题和应用扩展对话使用不同的发送按键，见各项说明', 'Document questions and extension conversations use different send keys, as described below'] }
 ] as const
 export type ShortcutGroup = typeof shortcutGroups[number]['id']
 export type Shortcut = { id: string; group: ShortcutGroup; title: ShortcutText; keys: string[][]; note?: ShortcutText }
@@ -39,6 +40,12 @@ export const shortcuts: Shortcut[] = [
   { id: 'document-forward', group: 'document', title: ['前进到下一篇文档', 'Go forward to the next document'], keys: [['Alt', '→']] },
   { id: 'document-undo', group: 'document', title: ['撤销编辑', 'Undo edits'], keys: [['Mod', 'Z']], note: ['文档处于编辑模式时。', 'While editing a document.'] },
   { id: 'document-redo', group: 'document', title: ['重做编辑', 'Redo edits'], keys: [['Mod', 'Shift', 'Z'], ['Mod', 'Y']], note: ['文档处于编辑模式时。', 'While editing a document.'] },
+  { id: 'tree-select', group: 'tree', title: ['聚焦上一个或下一个文档', 'Focus the previous or next document'], keys: [['↑'], ['↓']], note: ['只移动焦点；按 Enter 或空格打开文档。', 'Move focus only; press Enter or Space to open the document.'] },
+  { id: 'tree-boundary', group: 'tree', title: ['聚焦第一个或最后一个可见文档', 'Focus the first or last visible document'], keys: [['Home'], ['End']] },
+  { id: 'tree-expand', group: 'tree', title: ['展开目录或进入首个子文档', 'Expand a folder or focus its first child'], keys: [['→']] },
+  { id: 'tree-collapse', group: 'tree', title: ['收起目录或返回父文档', 'Collapse a folder or focus its parent'], keys: [['←']] },
+  { id: 'tree-open', group: 'tree', title: ['打开聚焦文档', 'Open the focused document'], keys: [['Enter'], ['Space']], note: ['Enter 或空格打开，方向键保留当前正文。', 'Enter or Space opens the document; arrow keys keep the current document open.'] },
+  { id: 'tree-context-menu', group: 'tree', title: ['打开文档操作菜单', 'Open document actions'], keys: [['Shift', 'F10']], note: ['键盘菜单键也可打开；关闭菜单后返回同一文档。', 'The keyboard Menu key also opens actions; closing the menu returns focus to the same document.'] },
   { id: 'block-select-all', group: 'block', title: ['选择所有块', 'Select all blocks'], keys: [['Mod', 'A']], note: ['当前块为空或文字已全选时；首次按下通常选择文字。', 'When the block is empty or its text is already selected; the first press usually selects text.'] },
   { id: 'block-select-range', group: 'block', title: ['扩展块选区', 'Extend block selection'], keys: [['Shift', '↑'], ['Shift', '↓']], note: ['光标位于块的首尾，或已选择多个块时。', 'At a block boundary, or with multiple blocks selected.'] },
   { id: 'block-clear', group: 'block', title: ['清除块选区', 'Clear block selection'], keys: [['Esc']] },
@@ -63,8 +70,9 @@ export const shortcuts: Shortcut[] = [
   { id: 'database-select', group: 'database', title: ['聚焦数据库选择器', 'Focus the database selector'], keys: [['Mod', 'Shift', 'L']] },
   { id: 'database-view', group: 'database', title: ['聚焦新建视图', 'Focus new view'], keys: [['Mod', 'Shift', 'V']] },
   { id: 'database-delete', group: 'database', title: ['删除选中记录', 'Delete selected records'], keys: [['Delete']], note: ['自定义数据库中，未在输入框内输入时；会先要求确认。', 'In a custom database, outside text fields; asks for confirmation first.'] },
-  { id: 'assistant-send', group: 'assistant', title: ['发送消息', 'Send a message'], keys: [['Enter']] },
-  { id: 'assistant-newline', group: 'assistant', title: ['消息内换行', 'Insert a line break'], keys: [['Shift', 'Enter']] }
+  { id: 'assistant-document-send', group: 'assistant', title: ['发送文档问题', 'Send a document question'], keys: [['Mod', 'Enter']], note: ['文档智能助手和文档辅助区；Enter 换行，输入法组合输入时暂停发送。', 'Document AI assistant and document auxiliary panel; Enter inserts a line break, and sending pauses during IME composition.'] },
+  { id: 'assistant-send', group: 'assistant', title: ['发送扩展对话消息', 'Send an extension message'], keys: [['Enter']], note: ['应用扩展助手和插件定制对话；输入法组合输入时暂停。', 'App extension assistant and plugin customization conversations; paused during IME composition.'] },
+  { id: 'assistant-newline', group: 'assistant', title: ['扩展对话消息内换行', 'Insert an extension message line break'], keys: [['Shift', 'Enter']], note: ['应用扩展助手和插件定制对话。', 'App extension assistant and plugin customization conversations.'] }
 ]
 
 export function shortcutKeyLabel(key: string, mac: boolean): string {

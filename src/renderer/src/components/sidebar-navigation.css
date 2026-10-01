@@ -86,10 +86,10 @@
 
 .sidebar-workspace-navigation .sidebar-utility-controls .shortcut-help-button {
   justify-content: flex-start;
-  gap: 7px;
+  gap: 4px;
   min-height: 36px;
   margin: 0;
-  padding: 4px 8px;
+  padding: 4px 6px;
   border-color: transparent;
   border-radius: 8px;
   font-size: 12px;
@@ -104,8 +104,14 @@
 }
 
 .sidebar-utility-controls .shortcut-help-button kbd {
-  display: none;
+  display: inline-block;
+  flex-shrink: 0;
+  padding-inline: 2px;
+  font-size: 12px;
+  opacity: .85;
 }
+
+.sidebar-utility-controls .shortcut-help-button svg { width: 16px; height: 16px; }
 
 .sidebar-workspace-navigation .root-drop-zone-compact {
   flex: 0 0 auto;

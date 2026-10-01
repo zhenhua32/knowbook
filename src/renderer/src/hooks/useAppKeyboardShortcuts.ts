@@ -4,6 +4,7 @@ import { PAGE_ORDER } from './useAppShellState'
 import type { DocumentsKeyboardState } from '../types/appDomains'
 import type { ShellPageState } from '../types/appShell'
 import { openQuickCapture } from '../documentCapture'
+import { hasVisibleShortcutBlocker } from '../utils/shortcutBlocker'
 
 type UseAppKeyboardShortcutsParams = {
   documents: DocumentsKeyboardState
@@ -15,8 +16,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
   const composingTarget = useRef<EventTarget | null>(null)
   useEffect(() => {
     // Settings retain hidden panels and their drafts. Only visible surfaces block shortcuts.
-    const blocked = (event: KeyboardEvent) => Array.from(document.querySelectorAll<HTMLElement>('[data-block-shortcuts]'))
-      .some((surface) => !surface.closest('[hidden], [inert]') && surface.getClientRects().length > 0)
+    const blocked = (event: KeyboardEvent) => hasVisibleShortcutBlocker()
       || isImeKeyboardEvent(event, composingTarget.current !== null && composingTarget.current === event.target)
     const chord = (event: KeyboardEvent) => [event.ctrlKey || event.metaKey ? 'mod' : '', event.altKey ? 'alt' : '',
       event.shiftKey ? 'shift' : '', event.key.toLowerCase()].filter(Boolean).join('+')
