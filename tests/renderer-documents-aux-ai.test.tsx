@@ -75,7 +75,7 @@ test('auxiliary answer uses safe Markdown and keeps pending and failure states o
 
 async function withAux(run: (context: {
   document: Document; window: JSDOM['window']; render: (overrides: Partial<AuxProps>) => Promise<void>;
-  calls: { ask: number; retry: number; configure: number; search: number }
+  calls: { ask: number; retry: number; configure: number; search: number; clip: number }
 }) => Promise<void>) {
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost', pretendToBeVisual: true })
   const originals = new Map<string, PropertyDescriptor | undefined>()
@@ -86,11 +86,11 @@ async function withAux(run: (context: {
   }
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('mount')!)
-  const calls = { ask: 0, retry: 0, configure: 0, search: 0 }
+  const calls = { ask: 0, retry: 0, configure: 0, search: 0, clip: 0 }
   function Harness({ overrides }: { overrides: Partial<AuxProps> }) {
     const [prompt, setPrompt] = useState('原始草稿问题')
     return <DocumentsAuxPanel {...auxProps()} onAskAi={() => calls.ask++} onRetryAi={() => calls.retry++}
-      onOpenAiSettings={() => calls.configure++} onFindRelatedNotes={() => calls.search++} {...overrides}
+      onOpenAiSettings={() => calls.configure++} onFindRelatedNotes={() => calls.search++} onClipWebPage={() => calls.clip++} {...overrides}
       aiPromptDraft={prompt} onAiPromptChange={setPrompt} />
   }
   try {
@@ -120,7 +120,7 @@ test('auxiliary actions respect configuration, document readiness, busy state, a
       findButton(region, auxProps().ui.askAiLabel).click()
     })
     await key({})
-    assert.deepEqual(calls, { ask: 0, retry: 0, configure: 1, search: 1 })
+    assert.deepEqual(calls, { ask: 0, retry: 0, configure: 1, search: 1, clip: 0 })
     await render({})
     await act(async () => prompt.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })))
     await key({})
@@ -175,5 +175,84 @@ test('failure retries use their own action and retain edited question drafts whi
     await act(async () => findButton(searchError, '重试检索').click())
     assert.equal(calls.search, 2)
     assert.equal(region.querySelector('.ai-answer'), null)
+  })
+})
+
+test('web clipping has a visible URL label and a connected description in both languages', () => {
+  for (const isZh of [true, false]) {
+    const props = auxProps(isZh)
+    const dom = new JSDOM(renderToStaticMarkup(<DocumentsAuxPanel {...props} />))
+    try {
+      const input = dom.window.document.querySelector<HTMLInputElement>('input[type="url"]')!
+      assert.ok(input.id, 'the URL field must have an addressable label target')
+      const label = [...dom.window.document.querySelectorAll('label')].find(label => label.htmlFor === input.id)
+      assert.ok(label, 'the URL field needs a label beyond its placeholder')
+      assert.equal(label.textContent, isZh ? '网页链接' : 'Webpage URL')
+      assert.equal(label.closest('[hidden]'), null)
+      const describedBy = input.getAttribute('aria-describedby')?.trim().split(/\s+/) ?? []
+      assert.ok(describedBy.length > 0, 'the clipping guidance must be linked to the field')
+      const descriptions = describedBy.map(id => {
+        const description = dom.window.document.getElementById(id)
+        assert.ok(description, `the field description ${id} must exist`)
+        return description.textContent ?? ''
+      }).join(' ')
+      assert.ok(descriptions.includes(props.ui.webClipHint))
+    } finally { dom.window.close() }
+  }
+})
+
+test('web clipping Enter respects composition events, native IME signals and blur recovery', async () => {
+  await withAux(async ({ document, window, render, calls }) => {
+    await render({ webClipUrlDraft: 'https://example.com/source' })
+    const input = document.querySelector<HTMLInputElement>('input[type="url"]')!
+    const key = async (init: KeyboardEventInit = {}) => {
+      const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init })
+      await act(async () => input.dispatchEvent(event))
+      return event
+    }
+    input.focus()
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })))
+    assert.equal((await key()).defaultPrevented, false, 'Enter must remain available to commit IME text')
+    assert.equal(calls.clip, 0)
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+    assert.equal((await key({ isComposing: true })).defaultPrevented, false)
+    assert.equal((await key({ keyCode: 229 })).defaultPrevented, false)
+    assert.equal((await key({ shiftKey: true })).defaultPrevented, false)
+    assert.equal(calls.clip, 0)
+    assert.equal((await key()).defaultPrevented, true)
+    assert.equal(calls.clip, 1, 'plain Enter clips once after composition ends')
+    await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })))
+    await key()
+    assert.equal(calls.clip, 1)
+    await act(async () => input.blur())
+    input.focus()
+    assert.equal((await key()).defaultPrevented, true)
+    assert.equal(calls.clip, 2, 'blur clears a stale composition flag before the next attempt')
+  })
+})
+
+test('web clipping keyboard and button share empty, busy and document readiness guards', async () => {
+  await withAux(async ({ document, window, render, calls }) => {
+    const base = { webClipUrlDraft: 'https://example.com/source', webClipBusy: false, documentReady: true }
+    for (const unavailable of [{ webClipUrlDraft: '' }, { webClipUrlDraft: ' \t ' },
+      { webClipBusy: true }, { documentReady: false }]) {
+      await render({ ...base, ...unavailable })
+      const input = document.querySelector<HTMLInputElement>('input[type="url"]')!
+      const ui = auxProps().ui
+      const button = findButton(document, unavailable.webClipBusy ? ui.clippingWebPage : ui.clipWebPage)
+      assert.equal(button.disabled, true)
+      const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      await act(async () => { button.click(); input.dispatchEvent(enter) })
+      assert.equal(calls.clip, 0, 'unavailable clipping must not dispatch from either entry point')
+      assert.equal(enter.defaultPrevented, false)
+    }
+    await render(base)
+    const input = document.querySelector<HTMLInputElement>('input[type="url"]')!
+    const button = findButton(document, auxProps().ui.clipWebPage)
+    assert.equal(button.disabled, false)
+    await act(async () => button.click())
+    assert.equal(calls.clip, 1)
+    await act(async () => input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+    assert.equal(calls.clip, 2)
   })
 })

@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../notify'
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { getBoardDropFieldValue, type BoardDropTarget } from '@shared/board'
 import type {
   ClipWebPageInput,
@@ -58,6 +58,8 @@ export function useWorkspaceDocumentManagement({
   const [dragOverDocumentId, setDragOverDocumentId] = useState<string | null>(null)
   const [dragOverBoardColumnId, setDragOverBoardColumnId] = useState<string | null>(null)
   const [dragOverRoot, setDragOverRoot] = useState(false)
+  const selectedDocumentIdRef = useRef(selectedDocumentId)
+  selectedDocumentIdRef.current = selectedDocumentId
 
   const getMarkdownExport = useCallback(async (documentId: string): Promise<DocumentMarkdownExport> => {
     const draft = getDraftMarkdownExport(documentId)
@@ -142,14 +144,16 @@ export function useWorkspaceDocumentManagement({
   const handleClipWebPage = useCallback(async (input: ClipWebPageInput) => {
     try {
       if (!await onFlushPendingDocumentChanges()) {
-        return
+        return false
       }
       const clipped = await window.knowbook.clipWebPage(input)
       const refreshed = await window.knowbook.getHomeData()
       onHomeDataChange(refreshed)
-      onSelectedDocumentChange(null)
-      onClearEditorSession()
-      onDetailLoadingChange(true)
+      if (selectedDocumentIdRef.current !== clipped.documentId) {
+        onSelectedDocumentChange(null)
+        onClearEditorSession()
+        onDetailLoadingChange(true)
+      }
       onMoveTargetIdChange('')
       onSelectedDocumentIdChange(clipped.documentId)
       onMessage(
@@ -158,6 +162,7 @@ export function useWorkspaceDocumentManagement({
           : ui.webClipOpenedExisting(clipped.title),
         clipped.warnings.length > 0 ? 'warning' : 'success'
       )
+      return true
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.webClipFailed
       onMessage(message, 'error')

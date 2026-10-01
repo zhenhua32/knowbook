@@ -79,10 +79,14 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
   } = props
   const promptId = useId()
   const promptHintId = useId()
+  const webClipUrlId = useId()
+  const webClipHintId = useId()
+  const webClipComposing = useRef(false)
   const composing = useRef(false)
   const canUseAi = documentReady && aiEnabled && hasApiKey
   const canAsk = canUseAi && !aiAsking && Boolean(aiPromptDraft.trim())
   const canFindRelated = documentReady && !aiContextSearching && Boolean(aiPromptDraft.trim())
+  const canClip = documentReady && !webClipBusy && Boolean(webClipUrlDraft.trim())
 
   if (!isOpen) {
     return (
@@ -103,12 +107,20 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
 
       <div className="preview-section">
         <p className="panel-label">{ui.webClipLabel}</p>
-        <div className="ai-panel">
+        <div className="ai-panel document-aux-web-clip">
+          <label className="document-aux-field-label" htmlFor={webClipUrlId}>{isZh ? '网页链接' : 'Webpage URL'}</label>
           <input
+            id={webClipUrlId}
+            aria-describedby={webClipHintId}
             className="editor-input"
+            disabled={!documentReady}
             onChange={(event) => onWebClipUrlChange(event.target.value)}
+            onCompositionStart={() => { webClipComposing.current = true }}
+            onCompositionEnd={() => { webClipComposing.current = false }}
+            onBlur={() => { webClipComposing.current = false }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (event.key === 'Enter' && !event.shiftKey && canClip
+                && !isImeKeyboardEvent(event.nativeEvent, webClipComposing.current)) {
                 event.preventDefault()
                 onClipWebPage()
               }
@@ -118,11 +130,11 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
             value={webClipUrlDraft}
           />
           <div className="toolbar-inline ai-actions">
-            <button className="secondary-button" disabled={webClipBusy || !webClipUrlDraft.trim()} onClick={onClipWebPage} type="button">
+            <button className="secondary-button" disabled={!canClip} onClick={onClipWebPage} type="button" aria-keyshortcuts="Enter">
               {webClipBusy ? ui.clippingWebPage : ui.clipWebPage}
             </button>
           </div>
-          <p className="mini-hint">{ui.webClipHint}</p>
+          <p className="mini-hint" id={webClipHintId}>{ui.webClipHint}</p>
         </div>
 
         {pluginDocumentActions.length > 0 ? (

@@ -216,6 +216,12 @@ test.describe('Web Clipping @electron', () => {
 
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain(`来源：[Clip Source Site](${sourceServer.articleUrl})`)
         await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Alpha paragraph captured through the in-app web clipping flow.')
+        await getWebClipUrlInput(page).fill(sourceServer.articleUrl)
+        await getWebClipUrlInput(page).press('Enter')
+        await expect(page.locator('.app-notifications')).toContainText(/Opened existing clipped document|已打开已有剪藏文档/)
+        await expect(await getTitleInput(page)).toHaveValue(articleTitle)
+        await expect(getWebClipUrlInput(page)).toHaveValue('')
+        await expect.poll(async () => (await getEditorValues(page)).join('\n')).toContain('Alpha paragraph captured through the in-app web clipping flow.')
       })
     } finally {
       await sourceServer.close()

@@ -27,7 +27,8 @@
   min-height: 36px;
 }
 
-.document-aux-ai-prompt-label {
+.document-aux-ai-prompt-label,
+.document-aux-field-label {
   color: var(--kb-text);
   font-size: var(--kb-type-label);
   font-weight: 600;
@@ -44,6 +45,7 @@
 }
 
 .document-aux-ai-actions button,
+.document-aux-web-clip button,
 .document-aux-ai-search-error button {
   min-height: 36px;
 }

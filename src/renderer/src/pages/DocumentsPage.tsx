@@ -1,4 +1,4 @@
-import { Suspense, useState, type ReactNode } from 'react'
+import { Suspense, useRef, useState, type ReactNode } from 'react'
 import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from '../components/RecoveryState'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
@@ -28,7 +28,7 @@ type DocumentsPageProps = {
   documentTree: HomeData['documentTree']
   documents: DocumentsDomainState
   isZh: boolean
-  onClipWebPage: (input: ClipWebPageInput) => Promise<unknown> | void
+  onClipWebPage: (input: ClipWebPageInput) => Promise<boolean>
   onCreateDocument: (parentId: string | null) => Promise<unknown> | void
   onDeleteSelectedDocument: () => Promise<unknown> | void
   onMoveSelectedDocument: () => Promise<unknown> | void
@@ -53,6 +53,7 @@ export function DocumentsPage({
   ui
 }: DocumentsPageProps) {
   const [webClipBusy, setWebClipBusy] = useState(false)
+  const webClipInFlight = useRef(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
   const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
@@ -74,18 +75,24 @@ export function DocumentsPage({
   })
 
   const handleClipWebPage = async () => {
-    if (!documents.selectedDocument || !webClipUrlDraft.trim() || webClipBusy) {
+    if (!documents.selectedDocument || documents.detailLoading
+      || documents.selectedDocument.id !== documents.selectedDocumentId || !webClipUrlDraft.trim() || webClipInFlight.current) {
       return
     }
 
+    const requestedUrl = webClipUrlDraft
+    webClipInFlight.current = true
     setWebClipBusy(true)
     try {
-      await onClipWebPage({
-        url: webClipUrlDraft,
+      const completed = await onClipWebPage({
+        url: requestedUrl,
         parentId: documents.selectedDocument.id
       })
-      setWebClipUrlDraft('')
+      if (completed) setWebClipUrlDraft(current => current === requestedUrl ? '' : current)
+    } catch {
+      // The workspace action reports failures; keep the URL available for retry.
     } finally {
+      webClipInFlight.current = false
       setWebClipBusy(false)
     }
   }
