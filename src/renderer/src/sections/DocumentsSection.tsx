@@ -2,6 +2,7 @@ import { MarkdownNodes, MarkdownReferencesContext } from '../components/Markdown
 import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../components/MarkdownDocumentContext'
 import { markdownTaskPatch } from '@shared/markdownTasks'
 import { hasAdvancedMarkdown } from '@shared/markdownDocument'
+import { documentSummaryText } from '@shared/documentSummary'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
@@ -17,6 +18,7 @@ import { LinkSuggestionPanel } from '../components/LinkSuggestionPanel'
 import { BlockReadingRow } from '../components/BlockReadingRow'
 import { DocumentNavigationBar } from '../components/DocumentNavigationBar'
 import { useDocumentViewport } from '../hooks/useDocumentViewport'
+import { matchingOpeningTitleIndex } from '../utils/documentReadingTitle'
 const MarkdownReadingList = lazy(() => import('../components/MarkdownReadingList').then((module) => ({ default: module.MarkdownReadingList })))
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
@@ -146,6 +148,10 @@ export function DocumentsSection({
     }
     return groups
   }, [blockEditorRowSharedProps?.markdownDocument, readingRows])
+  const openingTitleIndex = useMemo(() => summaryCardProps ? matchingOpeningTitleIndex(summaryCardProps.title, visibleEditorRows,
+    blockEditorRowSharedProps?.markdownDocument) : null, [summaryCardProps?.title, visibleEditorRows, blockEditorRowSharedProps?.markdownDocument])
+  const readingSummary = summaryCardProps ? documentSummaryText(summaryCardProps.summary) : ''
+  const showReadingMetadata = Boolean(summaryCardProps && !outlinePanelProps?.focusedHeadingId)
   const renderReadingRow = (row: VisibleEditorRow, grouped = false) => blockEditorRowSharedProps && <MarkdownBlockNodesContext.Provider
     key={row.block.id ?? row.index} value={blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]}>
     <BlockReadingRow {...row} indentPx={grouped ? 0 : row.indentPx}
@@ -289,7 +295,7 @@ export function DocumentsSection({
         {selectedDocument && documentReady ? (
           <>
             {summaryCardProps && !outlinePanelProps?.focusedHeadingId ? isReadingMode
-              ? <div className="document-reading-summary"><h1>{summaryCardProps.title.trim() || 'Untitled'}</h1><p>{summaryCardProps.summary}</p></div>
+              ? openingTitleIndex === null ? <div className="document-reading-summary"><h1>{summaryCardProps.title.trim() || 'Untitled'}</h1>{readingSummary ? <p>{readingSummary}</p> : null}</div> : null
               : <DocumentSummaryCard key={selectedDocument.id} {...summaryCardProps} /> : null}
 
               <div className={`preview-section${isWideMode ? ' preview-section-wide' : ''}`} ref={viewport.contentRef}>
@@ -304,7 +310,11 @@ export function DocumentsSection({
                   ? visibleEditorRows.map((row) => {
                      if (isReadingMode) {
                        const group = readingGroups.get(row.index)
-                       if (!group) return renderReadingRow(row)
+                       if (!group) return row.index === openingTitleIndex && showReadingMetadata && readingSummary
+                         ? <div key={row.block.id ?? row.index} className="document-reading-opening">
+                           {renderReadingRow(row)}
+                           <div className="document-reading-summary"><p>{readingSummary}</p></div>
+                         </div> : renderReadingRow(row)
                        if (group.first !== row.index) return null
                        return <Suspense key={row.block.id ?? row.index} fallback={renderReadingRow(row)}>
                          <MarkdownReadingList node={group.node} owners={blockEditorRowSharedProps.markdownDocument!.listItemOwners}

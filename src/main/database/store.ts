@@ -87,7 +87,8 @@ import {
   normalizeDatabaseViewConfig
 } from '@shared/database-workspace'
 
-export const DEFAULT_DOCUMENT_SUMMARY = 'New knowledge node ready for editing.'
+import { DEFAULT_DOCUMENT_SUMMARY } from '@shared/documentSummary'
+export { DEFAULT_DOCUMENT_SUMMARY } from '@shared/documentSummary'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
 const DEFAULT_DOCUMENT_DATABASE_DESCRIPTION = 'Default database'

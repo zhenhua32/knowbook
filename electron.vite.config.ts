@@ -1,6 +1,7 @@
 import { resolve } from 'node:path'
+import { createServer } from 'node:net'
 import react from '@vitejs/plugin-react'
-import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { defineConfig, externalizeDepsPlugin, type ElectronViteConfig } from 'electron-vite'
 
 const KATEX_LEGACY_FONT_SOURCES = /src:(url\([^)]*\.woff2\) format\(["']woff2["']\)),url\([^)]*\.woff\) format\(["']woff["']\),url\([^)]*\.ttf\) format\(["']truetype["']\)/g
 
@@ -24,7 +25,23 @@ function katexWoff2OnlyPlugin() {
   }
 }
 
-export default defineConfig({
+async function availableDevPort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const probe = createServer()
+    probe.once('error', reject)
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address()
+      if (!address || typeof address === 'string') {
+        probe.close()
+        reject(new Error('无法分配开发服务器端口。'))
+        return
+      }
+      probe.close(error => error ? reject(error) : resolvePort(address.port))
+    })
+  })
+}
+
+export default defineConfig(async ({ command }): Promise<ElectronViteConfig> => ({
   main: {
     plugins: [externalizeDepsPlugin()],
     build: {
@@ -67,7 +84,8 @@ export default defineConfig({
     plugins: [katexWoff2OnlyPlugin(), react()],
     server: {
       host: '127.0.0.1',
-      port: 5273,
+      // Vite treats port 0 as its default, so pass an OS-allocated positive port.
+      port: command === 'serve' ? await availableDevPort() : undefined,
       strictPort: true
     },
     build: {
@@ -86,4 +104,4 @@ export default defineConfig({
       }
     }
   }
-})
+}))

@@ -1,4 +1,5 @@
 import { useId, useRef, useState } from 'react'
+import { documentSummaryText } from '@shared/documentSummary'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type DocumentSummaryCardProps = {
@@ -31,6 +32,7 @@ export function DocumentSummaryCard(props: DocumentSummaryCardProps) {
   const fieldsId = useId()
   const toggleRef = useRef<HTMLButtonElement>(null)
   const composingRef = useRef(false)
+  const summaryText = documentSummaryText(summary)
 
   return (
     <div className={`document-summary-card${isEditing ? ' document-summary-card-editing' : ''}`}>
@@ -68,11 +70,7 @@ export function DocumentSummaryCard(props: DocumentSummaryCardProps) {
             />
           </label>
         </div>
-      ) : (
-        <p className={`document-summary-preview${summary.trim() ? '' : ' document-summary-preview-empty'}`}>
-          {summary.trim() || summaryLabel}
-        </p>
-      )}
+      ) : summaryText ? <p className="document-summary-preview">{summaryText}</p> : null}
       <p className="document-updated">{updatedText}</p>
     </div>
   )

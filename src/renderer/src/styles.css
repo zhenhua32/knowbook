@@ -618,15 +618,8 @@ dt,
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.document-header-status-row {
-  display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
 }
 
 .document-header-status {
@@ -634,9 +627,13 @@ dt,
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
 }
 
 .document-header-title-row {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -4550,32 +4547,15 @@ select:focus-visible {
   top: 0;
   z-index: 20;
   align-items: center;
-  gap: 20px;
-  min-height: 72px;
+  gap: 12px;
+  min-height: 52px;
   margin: 0 -42px 28px;
-  padding: 12px 24px 12px 28px;
+  padding: 8px 24px 8px 28px;
   border-bottom: 1px solid var(--kb-line);
   border-radius: 0;
   background: var(--kb-canvas);
   box-shadow: 0 8px 24px rgba(28, 35, 52, 0.035);
   backdrop-filter: blur(18px) saturate(1.2);
-}
-
-.document-header-main {
-  gap: 1px;
-}
-
-.document-header-status-row {
-  position: static;
-  overflow-wrap: anywhere;
-}
-
-.document-header-kicker {
-  color: var(--kb-text-muted);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
 }
 
 .document-header-title-row {
@@ -4585,10 +4565,10 @@ select:focus-visible {
 .document-header-title {
   overflow: hidden;
   margin: 0;
-  color: var(--kb-text);
+  color: var(--kb-text-soft);
   font-family: inherit;
-  font-size: 17px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 400;
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6103,7 +6083,7 @@ select:focus-visible {
   background: #aeb5c3;
 }
 
-@container document-canvas (max-width: 640px) {
+@container document-canvas (max-width: 480px) {
   .document-header-shell {
     align-items: stretch;
     flex-direction: column;
@@ -6120,10 +6100,9 @@ select:focus-visible {
     flex-wrap: wrap;
   }
 
-  .document-header-status-row {
-    position: static;
-  }
+}
 
+@container document-canvas (max-width: 640px) {
   .block-edit-toolbar {
     max-width: calc(100% - 8px);
   }

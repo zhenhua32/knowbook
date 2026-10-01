@@ -99,25 +99,6 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
   return (
     <div className="panel-head document-header-shell">
       <div className="document-header-main">
-        {hasHeaderStatus ? (
-          <div className="document-header-status-row">
-            <div className="document-header-status">
-              {mdCopyFlash ? <span className="autosave-flash autosave-flash-copy">{ui.markdownCopied}</span> : null}
-              {detailLoading ? <span className="pill document-header-pill">{ui.common.loading}</span> : null}
-            </div>
-          </div>
-        ) : null}
-        <span className="document-header-kicker">
-          {isZh ? '当前文档' : 'Current document'}
-          {hasDocument && !detailLoading && saveStatus ? (
-            <span className={`document-save-status status-${saveStatus}`} role="status"
-              title={saveStatus === 'error' ? (isZh ? '草稿仍在，可点击保存重试或导出 Markdown。' : 'Your draft is available. Retry Save or export Markdown.') : undefined}>
-              {saveStatus === 'saving' ? ui.common.saving : saveStatus === 'pending'
-                ? (isZh ? '待保存' : 'Unsaved changes') : saveStatus === 'error'
-                  ? (isZh ? '保存失败 · 可重试' : 'Save failed · Retry') : (isZh ? '已保存' : 'Saved')}
-            </span>
-          ) : null}
-        </span>
         <div className="document-header-title-row">
           {hasDocument ? (
             <DocumentHeaderIconButton
@@ -130,8 +111,24 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
               <StarIcon filled={isPinned} />
             </DocumentHeaderIconButton>
           ) : null}
-          <h3 className="document-header-title">{selectedDocumentTitle ?? ui.selectDocument}</h3>
+          <span className="document-header-title" title={selectedDocumentTitle ?? ui.selectDocument}>
+            {selectedDocumentTitle ?? ui.selectDocument}
+          </span>
         </div>
+        {hasHeaderStatus || (hasDocument && saveStatus) ? (
+          <div className="document-header-status">
+            {hasDocument && !detailLoading && saveStatus ? (
+              <span className={`document-save-status status-${saveStatus}`} role="status"
+                title={saveStatus === 'error' ? (isZh ? '草稿仍在，可点击保存重试或导出 Markdown。' : 'Your draft is available. Retry Save or export Markdown.') : undefined}>
+                {saveStatus === 'saving' ? ui.common.saving : saveStatus === 'pending'
+                  ? (isZh ? '待保存' : 'Unsaved changes') : saveStatus === 'error'
+                    ? (isZh ? '保存失败 · 可重试' : 'Save failed · Retry') : (isZh ? '已保存' : 'Saved')}
+              </span>
+            ) : null}
+            {mdCopyFlash ? <span className="autosave-flash autosave-flash-copy" role="status">{ui.markdownCopied}</span> : null}
+            {detailLoading ? <span className="pill document-header-pill" role="status">{ui.common.loading}</span> : null}
+          </div>
+        ) : null}
       </div>
       {hasDocument ? (
         <div className="document-header-actions">
