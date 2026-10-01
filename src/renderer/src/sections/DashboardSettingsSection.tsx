@@ -56,13 +56,14 @@ type DashboardSettingsSectionProps = {
   webClipBridgeSaving: boolean
   webClipBridgeActionError: { kind: 'save' | 'regenerate'; message: string } | null
   webClipBridgeRegenerating: boolean
+  webClipBridgeCopying: 'endpoint' | 'token' | null
   webClipBridgeLoading: boolean
   webClipBridgeLoadError: string | null
   onReloadWebClipBridgeStatus: () => void | Promise<void>
   onSaveWebClipBridgeSettings: () => void | Promise<void>
   onRegenerateWebClipBridgeToken: () => void | Promise<void>
-  onCopyWebClipBridgeEndpoint: () => void
-  onCopyWebClipBridgeToken: () => void
+  onCopyWebClipBridgeEndpoint: () => void | Promise<void>
+  onCopyWebClipBridgeToken: () => void | Promise<void>
   appearanceContent?: ReactNode
   recoveryContent?: ReactNode
   requestedCategory?: SettingsCategory | null
@@ -145,6 +146,7 @@ export function DashboardSettingsSection({
   webClipBridgeSaving,
   webClipBridgeActionError,
   webClipBridgeRegenerating,
+  webClipBridgeCopying,
   webClipBridgeLoading,
   webClipBridgeLoadError,
   onReloadWebClipBridgeStatus,
@@ -404,9 +406,14 @@ export function DashboardSettingsSection({
                   </div>
                 </dl>
                 <p className="mini-hint">{ui.webClipBridgeHint}</p>
+                <div className="settings-bridge-copy-actions">
+                <div className="settings-action-feedback settings-bridge-copy-feedback">
+                  {webClipBridgeCopying && <p className="mini-hint" role="status">{webClipBridgeCopying === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken}</p>}
+                </div>
                 <div className="settings-actions">
-                  <button className="secondary-button" disabled={!webClipBridgeStatus?.endpoint} onClick={onCopyWebClipBridgeEndpoint} type="button">{ui.webClipBridgeCopyEndpoint}</button>
-                  <button className="secondary-button" disabled={!webClipBridgeStatus?.token} onClick={onCopyWebClipBridgeToken} type="button">{ui.webClipBridgeCopyToken}</button>
+                  <button aria-busy={webClipBridgeCopying === 'endpoint'} className="secondary-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !webClipBridgeStatus?.endpoint} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeEndpoint)} type="button">{webClipBridgeCopying === 'endpoint' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyEndpoint}</button>
+                  <button aria-busy={webClipBridgeCopying === 'token'} className="secondary-button" disabled={webClipBridgeSaving || Boolean(webClipBridgeCopying) || !webClipBridgeStatus?.token} onClick={event => runBridgeAction(event.currentTarget, onCopyWebClipBridgeToken)} type="button">{webClipBridgeCopying === 'token' ? ui.webClipBridgeCopying : ui.webClipBridgeCopyToken}</button>
+                </div>
                 </div>
               </section>
 

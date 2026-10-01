@@ -40,6 +40,7 @@ function initialProps(isZh: boolean): Props {
     webClipBridgePortDraft: '', webClipBridgePortError: null, onWebClipBridgePortChange: noop,
     webClipBridgeSaving: false, webClipBridgeRegenerating: false, webClipBridgeLoading: false, webClipBridgeLoadError: null,
     webClipBridgeActionError: null,
+    webClipBridgeCopying: null,
     onReloadWebClipBridgeStatus: noop, onSaveWebClipBridgeSettings: noop, onRegenerateWebClipBridgeToken: noop,
     onCopyWebClipBridgeEndpoint: noop, onCopyWebClipBridgeToken: noop
   }

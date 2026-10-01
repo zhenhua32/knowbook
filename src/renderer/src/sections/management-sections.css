@@ -281,6 +281,7 @@
 .settings-editable-form,
 .settings-form-fields,
 .settings-form-actions,
+.settings-bridge-copy-actions,
 .settings-action-feedback {
   display: grid;
   gap: 16px;
@@ -301,7 +302,8 @@
   overscroll-behavior: contain;
 }
 
-.settings-form-actions p {
+.settings-form-actions p,
+.settings-bridge-copy-feedback p {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

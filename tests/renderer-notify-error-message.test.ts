@@ -40,7 +40,8 @@ test('empty error reasons use the active language while null still clears withou
     for (const language of ['zh-CN', 'en-US'] as const) {
       setActiveUiLanguage(language)
       const fallback = language === 'zh-CN' ? '操作失败，请重试。' : 'Action failed. Please retry.'
-      for (const message of ['', '  ', "Error invoking remote method 'knowbook:save-document': Error: "]) {
+      for (const message of ['', '  ', "Error invoking remote method 'knowbook:save-document': Error: ",
+        "Error invoking remote method 'knowbook:save-document': Error", "Error invoking remote method 'knowbook:save-document': TypeError"]) {
         notify(message, 'error')
         assert.equal(appNotifications.getSnapshot().at(-1)?.message, fallback)
       }

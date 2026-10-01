@@ -60,6 +60,7 @@ async function withSettings(language: 'zh-CN' | 'en-US', run: (context: Context)
   function Harness() {
     state = useSettingsState({ isSettingsPageActive: false, ui: getUiText(language), onMessage })
     return createElement('div', { 'data-update-busy': String(state.appUpdateRefreshing), 'data-bridge-busy': String(state.webClipBridgeSaving),
+      'data-bridge-copying': state.webClipBridgeCopying ?? '',
       'data-bridge-action-error': JSON.stringify(state.webClipBridgeActionError) },
       state.webClipBridgePortDraft)
   }
@@ -104,6 +105,11 @@ test('settings failures append the clean reason after the localized prefix and p
       for (const operation of operations(context, getUiText(language))) {
         const { completion } = await context.start(operation.run)
         if (operation.name === 'check-for-app-updates') assert.equal(context.document.querySelector('[data-update-busy]')!.getAttribute('data-update-busy'), 'true')
+        if (operation.name === 'copy-web-clip-endpoint' || operation.name === 'copy-web-clip-token') {
+          const kind = operation.name === 'copy-web-clip-endpoint' ? 'endpoint' : 'token'
+          assert.equal(context.state().webClipBridgeCopying, kind)
+          assert.equal(context.document.querySelector('[data-bridge-copying]')!.getAttribute('data-bridge-copying'), kind)
+        }
         if (operation.name === 'update-web-clip-bridge-settings') {
           assert.equal(context.document.querySelector('[data-bridge-busy]')!.getAttribute('data-bridge-busy'), 'true')
           const regenerate = 'regenerateToken' in operation && operation.regenerateToken
@@ -122,6 +128,8 @@ test('settings failures append the clean reason after the localized prefix and p
         }
         assert.equal(context.state().appUpdateRefreshing, false)
         assert.equal(context.state().webClipBridgeSaving, false)
+        assert.equal(context.state().webClipBridgeCopying, null)
+        assert.equal(context.document.querySelector('[data-bridge-copying]')!.getAttribute('data-bridge-copying'), '')
         assert.equal(context.state().appUpdateState, updateState)
         assert.equal(context.state().webClipBridgeStatus, bridgeStatus)
         assert.equal(context.state().webClipBridgeEnabledDraft, false)
@@ -158,6 +166,7 @@ test('empty packaged exceptions and non-Error rejections use only the localized 
           }
           assert.equal(context.state().appUpdateRefreshing, false)
           assert.equal(context.state().webClipBridgeSaving, false)
+          assert.equal(context.state().webClipBridgeCopying, null)
         }
       }
     })

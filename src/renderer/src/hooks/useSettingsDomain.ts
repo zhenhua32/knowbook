@@ -113,12 +113,8 @@ export function useSettingsDomain({
     onInstallAppUpdate: () => {
       void settingsState.installAppUpdate()
     },
-    onCopyWebClipBridgeEndpoint: () => {
-      void settingsState.copyWebClipBridgeEndpoint()
-    },
-    onCopyWebClipBridgeToken: () => {
-      void settingsState.copyWebClipBridgeToken()
-    },
+    onCopyWebClipBridgeEndpoint: settingsState.copyWebClipBridgeEndpoint,
+    onCopyWebClipBridgeToken: settingsState.copyWebClipBridgeToken,
     onOpenDocument,
     onOpenPlugins,
     onRestoreBackup,
@@ -136,6 +132,7 @@ export function useSettingsDomain({
     webClipBridgePortError: settingsState.webClipBridgePortError,
     webClipBridgeSaving: settingsState.webClipBridgeSaving,
     webClipBridgeRegenerating: settingsState.webClipBridgeRegenerating,
+    webClipBridgeCopying: settingsState.webClipBridgeCopying,
     webClipBridgeActionError: settingsState.webClipBridgeActionError,
     webClipBridgeLoading: settingsState.webClipBridgeLoading,
     webClipBridgeLoadError: settingsState.webClipBridgeLoadError,

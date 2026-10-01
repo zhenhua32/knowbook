@@ -30,6 +30,7 @@ function initialProps(isZh: boolean): Props {
     webClipBridgeEnabledDraft: true, onWebClipBridgeEnabledChange: noop, webClipBridgePortDraft: '5432',
     webClipBridgePortError: null, onWebClipBridgePortChange: noop, webClipBridgeSaving: false,
     webClipBridgeActionError: null, webClipBridgeRegenerating: false, webClipBridgeLoading: false, webClipBridgeLoadError: null,
+    webClipBridgeCopying: null,
     onReloadWebClipBridgeStatus: noop, onSaveWebClipBridgeSettings: noop, onRegenerateWebClipBridgeToken: noop,
     onCopyWebClipBridgeEndpoint: noop, onCopyWebClipBridgeToken: noop
   }
@@ -257,4 +258,104 @@ test('a pending AI save cannot pull focus back from another category when it fai
     await context.select('AI')
     assert.equal(context.ai.querySelector('.settings-ai-save-error')!.textContent, 'Failed to save AI settings.')
   })
+})
+
+test('copy controls require their actual saved values and lock for mutations or either copy operation with accurate localized progress', async () => {
+  for (const isZh of [true, false]) {
+    await withSettings(isZh, async context => {
+      const { bridge, ui, patch } = context
+      await context.select(isZh ? '网页剪藏' : 'Web clipping')
+      const group = bridge.querySelector('.settings-bridge-copy-actions')!
+      const [endpoint, token] = [...group.querySelectorAll<HTMLButtonElement>('button')]
+      assert.equal(endpoint.disabled, true)
+      assert.equal(token.disabled, false)
+      await patch({ webClipBridgeStatus: null })
+      assert.equal(endpoint.disabled, true)
+      assert.equal(token.disabled, true)
+      await patch({ webClipBridgeStatus: { enabled: true, configuredPort: 4321, port: 4321, running: true,
+        endpoint: 'http://127.0.0.1:4321/clip', token: 'saved-token', lastError: null } })
+      assert.equal(endpoint.disabled, false)
+      assert.equal(token.disabled, false)
+      for (const regenerating of [false, true]) {
+        await patch({ webClipBridgeSaving: true, webClipBridgeRegenerating: regenerating })
+        assert.equal(endpoint.disabled, true)
+        assert.equal(token.disabled, true)
+        assert.equal(group.querySelector('[role="status"]'), null, 'Mutation progress belongs to its existing mutation feedback')
+      }
+      for (const kind of ['endpoint', 'token'] as const) {
+        await patch({ webClipBridgeSaving: false, webClipBridgeRegenerating: false, webClipBridgeCopying: kind })
+        assert.equal(endpoint.disabled, true)
+        assert.equal(token.disabled, true)
+        assert.equal(endpoint.getAttribute('aria-busy'), String(kind === 'endpoint'))
+        assert.equal(token.getAttribute('aria-busy'), String(kind === 'token'))
+        assert.equal((kind === 'endpoint' ? endpoint : token).textContent, ui.webClipBridgeCopying)
+        assert.equal(group.querySelector('[role="status"]')!.textContent, kind === 'endpoint' ? ui.webClipBridgeCopyingEndpoint : ui.webClipBridgeCopyingToken)
+        assert.equal(group.querySelector('[role="status"]')!.closest('[aria-busy="true"]'), null)
+        assert.equal(button(bridge, ui.webClipBridgeSave).disabled, false, 'Copying must not lock configuration editing or saving')
+        assert.equal(button(bridge, ui.webClipBridgeRegenerateToken).disabled, false)
+        assert.equal(bridge.querySelector<HTMLInputElement>('input[inputmode="numeric"]')!.disabled, false)
+      }
+      await patch({ webClipBridgeCopying: null })
+      assert.equal(group.querySelector('[role="status"]'), null)
+      assert.equal(endpoint.textContent, ui.webClipBridgeCopyEndpoint)
+      assert.equal(token.textContent, ui.webClipBridgeCopyToken)
+    })
+  }
+})
+
+test('copy buttons consume their actual deferred handlers and recover focus after success or a handled failure without duplicate success text', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withSettings(false, async context => {
+        const pending = deferred(), { bridge, ui, patchNow } = context
+        const calls = { endpoint: 0, token: 0 }
+        const copy = (selected: 'endpoint' | 'token') => {
+          calls[selected]++
+          patchNow({ webClipBridgeCopying: selected })
+          return pending.promise.then(() => patchNow({ webClipBridgeCopying: null }), () => patchNow({ webClipBridgeCopying: null }))
+        }
+        await context.patch({ webClipBridgeStatus: { enabled: true, configuredPort: 4321, port: 4321, running: true,
+          endpoint: 'http://127.0.0.1:4321/clip', token: 'saved-token', lastError: null },
+          onCopyWebClipBridgeEndpoint: () => copy('endpoint'), onCopyWebClipBridgeToken: () => copy('token') })
+        await context.select('Web clipping')
+        const group = bridge.querySelector('.settings-bridge-copy-actions')!
+        const trigger = button(group, kind === 'endpoint' ? ui.webClipBridgeCopyEndpoint : ui.webClipBridgeCopyToken)
+        const other = button(group, kind === 'endpoint' ? ui.webClipBridgeCopyToken : ui.webClipBridgeCopyEndpoint)
+        await context.activate(trigger)
+        assert.equal(calls[kind], 1)
+        assertFocused(context.document, context.document.body)
+        assert.equal(trigger.getAttribute('aria-busy'), 'true')
+        assert.equal(other.getAttribute('aria-busy'), 'false')
+        await act(async () => { trigger.click(); other.click() })
+        assert.deepEqual(calls, kind === 'endpoint' ? { endpoint: 1, token: 0 } : { endpoint: 0, token: 1 })
+        await act(async () => outcome === 'success' ? pending.resolve() : pending.reject(new Error('The action provider handled the clipboard error')))
+        assertFocused(context.document, trigger)
+        assert.equal(trigger.disabled, false)
+        assert.equal(other.disabled, false)
+        assert.equal(group.querySelector('[role="status"]'), null)
+        assert.doesNotMatch(group.textContent!, /copied|已复制/)
+      })
+    }
+  }
+})
+
+test('copy completion preserves a readonly input or category focus after the user moves away', async () => {
+  for (const destination of ['readonly-input', 'category'] as const) {
+    await withSettings(false, async context => {
+      const pending = deferred(), { bridge, ui, patchNow } = context
+      await context.patch({ onCopyWebClipBridgeToken: () => {
+        patchNow({ webClipBridgeCopying: 'token' })
+        return pending.promise.finally(() => patchNow({ webClipBridgeCopying: null }))
+      } })
+      await context.select('Web clipping')
+      await context.activate(button(bridge.querySelector('.settings-bridge-copy-actions')!, ui.webClipBridgeCopyToken))
+      const target = destination === 'readonly-input' ? bridge.querySelector<HTMLInputElement>('input[readonly]')!
+        : button(context.document, 'General', '[role="tab"]')
+      await act(async () => { target.focus(); if (destination === 'category') (target as HTMLButtonElement).click() })
+      await act(async () => pending.resolve())
+      assertFocused(context.document, target)
+      if (destination === 'category') assert.equal(bridge.hidden, true)
+      assert.equal(bridge.querySelector('.settings-bridge-copy-feedback [role="status"]'), null)
+    })
+  }
 })

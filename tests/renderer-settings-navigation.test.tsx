@@ -38,6 +38,7 @@ function settingsProps(isZh: boolean): SettingsProps {
     webClipBridgePortError: null,
     webClipBridgeRegenerating: false,
     webClipBridgeActionError: null,
+    webClipBridgeCopying: null,
     webClipBridgeLoading: false, webClipBridgeLoadError: null, onReloadWebClipBridgeStatus: noop,
     onSaveWebClipBridgeSettings: noop, onRegenerateWebClipBridgeToken: noop,
     onCopyWebClipBridgeEndpoint: noop, onCopyWebClipBridgeToken: noop,

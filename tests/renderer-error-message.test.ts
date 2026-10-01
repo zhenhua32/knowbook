@@ -33,7 +33,8 @@ test('normalization preserves plain text formatting, paths, quotes, internal Err
     'D:\\Notes\\Error: guide.md', '/home/user/Error: notes.md',
     'An Error: string is part of the message.', 'CustomError: Keep this domain-specific label.',
     'HttpError: 429 Too Many Requests', 'SQLiteError: SQLITE_FULL',
-    'error: this is ordinary lowercase prose', 'TYPEERROR: preserve non-native uppercase labels'
+    'error: this is ordinary lowercase prose', 'TYPEERROR: preserve non-native uppercase labels',
+    'Error', 'TypeError', 'RangeError', 'SyntaxError', 'AggregateError'
   ]
   for (const message of plainMessages) {
     assert.equal(normalizeErrorMessage(message, 'fallback'), message)
@@ -75,6 +76,19 @@ test('getErrorMessage retains trimming, Error subclass and empty fallback compat
   assert.equal(getErrorMessage(new Error('Error:'), ''), '')
   assert.equal(getErrorMessage('Error: raw string', ''), '')
   assert.equal(getErrorMessage(new Error('Error: quota exceeded\nTry again later.'), 'fallback'), 'quota exceeded\nTry again later.')
+})
+
+test('Electron IPC errors with only an exception name have no reason and use the caller fallback', () => {
+  for (const name of ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AggregateError']) {
+    const wrapped = `Error invoking remote method 'knowbook:write-clipboard-text': ${name}`
+    assert.equal(normalizeErrorMessage(wrapped), '')
+    assert.equal(normalizeErrorMessage(wrapped, '  请重试。\n'), '  请重试。\n')
+    assert.equal(getErrorMessage(new Error(wrapped), '复制失败。'), '复制失败。')
+    assert.equal(normalizeErrorMessage('Error: ' + wrapped + '  \n', 'fallback'), 'fallback')
+    assert.equal(normalizeErrorMessage(wrapped + ': Clipboard unavailable', 'fallback'), 'Clipboard unavailable')
+  }
+  assert.equal(normalizeErrorMessage("Error invoking remote method 'knowbook:write-clipboard-text': Error count: 3"), 'Error count: 3')
+  assert.equal(normalizeErrorMessage("Error invoking remote method 'knowbook:write-clipboard-text': CustomError"), 'CustomError')
 })
 
 test('wrapper matching stops as soon as the failure reason begins and leaves later technical-looking lines intact', () => {

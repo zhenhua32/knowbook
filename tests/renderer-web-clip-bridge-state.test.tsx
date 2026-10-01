@@ -21,14 +21,17 @@ const updateState: AppUpdateState = { status: 'idle', currentVersion: '1.0.0', a
 type State = ReturnType<typeof useSettingsState>
 type Read = ReturnType<typeof deferred<WebClipBridgeStatus>>
 type Save = Read & { input: UpdateWebClipBridgeSettingsInput }
+type Copy = ReturnType<typeof deferred<void>> & { text: string }
+type CopyKind = Exclude<State['webClipBridgeCopying'], null>
 type View = {
   status: WebClipBridgeStatus | null; enabled: boolean; port: string;
   loading: boolean; error: string | null; portError: string | null; saving: boolean;
   actionError: State['webClipBridgeActionError'];
+  copying: State['webClipBridgeCopying'];
 }
 type Context = {
   state: () => State; view: () => View;
-  reads: Read[]; saves: Save[];
+  reads: Read[]; saves: Save[]; copies: Copy[];
   messages: [string | null, string | undefined][];
   start: (action: () => Promise<void>) => Promise<{ completion: Promise<void> }>;
   edit: (enabled: boolean, port: string) => Promise<void>;
@@ -47,6 +50,7 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
   const timers = new Map<number, () => void>()
   const reads: Read[] = []
   const saves: Save[] = []
+  const copies: Copy[] = []
   const messages: Context['messages'] = []
   let timerId = 0
   const interval = (callback: () => void) => { timers.set(++timerId, callback); return timerId }
@@ -59,7 +63,7 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
     checkForAppUpdates: async () => updateState,
     installAppUpdate: async () => {},
     updateWebClipBridgeSettings: input => { const request = { ...deferred<WebClipBridgeStatus>(), input }; saves.push(request); return request.promise },
-    writeClipboardText: async () => {}
+    writeClipboardText: text => { const request = { ...deferred<void>(), text }; copies.push(request); return request.promise }
   }
   Object.defineProperty(dom.window, 'knowbook', { value: api })
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
@@ -82,7 +86,7 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
     const view: View = { status: state.webClipBridgeStatus, enabled: state.webClipBridgeEnabledDraft,
       port: state.webClipBridgePortDraft, loading: state.webClipBridgeLoading,
       error: state.webClipBridgeLoadError, portError: state.webClipBridgePortError, saving: state.webClipBridgeSaving,
-      actionError: state.webClipBridgeActionError }
+      actionError: state.webClipBridgeActionError, copying: state.webClipBridgeCopying }
     return createElement('output', { 'data-testid': 'bridge-state' }, JSON.stringify(view))
   }
   const render = async (nextActive = active, nextLanguage = language) => {
@@ -96,7 +100,7 @@ async function withBridge(run: (context: Context) => Promise<void>, options: {
   try {
     await render()
     await run({ state: () => state, view: () => JSON.parse(mount.querySelector('output')!.textContent!) as View,
-      reads, saves, messages, render, unmount, timerCount: () => timers.size,
+      reads, saves, copies, messages, render, unmount, timerCount: () => timers.size,
       start: async action => {
         let completion!: Promise<void>
         await act(async () => { completion = action() })
@@ -121,7 +125,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
   for (const language of ['zh-CN', 'en-US'] as const) {
     await withBridge(async context => {
       assert.equal(context.reads.length, 1)
-      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, portError: null, saving: false, actionError: null })
+      assert.deepEqual(context.view(), { status: null, enabled: false, port: '3210', loading: true, error: null, portError: null, saving: false, actionError: null, copying: null })
       await context.edit(true, '9999')
       await context.start(() => context.state().saveWebClipBridgeSettings())
       await context.start(() => context.state().saveWebClipBridgeSettings(true))
@@ -141,7 +145,7 @@ test('an unknown bridge configuration blocks edits and writes, and a failed init
       assert.equal(context.view().error, error, 'a pending retry keeps the existing failure available to its inline UI')
       const actual = status(4789)
       await context.settle(() => context.reads[1].resolve(actual), completion)
-      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null })
+      assert.deepEqual(context.view(), { status: actual, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null, copying: null })
       const saved = await context.start(() => context.state().saveWebClipBridgeSettings())
       assert.deepEqual(context.saves[0].input, { enabled: true, port: 4789, regenerateToken: false })
       await context.settle(() => context.saves[0].resolve(actual), saved.completion)
@@ -399,7 +403,7 @@ test('saving blocks setters, duplicate writes and refreshes synchronously, then 
     assert.equal(context.view().port, '4789')
     const saved = status(4789)
     await context.settle(() => context.saves[0].resolve(saved), Promise.all([first, duplicate, refresh]).then(() => {}))
-    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null })
+    assert.deepEqual(context.view(), { status: saved, enabled: true, port: '4789', loading: false, error: null, portError: null, saving: false, actionError: null, copying: null })
     assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeSaved(true), undefined]])
   }, { active: true })
 })
@@ -664,6 +668,319 @@ test('late unmounted bridge mutations cannot overwrite or clear a new session op
         assert.equal(context.messages.length, 1)
         assert.deepEqual(context.messages[0], [owner!.message, 'error'])
       })
+    }
+  }
+})
+
+function copyBridge(state: State, kind: CopyKind) {
+  return kind === 'endpoint' ? state.copyWebClipBridgeEndpoint() : state.copyWebClipBridgeToken()
+}
+
+function copiedMessage(kind: CopyKind, language: 'zh-CN' | 'en-US') {
+  const ui = getUiText(language)
+  return kind === 'endpoint' ? ui.webClipBridgeEndpointCopied : ui.webClipBridgeTokenCopied
+}
+
+test('unknown configurations and unmounted copy callbacks never dispatch clipboard writes or notifications', async () => {
+  await withBridge(async context => {
+    await context.state().copyWebClipBridgeEndpoint()
+    await context.state().copyWebClipBridgeToken()
+    assert.equal(context.copies.length, 0)
+    assert.equal(context.view().copying, null)
+    await context.settle(() => context.reads[0].resolve(status()))
+    const previous = context.state()
+    await context.unmount()
+    await previous.copyWebClipBridgeEndpoint()
+    await previous.copyWebClipBridgeToken()
+    assert.equal(context.copies.length, 0)
+    assert.deepEqual(context.messages, [])
+  })
+})
+
+test('saving and regenerating block both copy commands synchronously and until the mutation settles', async () => {
+  for (const regenerate of [false, true]) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withBridge(async context => {
+        const known = status()
+        await context.settle(() => context.reads[0].resolve(known))
+        await context.edit(true, '5432')
+        const previous = context.state()
+        let mutation!: Promise<void>
+        await act(async () => {
+          mutation = previous.saveWebClipBridgeSettings(regenerate)
+          await previous.copyWebClipBridgeEndpoint()
+          await previous.copyWebClipBridgeToken()
+        })
+        assert.equal(context.saves.length, 1)
+        assert.equal(context.view().saving, true)
+        assert.equal(context.view().copying, null)
+        await previous.copyWebClipBridgeEndpoint()
+        await context.state().copyWebClipBridgeToken()
+        assert.equal(context.copies.length, 0, 'a known old value must not be copied while its replacement is pending')
+        assert.deepEqual(context.messages, [])
+        const next = regenerate ? { ...known, token: 'regenerated-token' } : status(5432, known.token)
+        await context.settle(() => outcome === 'success' ? context.saves[0].resolve(next)
+          : context.saves[0].reject(new Error('Mutation failed')), mutation)
+        const actual = outcome === 'success' ? next : known
+        const copy = await context.start(() => previous.copyWebClipBridgeToken())
+        assert.equal(context.copies[0].text, actual.token)
+        assert.equal(context.view().copying, 'token')
+        const actionError = context.view().actionError
+        await context.settle(() => context.copies[0].resolve(), copy.completion)
+        assert.equal(context.view().copying, null)
+        assert.deepEqual(context.view().actionError, actionError, 'copying must not clear a failed configuration action')
+      })
+    }
+  }
+})
+
+test('retained copy callbacks use refreshed and saved snapshots while leaving invalid unsaved drafts intact', async () => {
+  await withBridge(async context => {
+    await context.settle(() => context.reads[0].resolve(status()))
+    const previous = context.state()
+    await context.edit(false, '1e4')
+    const portError = context.view().portError
+    await context.poll()
+    const refreshed = status(5678, 'polled-token')
+    await context.settle(() => context.reads[1].resolve(refreshed))
+    for (const kind of ['endpoint', 'token'] as const) {
+      const copy = await context.start(() => copyBridge(previous, kind))
+      assert.equal(context.copies.at(-1)!.text, refreshed[kind])
+      await context.settle(() => context.copies.at(-1)!.resolve(), copy.completion)
+      assert.equal(context.view().enabled, false)
+      assert.equal(context.view().port, '1e4')
+      assert.equal(context.view().portError, portError)
+    }
+    await context.edit(true, '7890')
+    const save = await context.start(() => context.state().saveWebClipBridgeSettings())
+    const saved = status(7890, refreshed.token)
+    await context.settle(() => context.saves[0].resolve(saved), save.completion)
+    const endpoint = await context.start(() => previous.copyWebClipBridgeEndpoint())
+    assert.equal(context.copies.at(-1)!.text, saved.endpoint)
+    await context.settle(() => context.copies.at(-1)!.resolve(), endpoint.completion)
+    await context.edit(false, '1e4')
+    const regenerate = await context.start(() => context.state().saveWebClipBridgeSettings(true))
+    const regenerated = { ...saved, token: 'latest-saved-token' }
+    await context.settle(() => context.saves[1].resolve(regenerated), regenerate.completion)
+    const token = await context.start(() => previous.copyWebClipBridgeToken())
+    assert.equal(context.copies.at(-1)!.text, regenerated.token)
+    await context.settle(() => context.copies.at(-1)!.resolve(), token.completion)
+    assert.deepEqual(context.copies.map(copy => copy.text), [refreshed.endpoint, refreshed.token, saved.endpoint, regenerated.token])
+    assert.equal(context.view().enabled, false)
+    assert.equal(context.view().port, '1e4')
+    assert.equal(context.view().portError, portError)
+    assert.equal(context.view().copying, null)
+  }, { active: true })
+})
+
+test('stopped services still allow copying the raw saved token but never copy a missing endpoint', async () => {
+  for (const enabled of [false, true]) {
+    await withBridge(async context => {
+      const known = { ...status(), enabled, running: false, port: null, endpoint: null,
+        lastError: enabled ? 'Port in use' : null }
+      await context.settle(() => context.reads[0].resolve(known))
+      await context.edit(!enabled, 'invalid-port')
+      await context.state().copyWebClipBridgeEndpoint()
+      assert.equal(context.copies.length, 0)
+      assert.equal(context.view().copying, null)
+      const token = await context.start(() => context.state().copyWebClipBridgeToken())
+      assert.equal(context.copies.length, 1)
+      assert.equal(context.copies[0].text, known.token, 'the extension adds the Bearer prefix itself')
+      await context.settle(() => context.copies[0].resolve(), token.completion)
+      assert.equal(context.view().port, 'invalid-port')
+      assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeTokenCopied, undefined]])
+    })
+  }
+})
+
+test('both copy commands share a synchronous clipboard lock and release it after success or failure', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withBridge(async context => {
+        const known = status()
+        await context.settle(() => context.reads[0].resolve(known))
+        const other = kind === 'endpoint' ? 'token' : 'endpoint'
+        let first!: Promise<void>, duplicate!: Promise<void>, different!: Promise<void>
+        await act(async () => {
+          const current = context.state()
+          first = copyBridge(current, kind)
+          duplicate = copyBridge(current, kind)
+          different = copyBridge(current, other)
+        })
+        assert.equal(context.copies.length, 1)
+        assert.equal(context.copies[0].text, known[kind])
+        assert.equal(context.view().copying, kind)
+        assert.equal(context.view().saving, false, 'clipboard acknowledgement does not own the configuration lock')
+        await copyBridge(context.state(), other)
+        assert.equal(context.copies.length, 1)
+        await context.render(false, 'en-US')
+        await context.settle(() => outcome === 'success' ? context.copies[0].resolve()
+          : context.copies[0].reject(new Error("Error invoking remote method 'knowbook:write-clipboard-text': Error: Clipboard unavailable")),
+        Promise.all([first, duplicate, different]).then(() => {}))
+        assert.equal(context.view().copying, null)
+        assert.deepEqual(context.messages, [outcome === 'success' ? [copiedMessage(kind, 'en-US'), undefined]
+          : [`${getUiText('en-US').copyFailed} Clipboard unavailable`, 'error']])
+        const retry = await context.start(() => copyBridge(context.state(), other))
+        assert.equal(context.copies.length, 2)
+        assert.equal(context.copies[1].text, known[other])
+        await context.settle(() => context.copies[1].resolve(), retry.completion)
+        assert.equal(context.view().copying, null)
+        assert.deepEqual(context.messages.at(-1), [copiedMessage(other, 'en-US'), undefined])
+      })
+    }
+  }
+})
+
+test('copy failures without a usable reason use the current language fallback and permit a retry', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const error of [new Error("Error invoking remote method 'knowbook:write-clipboard-text': Error: "), new Error('   '), 'non-Error rejection']) {
+      await withBridge(async context => {
+        await context.settle(() => context.reads[0].resolve(status()))
+        const copy = await context.start(() => copyBridge(context.state(), kind))
+        await context.render(false, 'en-US')
+        await context.settle(() => context.copies[0].reject(error), copy.completion)
+        assert.deepEqual(context.messages, [[getUiText('en-US').copyFailed, 'error']])
+        assert.equal(context.view().copying, null)
+        const retry = await context.start(() => copyBridge(context.state(), kind))
+        assert.equal(context.copies.length, 2)
+        await context.settle(() => context.copies[1].resolve(), retry.completion)
+        assert.equal(context.view().copying, null)
+        assert.deepEqual(context.messages.at(-1), [copiedMessage(kind, 'en-US'), undefined])
+      })
+    }
+  }
+})
+
+test('late clipboard completions cannot notify or release a newly mounted session copy owner', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withBridge(async context => {
+        await context.settle(() => context.reads[0].resolve(status()))
+        const previous = context.state()
+        const old = await context.start(() => copyBridge(previous, kind))
+        await context.unmount()
+        await copyBridge(previous, kind)
+        assert.equal(context.copies.length, 1)
+        await context.render(false, 'en-US')
+        const known = status(6789, 'new-session-token')
+        await context.settle(() => context.reads[1].resolve(known))
+        const currentKind = kind === 'endpoint' ? 'token' : 'endpoint'
+        const current = await context.start(() => copyBridge(context.state(), currentKind))
+        assert.equal(context.copies.length, 2)
+        assert.equal(context.view().copying, currentKind)
+        await context.settle(() => outcome === 'success' ? context.copies[0].resolve()
+          : context.copies[0].reject(new Error('Old clipboard failure')), old.completion)
+        assert.equal(context.view().copying, currentKind)
+        assert.deepEqual(context.messages, [])
+        await copyBridge(context.state(), kind)
+        assert.equal(context.copies.length, 2, 'an old finally must not unlock the new clipboard request')
+        await context.settle(() => context.copies[1].resolve(), current.completion)
+        assert.equal(context.view().copying, null)
+        assert.deepEqual(context.messages, [[copiedMessage(currentKind, 'en-US'), undefined]])
+        assert.equal(context.copies[1].text, known[currentKind])
+      })
+    }
+  }
+})
+
+test('known snapshots remain copyable during failed reads and invalid saves do not invalidate their acknowledgement', async () => {
+  await withBridge(async context => {
+    const known = status()
+    await context.settle(() => context.reads[0].resolve(known))
+    await context.edit(false, '1e4')
+    const portError = context.view().portError
+    await context.poll()
+    assert.equal(context.view().loading, true)
+    const token = await context.start(() => context.state().copyWebClipBridgeToken())
+    assert.equal(context.view().copying, 'token')
+    assert.equal(context.copies[0].text, known.token)
+    const invalidSave = await context.start(() => context.state().saveWebClipBridgeSettings())
+    await invalidSave.completion
+    assert.equal(context.saves.length, 0)
+    assert.equal(context.view().copying, 'token')
+    await context.settle(() => context.reads[1].reject(new Error('Status temporarily unavailable')))
+    const readError = context.view().error
+    assert.ok(readError)
+    await context.settle(() => context.copies[0].resolve(), token.completion)
+    assert.deepEqual(context.messages, [[getUiText('zh-CN').webClipBridgeTokenCopied, undefined]])
+    assert.equal(context.view().error, readError)
+    const endpoint = await context.start(() => context.state().copyWebClipBridgeEndpoint())
+    assert.equal(context.copies[1].text, known.endpoint)
+    await context.settle(() => context.copies[1].resolve(), endpoint.completion)
+    assert.equal(context.view().error, readError)
+    assert.equal(context.view().portError, portError)
+    assert.equal(context.view().port, '1e4')
+    assert.equal(context.view().enabled, false)
+    assert.equal(context.view().copying, null)
+  }, { active: true })
+})
+
+test('accepted configuration actions supersede old clipboard acknowledgement without waiting for it or losing action errors', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const regenerate of [false, true]) {
+      for (const mutationOutcome of ['success', 'failure'] as const) {
+        for (const copyOutcome of ['success', 'failure'] as const) {
+          await withBridge(async context => {
+            const known = status()
+            await context.settle(() => context.reads[0].resolve(known))
+            await context.edit(true, '5432')
+            const copy = await context.start(() => copyBridge(context.state(), kind))
+            const mutation = await context.start(() => context.state().saveWebClipBridgeSettings(regenerate))
+            assert.equal(context.saves.length, 1, 'copying must not prevent an explicit configuration action')
+            assert.equal(context.view().saving, true)
+            assert.equal(context.view().copying, kind)
+            const next = regenerate ? { ...known, token: 'replacement-token' } : status(5432, known.token)
+            await context.settle(() => mutationOutcome === 'success' ? context.saves[0].resolve(next)
+              : context.saves[0].reject(new Error('Current configuration failed')), mutation.completion)
+            const actual = mutationOutcome === 'success' ? next : known
+            const actionError = context.view().actionError
+            const messages = [...context.messages]
+            assert.equal(context.view().saving, false)
+            assert.equal(context.view().copying, kind)
+            await context.settle(() => copyOutcome === 'success' ? context.copies[0].resolve()
+              : context.copies[0].reject(new Error('Obsolete clipboard failure')), copy.completion)
+            assert.deepEqual(context.messages, messages, 'even a failed or same-value accepted mutation supersedes the old acknowledgement')
+            assert.equal(context.view().copying, null)
+            assert.deepEqual(context.view().actionError, actionError)
+            assert.equal(context.copies[0].text, known[kind], 'already dispatched clipboard text is never rewritten by the renderer')
+            const retry = await context.start(() => copyBridge(context.state(), kind))
+            assert.equal(context.copies[1].text, actual[kind])
+            await context.settle(() => context.copies[1].resolve(), retry.completion)
+            assert.deepEqual(context.view().actionError, actionError)
+            assert.deepEqual(context.messages.at(-1), [copiedMessage(kind, 'zh-CN'), undefined])
+          })
+        }
+      }
+    }
+  }
+})
+
+test('polls suppress a clipboard acknowledgement only when its copied field value changed', async () => {
+  for (const kind of ['endpoint', 'token'] as const) {
+    for (const changedField of ['endpoint', 'token'] as const) {
+      for (const outcome of ['success', 'failure'] as const) {
+        await withBridge(async context => {
+          const known = status()
+          await context.settle(() => context.reads[0].resolve(known))
+          const copy = await context.start(() => copyBridge(context.state(), kind))
+          await context.poll()
+          const refreshed = changedField === 'endpoint' ? status(6789, known.token) : { ...known, token: 'external-token' }
+          await context.settle(() => context.reads[1].resolve(refreshed))
+          assert.equal(context.view().copying, kind)
+          await context.settle(() => outcome === 'success' ? context.copies[0].resolve()
+            : context.copies[0].reject(new Error('Clipboard unavailable')), copy.completion)
+          assert.equal(context.view().copying, null)
+          assert.equal(context.copies[0].text, known[kind])
+          assert.deepEqual(context.messages, changedField === kind ? [] : [outcome === 'success'
+            ? [copiedMessage(kind, 'zh-CN'), undefined]
+            : [`${getUiText('zh-CN').copyFailed} Clipboard unavailable`, 'error']])
+          const retry = await context.start(() => copyBridge(context.state(), kind))
+          assert.equal(context.copies[1].text, refreshed[kind])
+          await context.settle(() => context.copies[1].resolve(), retry.completion)
+          assert.equal(context.view().copying, null)
+          assert.deepEqual(context.messages.at(-1), [copiedMessage(kind, 'zh-CN'), undefined])
+        }, { active: true })
+      }
     }
   }
 })

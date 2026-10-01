@@ -22,6 +22,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const [webClipBridgePortDraft, setWebClipBridgePortDraft] = useState('3210')
   const [webClipBridgeSaving, setWebClipBridgeSaving] = useState(false)
   const [webClipBridgeRegenerating, setWebClipBridgeRegenerating] = useState(false)
+  const [webClipBridgeCopying, setWebClipBridgeCopying] = useState<'endpoint' | 'token' | null>(null)
   const [webClipBridgeActionError, setWebClipBridgeActionError] = useState<{ kind: 'save' | 'regenerate'; message: string } | null>(null)
   const mounted = useRef(false)
   const session = useRef(0)
@@ -31,6 +32,8 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   const bridgeReadPromise = useRef<Promise<void> | null>(null)
   const bridgeSaveGeneration = useRef(0)
   const bridgeSaving = useRef(false)
+  const bridgeCopyGeneration = useRef(0)
+  const bridgeCopying = useRef(false)
   const currentUi = useRef(ui)
   currentUi.current = ui
   const webClipBridgePortError = webClipBridgeStatus && parseWebClipBridgePortDraft(webClipBridgePortDraft) === null
@@ -83,8 +86,10 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       session.current++
       bridgeReadGeneration.current++
       bridgeSaveGeneration.current++
+      bridgeCopyGeneration.current++
       bridgeReadPromise.current = null
       bridgeSaving.current = false
+      bridgeCopying.current = false
     }
   }, [reloadWebClipBridgeStatus])
 
@@ -170,35 +175,36 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     if (mounted.current && bridgeStatus.current && !bridgeSaving.current) setWebClipBridgePortDraft(port)
   }, [])
 
-  const copyWebClipBridgeEndpoint = useCallback(async () => {
-    if (!webClipBridgeStatus?.endpoint) {
-      return
-    }
-
+  const copyWebClipBridgeValue = useCallback(async (kind: 'endpoint' | 'token') => {
+    if (!mounted.current || bridgeSaving.current || bridgeCopying.current) return
+    const text = bridgeStatus.current?.[kind]
+    if (!text) return
+    bridgeCopying.current = true
+    const generation = ++bridgeCopyGeneration.current
+    const copySession = session.current
+    const saveGeneration = bridgeSaveGeneration.current
+    const isCurrent = () => mounted.current && session.current === copySession && bridgeCopyGeneration.current === generation
+    // A later configuration change can make an earlier clipboard acknowledgement obsolete.
+    const canNotify = () => isCurrent() && bridgeSaveGeneration.current === saveGeneration && bridgeStatus.current?.[kind] === text
+    setWebClipBridgeCopying(kind)
     try {
-      await window.knowbook.writeClipboardText(webClipBridgeStatus.endpoint)
-      onMessage(ui.webClipBridgeEndpointCopied)
+      await window.knowbook.writeClipboardText(text)
+      if (canNotify()) onMessage(kind === 'endpoint' ? currentUi.current.webClipBridgeEndpointCopied : currentUi.current.webClipBridgeTokenCopied)
     } catch (error) {
+      if (!canNotify()) return
       const detail = getErrorMessage(error, '')
-      const message = detail ? `${ui.copyFailed} ${detail}` : ui.copyFailed
-      onMessage(message, 'error')
+      const prefix = currentUi.current.copyFailed
+      onMessage(detail ? `${prefix} ${detail}` : prefix, 'error')
+    } finally {
+      if (isCurrent()) {
+        bridgeCopying.current = false
+        setWebClipBridgeCopying(null)
+      }
     }
-  }, [onMessage, ui, webClipBridgeStatus?.endpoint])
+  }, [onMessage])
 
-  const copyWebClipBridgeToken = useCallback(async () => {
-    if (!webClipBridgeStatus?.token) {
-      return
-    }
-
-    try {
-      await window.knowbook.writeClipboardText(webClipBridgeStatus.token)
-      onMessage(ui.webClipBridgeTokenCopied)
-    } catch (error) {
-      const detail = getErrorMessage(error, '')
-      const message = detail ? `${ui.copyFailed} ${detail}` : ui.copyFailed
-      onMessage(message, 'error')
-    }
-  }, [onMessage, ui, webClipBridgeStatus?.token])
+  const copyWebClipBridgeEndpoint = useCallback(() => copyWebClipBridgeValue('endpoint'), [copyWebClipBridgeValue])
+  const copyWebClipBridgeToken = useCallback(() => copyWebClipBridgeValue('token'), [copyWebClipBridgeValue])
 
   return {
     ...appUpdates,
@@ -214,6 +220,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
     webClipBridgePortError,
     webClipBridgeSaving,
     webClipBridgeRegenerating,
+    webClipBridgeCopying,
     webClipBridgeActionError,
     webClipBridgeLoading,
     webClipBridgeLoadError,
