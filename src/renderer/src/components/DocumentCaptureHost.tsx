@@ -6,10 +6,10 @@ import type { AppShellState } from '../types/appShell'
 import { lazyWithRetry } from '../utils/lazyWithRetry'
 import { getErrorMessage } from '../utils/errorMessage'
 import { ErrorBoundary } from './ErrorBoundary'
+import QuickCaptureDialog from './QuickCaptureDialog'
 
 const DocumentTemplateDialog = lazyWithRetry(() => import('./DocumentTemplateDialog'))
 const SaveDocumentTemplateDialog = lazyWithRetry(() => import('./SaveDocumentTemplateDialog'))
-const QuickCaptureDialog = lazyWithRetry(() => import('./QuickCaptureDialog'))
 
 export default function DocumentCaptureHost({ state, documents, shell }: {
   state: ReturnType<typeof useDocumentCapture>; documents: DocumentsDomainState; shell: AppShellState
@@ -46,7 +46,7 @@ export default function DocumentCaptureHost({ state, documents, shell }: {
   }, [closeCapture, shell, isZh])
   if (!capture) return null
   return <ErrorBoundary onNavigate={closeCapture} navigateLabel={isZh ? '关闭' : 'Close'}>
-    <Suspense fallback={<p role="status">{isZh ? '正在打开…' : 'Opening…'}</p>}>
+    <Suspense fallback={null}>
       {capture.kind === 'templates' && <DocumentTemplateDialog isZh={isZh} documentTree={documentTree}
         initialParentId={capture.parentId} onClose={closeCapture} onCreate={createFromTemplate} />}
       {capture.kind === 'quick' && <QuickCaptureDialog isZh={isZh} documentTree={documentTree}

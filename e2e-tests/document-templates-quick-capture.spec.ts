@@ -160,6 +160,74 @@ test.describe('Document templates and quick capture @electron', () => {
     }
   })
 
+  test('quick capture opens without transient page loading or workspace movement and restores focus on each close', async ({}, testInfo) => {
+    await withElectronApp(async ({ page }) => {
+      const trigger = page.getByRole('button', { name: captureDialogName, exact: true })
+      await expect(trigger).toBeEnabled()
+      // Observe the cold first click, before either capture dialog has loaded. A
+      // screenshot of the final dialog would miss a fallback inserted for one frame.
+      await page.evaluate(() => {
+        const root = document.getElementById('root')!
+        const shell = document.querySelector<HTMLElement>('[data-testid="shell"]')!
+        const baseline = shell.getBoundingClientRect()
+        let frame = 0
+        const probe = { openingStatuses: [] as string[], maxShellDelta: 0, samples: 0, stop: () => {} }
+        const sampleLayout = () => {
+          const rect = shell.getBoundingClientRect()
+          probe.samples++
+          probe.maxShellDelta = Math.max(probe.maxShellDelta,
+            Math.abs(rect.x - baseline.x), Math.abs(rect.y - baseline.y),
+            Math.abs(rect.width - baseline.width), Math.abs(rect.height - baseline.height))
+        }
+        const inspect = (node: Node) => {
+          if (!(node instanceof Element)) return
+          for (const element of [node, ...node.querySelectorAll('[role="status"]')]) {
+            const text = element.textContent?.trim() ?? ''
+            if (element.matches('[role="status"]') && /^(?:Opening|正在打开)[.…]*$/i.test(text)) {
+              probe.openingStatuses.push(text)
+            }
+          }
+        }
+        const observer = new MutationObserver(records => {
+          for (const record of records) {
+            // Added nodes retain their text even if React has already removed the
+            // short-lived fallback by the time this observer is delivered.
+            for (const node of record.addedNodes) inspect(node)
+          }
+          sampleLayout()
+        })
+        observer.observe(root, { subtree: true, childList: true })
+        const sampleFrame = () => { sampleLayout(); frame = requestAnimationFrame(sampleFrame) }
+        frame = requestAnimationFrame(sampleFrame)
+        probe.stop = () => { observer.disconnect(); cancelAnimationFrame(frame) }
+        Object.assign(window, { __quickCaptureOpeningProbe: probe })
+      })
+      try {
+        for (const opening of ['first', 'repeated']) {
+          await trigger.click()
+          const dialog = page.getByRole('dialog', { name: captureDialogName })
+          await expect(dialog).toBeVisible()
+          await expect(dialog.getByLabel(captureBodyLabel)).toBeFocused()
+          if (opening === 'first') await page.screenshot({ path: testInfo.outputPath('quick-capture-stable-opening.png') })
+          await dialog.getByRole('button', { name: uiText('Cancel', '取消'), exact: true }).click()
+          await expect(dialog).toHaveCount(0)
+          await expect(trigger).toBeFocused()
+          const observed = await page.evaluate(() => {
+            const probe = (window as unknown as { __quickCaptureOpeningProbe: {
+              openingStatuses: string[]; maxShellDelta: number; samples: number
+            } }).__quickCaptureOpeningProbe
+            return { openingStatuses: probe.openingStatuses, maxShellDelta: probe.maxShellDelta, samples: probe.samples }
+          })
+          expect(observed.openingStatuses, `${opening} opening must not insert a page loading message`).toEqual([])
+          expect(observed.samples).toBeGreaterThan(0)
+          expect(observed.maxShellDelta, `${opening} opening must keep the workspace in place`).toBeLessThanOrEqual(0.5)
+        }
+      } finally {
+        await page.evaluate(() => (window as unknown as { __quickCaptureOpeningProbe: { stop: () => void } }).__quickCaptureOpeningProbe.stop())
+      }
+    })
+  })
+
   test('quick capture cancels without creating a document and saves Markdown through the keyboard', async ({}, testInfo) => {
     test.setTimeout(120_000)
     let context = await launchElectronApp()

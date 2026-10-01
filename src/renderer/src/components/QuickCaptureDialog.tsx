@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CreateQuickNoteInput, DocumentTreeNode } from '@shared/contracts'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
@@ -31,7 +31,7 @@ export default function QuickCaptureDialog({ isZh, documentTree, onClose, onSave
   const labelId = useId(), hintId = useId(), formId = useId(), keyboardHintId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const element = dialog.current!
