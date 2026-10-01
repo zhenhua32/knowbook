@@ -235,16 +235,19 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
           : <div className={`workspace-search-results${loading ? ' is-loading' : ''}`} data-testid="workspace-search-results">
             {result?.items.map((item) => <article className="workspace-search-result" key={`${item.documentId}:${item.blockId || 'document'}`}
               data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''}>
-              <div className="workspace-search-result-head"><p className="workspace-search-path" title={item.documentPath}><MatchText text={item.documentPath} terms={terms} /></p>
+              <div className="workspace-search-result-head"><div className="workspace-search-result-heading">
+                <h4><MatchText text={item.documentTitle} terms={terms} /></h4>
+                <p className="workspace-search-path" title={item.documentPath}><MatchText text={item.documentPath} terms={terms} /></p></div>
                 <span className="pill">{item.matchType === 'title' ? choose('文档', 'Document') : blockLabels[item.blockType || ''] || choose('内容块', 'Block')}</span></div>
-              <h4><MatchText text={item.documentTitle} terms={terms} /></h4>
               {item.snippet && <p className="workspace-search-snippet"><MatchText text={item.snippet} terms={terms} /></p>}
-              <div className="workspace-search-result-meta"><time dateTime={item.updatedAt}>{choose('更新于 ', 'Updated ')}{new Date(item.updatedAt).toLocaleString(isZh ? 'zh-CN' : 'en-US')}</time>
-                {item.tags.map((tag) => <span className="workspace-search-tag" key={tag}>#{tag}</span>)}</div>
-              <div className="workspace-search-result-actions">
-                <button type="button" className="primary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
-                {item.blockId && <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
-                <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
+              <div className="workspace-search-result-footer">
+                <div className="workspace-search-result-meta"><time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString(isZh ? 'zh-CN' : 'en-US')}>{choose('更新于 ', 'Updated ')}{new Date(item.updatedAt).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
+                  {item.tags.map((tag) => <span className="workspace-search-tag" key={tag}>#{tag}</span>)}</div>
+                <div className="workspace-search-result-actions">
+                  <button type="button" className="primary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
+                  {item.blockId && <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
+                  <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
+                </div>
               </div>
             </article>)}
           </div>}
