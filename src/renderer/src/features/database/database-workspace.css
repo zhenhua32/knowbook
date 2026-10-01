@@ -299,17 +299,30 @@
 .dbw-toolbar-button b { padding: 1px 5px; border-radius: 9px; background: #e7e8f5; color: var(--dbw-accent); font-size: 10px; }
 .dbw-toolbar-select select { max-width: 88px; padding: 0; border: 0; outline: 0; background: transparent; color: #5f6473; cursor: pointer; }
 .dbw-config-popover { top: calc(100% + 7px); left: 10px; width: 390px; max-width: calc(100% - 20px); padding: 12px; }
+.dbw-filter-popover { width: 560px; }
 .dbw-popover-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .dbw-popover-heading button { border: 0; background: transparent; color: var(--dbw-muted); cursor: pointer; font-size: 12px; }
 .dbw-config-row,
 .dbw-filter-row { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(88px, .7fr) auto; gap: 6px; margin-top: 7px; }
-.dbw-filter-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 24px; }
-.dbw-filter-row-without-value { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 24px; }
+.dbw-filter-row { grid-template-columns: minmax(0, 1fr) minmax(0, .9fr) minmax(140px, 1.3fr) 36px; align-items: start; }
+.dbw-filter-row-without-value { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px; }
 .dbw-config-row select,
 .dbw-filter-row select,
 .dbw-filter-row input { min-width: 0; height: 32px; padding: 0 7px; border: 1px solid var(--dbw-line); border-radius: 7px; background: #fff; color: var(--dbw-text); }
+.dbw-filter-value { min-width: 0; }
+.dbw-filter-options { display: grid; gap: 4px; max-height: 160px; padding: 6px; overflow-y: auto; border: 1px solid var(--dbw-line); border-radius: 7px; background: var(--dbw-bg); }
+.dbw-filter-options label { display: flex; align-items: center; gap: 7px; min-height: 28px; padding: 3px 5px; border-radius: 4px; cursor: pointer; font-size: var(--kb-type-label); }
+.dbw-filter-options label:hover { background: var(--dbw-soft); }
+.dbw-filter-options label span { min-width: 0; overflow-wrap: anywhere; }
+.dbw-filter-row input[type='checkbox'] { flex: 0 0 auto; width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; accent-color: var(--dbw-accent); }
+.dbw-filter-range { display: grid; gap: 6px; }
+.dbw-filter-range input { width: 100%; }
+.dbw-filter-value-error { color: var(--dbw-danger); font-size: var(--kb-type-caption); line-height: 1.5; overflow-wrap: anywhere; }
+.dbw-filter-legacy-value { display: block; color: var(--dbw-text-soft); }
 .dbw-config-row button,
 .dbw-filter-row button { border: 0; background: transparent; color: var(--dbw-muted); cursor: pointer; }
+.dbw-filter-row > button { min-height: 36px; border-radius: 7px; color: var(--dbw-text); }
+.dbw-filter-row > button:hover { background: var(--dbw-soft); }
 .dbw-add-config-row { margin-top: 10px; padding: 6px; border: 0; background: transparent; color: var(--dbw-accent); cursor: pointer; font-weight: 650; }
 .dbw-layout-switcher { display: flex; padding: 2px; border: 1px solid var(--dbw-line); border-radius: 8px; background: #f7f8fa; }
 .dbw-layout-switcher button { display: grid; width: 29px; height: 28px; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #7a7f8e; cursor: pointer; }
@@ -645,6 +658,7 @@
 }
 
 .dbw-empty-state p {
+  color: var(--kb-text-soft);
   font-size: var(--kb-type-body);
   line-height: 22px;
 }

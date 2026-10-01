@@ -435,6 +435,11 @@ export function DatabaseWorkspace({
   })
 
   const empty = filteredRecords.length === 0
+  const hasSearchOrFilters = draft.query.trim().length > 0 || draft.filters.rules.length > 0
+  const clearSearchAndFilters = () => {
+    updateDraft((current) => ({ ...current, query: '', filters: { operator: 'and', rules: [] } }))
+    document.querySelector<HTMLInputElement>('.dbw-main-search input')?.focus()
+  }
   return (
     <section className="dbw-shell" data-testid="database-grid">
       <DatabaseHeader
@@ -507,7 +512,18 @@ export function DatabaseWorkspace({
       ) : null}
 
       <main className={`dbw-canvas dbw-canvas-${draft.layout}`}>
-        {empty ? <div className="dbw-empty-state"><span aria-hidden="true">▦</span><h3>{text.noRecords}</h3><p>{text.noRecordsHint}</p><button className="dbw-primary-button" onClick={createDocumentOrRecord} type="button">＋ {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}</button></div> : null}
+        {empty ? (
+          <div className="dbw-empty-state">
+            <span aria-hidden="true">{hasSearchOrFilters ? '⌕' : '▦'}</span>
+            <h3>{hasSearchOrFilters ? text.noMatchingRecords : text.noRecords}</h3>
+            <p>{hasSearchOrFilters ? text.noMatchingRecordsHint : text.noRecordsHint}</p>
+            {hasSearchOrFilters ? (
+              <button className="dbw-primary-button" onClick={clearSearchAndFilters} type="button">{text.clearSearchAndFilters}</button>
+            ) : (
+              <button className="dbw-primary-button" onClick={createDocumentOrRecord} type="button">＋ {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}</button>
+            )}
+          </div>
+        ) : null}
         {!empty && draft.layout === 'table' ? (
           <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={updateValue} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
         ) : null}

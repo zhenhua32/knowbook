@@ -16,6 +16,7 @@ export function applyDatabaseView(
   sorts: DatabaseViewSort[]
 ): DatabaseRecord[] {
   const searchableFieldIds = new Set(fields.map((field) => field.id))
+  const fieldsById = new Map(fields.map((field) => [field.id, field]))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = records.filter((record) => {
     if (normalizedQuery) {
@@ -29,7 +30,7 @@ export function applyDatabaseView(
         return false
       }
     }
-    return matchesFilterGroup(record, filters)
+    return matchesFilterGroup(record, filters, fieldsById)
   })
 
   return [...filtered].sort((left, right) => compareRecords(left, right, sorts))
@@ -65,19 +66,23 @@ export function getRecordValue(record: DatabaseRecord, fieldId: string): Databas
   return fieldId === '__title__' ? record.title : record.fieldValues[fieldId]
 }
 
-function matchesFilterGroup(record: DatabaseRecord, group: DatabaseFilterGroup): boolean {
+function matchesFilterGroup(record: DatabaseRecord, group: DatabaseFilterGroup, fields: Map<string, DatabaseField>): boolean {
   if (group.rules.length === 0) {
     return true
   }
   const results = group.rules.map((rule) => 'rules' in rule
-    ? matchesFilterGroup(record, rule)
-    : matchesFilterRule(record, rule))
+    ? matchesFilterGroup(record, rule, fields)
+    : matchesFilterRule(record, rule, fields.get(rule.fieldId)))
   return group.operator === 'or' ? results.some(Boolean) : results.every(Boolean)
 }
 
-function matchesFilterRule(record: DatabaseRecord, rule: DatabaseFilterRule): boolean {
+function matchesFilterRule(record: DatabaseRecord, rule: DatabaseFilterRule, field: DatabaseField | undefined): boolean {
   const value = getRecordValue(record, rule.fieldId)
   const expected = rule.value
+  if (field?.type === 'date') {
+    const calendarMatch = matchesCalendarDateRule(value, rule)
+    if (calendarMatch !== undefined) return calendarMatch
+  }
   const valueText = formatDatabaseRecordValueForSearch(value).toLocaleLowerCase()
   const expectedText = formatDatabaseRecordValueForSearch(expected as DatabaseRecordValue | undefined).toLocaleLowerCase()
   const empty = value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0)
@@ -100,6 +105,41 @@ function matchesFilterRule(record: DatabaseRecord, rule: DatabaseFilterRule): bo
     case 'less-than': return compareValue(value, expected) < 0
     default: return true
   }
+}
+
+function matchesCalendarDateRule(value: DatabaseRecordValue | undefined, rule: DatabaseFilterRule): boolean | undefined {
+  const { operator, value: expected } = rule
+  if (['before', 'after', 'between', 'greater-than', 'less-than'].includes(operator) && getCalendarDay(value) === null) return false
+  if (operator === 'between' && Array.isArray(expected) && expected.some(boundary => !boundary)) return false
+  if (operator === 'between' && Array.isArray(expected) && expected.length === 2 && expected.every(isCalendarDay)) {
+    const day = getCalendarDay(value)
+    return day !== null && day >= expected[0] && day <= expected[1]
+  }
+  if (!['equals', 'not-equals', 'before', 'after', 'greater-than', 'less-than'].includes(operator)) return undefined
+  // Empty boundaries cannot compare a missing date as greater or less.
+  if (expected === '' || expected === null || expected === undefined) {
+    return ['before', 'after', 'greater-than', 'less-than'].includes(operator) ? false : undefined
+  }
+  if (!isCalendarDay(expected)) return undefined
+  const day = getCalendarDay(value)
+  if (operator === 'not-equals') return day !== expected
+  if (day === null) return false
+  if (operator === 'equals') return day === expected
+  return operator === 'before' || operator === 'less-than' ? day < expected : day > expected
+}
+
+function isCalendarDay(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+}
+
+function getCalendarDay(value: DatabaseRecordValue | undefined): string | null {
+  if (typeof value !== 'string' || !value) return null
+  // Date properties represent calendar days, whereas system dates are instants
+  // shown in the user's local timezone by the table.
+  if (isCalendarDay(value)) return value
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return `${String(date.getFullYear()).padStart(4, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
 function compareRecords(left: DatabaseRecord, right: DatabaseRecord, sorts: DatabaseViewSort[]): number {

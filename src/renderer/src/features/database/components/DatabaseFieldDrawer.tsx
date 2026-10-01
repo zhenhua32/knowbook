@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { DatabaseField, DocumentDatabaseColumnType } from '@shared/contracts'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 
 export function DatabaseFieldDrawer({
   fields,
@@ -135,12 +136,24 @@ function FieldRow({
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(field.name)
   const [options, setOptions] = useState(field.options.join(', '))
+  const nameButtonRef = useRef<HTMLButtonElement>(null)
+  const nameEditingRef = useRef(false)
+  const composingRef = useRef(false)
+  const restoreNameFocusRef = useRef(false)
 
   useEffect(() => setName(field.name), [field.name])
   useEffect(() => setOptions(field.options.join(', ')), [field.options])
+  useLayoutEffect(() => {
+    if (!editing && restoreNameFocusRef.current) {
+      restoreNameFocusRef.current = false
+      nameButtonRef.current?.focus({ preventScroll: true })
+    }
+  }, [editing])
 
-  const commitName = async () => {
-    const normalized = name.trim()
+  const commitName = async (value: string) => {
+    if (!nameEditingRef.current) return
+    nameEditingRef.current = false
+    const normalized = value.trim()
     setEditing(false)
     if (!normalized) setName(field.name)
     else if (normalized !== field.name) await onRename(normalized)
@@ -155,8 +168,37 @@ function FieldRow({
       <span aria-hidden="true" className="dbw-field-grip">⠿</span>
       <div className="dbw-field-copy">
         {editing && field.role === 'property' ? (
-          <input autoFocus onBlur={() => void commitName()} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') { setName(field.name); setEditing(false) } }} value={name} />
-        ) : <button className="dbw-field-name" disabled={field.role !== 'property'} onClick={() => setEditing(true)} type="button">{field.name}</button>}
+          <input autoFocus
+            onCompositionStart={() => { composingRef.current = true }}
+            onCompositionEnd={() => { composingRef.current = false }}
+            onBlur={(event) => { composingRef.current = false; void commitName(event.currentTarget.value) }}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
+                event.stopPropagation()
+                return
+              }
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                event.stopPropagation()
+                restoreNameFocusRef.current = true
+                event.currentTarget.blur()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                event.stopPropagation()
+                nameEditingRef.current = false
+                restoreNameFocusRef.current = true
+                setName(field.name)
+                setEditing(false)
+                event.currentTarget.blur()
+              }
+            }} value={name} />
+        ) : <button className="dbw-field-name" disabled={field.role !== 'property'} ref={nameButtonRef} onClick={() => {
+          nameEditingRef.current = true
+          composingRef.current = false
+          setName(field.name)
+          setEditing(true)
+        }} type="button">{field.name}</button>}
         <small>{field.role === 'property' ? field.type : `系统 · ${field.type}`}</small>
         {(field.type === 'select' || field.type === 'multi-select') && field.role === 'property' ? (
           <input className="dbw-field-options" onBlur={() => void commitOptions()} onChange={(event) => setOptions(event.target.value)} value={options} />
