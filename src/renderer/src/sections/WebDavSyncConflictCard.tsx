@@ -3,6 +3,7 @@ import type { ResolveWebDavSyncConflict, WebDavSyncConflict, WebDavSyncConflictD
 import type { UpdateDocumentInput } from '@shared/contracts'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { getErrorMessage } from '../utils/errorMessage'
+import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
 import './webdav-sync.css'
 
 function fieldLabel(part: Pick<WebDavSyncMergePart, 'field' | 'blockId'> & { property?: string }, isZh: boolean, blockIndex: number): string {
@@ -25,18 +26,26 @@ function fieldLabel(part: Pick<WebDavSyncMergePart, 'field' | 'blockId'> & { pro
   }
 }
 
-export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onResolve }: {
+export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onResolve, resolutionError, resolutionFeedbackActive }: {
   conflict: WebDavSyncConflict
   isZh: boolean
   disabled: boolean
   onResolve: (input: ResolveWebDavSyncConflict) => Promise<boolean>
+  resolutionError?: string
+  resolutionFeedbackActive?: boolean
 }) {
+  const scopeRef = useRef<HTMLDetailsElement | null>(null)
+  const wholeActionsRef = useRef<HTMLDivElement | null>(null)
+  const runWithFocus = useAsyncActionFocus(scopeRef)
   const [details, setDetails] = useState<WebDavSyncConflictDetails | null>(null)
   const [loading, setLoading] = useState(false), [error, setError] = useState('')
   const [merging, setMerging] = useState(false), [choices, setChoices] = useState<Record<string, WebDavSyncMergeChoice>>({})
   const [composing, setComposing] = useState(false)
   const [result, setResult] = useState<UpdateDocumentInput | null>(null), [previewLoading, setPreviewLoading] = useState(false)
+  const [resolving, setResolving] = useState(false), [resolutionFailed, setResolutionFailed] = useState(false)
+  const [resolutionPlacement, setResolutionPlacement] = useState<'whole' | 'merge' | null>(null)
   const request = useRef(0), previewRequest = useRef(0), mounted = useRef(false), lock = useRef(false)
+  const resolvingChoice = useRef<ResolveWebDavSyncConflict['choice'] | null>(null)
   const resolution = useRef(conflict.resolution)
   resolution.current = conflict.resolution
   const prefix = useId(), t = (zh: string, en: string) => isZh ? zh : en
@@ -79,23 +88,36 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
       if (mounted.current && id === request.current) setError(getErrorMessage(reason, t('无法加载完整版本，请重试。', 'Could not load full versions. Retry.')))
     } finally { if (mounted.current && id === request.current) setLoading(false) }
   }
-  const resolve = async (input: Omit<ResolveWebDavSyncConflict, keyof typeof version>) => {
+  const resolve = (trigger: HTMLButtonElement, input: Omit<ResolveWebDavSyncConflict, keyof typeof version>, placement: 'whole' | 'merge') => {
     if (disabled || lock.current || composing) return
-    lock.current = true
-    try {
-      if (await onResolve({ ...version, ...input }) && mounted.current) {
-        setError('')
-        if (input.choice !== 'merge') setMerging(false)
+    runWithFocus(trigger, async () => {
+      lock.current = true
+      resolvingChoice.current = input.choice
+      setResolving(true); setResolutionFailed(false); setResolutionPlacement(placement)
+      try {
+        const succeeded = await onResolve({ ...version, ...input })
+        if (!mounted.current) return
+        setResolutionFailed(!succeeded)
+        if (succeeded) {
+          setError('')
+          if (input.choice !== 'merge') setMerging(false)
+        }
+      } catch {
+        if (mounted.current) setResolutionFailed(true)
+      } finally {
+        lock.current = false
+        if (mounted.current) setResolving(false)
       }
-    } finally { lock.current = false }
+    }, () => wholeActionsRef.current?.querySelector<HTMLButtonElement>('button') ?? null)
   }
   const choose = (id: string, value: WebDavSyncMergeChoice) => {
+    if (disabled || lock.current) return
     previewRequest.current++
     setResult(null); setPreviewLoading(false)
     setChoices(current => ({ ...current, [id]: value }))
   }
   const previewMerge = async () => {
-    if (disabled || composing || completed !== parts.length || previewLoading) return
+    if (disabled || lock.current || composing || completed !== parts.length || previewLoading) return
     const id = ++previewRequest.current
     setPreviewLoading(true); setError('')
     try {
@@ -120,8 +142,16 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
     <h5 id={id}>{heading}{deleted ? ` · ${t('已删除', 'Deleted')}` : ''}</h5>
     <pre>{value || t('（空）', '(Empty)')}</pre>
   </section>
+  const actionDisabled = disabled || resolving
+  const resolutionFeedback = (placement: 'whole' | 'merge') => {
+    const active = resolutionPlacement === placement && (resolving || resolutionFailed && resolutionFeedbackActive !== false)
+    return <div className="webdav-action-feedback" role={active ? resolving ? 'status' : 'alert' : undefined}>{active
+      ? <p className={resolving ? undefined : 'webdav-settings-action-error'}>{resolving
+        ? t('正在保存处理方案…', 'Saving resolution…')
+        : resolutionError || t('无法保存处理方案，请重试。', 'Could not save the resolution. Retry.')}</p> : null}</div>
+  }
 
-  return <details className="webdav-conflict-card" onToggle={event => {
+  return <details ref={scopeRef} className="webdav-conflict-card" onToggle={event => {
     if (event.target === event.currentTarget && event.currentTarget.open) void loadDetails()
   }}>
     <summary><strong>{conflict.title}</strong>{conflict.resolution ? <span className="webdav-conflict-pending">{t('待同步应用', 'Pending sync')} · {resolutionLabels[conflict.resolution]}</span> : null}</summary>
@@ -129,7 +159,7 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
       <p>{reasons[conflict.reason]}</p>
       {conflict.mergeFields.length > 0 ? <p className="mini-hint">{t('需要处理：', 'Changes to resolve: ')}{(parts.length ? parts : conflict.mergeFields).map(part => fieldLabel(part, isZh, blockIndex(part))).join(t('、', ', '))}</p> : null}
       {loading ? <p className="mini-hint">{t('正在加载完整版本…', 'Loading full versions…')}</p> : null}
-      {error ? <div role="alert">{error} <button className="secondary-button" type="button" disabled={disabled || loading || previewLoading || Boolean(details && (composing || completed !== parts.length))}
+      {error ? <div role="alert">{error} <button className="secondary-button" type="button" disabled={actionDisabled || loading || previewLoading || Boolean(details && (composing || completed !== parts.length))}
         onClick={() => { if (details) void previewMerge(); else void loadDetails() }}>{details ? t('重试预览', 'Retry preview') : t('重新加载', 'Reload')}</button></div> : null}
       <div className="webdav-conflict-comparison">
         {preview(t('本地版本', 'Local version'), details?.localPreview ?? conflict.localPreview, `${prefix}-local`, conflict.localDeleted)}
@@ -137,14 +167,15 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
       </div>
       {!details && (conflict.localPreview.length >= 12_000 || conflict.remotePreview.length >= 12_000) ? <p className="mini-hint">{t('当前显示简略预览；加载后可查看完整版本。', 'This is a shortened preview. Full versions appear after loading.')}</p> : null}
       {details?.basePreview !== null && details?.basePreview !== undefined ? <details className="webdav-conflict-base"><summary>{t('查看共同版本', 'View common version')}</summary><pre>{details.basePreview}</pre></details> : null}
-      <div className="settings-actions">
-        {conflict.canMerge ? <button className="primary-button" type="button" disabled={disabled || loading} aria-expanded={merging} onClick={() => {
+      {resolutionFeedback('whole')}
+      <div ref={wholeActionsRef} className="settings-actions">
+        {conflict.canMerge ? <button className="primary-button" type="button" disabled={actionDisabled || loading} aria-expanded={merging} onClick={() => {
           setMerging(current => !current); void loadDetails()
         }}>{t('逐项合并', 'Merge changes')}</button> : null}
-        {conflict.canKeepBoth ? <button className="secondary-button" type="button" disabled={disabled} onClick={() => void resolve({ choice: 'both' })}>{t('两份都保留', 'Keep both')}</button> : null}
-        <button className="secondary-button" type="button" disabled={disabled} onClick={() => void resolve({ choice: 'local' })}>{t('使用本地版本', 'Use local version')}</button>
-        <button className="secondary-button" type="button" disabled={disabled} onClick={() => void resolve({ choice: 'remote' })}>{t('使用远端版本', 'Use remote version')}</button>
-        {conflict.resolution ? <button className="secondary-button" type="button" disabled={disabled} onClick={() => void resolve({ choice: 'clear' })}>{t('取消处理方案', 'Clear resolution')}</button> : null}
+        {conflict.canKeepBoth ? <button className="secondary-button" type="button" disabled={actionDisabled} aria-busy={resolving && resolvingChoice.current === 'both'} onClick={event => resolve(event.currentTarget, { choice: 'both' }, 'whole')}>{t('两份都保留', 'Keep both')}</button> : null}
+        <button className="secondary-button" type="button" disabled={actionDisabled} aria-busy={resolving && resolvingChoice.current === 'local'} onClick={event => resolve(event.currentTarget, { choice: 'local' }, 'whole')}>{t('使用本地版本', 'Use local version')}</button>
+        <button className="secondary-button" type="button" disabled={actionDisabled} aria-busy={resolving && resolvingChoice.current === 'remote'} onClick={event => resolve(event.currentTarget, { choice: 'remote' }, 'whole')}>{t('使用远端版本', 'Use remote version')}</button>
+        {conflict.resolution ? <button className="secondary-button" type="button" disabled={actionDisabled} aria-busy={resolving && resolvingChoice.current === 'clear'} onClick={event => resolve(event.currentTarget, { choice: 'clear' }, 'whole')}>{t('取消处理方案', 'Clear resolution')}</button> : null}
       </div>
       {conflict.canKeepBoth ? <p className="mini-hint">{conflict.localDeleted
         ? t('两份都保留会保留原文档的本地删除状态，并在根目录生成远端冲突副本。', 'Keep both retains the local deletion and creates a remote conflict copy in the root folder.')
@@ -155,7 +186,7 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
         <p className="mini-hint">{t('仅需决定以下重叠改动；两端其他独立改动已合并。', 'Decide only the overlapping changes below. Other independent changes from both devices are combined.')}</p>
         {parts.map(part => {
           const label = fieldLabel(part, isZh, blockIndex(part)), choice = choices[part.id]
-          return <fieldset key={part.id} data-merge-part={part.id} disabled={disabled}>
+          return <fieldset key={part.id} data-merge-part={part.id} disabled={actionDisabled}>
             <legend>{label}</legend>
             <div className="webdav-conflict-comparison">
               {preview(t('本地改动', 'Local change'), partPreview(part, part.localPreview), `${prefix}-${part.id}-local`)}
@@ -174,9 +205,10 @@ export default function WebDavSyncConflictCard({ conflict, isZh, disabled, onRes
           </fieldset>
         })}
         <p className="mini-hint">{t(`已处理 ${completed} / ${parts.length} 项重叠改动`, `${completed} / ${parts.length} overlapping changes resolved`)}</p>
+        {resolutionFeedback('merge')}
         <div className="settings-actions">
-          <button className="secondary-button" type="button" disabled={disabled || composing || completed !== parts.length || previewLoading} onClick={() => void previewMerge()}>{previewLoading ? t('正在生成预览…', 'Preparing preview…') : t('预览合并结果', 'Preview merge result')}</button>
-          <button className="primary-button" type="button" disabled={disabled || composing || completed !== parts.length} onClick={() => void resolve({ choice: 'merge', mergeChoices: choices })}>{t('保存合并方案', 'Save merge plan')}</button>
+          <button className="secondary-button" type="button" disabled={actionDisabled || composing || completed !== parts.length || previewLoading} onClick={() => void previewMerge()}>{previewLoading ? t('正在生成预览…', 'Preparing preview…') : t('预览合并结果', 'Preview merge result')}</button>
+          <button className="primary-button" type="button" disabled={actionDisabled || composing || completed !== parts.length} aria-busy={resolving && resolutionPlacement === 'merge'} onClick={event => resolve(event.currentTarget, { choice: 'merge', mergeChoices: choices }, 'merge')}>{t('保存合并方案', 'Save merge plan')}</button>
         </div>
         {result ? <section aria-labelledby={`${prefix}-result`}><h5 id={`${prefix}-result`}>{t('合并结果', 'Merge result')}</h5>
           <pre className="webdav-conflict-result">{[result.title, result.summary, serializeBlocksToMarkdown(result.blocks)].filter(Boolean).join('\n\n')}</pre></section> : null}

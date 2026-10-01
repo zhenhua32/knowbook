@@ -1,4 +1,5 @@
 import { useId, useRef } from 'react'
+import type { WebDavSyncConflict } from '@shared/webdav-sync'
 import { useWebDavSettingsState } from '../hooks/useWebDavSettingsState'
 import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
 import WebDavSyncProgress from './WebDavSyncProgress'
@@ -6,7 +7,7 @@ import WebDavSyncConflictCard from './WebDavSyncConflictCard'
 
 export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const { status, config, password, clearPassword, intervalDraft, intervalError, dirty,
-    readLoading, readError, actionError, actionKind, working, canStop,
+    readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
     edit, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow, resolve, cancel
   } = useWebDavSettingsState(isZh)
   const intervalErrorId = useId()
@@ -15,10 +16,13 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const runAction = useAsyncActionFocus(sectionRef)
   const t = (zh: string, en: string) => isZh ? zh : en
   const operationText = actionKind === 'save' ? t('正在保存同步设置…', 'Saving sync settings…')
-    : actionKind === 'resolve' ? t('正在保存冲突处理方式…', 'Saving conflict resolution…')
     : actionKind === 'cancel' ? t('正在停止本次同步…', 'Stopping this sync…')
     : actionKind === 'test' ? t('正在测试连接…', 'Testing connection…')
     : actionKind === 'sync' ? t('正在启动同步…', 'Starting sync…') : ''
+  const primaryError = actionErrorTarget ? '' : actionError
+  const matchesConflict = (target: typeof actionErrorTarget, conflict: WebDavSyncConflict) => Boolean(status && target
+    && target.url === status.config.url && target.username === status.config.username && target.directory === status.config.directory
+    && target.key === conflict.key && target.localHash === conflict.localHash && target.remoteHash === conflict.remoteHash)
 
   return <section ref={sectionRef} className="settings-group webdav-settings" aria-label={t('WebDAV 同步', 'WebDAV sync')}>
     <div className="settings-group-heading">
@@ -32,6 +36,7 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
       {status && <p className="mini-hint">{t('显示上次读取的状态，可重新加载以获取最新状态。', 'Showing the last known status. Reload to get the latest status.')}</p>}
       <button className="secondary-button" type="button" disabled={readLoading || actionKind === 'save' || actionKind === 'resolve' || actionKind === 'cancel'} onClick={event => runAction(event.currentTarget, refreshStatus, () => urlRef.current)}>{t('重新加载', 'Reload')}</button>
     </div>}
+    <div className="webdav-settings-form">
     <fieldset aria-busy={working} disabled={working || !status} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
       <label className="editor-label">{t('WebDAV 服务地址', 'WebDAV URL')}
         <input ref={urlRef} className="editor-input" type="url" value={config.url} placeholder="https://dav.jianguoyun.com/dav/" onChange={event => edit({ url: event.target.value })} />
@@ -61,25 +66,32 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
       <label className="toggle-row"><input type="checkbox" checked={config.allowInsecureHttp} onChange={event => edit({ allowInsecureHttp: event.target.checked })} />
         <span>{t('允许 HTTP（连接不加密，仅用于可信网络）', 'Allow HTTP (unencrypted; trusted networks only)')}</span>
       </label>
-      <div className="settings-actions">
-        <button aria-busy={actionKind === 'save'} className="primary-button" type="button" disabled={Boolean(intervalError)} onClick={event => runAction(event.currentTarget, save)}>{actionKind === 'save' ? t('正在保存…', 'Saving…') : t('保存同步设置', 'Save sync settings')}</button>
-        <button aria-busy={actionKind === 'test'} className="secondary-button" type="button" disabled={dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, testConnection)}>{t('测试连接', 'Test connection')}</button>
-        <button aria-busy={actionKind === 'sync'} className="secondary-button" type="button" disabled={dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, syncNow)}>{t('立即同步', 'Sync now')}</button>
-      </div>
     </fieldset>
-    {canStop || actionKind === 'cancel' ? <button aria-busy={actionKind === 'cancel'} className="secondary-button" type="button" disabled={actionKind === 'cancel'} onClick={event => runAction(event.currentTarget, cancel, () => urlRef.current)}>{actionKind === 'cancel' ? t('正在停止…', 'Stopping…') : t('停止本次同步', 'Stop this sync')}</button> : null}
-    {dirty ? <p className="mini-hint">{t('请先保存设置，再测试连接或同步。', 'Save your settings before testing or syncing.')}</p> : null}
-    {status?.progress && (status.phase === 'syncing' || status.phase === 'testing') && actionKind !== 'cancel'
-      ? <WebDavSyncProgress progress={status.progress} isZh={isZh} />
-      : status && <p role="status">{operationText || status.message || t('尚未配置同步', 'Sync is not configured')}</p>}
+    <div className={`webdav-main-actions${working ? ' is-working' : ''}`}>
+      <div className="webdav-action-feedback">
+        {primaryError && <p className="webdav-settings-action-error" role="alert">{primaryError}</p>}
+        {status?.progress && (status.phase === 'syncing' || status.phase === 'testing') && actionKind !== 'cancel'
+          ? <WebDavSyncProgress progress={status.progress} isZh={isZh} />
+          : !primaryError && status && <p role="status">{operationText || status.message || t('尚未配置同步', 'Sync is not configured')}</p>}
+      </div>
+      {dirty ? <p className="mini-hint">{t('请先保存设置，再测试连接或同步。', 'Save your settings before testing or syncing.')}</p> : null}
+      <div className="settings-actions">
+        <button aria-busy={actionKind === 'save'} className="primary-button" type="button" disabled={working || !status || Boolean(intervalError)} onClick={event => runAction(event.currentTarget, save)}>{actionKind === 'save' ? t('正在保存…', 'Saving…') : t('保存同步设置', 'Save sync settings')}</button>
+        <button aria-busy={actionKind === 'test'} className="secondary-button" type="button" disabled={working || dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, testConnection)}>{t('测试连接', 'Test connection')}</button>
+        <button aria-busy={actionKind === 'sync'} className="secondary-button" type="button" disabled={working || dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, syncNow)}>{t('立即同步', 'Sync now')}</button>
+        {canStop || actionKind === 'cancel' ? <button aria-busy={actionKind === 'cancel'} className="secondary-button" type="button" disabled={actionKind === 'cancel'} onClick={event => runAction(event.currentTarget, cancel, () => urlRef.current)}>{actionKind === 'cancel' ? t('正在停止…', 'Stopping…') : t('停止本次同步', 'Stop this sync')}</button> : null}
+      </div>
+    </div>
+    </div>
     {status?.lastSyncAt ? <p className="mini-hint">{t('上次同步：', 'Last sync: ')}{new Date(status.lastSyncAt).toLocaleString()}</p> : null}
-    {actionError && <p className="webdav-settings-action-error" role="alert">{actionError}</p>}
     <p className="mini-hint">{t('密码由系统加密保存。AI 密钥、插件和本机设置不上传；历史与回收站保留在各设备。云端内容目前不提供端到端加密。', 'Passwords are protected by the OS. AI keys, plugins and device settings stay local; history and Trash remain on each device. Cloud content is not end-to-end encrypted.')}</p>
     {status?.conflicts.length ? <div>
       <h4>{t('待处理冲突', 'Conflicts to resolve')} ({status.conflicts.filter(conflict => !conflict.resolution).length}) · {t('待同步应用', 'Pending sync')} ({status.conflicts.filter(conflict => conflict.resolution).length})</h4>
       {status.conflicts.map(conflict => <WebDavSyncConflictCard
         key={JSON.stringify([status.config.url, status.config.username, status.config.directory, conflict.key, conflict.localHash, conflict.remoteHash])}
-        conflict={conflict} isZh={isZh} disabled={Boolean(working || dirty)} onResolve={resolve} />)}
+        conflict={conflict} isZh={isZh} disabled={Boolean(working || dirty)} onResolve={resolve}
+        resolutionFeedbackActive={matchesConflict(actionTarget, conflict) || matchesConflict(actionErrorTarget, conflict)}
+        resolutionError={matchesConflict(actionErrorTarget, conflict) ? actionError : undefined} />)}
     </div> : null}
   </section>
 }

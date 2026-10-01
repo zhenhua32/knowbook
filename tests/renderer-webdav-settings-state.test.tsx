@@ -28,7 +28,7 @@ const progress: WebDavSyncProgress = { stage: 'uploading', completed: 2, total: 
   requestsCompleted: 3, waitingUntil: null }
 type State = ReturnType<typeof useWebDavSettingsState>
 type View = Pick<State, 'status' | 'config' | 'password' | 'clearPassword' | 'intervalDraft' | 'intervalError' |
-  'dirty' | 'readLoading' | 'readError' | 'actionError' | 'actionKind' | 'working' | 'canStop'>
+  'dirty' | 'readLoading' | 'readError' | 'actionError' | 'actionErrorTarget' | 'actionTarget' | 'actionKind' | 'working' | 'canStop'>
 type Read = ReturnType<typeof deferred<WebDavSyncStatus>>
 type Calls = { reads: Read[]; saves: (Read & { input: SaveWebDavSyncConfig })[]; tests: Read[]; syncs: Read[];
   resolutions: (Read & { input: ResolveWebDavSyncConflict })[]; cancellations: Read[] }
@@ -75,7 +75,8 @@ async function withWebDav(run: (context: Context) => Promise<void>, isZh = false
     state = useWebDavSettingsState(isZh)
     const view: View = { status: state.status, config: state.config, password: state.password, clearPassword: state.clearPassword,
       intervalDraft: state.intervalDraft, intervalError: state.intervalError, dirty: state.dirty, readLoading: state.readLoading,
-      readError: state.readError, actionError: state.actionError, actionKind: state.actionKind, working: state.working, canStop: state.canStop }
+      readError: state.readError, actionError: state.actionError, actionErrorTarget: state.actionErrorTarget,
+      actionTarget: state.actionTarget, actionKind: state.actionKind, working: state.working, canStop: state.canStop }
     return createElement('output', null, JSON.stringify(view))
   }
   const render = async () => {
@@ -550,5 +551,151 @@ test('unmount removes the poll and isolates an old pending status read from the 
       assert.equal(context.view().readLoading, false)
       assert.deepEqual(context.intervals(), [1000])
     })
+  }
+})
+
+test('a failed conflict action retains its exact version and sync destination through status polling', async () => {
+  await withWebDav(async context => {
+    const config = { ...savedConfig, url: 'https://original.example/dav/', username: 'original-user', directory: 'Original' }
+    const owner = { key: conflict.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash,
+      url: config.url, username: config.username, directory: config.directory }
+    await context.ready(status({ config, conflicts: [conflict] }))
+    const resolving = await context.start(() => context.state().resolve(resolution))
+    assert.deepEqual(context.view().actionTarget, owner)
+    assert.equal(context.view().actionErrorTarget, null)
+    await context.settle(() => context.calls.resolutions[0].reject(new Error('This conflict version is no longer current')), resolving.completion)
+    assert.equal(await resolving.completion, false)
+    assert.equal(context.view().actionTarget, null)
+    assert.equal(context.view().actionError, 'This conflict version is no longer current')
+    assert.deepEqual(context.view().actionErrorTarget, owner)
+
+    const nextVersion = { ...conflict, localHash: 'c'.repeat(64), remoteHash: 'd'.repeat(64) }
+    await context.settle(() => context.calls.reads.at(-1)!.resolve(status({ config, conflicts: [nextVersion] })))
+    assert.equal(context.view().status?.conflicts[0].localHash, nextVersion.localHash)
+    assert.deepEqual(context.view().actionErrorTarget, owner, 'a refreshed card version cannot take ownership of the old error')
+    await context.poll()
+    const nextConfig = { ...config, url: 'https://next.example/dav/', username: 'next-user', directory: 'Next' }
+    await context.settle(() => context.calls.reads.at(-1)!.resolve(status({ config: nextConfig, conflicts: [nextVersion] })))
+    assert.deepEqual(context.view().config, nextConfig)
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.view().actionError, 'This conflict version is no longer current')
+    assert.deepEqual(context.view().actionErrorTarget, owner, 'polling another destination must not reassign the failure to its card')
+    assert.equal(context.view().actionTarget, null)
+  })
+})
+
+test('only a new accepted primary or conflict action clears the previous conflict error owner', async () => {
+  for (const operation of ['save', 'testConnection', 'syncNow', 'resolve'] as const) {
+    await withWebDav(async context => {
+      const nextConflict = { ...conflict, key: 'doc:two', localHash: 'c'.repeat(64), remoteHash: 'd'.repeat(64) }
+      const nextResolution: ResolveWebDavSyncConflict = { key: nextConflict.key, localHash: nextConflict.localHash,
+        remoteHash: nextConflict.remoteHash, choice: 'remote' }
+      const known = status({ conflicts: [conflict, nextConflict] })
+      await context.ready(known)
+      const failing = await context.start(() => context.state().resolve(resolution))
+      await context.settle(() => context.calls.resolutions[0].reject(new Error('Previous conflict action failed')), failing.completion)
+      await context.settle(() => context.calls.reads.at(-1)!.resolve(known))
+      const previousOwner = context.view().actionErrorTarget
+      assert.ok(previousOwner)
+
+      await context.start(() => context.state().cancel())
+      await act(async () => context.state().setIntervalDraft(''))
+      await context.start(() => context.state().save())
+      await context.start(() => context.state().testConnection())
+      await context.start(() => context.state().syncNow())
+      await context.start(() => context.state().resolve(nextResolution))
+      assert.equal(context.view().actionError, 'Previous conflict action failed')
+      assert.deepEqual(context.view().actionErrorTarget, previousOwner, 'rejected actions must leave the existing feedback intact')
+      assert.equal(context.view().actionTarget, null)
+      assert.equal(context.calls.saves.length + context.calls.tests.length + context.calls.syncs.length + context.calls.cancellations.length, 0)
+      assert.equal(context.calls.resolutions.length, 1)
+      await act(async () => context.state().setIntervalDraft('5'))
+
+      const running = await context.start(() => operation === 'resolve'
+        ? context.state().resolve(nextResolution) : context.state()[operation]())
+      assert.equal(context.view().actionError, '')
+      assert.equal(context.view().actionErrorTarget, null)
+      assert.deepEqual(context.view().actionTarget, operation === 'resolve'
+        ? { key: nextConflict.key, localHash: nextConflict.localHash, remoteHash: nextConflict.remoteHash,
+          url: savedConfig.url, username: savedConfig.username, directory: savedConfig.directory }
+        : null)
+      const request = operation === 'save' ? context.calls.saves[0] : operation === 'testConnection'
+        ? context.calls.tests[0] : operation === 'syncNow' ? context.calls.syncs[0] : context.calls.resolutions[1]
+      await context.settle(() => request.resolve(known), running.completion)
+      assert.equal(await running.completion, true)
+      assert.equal(context.view().actionTarget, null)
+      assert.equal(context.view().actionErrorTarget, null)
+      assert.equal(context.view().actionError, '')
+    })
+  }
+})
+
+test('a cancelled sync late result cannot overwrite a newer conflict failure or its owner', async () => {
+  for (const outcome of ['success', 'failure'] as const) {
+    await withWebDav(async context => {
+      await context.ready()
+      const oldSync = await context.start(() => context.state().syncNow())
+      await context.poll()
+      await context.settle(() => context.calls.reads.at(-1)!.resolve(status({ phase: 'syncing', progress })))
+      const stopping = await context.start(() => context.state().cancel())
+      assert.equal(context.view().actionTarget, null)
+      const nextConflict = { ...conflict, key: 'doc:two', localHash: 'c'.repeat(64), remoteHash: 'd'.repeat(64) }
+      const stopped = status({ conflicts: [nextConflict], message: 'Stopped' })
+      await context.settle(() => context.calls.cancellations[0].resolve(stopped), stopping.completion)
+      const nextResolution: ResolveWebDavSyncConflict = { key: nextConflict.key, localHash: nextConflict.localHash,
+        remoteHash: nextConflict.remoteHash, choice: 'local' }
+      const owner = { key: nextConflict.key, localHash: nextConflict.localHash, remoteHash: nextConflict.remoteHash,
+        url: savedConfig.url, username: savedConfig.username, directory: savedConfig.directory }
+      const resolving = await context.start(() => context.state().resolve(nextResolution))
+      assert.deepEqual(context.view().actionTarget, owner)
+      await context.settle(() => context.calls.resolutions[0].reject(new Error('New conflict action failed')), resolving.completion)
+      assert.equal(context.view().actionTarget, null)
+      assert.deepEqual(context.view().actionErrorTarget, owner)
+      await context.settle(() => outcome === 'success'
+        ? context.calls.syncs[0].resolve(status({ phase: 'error', config: { ...savedConfig, directory: 'Old target' } }))
+        : context.calls.syncs[0].reject(new Error('Old sync failed after cancellation')), oldSync.completion)
+      assert.equal(await oldSync.completion, false)
+      assert.deepEqual(context.view().status, stopped)
+      assert.equal(context.view().actionError, 'New conflict action failed')
+      assert.deepEqual(context.view().actionErrorTarget, owner)
+      assert.equal(context.view().actionTarget, null)
+    })
+  }
+})
+
+test('unmounted conflict and cancellation replies cannot replace a new session conflict owner', async () => {
+  for (const operation of ['resolve', 'cancel'] as const) {
+    for (const outcome of ['success', 'failure'] as const) {
+      await withWebDav(async context => {
+        await context.ready(operation === 'cancel' ? status({ phase: 'syncing', progress }) : status({ conflicts: [conflict] }))
+        const oldAction = await context.start(() => operation === 'resolve'
+          ? context.state().resolve(resolution) : context.state().cancel())
+        const oldRequest = operation === 'resolve' ? context.calls.resolutions[0] : context.calls.cancellations[0]
+        await context.unmount()
+        await context.render()
+        const config = { ...savedConfig, url: 'https://new-session.example/dav/', username: 'new-session-user', directory: 'New session' }
+        const nextConflict = { ...conflict, key: 'doc:new-session', localHash: 'c'.repeat(64), remoteHash: 'd'.repeat(64) }
+        const known = status({ config, conflicts: [nextConflict] })
+        await context.ready(known)
+        const nextResolution: ResolveWebDavSyncConflict = { key: nextConflict.key, localHash: nextConflict.localHash,
+          remoteHash: nextConflict.remoteHash, choice: 'local' }
+        const owner = { key: nextConflict.key, localHash: nextConflict.localHash, remoteHash: nextConflict.remoteHash,
+          url: config.url, username: config.username, directory: config.directory }
+        const resolving = await context.start(() => context.state().resolve(nextResolution))
+        assert.deepEqual(context.view().actionTarget, owner)
+        await context.settle(() => outcome === 'success' ? oldRequest.resolve(status({ message: 'Old session response' }))
+          : oldRequest.reject(new Error('Old session failure')), oldAction.completion)
+        assert.equal(await oldAction.completion, false)
+        assert.deepEqual(context.view().status, known)
+        assert.deepEqual(context.view().actionTarget, owner)
+        assert.equal(context.view().actionKind, 'resolve')
+        assert.equal(context.view().actionError, '')
+        assert.equal(context.view().actionErrorTarget, null)
+        await context.settle(() => context.calls.resolutions.at(-1)!.resolve(known), resolving.completion)
+        assert.equal(context.view().actionTarget, null)
+        assert.equal(context.view().actionErrorTarget, null)
+        assert.equal(context.view().actionError, '')
+      })
+    }
   }
 })

@@ -134,8 +134,9 @@ async function enterAction(page: Page, target: Locator) {
   await page.keyboard.press('Enter')
 }
 
-async function causeReadError(app: ElectronApplication, error: Locator) {
+async function causeReadError(app: ElectronApplication, page: Page, error: Locator) {
   await prepareRead(app)
+  await page.clock.runFor(1000)
   await expect.poll(async () => (await readProbe(app)).reads).toBe(1)
   await finishReads(app, true)
   await expect(error).toContainText('Controlled settings read failure')
@@ -145,6 +146,9 @@ test('manual WebDAV Reload restores focus on failure and success while backgroun
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
   await withElectronApp(async ({ app, page }) => {
     await seedWebDav(page)
+    const now = new Date('2026-10-02T00:00:00Z')
+    await page.clock.install({ time: now })
+    await page.clock.pauseAt(new Date(now.getTime() + 1))
     await installProbe(app, 'webdav', true)
     const { section, reload, url, username } = await openWebDav(page)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)
@@ -171,12 +175,13 @@ test('manual WebDAV Reload restores focus on failure and success while backgroun
     // A successful automatic poll has no user action whose focus needs restoration.
     await username.focus()
     await prepareRead(app)
+    await page.clock.runFor(1000)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)
     await finishReads(app, false)
     await expect(username).toBeFocused()
 
     // A known status leaves the inputs usable during Reload: preserve a user's new input focus.
-    await causeReadError(app, section.getByRole('alert'))
+    await causeReadError(app, page, section.getByRole('alert'))
     await prepareRead(app)
     await enterAction(page, reload)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)
@@ -187,7 +192,7 @@ test('manual WebDAV Reload restores focus on failure and success while backgroun
     await expect(username).toBeFocused()
 
     // Categories retain the sync component; a late response must not focus its hidden input.
-    await causeReadError(app, section.getByRole('alert'))
+    await causeReadError(app, page, section.getByRole('alert'))
     await prepareRead(app)
     await enterAction(page, reload)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)
@@ -198,7 +203,7 @@ test('manual WebDAV Reload restores focus on failure and success while backgroun
     await expect(general).toBeFocused()
 
     await enterAction(page, page.getByRole('tab', { name: 'Sync', exact: true }))
-    await causeReadError(app, section.getByRole('alert'))
+    await causeReadError(app, page, section.getByRole('alert'))
     await prepareRead(app)
     await enterAction(page, reload)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)

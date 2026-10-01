@@ -4,6 +4,8 @@ import { getErrorMessage } from '../utils/errorMessage'
 
 type Draft = Omit<WebDavSyncConfig, 'intervalMinutes'> & { intervalDraft: string; password: string; clearPassword: boolean }
 type ActionKind = 'save' | 'test' | 'sync' | 'resolve' | 'cancel'
+type ConflictActionTarget = Pick<ResolveWebDavSyncConflict, 'key' | 'localHash' | 'remoteHash'>
+  & Pick<WebDavSyncConfig, 'url' | 'username' | 'directory'>
 type PendingAction = { kind: ActionKind; session: number }
 
 function createDraft(config: WebDavSyncConfig): Draft {
@@ -34,6 +36,8 @@ export function useWebDavSettingsState(isZh: boolean) {
   const [readLoading, setReadLoading] = useState(true)
   const [readError, setReadError] = useState('')
   const [actionError, setActionError] = useState('')
+  const [actionErrorTarget, setActionErrorTarget] = useState<ConflictActionTarget | null>(null)
+  const [actionTarget, setActionTarget] = useState<ConflictActionTarget | null>(null)
   const [actionKind, setActionKind] = useState<ActionKind | null>(null)
   const draftRef = useRef(draft), statusRef = useRef(status)
   const savedRef = useRef(DEFAULT_WEBDAV_SYNC_CONFIG)
@@ -113,7 +117,7 @@ export function useWebDavSettingsState(isZh: boolean) {
   const setClearPassword = useCallback((clearPassword: boolean) => updateDraft({ clearPassword, password: '' }), [updateDraft])
   const setIntervalDraft = useCallback((intervalDraft: string) => updateDraft({ intervalDraft }), [updateDraft])
 
-  const run = useCallback(async (kind: ActionKind, operation: () => Promise<WebDavSyncStatus>): Promise<boolean> => {
+  const run = useCallback(async (kind: ActionKind, operation: () => Promise<WebDavSyncStatus>, conflict?: ResolveWebDavSyncConflict): Promise<boolean> => {
     if (!mountedRef.current || !statusRef.current) return false
     const currentAction = actionRef.current
     if (kind === 'cancel') {
@@ -123,10 +127,14 @@ export function useWebDavSettingsState(isZh: boolean) {
     if ((kind === 'test' || kind === 'sync' || kind === 'resolve') && isDirty(draftRef.current, savedRef.current)) return false
     if ((kind === 'test' || kind === 'sync') && !statusRef.current.hasPassword) return false
     const pending = { kind, session: sessionRef.current }
+    const target = conflict ? { key: conflict.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash,
+      url: savedRef.current.url, username: savedRef.current.username, directory: savedRef.current.directory } : null
     actionRef.current = pending
     readBarrierRef.current += 1
     setActionKind(kind)
+    setActionTarget(target)
     setActionError('')
+    setActionErrorTarget(null)
     const isCurrent = () => mountedRef.current && sessionRef.current === pending.session && actionRef.current === pending
     let failed = false
     try {
@@ -139,6 +147,7 @@ export function useWebDavSettingsState(isZh: boolean) {
       if (isCurrent()) {
         failed = true
         setActionError(getErrorMessage(reason, languageRef.current ? '操作失败，请重试。' : 'Action failed. Retry.'))
+        setActionErrorTarget(target)
       }
       return false
     } finally {
@@ -146,6 +155,7 @@ export function useWebDavSettingsState(isZh: boolean) {
         readBarrierRef.current += 1
         actionRef.current = null
         setActionKind(null)
+        setActionTarget(null)
         if (failed) void refreshStatus()
       }
     }
@@ -160,7 +170,7 @@ export function useWebDavSettingsState(isZh: boolean) {
   }, [run])
   const testConnection = useCallback(() => run('test', () => window.knowbook.testWebDavConnection()), [run])
   const syncNow = useCallback(() => run('sync', () => window.knowbook.syncWebDavNow()), [run])
-  const resolve = useCallback((input: ResolveWebDavSyncConflict) => run('resolve', () => window.knowbook.resolveWebDavSyncConflict(input)), [run])
+  const resolve = useCallback((input: ResolveWebDavSyncConflict) => run('resolve', () => window.knowbook.resolveWebDavSyncConflict(input), input), [run])
   const cancel = useCallback(() => run('cancel', () => window.knowbook.cancelWebDavSync()), [run])
 
   const intervalMinutes = parseInterval(draft.intervalDraft)
@@ -172,6 +182,6 @@ export function useWebDavSettingsState(isZh: boolean) {
   const canStop = actionKind === 'test' || actionKind === 'sync' || (actionKind === null && isRunning(status))
 
   return { status, config, password, clearPassword, intervalDraft, intervalError,
-    dirty: isDirty(draft, savedRef.current), readLoading, readError, actionError, actionKind, working, canStop,
+    dirty: isDirty(draft, savedRef.current), readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
     edit, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow, resolve, cancel }
 }
