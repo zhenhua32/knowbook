@@ -90,6 +90,10 @@ export function useSettingsDomain({
     aiClearingApiKey,
     appUpdateRefreshing: settingsState.appUpdateRefreshing,
     appUpdateState: settingsState.appUpdateState,
+    appUpdateLoading: settingsState.appUpdateLoading,
+    appUpdateLoadError: settingsState.appUpdateLoadError,
+    appUpdateCheckError: settingsState.appUpdateCheckError,
+    appUpdateCanCheck: settingsState.appUpdateCanCheck,
     isSettingsPage,
     isZh,
     loading,
@@ -101,9 +105,8 @@ export function useSettingsDomain({
     onAiRelatedNotesEnabledChange,
     onAiModelChange,
     onBackupNow,
-    onCheckForAppUpdates: () => {
-      void settingsState.checkForAppUpdates()
-    },
+    onCheckForAppUpdates: settingsState.checkForAppUpdates,
+    onReloadAppUpdateState: settingsState.reloadAppUpdateState,
     onInstallAppUpdate: () => {
       void settingsState.installAppUpdate()
     },

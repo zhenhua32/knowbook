@@ -205,8 +205,12 @@ function createUiText(language: UiLanguage) {
     updateStatusError: (message: string | null) => zh
       ? `更新检查失败${message ? `：${message}` : '。'}`
       : `Update check failed${message ? `: ${message}` : '.'}`,
-    appUpdateCheckStarted: zh ? '已开始检查更新。' : 'Started checking for updates.',
+    appUpdateCheckStarted: zh ? '更新状态已刷新。' : 'Update status refreshed.',
     appUpdateCheckFailed: zh ? '检查更新失败。' : 'Failed to check for updates.',
+    appUpdateLoadFailed: zh ? '读取更新状态失败。' : 'Failed to load update status.',
+    appUpdateReload: zh ? '重新加载状态' : 'Reload status',
+    appUpdateStatusUnavailable: zh ? '更新状态尚未读取，请重新加载。' : 'Update status is unavailable. Reload to retry.',
+    appUpdateLastKnownStatus: zh ? '显示上次读取的状态，重新加载可获取最新状态。' : 'Showing the last known status. Reload to get the latest status.',
     appUpdateInstallFailed: zh ? '安装更新失败。' : 'Failed to install the downloaded update.',
     automationFeedLabel: zh ? '工作区动态' : 'Workspace activity',
     recentEventsTitle: zh ? '最近活动' : 'Recent activity',

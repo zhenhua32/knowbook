@@ -39,7 +39,12 @@ type DashboardSettingsSectionProps = {
   onBackupNow: () => void
   appUpdateState: AppUpdateState | null
   appUpdateRefreshing: boolean
-  onCheckForAppUpdates: () => void
+  appUpdateLoading: boolean
+  appUpdateLoadError: string | null
+  appUpdateCheckError: string | null
+  appUpdateCanCheck: boolean
+  onReloadAppUpdateState: () => Promise<void>
+  onCheckForAppUpdates: () => void | Promise<void>
   onInstallAppUpdate: () => void
   webClipBridgeStatus: WebClipBridgeStatus | null
   webClipBridgeEnabledDraft: boolean
@@ -64,7 +69,7 @@ type DashboardSettingsSectionProps = {
 
 function getAppUpdateStatusText(state: AppUpdateState | null, ui: UiText): string {
   if (!state) {
-    return ui.common.loading
+    return ui.appUpdateStatusUnavailable
   }
 
   switch (state.status) {
@@ -121,6 +126,11 @@ export function DashboardSettingsSection({
   onBackupNow,
   appUpdateState,
   appUpdateRefreshing,
+  appUpdateLoading,
+  appUpdateLoadError,
+  appUpdateCheckError,
+  appUpdateCanCheck,
+  onReloadAppUpdateState,
   onCheckForAppUpdates,
   onInstallAppUpdate,
   webClipBridgeStatus,
@@ -150,9 +160,15 @@ export function DashboardSettingsSection({
   const bridgeTokenHintId = useId()
   const aiPanelRef = useRef<HTMLElement>(null)
   const bridgePanelRef = useRef<HTMLElement>(null)
+  const updatesPanelRef = useRef<HTMLElement>(null)
   const bridgePortRef = useRef<HTMLInputElement>(null)
   const runAiAction = useAsyncActionFocus(aiPanelRef)
   const runBridgeAction = useAsyncActionFocus(bridgePanelRef)
+  const runUpdateAction = useAsyncActionFocus(updatesPanelRef)
+  const updateCheckBusy = appUpdateRefreshing || (appUpdateState?.status === 'checking' && !appUpdateCanCheck)
+  const staleCheckFeedback = appUpdateCheckError && (appUpdateState?.status === 'not-available' || appUpdateState?.status === 'idle')
+  const updateStatusText = updateCheckBusy ? ui.updateStatusChecking : staleCheckFeedback ? ui.appUpdateCheckFailed
+    : !appUpdateState && appUpdateLoading ? ui.common.loading : getAppUpdateStatusText(appUpdateState, ui)
   const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'general', label: isZh ? '通用' : 'General' },
@@ -370,7 +386,7 @@ export function DashboardSettingsSection({
                 </div>
               </section>
 
-              <section className="panel settings-category-panel" {...panelProps('updates')}>
+              <section ref={updatesPanelRef} className="panel settings-category-panel settings-updates-panel" {...panelProps('updates')}>
                 <div>
                   <p className="panel-label">{ui.appUpdateLabel}</p>
                   <h3 className="settings-card-title">{ui.appUpdateTitle}</h3>
@@ -379,35 +395,47 @@ export function DashboardSettingsSection({
                 <dl className="meta-grid">
                   <div>
                     <dt>{ui.currentVersionLabel}</dt>
-                    <dd>{appUpdateState?.currentVersion ?? ui.initializing}</dd>
+                    <dd>{appUpdateState?.currentVersion ?? '—'}</dd>
                   </div>
                   <div>
                     <dt>{ui.availableVersionLabel}</dt>
-                    <dd>{appUpdateState?.downloadedVersion ?? appUpdateState?.availableVersion ?? ui.common.none}</dd>
+                    <dd>{appUpdateState ? appUpdateState.downloadedVersion ?? appUpdateState.availableVersion ?? ui.common.none : '—'}</dd>
                   </div>
                   <div>
                     <dt>{ui.updateStatusField}</dt>
-                    <dd>{getAppUpdateStatusText(appUpdateState, ui)}</dd>
+                    <dd>{updateStatusText}</dd>
                   </div>
                   <div>
                     <dt>{ui.lastCheckedLabel}</dt>
-                    <dd>{appUpdateState?.checkedAt ? new Date(appUpdateState.checkedAt).toLocaleString(ui.locale) : ui.notCheckedYet}</dd>
+                    <dd>{appUpdateState ? appUpdateState.checkedAt ? new Date(appUpdateState.checkedAt).toLocaleString(ui.locale) : ui.notCheckedYet : '—'}</dd>
                   </div>
                 </dl>
                 <div>
                   <strong>{ui.releaseNotesLabel}</strong>
                   <p className="settings-release-notes">{appUpdateState?.releaseNotes ?? ui.noReleaseNotes}</p>
                 </div>
+                <div className="settings-update-actions">
+                <div className="settings-bridge-read-error settings-update-feedback">
+                  {appUpdateCheckError && <p className="settings-update-check-error" role="alert">{appUpdateCheckError}</p>}
+                  {appUpdateLoading && <p className="mini-hint" role="status">{ui.common.loading}</p>}
+                  {appUpdateLoadError && <p className="settings-update-read-error" role="alert">{appUpdateLoadError}</p>}
+                  {appUpdateLoadError && appUpdateState && <p className="mini-hint">{ui.appUpdateLastKnownStatus}</p>}
+                  {updateCheckBusy && !appUpdateCheckError && <p role="status">{ui.checkingForUpdates}</p>}
+                </div>
                 <div className="settings-actions">
+                  <button aria-busy={appUpdateLoading} className="secondary-button" disabled={appUpdateLoading || appUpdateRefreshing}
+                    onClick={event => runUpdateAction(event.currentTarget, onReloadAppUpdateState)} type="button">{ui.appUpdateReload}</button>
                   <button
+                    aria-busy={updateCheckBusy}
                     className="secondary-button"
-                    disabled={appUpdateRefreshing || appUpdateState?.status === 'checking' || appUpdateState?.updatesEnabled === false}
-                    onClick={onCheckForAppUpdates}
+                    disabled={!appUpdateCanCheck}
+                    onClick={event => runUpdateAction(event.currentTarget, onCheckForAppUpdates)}
                     type="button"
                   >
-                    {appUpdateRefreshing || appUpdateState?.status === 'checking' ? ui.checkingForUpdates : ui.checkForUpdates}
+                    {updateCheckBusy ? ui.checkingForUpdates : ui.checkForUpdates}
                   </button>
-                  <button className="primary-button" disabled={!appUpdateState?.canInstall} onClick={onInstallAppUpdate} type="button">{ui.installUpdateNow}</button>
+                  <button className="primary-button" disabled={!appUpdateState?.canInstall || Boolean(appUpdateLoadError) || appUpdateRefreshing} onClick={onInstallAppUpdate} type="button">{ui.installUpdateNow}</button>
+                </div>
                 </div>
               </section>
               <section className="panel settings-category-panel settings-group" {...panelProps('storage')}>

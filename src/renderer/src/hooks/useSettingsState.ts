@@ -1,9 +1,10 @@
 import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { AppUpdateState, WebClipBridgeStatus } from '@shared/contracts'
+import type { WebClipBridgeStatus } from '@shared/contracts'
 import { parseWebClipBridgePortDraft } from '@shared/web-clip-bridge-settings'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
+import { useAppUpdateSettingsState } from './useAppUpdateSettingsState'
 
 type UseSettingsStateParams = {
   isSettingsPageActive: boolean
@@ -12,8 +13,8 @@ type UseSettingsStateParams = {
 }
 
 export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSettingsStateParams) {
-  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState | null>(null)
-  const [appUpdateRefreshing, setAppUpdateRefreshing] = useState(false)
+  const appUpdates = useAppUpdateSettingsState({ ui, onMessage })
+  const { reloadAppUpdateState } = appUpdates
   const [webClipBridgeStatus, setWebClipBridgeStatus] = useState<WebClipBridgeStatus | null>(null)
   const [webClipBridgeLoading, setWebClipBridgeLoading] = useState(true)
   const [webClipBridgeLoadError, setWebClipBridgeLoadError] = useState<string | null>(null)
@@ -74,16 +75,6 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
 
   useEffect(() => {
     mounted.current = true
-    const loadSession = session.current
-
-    window.knowbook.getAppUpdateState().then((state) => {
-      if (mounted.current && session.current === loadSession) {
-        setAppUpdateState(state)
-      }
-    }).catch((error) => {
-      console.warn('Failed to load app update state.', error)
-    })
-
     void reloadWebClipBridgeStatus()
 
     return () => {
@@ -101,49 +92,17 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
       return
     }
 
-    let cancelled = false
-
-    const refresh = async () => {
-      try {
-        const state = await window.knowbook.getAppUpdateState()
-        if (!cancelled) {
-          setAppUpdateState(state)
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Failed to refresh settings state.', error)
-        }
-      }
-    }
-
-    void refresh()
+    void reloadAppUpdateState()
     void reloadWebClipBridgeStatus()
     const timer = setInterval(() => {
-      void refresh()
+      void reloadAppUpdateState()
       void reloadWebClipBridgeStatus()
     }, 4000)
 
     return () => {
-      cancelled = true
       clearInterval(timer)
     }
-  }, [isSettingsPageActive, reloadWebClipBridgeStatus])
-
-  const checkForAppUpdates = useCallback(async () => {
-    setAppUpdateRefreshing(true)
-
-    try {
-      const nextState = await window.knowbook.checkForAppUpdates()
-      setAppUpdateState(nextState)
-      onMessage(ui.appUpdateCheckStarted)
-    } catch (error) {
-      const detail = getErrorMessage(error, '')
-      const message = detail ? `${ui.appUpdateCheckFailed} ${detail}` : ui.appUpdateCheckFailed
-      onMessage(message, 'error')
-    } finally {
-      setAppUpdateRefreshing(false)
-    }
-  }, [onMessage, ui])
+  }, [isSettingsPageActive, reloadAppUpdateState, reloadWebClipBridgeStatus])
 
   const installAppUpdate = useCallback(async () => {
     try {
@@ -238,9 +197,7 @@ export function useSettingsState({ isSettingsPageActive, ui, onMessage }: UseSet
   }, [onMessage, ui, webClipBridgeStatus?.token])
 
   return {
-    appUpdateState,
-    appUpdateRefreshing,
-    checkForAppUpdates,
+    ...appUpdates,
     copyWebClipBridgeEndpoint,
     copyWebClipBridgeToken,
     installAppUpdate,

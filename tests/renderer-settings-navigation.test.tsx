@@ -30,6 +30,8 @@ function settingsProps(isZh: boolean): SettingsProps {
     aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop, aiSaving: false, aiClearingApiKey: false,
     onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
     appUpdateState: null, appUpdateRefreshing: false, onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
+    appUpdateLoading: false, appUpdateLoadError: null, appUpdateCheckError: null, appUpdateCanCheck: false,
+    onReloadAppUpdateState: async () => undefined,
     webClipBridgeStatus: { enabled: false, running: false, port: null, configuredPort: 3030, token: 'fixture-token', endpoint: null, lastError: null }, webClipBridgeEnabledDraft: false, onWebClipBridgeEnabledChange: noop,
     webClipBridgePortDraft: '3030', onWebClipBridgePortChange: noop, webClipBridgeSaving: false,
     webClipBridgePortError: null,

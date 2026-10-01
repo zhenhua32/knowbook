@@ -259,6 +259,25 @@
   overflow-wrap: anywhere;
 }
 
+.settings-update-actions {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  position: sticky;
+  bottom: 12px;
+  z-index: 1;
+  padding: 12px;
+  border: 1px solid var(--kb-line);
+  border-radius: 12px;
+  background: var(--kb-canvas);
+}
+
+.settings-update-feedback {
+  max-height: min(320px, calc(100dvh - 200px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .settings-bridge-read-error [role='alert'],
 .settings-bridge-port-error {
   color: color-mix(in srgb, var(--kb-danger) 90%, var(--kb-text));
