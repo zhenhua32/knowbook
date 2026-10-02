@@ -510,6 +510,10 @@
 .dbw-dialog :is([readonly], [aria-busy='true']) { cursor: progress; }
 .dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); scroll-padding-block: 12px; }
 .dbw-create-record-dialog .dbw-record-form { max-height: calc(100vh - 210px); }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-modal-layer:has(.dbw-create-record-dialog) { padding-bottom: max(24px, var(--kb-notification-clearance, 0px)); }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog { display: flex; flex-direction: column; height: calc(100dvh - 24px - max(24px, var(--kb-notification-clearance, 0px))); max-height: max-content; }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog > :not(fieldset) { flex-shrink: 0; }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog .dbw-record-form { flex-basis: auto; }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }
 
 @media (max-width: 1320px) {
