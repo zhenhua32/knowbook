@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { DatabaseField, DocumentDatabaseColumnType } from '@shared/contracts'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
@@ -37,6 +37,8 @@ export function DatabaseFieldDrawer({
 }) {
   const drawerRef = useRef<HTMLElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
+  const createFormRef = useRef<HTMLFormElement | null>(null)
+  const addFieldRef = useRef<HTMLButtonElement | null>(null)
   const requiredHintId = useId()
   const optionsHintId = useId()
   const createComposingRef = useRef(false)
@@ -47,6 +49,7 @@ export function DatabaseFieldDrawer({
   const [options, setOptions] = useState('')
   const [failed, setFailed] = useState(false)
   const submission = useFieldSubmission(open ? sourceSessionKey : null)
+  const createFocus = useFieldCreationFocus(drawerRef, createFormRef, addFieldRef, open ? sourceSessionKey : null)
   const close = () => { if (!submission.isBusy()) onClose() }
 
   useLayoutEffect(() => {
@@ -75,14 +78,29 @@ export function DatabaseFieldDrawer({
     const normalizedName = name.trim()
     const normalizedOptions = [...new Set(options.split(',').map((option) => option.trim()).filter(Boolean))]
     if (!normalizedName || ((type === 'select' || type === 'multi-select') && normalizedOptions.length === 0)) return
+    const pendingFocus = createFocus.capture()
     setFailed(false)
     const completed = await submission.run('create', () => onCreateField(normalizedName, type, normalizedOptions))
+    createFocus.complete(pendingFocus, completed)
     if (completed === null) return
     if (!completed) { setFailed(true); return }
     setName('')
     setType('text')
     setOptions('')
     setCreating(false)
+  }
+
+  const cancelCreate = () => {
+    if (submission.isBusy()) return
+    const pendingFocus = createFocus.capture()
+    createFocus.complete(pendingFocus, true)
+    createComposingRef.current = false
+    blockedImplicitSubmitRef.current = false
+    setCreating(false)
+    setFailed(false)
+    setName('')
+    setType('text')
+    setOptions('')
   }
 
   return (
@@ -115,7 +133,7 @@ export function DatabaseFieldDrawer({
         </div>
         <div className="dbw-field-create">
           {creating ? (
-            <form className="dbw-field-create-form" noValidate
+            <form className="dbw-field-create-form" noValidate ref={createFormRef}
               onCompositionStartCapture={() => { createComposingRef.current = true }}
               // Candidate confirmation can end composition before the browser's implicit submit.
               onCompositionEndCapture={() => { createComposingRef.current = false }}
@@ -150,14 +168,97 @@ export function DatabaseFieldDrawer({
               {failed ? <p className="dbw-field-submit-error" role="alert">{text.failed}</p> : null}
               <div className="dbw-inline-actions">
                 <button className="dbw-primary-button" disabled={submission.busy || !name.trim() || ((type === 'select' || type === 'multi-select') && !options.split(',').some(option => option.trim()))} type="submit">{submission.action === 'create' ? text.creating : text.create}</button>
-                <button className="dbw-quiet-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { createComposingRef.current = false; blockedImplicitSubmitRef.current = false; setCreating(false); setFailed(false); setName(''); setType('text'); setOptions('') } }} type="button">{text.cancel}</button>
+                <button className="dbw-quiet-button" disabled={submission.busy} onClick={cancelCreate} type="button">{text.cancel}</button>
               </div>
             </form>
-          ) : <button className="dbw-add-field-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { createComposingRef.current = false; blockedImplicitSubmitRef.current = false; setCreating(true) } }} type="button">＋ {text.addField}</button>}
+          ) : <button className="dbw-add-field-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { createComposingRef.current = false; blockedImplicitSubmitRef.current = false; setCreating(true) } }} ref={addFieldRef} type="button">＋ {text.addField}</button>}
         </div>
       </aside>
     </>
   )
+}
+
+type FieldCreationFocus = {
+  origin: HTMLElement
+  target: HTMLElement | 'add' | null
+  cleanup: () => void
+}
+
+function isFieldFocusVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
+}
+
+function useFieldCreationFocus(
+  drawerRef: RefObject<HTMLElement | null>,
+  formRef: RefObject<HTMLFormElement | null>,
+  addRef: RefObject<HTMLButtonElement | null>,
+  session: string | null
+) {
+  const pendingRef = useRef<FieldCreationFocus | null>(null)
+  const clear = () => {
+    pendingRef.current?.cleanup()
+    pendingRef.current = null
+  }
+  useLayoutEffect(() => clear, [session])
+  useLayoutEffect(() => {
+    const pending = pendingRef.current
+    if (!pending?.target) return
+    const drawer = drawerRef.current
+    const document = pending.origin.ownerDocument
+    const target = pending.target === 'add' ? addRef.current : pending.target
+    if (!drawer || !target || !isFieldFocusVisible(drawer) || !isFieldFocusVisible(target)
+      || !drawer.contains(target) || !document.hasFocus()
+      || (document.activeElement !== document.body && document.activeElement !== pending.origin)
+      || [...document.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
+        .some(dialog => dialog !== drawer && isFieldFocusVisible(dialog))) {
+      clear()
+      return
+    }
+    if (target.matches(':disabled, [aria-disabled="true"]')) return
+    // Failure feedback can push the retry control below the form's scroll viewport.
+    const preventScroll = pending.target === 'add'
+    clear()
+    target.focus({ preventScroll })
+  })
+
+  const capture = (): FieldCreationFocus | null => {
+    clear()
+    const form = formRef.current
+    const drawer = drawerRef.current
+    const document = form?.ownerDocument
+    const origin = document?.activeElement
+    if (!session || !form || !drawer || !(origin instanceof HTMLElement) || !form.contains(origin)
+      || !document?.hasFocus() || !isFieldFocusVisible(drawer) || !isFieldFocusVisible(origin)) return null
+    const abandon = () => { if (pendingRef.current === pending) clear() }
+    const moved = (event: FocusEvent) => { if (event.target !== document.body) abandon() }
+    const blurred = (event: FocusEvent) => {
+      // Disabling a control or removing the completed form can move focus to BODY.
+      const toBody = !event.relatedTarget || event.relatedTarget === document.body
+      if (origin.isConnected && (!toBody || (!origin.matches(':disabled') && pending.target !== 'add'))) abandon()
+    }
+    const pending: FieldCreationFocus = { origin, target: null, cleanup: () => {
+      document.removeEventListener('pointerdown', abandon, true)
+      document.removeEventListener('keydown', abandon, true)
+      document.removeEventListener('focusin', moved, true)
+      origin.removeEventListener('focusout', blurred)
+      document.defaultView?.removeEventListener('blur', abandon)
+    } }
+    pendingRef.current = pending
+    document.addEventListener('pointerdown', abandon, true)
+    document.addEventListener('keydown', abandon, true)
+    document.addEventListener('focusin', moved, true)
+    origin.addEventListener('focusout', blurred)
+    document.defaultView?.addEventListener('blur', abandon)
+    return pending
+  }
+  const complete = (pending: FieldCreationFocus | null, success: boolean | null) => {
+    if (!pending || pendingRef.current !== pending) return
+    if (success === null) { clear(); return }
+    pending.target = success ? 'add' : pending.origin
+  }
+  return { capture, complete }
 }
 
 function FieldRow({

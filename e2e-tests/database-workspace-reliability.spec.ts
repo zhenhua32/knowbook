@@ -439,6 +439,217 @@ for (const [language, theme] of [['en-US', 'light'], ['zh-CN', 'dark']] as const
   })
 }
 
+async function installFieldFocusProbe(app: ElectronApplication) {
+  await app.evaluate(({ ipcMain }) => {
+    type Handler = (event: unknown, input: unknown) => unknown
+    type Pending = { event: unknown; input: unknown; resolve: (value: unknown) => void; reject: (error: Error) => void; settled: boolean }
+    const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
+    const original = handlers.get('knowbook:create-document-database-column')!
+    const pending: Pending[] = []
+    const failures: string[] = []
+    process.env.KNOWBOOK_FIELD_ENTER_REQUESTS = '[]'
+    process.env.KNOWBOOK_FIELD_ENTER_FAILURES = '[]'
+    ipcMain.removeHandler('knowbook:create-document-database-column')
+    ipcMain.handle('knowbook:create-document-database-column', (event, input) => new Promise((resolve, reject) => {
+      pending.push({ event, input, resolve, reject, settled: false })
+      process.env.KNOWBOOK_FIELD_ENTER_REQUESTS = JSON.stringify(pending.map(request => request.input))
+    }))
+    ipcMain.on('knowbook:test-field-focus-settle', (_event, index: number) => {
+      const request = pending[index]
+      if (!request || request.settled) throw new Error('Invalid isolated field focus settlement')
+      request.settled = true
+      setImmediate(async () => {
+        try { request.resolve(await original(request.event, request.input)) }
+        catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error))
+          process.env.KNOWBOOK_FIELD_ENTER_FAILURES = JSON.stringify(failures)
+          request.reject(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
+    })
+  })
+  return {
+    callCount: () => app.evaluate(() => JSON.parse(process.env.KNOWBOOK_FIELD_ENTER_REQUESTS!).length as number),
+    settle: (index: number) => app.evaluate(({ ipcMain }, index) => { ipcMain.emit('knowbook:test-field-focus-settle', null, index) }, index)
+  }
+}
+
+async function setFieldFocusFailure(app: ElectronApplication, databaseId: string, fieldName: string, enabled: boolean) {
+  await app.evaluate(({ app }, { databaseId, fieldName, enabled }) => {
+    const { createRequire } = process.getBuiltinModule('node:module')!
+    const { join } = process.getBuiltinModule('node:path')!
+    const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
+    const database = new Database(join(app.getPath('userData'), 'storage', 'knowbook.db'), { fileMustExist: true })
+    try {
+      database.exec('DROP TRIGGER IF EXISTS knowbook_e2e_field_focus_failure')
+      if (enabled) {
+        const id = databaseId.replace(/'/g, "''")
+        const name = fieldName.replace(/'/g, "''")
+        database.exec("CREATE TRIGGER knowbook_e2e_field_focus_failure BEFORE INSERT ON document_database_columns WHEN NEW.database_id = '" + id +
+          "' AND NEW.name = '" + name + "' BEGIN SELECT RAISE(ABORT, 'The isolated field focus save is temporarily unavailable.'); END")
+      }
+    } finally { database.close() }
+  }, { databaseId, fieldName, enabled })
+}
+
+for (const [language, theme] of [['en-US', 'light'], ['zh-CN', 'dark']] as const) {
+  test(`field creation returns keyboard focus to Add field in ${language} @electron`, async ({}, testInfo) => {
+    test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+    await withElectronApp(async ({ page, app }) => {
+      const errors: string[] = []
+      page.on('pageerror', error => errors.push(error.message))
+      const ids = await seedCustomDatabase(page)
+      const originalColumns = await page.evaluate(id => window.knowbook.getDocumentDatabaseColumns(id), ids.database)
+      const originalRecords = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)
+      await page.evaluate(async ({ language, theme }) => {
+        await window.knowbook.saveSetting('ui.language', language)
+        await window.knowbook.saveSetting('appearance.theme', theme)
+      }, { language, theme })
+      await page.reload()
+      await page.setViewportSize({ width: 760, height: 640 })
+      await page.getByTitle(uiText('Database', '数据库'), { exact: true }).click()
+      await expect(page.locator('.dbw-source-trigger')).toContainText('操作可靠性')
+      const probe = await installFieldFocusProbe(app)
+      const readColumns = () => page.evaluate(id => window.knowbook.getDocumentDatabaseColumns(id), ids.database)
+      await page.getByRole('button', { name: /^(?:Fields|字段)/ }).click()
+      const drawer = page.getByRole('dialog', { name: uiText('Manage fields', '字段管理'), exact: true })
+      const add = drawer.getByRole('button', { name: uiText('＋ Add field', '＋ 新增字段'), exact: true })
+      await add.click()
+      const form = drawer.locator('.dbw-field-create-form')
+      const name = form.getByLabel(uiText('Name', '名称'), { exact: true })
+      const type = form.getByLabel(uiText('Field type', '字段类型'), { exact: true })
+      const options = form.getByLabel(uiText('Options (comma separated)', '选项（逗号分隔）'), { exact: true })
+      const create = form.getByRole('button', { name: uiText('Create', '创建'), exact: true })
+      const cancel = form.getByRole('button', { name: uiText('Cancel', '取消'), exact: true })
+      await name.fill('  Focus return field  ')
+      await expect(name).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect.poll(probe.callCount).toBe(1)
+      await expect(name).toBeDisabled()
+      // No pending keyboard or pointer event: automatic disabled-to-body blur
+      // must leave the submission's focus ownership intact.
+      await probe.settle(0)
+      await expect(form).toHaveCount(0)
+      const columns = await readColumns()
+      expect(columns).toHaveLength(originalColumns.length + 1)
+      expect(columns.filter(field => field.name === 'Focus return field').map(field => ({ type: field.type, options: field.options })))
+        .toEqual([{ type: 'text', options: [] }])
+      expect(await probe.callCount()).toBe(1)
+      await recordFieldEnterState(page, app, testInfo, `${language}-create-success-focus-baseline`)
+      await expect(add).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect(name).toBeFocused()
+      await name.fill('Cancelled focus field')
+      await page.keyboard.press('Tab')
+      await expect(type).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(create).toBeFocused()
+      await page.keyboard.press('Tab')
+      await expect(cancel).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect(form).toHaveCount(0)
+      await recordFieldEnterState(page, app, testInfo, `${language}-cancel-returns-add`)
+      await expect(add).toBeFocused()
+      expect(await probe.callCount()).toBe(1)
+      expect((await readColumns()).some(field => field.name === 'Cancelled focus field')).toBe(false)
+      await page.keyboard.press('Enter')
+      await expect(name).toBeFocused()
+
+      const attempts = [
+        { origin: 'name', name: 'Focus retry name', type: 'text' },
+        { origin: 'options', name: 'Focus retry options', type: 'select' },
+        { origin: 'create', name: 'Focus retry create', type: 'multi-select' }
+      ] as const
+      for (const attempt of attempts) {
+        if (attempt.origin === 'create') await page.setViewportSize({ width: 760, height: 480 })
+        await name.fill(`  ${attempt.name}  `)
+        await type.selectOption(attempt.type)
+        if (attempt.origin !== 'name') await options.fill(' Low , High, Low ,  ')
+        let trigger = name
+        if (attempt.origin === 'options') trigger = options
+        if (attempt.origin === 'create') {
+          await page.keyboard.press('Tab')
+          trigger = create
+        }
+        await expect(trigger).toBeFocused()
+        if (attempt.origin === 'create') await expectFieldCreateActionReachable(create)
+        const originalTrigger = await trigger.elementHandle()
+        expect(originalTrigger).not.toBeNull()
+        await setFieldFocusFailure(app, ids.database, attempt.name, true)
+        const before = await probe.callCount()
+        await page.keyboard.press('Enter')
+        await expect.poll(probe.callCount).toBe(before + 1)
+        await expect(name).toBeDisabled()
+        await probe.settle(before)
+        await expect(form.getByRole('alert')).toHaveText(uiText('Something went wrong. Please try again.', '操作失败，请重试。'))
+        await recordFieldEnterState(page, app, testInfo, `${language}-${attempt.origin}-failure-restores-origin`)
+        if (attempt.origin === 'create') {
+          await recordFieldGuidance(page, app, testInfo, form, `${language}-create-failure-short-focus`, false)
+          await expectFieldCreateActionReachable(create)
+        }
+        await expect(trigger).toBeFocused()
+        expect(await originalTrigger!.evaluate(element => ({ connected: element.isConnected, focused: document.activeElement === element })))
+          .toEqual({ connected: true, focused: true })
+        await expect(name).toHaveValue(`  ${attempt.name}  `)
+        await expect(type).toHaveValue(attempt.type)
+        if (attempt.origin !== 'name') await expect(options).toHaveValue(' Low , High, Low ,  ')
+        expect((await readColumns()).some(field => field.name === attempt.name)).toBe(false)
+        expect(await probe.callCount()).toBe(before + 1)
+        await setFieldFocusFailure(app, ids.database, attempt.name, false)
+        // Retry is an immediate native Enter on the restored original control;
+        // no click/focus call repairs the very behavior under test.
+        await page.keyboard.press('Enter')
+        await expect.poll(probe.callCount).toBe(before + 2)
+        await expect(name).toBeDisabled()
+        await probe.settle(before + 1)
+        await expect(form).toHaveCount(0)
+        await expect(add).toBeFocused()
+        if (attempt.origin === 'create') await page.setViewportSize({ width: 760, height: 640 })
+        expect((await readColumns()).filter(field => field.name === attempt.name).map(field => ({ type: field.type, options: field.options })))
+          .toEqual([{ type: attempt.type, options: attempt.origin === 'name' ? [] : ['Low', 'High'] }])
+        await page.keyboard.press('Enter')
+        await expect(name).toBeFocused()
+      }
+
+      await name.fill('Focus owner field')
+      const beforeOwnership = await probe.callCount()
+      await page.keyboard.press('Enter')
+      await expect.poll(probe.callCount).toBe(beforeOwnership + 1)
+      await expect(name).toBeDisabled()
+      // Real Tab reaches the drawer's focus-trap fallback while all controls
+      // are disabled. The user's new focus must survive the later success.
+      await page.keyboard.press('Tab')
+      await expect(drawer).toBeFocused()
+      await recordFieldEnterState(page, app, testInfo, `${language}-pending-tab-transfers-ownership`)
+      await probe.settle(beforeOwnership)
+      await expect(form).toHaveCount(0)
+      await recordFieldEnterState(page, app, testInfo, `${language}-success-keeps-drawer-focus`)
+      await expect(drawer).toBeFocused()
+      await expect(add).not.toBeFocused()
+      expect(await probe.callCount()).toBe(8)
+      const expectedFields = [
+        { name: 'Focus return field', type: 'text', options: [] },
+        ...attempts.map(attempt => ({ name: attempt.name, type: attempt.type, options: attempt.origin === 'name' ? [] : ['Low', 'High'] })),
+        { name: 'Focus owner field', type: 'text', options: [] }
+      ]
+      const persisted = await readColumns()
+      expect(persisted).toHaveLength(originalColumns.length + expectedFields.length)
+      expect(persisted.filter(field => expectedFields.some(expected => expected.name === field.name)).map(field => ({ name: field.name, type: field.type, options: field.options })))
+        .toEqual(expectedFields)
+      expect(persisted.filter(field => originalColumns.some(original => original.id === field.id))).toEqual(originalColumns)
+      expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(originalRecords)
+      expect(await app.evaluate(() => JSON.parse(process.env.KNOWBOOK_FIELD_ENTER_FAILURES!)))
+        .toEqual(Array.from({ length: 3 }, () => 'The isolated field focus save is temporarily unavailable.'))
+      await drawer.getByRole('button', { name: uiText('Close', '关闭'), exact: true }).click()
+      await page.reload()
+      expect((await readColumns()).filter(field => expectedFields.some(expected => expected.name === field.name)).map(field => ({ name: field.name, type: field.type, options: field.options })))
+        .toEqual(expectedFields)
+      await recordFieldEnterState(page, app, testInfo, `${language}-focus-fields-survive-reload`)
+      expect(errors).toEqual([])
+    })
+  })
+}
+
 async function recordFieldEnterState(page: Page, app: ElectronApplication, testInfo: TestInfo, phase: string) {
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
     visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable(), bounds: window.getBounds()
@@ -449,7 +660,7 @@ async function recordFieldEnterState(page: Page, app: ElectronApplication, testI
     const drawer = document.querySelector('.dbw-field-drawer')
     const form = drawer?.querySelector('.dbw-field-create-form')
     return { viewport: { width: innerWidth, height: innerHeight }, formPresent: Boolean(form),
-      busy: drawer?.getAttribute('aria-busy'), active: { tag: document.activeElement?.tagName, label: document.activeElement?.getAttribute('aria-label') },
+      busy: drawer?.getAttribute('aria-busy'), active: { tag: document.activeElement?.tagName, label: document.activeElement?.getAttribute('aria-label'), text: document.activeElement?.textContent?.slice(0, 100) },
       values: Array.from(form?.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select') ?? []).map(input => ({
         label: input.getAttribute('aria-label'), value: input.value, disabled: input.disabled, focused: document.activeElement === input
       })), alerts: Array.from(drawer?.querySelectorAll('[role=alert]') ?? []).map(alert => alert.textContent) }

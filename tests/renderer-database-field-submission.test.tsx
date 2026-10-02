@@ -31,6 +31,7 @@ async function withDrawer(run: (context: {
   startCreate: () => Promise<HTMLElement>
   row: (index?: number) => HTMLElement
   editName: (index?: number) => Promise<HTMLInputElement>
+  flushFrames: () => Promise<void>
   unmount: () => Promise<void>
 }) => Promise<void>, locale = 'en-US') {
   const dom = new JSDOM('<button id="opener">Fields</button><div id="mount"></div>', { url: 'http://localhost' })
@@ -56,10 +57,13 @@ async function withDrawer(run: (context: {
     onCreateField: (...input) => request(requests.create, input), onRenameField: (...input) => request(requests.name, input),
     onUpdateOptions: (...input) => request(requests.options, input), onMoveDatabaseField: (...input) => request(requests.move, input) }
   let mounted = true
+  const flushFrames = async () => {
+    await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)) })
+  }
   const render = async (patch: Partial<DrawerProps> = {}) => {
     props = { ...props, ...patch }
     await act(async () => root.render(createElement(DatabaseFieldDrawer, props)))
-    await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)) })
+    await flushFrames()
   }
   const click = async (element: HTMLElement) => { await act(async () => element.click()) }
   const row = (index = 0) => { const element = dom.window.document.querySelectorAll<HTMLElement>('.dbw-field-row')[index]; assert.ok(element); return element }
@@ -67,7 +71,7 @@ async function withDrawer(run: (context: {
   const unmount = async () => { if (mounted) { mounted = false; await act(async () => root.unmount()) } }
   try {
     await render()
-    await run({ document: dom.window.document, window: dom.window, text, requests, calls, render, row, click, createForm, unmount,
+    await run({ document: dom.window.document, window: dom.window, text, requests, calls, render, row, click, createForm, flushFrames, unmount,
       fill: async (element, value) => { await act(async () => {
         Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(element, value)
         element.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
@@ -97,6 +101,30 @@ const nameInput = (form: HTMLElement) => form.querySelector<HTMLInputElement>('i
 const optionInput = (row: HTMLElement) => row.querySelector<HTMLInputElement>('.dbw-field-options')!
 const alert = (element: ParentNode) => element.querySelector('[role=alert]')?.textContent ?? ''
 const nameButton = (row: HTMLElement) => row.querySelector<HTMLButtonElement>('.dbw-field-name')!
+
+async function withFieldFocusEnvironment(document: Document, window: JSDOM['window'], run: (setForeground: (value: boolean) => void) => Promise<void>) {
+  const focusDescriptor = Object.getOwnPropertyDescriptor(document, 'hasFocus')
+  const prototype = window.HTMLElement.prototype
+  const rectDescriptor = Object.getOwnPropertyDescriptor(prototype, 'getClientRects')
+  const bodyTabIndex = document.body.getAttribute('tabindex')
+  let foreground = true
+  Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => foreground })
+  document.body.tabIndex = -1
+  // JSDOM has no layout. Only these focus cases give connected controls a visible box.
+  Object.defineProperty(prototype, 'getClientRects', { configurable: true, value: function (this: HTMLElement) {
+    return (this.isConnected && !this.closest('[hidden], [inert], [aria-hidden="true"]')
+      ? [new window.DOMRect(0, 0, 120, 32)] : []) as unknown as DOMRectList
+  } })
+  try { await run(value => { foreground = value }) }
+  finally {
+    if (focusDescriptor) Object.defineProperty(document, 'hasFocus', focusDescriptor)
+    else Reflect.deleteProperty(document, 'hasFocus')
+    if (rectDescriptor) Object.defineProperty(prototype, 'getClientRects', rectDescriptor)
+    else Reflect.deleteProperty(prototype, 'getClientRects')
+    if (bodyTabIndex === null) document.body.removeAttribute('tabindex')
+    else document.body.setAttribute('tabindex', bodyTabIndex)
+  }
+}
 
 test('failed field creation retains name, type and options for retry; only success clears the form in both languages', async () => {
   for (const locale of ['zh-CN', 'en-US']) {
@@ -554,6 +582,213 @@ test('invalid DOM submits never write or show an error, and a fresh pointer or b
       assert.equal(alert(createForm()), '')
       await act(async () => requests.create[0].resolve(true))
     }, locale)
+  }
+})
+
+test('successful creation from a focused Name returns to Add field after the submitted form is removed', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withDrawer(async ({ document, window, requests, startCreate, createForm, fill, flushFrames }) => {
+      await withFieldFocusEnvironment(document, window, async () => {
+        const form = await startCreate()
+        const name = nameInput(form)
+        await fill(name, 'Focused field')
+        await act(async () => name.focus())
+        assert.equal(document.activeElement === name, true)
+        // Submit is explicit: JSDOM does not implement implicit Enter activation.
+        const event = new window.Event('submit', { bubbles: true, cancelable: true })
+        await act(async () => createForm().dispatchEvent(event))
+        assert.equal(event.defaultPrevented, true)
+        assert.equal(requests.create.length, 1)
+        await act(async () => requests.create[0].resolve(true))
+        await flushFrames()
+        assert.equal(document.querySelectorAll('.dbw-field-create-form').length, 0)
+        const add = document.querySelector<HTMLButtonElement>('.dbw-add-field-button')!
+        assert.equal(add.isConnected, true)
+        assert.equal(document.activeElement === add, true, 'A removed submitted input must leave focus on the visible Add field entry')
+      })
+    }, locale)
+  }
+})
+
+test('failed creation restores the actual focused input or retry button after native-style disabled blur and retains the draft for retry', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const origin of ['name', 'options', 'submit']) for (const outcome of ['false', 'throw']) {
+    await withDrawer(async ({ document, window, text, requests, startCreate, createForm, fill, key, flushFrames }) => {
+      await withFieldFocusEnvironment(document, window, async () => {
+        const form = await startCreate()
+        await fill(nameInput(form), 'Retained focused field')
+        const type = form.querySelector<HTMLSelectElement>('select')!
+        await act(async () => { type.value = 'multi-select'; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+        const options = createForm().querySelectorAll<HTMLInputElement>('input')[1]
+        await fill(options, 'Draft, Review')
+        const trigger = origin === 'name' ? nameInput(form) : origin === 'options' ? options : createButton(form)
+        await act(async () => trigger.focus())
+        const event = new window.Event('submit', { bubbles: true, cancelable: true })
+        await act(async () => createForm().dispatchEvent(event))
+        assert.equal(requests.create.length, 1)
+        assert.equal(event.defaultPrevented, true)
+        assert.equal(trigger.disabled, true)
+        // JSDOM's disabled-control blur is a no-op. Focusing BODY emits the real
+        // focusout/focusin transition without reenabling the submitted control.
+        await act(async () => document.body.focus())
+        assert.equal(document.activeElement === document.body, true)
+        await act(async () => outcome === 'false' ? requests.create[0].resolve(false) : requests.create[0].reject(new Error('Private creation failure')))
+        await flushFrames()
+        assert.equal(trigger.disabled, false)
+        assert.equal(document.activeElement === trigger, true, 'Failure restores only the original focused form control')
+        assert.equal(nameInput(createForm()).value, 'Retained focused field')
+        assert.equal(options.value, 'Draft, Review')
+        assert.equal(type.value, 'multi-select')
+        assert.equal(alert(createForm()), text.failed)
+        assert.equal(document.body.textContent!.includes('Private creation failure'), false)
+
+        // Synthetic Enter is followed by its explicit submit; native activation is tested in Electron.
+        await key(trigger, 'Enter')
+        const retry = new window.Event('submit', { bubbles: true, cancelable: true })
+        await act(async () => { createForm().dispatchEvent(retry); createButton(createForm()).click() })
+        assert.equal(requests.create.length, 2)
+        assert.deepEqual(requests.create[1].input, requests.create[0].input)
+        assert.equal(alert(createForm()), '')
+        await act(async () => requests.create[1].resolve(true))
+        await flushFrames()
+        const add = document.querySelector<HTMLButtonElement>('.dbw-add-field-button')!
+        assert.equal(document.activeElement === add, true)
+        await act(async () => add.click())
+        assert.equal(document.activeElement === nameInput(createForm()), true)
+        assert.equal(nameInput(createForm()).value, '')
+        assert.equal(requests.create.length, 2)
+      })
+    }, locale)
+  }
+})
+
+test('successful Options and submit-button origins, and explicit Cancel, return to Add field without closing the drawer', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const action of ['options', 'submit', 'cancel']) {
+    await withDrawer(async ({ document, window, requests, calls, startCreate, createForm, fill, flushFrames }) => {
+      await withFieldFocusEnvironment(document, window, async () => {
+        const form = await startCreate()
+        await fill(nameInput(form), 'Focused options field')
+        const type = form.querySelector<HTMLSelectElement>('select')!
+        await act(async () => { type.value = 'select'; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+        const options = createForm().querySelectorAll<HTMLInputElement>('input')[1]
+        await fill(options, 'Draft, Review')
+        if (action === 'cancel') {
+          const cancel = form.querySelector<HTMLButtonElement>('.dbw-quiet-button')!
+          await act(async () => { cancel.focus(); cancel.click() })
+        } else {
+          const trigger = action === 'options' ? options : createButton(form)
+          await act(async () => trigger.focus())
+          await act(async () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })))
+          assert.equal(requests.create.length, 1)
+          assert.equal(trigger.disabled, true)
+          await act(async () => document.body.focus())
+          assert.equal(document.activeElement === document.body, true)
+          await act(async () => requests.create[0].resolve(true))
+        }
+        await flushFrames()
+        assert.equal(document.querySelectorAll('.dbw-field-create-form').length, 0)
+        const add = document.querySelector<HTMLButtonElement>('.dbw-add-field-button')!
+        assert.equal(document.activeElement === add, true)
+        assert.equal(calls.close, 0)
+        assert.equal(requests.create.length, action === 'cancel' ? 0 : 1)
+        await act(async () => add.click())
+        assert.equal(document.activeElement === nameInput(createForm()), true)
+        assert.equal(nameInput(createForm()).value, '')
+        assert.equal(createForm().querySelector<HTMLSelectElement>('select')!.value, 'text')
+      })
+    }, locale)
+  }
+})
+
+test('pending creation never restores focus after the user moves on or the renderer loses foreground focus', async () => {
+  for (const departure of ['other-control', 'focus-aba', 'pointer', 'key', 'window-blur', 'background', 'enabled-blur', 'other-modal']) for (const outcome of [true, false]) {
+    await withDrawer(async ({ document, window, requests, startCreate, createForm, fill, render, flushFrames }) => {
+      await withFieldFocusEnvironment(document, window, async setForeground => {
+        const form = await startCreate()
+        const name = nameInput(form)
+        await fill(name, 'No focus theft')
+        await act(async () => name.focus())
+        await act(async () => {
+          form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+          if (departure === 'enabled-blur') {
+            assert.equal(name.disabled, false, 'The user leaves before the busy state commits')
+            document.body.focus()
+          }
+        })
+        assert.equal(requests.create.length, 1)
+        if (departure !== 'enabled-blur') {
+          assert.equal(name.disabled, true)
+          await act(async () => document.body.focus())
+        }
+        assert.equal(document.activeElement === document.body, true, `${departure}/${outcome}: origin transfers to BODY`)
+        const outside = document.getElementById('opener')!
+        const otherModal = document.createElement('div')
+        await act(async () => {
+          if (departure === 'other-control' || departure === 'focus-aba') outside.focus()
+          if (departure === 'focus-aba') outside.blur()
+          if (departure === 'pointer') document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+          if (departure === 'key') document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+          if (departure === 'window-blur') window.dispatchEvent(new window.Event('blur'))
+          if (departure === 'background') setForeground(false)
+          if (departure === 'other-modal') {
+            otherModal.setAttribute('role', 'alertdialog')
+            otherModal.setAttribute('aria-modal', 'true')
+            otherModal.textContent = 'A separate visible modal'
+            document.body.append(otherModal)
+          }
+        })
+        const retained = document.activeElement
+        await act(async () => requests.create[0].resolve(outcome))
+        await flushFrames()
+        assert.equal(document.activeElement === retained, true, `${departure}/${outcome}: completion must not reclaim focus after a new user context`)
+        setForeground(true)
+        await flushFrames()
+        assert.equal(document.activeElement === retained, true, `${departure}/${outcome}: returning to foreground must not replay abandoned focus`)
+        if (departure === 'other-modal') {
+          otherModal.remove()
+          await render()
+          await flushFrames()
+          assert.equal(document.activeElement === retained, true, `${departure}/${outcome}: removing the other modal must not replay abandoned focus`)
+        }
+      })
+    })
+  }
+})
+
+test('late creation completion cannot focus Add field or the old input after source, reopened-session, ABA or unmount transitions', async () => {
+  for (const transition of ['source', 'reopen', 'aba', 'unmount']) for (const outcome of [true, false]) {
+    await withDrawer(async ({ document, window, requests, startCreate, createForm, fill, render, unmount, flushFrames }) => {
+      await withFieldFocusEnvironment(document, window, async () => {
+        const form = await startCreate()
+        const old = nameInput(form)
+        await fill(old, 'Old focused request')
+        await act(async () => old.focus())
+        await act(async () => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })))
+        assert.equal(old.disabled, true)
+        await act(async () => document.body.focus())
+        assert.equal(document.activeElement === document.body, true, `${transition}/${outcome}: disabled origin transfers to BODY`)
+        let current: HTMLInputElement | null = null
+        if (transition === 'unmount') {
+          await unmount()
+          await act(async () => document.getElementById('opener')!.focus())
+        } else {
+          if (transition === 'reopen') { await render({ open: false }); await render({ open: true }) }
+          else { await render({ sourceSessionKey: 'source-b' }); if (transition === 'aba') await render({ sourceSessionKey: 'source-a' }) }
+          await startCreate()
+          current = nameInput(createForm())
+          await fill(current, 'New focused session')
+          await act(async () => current!.focus())
+        }
+        const retained = document.activeElement
+        await act(async () => requests.create[0].resolve(outcome))
+        await flushFrames()
+        assert.equal(document.activeElement === retained, true, `${transition}/${outcome}: late completion retains the current focus`)
+        if (current) {
+          assert.equal(current.value, 'New focused session')
+          assert.equal(alert(createForm()), '')
+          assert.equal(current.disabled, false)
+        } else assert.equal(document.querySelectorAll('[role=dialog]').length, 0)
+      })
+    })
   }
 })
 
