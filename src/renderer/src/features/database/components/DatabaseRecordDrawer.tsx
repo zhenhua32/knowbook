@@ -3,6 +3,7 @@ import type { DatabaseField, DatabaseRecord, DocumentCatalogEntry, DocumentDatab
 import { DatabaseValueEditor } from './DatabaseValueEditor'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 
 type RecordDraft = {
   title: string
@@ -266,8 +267,10 @@ export function CreateRecordDialog({
   onCancel: () => void
   onCreate: (draft: RecordDraft, continueAdding: boolean) => Promise<boolean>
 }) {
-  const dialogRef = useRef<HTMLDivElement | null>(null)
+  const dialogRef = useRef<HTMLFormElement | null>(null)
   const titleRef = useRef<HTMLInputElement | null>(null)
+  const createComposingRef = useRef(false)
+  const blockedImplicitSubmitRef = useRef(false)
   const errorId = useId()
   const propertyFields = fields.filter((field) => field.role === 'property')
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
@@ -277,6 +280,8 @@ export function CreateRecordDialog({
     if (!submission.isBusy()) setDraft(update)
   }
   useLayoutEffect(() => {
+    createComposingRef.current = false
+    blockedImplicitSubmitRef.current = false
     if (!open) return
     setDraft({ title: '', documentId: '', fieldValues: {} })
   }, [open])
@@ -284,8 +289,10 @@ export function CreateRecordDialog({
   if (!open) return null
 
   const submit = async (continueAdding: boolean) => {
-    if (!draft.title.trim()) return
+    if (createComposingRef.current || blockedImplicitSubmitRef.current || !draft.title.trim()) return
     await submission.submit(() => onCreate(draft, continueAdding), () => {
+      createComposingRef.current = false
+      blockedImplicitSubmitRef.current = false
       if (!continueAdding) {
         onCancel()
         return
@@ -297,7 +304,15 @@ export function CreateRecordDialog({
   return (
     <div className="dbw-modal-layer">
       <button aria-label={text.close} className="dbw-modal-scrim" disabled={submission.busy} onClick={cancel} type="button" />
-      <div aria-busy={submission.busy} aria-label={text.createRecord} aria-modal="true" className="dbw-dialog dbw-create-record-dialog" ref={dialogRef} role="dialog" tabIndex={-1}>
+      <form aria-busy={submission.busy} aria-label={text.createRecord} aria-modal="true" className="dbw-dialog dbw-create-record-dialog" noValidate ref={dialogRef} role="dialog" tabIndex={-1}
+        onCompositionStartCapture={() => { createComposingRef.current = true }}
+        // Candidate confirmation can end composition before the browser's implicit submit.
+        onCompositionEndCapture={() => { createComposingRef.current = false }}
+        onBlurCapture={() => { createComposingRef.current = false; blockedImplicitSubmitRef.current = false }}
+        onPointerDownCapture={() => { blockedImplicitSubmitRef.current = false }}
+        onKeyDownCapture={event => { blockedImplicitSubmitRef.current = isImeKeyboardEvent(event.nativeEvent, createComposingRef.current) }}
+        onSubmit={event => { event.preventDefault(); void submit(false) }}
+        onKeyDown={event => { if (isImeKeyboardEvent(event.nativeEvent, createComposingRef.current)) event.stopPropagation() }}>
         <header><h2>{text.createRecord}</h2><button aria-label={text.close} className="dbw-icon-button" disabled={submission.busy} onClick={cancel} type="button">×</button></header>
         <fieldset className="dbw-record-form" disabled={submission.busy}>
           <label><span>{text.title} *</span><input onChange={(event) => updateDraft((current) => ({ ...current, title: event.target.value }))} ref={titleRef} value={draft.title} /></label>
@@ -307,8 +322,8 @@ export function CreateRecordDialog({
           ))}
         </fieldset>
         {submission.failed ? <p className="dbw-record-submit-error" id={errorId} role="alert">{text.formFailed}</p> : null}
-        <footer><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-quiet-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(true)} type="button">{submission.busy ? text.creating : text.createAndContinue}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(false)} type="button">{submission.busy ? text.creating : text.create}</button></footer>
-      </div>
+        <footer><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-quiet-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(true)} type="button">{submission.busy ? text.creating : text.createAndContinue}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} type="submit">{submission.busy ? text.creating : text.create}</button></footer>
+      </form>
     </div>
   )
 }
