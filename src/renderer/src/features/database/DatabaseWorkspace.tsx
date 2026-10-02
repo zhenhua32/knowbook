@@ -36,6 +36,7 @@ import { DatabaseFieldDrawer } from './components/DatabaseFieldDrawer'
 import { CreateRecordDialog, DatabaseRecordDrawer } from './components/DatabaseRecordDrawer'
 import { DatabaseConfirmDialog, DatabaseFormDialog } from './components/DatabaseDialogs'
 import { DatabaseValueEditor } from './components/DatabaseValueEditor'
+import type { DatabaseDeletion } from './model/databaseDeletion'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -55,6 +56,7 @@ type DatabaseWorkspaceProps = {
   onOpenDocument: (documentId: string) => void
   onRefresh: (databaseId?: string, preferredViewId?: string) => Promise<void>
   onSavedDatabase?: (database: DocumentDatabase, options?: { activate?: boolean }) => void
+  onDeleted?: (deletion: DatabaseDeletion) => void | Promise<void>
   onSavedView?: (view: DatabaseSavedView) => void
   onSelectedRecordIdsChange: (recordIds: string[]) => void
 }
@@ -92,6 +94,7 @@ export function DatabaseWorkspace({
   onOpenDocument,
   onRefresh,
   onSavedDatabase,
+  onDeleted,
   onSavedView,
   onSelectedRecordIdsChange
 }: DatabaseWorkspaceProps) {
@@ -153,6 +156,23 @@ export function DatabaseWorkspace({
     if (formOwnerRef.current.source !== fieldSourceSession || formOwnerRef.current.view !== viewSession) closeForm(formSession, false)
   }, [fieldSourceSession, formMode, formSession, viewSession])
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
+  const confirmSessionRef = useRef(0)
+  const [confirmSession, setConfirmSession] = useState(0)
+  const confirmOwner = useRef({ source: fieldSourceSession, view: viewSession, returnFocus: null as HTMLElement | null })
+  const openConfirm = (target: ConfirmTarget) => {
+    confirmOwner.current = { source: fieldSourceSessionRef.current, view: viewSessionRef.current,
+      returnFocus: document.querySelector<HTMLInputElement>('.dbw-main-search input') }
+    setConfirmSession(++confirmSessionRef.current)
+    setConfirmTarget(target)
+  }
+  const closeConfirm = (session = confirmSessionRef.current) => {
+    if (session !== confirmSessionRef.current) return
+    confirmSessionRef.current++
+    setConfirmTarget(null)
+  }
+  useLayoutEffect(() => {
+    if (confirmTarget && (confirmOwner.current.source !== fieldSourceSession || confirmOwner.current.view !== viewSession)) closeConfirm(confirmSession)
+  }, [confirmTarget, confirmSession, fieldSourceSession, viewSession])
   const [bulkFieldId, setBulkFieldId] = useState('')
   const [bulkValue, setBulkValue] = useState<DocumentDatabaseFieldValue>(null)
 
@@ -238,7 +258,7 @@ export function DatabaseWorkspace({
       }
       if (event.key === 'Delete' && !isTyping && currentSource?.kind === 'custom' && selectedRecordIds.length > 0) {
         event.preventDefault()
-        setConfirmTarget({ kind: 'records', ids: selectedRecordIds, name: text.selected(selectedRecordIds.length) })
+        openConfirm({ kind: 'records', ids: selectedRecordIds, name: text.selected(selectedRecordIds.length) })
       }
     }
     window.addEventListener('keydown', handleShortcut)
@@ -620,20 +640,49 @@ export function DatabaseWorkspace({
   const handleConfirm = async () => {
     const target = confirmTarget
     if (!target) return
-    if (target.kind === 'database') {
-      await window.knowbook.deleteDatabase(target.id)
-      const fallback = sources.find((source) => source.kind === 'document-catalog')
-      await onRefresh(fallback?.id)
-      if (fallback) switchSource(fallback.id)
-      return
+    const session = confirmSession
+    const owner = confirmOwner.current
+    const ownsConfirmation = () => mounted.current && confirmSessionRef.current === session
+      && fieldSourceSessionRef.current === owner.source && viewSessionRef.current === owner.view
+    if (!ownsConfirmation()) return
+    const deleted: DatabaseDeletion = target.kind === 'records'
+      ? { kind: 'records', ids: [...target.ids], databaseId: currentSource.id }
+      : { kind: target.kind, id: target.id, databaseId: currentSource.id }
+    if (target.kind === 'database') await window.knowbook.deleteDatabase(target.id)
+    else if (target.kind === 'view') await window.knowbook.deleteDatabaseSavedView(target.id)
+    else if (target.kind === 'field') await window.knowbook.deleteDocumentDatabaseColumn(target.id)
+    else if (target.kind === 'record') await window.knowbook.deleteDatabaseEntity(target.id)
+    else await window.knowbook.deleteDatabaseEntities({ entityIds: target.ids })
+    const owned = ownsConfirmation()
+    const fallback = sources.find(source => source.kind === 'document-catalog' && source.id !== currentSource.id)
+      ?? sources.find(source => source.id !== currentSource.id)
+    let completedView = owner.view
+    if (owned) {
+      if (target.kind === 'view' && target.id === activeViewId) {
+        selectView(savedViews.find(view => view.id !== target.id)?.id ?? '')
+        completedView = viewSessionRef.current
+      }
+      if (target.kind === 'field') setFieldDrawerOpen(false)
+      if (target.kind === 'record' || target.kind === 'records') {
+        const ids = new Set(target.kind === 'records' ? target.ids : [target.id])
+        if (openRecordId && ids.has(openRecordId)) setOpenRecordId(null)
+        if (!onDeleted) onSelectedRecordIdsChange(selectedRecordIds.filter(id => !ids.has(id)))
+      }
+      closeConfirm(session)
     }
-    if (target.kind === 'view') await window.knowbook.deleteDatabaseSavedView(target.id)
-    if (target.kind === 'field') await window.knowbook.deleteDocumentDatabaseColumn(target.id)
-    if (target.kind === 'record') await window.knowbook.deleteDatabaseEntity(target.id)
-    if (target.kind === 'records') await window.knowbook.deleteDatabaseEntities({ entityIds: target.ids })
-    setOpenRecordId(null)
-    onSelectedRecordIdsChange([])
-    await refresh()
+    try {
+      if (onDeleted) await onDeleted(deleted)
+      else if (owned) {
+        if (target.kind === 'database' && fallback) switchSource(fallback.id)
+        await onRefresh(target.kind === 'database' ? fallback?.id : currentSource.id)
+      }
+    } catch {
+      const expectedSource = target.kind === 'database' ? fallback?.id : owner.source.id
+      if (owned && mounted.current && confirmSessionRef.current === session + 1
+        && currentSourceIdRef.current === expectedSource && (target.kind === 'database' || viewSessionRef.current === completedView)) {
+        onMessage(text.deletedRefreshFailed, 'error')
+      }
+    }
   }
 
   const toggleField = (fieldId: string) => updateDraft((current) => ({
@@ -663,7 +712,7 @@ export function DatabaseWorkspace({
         currentSource={currentSource}
         onCreateDatabase={(returnTarget) => openDatabaseForm('create-database', returnTarget)}
         onCreateRecord={createDocumentOrRecord}
-        onDeleteDatabase={() => setConfirmTarget({ kind: 'database', id: currentSource.id, name: currentSource.name })}
+        onDeleteDatabase={() => openConfirm({ kind: 'database', id: currentSource.id, name: currentSource.name })}
         onEditDatabase={(returnTarget) => openDatabaseForm('edit-database', returnTarget)}
         onSourceChange={switchSource}
         sources={sources}
@@ -676,7 +725,7 @@ export function DatabaseWorkspace({
         onCreateView={(layout, returnTarget) => openViewForm('create-view', layout, undefined, returnTarget)}
         onDeleteView={(view) => {
           if (savedViews.length <= 1) { onMessage(locale.startsWith('zh') ? '数据库至少需要保留一个视图。' : 'A database must keep at least one view.'); return }
-          setConfirmTarget({ kind: 'view', id: view.id, name: view.name })
+          openConfirm({ kind: 'view', id: view.id, name: view.name })
         }}
         onMoveView={(viewId, targetViewId) => {
           const reordered = [...savedViews]
@@ -726,7 +775,7 @@ export function DatabaseWorkspace({
             </div>
           ) : null}
           {currentSource.kind === 'custom' && selectedRecordIds.some((recordId) => records.find((record) => record.id === recordId)?.documentId) ? <button onClick={() => void clearBulkDocuments()} type="button">{locale.startsWith('zh') ? '解除文档关联' : 'Unlink documents'}</button> : null}
-          {currentSource.kind === 'custom' ? <button className="dbw-danger-text" onClick={() => setConfirmTarget({ kind: 'records', ids: selectedRecordIds, name: text.selected(selectedRecordIds.length) })} type="button">{text.deleteRecord}</button> : null}
+          {currentSource.kind === 'custom' ? <button className="dbw-danger-text" onClick={() => openConfirm({ kind: 'records', ids: selectedRecordIds, name: text.selected(selectedRecordIds.length) })} type="button">{text.deleteRecord}</button> : null}
         </div>
       ) : null}
 
@@ -767,7 +816,7 @@ export function DatabaseWorkspace({
             }))
           })
         }}
-        onDeleteField={(field) => setConfirmTarget({ kind: 'field', id: field.id, name: field.name })}
+        onDeleteField={(field) => openConfirm({ kind: 'field', id: field.id, name: field.name })}
         onMoveField={moveField}
         onMoveDatabaseField={(fieldId, direction) => runFieldMutation(() => window.knowbook.moveDocumentDatabaseColumn({ columnId: fieldId, direction }))}
         onRenameField={(fieldId, name) => runFieldMutation(() => window.knowbook.renameDocumentDatabaseColumn({ columnId: fieldId, name }))}
@@ -778,7 +827,7 @@ export function DatabaseWorkspace({
         visibleFieldIds={draft.visibleFieldIds}
       />
       <CreateRecordDialog documents={catalogDocuments} fields={visibleFields} key={`create-${currentSource.id}`} onCancel={() => setCreateRecordOpen(false)} onCreate={createRecord} open={createRecordOpen} text={text} />
-      <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} key={`record-${currentSource.id}`} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
+      <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} key={`record-${currentSource.id}`} onClose={() => setOpenRecordId(null)} onDelete={(record) => openConfirm({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
       <DatabaseFormDialog blocked={!pendingForms.has(formSession) && (formMode === 'rename-view'
           ? savingViews.has(JSON.stringify([currentSource.id, formViewId])) : formMode === 'edit-database' && savingDatabases.has(currentSource.id))}
         blockedMessage={formMode === 'edit-database' ? text.databaseEditWaitsForSave : undefined}
@@ -794,7 +843,11 @@ export function DatabaseWorkspace({
         submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text}
         title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView}
         withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
-      <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} onCancel={() => setConfirmTarget(null)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
+      <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord}
+        key={`confirm-${confirmSession}`} returnFocus={confirmOwner.current.returnFocus}
+        canReturnFocus={() => mounted.current && fieldSourceSessionRef.current === confirmOwner.current.source
+          && confirmSessionRef.current === confirmSession + 1}
+        onCancel={() => closeConfirm(confirmSession)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
     </section>
   )
 }

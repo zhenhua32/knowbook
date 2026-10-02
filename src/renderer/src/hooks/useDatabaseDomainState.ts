@@ -10,6 +10,7 @@ import type {
   DocumentDatabaseFieldValue
 } from '@shared/contracts'
 import { getErrorMessage } from '../utils/errorMessage'
+import { withoutDatabaseField, type DatabaseDeletion } from '../features/database/model/databaseDeletion'
 
 export const BOARD_GROUP_BY_PARENT = '__parent__'
 
@@ -55,11 +56,51 @@ export function useDatabaseDomainState(isActive = true) {
   const [listError, setListError] = useState<string | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
   const listWriteRevision = useRef(0)
+  const dataWriteRevision = useRef(0)
+  const currentSourceId = useRef(databaseEntityDatabaseId)
+  currentSourceId.current = databaseEntityDatabaseId
+  const latestViews = useRef(databaseSavedViews)
+  latestViews.current = databaseSavedViews
   const acknowledgeDatabase = useCallback((saved: DocumentDatabase) => {
     listWriteRevision.current++
     setDatabases(previous => previous.some(database => database.id === saved.id)
       ? previous.map(database => database.id === saved.id ? saved : database)
       : [...previous, saved])
+  }, [])
+  const acknowledgeWorkspaceRead = useCallback((databaseId: string) => {
+    // A complete Page read supersedes an older independent source load.
+    listWriteRevision.current++
+    dataWriteRevision.current++
+    setListReady(true)
+    setListError(null)
+    setListLoading(false)
+    setLoadedDatabaseId(databaseId)
+    setDataError(null)
+    setDataLoading(false)
+  }, [])
+  const acknowledgeDeletion = useCallback((deleted: DatabaseDeletion,
+    applyToCurrentSource = currentSourceId.current === deleted.databaseId) => {
+    if (deleted.kind === 'database') {
+      listWriteRevision.current++
+      setDatabases(previous => previous.filter(database => database.id !== deleted.id))
+      return
+    }
+    if (!applyToCurrentSource) return
+    dataWriteRevision.current++
+    if (deleted.kind === 'view') {
+      setDatabaseSavedViews(previous => previous.filter(view => view.id !== deleted.id))
+      setActiveDatabaseSavedViewId(previous => previous === deleted.id
+        ? latestViews.current.find(view => view.id !== deleted.id)?.id ?? '' : previous)
+    } else if (deleted.kind === 'field') {
+      setSelectedDatabaseColumns(previous => previous.filter(field => field.id !== deleted.id))
+      setDatabaseEntities(previous => previous.map(entity => ({ ...entity, fieldValues: withoutDatabaseField(entity.fieldValues, deleted.id) })))
+      setDatabaseEntityFieldValues(previous => withoutDatabaseField(previous, deleted.id))
+      setDatabaseEntityBulkFieldValues(previous => withoutDatabaseField(previous, deleted.id))
+    } else {
+      const ids = new Set(deleted.kind === 'records' ? deleted.ids : [deleted.id])
+      setDatabaseEntities(previous => previous.filter(entity => !ids.has(entity.id)))
+      setSelectedDatabaseEntityIds(previous => previous.filter(id => !ids.has(id)))
+    }
   }, [])
   const activateCreatedDatabase = useCallback((databaseId: string) => {
     // A successful creation confirms an empty source. Keep the workspace
@@ -120,6 +161,7 @@ export function useDatabaseDomainState(isActive = true) {
     }
 
     let mounted = true
+    const revision = dataWriteRevision.current
     setDataError(null)
 
     if (!databaseEntityDatabaseId) {
@@ -144,21 +186,23 @@ export function useDatabaseDomainState(isActive = true) {
     }
 
     setDataLoading(true)
-    setDatabaseSavedViews([])
-    setActiveDatabaseSavedViewId('')
-    setIsCreatingDatabaseSavedView(false)
-    setDatabaseSavedViewNameDraft('')
-    setDatabaseEntityFilterQuery('')
-    setDatabaseEntityFilterScope('')
-    setDatabaseEntitySortMode('updated-desc')
-    setDatabaseEntityViewMode('cards')
+    if (loadedDatabaseId !== databaseEntityDatabaseId) {
+      setDatabaseSavedViews([])
+      setActiveDatabaseSavedViewId('')
+      setIsCreatingDatabaseSavedView(false)
+      setDatabaseSavedViewNameDraft('')
+      setDatabaseEntityFilterQuery('')
+      setDatabaseEntityFilterScope('')
+      setDatabaseEntitySortMode('updated-desc')
+      setDatabaseEntityViewMode('cards')
+    }
 
     Promise.all([
       window.knowbook.getDatabaseEntities(databaseEntityDatabaseId),
       window.knowbook.getDocumentDatabaseColumns(databaseEntityDatabaseId),
       window.knowbook.getDatabaseSavedViews(databaseEntityDatabaseId)
     ]).then(([items, columns, views]) => {
-      if (mounted) {
+      if (mounted && revision === dataWriteRevision.current) {
         setLoadedDatabaseId(databaseEntityDatabaseId)
         setDatabaseEntities(items)
         setSelectedDatabaseColumns(columns)
@@ -168,7 +212,7 @@ export function useDatabaseDomainState(isActive = true) {
         setSelectedDatabaseEntityIds([])
       }
     }).catch((error) => {
-      if (mounted) {
+      if (mounted && revision === dataWriteRevision.current) {
         setDataError(getErrorMessage(error, 'Database records could not be loaded.'))
         console.warn('Failed to load database workspace data.', error)
       }
@@ -198,6 +242,8 @@ export function useDatabaseDomainState(isActive = true) {
 
   return {
     acknowledgeDatabase,
+    acknowledgeWorkspaceRead,
+    acknowledgeDeletion,
     activateCreatedDatabase,
     databaseError: listError ?? dataError,
     databaseLoading: listLoading || dataLoading,

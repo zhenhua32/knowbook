@@ -119,6 +119,7 @@ async function withPage(run: (context: {
       setDatabases: (value: SetStateAction<DocumentDatabase[]>) => change('databases', value),
       acknowledgeDatabase: (saved: DocumentDatabase) => change('databases', previous => previous.some(item => item.id === saved.id)
         ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]),
+      acknowledgeWorkspaceRead: () => {},
       activateCreatedDatabase: (id: string) => {
         activations.push(id)
         setModel(previous => ({ ...previous, sourceId: id, columns: [], entities: [], views: [], activeViewId: '' }))

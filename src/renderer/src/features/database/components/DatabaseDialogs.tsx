@@ -69,6 +69,8 @@ export function DatabaseConfirmDialog({
   open,
   text,
   title,
+  returnFocus,
+  canReturnFocus,
   onCancel,
   onConfirm
 }: {
@@ -77,10 +79,12 @@ export function DatabaseConfirmDialog({
   open: boolean
   text: DatabaseWorkspaceText
   title: string
+  returnFocus?: HTMLElement | null
+  canReturnFocus?: () => boolean
   onCancel: () => void
   onConfirm: () => void | Promise<void>
 }) {
   if (!open) return null
   return <ConfirmationDialog title={title} description={body} note={text.dangerCannotUndo} confirmLabel={confirmLabel}
-    onCancel={onCancel} onConfirm={onConfirm} />
+    onCancel={onCancel} onConfirm={onConfirm} returnFocus={returnFocus} canReturnFocus={canReturnFocus} />
 }

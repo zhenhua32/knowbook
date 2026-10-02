@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../notify'
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import '../features/database/database-workspace.css'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DatabaseSavedView, DatabaseViewConfigV1, DocumentCatalogEntry, DocumentDatabase, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
@@ -8,6 +8,8 @@ import type { DatabaseDomainState, DatabaseWorkspaceBoardState } from '../types/
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
 import { DatabaseWorkspace } from '../features/database/DatabaseWorkspace'
 import { RecoveryState } from '../components/RecoveryState'
+import { withoutDatabaseField, type DatabaseDeletion } from '../features/database/model/databaseDeletion'
+import { getErrorMessage } from '../utils/errorMessage'
 
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -49,6 +51,8 @@ export function DatabasePage({
   const refreshGeneration = useRef(0)
   const createdSource = useRef<string | null>(null)
   const viewDraftCache = useRef(new Map<string, DatabaseViewConfigV1>())
+  const deletionRevision = useRef(0)
+  const [deletionRecovery, setDeletionRecovery] = useState<{ sourceId: string; sourceGeneration: number; revision: number; error: string; busy: boolean } | null>(null)
   const sourceSession = useRef({ renderedId: database.databaseEntityDatabaseId, currentId: database.databaseEntityDatabaseId, generation: 0 })
   if (sourceSession.current.renderedId !== database.databaseEntityDatabaseId) {
     sourceSession.current.renderedId = database.databaseEntityDatabaseId
@@ -121,6 +125,7 @@ export function DatabasePage({
       const candidateId = preferredViewId ?? current
       return views.some((view) => view.id === candidateId) ? candidateId : views[0]?.id ?? ''
     })
+    current.database.acknowledgeWorkspaceRead(targetId)
   }, [])
 
   const acknowledgeSavedView = useCallback((view: DatabaseSavedView) => {
@@ -145,20 +150,64 @@ export function DatabasePage({
     if (options?.activate) createdSource.current = saved.id
   }, [])
 
+  const refreshDeletedSource = useCallback(async (sourceId: string, revision: number, sourceGeneration: number) => {
+    const ownsRecovery = () => mounted.current && deletionRevision.current === revision
+      && sourceSession.current.currentId === sourceId && sourceSession.current.generation === sourceGeneration
+    if (!ownsRecovery()) return
+    setDeletionRecovery(previous => previous?.revision === revision ? { ...previous, busy: true } : previous)
+    try {
+      await refreshWorkspace(sourceId)
+      if (ownsRecovery()) setDeletionRecovery(null)
+    } catch (error) {
+      if (ownsRecovery()) setDeletionRecovery({ sourceId, sourceGeneration, revision,
+        error: getErrorMessage(error, ui.language === 'zh-CN' ? '数据库刷新失败，请重试。' : 'The database could not be refreshed.'), busy: false })
+    }
+  }, [refreshWorkspace, ui.language])
+
+  const acknowledgeDeleted = useCallback(async (deleted: DatabaseDeletion) => {
+    if (!mounted.current) return
+    refreshGeneration.current++
+    const current = latest.current
+    const affectsCurrentSource = sourceSession.current.currentId === deleted.databaseId
+    current.database.acknowledgeDeletion(deleted, affectsCurrentSource)
+    const deletedSource = current.database.databases.find(source => source.id === deleted.databaseId)
+    if (deleted.kind === 'field' && deletedSource?.kind === 'document-catalog') {
+      current.onCatalogColumnsChange(previous => previous.filter(field => field.id !== deleted.id))
+      current.onCatalogDocumentsChange(previous => previous.map(document => ({ ...document,
+        fieldValues: withoutDatabaseField(document.fieldValues, deleted.id) })))
+    }
+    if (!affectsCurrentSource) return
+    const revision = ++deletionRevision.current
+    setDeletionRecovery(null)
+    let targetId = deleted.databaseId
+    if (deleted.kind === 'database') {
+      const remaining = current.database.databases.filter(source => source.id !== deleted.id)
+      targetId = remaining.find(source => source.kind === 'document-catalog')?.id ?? remaining[0]?.id ?? ''
+      changeCurrentDatabase(targetId)
+    }
+    await refreshDeletedSource(targetId, revision, sourceSession.current.generation)
+  }, [changeCurrentDatabase, refreshDeletedSource])
+
   const error = catalogError ?? database.databaseError
   const ready = catalogReady && database.databaseReady
+  const deletionWarning = deletionRecovery && deletionRecovery.sourceId === sourceSession.current.currentId
+    && deletionRecovery.sourceGeneration === sourceSession.current.generation ? <RecoveryState compact
+      title={ui.language === 'zh-CN' ? '删除已完成，刷新失败' : 'Deleted, but refresh failed'}
+      description={ui.language === 'zh-CN' ? '数据已删除。重试只会刷新列表，不会再次删除。' : 'The data was deleted. Retry only refreshes the list; it will not delete again.'}
+      error={deletionRecovery.error} busy={deletionRecovery.busy}
+      onRetry={() => refreshDeletedSource(deletionRecovery.sourceId, deletionRecovery.revision, deletionRecovery.sourceGeneration)} /> : null
   const recovery = error ? <RecoveryState compact={ready} title={ui.language === 'zh-CN' ? '数据库加载失败' : 'Unable to load database'}
     description={ready ? (ui.language === 'zh-CN' ? '仍显示上次成功读取的数据，请重试刷新。' : 'Showing the last loaded data. Retry the refresh.') : undefined}
     error={error} busy={catalogLoading || database.databaseLoading} onRetry={() => { onRetryCatalog(); database.reloadDatabaseDomain() }} /> : null
-  if (error && !ready) return recovery
+  if (error && !ready) return <>{deletionWarning}{recovery}</>
   if (!ready) {
-    return <div className="dbw-loading">{ui.common.loading}</div>
+    return <>{deletionWarning}<div className="dbw-loading">{ui.common.loading}</div></>
   }
-  if (!database.databases.length) return <>{recovery}<p className="dbw-loading" role="status">{ui.language === 'zh-CN' ? '暂无可用的数据库。' : 'No databases are available.'}
+  if (!database.databases.length) return <>{deletionWarning}{recovery}<p className="dbw-loading" role="status">{ui.language === 'zh-CN' ? '暂无可用的数据库。' : 'No databases are available.'}
     <button type="button" className="secondary-button" onClick={database.reloadDatabaseDomain}>{ui.language === 'zh-CN' ? '刷新' : 'Refresh'}</button></p></>
 
   return (
-    <>{recovery}
+    <>{deletionWarning}{recovery}
     <DatabaseWorkspace
       activeViewId={database.activeDatabaseSavedViewId}
       catalogColumns={catalogColumns}
@@ -172,6 +221,7 @@ export function DatabasePage({
       onMessage={onMessage}
       onOpenDocument={onOpenDocument}
       onRefresh={refreshWorkspace}
+      onDeleted={acknowledgeDeleted}
       onSavedDatabase={acknowledgeSavedDatabase}
       onSavedView={acknowledgeSavedView}
       onSelectedRecordIdsChange={database.setSelectedDatabaseEntityIds}

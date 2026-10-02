@@ -16,12 +16,14 @@ export type ConfirmationOptions = {
 }
 
 export function ConfirmationDialog({ title, description, confirmLabel = title, tone = 'danger', note, children,
-  onConfirm, onCancel, onComplete = onCancel, returnFocus,
-}: ConfirmationOptions & { onCancel: () => void; onComplete?: () => void; returnFocus?: HTMLElement | null }) {
+  onConfirm, onCancel, onComplete = onCancel, returnFocus, canReturnFocus,
+}: ConfirmationOptions & { onCancel: () => void; onComplete?: () => void; returnFocus?: HTMLElement | null; canReturnFocus?: () => boolean }) {
   const dialog = useRef<HTMLDialogElement>(null), cancel = useRef<HTMLButtonElement>(null)
   const lock = useRef(false), mounted = useRef(false), composing = useRef(false)
   const dismiss = useRef(onCancel)
+  const restoreAllowed = useRef(canReturnFocus)
   dismiss.current = onCancel
+  restoreAllowed.current = canReturnFocus
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const titleId = useId(), descriptionId = useId(), noteId = useId()
   const zh = getActiveUiText().language === 'zh-CN'
@@ -56,6 +58,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
       const shouldRestore = active === document.body || active === previous || element.contains(active)
       element.close()
       const restore = () => {
+        if (restoreAllowed.current && !restoreAllowed.current()) return
         const current = document.activeElement
         // An action may navigate or open another dialog before this one unmounts.
         if (!shouldRestore || (current !== document.body && current !== previous && !element.contains(current))) return
