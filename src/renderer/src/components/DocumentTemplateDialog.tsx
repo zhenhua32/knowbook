@@ -39,9 +39,10 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   const [busy, setBusy] = useState<'create' | 'delete' | null>(null)
   const labelId = useId(), hintId = useId(), previewId = useId(), formId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
-  const selected = templates.find(template => template.id === selectedId)
+  const preferred = templates.find(template => template.id === selectedId)
   const visible = templates.filter(template => (category === 'all' || (category === 'builtIn') === template.builtIn)
     && `${template.name} ${template.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
+  const selected = visible.find(template => template.id === selectedId) ?? visible[0]
   const date = documentTemplateDate()
   const previewTitle = selected ? expandDocumentTemplateVariables(title.trim() || selected.title, selected.name, date) : ''
   const preview = useMemo(() => selected ? expandDocumentTemplateVariables(serializeBlocksToMarkdown(selected.blocks, { includeBlockMetadata: false }), previewTitle, date) : '',
@@ -81,7 +82,8 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   }, [])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
-    const next = selected ? expandDocumentTemplateVariables(selected.title, selected.name, date) : ''
+    if (!selected) return
+    const next = expandDocumentTemplateVariables(selected.title, selected.name, date)
     const previousAutomaticTitle = automaticTitle.current
     setTitle(previous => previous === previousAutomaticTitle ? next : previous)
     automaticTitle.current = next
@@ -126,7 +128,8 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
           if (!mounted.current) return
           const next = templates.filter(template => template.id !== target.id)
           setTemplates(next)
-          setSelectedId(next.find(template => category === 'all' || (category === 'builtIn') === template.builtIn)?.id ?? '')
+          setSelectedId(previous => next.some(template => template.id === previous) ? previous
+            : next.find(template => category === 'all' || (category === 'builtIn') === template.builtIn)?.id ?? '')
         }
       })
     } catch (cause) {
@@ -163,14 +166,14 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
           {([['all', isZh ? '全部' : 'All'], ['builtIn', isZh ? '内置模板' : 'Built-in'], ['custom', isZh ? '自定义模板' : 'Custom']] as const).map(([value, label]) =>
             <button type="button" key={value} disabled={Boolean(busy)} aria-pressed={category === value} onClick={() => {
               setCategory(value)
-              if (selected && value !== 'all' && (value === 'builtIn') !== selected.builtIn) setSelectedId(templates.find(template => (value === 'builtIn') === template.builtIn)?.id ?? '')
+              if (preferred && value !== 'all' && (value === 'builtIn') !== preferred.builtIn) setSelectedId(templates.find(template => (value === 'builtIn') === template.builtIn)?.id ?? '')
             }}>{label}</button>)}
         </div>
         {loading ? <p className="document-capture-hint" role="status">{isZh ? '正在加载模板…' : 'Loading templates…'}</p>
           : loadError ? <div className="document-capture-empty"><p role="alert">{loadError}</p>
             <button type="button" className="secondary-button" onClick={() => { void load() }}>{isZh ? '重试' : 'Retry'}</button></div>
           : visible.length ? <div className="document-template-list">{visible.map(template => <button type="button" key={template.id}
-            className="document-template-item" aria-pressed={selectedId === template.id} disabled={Boolean(busy)} onClick={() => { setSelectedId(template.id); setError('') }}>
+            className="document-template-item" aria-pressed={selected?.id === template.id} disabled={Boolean(busy)} onClick={() => { setSelectedId(template.id); setError('') }}>
             <span className="document-template-item-heading"><strong>{template.name}</strong><small>{template.builtIn ? (isZh ? '内置' : 'Built-in') : (isZh ? '自定义' : 'Custom')}</small></span>
             {template.description && <span className="document-template-description">{template.description}</span>}</button>)}</div>
           : <div className="document-capture-empty"><strong>{query.trim() ? (isZh ? '没有匹配的模板' : 'No matching templates') : category === 'custom' ? (isZh ? '还没有自定义模板' : 'No custom templates yet') : (isZh ? '暂无模板' : 'No templates available')}</strong>
