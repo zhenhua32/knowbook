@@ -52,10 +52,7 @@ export function useDatabaseDialogFocus({
     const previousFocus = returnTargetRef.current === undefined
       ? document.activeElement instanceof HTMLElement ? document.activeElement : null
       : returnTargetRef.current
-    const focusFrame = requestAnimationFrame(() => {
-      const firstFocusable = focusableElements(containerRef.current)[0]
-      ;(initialFocusRef?.current ?? firstFocusable ?? containerRef.current)?.focus()
-    })
+    const cancelInitialFocus = scheduleInitialFocus(containerRef, initialFocusRef)
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isImeKeyboardEvent(event)) return
       if (event.key === 'Escape') {
@@ -83,7 +80,7 @@ export function useDatabaseDialogFocus({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => {
-      cancelAnimationFrame(focusFrame)
+      cancelInitialFocus()
       window.removeEventListener('keydown', handleKeyDown)
       if (!mounted.current || !previousFocus || returnGuardRef.current?.() === false) return
       returnFrameRef.current = requestAnimationFrame(() => {
@@ -98,6 +95,50 @@ export function useDatabaseDialogFocus({
       })
     }
   }, [containerRef, initialFocusRef, open])
+}
+
+function scheduleInitialFocus(
+  containerRef: RefObject<HTMLElement | null>,
+  initialFocusRef?: RefObject<HTMLElement | null>
+): () => void {
+  const container = containerRef.current
+  const openingActive = document.activeElement
+  if (!container || !document.hasFocus() || !isVisible(container)
+    || (openingActive instanceof HTMLElement && container.contains(openingActive)
+      && isVisible(openingActive) && !openingActive.matches(':disabled, [aria-disabled="true"]'))) return () => {}
+
+  let pending = true
+  let frame: number
+  const cancel = () => {
+    if (!pending) return
+    pending = false
+    cancelAnimationFrame(frame)
+    document.removeEventListener('focusin', cancel, true)
+    document.removeEventListener('pointerdown', cancel, true)
+    document.removeEventListener('keydown', cancel, true)
+    document.removeEventListener('compositionstart', cancel, true)
+    window.removeEventListener('blur', cancel)
+  }
+  // Initial focus belongs only to an untouched opening, before the user starts interacting.
+  document.addEventListener('focusin', cancel, true)
+  document.addEventListener('pointerdown', cancel, true)
+  document.addEventListener('keydown', cancel, true)
+  document.addEventListener('compositionstart', cancel, true)
+  window.addEventListener('blur', cancel)
+  frame = requestAnimationFrame(() => {
+    if (!pending) return
+    cancel()
+    if (containerRef.current !== container || !document.hasFocus() || !isVisible(container)) return
+    if ([...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
+      .some(dialog => dialog !== container && isVisible(dialog))) return
+    const active = document.activeElement
+    if (active !== openingActive && active !== document.body) return
+    const target = [initialFocusRef?.current, ...focusableElements(container), container]
+      .find(element => element && container.contains(element) && isVisible(element)
+        && !element.matches(':disabled, [aria-disabled="true"]'))
+    target?.focus()
+  })
+  return cancel
 }
 
 function isVisible(element: HTMLElement): boolean {
