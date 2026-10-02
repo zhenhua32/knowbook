@@ -421,6 +421,142 @@ test('select fields explain empty options without treating normal incomplete inp
   }
 })
 
+test('valid field creation handles a DOM submit once across Name and Options origins, including same-frame button submissions', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const fieldType of ['text', 'select', 'multi-select']) {
+    await withDrawer(async ({ window, requests, startCreate, createForm, fill }) => {
+      const form = await startCreate()
+      const name = nameInput(form)
+      const type = form.querySelector<HTMLSelectElement>('select')!
+      await act(async () => { type.value = fieldType; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      await fill(name, '  Project stage  ')
+      let focused = name
+      if (fieldType !== 'text') {
+        focused = createForm().querySelectorAll<HTMLInputElement>('input')[1]
+        await fill(focused, ' Draft, Review, Draft, , ')
+      }
+      await act(async () => focused.focus())
+      // JSDOM does not perform implicit submission for a synthetic Enter.
+      // Dispatch its resulting submit event explicitly; Electron covers native Enter.
+      const first = new window.Event('submit', { bubbles: true, cancelable: true })
+      const repeated = new window.Event('submit', { bubbles: true, cancelable: true })
+      await act(async () => createForm().dispatchEvent(first))
+      assert.equal(requests.create.length, 1, 'A valid submit must call the creation callback')
+      assert.equal(first.defaultPrevented, true)
+      await act(async () => {
+        createButton(createForm()).click()
+        createForm().dispatchEvent(repeated)
+        createButton(createForm()).click()
+      })
+      assert.equal(requests.create.length, 1, 'A valid submit and button activation share the synchronous creation lock')
+      assert.equal(repeated.defaultPrevented, true)
+      assert.deepEqual(requests.create[0].input, ['Project stage', fieldType, fieldType === 'text' ? [] : ['Draft', 'Review']])
+      assert.equal(alert(createForm()), '')
+      await act(async () => requests.create[0].resolve(true))
+    }, locale)
+  }
+})
+
+test('IME candidate submission is blocked after composition ends until the next ordinary Enter, without swallowing candidate keys', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const target of ['name', 'options']) for (const origin of ['lifecycle', 'native', 'key-code']) {
+    await withDrawer(async ({ document, window, calls, requests, startCreate, createForm, fill, key }) => {
+      const form = await startCreate()
+      await fill(nameInput(form), '  Candidate field  ')
+      let input = nameInput(form)
+      if (target === 'options') {
+        const type = form.querySelector<HTMLSelectElement>('select')!
+        await act(async () => { type.value = 'select'; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+        input = createForm().querySelectorAll<HTMLInputElement>('input')[1]
+        await fill(input, ' Draft, Review, Draft, , ')
+      }
+      const draft = input.value
+      await act(async () => {
+        input.focus()
+        if (origin === 'lifecycle') input.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+      })
+      const init: KeyboardEventInit = origin === 'native' ? { isComposing: true } : origin === 'key-code' ? { keyCode: 229 } : {}
+      for (const candidate of ['Escape', 'Enter']) {
+        assert.equal((await key(input, candidate, init)).defaultPrevented, false)
+        assert.equal(document.activeElement === input, true)
+        assert.equal(input.value, draft)
+        assert.equal(calls.close, 0)
+        assert.equal(requests.create.length, 0)
+      }
+      // Some browsers end composition before dispatching its implicit submit.
+      // Explicit submit events test that ordering; synthetic Enter has no default in JSDOM.
+      await act(async () => input.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+      const candidateSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+      await act(async () => createForm().dispatchEvent(candidateSubmit))
+      assert.equal(candidateSubmit.defaultPrevented, true)
+      assert.equal(requests.create.length, 0, 'The candidate-confirming Enter must not create a field after compositionend')
+      assert.equal(input.value, draft)
+      assert.equal(alert(createForm()), '')
+      assert.equal(calls.close, 0)
+
+      assert.equal((await key(input, 'Enter')).defaultPrevented, false)
+      const acceptedSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+      const repeatedSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+      await act(async () => {
+        createForm().dispatchEvent(acceptedSubmit)
+        createButton(createForm()).click()
+        createForm().dispatchEvent(repeatedSubmit)
+      })
+      assert.equal(acceptedSubmit.defaultPrevented, true)
+      assert.equal(repeatedSubmit.defaultPrevented, true)
+      assert.equal(requests.create.length, 1, 'The next ordinary Enter and same-frame button submission share one lock')
+      assert.deepEqual(requests.create[0].input, ['Candidate field', target === 'options' ? 'select' : 'text', target === 'options' ? ['Draft', 'Review'] : []])
+      await act(async () => requests.create[0].resolve(true))
+    }, locale)
+  }
+})
+
+test('invalid DOM submits never write or show an error, and a fresh pointer or blur permits submission after an IME candidate', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const reset of ['pointer', 'blur']) {
+    await withDrawer(async ({ window, requests, startCreate, createForm, fill, key }) => {
+      const form = await startCreate()
+      const name = nameInput(form)
+      const type = form.querySelector<HTMLSelectElement>('select')!
+      await act(async () => { type.value = 'multi-select'; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      const options = createForm().querySelectorAll<HTMLInputElement>('input')[1]
+      for (const [nameValue, optionsValue] of [['', 'Draft'], [' \t ', 'Draft'], ['Valid field', ''], ['Valid field', ', , ,']]) {
+        await fill(name, nameValue)
+        await fill(options, optionsValue)
+        assert.equal(createButton(createForm()).disabled, true)
+        await key(options, 'Enter')
+        const incompleteSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+        await act(async () => createForm().dispatchEvent(incompleteSubmit))
+        assert.equal(incompleteSubmit.defaultPrevented, true)
+        assert.equal(requests.create.length, 0)
+        assert.equal(alert(createForm()), '')
+        assert.equal(createForm().querySelectorAll('[aria-invalid="true"]').length, 0)
+      }
+      await fill(name, '  Valid field  ')
+      await fill(options, ' Draft, Review, Draft, , ')
+      await act(async () => options.focus())
+      assert.equal((await key(options, 'Enter', { keyCode: 229 })).defaultPrevented, false)
+      await act(async () => options.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+      const blockedSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+      await act(async () => createForm().dispatchEvent(blockedSubmit))
+      assert.equal(blockedSubmit.defaultPrevented, true)
+      assert.equal(requests.create.length, 0)
+
+      await act(async () => {
+        if (reset === 'pointer') createButton(createForm()).dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+        else options.blur()
+      })
+      const acceptedSubmit = new window.Event('submit', { bubbles: true, cancelable: true })
+      await act(async () => {
+        createForm().dispatchEvent(acceptedSubmit)
+        createButton(createForm()).click()
+      })
+      assert.equal(acceptedSubmit.defaultPrevented, true)
+      assert.equal(requests.create.length, 1, 'A new explicit user action clears the stale candidate gate without bypassing the lock')
+      assert.deepEqual(requests.create[0].input, ['Valid field', 'multi-select', ['Draft', 'Review']])
+      assert.equal(alert(createForm()), '')
+      await act(async () => requests.create[0].resolve(true))
+    }, locale)
+  }
+})
+
 test('creation and option drafts survive IME Enter and Escape; ordinary Escape works after composition ends or blur', async () => {
   for (const locale of ['zh-CN', 'en-US']) {
     for (const target of ['create-name', 'create-options', 'row-options']) {

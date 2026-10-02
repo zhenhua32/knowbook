@@ -40,6 +40,7 @@ export function DatabaseFieldDrawer({
   const requiredHintId = useId()
   const optionsHintId = useId()
   const createComposingRef = useRef(false)
+  const blockedImplicitSubmitRef = useRef(false)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [type, setType] = useState<DocumentDatabaseColumnType>('text')
@@ -50,6 +51,7 @@ export function DatabaseFieldDrawer({
 
   useLayoutEffect(() => {
     createComposingRef.current = false
+    blockedImplicitSubmitRef.current = false
     setCreating(false)
     setName('')
     setType('text')
@@ -113,10 +115,18 @@ export function DatabaseFieldDrawer({
         </div>
         <div className="dbw-field-create">
           {creating ? (
-            <div className="dbw-field-create-form"
+            <form className="dbw-field-create-form" noValidate
               onCompositionStartCapture={() => { createComposingRef.current = true }}
+              // Candidate confirmation can end composition before the browser's implicit submit.
               onCompositionEndCapture={() => { createComposingRef.current = false }}
-              onBlurCapture={() => { createComposingRef.current = false }}
+              onBlurCapture={() => { createComposingRef.current = false; blockedImplicitSubmitRef.current = false }}
+              onPointerDownCapture={() => { blockedImplicitSubmitRef.current = false }}
+              onKeyDownCapture={event => { blockedImplicitSubmitRef.current = isImeKeyboardEvent(event.nativeEvent, createComposingRef.current) }}
+              onSubmit={event => {
+                event.preventDefault()
+                if (createComposingRef.current || blockedImplicitSubmitRef.current) return
+                void submit()
+              }}
               onKeyDown={event => { if (isImeKeyboardEvent(event.nativeEvent, createComposingRef.current)) event.stopPropagation() }}>
               <p className="dbw-field-create-hint" id={requiredHintId}>{text.requiredFieldsHint}</p>
               <label className="dbw-field-create-label">
@@ -139,11 +149,11 @@ export function DatabaseFieldDrawer({
               ) : null}
               {failed ? <p className="dbw-field-submit-error" role="alert">{text.failed}</p> : null}
               <div className="dbw-inline-actions">
-                <button className="dbw-primary-button" disabled={submission.busy || !name.trim() || ((type === 'select' || type === 'multi-select') && !options.split(',').some(option => option.trim()))} onClick={() => void submit()} type="button">{submission.action === 'create' ? text.creating : text.create}</button>
-                <button className="dbw-quiet-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { setCreating(false); setFailed(false); setName(''); setType('text'); setOptions('') } }} type="button">{text.cancel}</button>
+                <button className="dbw-primary-button" disabled={submission.busy || !name.trim() || ((type === 'select' || type === 'multi-select') && !options.split(',').some(option => option.trim()))} type="submit">{submission.action === 'create' ? text.creating : text.create}</button>
+                <button className="dbw-quiet-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { createComposingRef.current = false; blockedImplicitSubmitRef.current = false; setCreating(false); setFailed(false); setName(''); setType('text'); setOptions('') } }} type="button">{text.cancel}</button>
               </div>
-            </div>
-          ) : <button className="dbw-add-field-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) setCreating(true) }} type="button">＋ {text.addField}</button>}
+            </form>
+          ) : <button className="dbw-add-field-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) { createComposingRef.current = false; blockedImplicitSubmitRef.current = false; setCreating(true) } }} type="button">＋ {text.addField}</button>}
         </div>
       </aside>
     </>

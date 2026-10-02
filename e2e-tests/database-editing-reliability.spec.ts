@@ -160,7 +160,10 @@ test('database text edits respect IME and Escape without saving discarded values
     await page.getByRole('button', { name: 'Original record', exact: true }).click()
     const drawer = page.getByRole('dialog', { name: uiText('Record details', '记录详情') })
     const input = drawer.getByLabel('Notes', { exact: true })
+    // Start the IME interaction after the drawer's initial focus frame has completed.
+    await expect(drawer.locator('.dbw-drawer-header .dbw-icon-button')).toBeFocused()
     await input.focus()
+    await expect(input).toBeFocused()
     await input.dispatchEvent('compositionstart')
     await input.press('Escape')
     await expect(drawer).toBeVisible()
