@@ -433,3 +433,63 @@ test('language and compact-mode changes measure the overlay and clean listeners,
     assert.equal(context.document.activeElement === context.outside, true)
   }, { strict: true, priorValue: '53px' })
 })
+
+test('full-card pointer exit cannot expire an ordinary notification while its dismiss control still has focus', async () => {
+  for (const level of ['success', 'info', 'warning'] as const) {
+    await withHost(async context => {
+      await context.change(() => { show({ title: `Ordinary ${level}`, message: 'Keep this notice while reading its controls.', level }) })
+      assert.equal(context.document.querySelectorAll('.app-notification-summary').length, 0)
+      const id = appNotifications.getSnapshot()[0].id
+      const notification = card(context.document, String(id))
+      const dismiss = notification.querySelector<HTMLButtonElement>('.app-notification-close')!
+      await context.dispatch(notification, context.mouse('mouseover', context.outside))
+      await context.change(() => dismiss.focus())
+      assert.equal(context.document.activeElement === dismiss, true)
+      await context.dispatch(notification, context.mouse('mouseout', context.outside))
+      await context.advance(6_001)
+      assert.equal(notification.isConnected, true, 'Pointer exit must not clear the independent keyboard pause')
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), true)
+      assert.equal(context.document.activeElement === dismiss, true)
+
+      await context.change(() => context.outside.focus())
+      await context.advance(5_999)
+      assert.equal(notification.isConnected, true)
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), true)
+      await context.advance(1)
+      assert.equal(notification.isConnected, false)
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), false)
+      assert.equal(appNotifications.getHistorySnapshot().some(item => item.id === id), true)
+      assert.equal(context.document.activeElement === context.outside, true)
+    }, { width: 1360, height: 880 })
+  }
+})
+
+test('full-card focus exit cannot expire an ordinary notification while the pointer remains over it', async () => {
+  for (const level of ['success', 'info', 'warning'] as const) {
+    await withHost(async context => {
+      await context.change(() => { show({ title: `Ordinary ${level}`, message: 'Keep this notice while the pointer is reading it.', level }) })
+      assert.equal(context.document.querySelectorAll('.app-notification-summary').length, 0)
+      const id = appNotifications.getSnapshot()[0].id
+      const notification = card(context.document, String(id))
+      const dismiss = notification.querySelector<HTMLButtonElement>('.app-notification-close')!
+      await context.dispatch(notification, context.mouse('mouseover', context.outside))
+      await context.change(() => dismiss.focus())
+      assert.equal(context.document.activeElement === dismiss, true)
+      await context.change(() => context.outside.focus())
+      await context.advance(6_001)
+      assert.equal(notification.isConnected, true, 'Focus exit must not clear the independent pointer pause')
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), true)
+      assert.equal(context.document.activeElement === context.outside, true)
+
+      await context.dispatch(notification, context.mouse('mouseout', context.outside))
+      await context.advance(5_999)
+      assert.equal(notification.isConnected, true)
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), true)
+      await context.advance(1)
+      assert.equal(notification.isConnected, false)
+      assert.equal(appNotifications.getSnapshot().some(item => item.id === id), false)
+      assert.equal(appNotifications.getHistorySnapshot().some(item => item.id === id), true)
+      assert.equal(context.document.activeElement === context.outside, true)
+    }, { width: 1360, height: 880 })
+  }
+})

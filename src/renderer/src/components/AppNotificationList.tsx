@@ -181,7 +181,9 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
   const actionLock = useRef(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [paused, setPaused] = useState(false)
+  const [hovered, setHovered] = useState(false)
+  const [focusWithin, setFocusWithin] = useState(false)
+  const paused = hovered || focusWithin
   const level = notification.level ?? 'info'
   const running = level === 'progress'
   const persistent = running || level === 'error' || notification.persistent || Boolean(notification.actions?.length)
@@ -212,9 +214,9 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
   }
 
   return <article className={`app-notification app-notification-${level}`} data-notification-id={notification.id}
-    onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
-    onFocusCapture={() => setPaused(true)} onBlurCapture={(event) => {
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false)
+    onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+    onFocusCapture={() => setFocusWithin(true)} onBlurCapture={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false)
     }}>
     <span className="app-notification-icon" aria-hidden="true">{running ? '↻' : level === 'success' ? '✓' : level === 'error' || level === 'warning' ? '!' : 'i'}</span>
     <div className="app-notification-body">
