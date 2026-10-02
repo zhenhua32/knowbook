@@ -13,7 +13,8 @@
   pointer-events: none;
 }
 
-.app-notification {
+.app-notification,
+.app-notification-summary {
   display: flex;
   flex: 0 0 auto;
   align-items: flex-start;
@@ -44,10 +45,19 @@
 .app-notification-actions button:hover { background: var(--kb-accent-soft, #f0f1fe); }
 .app-notification-actions button:disabled { opacity: .55; cursor: not-allowed; }
 .app-notification-close { flex-shrink: 0; min-width: 28px; min-height: 28px; padding: 0 2px; border: 0; background: transparent; color: var(--kb-text-muted, #657089); font-size: 20px; line-height: 22px; cursor: pointer; }
-.app-notification button:focus-visible { outline: 2px solid var(--kb-accent, #6266dc); outline-offset: 2px; }
+.app-notification button:focus-visible,
+.app-notification-summary button:focus-visible { outline: 2px solid var(--kb-accent, #6266dc); outline-offset: 2px; }
 .app-notification-action-error { margin: 6px 0 0; color: var(--notification-alert, #ba364b); overflow-wrap: anywhere; }
 
+.app-notifications.is-compact > .app-notification { display: none; }
+.app-notification-summary { align-items: center; gap: 10px; padding: 10px 12px; }
+.app-notification-summary .app-notification-icon { flex-basis: 18px; font-size: 16px; }
+.app-notification-summary .app-notification-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; line-height: 20px; }
+.app-notification-summary .app-notification-message { overflow: hidden; margin-top: 2px; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; line-height: 16px; }
+.app-notification-summary-open { flex-shrink: 0; min-height: 32px; padding: 4px 8px; border: 1px solid var(--kb-line); border-radius: 7px; color: var(--kb-accent); background: var(--kb-accent-soft); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+
 :root[data-theme='dark'] .app-notification,
+:root[data-theme='dark'] .app-notification-summary,
 :root[data-theme='dark'] .notification-center {
   --kb-canvas: #202631;
   --kb-line: #424c60;

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { appNotifications } from '../app-notifications'
 
 const NotificationList = lazy(() => import('./AppNotificationList'))
@@ -10,6 +10,7 @@ export function AppNotificationHost({ isZh, onOpenDocument }: {
   const notifications = useSyncExternalStore(appNotifications.subscribe, appNotifications.getSnapshot)
   const history = useSyncExternalStore(appNotifications.subscribe, appNotifications.getHistorySnapshot)
   const [open, setOpen] = useState(false)
+  const bellRef = useRef<HTMLButtonElement>(null)
   const unread = history.filter((item) => !item.read).length
   useEffect(() => {
     let disposed = false
@@ -34,7 +35,7 @@ export function AppNotificationHost({ isZh, onOpenDocument }: {
   }, [])
 
   return <>
-    <button className="nav-icon-btn notification-bell" type="button" aria-haspopup="dialog" aria-expanded={open}
+    <button ref={bellRef} className="nav-icon-btn notification-bell" type="button" aria-haspopup="dialog" aria-expanded={open}
       aria-label={isZh ? `通知中心${unread ? `，${unread} 条未读` : ''}` : `Notification center${unread ? `, ${unread} unread` : ''}`}
       title={isZh ? '通知中心' : 'Notification center'} onClick={() => setOpen(true)}>
       <svg aria-hidden="true" className="nav-icon-svg" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
@@ -42,7 +43,7 @@ export function AppNotificationHost({ isZh, onOpenDocument }: {
     </button>
     {(open || notifications.length > 0) && <Suspense fallback={null}>
       <NotificationList notifications={notifications} history={history} open={open} onClose={() => setOpen(false)} isZh={isZh}
-        onDismiss={appNotifications.hide} onOpenDocument={onOpenDocument} />
+        onOpenCenter={() => setOpen(true)} returnFocusRef={bellRef} onDismiss={appNotifications.hide} onOpenDocument={onOpenDocument} />
     </Suspense>}
   </>
 }

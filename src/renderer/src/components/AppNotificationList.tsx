@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import type { AppNotificationAction } from '@shared/app-notification'
 import { appNotifications, type AppNotification } from '../app-notifications'
@@ -13,14 +13,54 @@ type NotificationProps = {
   onActionComplete?: () => void
 }
 
-export default function AppNotificationList({ notifications, history, open, onClose, ...props }: NotificationProps & {
+const compactNotificationQuery = '(max-width:900px), (max-height:700px)'
+
+export default function AppNotificationList({ notifications, history, open, onClose, onOpenCenter, returnFocusRef, ...props }: NotificationProps & {
   notifications: readonly AppNotification[]
   history: readonly AppNotification[]
   open: boolean
   onClose: () => void
+  onOpenCenter?: () => void
+  returnFocusRef?: RefObject<HTMLElement | null>
 }) {
   const listRef = useRef<HTMLElement>(null)
+  const resizeFocusOwner = useRef<HTMLElement | null>(null)
   const newestId = notifications.at(-1)?.id
+  const [compact, setCompact] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    && window.matchMedia(compactNotificationQuery).matches)
+  const [summaryHovered, setSummaryHovered] = useState(false)
+  const [summaryFocused, setSummaryFocused] = useState(false)
+  const liveIds = new Set(notifications.map((item) => item.id))
+  // Updates reorder history, while a running task keeps its original toast slot.
+  const latest = [...history].reverse().find((item) => liveIds.has(item.id)) ?? notifications.at(-1)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const media = window.matchMedia(compactNotificationQuery)
+    const update = () => {
+      const list = listRef.current
+      if (list && list.classList.contains('is-compact') !== media.matches) {
+        const active = document.activeElement as HTMLElement | null
+        resizeFocusOwner.current = active && list.contains(active) ? active : null
+      }
+      setCompact(media.matches)
+    }
+    update()
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  useEffect(() => {
+    if (!compact) { setSummaryHovered(false); setSummaryFocused(false) }
+  }, [compact])
+  useLayoutEffect(() => {
+    const previous = resizeFocusOwner.current
+    resizeFocusOwner.current = null
+    if (!previous || open || !listRef.current) return
+    const active = document.activeElement
+    if (active !== previous && active !== document.body) return
+    // Resizing hides the old control. Move only focus owned by this list.
+    const target = compact ? listRef.current.querySelector<HTMLButtonElement>('.app-notification-summary-open') : returnFocusRef?.current
+    target?.focus({ preventScroll: true })
+  }, [compact, open, returnFocusRef])
   useLayoutEffect(() => {
     const list = listRef.current
     if (!list) return
@@ -32,7 +72,7 @@ export default function AppNotificationList({ notifications, history, open, onCl
     const updateClearance = () => {
       if (!active) return
       const bounds = list.getBoundingClientRect()
-      const clearance = list.isConnected && list.childElementCount > 0 && bounds.height > 0
+      const clearance = list.isConnected && notifications.length > 0 && bounds.height > 0
         ? Math.max(0, Math.ceil(window.innerHeight - bounds.top + 12)) : 0
       rootStyle.setProperty(property, `${clearance}px`)
     }
@@ -47,30 +87,68 @@ export default function AppNotificationList({ notifications, history, open, onCl
       if (previousValue) rootStyle.setProperty(property, previousValue, previousPriority)
       else rootStyle.removeProperty(property)
     }
-  }, [open, notifications])
+  }, [open, notifications, history, compact])
   useEffect(() => {
     const list = listRef.current
     if (list) list.scrollTop = list.scrollHeight
   }, [newestId])
   return createPortal(
     <>
-    {!open && <section ref={listRef} className="app-notifications" aria-label={props.isZh ? '应用内通知' : 'Notifications'}>
-      {notifications.map((notification) => <NotificationCard key={notification.id} notification={notification} {...props} />)}
+    {!open && <section ref={listRef} className={`app-notifications${compact ? ' is-compact' : ''}`} aria-label={props.isZh ? '应用内通知' : 'Notifications'}>
+      {compact && latest && <NotificationSummary notification={latest} count={notifications.length} isZh={props.isZh} onOpenCenter={onOpenCenter}
+        onMouseEnter={() => setSummaryHovered(true)} onMouseLeave={() => setSummaryHovered(false)}
+        onFocus={() => setSummaryFocused(true)} onBlur={() => setSummaryFocused(false)} />}
+      {notifications.map((notification) => <NotificationCard key={notification.id} notification={notification} {...props}
+        pausedExternally={compact && notification.id === latest?.id && (summaryHovered || summaryFocused)} />)}
     </section>}
-    {open && <NotificationCenter history={history} onClose={onClose} {...props} />}
+    {open && <NotificationCenter history={history} onClose={onClose} returnFocusRef={returnFocusRef} {...props} />}
     </>, document.body)
 }
 
-function NotificationCenter({ history, onClose, ...props }: NotificationProps & {
+function NotificationSummary({ notification, count, isZh, onOpenCenter, onMouseEnter, onMouseLeave, onFocus, onBlur }: {
+  notification: AppNotification
+  count: number
+  isZh: boolean
+  onOpenCenter?: () => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+  onFocus: () => void
+  onBlur: () => void
+}) {
+  const level = notification.level ?? 'info'
+  const running = level === 'progress'
+  const message = running ? notification.progressLabel || notification.message || (Number.isFinite(notification.progress)
+    ? `${Math.round(Math.max(0, Math.min(100, notification.progress!)))}%` : isZh ? '任务进行中…' : 'Task in progress…') : notification.message
+  return <article className={`app-notification-summary app-notification-${level}`} data-testid="notification-summary" data-notification-id={notification.id}
+    onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} onFocusCapture={onFocus}
+    onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onBlur() }}>
+    <span className="app-notification-icon" aria-hidden="true">{running ? '↻' : level === 'success' ? '✓' : level === 'error' || level === 'warning' ? '!' : 'i'}</span>
+    <div className="app-notification-body" role={level === 'error' ? 'alert' : 'status'} aria-atomic="true">
+      <strong className="app-notification-title">{notification.title}</strong>
+      {message && <p className="app-notification-message">{message}</p>}
+    </div>
+    <button type="button" className="app-notification-summary-open" onClick={onOpenCenter}
+      aria-label={isZh ? `查看 ${count} 条通知` : `View ${count} notification${count === 1 ? '' : 's'}`}>
+      {isZh ? `查看通知 (${count})` : `View all (${count})`}
+    </button>
+  </article>
+}
+
+function NotificationCenter({ history, onClose, returnFocusRef, ...props }: NotificationProps & {
   history: readonly AppNotification[]
   onClose: () => void
+  returnFocusRef?: RefObject<HTMLElement | null>
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const dialog = ref.current!
     const previous = document.activeElement as HTMLElement | null
     dialog.showModal()
-    return () => { dialog.close(); previous?.focus() }
+    return () => {
+      dialog.close()
+      if (previous?.isConnected && previous !== document.body && previous !== document.documentElement) previous.focus({ preventScroll: true })
+      else returnFocusRef?.current?.focus({ preventScroll: true })
+    }
   }, [])
   useEffect(() => { appNotifications.markAllRead() }, [history])
   const running = history.filter((item) => item.level === 'progress').length
@@ -99,7 +177,7 @@ function NotificationCenter({ history, onClose, ...props }: NotificationProps & 
   </dialog>
 }
 
-function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete }: NotificationProps & { notification: AppNotification }) {
+function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete, pausedExternally }: NotificationProps & { notification: AppNotification; pausedExternally?: boolean }) {
   const actionLock = useRef(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -108,10 +186,10 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
   const running = level === 'progress'
   const persistent = running || level === 'error' || notification.persistent || Boolean(notification.actions?.length)
   useEffect(() => {
-    if (historyMode || persistent || paused) return
+    if (historyMode || persistent || paused || pausedExternally) return
     const timer = setTimeout(() => onDismiss(notification.id), 6_000)
     return () => clearTimeout(timer)
-  }, [notification, onDismiss, paused, persistent, historyMode])
+  }, [notification, onDismiss, paused, pausedExternally, persistent, historyMode])
 
   const runAction = async (action: AppNotificationAction) => {
     if (actionLock.current || action.disabled) return
