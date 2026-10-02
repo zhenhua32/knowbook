@@ -13,7 +13,7 @@ type RecordDraft = {
 type RecordSubmissionFocus = {
   container: HTMLElement
   origin: HTMLElement
-  ready: boolean
+  target: HTMLElement | null
   cleanup: () => void
 }
 
@@ -45,7 +45,7 @@ function useRecordSubmission(session: string | true | null, containerRef: RefObj
       || !document.hasFocus() || !container.contains(origin) || !isRecordFocusVisible(container)
       || !isRecordFocusVisible(origin) || origin.matches(':disabled, [aria-disabled="true"]')) return null
 
-    const captured: RecordSubmissionFocus = { container, origin, ready: false, cleanup: () => {} }
+    const captured: RecordSubmissionFocus = { container, origin, target: null, cleanup: () => {} }
     const cancel = () => { if (pendingFocus.current === captured) clearFocus() }
     const onFocusIn = (event: FocusEvent) => {
       if (event.target !== document.body && event.target !== origin) cancel()
@@ -90,22 +90,27 @@ function useRecordSubmission(session: string | true | null, containerRef: RefObj
 
   useLayoutEffect(() => {
     const captured = pendingFocus.current
-    if (!captured?.ready || busy) return
-    const { container, origin } = captured
+    if (!captured?.target || busy) return
+    const { container, origin, target } = captured
     const document = origin.ownerDocument
     const active = document.activeElement
     const canRestore = containerRef.current === container && document.hasFocus()
       && isRecordFocusVisible(container) && container.contains(origin) && isRecordFocusVisible(origin)
-      && !origin.matches(':disabled, [aria-disabled="true"]')
+      && container.contains(target) && isRecordFocusVisible(target)
+      && !target.matches(':disabled, [aria-disabled="true"]')
       && (active === document.body || active === origin)
       && ![...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
         .some(dialog => dialog !== container && isRecordFocusVisible(dialog))
     // Consume once after React re-enables the control; newer activity permanently cancels it.
     clearFocus()
-    if (canRestore) origin.focus()
+    if (canRestore) target.focus()
   })
 
-  const submit = async (action: () => Promise<boolean>, onSuccess?: () => void) => {
+  const submit = async (
+    action: () => Promise<boolean>,
+    onSuccess?: () => void,
+    successFocusRef?: RefObject<HTMLElement | null>
+  ) => {
     if (!session || !mounted.current || lock.current) return
     const requestGeneration = generation.current
     const isCurrent = () => mounted.current && generation.current === requestGeneration
@@ -121,8 +126,9 @@ function useRecordSubmission(session: string | true | null, containerRef: RefObj
     }
     if (!isCurrent()) return
     lock.current = false
-    if (completed === true) clearFocus()
-    else if (capturedFocus && pendingFocus.current === capturedFocus) capturedFocus.ready = true
+    const target = completed === true ? successFocusRef?.current : capturedFocus?.origin
+    if (capturedFocus && pendingFocus.current === capturedFocus && target) capturedFocus.target = target
+    else clearFocus()
     setBusy(false)
     if (completed === true) onSuccess?.()
     else setFailed(true)
@@ -265,23 +271,15 @@ export function CreateRecordDialog({
   const errorId = useId()
   const propertyFields = fields.filter((field) => field.role === 'property')
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
-  const focusTitle = useRef(false)
   const submission = useRecordSubmission(open ? true : null, dialogRef)
   const cancel = () => { if (!submission.isBusy()) onCancel() }
   const updateDraft = (update: (current: RecordDraft) => RecordDraft) => {
     if (!submission.isBusy()) setDraft(update)
   }
   useLayoutEffect(() => {
-    focusTitle.current = false
     if (!open) return
     setDraft({ title: '', documentId: '', fieldValues: {} })
   }, [open])
-  useLayoutEffect(() => {
-    if (open && !submission.busy && focusTitle.current) {
-      focusTitle.current = false
-      titleRef.current?.focus()
-    }
-  })
   useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: titleRef, onClose: cancel, open })
   if (!open) return null
 
@@ -292,9 +290,8 @@ export function CreateRecordDialog({
         onCancel()
         return
       }
-      focusTitle.current = true
       setDraft({ title: '', documentId: '', fieldValues: {} })
-    })
+    }, continueAdding ? titleRef : undefined)
   }
 
   return (

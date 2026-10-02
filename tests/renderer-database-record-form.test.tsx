@@ -109,34 +109,36 @@ const dialog = (document: Document) => document.querySelector<HTMLElement>('[rol
 test('failed creation retains the complete draft and retries; only a successful continue clears and refocuses it in both languages', async () => {
   for (const locale of ['zh-CN', 'en-US']) {
     await withForms(async ({ document, window, creates, calls, renderCreate, fill }) => {
-      const text = getDatabaseWorkspaceText(locale)
-      await renderCreate({ text })
-      await fill(titleInput(document), 'New record')
-      await fill(notesInput(document), 'Keep these notes')
-      const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
-      await act(async () => { linked.value = 'document-1'; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
-      await act(async () => continueButton(document).click())
-      await act(async () => creates[0].resolve(false))
-      assert.equal(titleInput(document).value, 'New record')
-      assert.equal(notesInput(document).value, 'Keep these notes')
-      assert.equal(linked.value, 'document-1')
-      assert.equal(alertText(document), text.formFailed)
-      const alert = document.querySelector<HTMLElement>('[role="alert"]')!
-      assert.equal(alert.id.length > 0, true)
-      assert.equal(primaryButton(document).getAttribute('aria-describedby'), alert.id)
-      assert.equal(continueButton(document).getAttribute('aria-describedby'), alert.id)
-      assert.equal(calls.cancel, 0)
-      await act(async () => continueButton(document).click())
-      assert.deepEqual(creates[1].draft, creates[0].draft)
-      assert.equal(alertText(document), '', 'a retry clears the previous error')
-      assert.equal(primaryButton(document).hasAttribute('aria-describedby'), false)
-      assert.equal(continueButton(document).hasAttribute('aria-describedby'), false)
-      await act(async () => creates[1].resolve(true))
-      assert.equal(titleInput(document).value, '')
-      assert.equal(notesInput(document).value, '')
-      assert.equal(linked.value, '')
-      assert.equal(document.activeElement, titleInput(document))
-      assert.equal(calls.cancel, 0, 'continue keeps the form open')
+      await withRecordFailureFocus(document, window, async () => {
+        const text = getDatabaseWorkspaceText(locale)
+        await renderCreate({ text })
+        await fill(titleInput(document), 'New record')
+        await fill(notesInput(document), 'Keep these notes')
+        const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+        await act(async () => { linked.value = 'document-1'; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+        await act(async () => { continueButton(document).focus(); continueButton(document).click() })
+        await act(async () => creates[0].resolve(false))
+        assert.equal(titleInput(document).value, 'New record')
+        assert.equal(notesInput(document).value, 'Keep these notes')
+        assert.equal(linked.value, 'document-1')
+        assert.equal(alertText(document), text.formFailed)
+        const alert = document.querySelector<HTMLElement>('[role="alert"]')!
+        assert.equal(alert.id.length > 0, true)
+        assert.equal(primaryButton(document).getAttribute('aria-describedby'), alert.id)
+        assert.equal(continueButton(document).getAttribute('aria-describedby'), alert.id)
+        assert.equal(calls.cancel, 0)
+        await act(async () => { continueButton(document).focus(); continueButton(document).click() })
+        assert.deepEqual(creates[1].draft, creates[0].draft)
+        assert.equal(alertText(document), '', 'a retry clears the previous error')
+        assert.equal(primaryButton(document).hasAttribute('aria-describedby'), false)
+        assert.equal(continueButton(document).hasAttribute('aria-describedby'), false)
+        await act(async () => creates[1].resolve(true))
+        assert.equal(titleInput(document).value, '')
+        assert.equal(notesInput(document).value, '')
+        assert.equal(linked.value, '')
+        assert.equal(document.activeElement, titleInput(document))
+        assert.equal(calls.cancel, 0, 'continue keeps the form open')
+      })
     })
   }
 })
@@ -757,6 +759,214 @@ test('an unavailable failed record button is never focused, and making it availa
         assert.equal(titleInput(document).value, 'Unavailable origin draft')
         assert.ok(alertText(document))
       })
+    })
+  }
+})
+
+test('successful Continue keeps pending Tab focus on the dialog while clearing the saved draft', async () => {
+  await withForms(async ({ document, window, creates, calls, renderCreate, fill }) => {
+    await withRecordFailureFocus(document, window, async ({ focusCalls }) => {
+      await renderCreate()
+      await fill(titleInput(document), 'Saved before continuing')
+      await fill(notesInput(document), 'Saved property')
+      const title = titleInput(document)
+      const submit = continueButton(document)
+      await act(async () => { submit.focus(); submit.click() })
+      assert.equal(creates.length, 1)
+      assert.equal(creates[0].continueAdding, true)
+      assert.equal(submit.disabled, true)
+      await act(async () => document.body.focus())
+      assert.equal(document.activeElement === document.body, true)
+      const container = dialog(document)
+      const tab = new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      await act(async () => document.body.dispatchEvent(tab))
+      assert.equal(document.activeElement === container, true, 'The shared pending Tab trap establishes the user focus')
+      const before = focusCalls.length
+      await act(async () => creates[0].resolve(true))
+      assert.equal(titleInput(document).value, '')
+      assert.equal(notesInput(document).value, '')
+      assert.equal(calls.cancel, 0)
+      assert.equal(document.activeElement === container, true, 'Clearing the saved draft must not override intervening Tab focus')
+      assert.equal(focusCalls.slice(before).filter(call => call.element === title).length, 0, 'The success path must not even attempt Title focus after the user moves on')
+    })
+  })
+})
+
+type PendingContinueFocus = Parameters<Parameters<typeof withForms>[0]>[0]
+  & Parameters<Parameters<typeof withRecordFailureFocus>[2]>[0]
+  & { title: HTMLInputElement; submit: HTMLButtonElement; container: HTMLElement }
+
+async function withPendingContinue(run: (context: PendingContinueFocus) => Promise<void>, locale = 'en-US', enabledBlur = false) {
+  await withForms(async forms => {
+    await withRecordFailureFocus(forms.document, forms.window, async focus => {
+      const { document, window, renderCreate, fill, creates } = forms
+      await renderCreate({ text: getDatabaseWorkspaceText(locale) })
+      await fill(titleInput(document), 'Saved continuation title')
+      await fill(notesInput(document), 'Saved continuation notes')
+      const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+      await act(async () => { linked.value = 'document-1'; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      const title = titleInput(document)
+      const submit = continueButton(document)
+      const container = dialog(document)
+      await act(async () => {
+        submit.focus()
+        submit.click()
+        if (enabledBlur) {
+          assert.equal(submit.disabled, false, 'The user leaves before the pending state commits')
+          document.body.focus()
+        }
+        submit.click()
+        primaryButton(document).click()
+      })
+      assert.equal(creates.length, 1, 'Both creation buttons share the same synchronous lock')
+      assert.equal(creates[0].continueAdding, true)
+      assert.equal(submit.disabled, true)
+      if (!enabledBlur) await act(async () => document.body.focus())
+      assert.equal(document.activeElement === document.body, true)
+      await run({ ...forms, ...focus, title, submit, container })
+    })
+  })
+}
+
+test('uninterrupted Continue focuses usable Title once, clears the saved draft and accepts another record in both languages', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withPendingContinue(async context => {
+      const { document, creates, calls, title, submit, focusCalls, fill } = context
+      const before = focusCalls.length
+      await act(async () => creates[0].resolve(true))
+      assert.equal(title.value, '')
+      assert.equal(notesInput(document).value, '')
+      assert.equal(document.querySelector<HTMLSelectElement>('.dbw-record-form select')!.value, '')
+      assert.equal(calls.cancel, 0)
+      assert.equal(title.matches(':disabled'), false)
+      assert.equal(submit.disabled, true, 'The cleared title disables Continue without invalidating the usable Title target')
+      assert.equal(document.activeElement === title, true)
+      assert.equal(focusCalls.length, before + 1)
+      assert.equal(focusCalls.at(-1)!.element === title, true)
+      assert.deepEqual(creates[0].draft, { title: 'Saved continuation title', documentId: 'document-1', fieldValues: { notes: 'Saved continuation notes' } })
+      assert.equal(alertText(document), '')
+      await fill(title, 'Next continuation title')
+      await fill(notesInput(document), 'Next continuation notes')
+      await act(async () => { submit.focus(); submit.click(); submit.click() })
+      assert.equal(creates.length, 2)
+      assert.equal(creates[1].continueAdding, true)
+      assert.equal(creates[1].draft.title, 'Next continuation title')
+      assert.equal(creates[1].draft.fieldValues.notes, 'Next continuation notes')
+      await act(async () => document.body.focus())
+      await act(async () => creates[1].resolve(true))
+      assert.equal(document.activeElement === title, true)
+      assert.equal(title.value, '')
+      assert.equal(calls.cancel, 0)
+    }, locale)
+  }
+})
+
+test('successful Continue clears the draft without refocusing after user activity or foreground and modal changes', async () => {
+  for (const departure of ['tab-aba', 'pointer', 'key', 'composition', 'external-aba', 'enabled-blur', 'window-blur', 'background', 'other-modal']) {
+    await withPendingContinue(async context => {
+      const { document, window, creates, calls, title, container, focusCalls, foreground, renderCreate } = context
+      const foreignModal = document.createElement('section')
+      await act(async () => {
+        if (departure === 'tab-aba') {
+          document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+          assert.equal(document.activeElement === container, true)
+          container.blur()
+          assert.equal(document.activeElement === document.body, true)
+        }
+        if (departure === 'pointer') document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+        if (departure === 'key') document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        if (departure === 'composition') {
+          document.body.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+          document.body.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }))
+        }
+        if (departure === 'external-aba') { const outside = document.getElementById('opener')!; outside.focus(); outside.blur() }
+        if (departure === 'window-blur') { foreground(false); window.dispatchEvent(new window.Event('blur')); foreground(true) }
+        if (departure === 'background') foreground(false)
+        if (departure === 'other-modal') {
+          foreignModal.setAttribute('role', 'alertdialog')
+          foreignModal.setAttribute('aria-modal', 'true')
+          document.body.append(foreignModal)
+        }
+      })
+      const retained = document.activeElement
+      const before = focusCalls.length
+      await act(async () => creates[0].resolve(true))
+      assert.equal(title.value, '')
+      assert.equal(notesInput(document).value, '')
+      assert.equal(document.querySelector<HTMLSelectElement>('.dbw-record-form select')!.value, '')
+      assert.equal(calls.cancel, 0)
+      assert.equal(document.activeElement === retained, true, `${departure}: saved continuation retains the user's latest focus`)
+      assert.equal(focusCalls.length, before, `${departure}: success cannot attempt Title focus after its lease is lost`)
+      foreground(true)
+      foreignModal.remove()
+      await renderCreate()
+      assert.equal(document.activeElement === retained, true)
+      assert.equal(focusCalls.length, before, `${departure}: becoming available does not replay abandoned success focus`)
+      assert.equal(creates.length, 1)
+      assert.equal(alertText(document), '')
+    }, 'en-US', departure === 'enabled-blur')
+  }
+})
+
+test('saved continuation never focuses an unavailable Title or container, and exposing them later cannot replay success focus', async () => {
+  for (const blocker of ['title-hidden', 'title-inert', 'title-disabled', 'title-aria-disabled', 'title-disconnected', 'container-hidden', 'container-inert', 'container-disconnected']) {
+    await withPendingContinue(async context => {
+      const { document, creates, calls, title, container, focusCalls, renderCreate } = context
+      const target = blocker.startsWith('title-') ? title : container
+      const parent = target.parentElement!
+      const attribute = blocker.slice(blocker.indexOf('-') + 1)
+      await act(async () => {
+        if (attribute === 'disconnected') target.remove()
+        else target.setAttribute(attribute, attribute === 'aria-disabled' ? 'true' : '')
+      })
+      const before = focusCalls.length
+      await act(async () => creates[0].resolve(true))
+      assert.equal(title.value, '', 'A successful write still clears its own draft')
+      assert.equal(calls.cancel, 0)
+      assert.equal(document.activeElement === document.body, true)
+      assert.equal(focusCalls.length, before, `${blocker}: the success target must be usable in its captured container`)
+      await act(async () => {
+        if (attribute === 'disconnected') parent.append(target)
+        else target.removeAttribute(attribute)
+      })
+      await renderCreate()
+      assert.equal(document.activeElement === document.body, true)
+      assert.equal(focusCalls.length, before, `${blocker}: exposing the target cannot restart an abandoned lease`)
+      assert.equal(creates.length, 1)
+    })
+  }
+})
+
+test('late successful Continue cannot clear or focus a closed, reopened, source-replaced or unmounted form context', async () => {
+  for (const transition of ['closed', 'reopened', 'source', 'source-aba', 'replacement', 'unmount']) {
+    await withPendingContinue(async context => {
+      const { document, creates, calls, focusCalls, renderCreate, renderDrawer, fill, unmount } = context
+      if (transition === 'unmount') await unmount()
+      else if (transition === 'closed' || transition === 'reopened') {
+        await renderCreate({ open: false })
+        if (transition === 'reopened') await renderCreate()
+      } else if (transition === 'replacement') await renderDrawer({ record: recordB })
+      else {
+        await renderCreate({}, 'source-b')
+        if (transition === 'source-aba') await renderCreate({}, 'source-a')
+      }
+      const current = document.querySelector<HTMLInputElement>('.dbw-record-form input')
+      if (current) {
+        await fill(current, 'Current context title')
+        await fill(notesInput(document), 'Current context notes')
+      } else await act(async () => document.getElementById('opener')!.focus())
+      const retained = document.activeElement
+      const before = focusCalls.length
+      await act(async () => creates[0].resolve(true))
+      assert.equal(document.activeElement === retained, true, `${transition}: a saved old operation has no new focus ownership`)
+      assert.equal(focusCalls.length, before)
+      assert.equal(calls.cancel + calls.close, 0)
+      assert.equal(alertText(document), '')
+      if (current) {
+        assert.equal(current.value, 'Current context title')
+        assert.equal(notesInput(document).value, 'Current context notes')
+        assert.equal(primaryButton(document).disabled, false)
+      } else assert.equal(document.querySelectorAll('[role="dialog"]').length, 0)
     })
   }
 })
