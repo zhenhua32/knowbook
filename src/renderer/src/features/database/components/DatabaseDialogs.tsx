@@ -11,6 +11,10 @@ export function DatabaseFormDialog({
   text,
   title,
   submitLabel,
+  busy = false,
+  blocked = false,
+  pendingLabel,
+  error,
   withDescription = false,
   onCancel,
   onDescriptionChange,
@@ -23,6 +27,10 @@ export function DatabaseFormDialog({
   text: DatabaseWorkspaceText
   title: string
   submitLabel?: string
+  busy?: boolean
+  blocked?: boolean
+  pendingLabel?: string
+  error?: string | null
   withDescription?: boolean
   onCancel: () => void
   onDescriptionChange: (value: string) => void
@@ -37,11 +45,13 @@ export function DatabaseFormDialog({
   return (
     <div className="dbw-modal-layer" role="presentation">
       <button aria-label={text.close} className="dbw-modal-scrim" onClick={onCancel} type="button" />
-      <form aria-modal="true" className="dbw-dialog" onSubmit={(event) => { event.preventDefault(); if (name.trim()) onSubmit() }} ref={dialogRef} role="dialog" tabIndex={-1}>
+      <form aria-modal="true" className="dbw-dialog" onSubmit={(event) => { event.preventDefault(); if (!busy && !blocked && name.trim()) onSubmit() }} ref={dialogRef} role="dialog" tabIndex={-1}>
         <header><h2>{title}</h2><button aria-label={text.close} className="dbw-icon-button" onClick={onCancel} type="button">×</button></header>
-        <label><span>{text.name}</span><input onChange={(event) => onNameChange(event.target.value)} ref={inputRef} value={name} /></label>
-        {withDescription ? <label><span>{text.description}</span><textarea onChange={(event) => onDescriptionChange(event.target.value)} rows={3} value={description} /></label> : null}
-        <footer><button className="dbw-quiet-button" onClick={onCancel} type="button">{text.cancel}</button><button className="dbw-primary-button" disabled={!name.trim()} type="submit">{submitLabel ?? text.save}</button></footer>
+        <label><span>{text.name}</span><input onChange={(event) => { if (!busy) onNameChange(event.target.value) }} readOnly={busy} ref={inputRef} value={name} /></label>
+        {withDescription ? <label><span>{text.description}</span><textarea onChange={(event) => { if (!busy) onDescriptionChange(event.target.value) }} readOnly={busy} rows={3} value={description} /></label> : null}
+        {busy || blocked ? <p className="dbw-view-form-notice" role="status">{busy ? text.viewOperationContinues : text.viewRenameWaitsForSave}</p> : null}
+        {error ? <p className="dbw-record-submit-error" role="alert">{error}</p> : null}
+        <footer><button className="dbw-quiet-button" onClick={onCancel} type="button">{busy ? text.close : text.cancel}</button><button aria-busy={busy || blocked} aria-disabled={busy || blocked || !name.trim()} className="dbw-primary-button" disabled={!name.trim() && !busy} type="submit">{busy ? pendingLabel ?? text.saving : blocked ? text.waitingForSave : submitLabel ?? text.save}</button></footer>
       </form>
     </div>
   )

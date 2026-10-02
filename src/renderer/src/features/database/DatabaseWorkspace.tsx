@@ -1,4 +1,5 @@
 import type { AppMessageHandler } from '../../notify'
+import { getErrorMessage } from '../../utils/errorMessage'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   DatabaseEntity,
@@ -112,6 +113,22 @@ export function DatabaseWorkspace({
   const [formDescription, setFormDescription] = useState('')
   const [formViewLayout, setFormViewLayout] = useState<DatabaseSavedViewLayoutMode>('table')
   const [formViewId, setFormViewId] = useState<string | null>(null)
+  const formSessionRef = useRef(0)
+  const [formSession, setFormSession] = useState(0)
+  const formOwnerRef = useRef({ source: fieldSourceSession, view: viewSession })
+  const formRequests = useRef(new Map<number, symbol>())
+  const [pendingForms, setPendingForms] = useState(() => new Set<number>())
+  const [formError, setFormError] = useState<string | null>(null)
+  const closeForm = (expectedSession = formSessionRef.current) => {
+    if (formSessionRef.current !== expectedSession) return
+    formSessionRef.current++
+    setFormMode(null)
+    setFormError(null)
+  }
+  useLayoutEffect(() => {
+    if (formMode !== 'create-view' && formMode !== 'rename-view') return
+    if (formOwnerRef.current.source !== fieldSourceSession || formOwnerRef.current.view !== viewSession) closeForm(formSession)
+  }, [fieldSourceSession, formMode, formSession, viewSession])
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
   const [bulkFieldId, setBulkFieldId] = useState('')
   const [bulkValue, setBulkValue] = useState<DocumentDatabaseFieldValue>(null)
@@ -136,7 +153,7 @@ export function DatabaseWorkspace({
     ? adaptCatalogRecords(currentSource.id, catalogDocuments)
     : adaptCustomRecords(currentSource.id, entities, catalogDocuments), [catalogDocuments, currentSource, entities])
 
-  const { activeView, baseConfig, dirty, draft, markSaved, replaceDraft, updateDraft } = useDatabaseViewDraft({
+  const { activeView, activateCreatedView, baseConfig, dirty, draft, replaceDraft, updateDraft } = useDatabaseViewDraft({
     activeViewId,
     databaseId: currentSource?.id ?? '',
     fields,
@@ -178,6 +195,7 @@ export function DatabaseWorkspace({
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
+      if (target?.closest('[role="dialog"], [role="alertdialog"]')) return
       const isTyping = target?.matches('input, textarea, select, [contenteditable="true"]')
       if (event.key === '/' && !isTyping) {
         event.preventDefault()
@@ -238,8 +256,8 @@ export function DatabaseWorkspace({
 
   const switchSource = (databaseId: string) => {
     if (databaseId !== currentSource.id) {
-      fieldSourceSessionRef.current = { ...fieldSourceSessionRef.current }
-      viewSessionRef.current = { ...viewSessionRef.current }
+      fieldSourceSessionRef.current = { id: databaseId }
+      viewSessionRef.current = { sourceId: databaseId, viewId: '' }
     }
     onSelectedRecordIdsChange([])
     setOpenRecordId(null)
@@ -248,7 +266,7 @@ export function DatabaseWorkspace({
   }
 
   const selectView = (viewId: string) => {
-    if (viewId !== activeViewId) viewSessionRef.current = { ...viewSessionRef.current }
+    if (viewId !== activeViewId) viewSessionRef.current = { sourceId: currentSource.id, viewId }
     onActiveViewIdChange(viewId)
   }
 
@@ -264,12 +282,20 @@ export function DatabaseWorkspace({
     })
   }
 
+  const beginForm = () => {
+    const session = ++formSessionRef.current
+    formOwnerRef.current = { source: fieldSourceSessionRef.current, view: viewSessionRef.current }
+    setFormSession(session)
+    setFormError(null)
+  }
   const openDatabaseForm = (mode: 'create-database' | 'edit-database') => {
+    beginForm()
     setFormMode(mode)
     setFormName(mode === 'edit-database' ? currentSource.name : '')
     setFormDescription(mode === 'edit-database' ? currentSource.description : '')
   }
   const openViewForm = (mode: 'create-view' | 'rename-view', layout: DatabaseSavedViewLayoutMode, view?: DatabaseSavedView) => {
+    beginForm()
     setFormMode(mode)
     setFormViewLayout(layout)
     setFormViewId(view?.id ?? null)
@@ -278,12 +304,13 @@ export function DatabaseWorkspace({
   }
 
   const submitForm = async () => {
+    if (!mounted.current || formSessionRef.current !== formSession || formRequests.current.has(formSession)) return
     const name = formName.trim()
     if (!name) return
     if (formMode === 'create-database') {
       await run(async () => {
         const created = await window.knowbook.createDocumentDatabase({ name, description: formDescription })
-        setFormMode(null)
+        closeForm(formSession)
         await onRefresh(created.id)
         switchSource(created.id)
       })
@@ -292,43 +319,85 @@ export function DatabaseWorkspace({
     if (formMode === 'edit-database') {
       await run(async () => {
         await window.knowbook.updateDatabaseMetadata({ databaseId: currentSource.id, name, description: formDescription })
-        setFormMode(null)
+        closeForm(formSession)
         await refresh()
       })
       return
     }
-    if (formMode === 'create-view') {
-      await createView(name, formViewLayout)
-      return
-    }
-    if (formMode === 'rename-view' && formViewId) {
-      await run(async () => {
-        const updated = await window.knowbook.updateDatabaseSavedView({ viewId: formViewId, name })
-        setFormMode(null)
-        await refresh(updated.id)
-        markSaved(updated)
-      })
-    }
+    if (formMode === 'create-view' || (formMode === 'rename-view' && formViewId)) await submitViewForm(name)
   }
 
-  const createView = async (name: string, layout: DatabaseSavedViewLayoutMode, config: DatabaseViewConfigV1 = { ...draft, layout }) => {
+  const normalizeCreatedConfig = (config: DatabaseViewConfigV1, layout: DatabaseSavedViewLayoutMode) => {
     const defaultBoardField = fields.find((field) => field.type === 'select' || field.type === 'multi-select')
       ?? fields.find((field) => field.id === DATABASE_SYSTEM_FIELD_IDS.parent)
       ?? fields.find((field) => field.role === 'property')
-    const normalizedConfig = layout === 'board' && !config.groupBy.fieldId && defaultBoardField
+    return layout === 'board' && !config.groupBy.fieldId && defaultBoardField
       ? { ...config, layout, groupBy: { fieldId: defaultBoardField.id } }
       : { ...config, layout }
-    await run(async () => {
-      const created = await window.knowbook.createDatabaseSavedView({
-        databaseId: currentSource.id,
-        name,
-        ...legacyViewFields(normalizedConfig),
-        config: normalizedConfig
-      })
-      setFormMode(null)
-      await refresh(created.id)
-      markSaved(created)
-    })
+  }
+
+  const submitViewForm = async (name: string) => {
+    const owner = formOwnerRef.current
+    if (owner.source !== fieldSourceSessionRef.current || owner.view !== viewSessionRef.current) return
+    const renameId = formMode === 'rename-view' ? formViewId : null
+    const saveKey = renameId ? JSON.stringify([currentSource.id, renameId]) : null
+    if (saveKey && viewSaveRequests.current.has(saveKey)) return
+    const request = Symbol('view-form')
+    formRequests.current.set(formSession, request)
+    setPendingForms((current) => new Set(current).add(formSession))
+    setFormError(null)
+    if (saveKey) {
+      viewSaveRequests.current.set(saveKey, request)
+      setSavingViews((current) => new Set(current).add(saveKey))
+    }
+    const ownsSource = () => mounted.current && fieldSourceSessionRef.current === owner.source
+    const ownsForm = () => ownsSource() && viewSessionRef.current === owner.view && formSessionRef.current === formSession
+    let completedViewSession = owner.view
+    const ownsClosedForm = () => ownsSource() && viewSessionRef.current === completedViewSession && formSessionRef.current === formSession + 1
+    try {
+      const config = normalizeCreatedConfig(draft, formViewLayout)
+      const saved = renameId
+        ? await window.knowbook.updateDatabaseSavedView({ viewId: renameId, name })
+        : await window.knowbook.createDatabaseSavedView({ databaseId: currentSource.id, name, ...legacyViewFields(config), config })
+      if (!ownsSource()) return
+      const shouldCompleteForm = ownsForm()
+      onSavedView?.(saved)
+      if (shouldCompleteForm) {
+        if (!renameId) {
+          completedViewSession = { sourceId: currentSource.id, viewId: saved.id }
+          viewSessionRef.current = completedViewSession
+          // Activate once, at the write acknowledgement. Refresh may finish
+          // after the user has edited or left this new view.
+          activateCreatedView(saved)
+        }
+        closeForm(formSession)
+      }
+      try {
+        await refresh()
+      } catch {
+        if (ownsClosedForm()) onMessage(text.viewsSavedRefreshFailed, 'error')
+      }
+    } catch (error) {
+      if (ownsForm()) setFormError(getErrorMessage(error, text.failed))
+      else if (ownsClosedForm()) reportError(error)
+    } finally {
+      if (formRequests.current.get(formSession) === request) {
+        formRequests.current.delete(formSession)
+        if (mounted.current) setPendingForms((current) => {
+          const next = new Set(current)
+          next.delete(formSession)
+          return next
+        })
+      }
+      if (saveKey && viewSaveRequests.current.get(saveKey) === request) {
+        viewSaveRequests.current.delete(saveKey)
+        if (mounted.current) setSavingViews((current) => {
+          const next = new Set(current)
+          next.delete(saveKey)
+          return next
+        })
+      }
+    }
   }
 
   const saveView = async () => {
@@ -630,7 +699,15 @@ export function DatabaseWorkspace({
       />
       <CreateRecordDialog documents={catalogDocuments} fields={visibleFields} key={`create-${currentSource.id}`} onCancel={() => setCreateRecordOpen(false)} onCreate={createRecord} open={createRecordOpen} text={text} />
       <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} key={`record-${currentSource.id}`} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
-      <DatabaseFormDialog description={formDescription} name={formName} onCancel={() => setFormMode(null)} onDescriptionChange={setFormDescription} onNameChange={setFormName} onSubmit={() => void submitForm()} open={formMode !== null} submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text} title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView} withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
+      <DatabaseFormDialog blocked={formMode === 'rename-view' && !pendingForms.has(formSession) && savingViews.has(JSON.stringify([currentSource.id, formViewId]))}
+        busy={pendingForms.has(formSession)} description={formDescription} error={formError} key={formSession} name={formName}
+        onCancel={() => closeForm(formSession)}
+        onDescriptionChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormDescription(value) }}
+        onNameChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormName(value) }}
+        onSubmit={() => void submitForm()} open={formMode !== null} pendingLabel={formMode === 'create-view' ? text.creating : text.saving}
+        submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text}
+        title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView}
+        withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
       <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} onCancel={() => setConfirmTarget(null)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
     </section>
   )

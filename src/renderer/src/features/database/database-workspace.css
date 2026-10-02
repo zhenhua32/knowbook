@@ -141,7 +141,7 @@
   color: var(--dbw-accent-on);
   box-shadow: 0 4px 12px rgba(98, 104, 220, 0.18);
 }
-.dbw-primary-button:not(:disabled):hover,
+.dbw-primary-button:not(:disabled):not([aria-disabled='true']):hover,
 .dbw-save-button:not(:disabled):not([aria-disabled='true']):hover { background: var(--dbw-accent-hover); }
 .dbw-save-button[aria-busy='true'] { cursor: progress; }
 .dbw-save-as-button:disabled { opacity: .55; cursor: default; }
@@ -498,6 +498,8 @@
 .dbw-dialog > label input,
 .dbw-dialog > label textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--dbw-line); border-radius: 8px; resize: vertical; }
 .dbw-dialog footer { justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--dbw-line); }
+.dbw-view-form-notice { margin: 0 20px 16px; color: var(--dbw-muted); font-size: 12px; line-height: 1.55; }
+.dbw-dialog :is([readonly], [aria-busy='true']) { cursor: progress; }
 .dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); }
 .dbw-create-record-dialog .dbw-record-form { max-height: calc(100vh - 210px); }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }

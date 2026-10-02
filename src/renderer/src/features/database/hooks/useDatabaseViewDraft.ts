@@ -79,7 +79,7 @@ export function useDatabaseViewDraft({
     setDraft(next)
   }, [activeViewId, fields, getCacheKey])
 
-  const markSaved = useCallback((view: DatabaseSavedView) => {
+  const activateCreatedView = useCallback((view: DatabaseSavedView) => {
     const next = repairDatabaseViewConfig(view.config, fields)
     draftCache.current.set(getCacheKey(view.id), next)
     onActiveViewIdChange(view.id)
@@ -98,7 +98,7 @@ export function useDatabaseViewDraft({
     baseConfig,
     draft,
     dirty: !areDatabaseViewConfigsEqual(draft, baseConfig),
-    markSaved,
+    activateCreatedView,
     replaceDraft,
     updateDraft
   }
