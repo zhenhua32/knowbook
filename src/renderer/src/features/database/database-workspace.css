@@ -497,7 +497,10 @@
 .dbw-dialog { position: relative; z-index: 1; width: min(440px, calc(100vw - 36px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid rgba(255,255,255,.7); border-radius: 14px; background: #fff; box-shadow: 0 24px 70px rgba(23,27,40,.28); }
 .dbw-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--dbw-line); }
 .dbw-dialog h2 { margin: 0; font-family: inherit; font-size: 17px; }
-.dbw-form-body { display: contents; }
+.dbw-form-dialog { display: flex; flex-direction: column; height: calc(100dvh - 48px); max-height: max-content; }
+.dbw-form-dialog > :not(.dbw-form-body) { flex-shrink: 0; }
+/* Leave room for the textarea frame when native focus scrolls its caret. */
+.dbw-form-body { display: block; flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 40px; }
 .dbw-form-body > label { display: grid; gap: 6px; margin: 16px 20px; }
 .dbw-form-body > label > span { color: #686d7b; font-size: 11px; font-weight: 650; }
 .dbw-form-body > label input,
@@ -517,10 +520,7 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-re
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog > :not(fieldset) { flex-shrink: 0; }
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog .dbw-record-form { flex-basis: auto; }
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-modal-layer:has(.dbw-form-dialog) { padding-bottom: max(24px, var(--kb-notification-clearance, 0px)); }
-body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dialog { display: flex; flex-direction: column; height: calc(100dvh - 24px - max(24px, var(--kb-notification-clearance, 0px))); max-height: max-content; }
-body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dialog > :not(.dbw-form-body) { flex-shrink: 0; }
-/* Leave room for the textarea frame when native focus scrolls its caret. */
-body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-body { display: block; flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 40px; }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dialog { height: calc(100dvh - 24px - max(24px, var(--kb-notification-clearance, 0px))); }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }
 
 @media (max-width: 1320px) {

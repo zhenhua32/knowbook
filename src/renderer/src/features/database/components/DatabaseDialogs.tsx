@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { ConfirmationDialog } from '../../../components/ConfirmationDialog'
@@ -46,11 +46,42 @@ export function DatabaseFormDialog({
   onSubmit: () => void
 }) {
   const dialogRef = useRef<HTMLFormElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const errorId = useId()
   const nameErrorId = useId()
   const hasErrorDetails = Boolean(error?.trim() && error !== text.failed)
   useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: inputRef, onClose: onCancel, open, returnFocusTarget, canReturnFocus })
+  useEffect(() => {
+    const body = bodyRef.current
+    if (!open || !body || !window.ResizeObserver) return
+    let observing = true
+    const visible = (element: HTMLElement) => {
+      if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+      const style = window.getComputedStyle(element)
+      return style.display !== 'none' && style.visibility !== 'hidden'
+    }
+    const observer = new window.ResizeObserver(() => {
+      const field = document.activeElement
+      if (!observing || !document.hasFocus() || !visible(body) || !(field instanceof HTMLElement)
+        || !body.contains(field) || !field.matches('input, textarea, select') || !visible(field)) return
+      if ([...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
+        .some(dialog => dialog !== dialogRef.current && !dialog.contains(body) && visible(dialog))) return
+      const bounds = body.getBoundingClientRect()
+      const top = bounds.top + body.clientTop
+      const bottom = Math.min(bounds.bottom, top + body.clientHeight)
+      const fieldBounds = field.getBoundingClientRect()
+      if (fieldBounds.height > bottom - top || bottom <= top) return
+      const style = window.getComputedStyle(field)
+      const outline = Math.min(Math.max(0, (Number.parseFloat(style.outlineWidth) || 0) + (Number.parseFloat(style.outlineOffset) || 0)),
+        (bottom - top - fieldBounds.height) / 2)
+      // A resize can clip the frame even when the focused caret remains visible.
+      if (fieldBounds.top - outline < top) body.scrollTop -= Math.ceil(top - fieldBounds.top + outline)
+      else if (fieldBounds.bottom + outline > bottom) body.scrollTop += Math.ceil(fieldBounds.bottom + outline - bottom)
+    })
+    observer.observe(body)
+    return () => { observing = false; observer.disconnect() }
+  }, [open])
   if (!open) return null
 
   return (
@@ -58,7 +89,7 @@ export function DatabaseFormDialog({
       <button aria-label={text.close} className="dbw-modal-scrim" onClick={onCancel} type="button" />
       <form aria-label={title} aria-modal="true" className="dbw-dialog dbw-form-dialog" onSubmit={(event) => { event.preventDefault(); if (!busy && !blocked && name.trim()) onSubmit() }} ref={dialogRef} role="dialog" tabIndex={-1}>
         <header><h2>{title}</h2><button aria-label={text.close} className="dbw-icon-button" onClick={onCancel} type="button">×</button></header>
-        <div className="dbw-form-body">
+        <div className="dbw-form-body" ref={bodyRef}>
           <label><span>{text.name}</span><input aria-describedby={nameError ? nameErrorId : undefined} aria-invalid={nameError ? true : undefined} onChange={(event) => { if (!busy) onNameChange(event.target.value) }} readOnly={busy} ref={inputRef} value={name} /></label>
           {nameError ? <p className="dbw-form-name-error" id={nameErrorId} role="alert">{nameError}</p> : null}
           {withDescription ? <label><span>{text.description}</span><textarea onChange={(event) => { if (!busy) onDescriptionChange(event.target.value) }} readOnly={busy} rows={3} value={description} /></label> : null}
