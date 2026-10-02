@@ -497,15 +497,17 @@
 .dbw-dialog { position: relative; z-index: 1; width: min(440px, calc(100vw - 36px)); max-height: calc(100vh - 48px); overflow: auto; border: 1px solid rgba(255,255,255,.7); border-radius: 14px; background: #fff; box-shadow: 0 24px 70px rgba(23,27,40,.28); }
 .dbw-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--dbw-line); }
 .dbw-dialog h2 { margin: 0; font-family: inherit; font-size: 17px; }
-.dbw-dialog > label { display: grid; gap: 6px; margin: 16px 20px; }
-.dbw-dialog > label > span { color: #686d7b; font-size: 11px; font-weight: 650; }
-.dbw-dialog > label input,
-.dbw-dialog > label textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--dbw-line); border-radius: 8px; resize: vertical; }
+.dbw-form-body { display: contents; }
+.dbw-form-body > label { display: grid; gap: 6px; margin: 16px 20px; }
+.dbw-form-body > label > span { color: #686d7b; font-size: 11px; font-weight: 650; }
+.dbw-form-body > label input,
+.dbw-form-body > label textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--dbw-line); border-radius: 8px; resize: vertical; }
 .dbw-dialog footer { justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--dbw-line); }
 .dbw-view-form-notice { margin: 0 20px 16px; color: var(--dbw-muted); font-size: 12px; line-height: 1.55; }
 .dbw-form-error-details { margin: 0 20px 16px; color: var(--dbw-text); }
 .dbw-form-error-details summary { min-height: 32px; }
 .dbw-form-error-details pre { max-height: 120px; margin: 4px 0 0; }
+.dbw-form-submit-error { margin: 0 20px; padding: 10px 0; }
 .dbw-form-name-error { margin: -8px 20px 16px; color: var(--dbw-danger); font-size: var(--kb-type-label); line-height: 1.6; }
 .dbw-dialog :is([readonly], [aria-busy='true']) { cursor: progress; }
 .dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); scroll-padding-block: 12px; }
@@ -514,6 +516,11 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-modal-lay
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog { display: flex; flex-direction: column; height: calc(100dvh - 24px - max(24px, var(--kb-notification-clearance, 0px))); max-height: max-content; }
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog > :not(fieldset) { flex-shrink: 0; }
 body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-record-dialog .dbw-record-form { flex-basis: auto; }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-modal-layer:has(.dbw-form-dialog) { padding-bottom: max(24px, var(--kb-notification-clearance, 0px)); }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dialog { display: flex; flex-direction: column; height: calc(100dvh - 24px - max(24px, var(--kb-notification-clearance, 0px))); max-height: max-content; }
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dialog > :not(.dbw-form-body) { flex-shrink: 0; }
+/* Leave room for the textarea frame when native focus scrolls its caret. */
+body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-body { display: block; flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 40px; }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }
 
 @media (max-width: 1320px) {
@@ -705,7 +712,7 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-re
 .dbw-field-copy small,
 .dbw-field-options,
 .dbw-eyebrow,
-.dbw-dialog > label > span {
+.dbw-form-body > label > span {
   font-size: var(--kb-type-caption);
   line-height: 18px;
 }
@@ -725,8 +732,8 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-re
 .dbw-record-form input,
 .dbw-record-form select,
 .dbw-record-form textarea,
-.dbw-dialog > label input,
-.dbw-dialog > label textarea {
+.dbw-form-body > label input,
+.dbw-form-body > label textarea {
   min-height: var(--kb-control-height);
   padding: 9px 11px;
   font-size: var(--kb-type-body);
@@ -991,7 +998,7 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-create-re
   .dbw-field-options,
   .dbw-record-form label > span,
   .dbw-record-field > span,
-  .dbw-dialog > label > span
+  .dbw-form-body > label > span
 ) {
   color: var(--dbw-muted);
 }

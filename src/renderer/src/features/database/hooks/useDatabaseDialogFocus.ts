@@ -55,6 +55,9 @@ export function useDatabaseDialogFocus({
     const cancelInitialFocus = scheduleInitialFocus(containerRef, initialFocusRef)
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isImeKeyboardEvent(event)) return
+      if ((event.key === 'Escape' || event.key === 'Tab') &&
+        [...document.querySelectorAll<HTMLDialogElement>('dialog[open]')]
+          .some(dialog => dialog.matches(':modal') && !dialog.contains(containerRef.current))) return
       if (event.key === 'Escape') {
         event.preventDefault()
         closeHandlerRef.current()

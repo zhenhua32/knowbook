@@ -13,6 +13,8 @@ type HarnessProps = {
   allInputsDisabled?: boolean
   containerHidden?: boolean
   alternateReturnTarget?: boolean
+  nativeContainer?: boolean
+  insideNativeOwner?: boolean
   strict?: boolean
   instance?: string
 }
@@ -22,6 +24,7 @@ type Context = {
   window: JSDOM['window']
   focusCalls: FocusCall[]
   compositions: { starts: number; ends: number }
+  closeCount: () => number
   initial: () => HTMLButtonElement
   input: () => HTMLInputElement
   secondary: () => HTMLInputElement
@@ -69,25 +72,27 @@ async function withInitialFocus(run: (context: Context) => Promise<void>) {
     nativeFocus.call(this, options)
   }
   const compositions = { starts: 0, ends: 0 }
+  let closeCount = 0
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('mount')!)
   let mounted = true
   let props: HarnessProps = { open: false, showInitial: true, instance: 'first' }
-  function Harness({ open, autoFocusInput, initialDisabled, initialHidden, showInitial, allInputsDisabled, containerHidden, alternateReturnTarget }: HarnessProps) {
+  function Harness({ open, autoFocusInput, initialDisabled, initialHidden, showInitial, allInputsDisabled, containerHidden, alternateReturnTarget, nativeContainer, insideNativeOwner }: HarnessProps) {
     const containerRef = useRef<HTMLElement | null>(null)
     const initialRef = useRef<HTMLButtonElement | null>(null)
     const [draft, setDraft] = useState('Original text')
-    useDatabaseDialogFocus({ containerRef, initialFocusRef: initialRef, open, onClose: () => {},
+    useDatabaseDialogFocus({ containerRef, initialFocusRef: initialRef, open, onClose: () => { closeCount++ },
       returnFocusTarget: alternateReturnTarget ? dom.window.document.getElementById('return-target') : undefined,
       // This suite isolates opening. Return-focus leases have their own existing tests.
       canReturnFocus: () => false })
     if (!open) return null
-    return createElement('section', { 'aria-label': 'Test database dialog', 'aria-modal': true, role: 'dialog', hidden: containerHidden, ref: containerRef, tabIndex: -1 },
+    const content = createElement(nativeContainer ? 'dialog' : 'section', { 'aria-label': 'Test database dialog', 'aria-modal': true, role: 'dialog', hidden: containerHidden, ref: containerRef, tabIndex: -1, open: nativeContainer ? true : undefined },
       showInitial ? createElement('button', { id: 'initial-close', disabled: initialDisabled, hidden: initialHidden, ref: initialRef, type: 'button' }, 'Close') : null,
       createElement('input', { id: 'draft-input', 'aria-label': 'Draft', autoFocus: autoFocusInput, disabled: allInputsDisabled, value: draft,
         onChange: (event: { target: HTMLInputElement }) => setDraft(event.target.value),
         onCompositionStart: () => { compositions.starts++ }, onCompositionEnd: () => { compositions.ends++ } }),
       createElement('input', { id: 'secondary-input', 'aria-label': 'Secondary', disabled: allInputsDisabled }))
+    return insideNativeOwner ? createElement('dialog', { id: 'native-owner', open: true }, content) : content
   }
   const change = async (action: () => void) => { await act(async () => action()) }
   const render = async (patch: Partial<HarnessProps> = {}) => {
@@ -104,7 +109,7 @@ async function withInitialFocus(run: (context: Context) => Promise<void>) {
   const unmount = async () => { if (mounted) { mounted = false; await act(async () => root.unmount()) } }
   try {
     await render()
-    await run({ document: dom.window.document, window: dom.window, focusCalls, compositions,
+    await run({ document: dom.window.document, window: dom.window, focusCalls, compositions, closeCount: () => closeCount,
       initial, input, secondary, outside, dialog: () => dom.window.document.querySelector<HTMLElement>('[role="dialog"]')!,
       change, render, unmount, frameCount: () => frames.size, frameCallbacks: () => [...frames.values()],
       foreground: value => { foreground = value },
@@ -340,4 +345,73 @@ test('opening eligibility is decided at setup, independently of the configured r
     await context.flushFrames()
     assert.equal(context.document.activeElement === context.initial(), true, 'A separate return target must not make an untouched opening look like user movement')
   })
+})
+
+// JSDOM has no native top layer. Model only its modal-state predicate, leaving
+// selector behavior and key defaults intact; Electron covers real cancel events.
+function stubNativeModal(dialog: HTMLDialogElement, isModal: () => boolean) {
+  const matches = dialog.matches.bind(dialog)
+  Object.defineProperty(dialog, 'matches', { configurable: true, value: (selector: string) =>
+    selector === ':modal' ? dialog.open && isModal() : matches(selector) })
+}
+
+test('a separate native modal owns BODY Escape and Tab without closing or focusing the database dialog underneath', async () => {
+  await withInitialFocus(async context => {
+    await context.open()
+    await context.flushFrames()
+    const nativeDialog = context.document.createElement('dialog')
+    nativeDialog.open = true
+    let isModal = true
+    stubNativeModal(nativeDialog, () => isModal)
+    context.document.body.append(nativeDialog)
+    await context.change(() => context.document.body.focus())
+    const before = context.focusCalls.length
+    for (const key of ['Escape', 'Tab', 'Shift+Tab']) {
+      const event = new context.window.KeyboardEvent('keydown', {
+        key: key === 'Shift+Tab' ? 'Tab' : key, shiftKey: key === 'Shift+Tab', bubbles: true, cancelable: true
+      })
+      await context.change(() => context.document.body.dispatchEvent(event))
+      assert.equal(event.defaultPrevented, false, `${key}: keep the native modal's default available`)
+      assert.equal(context.closeCount(), 0, `${key}: the underlying form must stay open`)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      assert.equal(context.focusCalls.length, before, `${key}: the underlying trap must not focus inert controls`)
+    }
+
+    nativeDialog.open = false
+    const resumed = new context.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await context.change(() => context.document.body.dispatchEvent(resumed))
+    assert.equal(resumed.defaultPrevented, true)
+    assert.equal(context.closeCount(), 1, 'Closing the native modal returns Escape ownership to the existing form')
+
+    nativeDialog.open = true
+    isModal = false
+    const nonmodal = new context.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    await context.change(() => context.document.body.dispatchEvent(nonmodal))
+    assert.equal(nonmodal.defaultPrevented, true)
+    assert.equal(context.closeCount(), 2, 'An open nonmodal dialog must not disable the form Escape handler')
+    const tab = new context.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+    await context.change(() => context.document.body.dispatchEvent(tab))
+    assert.equal(tab.defaultPrevented, true)
+    assert.equal(context.document.activeElement === context.initial(), true)
+  })
+})
+
+test('a native modal containing the hook container retains its own Escape and Tab handlers', async () => {
+  for (const nativeContainer of [true, false]) {
+    await withInitialFocus(async context => {
+      await context.open({ nativeContainer, insideNativeOwner: !nativeContainer })
+      const nativeDialog = nativeContainer ? context.dialog() as HTMLDialogElement
+        : context.document.getElementById('native-owner') as HTMLDialogElement
+      stubNativeModal(nativeDialog, () => true)
+      await context.change(() => context.document.body.focus())
+      const escape = new context.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      await context.change(() => context.document.body.dispatchEvent(escape))
+      assert.equal(escape.defaultPrevented, true)
+      assert.equal(context.closeCount(), 1, 'A native container or its native ancestor is the current owner')
+      const tab = new context.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      await context.change(() => context.document.body.dispatchEvent(tab))
+      assert.equal(tab.defaultPrevented, true)
+      assert.equal(context.document.activeElement === context.initial(), true)
+    })
+  }
 })
