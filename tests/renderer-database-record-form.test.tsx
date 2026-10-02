@@ -29,8 +29,8 @@ type SaveRequest = ReturnType<typeof deferred> & { draft: Draft; recordId: strin
 async function withForms(run: (context: {
   document: Document; window: JSDOM['window']; creates: CreateRequest[]; saves: SaveRequest[];
   calls: { close: number; cancel: number; delete: number; openDocument: number };
-  renderCreate: (overrides?: Partial<CreateProps>) => Promise<void>;
-  renderDrawer: (overrides?: Partial<DrawerProps>) => Promise<void>;
+  renderCreate: (overrides?: Partial<CreateProps>, identity?: string) => Promise<void>;
+  renderDrawer: (overrides?: Partial<DrawerProps>, identity?: string) => Promise<void>;
   fill: (input: HTMLInputElement, value: string) => Promise<void>;
   unmount: () => Promise<void>
 }) => Promise<void>) {
@@ -64,7 +64,8 @@ async function withForms(run: (context: {
   const unmount = async () => { if (mounted) { await act(async () => root.unmount()); mounted = false } }
   try {
     await run({ document: dom.window.document, window: dom.window, creates, saves, calls, unmount,
-      renderCreate: overrides => render(createElement(CreateRecordDialog, {
+      renderCreate: (overrides, identity) => render(createElement(CreateRecordDialog, {
+        key: identity,
         documents, fields, open: true, text, onCancel: () => calls.cancel++,
         onCreate: (draft, continueAdding) => {
           const request = { ...deferred(), draft: structuredClone(draft), continueAdding }
@@ -72,7 +73,8 @@ async function withForms(run: (context: {
           return request.promise
         }, ...overrides
       })),
-      renderDrawer: overrides => render(createElement(DatabaseRecordDrawer, {
+      renderDrawer: (overrides, identity) => render(createElement(DatabaseRecordDrawer, {
+        key: identity,
         documents, fields, open: true, record: recordA, text, onClose: () => calls.close++,
         onDelete: () => calls.delete++, onOpenDocument: () => calls.openDocument++,
         onSave: (record, draft) => {
@@ -503,4 +505,258 @@ test('unmounted record forms ignore pending success and rejection without invoki
     assert.equal(calls.close, 0)
     assert.equal(document.querySelector('[role="alert"]'), null)
   })
+})
+
+async function withRecordFailureFocus(document: Document, window: JSDOM['window'], run: (context: {
+  foreground: (value: boolean) => void
+  focusCalls: Array<{ element: HTMLElement; options?: FocusOptions }>
+}) => Promise<void>) {
+  const focusDescriptor = Object.getOwnPropertyDescriptor(document, 'hasFocus')
+  const bodyTabIndex = document.body.getAttribute('tabindex')
+  const prototype = window.HTMLElement.prototype
+  const rectDescriptor = Object.getOwnPropertyDescriptor(prototype, 'getClientRects')
+  const nativeFocusDescriptor = Object.getOwnPropertyDescriptor(prototype, 'focus')
+  const nativeFocus = prototype.focus
+  const focusCalls: Array<{ element: HTMLElement; options?: FocusOptions }> = []
+  let foreground = true
+  Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => foreground })
+  document.body.tabIndex = -1
+  // Only new focus cases opt into measurable layout; original form cases stay unchanged.
+  Object.defineProperty(prototype, 'getClientRects', { configurable: true, value: function (this: HTMLElement) {
+    const rects = this.isConnected && !this.closest('[hidden], [inert], [aria-hidden="true"]') ? [new window.DOMRect(0, 0, 160, 32)] : []
+    return Object.assign(rects, { item: (index: number) => rects[index] ?? null }) as unknown as DOMRectList
+  } })
+  Object.defineProperty(prototype, 'focus', { configurable: true, value: function (this: HTMLElement, options?: FocusOptions) {
+    focusCalls.push({ element: this, options })
+    nativeFocus.call(this, options)
+  } })
+  try { await run({ foreground: value => { foreground = value }, focusCalls }) }
+  finally {
+    if (focusDescriptor) Object.defineProperty(document, 'hasFocus', focusDescriptor)
+    else Reflect.deleteProperty(document, 'hasFocus')
+    if (bodyTabIndex === null) document.body.removeAttribute('tabindex')
+    else document.body.setAttribute('tabindex', bodyTabIndex)
+    if (rectDescriptor) Object.defineProperty(prototype, 'getClientRects', rectDescriptor)
+    else Reflect.deleteProperty(prototype, 'getClientRects')
+    if (nativeFocusDescriptor) Object.defineProperty(prototype, 'focus', nativeFocusDescriptor)
+    else Reflect.deleteProperty(prototype, 'focus')
+  }
+}
+
+test('failed Create restores the submitted button after disabled focus moves to BODY, preserving the draft and selection', async () => {
+  await withForms(async ({ document, window, creates, renderCreate, fill }) => {
+    await withRecordFailureFocus(document, window, async () => {
+      await renderCreate()
+      await fill(titleInput(document), 'Retained record title')
+      await fill(notesInput(document), 'Retained record notes')
+      const title = titleInput(document)
+      const submit = primaryButton(document)
+      await act(async () => { title.setSelectionRange(2, 7); submit.focus(); submit.click() })
+      assert.equal(creates.length, 1)
+      assert.equal(submit.disabled, true)
+      // Disabled-control blur is a JSDOM no-op. BODY focus produces real focusout/focusin.
+      await act(async () => document.body.focus())
+      assert.equal(document.activeElement === document.body, true)
+      await act(async () => creates[0].resolve(false))
+      assert.equal(submit.disabled, false)
+      assert.equal(document.activeElement === submit, true, 'Failure must return to the original Create button rather than BODY')
+      assert.equal(titleInput(document).value, 'Retained record title')
+      assert.equal(notesInput(document).value, 'Retained record notes')
+      assert.equal(title.selectionStart, 2)
+      assert.equal(title.selectionEnd, 7)
+    })
+  })
+})
+
+test('Create, Continue and Save failure restore their own button for immediate retry without changing draft or success semantics', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const kind of ['create', 'continue', 'save']) for (const failure of ['false', 'throw']) {
+    await withForms(async ({ document, window, creates, saves, calls, renderCreate, renderDrawer, fill }) => {
+      await withRecordFailureFocus(document, window, async ({ focusCalls }) => {
+        const text = getDatabaseWorkspaceText(locale)
+        if (kind === 'save') await renderDrawer({ text })
+        else await renderCreate({ text })
+        await fill(titleInput(document), 'Preserved retry title')
+        await fill(notesInput(document), 'Preserved retry notes')
+        const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+        await act(async () => { linked.value = 'document-1'; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+        const title = titleInput(document)
+        const submit = kind === 'continue' ? continueButton(document) : primaryButton(document)
+        const requests = kind === 'save' ? saves : creates
+        await act(async () => { title.setSelectionRange(3, 8); submit.focus(); submit.click() })
+        assert.equal(requests.length, 1)
+        assert.equal(submit.disabled, true)
+        await act(async () => document.body.focus())
+        assert.equal(document.activeElement === document.body, true)
+        const before = focusCalls.length
+        await act(async () => failure === 'false' ? requests[0].resolve(false) : requests[0].reject(new Error('Private record mutation failed')))
+        assert.equal(document.activeElement === submit, true, `${locale}/${kind}/${failure}: failure returns to its actual accepted button`)
+        assert.equal(focusCalls.length, before + 1)
+        assert.equal(focusCalls.at(-1)!.element === submit, true)
+        assert.equal(submit.disabled, false)
+        assert.equal(title.value, 'Preserved retry title')
+        assert.equal(title.selectionStart, 3)
+        assert.equal(title.selectionEnd, 8)
+        assert.equal(notesInput(document).value, 'Preserved retry notes')
+        assert.equal(linked.value, 'document-1')
+        assert.equal(alertText(document), text.formFailed)
+        assert.equal(document.body.textContent!.includes('Private record mutation failed'), false)
+        const alert = document.querySelector<HTMLElement>('[role="alert"]')!
+        assert.equal(submit.getAttribute('aria-describedby'), alert.id)
+
+        // HTMLElement.click is explicit DOM activation; native Enter remains an Electron check.
+        await act(async () => { submit.click(); submit.click() })
+        assert.equal(requests.length, 2)
+        assert.deepEqual(requests[1].draft, requests[0].draft)
+        assert.equal(alertText(document), '')
+        assert.equal(submit.hasAttribute('aria-describedby'), false)
+        await act(async () => requests[1].resolve(true))
+        if (kind === 'continue') {
+          assert.equal(titleInput(document).value, '')
+          assert.equal(notesInput(document).value, '')
+          assert.equal(linked.value, '')
+          assert.equal(document.activeElement === titleInput(document), true)
+          assert.equal(calls.cancel, 0)
+        } else assert.equal(kind === 'save' ? calls.close : calls.cancel, 1)
+      })
+    })
+  }
+})
+
+test('record failure does not reclaim focus after pending user activity, foreground loss, an enabled blur or another modal', async () => {
+  for (const kind of ['create', 'save']) for (const departure of ['tab', 'pointer', 'key', 'compositionstart', 'focus-aba', 'window-blur', 'background', 'enabled-blur', 'other-modal']) {
+    await withForms(async ({ document, window, creates, saves, renderCreate, renderDrawer, fill }) => {
+      await withRecordFailureFocus(document, window, async ({ foreground, focusCalls }) => {
+        if (kind === 'save') await renderDrawer()
+        else await renderCreate()
+        await fill(titleInput(document), 'Do not steal focus')
+        const submit = primaryButton(document)
+        const requests = kind === 'save' ? saves : creates
+        await act(async () => {
+          submit.focus()
+          submit.click()
+          if (departure === 'enabled-blur') {
+            assert.equal(submit.disabled, false, 'This departure happens before busy commits')
+            document.body.focus()
+          }
+        })
+        assert.equal(requests.length, 1)
+        if (departure !== 'enabled-blur') {
+          assert.equal(submit.disabled, true)
+          await act(async () => document.body.focus())
+        }
+        assert.equal(document.activeElement === document.body, true)
+        const foreignModal = document.createElement('section')
+        await act(async () => {
+          if (departure === 'tab') {
+            document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }))
+            assert.equal(document.activeElement === dialog(document), true, 'The pending dialog itself receives its normal Tab trap focus')
+          }
+          if (departure === 'pointer') document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+          if (departure === 'key') document.body.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+          if (departure === 'compositionstart') document.body.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+          if (departure === 'focus-aba') { const outside = document.getElementById('opener')!; outside.focus(); outside.blur() }
+          if (departure === 'window-blur') { foreground(false); window.dispatchEvent(new window.Event('blur')); foreground(true) }
+          if (departure === 'background') foreground(false)
+          if (departure === 'other-modal') {
+            foreignModal.setAttribute('role', 'alertdialog')
+            foreignModal.setAttribute('aria-modal', 'true')
+            document.body.append(foreignModal)
+          }
+        })
+        const retained = document.activeElement
+        const before = focusCalls.length
+        await act(async () => requests[0].resolve(false))
+        assert.equal(document.activeElement === retained, true, `${kind}/${departure}: failure retains the user's latest focus`)
+        assert.equal(focusCalls.length, before, `${kind}/${departure}: failure must not attempt a programmatic return`)
+        foreground(true)
+        foreignModal.remove()
+        if (kind === 'save') await renderDrawer()
+        else await renderCreate()
+        assert.equal(document.activeElement === retained, true)
+        assert.equal(focusCalls.length, before, `${kind}/${departure}: removing the blocker must not replay failure focus`)
+        assert.equal(titleInput(document).value, 'Do not steal focus')
+        assert.ok(alertText(document))
+      })
+    })
+  }
+})
+
+test('late record failure cannot focus or alter a different record, source-keyed form, closed or reopened session, or unmounted view', async () => {
+  for (const kind of ['create', 'save']) for (const transition of ['record', 'source', 'closed', 'reopened', 'unmount']) for (const failure of ['false', 'throw']) {
+    if (kind === 'create' && transition === 'record') continue
+    await withForms(async ({ document, window, creates, saves, calls, renderCreate, renderDrawer, fill, unmount }) => {
+      await withRecordFailureFocus(document, window, async ({ focusCalls }) => {
+        if (kind === 'save') await renderDrawer()
+        else await renderCreate()
+        await fill(titleInput(document), 'Old pending title')
+        const submit = primaryButton(document)
+        const requests = kind === 'save' ? saves : creates
+        await act(async () => { submit.focus(); submit.click() })
+        assert.equal(submit.disabled, true)
+        await act(async () => document.body.focus())
+        if (transition === 'unmount') await unmount()
+        else if (transition === 'closed' || transition === 'reopened') {
+          if (kind === 'save') await renderDrawer({ open: false })
+          else await renderCreate({ open: false })
+          if (transition === 'reopened') {
+            if (kind === 'save') await renderDrawer()
+            else await renderCreate()
+          }
+        } else if (kind === 'save') {
+          await renderDrawer({ record: transition === 'record' ? recordB : { ...recordB, databaseId: 'source-b' } }, transition === 'source' ? 'source-b' : undefined)
+        } else await renderCreate({}, 'source-b')
+        const current = document.querySelector<HTMLInputElement>('.dbw-record-form input')
+        if (current) await fill(current, 'Current session title')
+        else await act(async () => document.getElementById('opener')!.focus())
+        const retained = document.activeElement
+        const before = focusCalls.length
+        await act(async () => failure === 'false' ? requests[0].resolve(false) : requests[0].reject(new Error('Late private failure')))
+        assert.equal(document.activeElement === retained, true, `${kind}/${transition}/${failure}: the old operation has no current focus ownership`)
+        assert.equal(focusCalls.length, before)
+        assert.equal(alertText(document), '')
+        assert.equal(calls.close + calls.cancel, 0)
+        if (current) {
+          assert.equal(current.value, 'Current session title')
+          assert.equal(primaryButton(document).disabled, false)
+        } else assert.equal(document.querySelectorAll('[role="dialog"]').length, 0)
+      })
+    })
+  }
+})
+
+test('an unavailable failed record button is never focused, and making it available again does not replay the return', async () => {
+  for (const kind of ['create', 'save']) for (const blocker of ['hidden', 'inert', 'aria-disabled', 'disconnected']) {
+    await withForms(async ({ document, window, creates, saves, renderCreate, renderDrawer, fill }) => {
+      await withRecordFailureFocus(document, window, async ({ focusCalls }) => {
+        if (kind === 'save') await renderDrawer()
+        else await renderCreate()
+        await fill(titleInput(document), 'Unavailable origin draft')
+        const submit = primaryButton(document)
+        const parent = submit.parentElement!
+        const requests = kind === 'save' ? saves : creates
+        await act(async () => { submit.focus(); submit.click() })
+        assert.equal(submit.disabled, true)
+        await act(async () => {
+          document.body.focus()
+          if (blocker === 'disconnected') submit.remove()
+          else submit.setAttribute(blocker, blocker === 'aria-disabled' ? 'true' : '')
+        })
+        assert.equal(document.activeElement === document.body, true)
+        const before = focusCalls.length
+        await act(async () => requests[0].resolve(false))
+        assert.equal(document.activeElement === document.body, true)
+        assert.equal(focusCalls.length, before, `${kind}/${blocker}: failure cannot attempt an unavailable origin`)
+        await act(async () => {
+          if (blocker === 'disconnected') parent.append(submit)
+          else submit.removeAttribute(blocker)
+        })
+        if (kind === 'save') await renderDrawer()
+        else await renderCreate()
+        assert.equal(document.activeElement === document.body, true)
+        assert.equal(focusCalls.length, before)
+        assert.equal(titleInput(document).value, 'Unavailable origin draft')
+        assert.ok(alertText(document))
+      })
+    })
+  }
 })

@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { DatabaseField, DatabaseRecord, DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
@@ -10,31 +10,107 @@ type RecordDraft = {
   fieldValues: Record<string, DocumentDatabaseFieldValue>
 }
 
-function useRecordSubmission(session: string | true | null) {
+type RecordSubmissionFocus = {
+  container: HTMLElement
+  origin: HTMLElement
+  ready: boolean
+  cleanup: () => void
+}
+
+function isRecordFocusVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
+}
+
+function useRecordSubmission(session: string | true | null, containerRef: RefObject<HTMLElement | null>) {
   const generation = useRef(0)
   const mounted = useRef(false)
   const lock = useRef(false)
+  const pendingFocus = useRef<RecordSubmissionFocus | null>(null)
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
+  const clearFocus = () => {
+    pendingFocus.current?.cleanup()
+    pendingFocus.current = null
+  }
+
+  const captureFocus = () => {
+    clearFocus()
+    const container = containerRef.current
+    const document = container?.ownerDocument
+    const window = document?.defaultView
+    const origin = document?.activeElement
+    if (!container || !document || !window || !(origin instanceof window.HTMLElement)
+      || !document.hasFocus() || !container.contains(origin) || !isRecordFocusVisible(container)
+      || !isRecordFocusVisible(origin) || origin.matches(':disabled, [aria-disabled="true"]')) return null
+
+    const captured: RecordSubmissionFocus = { container, origin, ready: false, cleanup: () => {} }
+    const cancel = () => { if (pendingFocus.current === captured) clearFocus() }
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target !== document.body && event.target !== origin) cancel()
+    }
+    const onFocusOut = (event: FocusEvent) => {
+      // Chromium moves a newly disabled submission button to BODY while work is pending.
+      const toBody = !event.relatedTarget || event.relatedTarget === document.body
+      if (!toBody || !origin.matches(':disabled') || !origin.isConnected) cancel()
+    }
+    captured.cleanup = () => {
+      document.removeEventListener('pointerdown', cancel, true)
+      document.removeEventListener('keydown', cancel, true)
+      document.removeEventListener('compositionstart', cancel, true)
+      document.removeEventListener('focusin', onFocusIn, true)
+      origin.removeEventListener('focusout', onFocusOut)
+      window.removeEventListener('blur', cancel)
+    }
+    pendingFocus.current = captured
+    document.addEventListener('pointerdown', cancel, true)
+    document.addEventListener('keydown', cancel, true)
+    document.addEventListener('compositionstart', cancel, true)
+    document.addEventListener('focusin', onFocusIn, true)
+    origin.addEventListener('focusout', onFocusOut)
+    window.addEventListener('blur', cancel)
+    return captured
+  }
 
   useLayoutEffect(() => {
+    clearFocus()
     generation.current += 1
     mounted.current = true
     lock.current = false
     setBusy(false)
     setFailed(false)
     return () => {
+      clearFocus()
       mounted.current = false
       generation.current += 1
       lock.current = false
     }
   }, [session])
 
+  useLayoutEffect(() => {
+    const captured = pendingFocus.current
+    if (!captured?.ready || busy) return
+    const { container, origin } = captured
+    const document = origin.ownerDocument
+    const active = document.activeElement
+    const canRestore = containerRef.current === container && document.hasFocus()
+      && isRecordFocusVisible(container) && container.contains(origin) && isRecordFocusVisible(origin)
+      && !origin.matches(':disabled, [aria-disabled="true"]')
+      && (active === document.body || active === origin)
+      && ![...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
+        .some(dialog => dialog !== container && isRecordFocusVisible(dialog))
+    // Consume once after React re-enables the control; newer activity permanently cancels it.
+    clearFocus()
+    if (canRestore) origin.focus()
+  })
+
   const submit = async (action: () => Promise<boolean>, onSuccess?: () => void) => {
     if (!session || !mounted.current || lock.current) return
     const requestGeneration = generation.current
     const isCurrent = () => mounted.current && generation.current === requestGeneration
     lock.current = true
+    const capturedFocus = captureFocus()
     setBusy(true)
     setFailed(false)
     let completed = false
@@ -45,6 +121,8 @@ function useRecordSubmission(session: string | true | null) {
     }
     if (!isCurrent()) return
     lock.current = false
+    if (completed === true) clearFocus()
+    else if (capturedFocus && pendingFocus.current === capturedFocus) capturedFocus.ready = true
     setBusy(false)
     if (completed === true) onSuccess?.()
     else setFailed(true)
@@ -81,7 +159,7 @@ export function DatabaseRecordDrawer({
   const edited = useRef(false)
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
   const propertyFields = useMemo(() => fields.filter((field) => field.role === 'property'), [fields])
-  const submission = useRecordSubmission(open ? record?.id ?? null : null)
+  const submission = useRecordSubmission(open ? record?.id ?? null : null, drawerRef)
   const close = () => { if (!submission.isBusy()) onClose() }
   const updateDraft = (update: (current: RecordDraft) => RecordDraft) => {
     if (submission.isBusy()) return
@@ -188,7 +266,7 @@ export function CreateRecordDialog({
   const propertyFields = fields.filter((field) => field.role === 'property')
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
   const focusTitle = useRef(false)
-  const submission = useRecordSubmission(open ? true : null)
+  const submission = useRecordSubmission(open ? true : null, dialogRef)
   const cancel = () => { if (!submission.isBusy()) onCancel() }
   const updateDraft = (update: (current: RecordDraft) => RecordDraft) => {
     if (!submission.isBusy()) setDraft(update)

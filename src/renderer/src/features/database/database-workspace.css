@@ -508,7 +508,7 @@
 .dbw-form-error-details pre { max-height: 120px; margin: 4px 0 0; }
 .dbw-form-name-error { margin: -8px 20px 16px; color: var(--dbw-danger); font-size: var(--kb-type-label); line-height: 1.6; }
 .dbw-dialog :is([readonly], [aria-busy='true']) { cursor: progress; }
-.dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); }
+.dbw-create-record-dialog { width: min(540px, calc(100vw - 36px)); scroll-padding-block: 12px; }
 .dbw-create-record-dialog .dbw-record-form { max-height: calc(100vh - 210px); }
 .dbw-loading { display: grid; min-height: 420px; place-items: center; color: #7d8290; }
 
