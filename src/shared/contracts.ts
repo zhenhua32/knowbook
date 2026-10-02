@@ -247,6 +247,10 @@ export interface DatabaseSavedView {
   updatedAt: string
 }
 
+export type DatabaseSavedViewFormResult =
+  | { status: 'saved'; view: DatabaseSavedView }
+  | { status: 'invalid-name'; reason: 'name-required' | 'name-taken'; message: string }
+
 export interface DatabaseEntity {
   id: string
   databaseId: string
@@ -1052,6 +1056,8 @@ export interface ElectronApi {
   getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>
   createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
   updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => Promise<DatabaseSavedView>
+  createDatabaseSavedViewForm: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedViewFormResult>
+  updateDatabaseSavedViewForm: (input: UpdateDatabaseSavedViewInput) => Promise<DatabaseSavedViewFormResult>
   reorderDatabaseSavedViews: (input: ReorderDatabaseSavedViewsInput) => Promise<DatabaseSavedView[]>
   deleteDatabaseSavedView: (viewId: string) => Promise<void>
   createDatabaseEntity: (input: CreateDatabaseEntityInput) => Promise<DatabaseEntity>

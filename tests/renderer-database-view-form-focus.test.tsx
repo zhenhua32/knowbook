@@ -99,13 +99,20 @@ async function withFocus(run: (context: Context) => Promise<void>, locale = 'en-
   const creates: Context['creates'] = []
   const updates: Context['updates'] = []
   const refreshes: Context['refreshes'] = []
-  Object.defineProperty(dom.window, 'knowbook', { value: {
+  const api = {
     createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => {
       const request = { ...deferred<DatabaseSavedView>(), input: clone(input) }; creates.push(request); return request.promise
     },
     updateDatabaseSavedView: (input: UpdateDatabaseSavedViewInput) => {
       const request = { ...deferred<DatabaseSavedView>(), input: clone(input) }; updates.push(request); return request.promise
     }
+  }
+  Object.defineProperty(dom.window, 'knowbook', { value: {
+    ...api,
+    createDatabaseSavedViewForm: (input: CreateDatabaseSavedViewInput) => api.createDatabaseSavedView(input)
+      .then(saved => ({ status: 'saved' as const, view: saved })),
+    updateDatabaseSavedViewForm: (input: UpdateDatabaseSavedViewInput) => api.updateDatabaseSavedView(input)
+      .then(saved => ({ status: 'saved' as const, view: saved }))
   } })
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('mount')!)

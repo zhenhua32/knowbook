@@ -127,6 +127,7 @@ import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
 import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
+import { runDatabaseSavedViewForm } from './database/saved-view-form'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginPlatformV2Service } from './plugin-platform/platform-service'
 import { QuickJsWasiPluginRuntimeFactory } from './plugin-platform/quickjs-runtime-client'
@@ -1685,6 +1686,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:update-database-saved-view', (_event, input: UpdateDatabaseSavedViewInput) => {
     const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
     return view
+  })
+
+  ipcMain.handle('knowbook:create-database-saved-view-form', (_event, input: CreateDatabaseSavedViewInput) => {
+    return runDatabaseSavedViewForm(() => store.createDatabaseSavedView(input))
+  })
+
+  ipcMain.handle('knowbook:update-database-saved-view-form', (_event, input: UpdateDatabaseSavedViewInput) => {
+    return runDatabaseSavedViewForm(() => store.updateDatabaseSavedView(input))
   })
 
   ipcMain.handle('knowbook:reorder-database-saved-views', (_event, input: ReorderDatabaseSavedViewsInput) => {

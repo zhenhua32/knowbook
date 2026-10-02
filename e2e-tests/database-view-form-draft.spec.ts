@@ -2,18 +2,21 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import type { IpcMainInvokeEvent } from 'electron'
 import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
-import type { CreateDatabaseSavedViewInput, DatabaseSavedView, DatabaseViewConfigV1, UpdateDatabaseSavedViewInput } from '../src/shared/contracts'
+import type { CreateDatabaseSavedViewInput, DatabaseSavedView, DatabaseSavedViewFormResult, DatabaseViewConfigV1, UpdateDatabaseSavedViewInput } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type MutationInput = CreateDatabaseSavedViewInput | UpdateDatabaseSavedViewInput
-type MutationHandler = (event: IpcMainInvokeEvent, input: MutationInput) => DatabaseSavedView | Promise<DatabaseSavedView>
+type MutationResult = DatabaseSavedViewFormResult | DatabaseSavedView
+type MutationHandler = (event: IpcMainInvokeEvent, input: MutationInput) => DatabaseSavedViewFormResult | Promise<DatabaseSavedViewFormResult>
+type SaveHandler = (event: IpcMainInvokeEvent, input: MutationInput) => DatabaseSavedView | Promise<DatabaseSavedView>
 type ReadHandler = (event: IpcMainInvokeEvent, databaseId: string) => DatabaseSavedView[] | Promise<DatabaseSavedView[]>
 type Probe = {
-  originalCreate: MutationHandler; originalUpdate: MutationHandler; originalRead: ReadHandler; holdReads: boolean; readsCompleted: number
+  originalCreate: MutationHandler; originalUpdate: MutationHandler; originalSave: SaveHandler; originalRead: ReadHandler; holdReads: boolean; readsCompleted: number
   calls: Array<{ kind: 'create' | 'update'; input: MutationInput }>; written: DatabaseSavedView[]
-  failures: Array<{ kind: 'create' | 'update'; input: MutationInput; message: string }>
-  pending: Array<{ kind: 'create' | 'update'; event: IpcMainInvokeEvent; input: MutationInput;
-    resolve: (value: DatabaseSavedView) => void; reject: (error: Error) => void }>
+  failures: Array<{ kind: 'create' | 'update'; input: MutationInput; message: string;
+    reason?: Extract<DatabaseSavedViewFormResult, { status: 'invalid-name' }>['reason'] }>
+  pending: Array<{ kind: 'create' | 'update'; api: 'form' | 'ordinary'; event: IpcMainInvokeEvent; input: MutationInput;
+    resolve: (value: MutationResult) => void; reject: (error: Error) => void }>
   pendingReads: Array<{ event: IpcMainInvokeEvent; databaseId: string;
     resolve: (value: DatabaseSavedView[]) => void; reject: (error: Error) => void }>
 }
@@ -62,19 +65,21 @@ async function seed(page: Page, language: 'en-US' | 'zh-CN'): Promise<Fixture> {
 
 async function installProbe(app: ElectronApplication) {
   await app.evaluate(({ ipcMain }) => {
-    const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, MutationHandler | ReadHandler> })._invokeHandlers
-    const originalCreate = handlers.get('knowbook:create-database-saved-view') as MutationHandler
-    const originalUpdate = handlers.get('knowbook:update-database-saved-view') as MutationHandler
+    const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, MutationHandler | SaveHandler | ReadHandler> })._invokeHandlers
+    const originalCreate = handlers.get('knowbook:create-database-saved-view-form') as MutationHandler
+    const originalUpdate = handlers.get('knowbook:update-database-saved-view-form') as MutationHandler
+    const originalSave = handlers.get('knowbook:update-database-saved-view') as SaveHandler
     const originalRead = handlers.get('knowbook:get-database-saved-views') as ReadHandler
-    if (!originalCreate || !originalUpdate || !originalRead) throw new Error('Real saved-view handlers are required')
-    const probe: Probe = { originalCreate, originalUpdate, originalRead, holdReads: false, readsCompleted: 0,
+    if (!originalCreate || !originalUpdate || !originalSave || !originalRead) throw new Error('Real form and ordinary saved-view handlers are required')
+    const probe: Probe = { originalCreate, originalUpdate, originalSave, originalRead, holdReads: false, readsCompleted: 0,
       calls: [], written: [], failures: [], pending: [], pendingReads: [] }
     ;(globalThis as ProbeGlobal).__knowbookViewFormProbe = probe
-    for (const [kind, channel] of [['create', 'knowbook:create-database-saved-view'], ['update', 'knowbook:update-database-saved-view']] as const) {
+    for (const [api, kind, channel] of [['form', 'create', 'knowbook:create-database-saved-view-form'],
+      ['form', 'update', 'knowbook:update-database-saved-view-form'], ['ordinary', 'update', 'knowbook:update-database-saved-view']] as const) {
       ipcMain.removeHandler(channel)
       ipcMain.handle(channel, (event, input: MutationInput) => {
         probe.calls.push({ kind, input })
-        return new Promise<DatabaseSavedView>((resolve, reject) => probe.pending.push({ kind, event, input, resolve, reject }))
+        return new Promise<MutationResult>((resolve, reject) => probe.pending.push({ api, kind, event, input, resolve, reject }))
       })
     }
     ipcMain.removeHandler('knowbook:get-database-saved-views')
@@ -103,9 +108,13 @@ async function finishMutation(app: ElectronApplication, page: Page, count: numbe
     if (!pending) throw new Error('No view form mutation is pending')
     setImmediate(async () => {
       try {
-        const original = pending.kind === 'create' ? probe.originalCreate : probe.originalUpdate
+        const original = pending.api === 'ordinary' ? probe.originalSave : pending.kind === 'create' ? probe.originalCreate : probe.originalUpdate
         const result = await original(pending.event, pending.input)
-        probe.written.push(result)
+        if ('status' in result) {
+          if (result.status === 'saved') probe.written.push(result.view)
+          else probe.failures.push({ kind: pending.kind, input: pending.input, message: result.message, reason: result.reason })
+        } else probe.written.push(result)
+        // Typed name issues resolve exactly as the real handler returned them.
         pending.resolve(result)
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error))
@@ -175,6 +184,26 @@ async function submitForm(page: Page, app: ElectronApplication, count: number, p
   await expect.poll(async () => (await probeState(app)).calls.length).toBe(count)
 }
 
+async function expectNameIssue(page: Page, message: string) {
+  const alert = form(page).getByRole('alert')
+  await expect(alert).toHaveCount(1)
+  await expect(alert).toHaveText(message)
+  await expect(alert).toBeVisible()
+  await expect(nameInput(page)).toHaveAttribute('aria-invalid', 'true')
+  const issueId = await alert.getAttribute('id')
+  expect(issueId).toBeTruthy()
+  const descriptions = await nameInput(page).evaluate(input => (input.getAttribute('aria-describedby') ?? '')
+    .split(/\s+/).filter(Boolean).map(id => ({ id, text: document.getElementById(id)?.textContent })))
+  expect(descriptions).toContainEqual({ id: issueId, text: message })
+}
+
+async function expectNameIssueCleared(page: Page) {
+  await expect(form(page).getByRole('alert')).toHaveCount(0)
+  await expect(nameInput(page)).not.toHaveAttribute('aria-invalid', 'true')
+  await expect(nameInput(page)).not.toHaveAttribute('aria-describedby', /\S/)
+  await expect(form(page).locator('.dbw-form-error-details')).toHaveCount(0)
+}
+
 async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, phase: string) {
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
     visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable(), bounds: window.getBounds()
@@ -195,7 +224,9 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
       tabs: Array.from(document.querySelectorAll<HTMLButtonElement>('.dbw-view-tab')).map(tab => ({
         name: tab.title, current: tab.getAttribute('aria-current'), dirty: Boolean(tab.querySelector('.dbw-unsaved-dot')) })),
       dialog: dialog ? { title: dialog.querySelector('h2')?.textContent, ariaBusy: dialog.getAttribute('aria-busy'),
-        name: name ? { value: name.value, readOnly: name.readOnly, disabled: name.disabled, focused: active === name } : null,
+        name: name ? { value: name.value, readOnly: name.readOnly, disabled: name.disabled, focused: active === name,
+          ariaInvalid: name.getAttribute('aria-invalid'), descriptions: (name.getAttribute('aria-describedby') ?? '')
+            .split(/\s+/).filter(Boolean).map(id => ({ id, text: document.getElementById(id)?.textContent })) } : null,
         submit: button ? { text: button.textContent?.trim(), disabled: button.disabled, ariaDisabled: button.getAttribute('aria-disabled'),
           ariaBusy: button.getAttribute('aria-busy'), focused: active === button } : null,
         status: dialog.querySelector('[role="status"]')?.textContent, error: dialog.querySelector('[role="alert"]')?.textContent,
@@ -371,7 +402,8 @@ test('a real duplicate view name preserves the focused name draft and supports E
     await expect(submit(page)).toHaveAttribute('aria-busy', 'true')
     await expect(submit(page)).toHaveAttribute('aria-disabled', 'true')
     expect(await submit(page).evaluate(button => (button as HTMLButtonElement).disabled)).toBe(false)
-    // The real store's existing unique-name validation rejects this invocation.
+    // The conflict was added after the renderer loaded its list; only the real
+    // store's typed form result can classify this previously unknown name issue.
     await finishMutation(app, page, 1, false, true)
     await expect(form(page).getByRole('alert')).toBeVisible()
     await record(page, app, testInfo, 'en-real-name-conflict-returned-collapsed')
@@ -379,8 +411,9 @@ test('a real duplicate view name preserves the focused name draft and supports E
     expect(rejected.written).toHaveLength(0)
     expect(rejected.failures).toHaveLength(1)
     expect(rejected.failures[0].kind).toBe('update')
+    expect(rejected.failures[0].reason).toBe('name-taken')
     expect(rejected.failures[0].message.trim()).not.toBe('')
-    await expect(form(page).getByRole('alert')).toHaveText('Could not save. Your input has been kept. Try again.')
+    await expectNameIssue(page, 'A view with this name already exists in this database. Choose another name.')
     await expect(form(page).getByRole('alert')).not.toContainText(/Error invoking|remote method|^Error:/i)
     const details = form(page).locator('.dbw-form-error-details')
     const reason = details.locator('pre')
@@ -411,6 +444,8 @@ test('a real duplicate view name preserves the focused name draft and supports E
     await expect(nameInput(page)).toBeFocused()
     await expect(nameInput(page)).toHaveValue('Duplicate name')
     await nameInput(page).fill('Legal retry name')
+    await expectNameIssueCleared(page)
+    await expect(nameInput(page)).toBeFocused()
     await page.keyboard.press('Enter')
     await expect.poll(async () => (await probeState(app)).calls.length).toBe(2)
     await record(page, app, testInfo, 'en-name-enter-retry-pending')
@@ -429,6 +464,98 @@ test('a real duplicate view name preserves the focused name draft and supports E
     expect(final.find(view => view.id === duplicate.id)?.name).toBe('Duplicate name')
     expect((await probeState(app)).written).toHaveLength(1)
     expect((await probeState(app)).failures).toHaveLength(1)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.databaseId)).toEqual(before)
+  })
+})
+
+test('a Chinese create form reports a real case-insensitive trimmed name conflict and accepts a corrected Enter retry @electron', async ({}, testInfo) => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+  await withElectronApp(async ({ page, app }) => {
+    const ids = await seed(page, 'zh-CN')
+    const before = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.databaseId)
+    await installProbe(app)
+    await query(page).fill('Beta')
+    await expect(dirty(page)).toHaveCount(1)
+    const duplicateDraft = '  PRIMARY FORM VIEW  '
+    await openCreate(page, duplicateDraft)
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await probeState(app)).calls.length).toBe(1)
+    await page.keyboard.press('Enter')
+    const pending = await record(page, app, testInfo, 'zh-trimmed-duplicate-create-pending')
+    expect(pending.probe.calls).toHaveLength(1)
+    expect(pending.probe.calls[0]).toMatchObject({ kind: 'create', input: { databaseId: ids.databaseId, name: duplicateDraft.trim() } })
+    expect(pending.state.dialog?.name).toMatchObject({ value: duplicateDraft, readOnly: true, disabled: false, focused: true })
+    await expect(submit(page)).toHaveAttribute('aria-busy', 'true')
+    await expect(submit(page)).toHaveAttribute('aria-disabled', 'true')
+    expect(await submit(page).evaluate(button => (button as HTMLButtonElement).disabled)).toBe(false)
+    // Delegate the production form handler; SQLite's ASCII NOCASE comparison
+    // must reject this name without creating or changing any stored view.
+    await finishMutation(app, page, 1, false, true)
+    await expect(form(page).getByRole('alert')).toBeVisible()
+    await record(page, app, testInfo, 'zh-trimmed-duplicate-create-collapsed')
+    const rejected = await probeState(app)
+    expect(rejected.written).toHaveLength(0)
+    expect(rejected.failures).toHaveLength(1)
+    expect(rejected.failures[0]).toMatchObject({ kind: 'create', reason: 'name-taken' })
+    expect(rejected.failures[0].message.trim()).not.toBe('')
+    await expectNameIssue(page, '此数据库中已有同名视图，请换一个名称。')
+    await expect(form(page).getByRole('alert')).not.toContainText(/Error invoking|remote method|SqliteError|^Error:/i)
+    await expect(nameInput(page)).toHaveValue(duplicateDraft)
+    await expect(nameInput(page)).toBeFocused()
+    await expect(nameInput(page)).toBeEnabled()
+    await expect(nameInput(page)).toHaveJSProperty('readOnly', false)
+    await expect(query(page)).toHaveValue('Beta')
+    await expect(dirty(page)).toHaveCount(1)
+    const details = form(page).locator('.dbw-form-error-details')
+    const reason = details.locator('pre')
+    await expect(details).toHaveJSProperty('open', false)
+    await expect(reason).not.toBeVisible()
+    await expect(reason).toHaveText(rejected.failures[0].message)
+    await expect(reason).not.toContainText(/Error invoking|remote method|^Error:/i)
+    const afterFailure = await page.evaluate(id => window.knowbook.getDatabaseSavedViews(id), ids.databaseId)
+    expect(afterFailure).toHaveLength(1)
+    expect(afterFailure[0].id).toBe(ids.viewId)
+    expect(afterFailure[0].name).toBe(primaryName)
+    expect(afterFailure[0].config).toEqual(ids.initialConfig)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.databaseId)).toEqual(before)
+    const summary = details.locator('summary')
+    await expect(summary).toHaveAccessibleName('错误详情')
+    await tabTo(page, summary, 'zh-create-name-to-error-details', 8)
+    await page.keyboard.press('Space')
+    await expect(details).toHaveJSProperty('open', true)
+    await expect(reason).toBeVisible()
+    await expect(reason).toHaveText(rejected.failures[0].message)
+    await expect(summary).toBeFocused()
+    await record(page, app, testInfo, 'zh-trimmed-duplicate-create-expanded')
+    await page.keyboard.press('Shift+Tab')
+    await expect(nameInput(page)).toBeFocused()
+    const correctedName = '合法名称新视图'
+    await nameInput(page).fill(correctedName)
+    await expectNameIssueCleared(page)
+    await expect(nameInput(page)).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect.poll(async () => (await probeState(app)).calls.length).toBe(2)
+    await record(page, app, testInfo, 'zh-corrected-create-enter-pending')
+    await expect(nameInput(page)).toBeFocused()
+    await expect(nameInput(page)).toHaveJSProperty('readOnly', true)
+    await finishMutation(app, page, 1, true)
+    await record(page, app, testInfo, 'zh-corrected-create-enter-saved')
+    await expect(form(page)).toHaveCount(0)
+    await expect(activeTab(page)).toHaveAttribute('title', correctedName)
+    await expect(query(page)).toHaveValue('Beta')
+    await expect(dirty(page)).toHaveCount(0)
+    await expect(titles(page)).toHaveText(['Beta keep', 'Beta skip'])
+    const stored = await page.evaluate(id => window.knowbook.getDatabaseSavedViews(id), ids.databaseId)
+    expect(stored).toHaveLength(2)
+    expect(stored.find(view => view.id === ids.viewId)?.name).toBe(primaryName)
+    expect(stored.find(view => view.id === ids.viewId)?.config).toEqual(ids.initialConfig)
+    const created = stored.find(view => view.name === correctedName)!
+    expect(created.config).toEqual({ ...ids.initialConfig, query: 'Beta' })
+    const final = await probeState(app)
+    expect(final.calls).toHaveLength(2)
+    expect(final.written).toHaveLength(1)
+    expect(final.written[0].id).toBe(created.id)
+    expect(final.failures).toHaveLength(1)
     expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.databaseId)).toEqual(before)
   })
 })

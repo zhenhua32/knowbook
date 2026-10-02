@@ -2,15 +2,15 @@ import { expect, test, type Locator, type Page, type TestInfo } from '@playwrigh
 import type { IpcMainInvokeEvent } from 'electron'
 import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
-import type { CreateDatabaseSavedViewInput, DatabaseSavedView, DatabaseViewConfigV1 } from '../src/shared/contracts'
+import type { CreateDatabaseSavedViewInput, DatabaseSavedView, DatabaseSavedViewFormResult, DatabaseViewConfigV1 } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-type CreateHandler = (event: IpcMainInvokeEvent, input: CreateDatabaseSavedViewInput) => DatabaseSavedView | Promise<DatabaseSavedView>
+type CreateHandler = (event: IpcMainInvokeEvent, input: CreateDatabaseSavedViewInput) => DatabaseSavedViewFormResult | Promise<DatabaseSavedViewFormResult>
 type ReadHandler = (event: IpcMainInvokeEvent, id: string) => DatabaseSavedView[] | Promise<DatabaseSavedView[]>
 type Probe = {
   originalCreate: CreateHandler; originalRead: ReadHandler; holdReads: boolean; readsCompleted: number
-  calls: CreateDatabaseSavedViewInput[]; written: DatabaseSavedView[]
-  pending: Array<{ event: IpcMainInvokeEvent; input: CreateDatabaseSavedViewInput; resolve: (view: DatabaseSavedView) => void; reject: (error: Error) => void }>
+  calls: CreateDatabaseSavedViewInput[]; written: DatabaseSavedView[]; results: DatabaseSavedViewFormResult[]
+  pending: Array<{ event: IpcMainInvokeEvent; input: CreateDatabaseSavedViewInput; resolve: (result: DatabaseSavedViewFormResult) => void; reject: (error: Error) => void }>
   pendingReads: Array<{ event: IpcMainInvokeEvent; id: string; resolve: (views: DatabaseSavedView[]) => void; reject: (error: Error) => void }>
 }
 type ProbeGlobal = typeof globalThis & { __knowbookFormFocusProbe?: Probe }
@@ -60,15 +60,15 @@ async function seed(page: Page, language: 'en-US' | 'zh-CN') {
 async function installProbe(app: ElectronApplication) {
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, CreateHandler | ReadHandler> })._invokeHandlers
-    const originalCreate = handlers.get('knowbook:create-database-saved-view') as CreateHandler
+    const originalCreate = handlers.get('knowbook:create-database-saved-view-form') as CreateHandler
     const originalRead = handlers.get('knowbook:get-database-saved-views') as ReadHandler
     if (!originalCreate || !originalRead) throw new Error('Real saved-view IPC handlers are required')
-    const probe: Probe = { originalCreate, originalRead, holdReads: false, readsCompleted: 0, calls: [], written: [], pending: [], pendingReads: [] }
+    const probe: Probe = { originalCreate, originalRead, holdReads: false, readsCompleted: 0, calls: [], written: [], results: [], pending: [], pendingReads: [] }
     ;(globalThis as ProbeGlobal).__knowbookFormFocusProbe = probe
-    ipcMain.removeHandler('knowbook:create-database-saved-view')
-    ipcMain.handle('knowbook:create-database-saved-view', (event, input: CreateDatabaseSavedViewInput) => {
+    ipcMain.removeHandler('knowbook:create-database-saved-view-form')
+    ipcMain.handle('knowbook:create-database-saved-view-form', (event, input: CreateDatabaseSavedViewInput) => {
       probe.calls.push(input)
-      return new Promise<DatabaseSavedView>((resolve, reject) => probe.pending.push({ event, input, resolve, reject }))
+      return new Promise<DatabaseSavedViewFormResult>((resolve, reject) => probe.pending.push({ event, input, resolve, reject }))
     })
     ipcMain.removeHandler('knowbook:get-database-saved-views')
     ipcMain.handle('knowbook:get-database-saved-views', async (event, id: string) => {
@@ -83,7 +83,7 @@ async function installProbe(app: ElectronApplication) {
 async function probeState(app: ElectronApplication) {
   return app.evaluate(() => {
     const probe = (globalThis as ProbeGlobal).__knowbookFormFocusProbe!
-    return { calls: probe.calls, written: probe.written, pending: probe.pending.length,
+    return { calls: probe.calls, written: probe.written, results: probe.results, pending: probe.pending.length,
       holdReads: probe.holdReads, pendingReads: probe.pendingReads.length, readsCompleted: probe.readsCompleted }
   })
 }
@@ -97,12 +97,15 @@ async function finishCreate(app: ElectronApplication) {
     setImmediate(async () => {
       try {
         const result = await probe.originalCreate(pending.event, pending.input)
-        probe.written.push(result)
+        probe.results.push(result)
+        if (result.status === 'saved') probe.written.push(result.view)
         pending.resolve(result)
       } catch (error) { pending.reject(error instanceof Error ? error : new Error(String(error))) }
     })
   })
-  await expect.poll(async () => (await probeState(app)).written.length).toBe(1)
+  await expect.poll(async () => (await probeState(app)).results.length).toBe(1)
+  expect((await probeState(app)).results[0].status).toBe('saved')
+  expect((await probeState(app)).written).toHaveLength(1)
   await expect.poll(async () => (await probeState(app)).pendingReads).toBeGreaterThan(0)
 }
 

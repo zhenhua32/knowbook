@@ -73,6 +73,7 @@ import type {
 } from '@shared/contracts'
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
 import { WorkspaceSearchRepository } from './workspace-search'
@@ -3208,14 +3209,14 @@ export class KnowbookStore {
         `).get(databaseId, name) as { id: string } | undefined
 
     if (existing) {
-      throw new Error('A saved view with this name already exists in this database.')
+      throw new DatabaseSavedViewNameError('name-taken', 'A saved view with this name already exists in this database.')
     }
   }
 
   private normalizeDatabaseSavedViewName(name: string): string {
     const trimmedName = name.trim()
     if (!trimmedName) {
-      throw new Error('Saved view name is required.')
+      throw new DatabaseSavedViewNameError('name-required', 'Saved view name is required.')
     }
 
     return trimmedName

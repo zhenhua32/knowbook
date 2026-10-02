@@ -6,6 +6,7 @@ import type {
   DatabaseField,
   DatabaseRecord,
   DatabaseSavedView,
+  DatabaseSavedViewFormResult,
   DatabaseSavedViewLayoutMode,
   DatabaseViewConfigV1,
   DocumentCatalogEntry,
@@ -136,6 +137,7 @@ export function DatabaseWorkspace({
   const formRequests = useRef(new Map<number, symbol>())
   const [pendingForms, setPendingForms] = useState(() => new Set<number>())
   const [formError, setFormError] = useState<string | null>(null)
+  const [formNameIssue, setFormNameIssue] = useState<Extract<DatabaseSavedViewFormResult, { status: 'invalid-name' }>['reason'] | null>(null)
   const metadataSaveRequests = useRef(new Map<string, symbol>())
   const [savingDatabases, setSavingDatabases] = useState(() => new Set<string>())
   const closeForm = (expectedSession = formSessionRef.current, restoreFocus = true,
@@ -150,6 +152,7 @@ export function DatabaseWorkspace({
     formSessionRef.current++
     setFormMode(null)
     setFormError(null)
+    setFormNameIssue(null)
   }
   useLayoutEffect(() => {
     if (!formMode) return
@@ -332,6 +335,7 @@ export function DatabaseWorkspace({
     formFocusLeaseRef.current = { session, target: returnTarget, source: fieldSourceSessionRef.current, closedView: null, approved: false }
     setFormSession(session)
     setFormError(null)
+    setFormNameIssue(null)
   }
   const openDatabaseForm = (mode: 'create-database' | 'edit-database', returnTarget?: HTMLElement | null) => {
     beginForm(returnTarget)
@@ -445,6 +449,7 @@ export function DatabaseWorkspace({
     formRequests.current.set(formSession, request)
     setPendingForms((current) => new Set(current).add(formSession))
     setFormError(null)
+    setFormNameIssue(null)
     if (saveKey) {
       viewSaveRequests.current.set(saveKey, request)
       setSavingViews((current) => new Set(current).add(saveKey))
@@ -455,9 +460,17 @@ export function DatabaseWorkspace({
     const ownsClosedForm = () => ownsSource() && viewSessionRef.current === completedViewSession && formSessionRef.current === formSession + 1
     try {
       const config = normalizeCreatedConfig(draft, formViewLayout)
-      const saved = renameId
-        ? await window.knowbook.updateDatabaseSavedView({ viewId: renameId, name })
-        : await window.knowbook.createDatabaseSavedView({ databaseId: currentSource.id, name, ...legacyViewFields(config), config })
+      const result = renameId
+        ? await window.knowbook.updateDatabaseSavedViewForm({ viewId: renameId, name })
+        : await window.knowbook.createDatabaseSavedViewForm({ databaseId: currentSource.id, name, ...legacyViewFields(config), config })
+      if (result.status === 'invalid-name') {
+        if (ownsForm()) {
+          setFormNameIssue(result.reason)
+          setFormError(result.message)
+        }
+        return
+      }
+      const saved = result.view
       if (!ownsSource()) return
       const shouldCompleteForm = ownsForm()
       onSavedView?.(saved)
@@ -832,13 +845,21 @@ export function DatabaseWorkspace({
           ? savingViews.has(JSON.stringify([currentSource.id, formViewId])) : formMode === 'edit-database' && savingDatabases.has(currentSource.id))}
         blockedMessage={formMode === 'edit-database' ? text.databaseEditWaitsForSave : undefined}
         busy={pendingForms.has(formSession)} description={formDescription} error={formError} key={formSession} name={formName}
+        nameError={formNameIssue === 'name-taken' ? text.viewNameTaken : formNameIssue === 'name-required' ? text.viewNameRequired : null}
         canReturnFocus={() => Boolean(formFocusLease?.approved && mounted.current
           && fieldSourceSessionRef.current === formFocusLease.source && viewSessionRef.current === formFocusLease.closedView
           && formSessionRef.current === formFocusLease.session + 1)}
         returnFocusTarget={formFocusLease?.target}
         onCancel={() => closeForm(formSession)}
         onDescriptionChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormDescription(value) }}
-        onNameChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormName(value) }}
+        onNameChange={(value) => {
+          if (formSessionRef.current !== formSession || formRequests.current.has(formSession)) return
+          if (value !== formName && formNameIssue) {
+            setFormNameIssue(null)
+            setFormError(null)
+          }
+          setFormName(value)
+        }}
         onSubmit={() => void submitForm()} open={formMode !== null} pendingLabel={formMode === 'create-view' || formMode === 'create-database' ? text.creating : text.saving}
         submitLabel={formMode === 'create-database' || formMode === 'create-view' ? text.create : text.save} text={text}
         title={formMode === 'create-database' ? text.newDatabase : formMode === 'edit-database' ? text.editDatabase : formMode === 'rename-view' ? text.rename : text.newView}
