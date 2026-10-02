@@ -314,6 +314,113 @@ test('field creation and row type descriptions expose all five localized types a
   }
 })
 
+test('field creation keeps localized labels and required guidance visible after filling and across conditional option types', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withDrawer(async ({ document, window, text, requests, startCreate, createForm, fill }) => {
+      const form = await startCreate()
+      const name = nameInput(form)
+      const type = form.querySelector<HTMLSelectElement>('select')!
+      assert.equal((name.labels?.length ?? 0) > 0, true, 'Name must have a persistent visible label')
+      assert.equal((type.labels?.length ?? 0) > 0, true, 'Field type must have a persistent visible label')
+      assert.equal(name.labels![0].textContent!.includes(text.name), true)
+      assert.equal(name.labels![0].textContent!.includes('*'), true)
+      assert.equal(type.labels![0].textContent!.includes(text.fieldType), true)
+      assert.equal(name.getAttribute('aria-required'), 'true')
+      assert.equal(type.getAttribute('aria-required') === 'true', false)
+      const requiredId = name.getAttribute('aria-describedby') ?? ''
+      assert.equal(requiredId.length > 0, true)
+      const requiredHint = document.getElementById(requiredId)
+      assert.equal(requiredHint?.textContent, locale === 'zh-CN' ? '标有 * 的项目为必填。' : 'Fields marked * are required.')
+      assert.equal(requiredHint?.closest('[hidden], [aria-hidden="true"]') === null, true)
+      await fill(name, 'Filled field name')
+      assert.equal(name.labels![0].textContent!.includes(text.name), true, 'Filling must not replace the visible name label')
+      const changeType = async (value: string) => act(async () => {
+        type.value = value
+        type.dispatchEvent(new window.Event('change', { bubbles: true }))
+      })
+      let optionsHintId = ''
+      for (const value of ['select', 'multi-select']) {
+        await changeType(value)
+        const options = createForm().querySelector<HTMLInputElement>(`input[aria-label="${text.options}"]`)!
+        assert.ok(options)
+        assert.equal((options.labels?.length ?? 0) > 0, true)
+        assert.equal(options.labels![0].textContent!.includes(text.options), true)
+        assert.equal(options.labels![0].textContent!.includes('*'), true)
+        assert.equal(options.getAttribute('aria-required'), 'true')
+        const hintId = options.getAttribute('aria-describedby') ?? ''
+        assert.equal(hintId.length > 0, true)
+        if (optionsHintId) assert.equal(hintId, optionsHintId, 'The options explanation keeps its identity across select types')
+        optionsHintId = hintId
+        assert.equal(document.getElementById(hintId)?.textContent, locale === 'zh-CN'
+          ? '至少输入一个选项，使用英文逗号分隔。' : 'Enter at least one option. Separate options with commas.')
+        await fill(options, 'Draft, Review')
+        assert.equal(options.labels![0].textContent!.includes(text.options), true)
+        assert.equal(name.value, 'Filled field name')
+        assert.equal(name.getAttribute('aria-describedby'), requiredId)
+      }
+      for (const value of ['text', 'date', 'checkbox']) {
+        await changeType(value)
+        assert.equal(createForm().querySelectorAll(`input[aria-label="${text.options}"]`).length, 0)
+        assert.equal(document.getElementById(optionsHintId) === null, true)
+        assert.equal(name.getAttribute('aria-describedby'), requiredId)
+        assert.equal(document.getElementById(requiredId) === requiredHint, true)
+        for (const element of createForm().querySelectorAll('[aria-describedby]')) {
+          for (const id of element.getAttribute('aria-describedby')!.split(/\s+/)) assert.equal(document.getElementById(id) !== null, true)
+        }
+      }
+      await changeType('select')
+      const returnedOptions = createForm().querySelector<HTMLInputElement>(`input[aria-label="${text.options}"]`)!
+      assert.equal(returnedOptions.value, 'Draft, Review', 'Type changes must preserve the previously entered option draft')
+      assert.equal(returnedOptions.getAttribute('aria-describedby'), optionsHintId)
+      assert.equal(alert(createForm()), '')
+      assert.equal(createForm().querySelectorAll('[aria-invalid="true"]').length, 0)
+      assert.equal(Object.values(requests).flat().length, 0)
+    }, locale)
+  }
+})
+
+test('select fields explain empty options without treating normal incomplete input as an error, and retain trimmed deduplicated submission behavior', async () => {
+  for (const locale of ['zh-CN', 'en-US']) for (const fieldType of ['select', 'multi-select']) {
+    await withDrawer(async ({ window, text, requests, startCreate, createForm, fill, click }) => {
+      const form = await startCreate()
+      const name = nameInput(form)
+      const type = form.querySelector<HTMLSelectElement>('select')!
+      await act(async () => { type.value = fieldType; type.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      const options = createForm().querySelector<HTMLInputElement>(`input[aria-label="${text.options}"]`)!
+      const hintId = options.getAttribute('aria-describedby') ?? ''
+      assert.equal(hintId.length > 0, true)
+      assert.equal(options.ownerDocument.getElementById(hintId)?.textContent, locale === 'zh-CN'
+        ? '至少输入一个选项，使用英文逗号分隔。' : 'Enter at least one option. Separate options with commas.')
+      await fill(name, '  Project stage  ')
+      for (const emptyOptions of ['', ' \t ', ', , ,']) {
+        await fill(options, emptyOptions)
+        assert.equal(createButton(createForm()).disabled, true)
+        await click(createButton(createForm()))
+        assert.equal(requests.create.length, 0)
+        assert.equal(alert(createForm()), '')
+        assert.equal(createForm().querySelectorAll('[aria-invalid="true"]').length, 0)
+      }
+      await fill(options, ' Draft, Review, Draft, ,  ')
+      assert.equal(createButton(createForm()).disabled, false)
+      for (const emptyName of ['', ' \t ']) {
+        await fill(name, emptyName)
+        assert.equal(createButton(createForm()).disabled, true)
+        await click(createButton(createForm()))
+        assert.equal(requests.create.length, 0)
+        assert.equal(alert(createForm()), '')
+      }
+      await fill(name, '  Project stage  ')
+      assert.equal(createButton(createForm()).disabled, false)
+      assert.equal(name.labels![0].textContent!.includes(text.name), true)
+      assert.equal(options.labels![0].textContent!.includes(text.options), true)
+      await click(createButton(createForm()))
+      assert.equal(requests.create.length, 1)
+      assert.deepEqual(requests.create[0].input, ['Project stage', fieldType, ['Draft', 'Review']])
+      await act(async () => requests.create[0].resolve(true))
+    }, locale)
+  }
+})
+
 test('creation and option drafts survive IME Enter and Escape; ordinary Escape works after composition ends or blur', async () => {
   for (const locale of ['zh-CN', 'en-US']) {
     for (const target of ['create-name', 'create-options', 'row-options']) {

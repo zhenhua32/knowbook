@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { DatabaseField, DocumentDatabaseColumnType } from '@shared/contracts'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
@@ -37,6 +37,8 @@ export function DatabaseFieldDrawer({
 }) {
   const drawerRef = useRef<HTMLElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
+  const requiredHintId = useId()
+  const optionsHintId = useId()
   const createComposingRef = useRef(false)
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -116,12 +118,25 @@ export function DatabaseFieldDrawer({
               onCompositionEndCapture={() => { createComposingRef.current = false }}
               onBlurCapture={() => { createComposingRef.current = false }}
               onKeyDown={event => { if (isImeKeyboardEvent(event.nativeEvent, createComposingRef.current)) event.stopPropagation() }}>
-              <input aria-label={text.name} autoFocus disabled={submission.busy} onChange={(event) => setName(event.target.value)} placeholder={text.name} value={name} />
-              <select aria-label={text.fieldType} disabled={submission.busy} onChange={(event) => setType(event.target.value as DocumentDatabaseColumnType)} value={type}>
-                {(['text', 'select', 'multi-select', 'date', 'checkbox'] as DocumentDatabaseColumnType[]).map(value =>
-                  <option key={value} value={value}>{fieldTypeLabel(value, text)}</option>)}
-              </select>
-              {type === 'select' || type === 'multi-select' ? <input aria-label={text.options} disabled={submission.busy} onChange={(event) => setOptions(event.target.value)} placeholder={text.options} value={options} /> : null}
+              <p className="dbw-field-create-hint" id={requiredHintId}>{text.requiredFieldsHint}</p>
+              <label className="dbw-field-create-label">
+                <span>{text.name} <span aria-hidden="true">*</span></span>
+                <input aria-describedby={requiredHintId} aria-label={text.name} aria-required="true" autoFocus disabled={submission.busy} onChange={(event) => setName(event.target.value)} placeholder={text.name} value={name} />
+              </label>
+              <label className="dbw-field-create-label">
+                <span>{text.fieldType}</span>
+                <select aria-label={text.fieldType} disabled={submission.busy} onChange={(event) => setType(event.target.value as DocumentDatabaseColumnType)} value={type}>
+                  {(['text', 'select', 'multi-select', 'date', 'checkbox'] as DocumentDatabaseColumnType[]).map(value =>
+                    <option key={value} value={value}>{fieldTypeLabel(value, text)}</option>)}
+                </select>
+              </label>
+              {type === 'select' || type === 'multi-select' ? (
+                <label className="dbw-field-create-label">
+                  <span>{text.options} <span aria-hidden="true">*</span></span>
+                  <input aria-describedby={optionsHintId} aria-label={text.options} aria-required="true" disabled={submission.busy} onChange={(event) => setOptions(event.target.value)} placeholder={text.options} value={options} />
+                  <span className="dbw-field-create-hint" id={optionsHintId}>{text.fieldOptionsHint}</span>
+                </label>
+              ) : null}
               {failed ? <p className="dbw-field-submit-error" role="alert">{text.failed}</p> : null}
               <div className="dbw-inline-actions">
                 <button className="dbw-primary-button" disabled={submission.busy || !name.trim() || ((type === 'select' || type === 'multi-select') && !options.split(',').some(option => option.trim()))} onClick={() => void submit()} type="button">{submission.action === 'create' ? text.creating : text.create}</button>

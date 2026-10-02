@@ -1,5 +1,7 @@
-import { expect, test, type Page } from '@playwright/test'
-import { hasBuiltElectronApp, withElectronApp } from './helpers/electron'
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
+import type { ElectronApplication } from 'playwright'
+import { writeFileSync } from 'node:fs'
+import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function openDatabase(page: Page, name: string) {
   await page.getByTitle('数据库', { exact: true }).click()
@@ -190,6 +192,248 @@ for (const theme of ['light', 'dark']) {
       await expect(drawer.getByRole('button', { name: 'Stage', exact: true })).toBeVisible()
       await expect(drawer.getByLabel('选项（逗号分隔） · Stage', { exact: true })).toHaveValue('Low, High')
       expect(await requestCount()).toBe(2)
+      expect(errors).toEqual([])
+    })
+  })
+}
+
+async function recordFieldGuidance(page: Page, app: ElectronApplication, testInfo: TestInfo, form: Locator, phase: string, requireAllVisible = true) {
+  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
+    visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable(), bounds: window.getBounds()
+  })))
+  expect(windows.length).toBeGreaterThan(0)
+  expect(windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
+  const geometry = await form.evaluate(element => {
+    const box = (rect: DOMRect) => ({ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height })
+    const items = Array.from(element.querySelectorAll<HTMLElement>('.dbw-field-create-label, input, select, button, .dbw-inline-actions, [id]')).map(node => {
+      const rect = node.getBoundingClientRect()
+      const clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
+      for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor)
+        const bounds = ancestor.getBoundingClientRect()
+        if (/auto|scroll|hidden|clip/.test(style.overflowX)) {
+          clip.left = Math.max(clip.left, bounds.left + ancestor.clientLeft)
+          clip.right = Math.min(clip.right, bounds.left + ancestor.clientLeft + ancestor.clientWidth)
+        }
+        if (/auto|scroll|hidden|clip/.test(style.overflowY)) {
+          clip.top = Math.max(clip.top, bounds.top + ancestor.clientTop)
+          clip.bottom = Math.min(clip.bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight)
+        }
+        if (style.position === 'fixed') break
+      }
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+      return { tag: node.tagName, label: node.getAttribute('aria-label'), text: node.tagName === 'INPUT' ? null : node.textContent,
+        focused: document.activeElement === node, centerHit: hit === node || (hit !== null && node.contains(hit)),
+        id: node.id, rect: box(rect), clip,
+        fullyVisible: rect.width > 0 && rect.height > 0 && rect.left >= clip.left - .5 && rect.right <= clip.right + .5 && rect.top >= clip.top - .5 && rect.bottom <= clip.bottom + .5 }
+    })
+    const createArea = element.closest('.dbw-field-create') as HTMLElement
+    return { viewport: { width: innerWidth, height: innerHeight }, form: box(element.getBoundingClientRect()),
+      createArea: { rect: box(createArea.getBoundingClientRect()), scrollTop: createArea.scrollTop, clientHeight: createArea.clientHeight, scrollHeight: createArea.scrollHeight },
+      horizontalOverflow: element.scrollWidth - element.clientWidth, items,
+      active: { tag: document.activeElement?.tagName, label: document.activeElement?.getAttribute('aria-label') } }
+  })
+  const path = testInfo.outputPath(`${phase}.json`)
+  writeFileSync(path, JSON.stringify({ windows, geometry, requireAllVisible }, null, 2))
+  await testInfo.attach(phase, { path, contentType: 'application/json' })
+  await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
+  expect(geometry.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(geometry.items.length).toBeGreaterThan(4)
+  if (requireAllVisible) expect(geometry.items.every(item => item.fullyVisible)).toBe(true)
+}
+
+async function expectFieldCreateActionReachable(button: Locator) {
+  await expect(button).toBeFocused()
+  await expect(button).toBeInViewport({ ratio: 1 })
+  const geometry = await button.evaluate(element => {
+    const container = element.closest('.dbw-field-create') as HTMLElement
+    const rect = element.getBoundingClientRect()
+    const bounds = container.getBoundingClientRect()
+    const clip = { left: bounds.left + container.clientLeft, top: bounds.top + container.clientTop,
+      right: bounds.left + container.clientLeft + container.clientWidth, bottom: bounds.top + container.clientTop + container.clientHeight }
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
+    return { fullyInside: rect.left >= clip.left - .5 && rect.right <= clip.right + .5 && rect.top >= clip.top - .5 && rect.bottom <= clip.bottom + .5,
+      centerHit: hit === element || (hit !== null && element.contains(hit)), scrollTop: container.scrollTop }
+  })
+  expect(geometry.fullyInside).toBe(true)
+  expect(geometry.centerHit).toBe(true)
+  expect(geometry.scrollTop).toBeGreaterThan(0)
+}
+
+async function expectFieldGuidanceReadable(locator: Locator) {
+  await expect(locator).toBeVisible()
+  const contrast = await locator.evaluate(element => {
+    const rgba = (color: string) => color.match(/[\d.]+/g)!.map(Number)
+    const over = (front: number[], back: number[]) => front.slice(0, 3).map((value, index) => value * (front[3] ?? 1) + back[index] * (1 - (front[3] ?? 1)))
+    const layers: number[][] = []
+    for (let node: Element | null = element; node; node = node.parentElement) {
+      const background = rgba(getComputedStyle(node).backgroundColor)
+      layers.push(background)
+      if ((background[3] ?? 1) === 1) break
+    }
+    if ((layers.at(-1)?.[3] ?? 1) !== 1) throw new Error('Missing opaque field guidance background')
+    const background = layers.reverse().reduce((back, front) => over(front, back), [255, 255, 255])
+    const foreground = over(rgba(getComputedStyle(element).color), background)
+    const luminance = (color: number[]) => color.map(channel => {
+      const value = channel / 255
+      return value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4
+    }).reduce((total, value, index) => total + value * [.2126, .7152, .0722][index], 0)
+    const a = luminance(foreground), b = luminance(background)
+    return (Math.max(a, b) + .05) / (Math.min(a, b) + .05)
+  })
+  expect(contrast).toBeGreaterThanOrEqual(4.5)
+}
+
+for (const [language, theme] of [['en-US', 'light'], ['zh-CN', 'dark']] as const) {
+  test(`new field guidance preserves labels and explains required choice options in ${language} ${theme} @electron`, async ({}, testInfo) => {
+    test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+    await withElectronApp(async ({ page, app }) => {
+      const errors: string[] = []
+      page.on('pageerror', error => errors.push(error.message))
+      const ids = await seedCustomDatabase(page)
+      const originalRecords = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)
+      const originalColumns = await page.evaluate(id => window.knowbook.getDocumentDatabaseColumns(id), ids.database)
+      await page.evaluate(async ({ language, theme }) => {
+        await window.knowbook.saveSetting('ui.language', language)
+        await window.knowbook.saveSetting('appearance.theme', theme)
+      }, { language, theme })
+      await page.reload()
+      await page.setViewportSize({ width: 760, height: 640 })
+      await page.getByTitle(uiText('Database', '数据库'), { exact: true }).click()
+      await expect(page.locator('.dbw-source-trigger')).toContainText('操作可靠性')
+      await app.evaluate(({ ipcMain }) => {
+        type Handler = (event: unknown, input: unknown) => unknown
+        const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
+        const original = handlers.get('knowbook:create-document-database-column')!
+        let calls = 0
+        process.env.KNOWBOOK_FIELD_GUIDANCE_CALLS = '0'
+        ipcMain.removeHandler('knowbook:create-document-database-column')
+        ipcMain.handle('knowbook:create-document-database-column', (event, input) => {
+          process.env.KNOWBOOK_FIELD_GUIDANCE_CALLS = String(++calls)
+          return original(event, input)
+        })
+      })
+      const callCount = () => app.evaluate(() => Number(process.env.KNOWBOOK_FIELD_GUIDANCE_CALLS))
+      const readColumns = () => page.evaluate(id => window.knowbook.getDocumentDatabaseColumns(id), ids.database)
+      await page.getByRole('button', { name: /^(?:Fields|字段)/ }).click()
+      const drawer = page.getByRole('dialog', { name: uiText('Manage fields', '字段管理'), exact: true })
+      const form = drawer.locator('.dbw-field-create-form')
+      const addField = drawer.getByRole('button', { name: uiText('＋ Add field', '＋ 新增字段'), exact: true })
+      const requiredText = uiText('Fields marked * are required.', '标有 * 的项目为必填。')
+      const optionsText = uiText('Enter at least one option. Separate options with commas.', '至少输入一个选项，使用英文逗号分隔。')
+      const name = form.getByLabel(uiText('Name', '名称'), { exact: true })
+      const type = form.getByLabel(uiText('Field type', '字段类型'), { exact: true })
+      const options = form.getByLabel(uiText('Options (comma separated)', '选项（逗号分隔）'), { exact: true })
+      const create = form.getByRole('button', { name: uiText('Create', '创建'), exact: true })
+      const nameLabel = name.locator('..')
+      const typeLabel = type.locator('..')
+      let requiredHintId: string | null = null
+      let optionsHintId: string | null = null
+
+      for (const [index, choiceType] of ['select', 'multi-select'].entries()) {
+        if (index > 0) await page.setViewportSize({ width: 760, height: 640 })
+        await addField.click()
+        await expect(name).toBeFocused()
+        await expect(name).toHaveAttribute('aria-required', 'true')
+        await expect(nameLabel).toHaveClass('dbw-field-create-label')
+        await expect(typeLabel).toHaveClass('dbw-field-create-label')
+        await expect(nameLabel).toContainText(language === 'en-US' ? 'Name' : '名称')
+        await expect(nameLabel).toContainText('*')
+        await expect(typeLabel).toContainText(language === 'en-US' ? 'Field type' : '字段类型')
+        const requiredHint = form.getByText(requiredText, { exact: true })
+        await expect(requiredHint).toBeVisible()
+        const requiredId = await requiredHint.getAttribute('id')
+        expect(requiredId).toBeTruthy()
+        if (requiredHintId) expect(requiredId).toBe(requiredHintId)
+        requiredHintId = requiredId
+        expect((await name.getAttribute('aria-describedby') ?? '').split(/\s+/)).toContain(requiredId)
+        await name.fill('   ')
+        await expect(create).toBeDisabled()
+        for (const plainType of ['text', 'date', 'checkbox']) {
+          await type.selectOption(plainType)
+          await expect(options).toHaveCount(0)
+          await expect(form.getByText(optionsText, { exact: true })).toHaveCount(0)
+        }
+        const fieldName = choiceType === 'select' ? 'Single choice' : 'Multiple choices'
+        await name.fill(`  ${fieldName}  `)
+        await type.selectOption(choiceType)
+        await expect(options).toHaveAttribute('aria-required', 'true')
+        await expect(options).toHaveValue('')
+        const optionsLabel = options.locator('..')
+        await expect(optionsLabel).toHaveClass('dbw-field-create-label')
+        await expect(optionsLabel).toContainText(language === 'en-US' ? 'Options (comma separated)' : '选项（逗号分隔）')
+        await expect(optionsLabel).toContainText('*')
+        const optionsHint = form.getByText(optionsText, { exact: true })
+        await expect(optionsHint).toBeVisible()
+        const optionId = await optionsHint.getAttribute('id')
+        expect(optionId).toBeTruthy()
+        if (optionsHintId) expect(optionId).toBe(optionsHintId)
+        optionsHintId = optionId
+        expect((await options.getAttribute('aria-describedby') ?? '').split(/\s+/)).toContain(optionId)
+        await expect(create).toBeDisabled()
+        await expect(form.getByRole('alert')).toHaveCount(0)
+        await expect(form.locator('[aria-invalid="true"]')).toHaveCount(0)
+        await options.fill(' , ,  , ')
+        await options.press('Enter')
+        await expect(create).toBeDisabled()
+        expect(await callCount()).toBe(index)
+        expect(await readColumns()).toHaveLength(originalColumns.length + index)
+        await form.scrollIntoViewIfNeeded()
+        await recordFieldGuidance(page, app, testInfo, form, `${language}-${choiceType}-required-guidance`)
+        await expectFieldGuidanceReadable(nameLabel.locator('span').first())
+        await expectFieldGuidanceReadable(typeLabel.locator('span').first())
+        await expectFieldGuidanceReadable(optionsLabel.locator('span').first())
+        await expectFieldGuidanceReadable(requiredHint)
+        await expectFieldGuidanceReadable(optionsHint)
+
+        if (index === 0) {
+          await page.setViewportSize({ width: 760, height: 480 })
+          await name.scrollIntoViewIfNeeded()
+          await name.click()
+          await expect(name).toBeFocused()
+          await page.keyboard.press('Tab')
+          await expect(type).toBeFocused()
+          await expect(type).toBeInViewport({ ratio: 1 })
+          await page.keyboard.press('Tab')
+          await expect(options).toBeFocused()
+          await expect(options).toBeInViewport({ ratio: 1 })
+        }
+        await options.fill(' Low , High, Low ,  ')
+        await expect(create).toBeEnabled()
+        await expect(options).toBeFocused()
+        await page.keyboard.press('Tab')
+        await expect(create).toBeFocused()
+        await expect(create).toBeInViewport({ ratio: 1 })
+        if (index === 0) {
+          await expectFieldCreateActionReachable(create)
+          await page.keyboard.press('Tab')
+          const cancel = form.getByRole('button', { name: uiText('Cancel', '取消'), exact: true })
+          await expectFieldCreateActionReachable(cancel)
+          await recordFieldGuidance(page, app, testInfo, form, `${language}-select-short-keyboard-scroll`, false)
+          expect(await callCount()).toBe(0)
+          await page.keyboard.press('Shift+Tab')
+          await expectFieldCreateActionReachable(create)
+        }
+        await page.keyboard.press('Enter')
+        await expect.poll(callCount).toBe(index + 1)
+        await expect(form).toHaveCount(0)
+        const columns = await readColumns()
+        expect(columns).toHaveLength(originalColumns.length + index + 1)
+        const saved = columns.filter(field => field.name === fieldName)
+        expect(saved).toHaveLength(1)
+        expect(saved[0].type).toBe(choiceType)
+        expect(saved[0].options).toEqual(['Low', 'High'])
+      }
+      expect(await callCount()).toBe(2)
+      expect((await readColumns()).filter(field => originalColumns.some(original => original.id === field.id))).toEqual(originalColumns)
+      expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(originalRecords)
+      await drawer.getByRole('button', { name: uiText('Close', '关闭'), exact: true }).click()
+      await page.reload()
+      const persisted = await readColumns()
+      expect(persisted.filter(field => ['Single choice', 'Multiple choices'].includes(field.name)).map(field => ({ name: field.name, type: field.type, options: field.options })))
+        .toEqual([{ name: 'Single choice', type: 'select', options: ['Low', 'High'] }, { name: 'Multiple choices', type: 'multi-select', options: ['Low', 'High'] }])
+      const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
+      expect(windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
       expect(errors).toEqual([])
     })
   })

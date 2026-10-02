@@ -435,7 +435,8 @@
 .dbw-drawer-header h2 { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .dbw-drawer-header h2 { margin: 0; font-family: inherit; font-size: 18px; }
 .dbw-drawer-header p { margin: 4px 0 0; color: var(--dbw-muted); font-size: 11px; }
-.dbw-field-list { flex: 1; overflow: auto; padding: 8px 12px; }
+.dbw-field-drawer .dbw-drawer-header { flex-shrink: 0; }
+.dbw-field-list { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
 .dbw-field-row { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px; border-bottom: 1px solid var(--dbw-line); }
 .dbw-field-row.is-hidden { opacity: .62; }
 .dbw-field-grip { color: #adb1bd; cursor: grab; }
@@ -449,11 +450,14 @@
 .dbw-field-row-actions { display: flex; flex-wrap: wrap; flex: 0 0 72px; justify-content: flex-end; }
 .dbw-field-row-actions button { width: 22px; height: 24px; padding: 0; border: 0; background: transparent; color: #8b8f9b; cursor: pointer; }
 .dbw-field-row-actions button:disabled { opacity: .28; cursor: default; }
-.dbw-field-create { padding: 14px; border-top: 1px solid var(--dbw-line); }
+.dbw-field-create { flex-shrink: 0; max-height: calc(100dvh - 200px); overflow-y: auto; padding: 14px; border-top: 1px solid var(--dbw-line); }
 .dbw-add-field-button { width: 100%; padding: 10px; border: 1px dashed #cfd2dc; border-radius: 8px; background: #fff; color: var(--dbw-accent); cursor: pointer; font-weight: 650; }
-.dbw-field-create-form { display: grid; gap: 8px; }
-.dbw-field-create-form > input,
-.dbw-field-create-form > select { width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid var(--dbw-line); border-radius: 8px; background: #fff; }
+.dbw-field-create-form { display: grid; gap: 10px; }
+.dbw-field-create-label { display: grid; min-width: 0; gap: 6px; }
+.dbw-field-create-label > span:first-child { color: var(--dbw-text); font-size: var(--kb-type-label); font-weight: 650; line-height: 20px; }
+.dbw-field-create-hint { margin: 0; color: var(--kb-text-soft); font-size: var(--kb-type-label); font-weight: 400; line-height: 20px; overflow-wrap: anywhere; }
+.dbw-field-create-label > input,
+.dbw-field-create-label > select { width: 100%; min-height: 36px; padding: 6px 9px; border: 1px solid var(--dbw-line); border-radius: 8px; background: #fff; }
 .dbw-field-operation-status { margin: 0; padding: 10px 20px; color: var(--kb-text-soft); font-size: var(--kb-type-label); line-height: 1.6; }
 .dbw-field-submit-error { margin: 6px 0 0; color: var(--dbw-danger); font-size: var(--kb-type-label); line-height: 1.6; overflow-wrap: anywhere; }
 .dbw-field-create-form > .dbw-field-submit-error { margin: 0; }
@@ -712,8 +716,8 @@
 }
 
 .dbw-field-copy > input,
-.dbw-field-create-form > input,
-.dbw-field-create-form > select,
+.dbw-field-create-label > input,
+.dbw-field-create-label > select,
 .dbw-record-form input,
 .dbw-record-form select,
 .dbw-record-form textarea,
@@ -869,7 +873,7 @@
   .dbw-drawer,
   .dbw-dialog,
   .dbw-add-field-button,
-  .dbw-field-create-form > select,
+  .dbw-field-create-label > select,
   .dbw-record-form input,
   .dbw-record-form select,
   .dbw-record-form textarea
