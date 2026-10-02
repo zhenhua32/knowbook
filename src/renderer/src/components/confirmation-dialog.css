@@ -12,12 +12,14 @@
   overflow: auto;
   overflow-wrap: anywhere;
 }
+.app-confirm-dialog[open] { display: flex; flex-direction: column; }
 .app-confirm-dialog::backdrop { background: #14182480; backdrop-filter: blur(3px); }
+.app-confirm-dialog > header, .app-confirm-dialog > footer { flex-shrink: 0; }
 .app-confirm-dialog > header { display: flex; align-items: flex-start; gap: 12px; padding: 24px 24px 12px; }
-.app-confirm-dialog h2 { margin: 2px 0 0; font-size: 18px; line-height: 1.5; }
+.app-confirm-dialog h2 { min-width: 0; max-height: min(162px, 30dvh); overflow: auto; padding-inline: 2px; margin: 2px 0 0; font-size: 18px; line-height: 1.5; }
 .app-confirm-icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; font-weight: 700; color: var(--kb-danger); background: color-mix(in srgb, var(--kb-danger) 12%, transparent); }
 .app-confirm-warning .app-confirm-icon { color: var(--kb-accent-strong); background: var(--kb-accent-soft); }
-.app-confirm-body { padding: 0 24px 24px; }
+.app-confirm-body { flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 12px; padding: 0 24px 24px; }
 .app-confirm-body p { margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
 .app-confirm-body .app-confirm-note { margin-top: 12px; color: var(--kb-text-soft); }
 .app-confirm-body .app-confirm-error { margin-top: 16px; padding: 12px; border: 1px solid var(--kb-danger); border-radius: 8px; }
@@ -30,6 +32,7 @@
 .app-confirm-dialog footer > div { display: flex; flex-wrap: wrap; gap: 8px; }
 .app-confirm-dialog footer button { min-height: 36px; min-width: 76px; white-space: normal; }
 .app-confirm-dialog button:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 3px; }
+.app-confirm-dialog h2:focus-visible, .app-confirm-body:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: -2px; }
 @media (max-width: 480px) {
   .app-confirm-dialog > header { padding: 20px 20px 12px; }
   .app-confirm-body { padding: 0 20px 20px; }
