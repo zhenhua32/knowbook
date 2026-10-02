@@ -263,7 +263,18 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
               const completed = feedback && isCurrentAction(feedback.context) && matchesActionResult(feedback.context, item) ? feedback : null
               const rowAction = pending ?? completed?.context
               const feedbackId = rowAction ? `${id}-action-${index}` : undefined
-              const copyPending = pending?.action === 'copy'
+              const actionProps = (action: SearchAction) => {
+                const ownsFeedback = rowAction?.action === action
+                const isPending = pending?.action === action
+                return {
+                  // Keep the original trigger through a save and a concurrent
+                  // refresh, including a failure that arrives before results.
+                  disabled: !ownsFeedback && (Boolean(busy) || loading),
+                  'aria-disabled': isPending || (ownsFeedback && loading),
+                  'aria-busy': isPending,
+                  'aria-describedby': ownsFeedback ? feedbackId : undefined
+                }
+              }
               return <article className="workspace-search-result" key={JSON.stringify([item.documentId, item.blockId ?? null])}
               data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''}>
               <div className="workspace-search-result-head"><div className="workspace-search-result-heading">
@@ -275,10 +286,9 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
                 <div className="workspace-search-result-meta"><time dateTime={item.updatedAt} title={new Date(item.updatedAt).toLocaleString(isZh ? 'zh-CN' : 'en-US')}>{choose('更新于 ', 'Updated ')}{new Date(item.updatedAt).toLocaleDateString(isZh ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</time>
                   {item.tags.map((tag) => <span className="workspace-search-tag" key={tag}>#{tag}</span>)}</div>
                 <div className="workspace-search-result-actions">
-                  <button type="button" className="primary-button" disabled={Boolean(busy) || loading} aria-describedby={rowAction?.action === 'open' ? feedbackId : undefined} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
-                  {item.blockId && <button type="button" className="secondary-button" disabled={Boolean(busy) || loading} aria-describedby={rowAction?.action === 'document' ? feedbackId : undefined} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
-                  <button type="button" className="secondary-button" disabled={(Boolean(busy) && !copyPending) || loading} aria-disabled={copyPending} aria-busy={copyPending}
-                    aria-describedby={rowAction?.action === 'copy' ? feedbackId : undefined} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
+                  <button type="button" className="primary-button" {...actionProps('open')} onClick={() => { void runAction(item, 'open') }}>{item.blockId ? choose('定位内容块', 'Go to block') : choose('打开文档', 'Open document')}</button>
+                  {item.blockId && <button type="button" className="secondary-button" {...actionProps('document')} onClick={() => { void runAction(item, 'document') }}>{choose('打开文档', 'Open document')}</button>}
+                  <button type="button" className="secondary-button" {...actionProps('copy')} onClick={() => { void runAction(item, 'copy') }}>{choose('复制文档链接', 'Copy document link')}</button>
                 </div>
               </div>
               {rowAction && <p id={feedbackId} className="workspace-search-action-feedback" role={!pending && completed?.error ? 'alert' : 'status'}>

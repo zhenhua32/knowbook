@@ -484,6 +484,19 @@ function assertDescribedBy(button: HTMLButtonElement, feedback: HTMLElement): vo
     'The action exposes its own progress or result to assistive technology')
 }
 
+function assertPendingTrigger(document: Document, row: HTMLElement, trigger: HTMLButtonElement): void {
+  assert.equal(trigger.disabled, false, 'The current operation keeps its own native focus target')
+  assert.equal(trigger.getAttribute('aria-disabled'), 'true')
+  assert.equal(trigger.getAttribute('aria-busy'), 'true')
+  assertDescribedBy(trigger, ownerFeedback(document, row, 'status'))
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+    if (button === trigger) continue
+    assert.equal(button.disabled, true, 'The global lock still disables every other result action')
+    assert.notEqual(button.getAttribute('aria-disabled'), 'true', 'Only the current action carries the pending ARIA state')
+    assert.notEqual(button.getAttribute('aria-busy'), 'true')
+  }
+}
+
 test('result copy feedback stays with the exact row, retains its action, and rejects same-frame duplicate operations', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const items = [actionResult(), actionResult('document'), actionResult('block-a'), actionResult('block-b')]
@@ -558,10 +571,7 @@ test('result navigation feedback preserves filters on rejection, permits retry, 
     let row = actionRow(document, 'block-a')
     await act(async () => resultAction(row, 'open').click())
     assert.equal(blockOpens.length, 1); assert.equal(blockOpens[0].guard?.(), true)
-    assertDescribedBy(resultAction(row, 'open'), ownerFeedback(document, row, 'status'))
-    for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
-      assert.equal(button.disabled, true, 'Opening keeps native disabling for every result action')
-    }
+    assertPendingTrigger(document, row, resultAction(row, 'open'))
     reversed = true
     await act(async () => listener()); await tick()
     assert.equal(blockOpens[0].guard?.(), true, 'A save-triggered refresh must not cancel an otherwise current document jump')
@@ -687,5 +697,170 @@ test('same-query refresh keeps feedback with reordered identities but suppresses
     noFeedback()
     items = [...items, removed]; await refresh()
     noFeedback()
+  })
+})
+
+test('each result action retains only its own pending trigger through deferred refresh and reordering', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const cases: { kind: 'open' | 'document' | 'copy'; blockId: string | null }[] = [
+    { kind: 'open', blockId: null }, { kind: 'open', blockId: 'block-a' },
+    { kind: 'document', blockId: 'block-a' }, { kind: 'copy', blockId: 'block-a' }
+  ]
+  for (const scenario of cases) {
+    let listener: () => void = () => undefined, navigationGuard: (() => boolean) | undefined
+    const searches: { input: WorkspaceSearchInput; response: ReturnType<typeof deferred<WorkspaceSearchPage>> }[] = []
+    const navigation = deferred<boolean>(), clipboard = deferred<void>(), calls: string[] = []
+    const items = [actionResult(), actionResult('block-a'), actionResult('block-b'),
+      { ...actionResult('block-c'), documentId: 'other-doc', documentTitle: 'Other result', documentPath: 'Other/Result' }]
+    const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+      onOpenDocument: (_id: string, guard?: () => boolean) => {
+        calls.push('document'); navigationGuard = guard; return navigation.promise
+      }, onOpenBlock: (_id: string, _blockId: string, guard?: () => boolean) => {
+        calls.push('block'); navigationGuard = guard; return navigation.promise
+      } }
+    await withRenderer(api({ onWorkspaceMutated: (callback) => { listener = callback; return () => undefined },
+      searchWorkspace: (input) => {
+        const response = deferred<WorkspaceSearchPage>(); searches.push({ input, response }); return response.promise
+      }, writeClipboardText: () => { calls.push('copy'); return clipboard.promise }
+    }), async ({ render, document }) => {
+      const tick = () => act(async () => t.mock.timers.tick(200))
+      await render(<SearchPage {...common} />); await tick()
+      assert.equal(searches.length, 1)
+      await act(async () => searches[0].response.resolve(actionPage(searches[0].input, items)))
+      await act(async () => listener())
+      for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+        assert.equal(button.disabled, true, 'A refresh without an action owner retains ordinary native disabling')
+      }
+      await tick(); assert.equal(searches.length, 2)
+      await act(async () => searches[1].response.resolve(actionPage(searches[1].input, items)))
+      const row = actionRow(document, scenario.blockId), trigger = resultAction(row, scenario.kind)
+      await act(async () => {
+        trigger.focus(); trigger.click(); trigger.click()
+        resultAction(actionRow(document, 'block-c', 'other-doc'), 'copy').click()
+      })
+      assert.deepEqual(calls, [scenario.kind === 'copy' ? 'copy' : scenario.blockId && scenario.kind === 'open' ? 'block' : 'document'])
+      assertPendingTrigger(document, row, trigger)
+      assert.equal(document.activeElement === trigger, true)
+      if (scenario.kind !== 'copy') assert.equal(navigationGuard?.(), true)
+
+      await act(async () => listener())
+      assert.equal(document.querySelector('.workspace-search-results-panel')!.getAttribute('aria-busy'), 'true')
+      assertPendingTrigger(document, row, trigger)
+      assert.equal(document.activeElement === trigger, true, 'A same-input refresh cannot disable the pending trigger')
+      await tick(); assert.equal(searches.length, 3)
+      await act(async () => trigger.click())
+      assert.equal(calls.length, 1, 'The retained trigger cannot repeat its operation while results are loading')
+      await act(async () => {
+        if (scenario.kind === 'copy') clipboard.reject(new Error('Copy failed during refresh'))
+        else if (scenario.blockId && scenario.kind === 'open') navigation.reject(new Error('Open failed during refresh'))
+        else navigation.resolve(false)
+      })
+      assert.equal(document.querySelector('.workspace-search-results-panel')!.getAttribute('aria-busy'), 'true')
+      assert.equal(trigger.disabled, false, 'Settling an action cannot remove its focus target while a refresh is still pending')
+      assert.equal(trigger.getAttribute('aria-disabled'), 'true', 'A completed action is still unavailable until the search finishes')
+      assert.notEqual(trigger.getAttribute('aria-busy'), 'true', 'Completed feedback must not continue announcing action progress')
+      assert.equal(document.activeElement === trigger, true)
+      assertDescribedBy(trigger, ownerFeedback(document, row, 'alert'))
+      for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+        if (button !== trigger) assert.equal(button.disabled, true, 'Only the exact completed action is retained during refresh')
+      }
+      await act(async () => trigger.click())
+      assert.equal(calls.length, 1, 'A completed retained trigger cannot start a fresh action while the search is pending')
+      await act(async () => searches[2].response.resolve(actionPage(searches[2].input, [...items].reverse())))
+      const movedRow = actionRow(document, scenario.blockId)
+      assert.equal(resultAction(movedRow, scenario.kind) === trigger, true, 'Reordering keeps the actual trigger node')
+      assert.equal(document.activeElement === trigger, true)
+      if (scenario.kind !== 'copy') assert.equal(navigationGuard?.(), true, 'Refreshing a draft keeps the current navigation guard valid')
+      assert.equal(trigger.disabled, false)
+      assert.notEqual(trigger.getAttribute('aria-disabled'), 'true')
+      assert.notEqual(trigger.getAttribute('aria-busy'), 'true')
+      assert.equal(document.activeElement === trigger, true)
+      assertDescribedBy(trigger, ownerFeedback(document, movedRow, 'alert'))
+    })
+  }
+})
+
+test('pending triggers honor moved focus, retry failures, query cancellation and obsolete copy-source locking', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let listener: () => void = () => undefined
+  let items = [actionResult(), actionResult('block-a'), actionResult('block-b')], navigationEffects = 0
+  const searches: WorkspaceSearchInput[] = []
+  const opens: { response: ReturnType<typeof deferred<boolean>>; guard?: () => boolean }[] = []
+  const copies: { text: string; response: ReturnType<typeof deferred<void>> }[] = []
+  const open = (_id: string, guard?: () => boolean) => {
+    const response = deferred<boolean>(); opens.push({ response, guard })
+    return response.promise.then((allowed) => {
+      if (allowed && (guard?.() ?? true)) { navigationEffects++; return true }
+      return false
+    })
+  }
+  const common = { isActive: true, isZh: false, documentTree: [], request: { query: 'needle', sequence: 1 },
+    onOpenDocument: open, onOpenBlock: (_id: string, _blockId: string, guard?: () => boolean) => open(_id, guard) }
+  await withRenderer(api({ onWorkspaceMutated: (callback) => { listener = callback; return () => undefined },
+    searchWorkspace: async (input) => { searches.push(input); return actionPage(input, items.map((item) => ({ ...item }))) },
+    writeClipboardText: (text) => {
+      const response = deferred<void>(); copies.push({ text, response }); return response.promise
+    }
+  }), async ({ render, document, window }) => {
+    const tick = () => act(async () => t.mock.timers.tick(200))
+    const noFeedback = () => assert.equal(document.querySelectorAll('.workspace-search-action-feedback').length, 0)
+    const assertExpiredLock = () => {
+      for (const button of document.querySelectorAll<HTMLButtonElement>('.workspace-search-result-actions button')) {
+        assert.equal(button.disabled, true, 'The invalidated owner cannot release a live operation')
+        assert.notEqual(button.getAttribute('aria-disabled'), 'true')
+        assert.notEqual(button.getAttribute('aria-busy'), 'true')
+      }
+      noFeedback()
+    }
+    await render(<SearchPage {...common} />); await tick()
+    const input = document.querySelector<HTMLInputElement>('input[type="search"]')!
+    const row = actionRow(document, 'block-a'), trigger = resultAction(row, 'open')
+    await act(async () => { trigger.focus(); trigger.click() })
+    assertPendingTrigger(document, row, trigger)
+    await act(async () => input.focus())
+    await act(async () => opens[0].response.reject(new Error('Open failed')))
+    assert.equal(document.activeElement === input, true, 'A rejected operation must preserve the newly focused control')
+    assert.match(ownerFeedback(document, row, 'alert').textContent!, /Open failed/)
+    await act(async () => { trigger.focus(); trigger.click(); trigger.click() })
+    assert.equal(opens.length, 2); assertPendingTrigger(document, row, trigger)
+    await act(async () => opens[1].response.resolve(false))
+    assert.match(ownerFeedback(document, row, 'alert').textContent!, /Your search is preserved/)
+    assert.equal(document.activeElement === trigger, true)
+    await act(async () => trigger.click())
+    assert.equal(opens.length, 3); assertPendingTrigger(document, row, trigger)
+    await act(async () => {
+      input.focus()
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(input, 'changed query')
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'changed query', inputType: 'insertText' }))
+    })
+    assert.equal(searches.length, 1, 'The new query has not been submitted to the debounced API')
+    assert.equal(opens[2].guard?.(), false)
+    assertExpiredLock()
+    await tick(); assertExpiredLock()
+    await act(async () => opens[2].response.resolve(true))
+    assert.equal(navigationEffects, 0, 'A late successful open cannot navigate after the query changed')
+    noFeedback(); assert.equal(document.activeElement === input, true)
+    assert.equal(input.value, 'changed query')
+
+    const copy = resultAction(actionRow(document, 'block-b'), 'copy')
+    await act(async () => { copy.focus(); copy.click() })
+    assertPendingTrigger(document, actionRow(document, 'block-b'), copy)
+    await act(async () => input.focus())
+    items = items.map((item) => ({ ...item, documentTitle: 'Renamed result', documentPath: 'Moved/Renamed result' }))
+    await act(async () => listener()); await tick()
+    assertExpiredLock(); assert.equal(document.activeElement === input, true)
+    await act(async () => resultAction(actionRow(document, 'block-b'), 'copy').click())
+    assert.equal(copies.length, 1)
+    await act(async () => copies[0].response.resolve())
+    noFeedback()
+    const retry = resultAction(actionRow(document, 'block-b'), 'copy')
+    assert.equal(retry.disabled, false)
+    await act(async () => { retry.focus(); retry.click() })
+    assert.equal(copies.length, 2); assert.equal(copies[1].text, '[Renamed result](/Moved/Renamed%20result.md)')
+    assertPendingTrigger(document, actionRow(document, 'block-b'), retry)
+    await act(async () => input.focus())
+    await act(async () => copies[1].response.reject(new Error('Current copy failed')))
+    assert.match(ownerFeedback(document, actionRow(document, 'block-b'), 'alert').textContent!, /Current copy failed/)
+    assert.equal(document.activeElement === input, true)
   })
 })
