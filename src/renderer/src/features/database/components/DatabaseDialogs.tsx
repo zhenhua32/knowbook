@@ -16,6 +16,8 @@ export function DatabaseFormDialog({
   pendingLabel,
   error,
   withDescription = false,
+  returnFocusTarget,
+  canReturnFocus,
   onCancel,
   onDescriptionChange,
   onNameChange,
@@ -32,6 +34,8 @@ export function DatabaseFormDialog({
   pendingLabel?: string
   error?: string | null
   withDescription?: boolean
+  returnFocusTarget?: HTMLElement | null
+  canReturnFocus?: () => boolean
   onCancel: () => void
   onDescriptionChange: (value: string) => void
   onNameChange: (value: string) => void
@@ -39,13 +43,13 @@ export function DatabaseFormDialog({
 }) {
   const dialogRef = useRef<HTMLFormElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
-  useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: inputRef, onClose: onCancel, open })
+  useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: inputRef, onClose: onCancel, open, returnFocusTarget, canReturnFocus })
   if (!open) return null
 
   return (
     <div className="dbw-modal-layer" role="presentation">
       <button aria-label={text.close} className="dbw-modal-scrim" onClick={onCancel} type="button" />
-      <form aria-modal="true" className="dbw-dialog" onSubmit={(event) => { event.preventDefault(); if (!busy && !blocked && name.trim()) onSubmit() }} ref={dialogRef} role="dialog" tabIndex={-1}>
+      <form aria-label={title} aria-modal="true" className="dbw-dialog" onSubmit={(event) => { event.preventDefault(); if (!busy && !blocked && name.trim()) onSubmit() }} ref={dialogRef} role="dialog" tabIndex={-1}>
         <header><h2>{title}</h2><button aria-label={text.close} className="dbw-icon-button" onClick={onCancel} type="button">×</button></header>
         <label><span>{text.name}</span><input onChange={(event) => { if (!busy) onNameChange(event.target.value) }} readOnly={busy} ref={inputRef} value={name} /></label>
         {withDescription ? <label><span>{text.description}</span><textarea onChange={(event) => { if (!busy) onDescriptionChange(event.target.value) }} readOnly={busy} rows={3} value={description} /></label> : null}

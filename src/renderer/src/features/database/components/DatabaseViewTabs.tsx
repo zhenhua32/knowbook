@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState, type RefObject } from 'react'
 import type { DatabaseSavedView, DatabaseSavedViewLayoutMode } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 
 export function DatabaseViewTabs({
   activeViewId,
   dirty,
+  newViewTriggerRef,
   savedViews,
   text,
   onCreateView,
@@ -15,15 +16,18 @@ export function DatabaseViewTabs({
 }: {
   activeViewId: string
   dirty: boolean
+  newViewTriggerRef?: RefObject<HTMLElement | null>
   savedViews: DatabaseSavedView[]
   text: DatabaseWorkspaceText
-  onCreateView: (layout: DatabaseSavedViewLayoutMode) => void
+  onCreateView: (layout: DatabaseSavedViewLayoutMode, returnTarget: HTMLElement | null) => void
   onDeleteView: (view: DatabaseSavedView) => void
   onMoveView: (viewId: string, targetViewId: string) => void
-  onRenameView: (view: DatabaseSavedView) => void
+  onRenameView: (view: DatabaseSavedView, returnTarget: HTMLElement) => void
   onSelectView: (viewId: string) => void
 }) {
   const [draggingViewId, setDraggingViewId] = useState<string | null>(null)
+  const localTriggerRef = useRef<HTMLElement | null>(null)
+  const triggerRef = newViewTriggerRef ?? localTriggerRef
   return (
     <nav aria-label={text.newView} className="dbw-view-tabs">
       <div className="dbw-view-tab-list">
@@ -51,7 +55,7 @@ export function DatabaseViewTabs({
               aria-current={activeViewId === view.id ? 'page' : undefined}
               className="dbw-view-tab"
               onClick={() => onSelectView(view.id)}
-              onDoubleClick={() => onRenameView(view)}
+              onDoubleClick={(event) => onRenameView(view, event.currentTarget)}
               title={view.name}
               type="button"
             >
@@ -71,11 +75,11 @@ export function DatabaseViewTabs({
       </div>
 
       <details className="dbw-new-view-menu">
-        <summary><span aria-hidden="true">＋</span>{text.newView}</summary>
+        <summary ref={triggerRef}><span aria-hidden="true">＋</span>{text.newView}</summary>
         <div className="dbw-popover dbw-layout-menu">
-          <button onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('table') }} type="button"><LayoutIcon layout="table" />{text.table}</button>
-          <button onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('board') }} type="button"><LayoutIcon layout="board" />{text.board}</button>
-          <button onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('cards') }} type="button"><LayoutIcon layout="cards" />{text.cards}</button>
+          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('table', target) }} type="button"><LayoutIcon layout="table" />{text.table}</button>
+          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('board', target) }} type="button"><LayoutIcon layout="board" />{text.board}</button>
+          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('cards', target) }} type="button"><LayoutIcon layout="cards" />{text.cards}</button>
         </div>
       </details>
     </nav>

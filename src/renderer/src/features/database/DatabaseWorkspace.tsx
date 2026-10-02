@@ -58,6 +58,13 @@ type DatabaseWorkspaceProps = {
 }
 
 type FormMode = 'create-database' | 'edit-database' | 'create-view' | 'rename-view' | null
+type FormFocusLease = {
+  session: number
+  target: HTMLElement | null
+  source: { id: string | undefined }
+  closedView: { sourceId: string | undefined; viewId: string } | null
+  approved: boolean
+}
 type ConfirmTarget =
   | { kind: 'database'; id: string; name: string }
   | { kind: 'view'; id: string; name: string }
@@ -116,18 +123,26 @@ export function DatabaseWorkspace({
   const formSessionRef = useRef(0)
   const [formSession, setFormSession] = useState(0)
   const formOwnerRef = useRef({ source: fieldSourceSession, view: viewSession })
+  const newViewTriggerRef = useRef<HTMLElement | null>(null)
+  const formFocusLeaseRef = useRef<FormFocusLease | null>(null)
+  const formFocusLease = formFocusLeaseRef.current
   const formRequests = useRef(new Map<number, symbol>())
   const [pendingForms, setPendingForms] = useState(() => new Set<number>())
   const [formError, setFormError] = useState<string | null>(null)
-  const closeForm = (expectedSession = formSessionRef.current) => {
+  const closeForm = (expectedSession = formSessionRef.current, restoreFocus = true, completedView = formOwnerRef.current.view) => {
     if (formSessionRef.current !== expectedSession) return
+    const lease = formFocusLeaseRef.current
+    if (lease?.session === expectedSession) {
+      lease.approved = restoreFocus && fieldSourceSessionRef.current === lease.source && viewSessionRef.current === completedView
+      lease.closedView = viewSessionRef.current
+    }
     formSessionRef.current++
     setFormMode(null)
     setFormError(null)
   }
   useLayoutEffect(() => {
     if (formMode !== 'create-view' && formMode !== 'rename-view') return
-    if (formOwnerRef.current.source !== fieldSourceSession || formOwnerRef.current.view !== viewSession) closeForm(formSession)
+    if (formOwnerRef.current.source !== fieldSourceSession || formOwnerRef.current.view !== viewSession) closeForm(formSession, false)
   }, [fieldSourceSession, formMode, formSession, viewSession])
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
   const [bulkFieldId, setBulkFieldId] = useState('')
@@ -282,9 +297,10 @@ export function DatabaseWorkspace({
     })
   }
 
-  const beginForm = () => {
+  const beginForm = (returnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null) => {
     const session = ++formSessionRef.current
     formOwnerRef.current = { source: fieldSourceSessionRef.current, view: viewSessionRef.current }
+    formFocusLeaseRef.current = { session, target: returnTarget, source: fieldSourceSessionRef.current, closedView: null, approved: false }
     setFormSession(session)
     setFormError(null)
   }
@@ -294,8 +310,8 @@ export function DatabaseWorkspace({
     setFormName(mode === 'edit-database' ? currentSource.name : '')
     setFormDescription(mode === 'edit-database' ? currentSource.description : '')
   }
-  const openViewForm = (mode: 'create-view' | 'rename-view', layout: DatabaseSavedViewLayoutMode, view?: DatabaseSavedView) => {
-    beginForm()
+  const openViewForm = (mode: 'create-view' | 'rename-view', layout: DatabaseSavedViewLayoutMode, view?: DatabaseSavedView, returnTarget?: HTMLElement | null) => {
+    beginForm(returnTarget === undefined && mode === 'create-view' ? newViewTriggerRef.current : returnTarget)
     setFormMode(mode)
     setFormViewLayout(layout)
     setFormViewId(view?.id ?? null)
@@ -370,7 +386,7 @@ export function DatabaseWorkspace({
           // after the user has edited or left this new view.
           activateCreatedView(saved)
         }
-        closeForm(formSession)
+        closeForm(formSession, true, completedViewSession)
       }
       try {
         await refresh()
@@ -593,7 +609,8 @@ export function DatabaseWorkspace({
       <DatabaseViewTabs
         activeViewId={activeViewId}
         dirty={dirty}
-        onCreateView={(layout) => openViewForm('create-view', layout)}
+        newViewTriggerRef={newViewTriggerRef}
+        onCreateView={(layout, returnTarget) => openViewForm('create-view', layout, undefined, returnTarget)}
         onDeleteView={(view) => {
           if (savedViews.length <= 1) { onMessage(locale.startsWith('zh') ? '数据库至少需要保留一个视图。' : 'A database must keep at least one view.'); return }
           setConfirmTarget({ kind: 'view', id: view.id, name: view.name })
@@ -611,7 +628,7 @@ export function DatabaseWorkspace({
             await refresh(activeViewId)
           })
         }}
-        onRenameView={(view) => openViewForm('rename-view', view.config.layout, view)}
+        onRenameView={(view, returnTarget) => openViewForm('rename-view', view.config.layout, view, returnTarget)}
         onSelectView={selectView}
         savedViews={savedViews}
         text={text}
@@ -625,7 +642,7 @@ export function DatabaseWorkspace({
         onOpenFields={() => setFieldDrawerOpen(true)}
         onReset={() => replaceDraft(baseConfig)}
         onSave={() => void saveView()}
-        onSaveAs={() => openViewForm('create-view', draft.layout)}
+        onSaveAs={(returnTarget) => openViewForm('create-view', draft.layout, undefined, returnTarget)}
         recordCount={filteredRecords.length}
         text={text}
       />
@@ -701,6 +718,10 @@ export function DatabaseWorkspace({
       <DatabaseRecordDrawer documents={catalogDocuments} fields={fields} key={`record-${currentSource.id}`} onClose={() => setOpenRecordId(null)} onDelete={(record) => setConfirmTarget({ kind: 'record', id: record.id, name: record.title })} onOpenDocument={onOpenDocument} onSave={saveRecord} open={Boolean(openRecord)} record={openRecord} text={text} />
       <DatabaseFormDialog blocked={formMode === 'rename-view' && !pendingForms.has(formSession) && savingViews.has(JSON.stringify([currentSource.id, formViewId]))}
         busy={pendingForms.has(formSession)} description={formDescription} error={formError} key={formSession} name={formName}
+        canReturnFocus={() => Boolean(formFocusLease?.approved && mounted.current
+          && fieldSourceSessionRef.current === formFocusLease.source && viewSessionRef.current === formFocusLease.closedView
+          && formSessionRef.current === formFocusLease.session + 1)}
+        returnFocusTarget={formFocusLease?.target}
         onCancel={() => closeForm(formSession)}
         onDescriptionChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormDescription(value) }}
         onNameChange={(value) => { if (formSessionRef.current === formSession && !formRequests.current.has(formSession)) setFormName(value) }}

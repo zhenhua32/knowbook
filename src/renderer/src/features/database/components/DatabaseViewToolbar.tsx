@@ -32,7 +32,7 @@ export function DatabaseViewToolbar({
   onOpenFields: () => void
   onReset: () => void
   onSave: () => void
-  onSaveAs: () => void
+  onSaveAs: (returnTarget: HTMLElement) => void
 }) {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const filterRules = config.filters.rules.filter((rule): rule is DatabaseFilterRule => !('rules' in rule))
@@ -182,7 +182,7 @@ export function DatabaseViewToolbar({
         {dirty ? <button className="dbw-quiet-button" onClick={onReset} type="button">{text.resetView}</button> : null}
         <button aria-busy={saving} aria-disabled={saving || !dirty} className="dbw-save-button" disabled={!dirty && !saving}
           onClick={() => { if (!saving) onSave() }} type="button">{saving ? text.saving : dirty ? text.saveChanges : text.saved}</button>
-        <button aria-label={text.saveAsView} className="dbw-save-as-button" disabled={saving} onClick={onSaveAs} type="button">⌄</button>
+        <button aria-label={text.saveAsView} className="dbw-save-as-button" disabled={saving} onClick={(event) => onSaveAs(event.currentTarget)} type="button">⌄</button>
       </div>
     </div>
   )
