@@ -28,7 +28,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     createAndContinue: '创建并继续添加', databaseSettings: '数据库设置', viewMenu: '视图菜单',
     saveAsView: '另存为新视图', resetView: '重置更改', failed: '操作失败，请重试。', saving: '正在保存…', creating: '正在创建…',
     savedRefreshFailed: '记录已保存，但列表刷新失败，请刷新数据库。',
-    fieldsSavedRefreshFailed: '字段已保存，但列表刷新失败，请刷新数据库。'
+    fieldsSavedRefreshFailed: '字段已保存，但列表刷新失败，请刷新数据库。',
+    viewsSavedRefreshFailed: '视图已保存，但列表刷新失败，请刷新数据库。'
   } : {
     workspace: 'Database workspace', allDocuments: 'All documents', system: 'System', custom: 'Custom databases',
     searchDatabase: 'Search databases…', noDatabases: 'No matching databases', newDatabase: 'New database', newDocument: 'New document', newRecord: 'New record',
@@ -57,7 +58,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     createAndContinue: 'Create and add another', databaseSettings: 'Database settings', viewMenu: 'View menu',
     saveAsView: 'Save as new view', resetView: 'Reset changes', failed: 'Something went wrong. Please try again.', saving: 'Saving…', creating: 'Creating…',
     savedRefreshFailed: 'The record was saved, but the list could not be refreshed. Refresh the database.',
-    fieldsSavedRefreshFailed: 'Field changes were saved, but the list could not be refreshed. Refresh the database.'
+    fieldsSavedRefreshFailed: 'Field changes were saved, but the list could not be refreshed. Refresh the database.',
+    viewsSavedRefreshFailed: 'The view was saved, but the list could not be refreshed. Refresh the database.'
   }
 }
 

@@ -1,5 +1,5 @@
 import type { AppMessageHandler } from '../../notify'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   DatabaseEntity,
   DatabaseField,
@@ -52,6 +52,7 @@ type DatabaseWorkspaceProps = {
   onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
   onRefresh: (databaseId?: string, preferredViewId?: string) => Promise<void>
+  onSavedView?: (view: DatabaseSavedView) => void
   onSelectedRecordIdsChange: (recordIds: string[]) => void
 }
 
@@ -79,6 +80,7 @@ export function DatabaseWorkspace({
   onMessage,
   onOpenDocument,
   onRefresh,
+  onSavedView,
   onSelectedRecordIdsChange
 }: DatabaseWorkspaceProps) {
   const text = useMemo(() => getDatabaseWorkspaceText(locale), [locale])
@@ -89,6 +91,19 @@ export function DatabaseWorkspace({
   const fieldSourceSessionRef = useRef({ id: currentSource?.id })
   if (fieldSourceSessionRef.current.id !== currentSource?.id) fieldSourceSessionRef.current = { id: currentSource?.id }
   const fieldSourceSession = fieldSourceSessionRef.current
+  const viewSessionRef = useRef({ sourceId: currentSource?.id, viewId: activeViewId })
+  if (viewSessionRef.current.sourceId !== currentSource?.id || viewSessionRef.current.viewId !== activeViewId) {
+    viewSessionRef.current = { sourceId: currentSource?.id, viewId: activeViewId }
+  }
+  const viewSession = viewSessionRef.current
+  const mounted = useRef(false)
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const viewSaveRequests = useRef(new Map<string, symbol>())
+  const [savingViews, setSavingViews] = useState(() => new Set<string>())
+  const viewSaveKey = JSON.stringify([currentSource?.id, activeViewId])
   const [fieldDrawerOpen, setFieldDrawerOpen] = useState(false)
   const [createRecordOpen, setCreateRecordOpen] = useState(false)
   const [openRecordId, setOpenRecordId] = useState<string | null>(null)
@@ -222,10 +237,19 @@ export function DatabaseWorkspace({
   }
 
   const switchSource = (databaseId: string) => {
+    if (databaseId !== currentSource.id) {
+      fieldSourceSessionRef.current = { ...fieldSourceSessionRef.current }
+      viewSessionRef.current = { ...viewSessionRef.current }
+    }
     onSelectedRecordIdsChange([])
     setOpenRecordId(null)
     onActiveViewIdChange('')
     onCurrentDatabaseIdChange(databaseId)
+  }
+
+  const selectView = (viewId: string) => {
+    if (viewId !== activeViewId) viewSessionRef.current = { ...viewSessionRef.current }
+    onActiveViewIdChange(viewId)
   }
 
   const createDocumentOrRecord = () => {
@@ -308,15 +332,39 @@ export function DatabaseWorkspace({
   }
 
   const saveView = async () => {
+    if (!mounted.current || viewSessionRef.current !== viewSession || viewSaveRequests.current.has(viewSaveKey)) return
     if (!activeView) {
       openViewForm('create-view', draft.layout)
       return
     }
-    await run(async () => {
+    const request = Symbol('save-view')
+    viewSaveRequests.current.set(viewSaveKey, request)
+    setSavingViews((current) => new Set(current).add(viewSaveKey))
+    const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
+    const ownsView = () => ownsSource() && viewSessionRef.current === viewSession
+    try {
       const updated = await window.knowbook.updateDatabaseSavedView({ viewId: activeView.id, ...legacyViewFields(draft), config: draft })
-      await refresh(updated.id)
-      markSaved(updated)
-    })
+      if (!ownsSource()) return
+      // The submitted snapshot is now on disk. Updating its baseline must not
+      // replace the cached draft or select a view the user has left.
+      onSavedView?.(updated)
+      try {
+        await refresh()
+      } catch {
+        if (ownsView()) onMessage(text.viewsSavedRefreshFailed, 'error')
+      }
+    } catch (error) {
+      if (ownsView()) reportError(error)
+    } finally {
+      if (viewSaveRequests.current.get(viewSaveKey) === request) {
+        viewSaveRequests.current.delete(viewSaveKey)
+        if (mounted.current) setSavingViews((current) => {
+          const next = new Set(current)
+          next.delete(viewSaveKey)
+          return next
+        })
+      }
+    }
   }
 
   const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => {
@@ -495,13 +543,14 @@ export function DatabaseWorkspace({
           })
         }}
         onRenameView={(view) => openViewForm('rename-view', view.config.layout, view)}
-        onSelectView={onActiveViewIdChange}
+        onSelectView={selectView}
         savedViews={savedViews}
         text={text}
       />
       <DatabaseViewToolbar
         config={draft}
         dirty={dirty}
+        saving={savingViews.has(viewSaveKey)}
         fields={fields}
         onChange={updateDraft}
         onOpenFields={() => setFieldDrawerOpen(true)}

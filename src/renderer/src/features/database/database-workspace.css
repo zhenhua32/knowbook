@@ -142,7 +142,9 @@
   box-shadow: 0 4px 12px rgba(98, 104, 220, 0.18);
 }
 .dbw-primary-button:not(:disabled):hover,
-.dbw-save-button:not(:disabled):hover { background: var(--dbw-accent-hover); }
+.dbw-save-button:not(:disabled):not([aria-disabled='true']):hover { background: var(--dbw-accent-hover); }
+.dbw-save-button[aria-busy='true'] { cursor: progress; }
+.dbw-save-as-button:disabled { opacity: .55; cursor: default; }
 .dbw-save-button:disabled { background: #eceef3; box-shadow: none; color: #8a8f9d; cursor: default; }
 .dbw-quiet-button,
 .dbw-open-document-button { border-color: var(--dbw-line); background: #fff; color: #545a69; }

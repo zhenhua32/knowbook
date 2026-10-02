@@ -2,7 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useLayoutEffect, useRef } from 'react'
 import '../features/database/database-workspace.css'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
+import type { DatabaseSavedView, DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import type { DatabaseDomainState, DatabaseWorkspaceBoardState } from '../types/appDomains'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
@@ -118,6 +118,19 @@ export function DatabasePage({
     })
   }, [])
 
+  const acknowledgeSavedView = useCallback((view: DatabaseSavedView) => {
+    const session = sourceSession.current.generation
+    const isCurrentSource = () => mounted.current && sourceSession.current.currentId === view.databaseId
+      && sourceSession.current.generation === session
+    if (!isCurrentSource()) return
+    latest.current.database.setDatabaseSavedViews((previous) => {
+      if (!isCurrentSource()) return previous
+      return previous.some((candidate) => candidate.id === view.id)
+        ? previous.map((candidate) => candidate.id === view.id ? view : candidate)
+        : [...previous, view]
+    })
+  }, [])
+
   const error = catalogError ?? database.databaseError
   const ready = catalogReady && database.databaseReady
   const recovery = error ? <RecoveryState compact={ready} title={ui.language === 'zh-CN' ? '数据库加载失败' : 'Unable to load database'}
@@ -145,6 +158,7 @@ export function DatabasePage({
       onMessage={onMessage}
       onOpenDocument={onOpenDocument}
       onRefresh={refreshWorkspace}
+      onSavedView={acknowledgeSavedView}
       onSelectedRecordIdsChange={database.setSelectedDatabaseEntityIds}
       savedViews={database.databaseSavedViews}
       selectedColumns={database.selectedDatabaseColumns}

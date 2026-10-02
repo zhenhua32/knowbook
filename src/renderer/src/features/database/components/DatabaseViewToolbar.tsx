@@ -12,6 +12,7 @@ import { LayoutIcon } from './DatabaseViewTabs'
 export function DatabaseViewToolbar({
   config,
   dirty,
+  saving = false,
   fields,
   recordCount,
   text,
@@ -23,6 +24,7 @@ export function DatabaseViewToolbar({
 }: {
   config: DatabaseViewConfigV1
   dirty: boolean
+  saving?: boolean
   fields: DatabaseField[]
   recordCount: number
   text: DatabaseWorkspaceText
@@ -178,8 +180,9 @@ export function DatabaseViewToolbar({
       <span className="dbw-record-count">{text.records(recordCount)}</span>
       <div className="dbw-save-actions">
         {dirty ? <button className="dbw-quiet-button" onClick={onReset} type="button">{text.resetView}</button> : null}
-        <button className="dbw-save-button" disabled={!dirty} onClick={onSave} type="button">{dirty ? text.saveChanges : text.saved}</button>
-        <button aria-label={text.saveAsView} className="dbw-save-as-button" onClick={onSaveAs} type="button">⌄</button>
+        <button aria-busy={saving} aria-disabled={saving || !dirty} className="dbw-save-button" disabled={!dirty && !saving}
+          onClick={() => { if (!saving) onSave() }} type="button">{saving ? text.saving : dirty ? text.saveChanges : text.saved}</button>
+        <button aria-label={text.saveAsView} className="dbw-save-as-button" disabled={saving} onClick={onSaveAs} type="button">⌄</button>
       </div>
     </div>
   )
