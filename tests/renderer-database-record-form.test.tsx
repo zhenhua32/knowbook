@@ -118,11 +118,17 @@ test('failed creation retains the complete draft and retries; only a successful 
       assert.equal(titleInput(document).value, 'New record')
       assert.equal(notesInput(document).value, 'Keep these notes')
       assert.equal(linked.value, 'document-1')
-      assert.equal(alertText(document), text.failed)
+      assert.equal(alertText(document), text.formFailed)
+      const alert = document.querySelector<HTMLElement>('[role="alert"]')!
+      assert.equal(alert.id.length > 0, true)
+      assert.equal(primaryButton(document).getAttribute('aria-describedby'), alert.id)
+      assert.equal(continueButton(document).getAttribute('aria-describedby'), alert.id)
       assert.equal(calls.cancel, 0)
       await act(async () => continueButton(document).click())
       assert.deepEqual(creates[1].draft, creates[0].draft)
       assert.equal(alertText(document), '', 'a retry clears the previous error')
+      assert.equal(primaryButton(document).hasAttribute('aria-describedby'), false)
+      assert.equal(continueButton(document).hasAttribute('aria-describedby'), false)
       await act(async () => creates[1].resolve(true))
       assert.equal(titleInput(document).value, '')
       assert.equal(notesInput(document).value, '')
@@ -140,7 +146,7 @@ test('a thrown create error stays generic and retrying a successful ordinary cre
     await fill(notesInput(document), 'Preserved property')
     await act(async () => primaryButton(document).click())
     await act(async () => creates[0].reject(new Error('secret IPC failure detail')))
-    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').failed)
+    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').formFailed)
     assert.equal(document.body.textContent!.includes('secret IPC failure detail'), false)
     assert.equal(titleInput(document).value, 'Preserved title')
     assert.equal(notesInput(document).value, 'Preserved property')
@@ -232,7 +238,7 @@ test('a failed save retains record edits and a successful retry closes only afte
     await act(async () => saves[0].resolve(false))
     assert.equal(titleInput(document).value, 'Edited record')
     assert.equal(notesInput(document).value, 'Edited notes')
-    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').failed)
+    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').formFailed)
     await act(async () => primaryButton(document).click())
     assert.deepEqual(saves[1].draft, saves[0].draft)
     await act(async () => saves[1].resolve(true))
@@ -262,7 +268,7 @@ test('saving locks all record controls and guards same-tick close, delete and do
     await act(async () => save.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
     assert.equal(calls.close, 0)
     await act(async () => saves[0].reject(new Error('private database error')))
-    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').failed)
+    assert.equal(alertText(document), getDatabaseWorkspaceText('en-US').formFailed)
     assert.equal(document.body.textContent!.includes('private database error'), false)
     assert.equal(titleInput(document).value, 'Locked record')
     assert.equal(save.disabled, false)
@@ -328,6 +334,137 @@ test('a same-record refresh followed by failure keeps the edited draft available
     assert.deepEqual(saves[1].draft, saves[0].draft)
     await act(async () => saves[1].resolve(true))
     assert.equal(calls.close, 1)
+  })
+})
+
+test('unsaved record edits survive a background refresh of the same record without moving input focus in both languages', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withForms(async ({ document, window, saves, renderDrawer, fill }) => {
+      const text = getDatabaseWorkspaceText(locale)
+      await renderDrawer({ text })
+      await fill(titleInput(document), 'Unsaved title')
+      await fill(notesInput(document), 'Unsaved notes')
+      const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+      await act(async () => { linked.value = ''; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      const focused = titleInput(document)
+      await act(async () => focused.focus())
+      await renderDrawer({ text, record: { ...recordA, title: 'Background title', fieldValues: { notes: 'Background notes' } },
+        fields: fields.map(field => ({ ...field, options: [...field.options] })) })
+      assert.equal(titleInput(document).value, 'Unsaved title')
+      assert.equal(notesInput(document).value, 'Unsaved notes')
+      assert.equal(linked.value, '')
+      assert.equal(document.activeElement === focused, true)
+      assert.equal(saves.length, 0, 'A refresh must not persist the local draft')
+      await act(async () => primaryButton(document).click())
+      assert.deepEqual(saves[0].draft, { title: 'Unsaved title', documentId: '', fieldValues: { notes: 'Unsaved notes' } })
+      await act(async () => saves[0].resolve(true))
+    })
+  }
+})
+
+test('a background refresh after a failed save keeps the whole retry draft and its localized recovery feedback', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withForms(async ({ document, window, saves, calls, renderDrawer, fill }) => {
+      const text = getDatabaseWorkspaceText(locale)
+      await renderDrawer({ text })
+      await fill(titleInput(document), 'Retry title')
+      await fill(notesInput(document), 'Retry notes')
+      const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+      await act(async () => { linked.value = ''; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+      await act(async () => primaryButton(document).click())
+      await act(async () => saves[0].reject(new Error('secret failed mutation')))
+      const focused = notesInput(document)
+      await act(async () => focused.focus())
+      await renderDrawer({ text, record: { ...recordA, title: 'Server title', fieldValues: { notes: 'Server notes' } },
+        fields: fields.map(field => ({ ...field, options: [...field.options] })) })
+      assert.equal(titleInput(document).value, 'Retry title')
+      assert.equal(notesInput(document).value, 'Retry notes')
+      assert.equal(linked.value, '')
+      assert.equal(document.activeElement === focused, true)
+      assert.equal(alertText(document), text.formFailed)
+      assert.equal(document.body.textContent!.includes('secret failed mutation'), false)
+      const alert = document.querySelector<HTMLElement>('[role="alert"]')!
+      assert.equal(alert.id.length > 0, true)
+      assert.equal(primaryButton(document).getAttribute('aria-describedby'), alert.id)
+      assert.equal(saves.length, 1)
+      assert.equal(calls.close, 0)
+      await act(async () => primaryButton(document).click())
+      assert.deepEqual(saves[1].draft, saves[0].draft)
+      assert.equal(alertText(document), '')
+      assert.equal(primaryButton(document).hasAttribute('aria-describedby'), false)
+      await act(async () => saves[1].resolve(true))
+      assert.equal(calls.close, 1)
+    })
+  }
+})
+
+test('pristine records still synchronize fresh props while different records and reopened sessions initialize a fresh draft', async () => {
+  for (const locale of ['zh-CN', 'en-US']) {
+    await withForms(async ({ document, saves, renderDrawer, fill }) => {
+      const text = getDatabaseWorkspaceText(locale)
+      await renderDrawer({ text })
+      const focused = titleInput(document)
+      await act(async () => focused.focus())
+      const refreshed = { ...recordA, title: 'Fresh server title', documentId: null, fieldValues: { notes: 'Fresh server notes' } }
+      await renderDrawer({ text, record: refreshed, fields: fields.map(field => ({ ...field, options: [...field.options] })) })
+      assert.equal(titleInput(document).value, 'Fresh server title')
+      assert.equal(notesInput(document).value, 'Fresh server notes')
+      assert.equal(document.querySelector<HTMLSelectElement>('.dbw-record-form select')!.value, '')
+      assert.equal(document.activeElement === focused, true, 'Refreshing a pristine value must not move focus')
+      assert.equal(saves.length, 0)
+
+      await fill(titleInput(document), 'Discard only on a new record')
+      await fill(notesInput(document), 'Local A notes')
+      await renderDrawer({ text, record: recordB })
+      assert.equal(titleInput(document).value, 'Record B')
+      assert.equal(notesInput(document).value, 'Original B')
+      assert.equal(document.querySelector<HTMLSelectElement>('.dbw-record-form select')!.value, 'document-1')
+      assert.equal(alertText(document), '')
+      await fill(titleInput(document), 'Local B edit')
+      await renderDrawer({ text, record: recordB, open: false })
+      await renderDrawer({ text, record: { ...recordB, title: 'Latest reopened B', documentId: null, fieldValues: { notes: 'Reopened notes' } } })
+      assert.equal(titleInput(document).value, 'Latest reopened B')
+      assert.equal(notesInput(document).value, 'Reopened notes')
+      assert.equal(document.querySelector<HTMLSelectElement>('.dbw-record-form select')!.value, '')
+      assert.equal(saves.length, 0)
+    })
+  }
+})
+
+test('schema refresh prunes removed field values and initializes added fields without replacing the remaining dirty record draft', async () => {
+  await withForms(async ({ document, window, saves, renderDrawer, fill }) => {
+    const removed: DatabaseField = { ...fields[0], id: 'removed', name: 'Removed field', sortOrder: 1 }
+    const added: DatabaseField = { ...fields[0], id: 'added', name: 'Added field', sortOrder: 1 }
+    await renderDrawer({ fields: [...fields, removed], record: { ...recordA, fieldValues: { notes: 'Original A', removed: 'Original removed value' } } })
+    await fill(titleInput(document), 'Schema-safe title')
+    await fill(notesInput(document), 'Schema-safe notes')
+    await fill(document.querySelector<HTMLInputElement>('input[aria-label="Removed field"]')!, 'Removed local value')
+    const linked = document.querySelector<HTMLSelectElement>('.dbw-record-form select')!
+    await act(async () => { linked.value = ''; linked.dispatchEvent(new window.Event('change', { bubbles: true })) })
+    const focused = titleInput(document)
+    await act(async () => focused.focus())
+    const newFields = [...fields.map(field => ({ ...field })), added]
+    await renderDrawer({ fields: newFields, record: { ...recordA, title: 'Remote title',
+      fieldValues: { notes: 'Remote notes', removed: 'Still present in an old snapshot', added: 'Initial added value' } } })
+    assert.equal(titleInput(document).value, 'Schema-safe title')
+    assert.equal(notesInput(document).value, 'Schema-safe notes')
+    assert.equal(linked.value, '')
+    assert.equal(document.querySelectorAll('input[aria-label="Removed field"]').length, 0)
+    const addedInput = document.querySelector<HTMLInputElement>('input[aria-label="Added field"]')!
+    assert.equal(addedInput.value, 'Initial added value')
+    assert.equal(document.activeElement === focused, true)
+    await fill(addedInput, 'Added local value')
+    await renderDrawer({ fields: newFields.map(field => ({ ...field })), record: { ...recordA,
+      fieldValues: { notes: 'Another remote value', added: 'Another added server value' } } })
+    assert.equal(titleInput(document).value, 'Schema-safe title')
+    assert.equal(notesInput(document).value, 'Schema-safe notes')
+    assert.equal(addedInput.value, 'Added local value')
+    assert.equal(document.activeElement === addedInput, true)
+    assert.equal(saves.length, 0)
+    await act(async () => primaryButton(document).click())
+    assert.deepEqual(saves[0].draft, { title: 'Schema-safe title', documentId: '',
+      fieldValues: { notes: 'Schema-safe notes', added: 'Added local value' } })
+    await act(async () => saves[0].resolve(true))
   })
 })
 

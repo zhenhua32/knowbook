@@ -1,16 +1,22 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
+import type { ElectronApplication } from 'playwright'
+import { writeFileSync } from 'node:fs'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 const sourceName = 'Editing reliability'
 
-async function seedDatabase(page: Page) {
-  const ids = await page.evaluate(async (name) => {
+async function seedDatabase(page: Page, language?: 'en-US' | 'zh-CN') {
+  const ids = await page.evaluate(async ({ name, language }) => {
     const database = await window.knowbook.createDocumentDatabase({ name, description: 'Reliable editing and save feedback.' })
     const field = await window.knowbook.createDocumentDatabaseColumn({ databaseId: database.id, name: 'Notes', type: 'text' })
     const record = await window.knowbook.createDatabaseEntity({ databaseId: database.id, title: 'Original record', fieldValues: { [field.id]: 'Saved note' } })
     const document = (await window.knowbook.getDocumentCatalog())[0]
+    if (language) {
+      await window.knowbook.saveSetting('ui.language', language)
+      await window.knowbook.saveSetting('appearance.theme', 'light')
+    }
     return { database: database.id, field: field.id, record: record.id, document: document.id }
-  }, sourceName)
+  }, { name: sourceName, language })
   await page.reload()
   await openSource(page)
   return ids
@@ -23,6 +29,89 @@ async function openSource(page: Page) {
   await page.locator('.dbw-source-list').getByRole('button', { name: new RegExp(sourceName) }).click()
   await expect(page.locator('.dbw-source-trigger')).toContainText(sourceName)
   await expect(page.locator('.dbw-table')).toBeVisible()
+}
+
+async function setRecordFailure(app: ElectronApplication, databaseId: string, enabled: boolean) {
+  await app.evaluate(({ app }, { databaseId, enabled }) => {
+    const { createRequire } = process.getBuiltinModule('node:module')!
+    const { join } = process.getBuiltinModule('node:path')!
+    const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
+    const database = new Database(join(app.getPath('userData'), 'storage', 'knowbook.db'), { fileMustExist: true })
+    try {
+      database.exec('DROP TRIGGER IF EXISTS knowbook_e2e_record_create_failure')
+      database.exec('DROP TRIGGER IF EXISTS knowbook_e2e_record_update_failure')
+      if (enabled) {
+        const id = databaseId.replace(/'/g, "''")
+        database.exec("CREATE TRIGGER knowbook_e2e_record_create_failure BEFORE INSERT ON database_entities WHEN NEW.database_id = '" + id +
+          "' AND NEW.title = 'Retained draft' BEGIN SELECT RAISE(ABORT, 'The isolated record creation is temporarily unavailable.'); END")
+        database.exec("CREATE TRIGGER knowbook_e2e_record_update_failure BEFORE UPDATE ON database_entities WHEN NEW.database_id = '" + id +
+          "' AND NEW.title = 'Saved after retry' BEGIN SELECT RAISE(ABORT, 'The isolated record update is temporarily unavailable.'); END")
+      }
+    } finally { database.close() }
+  }, { databaseId, enabled })
+}
+
+async function refreshCatalogThroughRealMutation(page: Page, app: ElectronApplication, scope: Locator) {
+  const before = await app.evaluate(() => Number(process.env.KNOWBOOK_DB_EDIT_CATALOG_READS))
+  // The production captured-document handler emits workspace-mutated; Shell
+  // then reads HomeData and the paged catalog without navigating away.
+  const created = await page.evaluate(() => window.knowbook.createQuickNote({
+    title: 'Background catalog refresh', content: 'Isolated catalog refresh probe.', parentId: null
+  }))
+  await expect.poll(() => app.evaluate(() => Number(process.env.KNOWBOOK_DB_EDIT_CATALOG_READS))).toBeGreaterThan(before)
+  await expect(scope.getByLabel(/Linked document|关联文档/).locator(`option[value="${created.id}"]`)).toHaveCount(1)
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  return created.id
+}
+
+async function tabTo(page: Page, target: Locator, limit = 16) {
+  let reached = false
+  for (let step = 0; step < limit; step++) {
+    await page.keyboard.press('Tab')
+    const state = await target.evaluate(element => ({ reached: document.activeElement === element, tag: document.activeElement?.tagName }))
+    reached = state.reached
+    if (reached || state.tag === 'BODY') break
+  }
+  expect(reached).toBe(true)
+  await expect(target).toBeFocused()
+}
+
+async function expectDescribedFailure(scope: Locator, button: Locator) {
+  const alert = scope.getByRole('alert')
+  await expect(alert).toHaveCount(1)
+  await expect(alert).toHaveText(uiText('Could not save. Your input has been kept. Try again.', '保存失败，输入已保留，可以重试。'))
+  await expect(alert).not.toContainText(/SqliteError|Error invoking|remote method|temporarily unavailable/i)
+  const alertId = await alert.getAttribute('id')
+  expect(alertId).toBeTruthy()
+  const describedIds = (await button.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)
+  expect(describedIds).toContain(alertId)
+}
+
+async function recordDraft(page: Page, app: ElectronApplication, testInfo: TestInfo, scope: Locator, phase: string) {
+  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
+    visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable(), bounds: window.getBounds()
+  })))
+  expect(windows.length).toBeGreaterThan(0)
+  expect(windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
+  const state = await scope.evaluate(element => ({
+    focused: document.activeElement === element, ariaBusy: element.getAttribute('aria-busy'),
+    controls: Array.from(element.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')).map(input => ({
+      label: input.getAttribute('aria-label') ?? input.closest('label')?.querySelector('span')?.textContent,
+      value: input.value, disabled: input.disabled, focused: document.activeElement === input
+    })),
+    alerts: Array.from(element.querySelectorAll('[role=alert]')).map(alert => ({ id: alert.id, text: alert.textContent })),
+    buttons: Array.from(element.querySelectorAll<HTMLButtonElement>('footer button')).map(button => ({
+      text: button.textContent, disabled: button.disabled, describedBy: button.getAttribute('aria-describedby'), focused: document.activeElement === button
+    }))
+  }))
+  const probe = await app.evaluate(() => ({
+    requests: JSON.parse(process.env.KNOWBOOK_DB_EDIT_REQUESTS!), failures: JSON.parse(process.env.KNOWBOOK_DB_EDIT_FAILURES!),
+    catalogReads: Number(process.env.KNOWBOOK_DB_EDIT_CATALOG_READS)
+  }))
+  const path = testInfo.outputPath(`${phase}.json`)
+  writeFileSync(path, JSON.stringify({ windows, state, probe }, null, 2))
+  await testInfo.attach(phase, { path, contentType: 'application/json' })
+  await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
 }
 
 async function expectReadable(locator: Locator) {
@@ -87,36 +176,61 @@ test('database text edits respect IME and Escape without saving discarded values
   })
 })
 
-test('record forms retain failed drafts, reject duplicate saves and remain readable in both themes @electron', async ({}, testInfo) => {
+for (const language of ['en-US', 'zh-CN'] as const) {
+test(`record forms retain dirty and failed drafts through real catalog refreshes in ${language} @electron`, async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
   await withElectronApp(async ({ page, app }) => {
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     await page.setViewportSize({ width: 960, height: 800 })
-    const ids = await seedDatabase(page)
+    const ids = await seedDatabase(page, language)
+    const originalRecords = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)
     await app.evaluate(({ ipcMain }) => {
       type Handler = (event: unknown, input: unknown) => unknown
-      type Pending = { kind: string; event: unknown; input: unknown; original: Handler; resolve: (value: unknown) => void; reject: (error: Error) => void }
+      type Pending = { kind: string; event: unknown; input: unknown; original: Handler; settled: boolean; resolve: (value: unknown) => void; reject: (error: Error) => void }
       const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
       const pending: Pending[] = []
+      const failures: string[] = []
       process.env.KNOWBOOK_DB_EDIT_REQUESTS = '[]'
+      process.env.KNOWBOOK_DB_EDIT_FAILURES = '[]'
+      process.env.KNOWBOOK_DB_EDIT_CATALOG_READS = '0'
       for (const kind of ['create', 'update']) {
         const channel = `knowbook:${kind}-database-entity`
         const original = handlers.get(channel)!
         ipcMain.removeHandler(channel)
         ipcMain.handle(channel, (event, input) => new Promise((resolve, reject) => {
-          pending.push({ kind, event, input, original, resolve, reject })
+          pending.push({ kind, event, input, original, settled: false, resolve, reject })
           process.env.KNOWBOOK_DB_EDIT_REQUESTS = JSON.stringify(pending.map(request => ({ kind: request.kind, input: request.input })))
         }))
       }
-      ipcMain.on('knowbook:test-db-edit-settle', (_event, result: { index: number; fail: boolean }) => {
+      const readCatalog = handlers.get('knowbook:get-document-catalog-page')!
+      if (!readCatalog) throw new Error('The real paged catalog handler is required')
+      ipcMain.removeHandler('knowbook:get-document-catalog-page')
+      ipcMain.handle('knowbook:get-document-catalog-page', async (event, input) => {
+        const result = await readCatalog(event, input)
+        process.env.KNOWBOOK_DB_EDIT_CATALOG_READS = String(Number(process.env.KNOWBOOK_DB_EDIT_CATALOG_READS) + 1)
+        return result
+      })
+      ipcMain.on('knowbook:test-db-edit-settle', (_event, result: { index: number }) => {
         const request = pending[result.index]
-        if (result.fail) request.reject(new Error('The isolated record save failed.'))
-        else Promise.resolve(request.original(request.event, request.input)).then(request.resolve, request.reject)
+        if (!request || request.settled) throw new Error('No unsettled real record mutation is pending')
+        request.settled = true
+        // The original SQLite handler produces both the trigger failure and
+        // successful retry; Inspector evaluation returns before settlement.
+        setImmediate(async () => {
+          try { request.resolve(await request.original(request.event, request.input)) }
+          catch (error) {
+            const reason = error instanceof Error ? error : new Error(String(error))
+            failures.push(reason.message)
+            process.env.KNOWBOOK_DB_EDIT_FAILURES = JSON.stringify(failures)
+            request.reject(reason)
+          }
+        })
       })
     })
     const requests = () => app.evaluate(() => JSON.parse(process.env.KNOWBOOK_DB_EDIT_REQUESTS!))
-    const settle = (index: number, fail: boolean) => app.evaluate(({ ipcMain }, result) => { ipcMain.emit('knowbook:test-db-edit-settle', null, result) }, { index, fail })
+    const settle = (index: number) => app.evaluate(({ ipcMain }, result) => { ipcMain.emit('knowbook:test-db-edit-settle', null, result) }, { index })
+    await setRecordFailure(app, ids.database, true)
     await page.getByRole('button', { name: uiText('New record', '新建记录') }).click()
     const dialog = page.getByRole('dialog', { name: uiText('Create record', '新建记录') })
     const title = dialog.getByLabel(/Title|标题/)
@@ -124,7 +238,19 @@ test('record forms retain failed drafts, reject duplicate saves and remain reada
     await title.fill('Retained draft')
     await note.fill('Retained property')
     await dialog.getByLabel(/Linked document|关联文档/).selectOption(ids.document)
-    await dialog.getByRole('button', { name: uiText('Create and add another', '创建并继续添加'), exact: true }).click()
+    await note.click()
+    await expect(note).toBeFocused()
+    const alternateDocument = await refreshCatalogThroughRealMutation(page, app, dialog)
+    await recordDraft(page, app, testInfo, dialog, `${language}-create-dirty-catalog-refresh`)
+    await expect(title).toHaveValue('Retained draft')
+    await expect(note).toHaveValue('Retained property')
+    await expect(dialog.getByLabel(/Linked document|关联文档/)).toHaveValue(ids.document)
+    await expect(note).toBeFocused()
+    expect(await requests()).toHaveLength(0)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(originalRecords)
+    const continueButton = dialog.getByRole('button', { name: uiText('Create and add another', '创建并继续添加'), exact: true })
+    await tabTo(page, continueButton)
+    await page.keyboard.press('Enter')
     await expect.poll(requests).toHaveLength(1)
     await expect(dialog).toHaveAttribute('aria-busy', 'true')
     await expect(title).toBeDisabled()
@@ -135,15 +261,32 @@ test('record forms retain failed drafts, reject duplicate saves and remain reada
     await page.keyboard.press('Tab')
     await expect(dialog).toBeFocused()
     expect(await requests()).toHaveLength(1)
-    await settle(0, true)
+    await recordDraft(page, app, testInfo, dialog, `${language}-create-pending-locked`)
+    await settle(0)
     await expect(dialog.getByRole('alert')).toBeVisible()
+    await recordDraft(page, app, testInfo, dialog, `${language}-create-real-sqlite-failure`)
+    await expectDescribedFailure(dialog, continueButton)
+    await expectDescribedFailure(dialog, dialog.locator('footer .dbw-primary-button'))
     await expect(title).toHaveValue('Retained draft')
     await expect(note).toHaveValue('Retained property')
     await expect(dialog.getByLabel(/Linked document|关联文档/)).toHaveValue(ids.document)
     await dialog.screenshot({ path: testInfo.outputPath('create-retry-light.png') })
-    await dialog.getByRole('button', { name: uiText('Create and add another', '创建并继续添加'), exact: true }).click()
+    await note.click()
+    await expect(note).toBeFocused()
+    await refreshCatalogThroughRealMutation(page, app, dialog)
+    await recordDraft(page, app, testInfo, dialog, `${language}-create-failed-catalog-refresh`)
+    await expect(title).toHaveValue('Retained draft')
+    await expect(note).toHaveValue('Retained property')
+    await expect(dialog.getByLabel(/Linked document|关联文档/)).toHaveValue(ids.document)
+    await expect(note).toBeFocused()
+    await expectDescribedFailure(dialog, continueButton)
+    expect(await requests()).toHaveLength(1)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(originalRecords)
+    await setRecordFailure(app, ids.database, false)
+    await tabTo(page, continueButton)
+    await page.keyboard.press('Enter')
     await expect.poll(requests).toHaveLength(2)
-    await settle(1, false)
+    await settle(1)
     await expect(title).toHaveValue('')
     await expect(note).toHaveValue('')
     await expect(title).toBeFocused()
@@ -155,22 +298,64 @@ test('record forms retain failed drafts, reject duplicate saves and remain reada
     const notificationBounds = await page.locator('.app-notifications').boundingBox()
     const drawerBounds = await drawer.boundingBox()
     expect(notificationBounds!.x + notificationBounds!.width).toBeLessThanOrEqual(drawerBounds!.x - 16)
-    await drawer.getByLabel(uiText('Title', '标题')).fill('Saved after retry')
-    await drawer.getByLabel('Notes', { exact: true }).fill('Saved property after retry')
-    await drawer.getByRole('button', { name: uiText('Save', '保存'), exact: true }).click()
+    const storedBeforeEdit = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)
+    const editTitle = drawer.getByLabel(uiText('Title', '标题'))
+    const editNote = drawer.getByLabel('Notes', { exact: true })
+    const editLinked = drawer.getByLabel(/Linked document|关联文档/)
+    await expect(editLinked).toHaveCount(1)
+    const saveButton = drawer.getByRole('button', { name: uiText('Save', '保存'), exact: true })
+    await editTitle.fill('Saved after retry')
+    await editLinked.selectOption(alternateDocument)
+    await editNote.fill('Saved property after retry')
+    await expect(editNote).toBeFocused()
+    await refreshCatalogThroughRealMutation(page, app, drawer)
+    await recordDraft(page, app, testInfo, drawer, `${language}-edit-dirty-catalog-refresh`)
+    await expect(editTitle).toHaveValue('Saved after retry')
+    await expect(editNote).toHaveValue('Saved property after retry')
+    await expect(editLinked).toHaveValue(alternateDocument)
+    await expect(editNote).toBeFocused()
+    expect(await requests()).toHaveLength(2)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(storedBeforeEdit)
+    await setRecordFailure(app, ids.database, true)
+    await tabTo(page, saveButton)
+    await page.keyboard.press('Enter')
     await expect.poll(requests).toHaveLength(3)
     await expect(drawer.getByRole('button', { name: uiText('Saving…', '正在保存…'), exact: true })).toBeDisabled()
     await page.keyboard.press('Escape')
     await expect(drawer).toBeVisible()
-    await settle(2, true)
+    await recordDraft(page, app, testInfo, drawer, `${language}-edit-pending-locked`)
+    await settle(2)
     await expect(drawer.getByRole('alert')).toBeVisible()
+    await recordDraft(page, app, testInfo, drawer, `${language}-edit-real-sqlite-failure`)
+    await expectDescribedFailure(drawer, saveButton)
     await expect(drawer.getByLabel(uiText('Title', '标题'))).toHaveValue('Saved after retry')
     await expect(drawer.getByLabel('Notes', { exact: true })).toHaveValue('Saved property after retry')
-    await drawer.getByRole('button', { name: uiText('Save', '保存'), exact: true }).click()
+    await expect(editLinked).toHaveValue(alternateDocument)
+    await editNote.click()
+    await expect(editNote).toBeFocused()
+    await refreshCatalogThroughRealMutation(page, app, drawer)
+    await recordDraft(page, app, testInfo, drawer, `${language}-edit-failed-catalog-refresh`)
+    await expect(editTitle).toHaveValue('Saved after retry')
+    await expect(editNote).toHaveValue('Saved property after retry')
+    await expect(editLinked).toHaveValue(alternateDocument)
+    await expect(editNote).toBeFocused()
+    await expectDescribedFailure(drawer, saveButton)
+    expect(await requests()).toHaveLength(3)
+    expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)).toEqual(storedBeforeEdit)
+    await setRecordFailure(app, ids.database, false)
+    await tabTo(page, saveButton)
+    await page.keyboard.press('Enter')
     await expect.poll(requests).toHaveLength(4)
-    await settle(3, false)
+    await settle(3)
     await expect(drawer).toBeHidden()
     await expect.poll(() => page.evaluate(async ids => (await window.knowbook.getDatabaseEntities(ids.database)).find(record => record.title === 'Saved after retry')?.fieldValues[ids.field], ids)).toBe('Saved property after retry')
+    const persisted = await page.evaluate(id => window.knowbook.getDatabaseEntities(id), ids.database)
+    expect(persisted).toHaveLength(originalRecords.length + 1)
+    expect(persisted.find(record => record.title === 'Saved after retry')?.documentId).toBe(alternateDocument)
+    expect(persisted.find(record => record.id === ids.record)).toEqual(originalRecords.find(record => record.id === ids.record))
+    const failures = await app.evaluate(() => JSON.parse(process.env.KNOWBOOK_DB_EDIT_FAILURES!))
+    expect(failures).toEqual(['The isolated record creation is temporarily unavailable.', 'The isolated record update is temporarily unavailable.'])
+    expect(await requests()).toHaveLength(4)
 
     for (const theme of ['light', 'dark']) {
       if (theme === 'dark') {
@@ -196,6 +381,7 @@ test('record forms retain failed drafts, reject duplicate saves and remain reada
     expect(errors).toEqual([])
   })
 })
+}
 
 test('a failed list refresh does not turn a successful creation into a duplicate retry @electron', async () => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')

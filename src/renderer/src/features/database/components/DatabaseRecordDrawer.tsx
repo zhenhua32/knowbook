@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { DatabaseField, DatabaseRecord, DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
@@ -76,23 +76,50 @@ export function DatabaseRecordDrawer({
 }) {
   const drawerRef = useRef<HTMLElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)
+  const errorId = useId()
+  const draftSession = useRef<string | null>(null)
+  const edited = useRef(false)
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
   const propertyFields = useMemo(() => fields.filter((field) => field.role === 'property'), [fields])
   const submission = useRecordSubmission(open ? record?.id ?? null : null)
   const close = () => { if (!submission.isBusy()) onClose() }
   const updateDraft = (update: (current: RecordDraft) => RecordDraft) => {
-    if (!submission.isBusy()) setDraft(update)
+    if (submission.isBusy()) return
+    edited.current = true
+    setDraft(update)
   }
 
   useLayoutEffect(() => {
-    // A refresh during submission must not replace the draft, including after failure.
-    if (!open || !record || submission.isBusy()) return
+    if (!open || !record) {
+      draftSession.current = null
+      edited.current = false
+      return
+    }
+    const newSession = draftSession.current !== record.id
+    if (newSession) {
+      draftSession.current = record.id
+      edited.current = false
+    }
+    if (!newSession && submission.isBusy()) return
+    if (!newSession && (edited.current || submission.failed)) {
+      // Catalog refreshes must preserve local edits, while reflecting added or removed properties.
+      setDraft((current) => {
+        if (Object.keys(current.fieldValues).length === propertyFields.length &&
+          propertyFields.every((field) => Object.hasOwn(current.fieldValues, field.id))) return current
+        return {
+          ...current,
+          fieldValues: Object.fromEntries(propertyFields.map((field) => [field.id,
+            Object.hasOwn(current.fieldValues, field.id) ? current.fieldValues[field.id] : toDocumentValue(record.fieldValues[field.id])]))
+        }
+      })
+      return
+    }
     setDraft({
       title: record.title,
       documentId: record.documentId ?? '',
       fieldValues: Object.fromEntries(propertyFields.map((field) => [field.id, toDocumentValue(record.fieldValues[field.id])]))
     })
-  }, [open, propertyFields, record])
+  }, [open, propertyFields, record, submission.busy, submission.failed])
 
   useDatabaseDialogFocus({ containerRef: drawerRef, initialFocusRef: closeRef, onClose: close, open })
 
@@ -118,7 +145,7 @@ export function DatabaseRecordDrawer({
           {draft.documentId ? <button className="dbw-open-document-button" onClick={() => { if (!submission.isBusy()) onOpenDocument(draft.documentId) }} type="button">↗ {text.openDocument}</button> : null}
           <div className="dbw-record-properties">
             {propertyFields.map((field) => (
-              <div className="dbw-record-field" key={field.id}>
+              <div className="dbw-record-field" key={`${record.id}:${field.id}`}>
                 <span>{field.name}</span>
                 <DatabaseValueEditor
                   column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }}
@@ -130,10 +157,10 @@ export function DatabaseRecordDrawer({
             ))}
           </div>
         </fieldset>
-        {submission.failed ? <p className="dbw-record-submit-error" role="alert">{text.failed}</p> : null}
+        {submission.failed ? <p className="dbw-record-submit-error" id={errorId} role="alert">{text.formFailed}</p> : null}
         <footer className="dbw-drawer-footer">
           <button className="dbw-danger-quiet-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) onDelete(record) }} type="button">{text.deleteRecord}</button>
-          <div><button className="dbw-quiet-button" disabled={submission.busy} onClick={close} type="button">{text.cancel}</button><button className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => { if (draft.title.trim()) void submission.submit(() => onSave(record, draft), onClose) }} type="button">{submission.busy ? text.saving : text.save}</button></div>
+          <div><button className="dbw-quiet-button" disabled={submission.busy} onClick={close} type="button">{text.cancel}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => { if (draft.title.trim()) void submission.submit(() => onSave(record, draft), onClose) }} type="button">{submission.busy ? text.saving : text.save}</button></div>
         </footer>
       </aside>
     </>
@@ -157,6 +184,7 @@ export function CreateRecordDialog({
 }) {
   const dialogRef = useRef<HTMLDivElement | null>(null)
   const titleRef = useRef<HTMLInputElement | null>(null)
+  const errorId = useId()
   const propertyFields = fields.filter((field) => field.role === 'property')
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
   const focusTitle = useRef(false)
@@ -203,8 +231,8 @@ export function CreateRecordDialog({
             <div className="dbw-record-field" key={field.id}><span>{field.name}</span><DatabaseValueEditor column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }} onChangeValue={(value) => updateDraft((current) => ({ ...current, fieldValues: { ...current.fieldValues, [field.id]: value } }))} textCommitMode="change" value={draft.fieldValues[field.id] ?? null} /></div>
           ))}
         </fieldset>
-        {submission.failed ? <p className="dbw-record-submit-error" role="alert">{text.failed}</p> : null}
-        <footer><button className="dbw-quiet-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(true)} type="button">{submission.busy ? text.creating : text.createAndContinue}</button><button className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(false)} type="button">{submission.busy ? text.creating : text.create}</button></footer>
+        {submission.failed ? <p className="dbw-record-submit-error" id={errorId} role="alert">{text.formFailed}</p> : null}
+        <footer><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-quiet-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(true)} type="button">{submission.busy ? text.creating : text.createAndContinue}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => void submit(false)} type="button">{submission.busy ? text.creating : text.create}</button></footer>
       </div>
     </div>
   )
