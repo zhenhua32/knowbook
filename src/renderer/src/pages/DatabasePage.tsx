@@ -2,7 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useLayoutEffect, useRef } from 'react'
 import '../features/database/database-workspace.css'
 import type { Dispatch, SetStateAction } from 'react'
-import type { DatabaseSavedView, DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
+import type { DatabaseSavedView, DatabaseViewConfigV1, DocumentCatalogEntry, DocumentDatabase, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import type { DatabaseDomainState, DatabaseWorkspaceBoardState } from '../types/appDomains'
 import { collectDocumentCatalogPages } from '../utils/documentCatalogPagination'
@@ -47,6 +47,8 @@ export function DatabasePage({
   latest.current = { database, onCatalogColumnsChange, onCatalogDocumentsChange, onHomeDataChange }
   const mounted = useRef(true)
   const refreshGeneration = useRef(0)
+  const createdSource = useRef<string | null>(null)
+  const viewDraftCache = useRef(new Map<string, DatabaseViewConfigV1>())
   const sourceSession = useRef({ renderedId: database.databaseEntityDatabaseId, currentId: database.databaseEntityDatabaseId, generation: 0 })
   if (sourceSession.current.renderedId !== database.databaseEntityDatabaseId) {
     sourceSession.current.renderedId = database.databaseEntityDatabaseId
@@ -67,7 +69,10 @@ export function DatabasePage({
       sourceSession.current.generation++
       refreshGeneration.current++
     }
-    latest.current.database.setDatabaseEntityDatabaseId(databaseId)
+    const activateEmptySource = createdSource.current === databaseId
+    createdSource.current = null
+    if (activateEmptySource) latest.current.database.activateCreatedDatabase(databaseId)
+    else latest.current.database.setDatabaseEntityDatabaseId(databaseId)
   }, [])
 
   const refreshWorkspace = useCallback(async (
@@ -131,6 +136,15 @@ export function DatabasePage({
     })
   }, [])
 
+  const acknowledgeSavedDatabase = useCallback((saved: DocumentDatabase, options?: { activate?: boolean }) => {
+    if (!mounted.current) return
+    // A read started before this write must not replace its acknowledged
+    // metadata. This shared list update is independent of source navigation.
+    refreshGeneration.current++
+    latest.current.database.acknowledgeDatabase(saved)
+    if (options?.activate) createdSource.current = saved.id
+  }, [])
+
   const error = catalogError ?? database.databaseError
   const ready = catalogReady && database.databaseReady
   const recovery = error ? <RecoveryState compact={ready} title={ui.language === 'zh-CN' ? '数据库加载失败' : 'Unable to load database'}
@@ -158,9 +172,11 @@ export function DatabasePage({
       onMessage={onMessage}
       onOpenDocument={onOpenDocument}
       onRefresh={refreshWorkspace}
+      onSavedDatabase={acknowledgeSavedDatabase}
       onSavedView={acknowledgeSavedView}
       onSelectedRecordIdsChange={database.setSelectedDatabaseEntityIds}
       savedViews={database.databaseSavedViews}
+      viewDraftCache={viewDraftCache.current}
       selectedColumns={database.selectedDatabaseColumns}
       selectedRecordIds={database.selectedDatabaseEntityIds}
     />

@@ -30,6 +30,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     savedRefreshFailed: '记录已保存，但列表刷新失败，请刷新数据库。',
     fieldsSavedRefreshFailed: '字段已保存，但列表刷新失败，请刷新数据库。',
     viewsSavedRefreshFailed: '视图已保存，但列表刷新失败，请刷新数据库。',
+    databasesSavedRefreshFailed: '数据库已保存，但列表刷新失败，请刷新数据库。',
+    databaseEditWaitsForSave: '请等待数据库保存完成，再提交更改。',
     viewOperationContinues: '关闭窗口后，本次操作仍会继续。',
     viewRenameWaitsForSave: '请等待视图保存完成，再提交重命名。', waitingForSave: '等待保存…'
   } : {
@@ -62,6 +64,8 @@ export function getDatabaseWorkspaceText(locale: string) {
     savedRefreshFailed: 'The record was saved, but the list could not be refreshed. Refresh the database.',
     fieldsSavedRefreshFailed: 'Field changes were saved, but the list could not be refreshed. Refresh the database.',
     viewsSavedRefreshFailed: 'The view was saved, but the list could not be refreshed. Refresh the database.',
+    databasesSavedRefreshFailed: 'Database changes were saved, but the list could not be refreshed. Refresh the database.',
+    databaseEditWaitsForSave: 'Wait for the database to finish saving before submitting changes.',
     viewOperationContinues: 'This operation will continue after this window is closed.',
     viewRenameWaitsForSave: 'Wait for the view to finish saving before renaming it.', waitingForSave: 'Waiting for save…'
   }

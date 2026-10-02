@@ -6,10 +6,10 @@ type DatabaseHeaderProps = {
   currentSource: DatabaseSource
   sources: DatabaseSource[]
   text: DatabaseWorkspaceText
-  onCreateDatabase: () => void
+  onCreateDatabase: (returnTarget: HTMLElement | null) => void
   onCreateRecord: () => void
   onDeleteDatabase: () => void
-  onEditDatabase: () => void
+  onEditDatabase: (returnTarget: HTMLElement | null) => void
   onSourceChange: (sourceId: string) => void
 }
 
@@ -27,6 +27,8 @@ export function DatabaseHeader({
   const [menuOpen, setMenuOpen] = useState(false)
   const [query, setQuery] = useState('')
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const sourceTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const settingsTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -52,6 +54,7 @@ export function DatabaseHeader({
           <button
             aria-expanded={pickerOpen}
             className="dbw-source-trigger"
+            ref={sourceTriggerRef}
             onClick={() => {
               setPickerOpen((open) => !open)
               setMenuOpen(false)
@@ -70,6 +73,7 @@ export function DatabaseHeader({
                 <span aria-hidden="true">⌕</span>
                 <input
                   autoFocus
+                  aria-label={text.searchDatabase}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder={text.searchDatabase}
                   value={query}
@@ -89,7 +93,7 @@ export function DatabaseHeader({
                 className="dbw-menu-create"
                 onClick={() => {
                   setPickerOpen(false)
-                  onCreateDatabase()
+                  onCreateDatabase(sourceTriggerRef.current)
                 }}
                 type="button"
               >
@@ -109,7 +113,9 @@ export function DatabaseHeader({
           <div className="dbw-menu-wrap">
             <button
               aria-label={text.databaseSettings}
+              aria-expanded={menuOpen}
               className="dbw-icon-button"
+              ref={settingsTriggerRef}
               onClick={() => {
                 setMenuOpen((open) => !open)
                 setPickerOpen(false)
@@ -118,7 +124,7 @@ export function DatabaseHeader({
             >•••</button>
             {menuOpen ? (
               <div className="dbw-popover dbw-action-menu">
-                <button onClick={() => { setMenuOpen(false); onEditDatabase() }} type="button">{text.editDatabase}</button>
+                <button onClick={() => { setMenuOpen(false); onEditDatabase(settingsTriggerRef.current) }} type="button">{text.editDatabase}</button>
                 <button className="dbw-danger-text" onClick={() => { setMenuOpen(false); onDeleteDatabase() }} type="button">{text.deleteDatabase}</button>
               </div>
             ) : null}

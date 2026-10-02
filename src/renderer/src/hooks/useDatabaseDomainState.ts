@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useRef, useState } from 'react'
 import type {
   DatabaseEntity,
   DatabaseSavedView,
@@ -54,6 +54,27 @@ export function useDatabaseDomainState(isActive = true) {
   const [dataLoading, setDataLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [dataError, setDataError] = useState<string | null>(null)
+  const listWriteRevision = useRef(0)
+  const acknowledgeDatabase = useCallback((saved: DocumentDatabase) => {
+    listWriteRevision.current++
+    setDatabases(previous => previous.some(database => database.id === saved.id)
+      ? previous.map(database => database.id === saved.id ? saved : database)
+      : [...previous, saved])
+  }, [])
+  const activateCreatedDatabase = useCallback((databaseId: string) => {
+    // A successful creation confirms an empty source. Keep the workspace
+    // mounted while its normal reads run, without presenting the old rows.
+    setLoadedDatabaseId(databaseId)
+    setDataError(null)
+    setSelectedDatabaseColumns([])
+    setDatabaseEntities([])
+    setDatabaseSavedViews([])
+    setActiveDatabaseSavedViewId('')
+    setSelectedDatabaseEntityIds([])
+    setDatabaseEntityFieldValues({})
+    setDatabaseEntityBulkFieldValues({})
+    setDatabaseEntityDatabaseId(databaseId)
+  }, [])
   const reloadDatabaseDomain = useCallback(() => {
     setDatabaseDomainRevision((revision) => revision + 1)
   }, [])
@@ -64,10 +85,11 @@ export function useDatabaseDomainState(isActive = true) {
     }
 
     let mounted = true
+    const revision = listWriteRevision.current
     setListLoading(true)
     setListError(null)
     window.knowbook.getDatabases().then((items) => {
-      if (mounted) {
+      if (mounted && revision === listWriteRevision.current) {
         setDatabases(items)
         setListReady(true)
         setDatabaseEntityDatabaseId((current) => {
@@ -81,7 +103,7 @@ export function useDatabaseDomainState(isActive = true) {
         })
       }
     }).catch((error) => {
-      if (mounted) {
+      if (mounted && revision === listWriteRevision.current) {
         setListError(getErrorMessage(error, 'Databases could not be loaded.'))
         console.warn('Failed to load databases.', error)
       }
@@ -175,6 +197,8 @@ export function useDatabaseDomainState(isActive = true) {
   }, [databaseEntityFilterScope, selectedDatabaseColumns])
 
   return {
+    acknowledgeDatabase,
+    activateCreatedDatabase,
     databaseError: listError ?? dataError,
     databaseLoading: listLoading || dataLoading,
     databaseReady: listReady && (!databaseEntityDatabaseId || loadedDatabaseId === databaseEntityDatabaseId),

@@ -21,7 +21,7 @@ register(`data:text/javascript,${encodeURIComponent(`
   }
 `)}`, import.meta.url)
 const { DatabasePage } = await import('../src/renderer/src/pages/DatabasePage')
-type WorkspaceProps = ComponentProps<typeof DatabaseWorkspace>
+type WorkspaceProps = ComponentProps<typeof DatabaseWorkspace> & { onSavedDatabase?: (saved: DocumentDatabase, options?: { activate?: boolean }) => void }
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -49,16 +49,19 @@ const request = () => ({ targetId: '', home: deferred<HomeData>(), documents: de
 type Request = ReturnType<typeof request>
 
 async function withPage(run: (context: {
-  document: Document; requests: Request[]; mutations: string[]; model: () => Model;
+  document: Document; requests: Request[]; mutations: string[]; activations: string[]; model: () => Model;
   start: (targetId?: string, preferredViewId?: string, switchAfterRefresh?: string) => Promise<{ completion: Promise<void> }>;
   resolve: (request: Request, label: string, databaseIds?: string[]) => Promise<void>;
   navigate: (id: string) => Promise<void>; externalNavigate: (id: string) => Promise<void>;
-  holdNavigation: () => void; flushNavigation: () => Promise<void>; unmount: () => Promise<void>
+  holdNavigation: () => void; flushNavigation: () => Promise<void>; unmount: () => Promise<void>;
+  acknowledge: (saved: DocumentDatabase, select?: boolean) => Promise<void>
 }) => Promise<void>) {
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost' })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   const requests: Request[] = []
   const mutations: string[] = []
+  const activations: string[] = []
+  let latestWorkspace!: WorkspaceProps
   let current!: Model
   let updateModel!: (action: SetStateAction<Model>) => void
   let intent: { targetId?: string; preferredViewId?: string; switchAfterRefresh?: string } = {}
@@ -68,7 +71,9 @@ async function withPage(run: (context: {
   let completion!: Promise<void>
   const applySource = (id: string) => updateModel(previous => ({ ...previous, sourceId: id,
     columns: columns(id), entities: entities(id, id), views: views(id), activeViewId: `${id}-view` }))
-  const renderWorkspace = (props: WorkspaceProps) => createElement('div', null,
+  const renderWorkspace = (props: WorkspaceProps) => {
+    latestWorkspace = props
+    return createElement('div', null,
     createElement('button', { id: 'refresh', onClick: () => {
       const action = intent
       completion = (async () => {
@@ -81,6 +86,7 @@ async function withPage(run: (context: {
     createElement('output', { id: 'workspace' }, JSON.stringify({ source: props.currentDatabaseId,
       columns: props.selectedColumns.map(column => column.id), entities: props.entities.map(entity => entity.id),
       views: props.savedViews.map(view => view.id), activeView: props.activeViewId })))
+  }
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true, databasePageTestWorkspace: renderWorkspace })) {
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
@@ -111,6 +117,12 @@ async function withPage(run: (context: {
       databases: model.databases, selectedDatabaseColumns: model.columns, databaseEntities: model.entities,
       databaseSavedViews: model.views, activeDatabaseSavedViewId: model.activeViewId, selectedDatabaseEntityIds: [],
       setDatabases: (value: SetStateAction<DocumentDatabase[]>) => change('databases', value),
+      acknowledgeDatabase: (saved: DocumentDatabase) => change('databases', previous => previous.some(item => item.id === saved.id)
+        ? previous.map(item => item.id === saved.id ? saved : item) : [...previous, saved]),
+      activateCreatedDatabase: (id: string) => {
+        activations.push(id)
+        setModel(previous => ({ ...previous, sourceId: id, columns: [], entities: [], views: [], activeViewId: '' }))
+      },
       setSelectedDatabaseColumns: (value: SetStateAction<DocumentDatabaseColumn[]>) => change('columns', value),
       setDatabaseEntities: (value: SetStateAction<DatabaseEntity[]>) => change('entities', value),
       setDatabaseSavedViews: (value: SetStateAction<DatabaseSavedView[]>) => change('views', value),
@@ -126,7 +138,11 @@ async function withPage(run: (context: {
   const unmount = async () => { if (mounted) { await act(async () => root.unmount()); mounted = false } }
   try {
     await act(async () => root.render(createElement(Harness)))
-    await run({ document: dom.window.document, requests, mutations, model: () => current, unmount,
+    await run({ document: dom.window.document, requests, mutations, activations, model: () => current, unmount,
+      acknowledge: async (saved, select = false) => { await act(async () => {
+        latestWorkspace.onSavedDatabase?.(saved, select ? { activate: true } : undefined)
+        if (select) latestWorkspace.onCurrentDatabaseIdChange(saved.id)
+      }) },
       start: async (targetId, preferredViewId, switchAfterRefresh) => {
         intent = { targetId, preferredViewId, switchAfterRefresh }
         await act(async () => dom.window.document.getElementById('refresh')!.click())
@@ -301,5 +317,69 @@ test('unmounting discards pending data and late failures while a current request
     await unmount()
     await act(async () => requests[2].columns.reject(new Error('Disposed source failed')))
     await assert.doesNotReject(disposed.completion)
+  })
+})
+
+test('a metadata acknowledgement updates only the source list and invalidates an older full refresh', async () => {
+  await withPage(async ({ requests, mutations, model, start, acknowledge, resolve, activations }) => {
+    const pending = await start('a')
+    const saved = { ...database('a'), name: 'Acknowledged name', description: 'Saved description', updatedAt: '2026-10-02' }
+    await acknowledge(saved)
+    assert.deepEqual(model().databases.find(item => item.id === 'a'), saved)
+    assert.equal(model().sourceId, 'a')
+    assert.equal(model().activeViewId, 'a-view')
+    assert.deepEqual(model().columns, columns('a'))
+    assert.deepEqual(model().entities, entities('a', 'a'))
+    assert.deepEqual(model().views, views('a'))
+    assert.deepEqual(activations, [])
+    const afterAck = structuredClone(model())
+    mutations.length = 0
+    await resolve(requests[0], 'stale-before-write')
+    await pending.completion
+    assert.deepEqual(model(), afterAck)
+    assert.deepEqual(mutations, [])
+  })
+})
+
+test('a late creation ACK remains discoverable without navigation or a cached empty-source activation', async () => {
+  await withPage(async ({ model, acknowledge, navigate, activations, requests }) => {
+    await navigate('b')
+    const target = { ...database('created'), name: 'Created in the background' }
+    const before = structuredClone(model())
+    await acknowledge(target)
+    assert.deepEqual(model().databases.find(item => item.id === target.id), target)
+    assert.equal(model().sourceId, 'b')
+    assert.deepEqual(model().columns, before.columns)
+    assert.deepEqual(model().entities, before.entities)
+    assert.deepEqual(model().views, before.views)
+    assert.equal(model().activeViewId, before.activeViewId)
+    assert.deepEqual(activations, [])
+    assert.equal(requests.length, 0)
+    await navigate(target.id)
+    assert.deepEqual(activations, [], 'A later manual selection must load normally, rather than reuse a stale empty-source qualification')
+    assert.equal(model().entities[0].id, 'entity-created')
+  })
+})
+
+test('an owned creation ACK and immediate navigation retain the new list entry while activating an empty source exactly once', async () => {
+  await withPage(async ({ requests, model, start, acknowledge, resolve, navigate, activations }) => {
+    const old = await start('a')
+    const saved = database('created')
+    await acknowledge(saved, true)
+    assert.deepEqual(model().databases.find(item => item.id === saved.id), saved)
+    assert.equal(model().sourceId, saved.id)
+    assert.deepEqual(activations, [saved.id])
+    assert.deepEqual(model().columns, [])
+    assert.deepEqual(model().entities, [])
+    assert.deepEqual(model().views, [])
+    assert.equal(model().activeViewId, '')
+    const afterAck = structuredClone(model())
+    await resolve(requests[0], 'old-a')
+    await old.completion
+    assert.deepEqual(model(), afterAck)
+    await navigate('b')
+    await navigate(saved.id)
+    assert.deepEqual(activations, [saved.id])
+    assert.equal(model().entities[0].id, 'entity-created')
   })
 })
