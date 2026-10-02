@@ -51,6 +51,7 @@ type Context = {
   submit: () => Promise<void>
   flushFrames: () => Promise<void>
   frameCount: () => number
+  frameCallbacks: () => FrameRequestCallback[]
   resolve: (kind: Kind) => Promise<DatabaseSavedView>
   navigate: (source: string, active: string) => Promise<void>
   leavePage: () => Promise<void>
@@ -163,7 +164,7 @@ async function withFocus(run: (context: Context) => Promise<void>, locale = 'en-
   try {
     await act(async () => root.render(createElement(Harness)))
     await run({ document: dom.window.document, text, focusCalls, creates, updates, refreshes, model: () => current,
-      form, name, summary, query, change, fill, frameCount: () => frames.size, unmount,
+      form, name, summary, query, change, fill, frameCount: () => frames.size, frameCallbacks: () => [...frames.values()], unmount,
       flushFrames: async () => change(() => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)) }),
       foreground: value => { focused = value },
       open: async kind => {
@@ -395,6 +396,123 @@ test('held restore skips another visible dialog or an unavailable opener, and ac
       assert.equal(context.document.querySelectorAll('form.dbw-dialog').length, 0)
       await context.flushFrames()
       assert.equal(context.focusCalls.length, firstCall)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      assert.equal(context.creates.length + context.updates.length, 0)
+    })
+  }
+})
+
+test('queued form return is revoked when the user focuses the query and then leaves it for BODY', async () => {
+  await withFocus(async context => {
+    await context.open('new')
+    await context.flushFrames()
+    await context.close()
+    assert.equal(context.frameCount() > 0, true)
+    const query = context.query()
+    await context.change(() => query.focus())
+    assert.equal(context.document.activeElement === query, true)
+    await context.change(() => query.blur())
+    assert.equal(context.document.activeElement === context.document.body, true)
+    const before = context.focusCalls.length
+    await context.flushFrames()
+    assert.equal(context.document.activeElement === context.document.body, true, 'Returning to BODY does not restore the old opener after the user has moved on')
+    assert.equal(context.focusCalls.length, before, 'A revoked return must not even attempt opener focus')
+    assert.equal(context.creates.length + context.updates.length, 0)
+  })
+})
+
+test('a user focus round trip through the old opener or an outside control permanently cancels a queued return', async () => {
+  for (const locale of ['en-US', 'zh-CN']) for (const destination of ['opener', 'outside']) {
+    await withFocus(async context => {
+      await context.fill(context.query(), 'Keep the current query')
+      const opener = await context.open('new')
+      await context.flushFrames()
+      await context.close()
+      assert.equal(context.frameCount() > 0, true)
+      const held = context.frameCallbacks()[0]
+      assert.ok(held)
+      const control = destination === 'opener' ? opener : context.document.getElementById('outside')!
+      await context.change(() => control.focus())
+      assert.equal(context.document.activeElement === control, true)
+      await context.change(() => control.blur())
+      assert.equal(context.document.activeElement === context.document.body, true)
+      const before = context.focusCalls.length
+      await context.flushFrames()
+      assert.equal(context.focusCalls.length, before, `${destination}: returning to BODY must not revive an abandoned lease`)
+      await context.change(() => held(0))
+      assert.equal(context.focusCalls.length, before, `${destination}: an already-copied callback must also stay cancelled`)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      assert.equal(context.query().value, 'Keep the current query')
+      assert.equal(context.creates.length + context.updates.length, 0)
+    }, locale)
+  }
+})
+
+test('pointer, key, composition and window blur after Close, Escape or saved ACK discard return focus without replay', async () => {
+  for (const completion of ['close', 'escape', 'saved']) for (const activity of ['pointer', 'key', 'composition', 'window-blur']) {
+    await withFocus(async context => {
+      await context.fill(context.query(), 'Preserved query')
+      await context.open('new')
+      await context.flushFrames()
+      if (completion === 'saved') {
+        await context.fill(context.name(), 'Accepted before interaction')
+        await context.submit()
+        await context.resolve('new')
+        assert.equal(context.refreshes.length, 1)
+      } else await context.close(completion as 'close' | 'escape')
+      assert.equal(context.document.querySelectorAll('form.dbw-dialog').length, 0)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      assert.equal(context.frameCount() > 0, true)
+      const held = context.frameCallbacks()[0]
+      assert.ok(held)
+      const window = context.document.defaultView!
+      await context.change(() => {
+        if (activity === 'pointer') context.document.body.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+        if (activity === 'key') {
+          const event = new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+          context.document.body.dispatchEvent(event)
+          assert.equal(event.defaultPrevented, false, 'Return-focus cancellation must not consume the user key')
+        }
+        if (activity === 'composition') {
+          context.document.body.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+          context.document.body.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }))
+        }
+        if (activity === 'window-blur') {
+          context.foreground(false)
+          window.dispatchEvent(new window.Event('blur'))
+          context.foreground(true)
+        }
+      })
+      const before = context.focusCalls.length
+      await context.flushFrames()
+      assert.equal(context.focusCalls.length, before, `${completion}/${activity}: a cancelled return cannot focus its opener`)
+      await context.change(() => held(0))
+      assert.equal(context.focusCalls.length, before, `${completion}/${activity}: late delivery cannot replay cancellation`)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      await context.flushFrames()
+      assert.equal(context.focusCalls.length, before)
+      assert.equal(context.query().value, 'Preserved query')
+      assert.equal(context.creates.length, completion === 'saved' ? 1 : 0)
+      assert.equal(context.updates.length, 0)
+    })
+  }
+})
+
+test('closing in a background renderer cannot reserve a return that replays when foreground focus comes back', async () => {
+  for (const close of ['close', 'escape'] as const) {
+    await withFocus(async context => {
+      await context.open('new')
+      await context.flushFrames()
+      context.foreground(false)
+      await context.close(close)
+      assert.equal(context.document.querySelectorAll('form.dbw-dialog').length, 0)
+      assert.equal(context.document.activeElement === context.document.body, true)
+      const held = context.frameCallbacks()
+      const before = context.focusCalls.length
+      context.foreground(true)
+      await context.flushFrames()
+      await context.change(() => held.forEach(callback => callback(0)))
+      assert.equal(context.focusCalls.length, before)
       assert.equal(context.document.activeElement === context.document.body, true)
       assert.equal(context.creates.length + context.updates.length, 0)
     })

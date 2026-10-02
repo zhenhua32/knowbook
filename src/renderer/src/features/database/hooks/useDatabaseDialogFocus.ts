@@ -33,21 +33,21 @@ export function useDatabaseDialogFocus({
   const returnGuardRef = useRef(canReturnFocus)
   returnGuardRef.current = canReturnFocus
   const mounted = useRef(false)
-  const returnFrameRef = useRef<number | null>(null)
+  const cancelReturnFocusRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     mounted.current = true
     return () => {
       mounted.current = false
-      if (returnFrameRef.current !== null) cancelAnimationFrame(returnFrameRef.current)
-      returnFrameRef.current = null
+      cancelReturnFocusRef.current?.()
+      cancelReturnFocusRef.current = null
     }
   }, [])
 
   useEffect(() => {
     if (!open) return
-    if (returnFrameRef.current !== null) cancelAnimationFrame(returnFrameRef.current)
-    returnFrameRef.current = null
+    cancelReturnFocusRef.current?.()
+    cancelReturnFocusRef.current = null
     const container = containerRef.current
     const previousFocus = returnTargetRef.current === undefined
       ? document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -82,9 +82,8 @@ export function useDatabaseDialogFocus({
     return () => {
       cancelInitialFocus()
       window.removeEventListener('keydown', handleKeyDown)
-      if (!mounted.current || !previousFocus || returnGuardRef.current?.() === false) return
-      returnFrameRef.current = requestAnimationFrame(() => {
-        returnFrameRef.current = null
+      if (!mounted.current || !previousFocus || returnGuardRef.current?.() === false || !document.hasFocus()) return
+      const cancelReturnFocus = queueDialogFocus(() => {
         if (!mounted.current || returnGuardRef.current?.() === false || !document.hasFocus()) return
         if (!isVisible(previousFocus) || previousFocus.matches(':disabled, [aria-disabled="true"]')) return
         if ([...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
@@ -92,7 +91,10 @@ export function useDatabaseDialogFocus({
         const active = document.activeElement
         if (active !== document.body && active !== previousFocus && !container?.contains(active)) return
         previousFocus.focus({ preventScroll: true })
+      }, () => {
+        if (cancelReturnFocusRef.current === cancelReturnFocus) cancelReturnFocusRef.current = null
       })
+      cancelReturnFocusRef.current = cancelReturnFocus
     }
   }, [containerRef, initialFocusRef, open])
 }
@@ -107,6 +109,20 @@ function scheduleInitialFocus(
     || (openingActive instanceof HTMLElement && container.contains(openingActive)
       && isVisible(openingActive) && !openingActive.matches(':disabled, [aria-disabled="true"]'))) return () => {}
 
+  return queueDialogFocus(() => {
+    if (containerRef.current !== container || !document.hasFocus() || !isVisible(container)) return
+    if ([...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
+      .some(dialog => dialog !== container && isVisible(dialog))) return
+    const active = document.activeElement
+    if (active !== openingActive && active !== document.body) return
+    const target = [initialFocusRef?.current, ...focusableElements(container), container]
+      .find(element => element && container.contains(element) && isVisible(element)
+        && !element.matches(':disabled, [aria-disabled="true"]'))
+    target?.focus()
+  })
+}
+
+function queueDialogFocus(focus: () => void, onEnd?: () => void): () => void {
   let pending = true
   let frame: number
   const cancel = () => {
@@ -118,8 +134,9 @@ function scheduleInitialFocus(
     document.removeEventListener('keydown', cancel, true)
     document.removeEventListener('compositionstart', cancel, true)
     window.removeEventListener('blur', cancel)
+    onEnd?.()
   }
-  // Initial focus belongs only to an untouched opening, before the user starts interacting.
+  // Deferred dialog focus yields permanently to any newer user interaction.
   document.addEventListener('focusin', cancel, true)
   document.addEventListener('pointerdown', cancel, true)
   document.addEventListener('keydown', cancel, true)
@@ -128,15 +145,7 @@ function scheduleInitialFocus(
   frame = requestAnimationFrame(() => {
     if (!pending) return
     cancel()
-    if (containerRef.current !== container || !document.hasFocus() || !isVisible(container)) return
-    if ([...document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"], [role="alertdialog"]')]
-      .some(dialog => dialog !== container && isVisible(dialog))) return
-    const active = document.activeElement
-    if (active !== openingActive && active !== document.body) return
-    const target = [initialFocusRef?.current, ...focusableElements(container), container]
-      .find(element => element && container.contains(element) && isVisible(element)
-        && !element.matches(':disabled, [aria-disabled="true"]'))
-    target?.focus()
+    focus()
   })
   return cancel
 }

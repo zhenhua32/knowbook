@@ -372,3 +372,101 @@ test('delayed renderer restore frames do not override a newer query or modal foc
     } finally { await releaseRestoreFrames(page) }
   })
 })
+
+async function recordBodyRestoreState(page: Page, app: ElectronApplication, testInfo: TestInfo, phase: string) {
+  // One main-process probe per recorded stage; no mutation/probe IPC is installed.
+  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
+    visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable(), bounds: window.getBounds()
+  })))
+  expect(windows.length).toBeGreaterThan(0)
+  expect(windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
+  const state = await page.evaluate(() => {
+    const probe = window as ProbeWindow
+    const active = document.activeElement as HTMLElement | null
+    const opener = document.querySelector<HTMLElement>('.dbw-new-view-menu summary')
+    const watch = probe.__knowbookFormFocusWatches?.['new-view']
+    return { viewport: { width: innerWidth, height: innerHeight }, active: { tag: active?.tagName,
+      label: active?.getAttribute('aria-label'), text: active?.tagName === 'SUMMARY' ? active.textContent?.trim() : null },
+      activeIsBody: active === document.body, summaryFocused: active === opener,
+      summaryConnected: opener?.isConnected ?? false,
+      query: document.querySelector<HTMLInputElement>('.dbw-main-search input')?.value,
+      dialogCount: document.querySelectorAll('form.dbw-dialog').length,
+      heldRestoreFrames: probe.__knowbookFormFocusFrames?.callbacks.size ?? 0,
+      focusWatch: watch ? { connected: watch.element.isConnected, focused: active === watch.element, calls: watch.calls } : null }
+  })
+  const path = testInfo.outputPath(`${phase}.json`)
+  writeFileSync(path, JSON.stringify({ phase, windows, state }, null, 2))
+  await testInfo.attach(`${phase}-state`, { path, contentType: 'application/json' })
+  await page.screenshot({ path: testInfo.outputPath(`${phase}.png`) })
+  return state
+}
+
+for (const language of ['en-US', 'zh-CN'] as const) {
+test(`delayed view form restoration does not reclaim BODY after newer pointer focus in ${language} @electron`, async ({}, testInfo) => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
+  await withElectronApp(async ({ page, app }) => {
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    // Only UI preferences are written. The default document catalog is used
+    // without creating, editing or saving any document, field, record or view.
+    await page.evaluate(async language => {
+      await window.knowbook.saveSetting('ui.language', language)
+      await window.knowbook.saveSetting('appearance.theme', language === 'zh-CN' ? 'dark' : 'light')
+    }, language)
+    await page.reload()
+    await page.setViewportSize({ width: 1180, height: language === 'zh-CN' ? 850 : 800 })
+    await page.getByTitle(uiText('Database', '数据库'), { exact: true }).click()
+    await expect(page.locator('.dbw-source-trigger')).toContainText(language === 'zh-CN' ? '全部文档' : 'All documents')
+    await twoFrames(page)
+    const before = await page.evaluate(async () => {
+      const database = (await window.knowbook.getDatabases()).find(source => source.kind === 'document-catalog')
+      if (!database) throw new Error('The real default document catalog is required')
+      return { id: database.id, columns: await window.knowbook.getDocumentDatabaseColumns(database.id),
+        entities: await window.knowbook.getDatabaseEntities(database.id), views: await window.knowbook.getDatabaseSavedViews(database.id) }
+    })
+    await watchFocus(summary(page), 'new-view')
+    await query(page).click()
+    await tabTo(page, summary(page), 'query-to-body-restore-open', 'Shift+Tab', 8)
+    await openFromFocusedSummary(page)
+    await expect(name(page)).toBeFocused()
+    const initialSummaryCalls = await focusCalls(page, 'new-view')
+    const userQuery = language === 'zh-CN' ? '新的指针搜索' : 'Newer pointer search'
+    try {
+      // Control renderer scheduling only; every focus transition below is a
+      // real mouse/keyboard interaction, with no focus()/blur() repair.
+      await holdRestoreFrames(page)
+      await page.keyboard.press('Escape')
+      await expect(form(page)).toHaveCount(0)
+      await pointerTo(page, query(page))
+      await expect(query(page)).toBeFocused()
+      await page.keyboard.type(userQuery)
+      const paragraph = page.locator('.dbw-header .dbw-source-wrap > p')
+      await expect(paragraph).toHaveCount(1)
+      await pointerTo(page, paragraph)
+      // Do not assume clicking non-focusable text creates BODY focus: prove
+      // the browser actually made that transition before releasing old RAF.
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true)
+      const pending = await recordBodyRestoreState(page, app, testInfo, `${language}-newer-pointer-body-before-restore`)
+      expect(pending.focusWatch?.calls.length).toBe(initialSummaryCalls)
+      await releaseRestoreFrames(page)
+      // The old build's late Summary focus is recorded before the oracle.
+      const settled = await recordBodyRestoreState(page, app, testInfo, `${language}-newer-pointer-body-after-restore`)
+      const after = await page.evaluate(async id => ({
+        columns: await window.knowbook.getDocumentDatabaseColumns(id),
+        entities: await window.knowbook.getDatabaseEntities(id),
+        views: await window.knowbook.getDatabaseSavedViews(id)
+      }), before.id)
+      expect(after.columns).toEqual(before.columns)
+      expect(after.entities).toEqual(before.entities)
+      expect(after.views).toEqual(before.views)
+      await expect(query(page)).toHaveValue(userQuery)
+      expect(settled.dialogCount).toBe(0)
+      expect(settled.activeIsBody).toBe(true)
+      expect(settled.focusWatch?.calls.length).toBe(initialSummaryCalls)
+      expect(await page.evaluate(() => document.activeElement === document.body)).toBe(true)
+      expect(await focusCalls(page, 'new-view')).toBe(initialSummaryCalls)
+      expect(errors).toEqual([])
+    } finally { await releaseRestoreFrames(page) }
+  })
+})
+}
