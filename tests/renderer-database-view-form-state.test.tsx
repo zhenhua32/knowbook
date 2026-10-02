@@ -237,7 +237,7 @@ function pending(context: Context) {
   assert.equal(context.form().querySelectorAll('[role="status"]').length > 0, true)
 }
 function noForm(context: Context) { assert.equal(context.document.querySelectorAll('form.dbw-dialog').length, 0) }
-function error(context: Context) { return context.form().querySelector('[role="alert"]')?.textContent ?? '' }
+function error(context: Context) { return context.form().querySelector('.dbw-form-error-details pre')?.textContent ?? context.form().querySelector('[role="alert"]')?.textContent ?? '' }
 async function drainRefreshes(context: Context) {
   for (let index = 0; index < context.refreshes.length; index++) if (!context.refreshes[index].settled) await context.resolveRefresh(index)
 }
@@ -262,6 +262,9 @@ test('renaming is single-flight and retains the entire dirty view through failur
       await context.reject('rename', 0, "Error invoking remote method 'knowbook:update-database-saved-view': Error: View mutation failed.")
       assert.equal(context.name().value, 'Renamed view')
       assert.equal(context.name().readOnly, false)
+      assert.equal(context.form().querySelector('[role="alert"]')?.textContent, locale === 'zh-CN'
+        ? '保存失败，输入已保留，可以重试。' : 'Could not save. Your input has been kept. Try again.')
+      assert.equal(context.form().querySelector<HTMLDetailsElement>('.dbw-form-error-details')?.open, false)
       assert.equal(error(context), 'View mutation failed.')
       assert.equal(context.query().value, 'Dirty query B')
       // The key remains available to the browser. The explicit submit below
@@ -303,6 +306,9 @@ test('creating retries its local failed name and activates the accepted view bef
       assert.equal(context.document.activeElement === input, true)
       await context.reject('create')
       assert.equal(context.name().value, 'Created view')
+      assert.equal(context.form().querySelector('[role="alert"]')?.textContent, locale === 'zh-CN'
+        ? '保存失败，输入已保留，可以重试。' : 'Could not save. Your input has been kept. Try again.')
+      assert.equal(context.form().querySelector<HTMLDetailsElement>('.dbw-form-error-details')?.open, false)
       assert.equal(error(context).includes('View mutation failed.'), true)
       assert.equal((await context.key(context.name(), 'Enter')).defaultPrevented, false)
       await context.submit()

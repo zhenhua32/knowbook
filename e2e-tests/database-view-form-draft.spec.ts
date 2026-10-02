@@ -187,6 +187,8 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
     const name = dialog?.querySelector<HTMLInputElement>('input')
     const button = dialog?.querySelector<HTMLButtonElement>('button[type="submit"]')
     const search = document.querySelector<HTMLInputElement>('.dbw-main-search input')
+    const errorDetails = dialog?.querySelector<HTMLDetailsElement>('.dbw-form-error-details')
+    const errorPre = errorDetails?.querySelector('pre')
     return { viewport: { width: innerWidth, height: innerHeight },
       active: { tag: active?.tagName, label: active?.getAttribute('aria-label'), text: active?.tagName === 'BUTTON' ? active.textContent?.trim() : null },
       query: search?.value, queryFocused: active === search, queryDisabled: search?.disabled,
@@ -196,7 +198,9 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
         name: name ? { value: name.value, readOnly: name.readOnly, disabled: name.disabled, focused: active === name } : null,
         submit: button ? { text: button.textContent?.trim(), disabled: button.disabled, ariaDisabled: button.getAttribute('aria-disabled'),
           ariaBusy: button.getAttribute('aria-busy'), focused: active === button } : null,
-        status: dialog.querySelector('[role="status"]')?.textContent, error: dialog.querySelector('[role="alert"]')?.textContent } : null,
+        status: dialog.querySelector('[role="status"]')?.textContent, error: dialog.querySelector('[role="alert"]')?.textContent,
+        errorDetails: errorDetails ? { open: errorDetails.open, summary: errorDetails.querySelector('summary')?.textContent,
+          text: errorPre?.textContent, rect: errorPre?.getBoundingClientRect().toJSON() } : null } : null,
       save: Array.from(document.querySelectorAll<HTMLButtonElement>('.dbw-save-button')).map(button => ({
         text: button.textContent?.trim(), disabled: button.disabled, ariaBusy: button.getAttribute('aria-busy'), ariaDisabled: button.getAttribute('aria-disabled') })),
       records: Array.from(document.querySelectorAll('.dbw-table .dbw-record-title strong')).map(title => title.textContent),
@@ -370,14 +374,20 @@ test('a real duplicate view name preserves the focused name draft and supports E
     // The real store's existing unique-name validation rejects this invocation.
     await finishMutation(app, page, 1, false, true)
     await expect(form(page).getByRole('alert')).toBeVisible()
-    await record(page, app, testInfo, 'en-real-name-conflict-returned')
+    await record(page, app, testInfo, 'en-real-name-conflict-returned-collapsed')
     const rejected = await probeState(app)
     expect(rejected.written).toHaveLength(0)
     expect(rejected.failures).toHaveLength(1)
     expect(rejected.failures[0].kind).toBe('update')
     expect(rejected.failures[0].message.trim()).not.toBe('')
-    await expect(form(page).getByRole('alert')).toHaveText(rejected.failures[0].message)
+    await expect(form(page).getByRole('alert')).toHaveText('Could not save. Your input has been kept. Try again.')
     await expect(form(page).getByRole('alert')).not.toContainText(/Error invoking|remote method|^Error:/i)
+    const details = form(page).locator('.dbw-form-error-details')
+    const reason = details.locator('pre')
+    await expect(details).toHaveJSProperty('open', false)
+    await expect(reason).not.toBeVisible()
+    await expect(reason).toHaveText(rejected.failures[0].message)
+    await expect(reason).not.toContainText(/Error invoking|remote method|^Error:/i)
     await expect(nameInput(page)).toHaveValue('Duplicate name')
     await expect(nameInput(page)).toBeFocused()
     await expect(nameInput(page)).toBeEnabled()
@@ -388,6 +398,18 @@ test('a real duplicate view name preserves the focused name draft and supports E
     expect(afterFailure.find(view => view.id === ids.viewId)?.name).toBe(primaryName)
     expect(afterFailure.find(view => view.id === ids.viewId)?.config).toEqual(ids.initialConfig)
     expect(afterFailure.find(view => view.id === duplicate.id)?.name).toBe('Duplicate name')
+    const summary = details.locator('summary')
+    await expect(summary).toHaveAccessibleName('Error details')
+    await tabTo(page, summary, 'en-failed-name-to-error-details', 8)
+    await page.keyboard.press('Space')
+    await expect(details).toHaveJSProperty('open', true)
+    await expect(reason).toBeVisible()
+    await expect(reason).toHaveText(rejected.failures[0].message)
+    await expect(summary).toBeFocused()
+    await record(page, app, testInfo, 'en-real-name-conflict-returned-expanded')
+    await page.keyboard.press('Shift+Tab')
+    await expect(nameInput(page)).toBeFocused()
+    await expect(nameInput(page)).toHaveValue('Duplicate name')
     await nameInput(page).fill('Legal retry name')
     await page.keyboard.press('Enter')
     await expect.poll(async () => (await probeState(app)).calls.length).toBe(2)

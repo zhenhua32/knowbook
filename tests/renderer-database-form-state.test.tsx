@@ -243,7 +243,7 @@ async function withDatabaseForms(run: (context: Context) => Promise<void>, local
 }
 
 function noForm(context: Context) { assert.equal(context.document.querySelectorAll('form.dbw-dialog').length, 0) }
-function error(context: Context) { return context.form().querySelector('[role="alert"]')?.textContent ?? '' }
+function error(context: Context) { return context.form().querySelector('.dbw-form-error-details pre')?.textContent ?? context.form().querySelector('[role="alert"]')?.textContent ?? '' }
 function count(context: Context, kind: Kind) { return kind === 'create' ? context.creates.length : context.updates.length }
 
 test('database create and edit submit once, retain focused read-only fields and allow a cleaned local failure to retry in both languages', async () => {
@@ -265,6 +265,9 @@ test('database create and edit submit once, retain focused read-only fields and 
       assert.equal(context.document.activeElement === focused, true)
       const method = kind === 'create' ? 'create-document-database' : 'update-database-metadata'
       await context.reject(kind, 0, `Error invoking remote method 'knowbook:${method}': Error: Database mutation failed.`)
+      assert.equal(context.form().querySelector('[role="alert"]')?.textContent, locale === 'zh-CN'
+        ? '保存失败，输入已保留，可以重试。' : 'Could not save. Your input has been kept. Try again.')
+      assert.equal(context.form().querySelector<HTMLDetailsElement>('.dbw-form-error-details')?.open, false)
       assert.equal(error(context), 'Database mutation failed.')
       assert.equal(context.messages.length, 0, 'The open form owns the error')
       assert.equal(context.name().value, 'Submitted database')

@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useId, useRef } from 'react'
 import { useDatabaseDialogFocus } from '../hooks/useDatabaseDialogFocus'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { ConfirmationDialog } from '../../../components/ConfirmationDialog'
@@ -45,6 +45,8 @@ export function DatabaseFormDialog({
 }) {
   const dialogRef = useRef<HTMLFormElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const errorId = useId()
+  const hasErrorDetails = Boolean(error?.trim() && error !== text.failed)
   useDatabaseDialogFocus({ containerRef: dialogRef, initialFocusRef: inputRef, onClose: onCancel, open, returnFocusTarget, canReturnFocus })
   if (!open) return null
 
@@ -56,8 +58,13 @@ export function DatabaseFormDialog({
         <label><span>{text.name}</span><input onChange={(event) => { if (!busy) onNameChange(event.target.value) }} readOnly={busy} ref={inputRef} value={name} /></label>
         {withDescription ? <label><span>{text.description}</span><textarea onChange={(event) => { if (!busy) onDescriptionChange(event.target.value) }} readOnly={busy} rows={3} value={description} /></label> : null}
         {busy || blocked ? <p className="dbw-view-form-notice" role="status">{busy ? text.viewOperationContinues : blockedMessage ?? text.viewRenameWaitsForSave}</p> : null}
-        {error ? <p className="dbw-record-submit-error" role="alert">{error}</p> : null}
-        <footer><button className="dbw-quiet-button" onClick={onCancel} type="button">{busy ? text.close : text.cancel}</button><button aria-busy={busy || blocked} aria-disabled={busy || blocked || !name.trim()} className="dbw-primary-button" disabled={!name.trim() && !busy} type="submit">{busy ? pendingLabel ?? text.saving : blocked ? text.waitingForSave : submitLabel ?? text.save}</button></footer>
+        {error ? <div className="dbw-form-error">
+          <p className="dbw-record-submit-error" id={errorId} role="alert">{text.formFailed}</p>
+          {hasErrorDetails ? <details className="recovery-details dbw-form-error-details">
+            <summary>{text.errorDetails}</summary><pre>{error}</pre>
+          </details> : null}
+        </div> : null}
+        <footer><button className="dbw-quiet-button" onClick={onCancel} type="button">{busy ? text.close : text.cancel}</button><button aria-busy={busy || blocked} aria-describedby={error ? errorId : undefined} aria-disabled={busy || blocked || !name.trim()} className="dbw-primary-button" disabled={!name.trim() && !busy} type="submit">{busy ? pendingLabel ?? text.saving : blocked ? text.waitingForSave : submitLabel ?? text.save}</button></footer>
       </form>
     </div>
   )

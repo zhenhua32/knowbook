@@ -194,6 +194,8 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
     const input = form?.querySelector<HTMLInputElement>('input')
     const description = form?.querySelector<HTMLTextAreaElement>('textarea')
     const submit = form?.querySelector<HTMLButtonElement>('button[type="submit"]')
+    const errorDetails = form?.querySelector<HTMLDetailsElement>('.dbw-form-error-details')
+    const errorPre = errorDetails?.querySelector('pre')
     const descriptionRect = description?.getBoundingClientRect()
     const descriptionHit = descriptionRect ? document.elementFromPoint(descriptionRect.x + descriptionRect.width / 2,
       descriptionRect.y + descriptionRect.height / 2) : null
@@ -212,7 +214,9 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
         labels: Array.from(form.querySelectorAll('label')).map(label => ({ text: label.textContent?.trim(), htmlFor: label.htmlFor })),
         submit: submit ? { text: submit.textContent?.trim(), disabled: submit.disabled, ariaBusy: submit.getAttribute('aria-busy'),
           ariaDisabled: submit.getAttribute('aria-disabled'), focused: active === submit } : null,
-        status: form.querySelector('[role="status"]')?.textContent, error: form.querySelector('[role="alert"]')?.textContent } : null,
+        status: form.querySelector('[role="status"]')?.textContent, error: form.querySelector('[role="alert"]')?.textContent,
+        errorDetails: errorDetails ? { open: errorDetails.open, summary: errorDetails.querySelector('summary')?.textContent,
+          text: errorPre?.textContent, rect: errorPre?.getBoundingClientRect().toJSON() } : null } : null,
       route: (window as ProbeWindow).__knowbookDatabaseFormRoute ?? [] }
   })
   const probe = await state(app)
@@ -318,9 +322,18 @@ test('editing database metadata preserves focused failed drafts and retries a re
       expect((await state(app)).calls).toHaveLength(1)
       await finish(app, page, 1, { failure: true })
       await expect(form(page).getByRole('alert')).toBeVisible()
-      await record(page, app, testInfo, 'zh-edit-real-sqlite-failure')
-      await expect(form(page).getByRole('alert')).toContainText('Database metadata is temporarily unavailable.')
+      await record(page, app, testInfo, 'zh-edit-real-sqlite-failure-collapsed')
+      await expect(form(page).getByRole('alert')).toHaveText('保存失败，输入已保留，可以重试。')
+      await expect(form(page).getByRole('alert')).not.toContainText(/SqliteError|Database metadata is temporarily unavailable\./i)
       await expect(form(page).getByRole('alert')).not.toContainText(/Error invoking|remote method/i)
+      const details = form(page).locator('.dbw-form-error-details')
+      const reason = details.locator('pre')
+      await expect(details).toHaveJSProperty('open', false)
+      await expect(reason).not.toBeVisible()
+      await expect(reason).toContainText('Database metadata is temporarily unavailable.')
+      await expect(reason).not.toContainText(/Error invoking|remote method/i)
+      expect((await state(app)).failures).toHaveLength(1)
+      await expect(reason).toContainText((await state(app)).failures[0])
       await expect(submit(page)).toBeFocused()
       await expect(name(page)).toHaveValue('Blocked metadata')
       await expect(description(page)).toHaveValue('保留这段未保存描述')
@@ -329,6 +342,16 @@ test('editing database metadata preserves focused failed drafts and retries a re
       await expect(page.locator('.dbw-view-tab-wrap.is-active .dbw-unsaved-dot')).toHaveCount(1)
       expect((await state(app)).written).toEqual([])
       expect((await page.evaluate(() => window.knowbook.getDatabases())).find(database => database.id === fixture.database.id)).toEqual(fixture.database)
+      const summary = details.locator('summary')
+      await expect(summary).toHaveAccessibleName('错误详情')
+      await tabTo(page, summary, 'failed-submit-to-error-details', 'Shift+Tab', 8)
+      await page.keyboard.press('Space')
+      await expect(details).toHaveJSProperty('open', true)
+      await expect(reason).toBeVisible()
+      await expect(reason).toContainText('Database metadata is temporarily unavailable.')
+      await expect(summary).toBeFocused()
+      await record(page, app, testInfo, 'zh-edit-real-sqlite-failure-expanded')
+      await tabTo(page, submit(page), 'expanded-error-details-to-submit', 'Tab', 8)
       await setMetadataFailure(app, fixture.database.id, false)
       await tabTo(page, name(page), 'failed-submit-to-name', 'Shift+Tab', 8)
       await name(page).fill('数据库修改成功')
