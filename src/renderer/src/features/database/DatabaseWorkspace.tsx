@@ -558,7 +558,7 @@ export function DatabaseWorkspace({
     }
   }
 
-  const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue): Promise<void | DatabaseValueCommitResult> => {
+  const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue, fromTextCell = false): Promise<void | DatabaseValueCommitResult> => {
     const write = async () => {
       if (currentSource.kind === 'document-catalog') {
         await window.knowbook.updateDocumentDatabaseValue({ documentId: record.id, columnId: field.id, value })
@@ -572,9 +572,15 @@ export function DatabaseWorkspace({
     }
     const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
     if (!ownsSource()) return { status: 'failed', message: text.formFailed }
+    const cellKey = JSON.stringify([record.databaseId, record.id, field.id])
+    const cellOperation = fromTextCell ? cellDrafts.get(cellKey)?.operation : null
     try { await write() }
     catch (error) {
-      if (ownsSource()) reportError(error)
+      console.warn('Database text cell save failed.', error)
+      if (ownsSource()) {
+        if (!fromTextCell) reportError(error)
+        else if (cellOperation && cellDrafts.get(cellKey)?.operation === cellOperation) onMessage(text.formFailed, 'error')
+      }
       return { status: 'failed', message: text.formFailed }
     }
     // End the write lock at its ACK; subsequent reads have separate ownership.
@@ -841,7 +847,7 @@ export function DatabaseWorkspace({
           </div>
         ) : null}
         {!empty && draft.layout === 'table' ? (
-          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={updateValue} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
+          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={(record, field, value) => updateValue(record, field, value, true)} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
         ) : null}
         {!empty && draft.layout === 'board' ? <DatabaseBoardView field={boardField} groups={boardGroups} onMoveRecord={moveBoardRecord} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} sourceKind={currentSource.kind} text={text} /> : null}
         {!empty && draft.layout === 'cards' ? <DatabaseCardView fields={draft.cardFieldIds.length > 0 ? visibleFields.filter((field) => draft.cardFieldIds.includes(field.id) || field.role === 'title') : visibleFields} locale={locale} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} /> : null}
