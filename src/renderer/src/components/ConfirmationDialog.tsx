@@ -4,6 +4,7 @@ import { getActiveUiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { registerModalFamily } from '../hooks/useDialogCloseFocus'
 
 export type ConfirmationOptions = {
   title: string
@@ -47,6 +48,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   const returnDelegate = useRef(onReturnFocus), cancelReturn = useRef<(() => void) | null>(null)
   const attentive = useRef(true)
   const action = useRef<ConfirmationAction | null>(null), originModal = useRef<HTMLElement | null>(null)
+  const modalFamily = useRef<ReturnType<typeof registerModalFamily> | null>(null)
   dismiss.current = onCancel
   restoreAllowed.current = canReturnFocus
   returnDelegate.current = onReturnFocus
@@ -68,6 +70,8 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     .some(modal => modal !== request.dialog && modal !== request.parentModal && !modal.contains(request.dialog) && isVisible(modal))
 
   useLayoutEffect(() => () => {
+    // DOM removal can blur the still-connected child before passive cleanup.
+    modalFamily.current?.closing()
     if (action.current) cancelActionAttention(action.current)
     action.current = null
   }, [cancelActionAttention])
@@ -137,9 +141,12 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     originModal.current = owner.activeElement?.closest<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]') ?? parentModal
     const hasForeignModal = () => [...owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
       .some(modal => modal !== element && modal !== parentModal && !modal.contains(element) && isVisible(modal))
+    const family = registerModalFamily(element, originModal.current)
+    modalFamily.current = family
     element.showModal()
     measureScrollability()
     cancel.current?.focus()
+    family.opened()
     attentive.current = true
     const abandonAttention = () => { attentive.current = false }
     const focusMoved = (event: FocusEvent) => { if (!element.contains(event.target as Node)) abandonAttention() }
@@ -169,50 +176,56 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
       view.removeEventListener('blur', abandonAttention)
       const active = owner.activeElement
       const shouldRestore = attentive.current && (active === owner.body || active === previous || element.contains(active))
-      element.close()
-      const allowed = () => {
-        const current = owner.activeElement
-        return shouldRestore && owner.hasFocus() && !hasForeignModal()
-          && (!restoreAllowed.current || restoreAllowed.current())
-          && (current === owner.body || current === previous || element.contains(current))
+      family.closing()
+      try {
+        element.close()
+        const allowed = () => {
+          const current = owner.activeElement
+          return shouldRestore && owner.hasFocus() && !hasForeignModal()
+            && (!restoreAllowed.current || restoreAllowed.current())
+            && (current === owner.body || current === previous || element.contains(current))
+        }
+        if (returnDelegate.current) {
+          if (allowed()) returnDelegate.current()
+          return
+        }
+        if (!allowed()) return
+        const target = () => previous?.isConnected ? previous
+          : previousTree?.isConnected ? previousTree.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ?? null : null
+        let pending = true, frame: number | null = null
+        const abandon = () => {
+          pending = false
+          if (frame !== null) view.cancelAnimationFrame(frame)
+          frame = null
+          owner.removeEventListener('pointerdown', abandon, true)
+          owner.removeEventListener('keydown', abandon, true)
+          owner.removeEventListener('compositionstart', abandon, true)
+          owner.removeEventListener('focusin', abandon, true)
+          view.removeEventListener('blur', abandon)
+          if (cancelReturn.current === abandon) cancelReturn.current = null
+        }
+        const restore = () => {
+          if (!pending) return
+          const next = target(), permitted = allowed() && !!next && isVisible(next) && !next.matches(':disabled, [aria-disabled="true"]')
+          abandon()
+          if (permitted) next!.focus({ preventScroll: true })
+        }
+        const next = target()
+        if (next?.matches(':disabled') && isVisible(next)) {
+          // Wait once for the awaiting owner to re-enable its opener; a new
+          // interaction permanently revokes even a copied callback.
+          cancelReturn.current = abandon
+          owner.addEventListener('pointerdown', abandon, true)
+          owner.addEventListener('keydown', abandon, true)
+          owner.addEventListener('compositionstart', abandon, true)
+          owner.addEventListener('focusin', abandon, true)
+          view.addEventListener('blur', abandon)
+          frame = view.requestAnimationFrame(restore)
+        } else restore()
+      } finally {
+        family.release()
+        if (modalFamily.current === family) modalFamily.current = null
       }
-      if (returnDelegate.current) {
-        if (allowed()) returnDelegate.current()
-        return
-      }
-      if (!allowed()) return
-      const target = () => previous?.isConnected ? previous
-        : previousTree?.isConnected ? previousTree.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ?? null : null
-      let pending = true, frame: number | null = null
-      const abandon = () => {
-        pending = false
-        if (frame !== null) view.cancelAnimationFrame(frame)
-        frame = null
-        owner.removeEventListener('pointerdown', abandon, true)
-        owner.removeEventListener('keydown', abandon, true)
-        owner.removeEventListener('compositionstart', abandon, true)
-        owner.removeEventListener('focusin', abandon, true)
-        view.removeEventListener('blur', abandon)
-        if (cancelReturn.current === abandon) cancelReturn.current = null
-      }
-      const restore = () => {
-        if (!pending) return
-        const next = target(), permitted = allowed() && !!next && isVisible(next) && !next.matches(':disabled, [aria-disabled="true"]')
-        abandon()
-        if (permitted) next!.focus({ preventScroll: true })
-      }
-      const next = target()
-      if (next?.matches(':disabled') && isVisible(next)) {
-        // Wait once for the awaiting owner to re-enable its opener; a new
-        // interaction permanently revokes even a copied callback.
-        cancelReturn.current = abandon
-        owner.addEventListener('pointerdown', abandon, true)
-        owner.addEventListener('keydown', abandon, true)
-        owner.addEventListener('compositionstart', abandon, true)
-        owner.addEventListener('focusin', abandon, true)
-        view.addEventListener('blur', abandon)
-        frame = view.requestAnimationFrame(restore)
-      } else restore()
     }
   }, [returnFocus, measureScrollability, cancelActionAttention])
 

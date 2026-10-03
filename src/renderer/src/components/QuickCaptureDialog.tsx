@@ -5,6 +5,7 @@ import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
+import { useDialogCloseFocus } from '../hooks/useDialogCloseFocus'
 import './document-capture.css'
 
 type Props = {
@@ -33,6 +34,7 @@ export default function QuickCaptureDialog({ isZh, documentTree, onClose, onSave
   const labelId = useId(), hintId = useId(), formId = useId(), keyboardHintId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
   const actionFocus = useDialogActionFocus(dialog)
+  const trackCloseFocus = useDialogCloseFocus()
 
   useLayoutEffect(() => {
     mounted.current = true
@@ -40,14 +42,12 @@ export default function QuickCaptureDialog({ isZh, documentTree, onClose, onSave
     const element = dialog.current!
     element.showModal()
     contentInput.current?.focus()
+    const closeDialog = trackCloseFocus(element, previous)
     return () => {
       mounted.current = false
-      element.close()
-      const restore = () => { if (previous?.isConnected && !previous.matches(':disabled')) previous.focus({ preventScroll: true }) }
-      restore()
-      if (previous?.matches(':disabled')) window.requestAnimationFrame(restore)
+      closeDialog()
     }
-  }, [])
+  }, [trackCloseFocus])
   useLayoutEffect(() => {
     const fields = body.current, content = contentInput.current
     if (!fields || !content || !window.ResizeObserver) return

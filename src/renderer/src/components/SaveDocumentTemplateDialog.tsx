@@ -5,6 +5,7 @@ import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
+import { useDialogCloseFocus } from '../hooks/useDialogCloseFocus'
 import './document-capture.css'
 
 type Props = {
@@ -21,6 +22,7 @@ export default function SaveDocumentTemplateDialog({ isZh, source, onClose, onSa
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const labelId = useId(), hintId = useId(), variablesId = useId(), formId = useId()
   const actionFocus = useDialogActionFocus(dialog)
+  const trackCloseFocus = useDialogCloseFocus()
 
   useEffect(() => {
     mounted.current = true
@@ -29,14 +31,12 @@ export default function SaveDocumentTemplateDialog({ isZh, source, onClose, onSa
     element.showModal()
     nameInput.current?.focus()
     nameInput.current?.select()
+    const closeDialog = trackCloseFocus(element, previous)
     return () => {
       mounted.current = false
-      element.close()
-      const restore = () => { if (previous?.isConnected && !previous.matches(':disabled')) previous.focus({ preventScroll: true }) }
-      restore()
-      if (previous?.matches(':disabled')) window.requestAnimationFrame(restore)
+      closeDialog()
     }
-  }, [])
+  }, [trackCloseFocus])
 
   const close = () => { if (!lock.current && !composing.current) onClose() }
   const save = async () => {

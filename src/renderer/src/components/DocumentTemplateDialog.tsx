@@ -8,6 +8,7 @@ import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
+import { useDialogCloseFocus } from '../hooks/useDialogCloseFocus'
 import { MarkdownContent } from './MarkdownContent'
 import './document-capture.css'
 
@@ -42,6 +43,7 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   const labelId = useId(), hintId = useId(), previewId = useId(), formId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
   const actionFocus = useDialogActionFocus(dialog)
+  const trackCloseFocus = useDialogCloseFocus()
   const preferred = templates.find(template => template.id === selectedId)
   const visible = templates.filter(template => (category === 'all' || (category === 'builtIn') === template.builtIn)
     && `${template.name} ${template.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
@@ -74,16 +76,14 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
     const element = dialog.current!
     element.showModal()
     search.current?.focus()
+    const closeDialog = trackCloseFocus(element, previous)
     return () => {
       mounted.current = false
       deleteSession.current++
       loadSequence.current++
-      element.close()
-      const restore = () => { if (previous?.isConnected && !previous.matches(':disabled')) previous.focus({ preventScroll: true }) }
-      restore()
-      if (previous?.matches(':disabled')) window.requestAnimationFrame(restore)
+      closeDialog()
     }
-  }, [])
+  }, [trackCloseFocus])
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     if (!selected) return
