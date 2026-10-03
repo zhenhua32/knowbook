@@ -31,6 +31,15 @@ type DatabasePageProps = {
   ui: UiText
 }
 
+type SavedRefreshPublication = {
+  cache: DatabaseTextDraftCache
+  snapshot: ReturnType<DatabaseTextDraftCache['captureSavedRefresh']>
+  isCurrent: () => boolean
+  catalog: boolean
+  records: DocumentCatalogEntry[] | DatabaseDomainState['databaseEntities']
+  columns: DocumentDatabaseColumn[]
+}
+
 export function DatabasePage({
   catalogColumns,
   catalogDocuments,
@@ -55,6 +64,8 @@ export function DatabasePage({
   const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
   const textDraftCache = database.databaseTextDraftCache ?? localTextDraftCache
   if (!textDraftCache.current) textDraftCache.current = new DatabaseTextDraftCache()
+  const savedRefreshPublication = useRef<SavedRefreshPublication | null>(null)
+  const [, pulseRefreshPublication] = useState(0)
   const deletionRevision = useRef(0)
   const [deletionRecovery, setDeletionRecovery] = useState<{ sourceId: string; sourceGeneration: number; revision: number; error: string; busy: boolean } | null>(null)
   const sourceSession = useRef({ renderedId: database.databaseEntityDatabaseId, currentId: database.databaseEntityDatabaseId, generation: 0 })
@@ -68,8 +79,22 @@ export function DatabasePage({
   }
   useLayoutEffect(() => {
     mounted.current = true
-    return () => { mounted.current = false; sourceSession.current.generation++; refreshGeneration.current++ }
+    return () => { mounted.current = false; sourceSession.current.generation++; refreshGeneration.current++; savedRefreshPublication.current = null }
   }, [])
+  useLayoutEffect(() => {
+    const pending = savedRefreshPublication.current
+    if (!pending) return
+    if (!pending.isCurrent() || textDraftCache.current !== pending.cache) {
+      savedRefreshPublication.current = null
+      return
+    }
+    const records = pending.catalog ? catalogDocuments : database.databaseEntities
+    const columns = pending.catalog ? catalogColumns : database.selectedDatabaseColumns
+    // A resolved read can still have guarded state updates waiting to commit.
+    if (records !== pending.records || columns !== pending.columns) return
+    savedRefreshPublication.current = null
+    pending.cache.confirmSavedRefresh(pending.snapshot)
+  })
 
   const changeCurrentDatabase = useCallback((databaseId: string) => {
     if (sourceSession.current.currentId !== databaseId) {
@@ -91,11 +116,14 @@ export function DatabasePage({
     if (!mounted.current || shouldContinue?.() === false) return false
     const targetId = targetDatabaseId ?? sourceSession.current.currentId
     const requestId = ++refreshGeneration.current
+    savedRefreshPublication.current = null
     const sessionId = sourceSession.current.generation
     const isCurrentRequest = () => mounted.current && requestId === refreshGeneration.current
       && sessionId === sourceSession.current.generation && shouldContinue?.() !== false
     const isCurrentSource = () => isCurrentRequest() && targetId === sourceSession.current.currentId
     const targetDatabase = latest.current.database.databases.find((candidate) => candidate.id === targetId)
+    const cache = latest.current.database.databaseTextDraftCache?.current ?? localTextDraftCache.current
+    const snapshot = cache?.captureSavedRefresh(targetId)
     let result
     try {
       result = await Promise.all([
@@ -126,6 +154,12 @@ export function DatabasePage({
       current.onCatalogColumnsChange(previous => canPublishGlobal() ? columns : previous)
     }
     if (!isCurrentSource()) return false
+    if (cache && snapshot?.size) {
+      const catalog = refreshedTarget?.kind === 'document-catalog'
+      savedRefreshPublication.current = { cache, snapshot, isCurrent: isCurrentSource, catalog,
+        records: catalog ? documents : entities, columns }
+      pulseRefreshPublication(previous => previous + 1)
+    }
     current.database.setSelectedDatabaseColumns(previous => isCurrentSource() ? columns : previous)
     current.database.setDatabaseEntities(previous => isCurrentSource() ? entities : previous)
     current.database.setDatabaseSavedViews(previous => isCurrentSource() ? views : previous)

@@ -35,6 +35,7 @@ export class DatabaseTextDraftCache {
   private entries = new Map<string, DatabaseTextDraft>()
   private listeners = new Map<string, Set<() => void>>()
   private readFlights = new Map<string, Promise<void>>()
+  private savedAuthorities = new WeakMap<object, { confirmed: boolean }>()
 
   get(key: string) { return this.entries.get(key) }
   subscribe(key: string, listener: () => void) {
@@ -51,11 +52,44 @@ export class DatabaseTextDraftCache {
   private revokeRead(draft?: DatabaseTextDraft) {
     if (draft?.readLease) draft.readLease.active = false
   }
+  private savedAuthority(draft?: DatabaseTextDraft) {
+    return draft && (this.savedAuthorities.get(draft)
+      ?? (draft.settled?.status === 'saved' ? this.savedAuthorities.get(draft.settled) : undefined))
+  }
+  private inheritSavedAuthority<T extends object>(source: object, target: T): T {
+    const authority = this.savedAuthorities.get(source)
+    if (authority) this.savedAuthorities.set(target, authority)
+    return target
+  }
+  captureSavedRefresh(sourceId: string): ReadonlyMap<string, DatabaseTextDraft> {
+    const snapshot = new Map<string, DatabaseTextDraft>()
+    for (const [key, draft] of this.entries) {
+      const settled = draft.status === 'saved' ? draft : draft.settled
+      if (settled?.status === 'saved' && settled.action === 'refresh' && !draft.operation && !draft.readOperation
+        && (JSON.parse(key) as string[])[0] === sourceId) {
+        if (!this.savedAuthorities.has(settled)) this.savedAuthorities.set(settled, { confirmed: false })
+        snapshot.set(key, draft)
+      }
+    }
+    return snapshot
+  }
+  confirmSavedRefresh(snapshot: ReadonlyMap<string, DatabaseTextDraft>) {
+    for (const [key, captured] of snapshot) {
+      const authority = this.savedAuthority(captured)
+      if (!authority) continue
+      authority.confirmed = true
+      const current = this.get(key)
+      if (!current || this.savedAuthority(current) !== authority || current.status !== 'saved' || current.action !== 'refresh'
+        || current.operation || current.readOperation) continue
+      this.revokeRead(current)
+      this.publish(key)
+    }
+  }
   sync(key: string, value: DocumentDatabaseFieldValue, revision?: string) {
     const draft = this.get(key)
     if (draft && (draft.status === 'saving' && draft.operation || draft.readOperation)) {
       if (revision !== draft.revision || formatTextDraft(value) !== formatTextDraft(draft.observedValue)) {
-        this.publish(key, { ...draft, observedValue: value, revision })
+        this.publish(key, this.inheritSavedAuthority(draft, { ...draft, observedValue: value, revision }))
       }
       return
     }
@@ -72,17 +106,30 @@ export class DatabaseTextDraftCache {
     const settled: SettledTextDraft | undefined = draft?.status === 'failed' || draft?.status === 'saved'
       ? { raw: draft.raw, status: draft.status, message: draft.message, action: draft.action }
       : draft?.settled
-    this.publish(key, { raw, baseline: draft ? draft.baseline : value, observedValue: draft ? draft.observedValue : value,
+    if (draft?.status === 'saved' && settled) this.inheritSavedAuthority(draft, settled)
+    const edited: DatabaseTextDraft = { raw, baseline: draft ? draft.baseline : value, observedValue: draft ? draft.observedValue : value,
       revision: draft ? draft.revision : revision, status: 'dirty', message: '', action: null, operation: null,
-      readOperation: null, readLease: null, settled })
+      readOperation: null, readLease: null, settled }
+    this.publish(key, draft ? this.inheritSavedAuthority(draft, edited) : edited)
   }
   restore(key: string, draft?: DatabaseTextDraft) {
     const current = this.get(key)
     if (current?.operation || draft?.operation) return
     this.revokeRead(current)
     // Escape must not revive a read that editing has already revoked.
-    this.publish(key, draft ? { ...draft, readOperation: null, readLease: null,
-      status: draft.status === 'refreshing' ? 'saved' : draft.status } : undefined)
+    const authority = this.savedAuthority(draft)
+    const restored: DatabaseTextDraft | undefined = draft && !(authority?.confirmed && draft.status === 'saved')
+      ? { ...draft, readOperation: null, readLease: null,
+          status: draft.status === 'refreshing' ? 'saved' : draft.status } : undefined
+    if (restored && authority) {
+      if (authority.confirmed && restored.status === 'dirty') {
+        restored.settled = undefined
+        restored.message = ''
+        restored.action = null
+      }
+      this.savedAuthorities.set(restored, authority)
+    }
+    this.publish(key, restored)
   }
   async commit(key: string, value: DocumentDatabaseFieldValue,
     change: (value: DocumentDatabaseFieldValue) => void | Promise<void | DatabaseValueCommitResult>, fallback: string,
@@ -99,18 +146,21 @@ export class DatabaseTextDraftCache {
         readOperation: null, readLease: null })
       return
     }
-    const newerProps = submitted.revision !== undefined && submitted.revision !== draft.revision
+    const newerProps = this.savedAuthority(draft)?.confirmed
+      || submitted.revision !== undefined && submitted.revision !== draft.revision
       || canonicalText(submitted.value) !== canonicalText(draft.observedValue)
     const baseline = newerProps ? submitted.value : draft.baseline
     // Preserve a write ACK against lagging props, but honor a newer server value.
     if (!observed?.explicitRetry && canonicalText(value) === canonicalText(baseline)) {
       const feedback = !newerProps && settled?.status === 'saved'
         && canonicalText(settled.raw) === canonicalText(value) ? settled : undefined
-      this.publish(key, { ...draft, raw: formatTextDraft(value), baseline: value, status: 'saved',
+      const acknowledged: DatabaseTextDraft = { ...draft, raw: formatTextDraft(value), baseline: value, status: 'saved',
         observedValue: newerProps ? submitted.value : draft.observedValue,
         revision: newerProps ? submitted.revision : draft.revision,
         message: feedback?.message ?? '', action: feedback?.action ?? null, settled: undefined,
-        readOperation: null, readLease: null })
+        readOperation: null, readLease: null }
+      if (feedback) this.inheritSavedAuthority(feedback, acknowledged)
+      this.publish(key, acknowledged)
       return
     }
     const operation = Symbol()
@@ -135,6 +185,7 @@ export class DatabaseTextDraftCache {
       const acknowledged: DatabaseTextDraft = { ...current, observedValue: seen.value, revision: seen.revision,
         raw: formatTextDraft(saved), baseline: saved, operation: null, readOperation, readLease,
         status: 'saved', message, action: message || refresh ? 'refresh' : null }
+      if (acknowledged.action === 'refresh') this.savedAuthorities.set(acknowledged, { confirmed: false })
       this.publish(key, acknowledged)
       if (refresh && readLease) void this.read(key, readLease, refresh, refreshFallback, acknowledged)
     }
@@ -144,7 +195,7 @@ export class DatabaseTextDraftCache {
     if (!draft || draft.operation || draft.readOperation || draft.action !== 'refresh') return
     this.revokeRead(draft)
     const readLease = { active: true }
-    this.publish(key, { ...draft, readOperation: Symbol(), readLease, message: '' })
+    this.publish(key, this.inheritSavedAuthority(draft, { ...draft, readOperation: Symbol(), readLease, message: '' }))
     await this.read(key, readLease, read, fallback, draft)
   }
   private read(key: string, lease: { active: boolean }, read: (isCurrent: () => boolean) => Promise<void | boolean>,
@@ -164,8 +215,8 @@ export class DatabaseTextDraftCache {
       const current = this.get(key)
       if (!lease.active || current?.readLease !== lease) return
       const seen = confirmed ? started : current
-      this.publish(key, { ...current, readOperation: null, observedValue: seen.observedValue, revision: seen.revision,
-        message, action: confirmed ? null : 'refresh' })
+      this.publish(key, this.inheritSavedAuthority(current, { ...current, readOperation: null,
+        observedValue: seen.observedValue, revision: seen.revision, message, action: confirmed ? null : 'refresh' as const }))
     })()
     this.readFlights.set(key, task)
     void task.then(() => { if (this.readFlights.get(key) === task) this.readFlights.delete(key) })
