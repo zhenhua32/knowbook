@@ -35,7 +35,8 @@ export class DatabaseTextDraftCache {
   private entries = new Map<string, DatabaseTextDraft>()
   private listeners = new Map<string, Set<() => void>>()
   private readFlights = new Map<string, Promise<void>>()
-  private savedAuthorities = new WeakMap<object, { confirmed: boolean }>()
+  private currentReadLeases = new Map<string, { active: boolean }>()
+  private savedAuthorities = new WeakMap<object, { confirmed: boolean; commitRequired?: boolean }>()
 
   get(key: string) { return this.entries.get(key) }
   subscribe(key: string, listener: () => void) {
@@ -49,8 +50,11 @@ export class DatabaseTextDraftCache {
     else this.entries.delete(key)
     this.listeners.get(key)?.forEach(listener => listener())
   }
-  private revokeRead(draft?: DatabaseTextDraft) {
+  private revokeRead(key: string, draft?: DatabaseTextDraft) {
     if (draft?.readLease) draft.readLease.active = false
+    const lease = this.currentReadLeases.get(key)
+    if (lease) lease.active = false
+    this.currentReadLeases.delete(key)
   }
   private savedAuthority(draft?: DatabaseTextDraft) {
     return draft && (this.savedAuthorities.get(draft)
@@ -65,9 +69,10 @@ export class DatabaseTextDraftCache {
     const snapshot = new Map<string, DatabaseTextDraft>()
     for (const [key, draft] of this.entries) {
       const settled = draft.status === 'saved' ? draft : draft.settled
-      if (settled?.status === 'saved' && settled.action === 'refresh' && !draft.operation && !draft.readOperation
+      if (settled?.status === 'saved' && settled.action === 'refresh' && !draft.operation
         && (JSON.parse(key) as string[])[0] === sourceId) {
         if (!this.savedAuthorities.has(settled)) this.savedAuthorities.set(settled, { confirmed: false })
+        if (draft.readOperation) this.savedAuthorities.get(settled)!.commitRequired = true
         snapshot.set(key, draft)
       }
     }
@@ -81,7 +86,7 @@ export class DatabaseTextDraftCache {
       const current = this.get(key)
       if (!current || this.savedAuthority(current) !== authority || current.status !== 'saved' || current.action !== 'refresh'
         || current.operation || current.readOperation) continue
-      this.revokeRead(current)
+      // The same read can still have other guarded Page updates to publish.
       this.publish(key)
     }
   }
@@ -102,7 +107,7 @@ export class DatabaseTextDraftCache {
   edit(key: string, value: DocumentDatabaseFieldValue, raw: string, revision?: string) {
     const draft = this.get(key)
     if (draft?.operation) return
-    this.revokeRead(draft)
+    this.revokeRead(key, draft)
     const settled: SettledTextDraft | undefined = draft?.status === 'failed' || draft?.status === 'saved'
       ? { raw: draft.raw, status: draft.status, message: draft.message, action: draft.action }
       : draft?.settled
@@ -115,12 +120,17 @@ export class DatabaseTextDraftCache {
   restore(key: string, draft?: DatabaseTextDraft) {
     const current = this.get(key)
     if (current?.operation || draft?.operation) return
-    this.revokeRead(current)
+    this.revokeRead(key, current)
     // Escape must not revive a read that editing has already revoked.
     const authority = this.savedAuthority(draft)
     const restored: DatabaseTextDraft | undefined = draft && !(authority?.confirmed && draft.status === 'saved')
       ? { ...draft, readOperation: null, readLease: null,
           status: draft.status === 'refreshing' ? 'saved' : draft.status } : undefined
+    if (restored && draft?.readOperation && current?.status === 'saved' && !current.readOperation
+      && this.savedAuthority(current) === authority) {
+      restored.message = current.message
+      restored.action = current.action
+    }
     if (restored && authority) {
       if (authority.confirmed && restored.status === 'dirty') {
         restored.settled = undefined
@@ -136,7 +146,7 @@ export class DatabaseTextDraftCache {
     observed?: { value: DocumentDatabaseFieldValue; revision?: string; explicitRetry?: boolean }, refreshFallback = fallback) {
     const draft = this.get(key)
     if (!draft || draft.operation || draft.status === 'saved') return
-    this.revokeRead(draft)
+    this.revokeRead(key, draft)
     const submitted = observed ?? { value: draft.observedValue, revision: draft.revision }
     const settled = draft.status === 'failed' ? draft : draft.settled
     // Inspecting a failed value must not retry its write implicitly.
@@ -186,6 +196,7 @@ export class DatabaseTextDraftCache {
         raw: formatTextDraft(saved), baseline: saved, operation: null, readOperation, readLease,
         status: 'saved', message, action: message || refresh ? 'refresh' : null }
       if (acknowledged.action === 'refresh') this.savedAuthorities.set(acknowledged, { confirmed: false })
+      if (readLease) this.currentReadLeases.set(key, readLease)
       this.publish(key, acknowledged)
       if (refresh && readLease) void this.read(key, readLease, refresh, refreshFallback, acknowledged)
     }
@@ -193,8 +204,9 @@ export class DatabaseTextDraftCache {
   async refresh(key: string, read: (isCurrent: () => boolean) => Promise<void | boolean>, fallback: string) {
     const draft = this.get(key)
     if (!draft || draft.operation || draft.readOperation || draft.action !== 'refresh') return
-    this.revokeRead(draft)
+    this.revokeRead(key, draft)
     const readLease = { active: true }
+    this.currentReadLeases.set(key, readLease)
     this.publish(key, this.inheritSavedAuthority(draft, { ...draft, readOperation: Symbol(), readLease, message: '' }))
     await this.read(key, readLease, read, fallback, draft)
   }
@@ -214,19 +226,27 @@ export class DatabaseTextDraftCache {
       } catch { message = fallback }
       const current = this.get(key)
       if (!lease.active || current?.readLease !== lease) return
-      const seen = confirmed ? started : current
+      const authority = this.savedAuthority(current)
+      if (authority?.confirmed) {
+        this.publish(key)
+        return
+      }
+      const waitingForCommit = confirmed && authority?.commitRequired
+      if (waitingForCommit) message = started.message
+      const seen = confirmed && !waitingForCommit ? started : current
       this.publish(key, this.inheritSavedAuthority(current, { ...current, readOperation: null,
-        observedValue: seen.observedValue, revision: seen.revision, message, action: confirmed ? null : 'refresh' as const }))
+        observedValue: seen.observedValue, revision: seen.revision, message,
+        action: confirmed && !waitingForCommit ? null : 'refresh' as const }))
     })()
     this.readFlights.set(key, task)
     void task.then(() => { if (this.readFlights.get(key) === task) this.readFlights.delete(key) })
     return task
   }
   prune(sourceId: string, recordIds: Set<string>, fieldIds: Set<string>) {
-    for (const key of this.entries.keys()) {
+    for (const key of new Set([...this.entries.keys(), ...this.currentReadLeases.keys()])) {
       const [source, record, field] = JSON.parse(key) as string[]
       if (source === sourceId && (!recordIds.has(record) || !fieldIds.has(field))) {
-        this.revokeRead(this.get(key))
+        this.revokeRead(key, this.get(key))
         this.publish(key)
       }
     }

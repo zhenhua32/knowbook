@@ -59,6 +59,7 @@ export function DatabasePage({
   latest.current = { database, onCatalogColumnsChange, onCatalogDocumentsChange, onHomeDataChange }
   const mounted = useRef(true)
   const refreshGeneration = useRef(0)
+  const acceptedPublicationGeneration = useRef(0)
   const createdSource = useRef<string | null>(null)
   const viewDraftCache = useRef(new Map<string, DatabaseViewConfigV1>())
   const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
@@ -139,14 +140,17 @@ export function DatabasePage({
       return false
     }
     if (!isCurrentRequest()) return false
+    acceptedPublicationGeneration.current = requestId
     const [home, documents, databases, columns, entities, views] = result
     const refreshedTarget = databases.find((candidate) => candidate.id === targetId) ?? targetDatabase
     const current = latest.current
     // Creating or deleting a database refreshes the shared catalog before the
     // workspace switches sources. Target data must wait for its own source.
-    // This read has already passed its request guard. A subsequent intentional
-    // source switch must retain its global metadata; cell edits can still veto it.
-    const canPublishGlobal = () => shouldContinue?.() !== false
+    // Completed unowned reads retain global metadata across a source switch.
+    // A newer pending or failed read does not discard an accepted snapshot.
+    const canPublishGlobal = () => shouldContinue ? mounted.current
+      && sessionId === sourceSession.current.generation
+      && requestId === acceptedPublicationGeneration.current && shouldContinue() !== false : true
     current.onHomeDataChange(previous => canPublishGlobal() ? home : previous)
     current.onCatalogDocumentsChange(previous => canPublishGlobal() ? documents : previous)
     current.database.setDatabases(previous => canPublishGlobal() ? databases : previous)
@@ -189,7 +193,7 @@ export function DatabasePage({
     if (!mounted.current) return
     // A read started before this write must not replace its acknowledged
     // metadata. This shared list update is independent of source navigation.
-    refreshGeneration.current++
+    acceptedPublicationGeneration.current = ++refreshGeneration.current
     latest.current.database.acknowledgeDatabase(saved)
     if (options?.activate) createdSource.current = saved.id
   }, [])
@@ -210,7 +214,7 @@ export function DatabasePage({
 
   const acknowledgeDeleted = useCallback(async (deleted: DatabaseDeletion) => {
     if (!mounted.current) return
-    refreshGeneration.current++
+    acceptedPublicationGeneration.current = ++refreshGeneration.current
     const current = latest.current
     const affectsCurrentSource = sourceSession.current.currentId === deleted.databaseId
     current.database.acknowledgeDeletion(deleted, affectsCurrentSource)
