@@ -261,6 +261,92 @@ function useFieldCreationFocus(
   return { capture, complete }
 }
 
+type FieldRenameFocus = {
+  origin: HTMLInputElement
+  drawer: HTMLElement
+  blurring: boolean
+  bodyTransition: boolean
+  target: 'name' | 'editor' | null
+  cleanup: () => void
+}
+
+function useFieldRenameFocus(
+  inputRef: RefObject<HTMLInputElement | null>,
+  buttonRef: RefObject<HTMLButtonElement | null>
+) {
+  const pendingRef = useRef<FieldRenameFocus | null>(null)
+  const clear = () => {
+    pendingRef.current?.cleanup()
+    pendingRef.current = null
+  }
+  const hasForeignModal = (drawer: HTMLElement) => [...drawer.ownerDocument.querySelectorAll<HTMLElement>(
+    'dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]'
+  )].some(dialog => dialog !== drawer && isFieldFocusVisible(dialog))
+  useLayoutEffect(() => clear, [])
+  useLayoutEffect(() => {
+    const pending = pendingRef.current
+    if (!pending?.target) return
+    const target = pending.target === 'name' ? buttonRef.current : inputRef.current
+    const document = pending.origin.ownerDocument
+    if (!target || (pending.target === 'editor' && target !== pending.origin)
+      || !isFieldFocusVisible(pending.drawer) || !isFieldFocusVisible(target)
+      || !pending.drawer.contains(target) || !document.hasFocus() || hasForeignModal(pending.drawer)
+      || (document.activeElement !== document.body && document.activeElement !== pending.origin)) {
+      clear()
+      return
+    }
+    if (target.matches(':disabled') || target.closest('[aria-disabled="true"]')) { clear(); return }
+    clear()
+    target.focus({ preventScroll: true })
+  })
+
+  const blur = (origin: HTMLInputElement) => {
+    clear()
+    const document = origin.ownerDocument
+    const drawer = origin.closest<HTMLElement>('.dbw-field-drawer')
+    if (inputRef.current !== origin || !drawer || document.activeElement !== origin || !document.hasFocus()
+      || !isFieldFocusVisible(drawer) || !isFieldFocusVisible(origin) || origin.matches(':disabled')
+      || origin.closest('[aria-disabled="true"]') || hasForeignModal(drawer)) { origin.blur(); return }
+    const abandon = () => { if (pendingRef.current === pending) clear() }
+    const moved = (event: FocusEvent) => {
+      if (event.target === document.body && (pending.blurring || pending.bodyTransition)) {
+        pending.bodyTransition = false
+        return
+      }
+      abandon()
+    }
+    const blurred = (event: FocusEvent) => {
+      const toBody = !event.relatedTarget || event.relatedTarget === document.body
+      if (!toBody || (!pending.blurring && !origin.matches(':disabled'))) { abandon(); return }
+      pending.bodyTransition = true
+      queueMicrotask(() => { pending.bodyTransition = false })
+    }
+    const pending: FieldRenameFocus = { origin, drawer, blurring: true, bodyTransition: false, target: null, cleanup: () => {
+      document.removeEventListener('pointerdown', abandon, true)
+      document.removeEventListener('keydown', abandon, true)
+      document.removeEventListener('compositionstart', abandon, true)
+      document.removeEventListener('focusin', moved, true)
+      origin.removeEventListener('focusout', blurred)
+      document.defaultView?.removeEventListener('blur', abandon)
+    } }
+    pendingRef.current = pending
+    document.addEventListener('pointerdown', abandon, true)
+    document.addEventListener('keydown', abandon, true)
+    document.addEventListener('compositionstart', abandon, true)
+    document.addEventListener('focusin', moved, true)
+    origin.addEventListener('focusout', blurred)
+    document.defaultView?.addEventListener('blur', abandon)
+    // Enter deliberately blurs before the asynchronous submission disables its editor.
+    try { origin.blur() } finally { pending.blurring = false; pending.bodyTransition = false }
+  }
+  const complete = (pending: FieldRenameFocus | null, completed: boolean | null) => {
+    if (!pending || pendingRef.current !== pending) return
+    if (completed === null) { clear(); return }
+    pending.target = completed ? 'name' : 'editor'
+  }
+  return { blur, current: () => pendingRef.current, complete }
+}
+
 function FieldRow({
   field,
   isFirst,
@@ -300,7 +386,7 @@ function FieldRow({
   const composingRef = useRef(false)
   const optionsComposingRef = useRef(false)
   const restoreNameFocusRef = useRef(false)
-  const restoreEditorFocusRef = useRef(false)
+  const renameFocus = useFieldRenameFocus(nameInputRef, nameButtonRef)
   const mounted = useRef(false)
   const savedNameRef = useRef(field.name)
   const savedOptionsRef = useRef(field.options)
@@ -324,10 +410,6 @@ function FieldRow({
       restoreNameFocusRef.current = false
       nameButtonRef.current?.focus({ preventScroll: true })
     }
-    if (editing && !submission.busy && restoreEditorFocusRef.current) {
-      restoreEditorFocusRef.current = false
-      nameInputRef.current?.focus({ preventScroll: true })
-    }
   }, [editing, nameFailed, submission.busy])
 
   const commitName = async (value: string) => {
@@ -345,7 +427,9 @@ function FieldRow({
     nameSavingRef.current = true
     nameFailedRef.current = false
     setNameFailed(false)
+    const pendingFocus = renameFocus.current()
     const completed = await submission.run('name', () => onRename(normalized))
+    renameFocus.complete(pendingFocus, completed)
     if (!mounted.current || completed === null) return
     nameSavingRef.current = false
     if (completed) {
@@ -355,8 +439,6 @@ function FieldRow({
     } else {
       nameFailedRef.current = true
       nameEditingRef.current = true
-      restoreEditorFocusRef.current = restoreNameFocusRef.current
-      restoreNameFocusRef.current = false
       setNameFailed(true)
     }
   }
@@ -400,8 +482,10 @@ function FieldRow({
               if (event.key === 'Enter') {
                 event.preventDefault()
                 event.stopPropagation()
-                restoreNameFocusRef.current = true
-                event.currentTarget.blur()
+                const normalized = event.currentTarget.value.trim()
+                restoreNameFocusRef.current = !normalized || normalized === savedNameRef.current
+                if (restoreNameFocusRef.current) event.currentTarget.blur()
+                else renameFocus.blur(event.currentTarget)
               } else if (event.key === 'Escape') {
                 event.preventDefault()
                 event.stopPropagation()

@@ -18,6 +18,12 @@ async function withRenameDrawer(run: (context: {
   refreshName: (name: string) => Promise<void>; delayNextRename: () => (() => void)
 }) => Promise<void>, locale = 'en-US') {
   const dom = new JSDOM('<button id="opener">Fields</button><div id="mount"></div>', { url: 'http://localhost' })
+  // Model a foreground, laid-out renderer; JSDOM focus/blur stay native.
+  Object.defineProperty(dom.window.document, 'hasFocus', { configurable: true, value: () => true })
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'getClientRects', { configurable: true, value: function (this: HTMLElement) {
+    return (this.isConnected && !this.closest('[hidden], [inert], [aria-hidden="true"]')
+      ? [new dom.window.DOMRect(0, 0, 120, 32)] : []) as unknown as DOMRectList
+  } })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   const frames = new Map<number, FrameRequestCallback>()
   let frameId = 0
