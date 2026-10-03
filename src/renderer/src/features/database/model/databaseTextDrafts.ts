@@ -5,6 +5,13 @@ export type DatabaseValueCommitResult =
       refresh?: (isCurrent: () => boolean) => Promise<void | boolean> }
   | { status: 'failed'; message: string }
 
+type SettledTextDraft = {
+  raw: string
+  status: 'failed' | 'saved'
+  message: string
+  action: 'retry' | 'refresh' | null
+}
+
 export type DatabaseTextDraft = {
   raw: string
   baseline: DocumentDatabaseFieldValue
@@ -16,6 +23,7 @@ export type DatabaseTextDraft = {
   operation: symbol | null
   readOperation?: symbol | null
   readLease?: { active: boolean } | null
+  settled?: SettledTextDraft
 }
 
 export function formatTextDraft(value: DocumentDatabaseFieldValue): string {
@@ -61,9 +69,12 @@ export class DatabaseTextDraftCache {
     const draft = this.get(key)
     if (draft?.operation) return
     this.revokeRead(draft)
+    const settled: SettledTextDraft | undefined = draft?.status === 'failed' || draft?.status === 'saved'
+      ? { raw: draft.raw, status: draft.status, message: draft.message, action: draft.action }
+      : draft?.settled
     this.publish(key, { raw, baseline: draft ? draft.baseline : value, observedValue: draft ? draft.observedValue : value,
       revision: draft ? draft.revision : revision, status: 'dirty', message: '', action: null, operation: null,
-      readOperation: null, readLease: null })
+      readOperation: null, readLease: null, settled })
   }
   restore(key: string, draft?: DatabaseTextDraft) {
     const current = this.get(key)
@@ -75,15 +86,37 @@ export class DatabaseTextDraftCache {
   }
   async commit(key: string, value: DocumentDatabaseFieldValue,
     change: (value: DocumentDatabaseFieldValue) => void | Promise<void | DatabaseValueCommitResult>, fallback: string,
-    observed?: { value: DocumentDatabaseFieldValue; revision?: string }, refreshFallback = fallback) {
+    observed?: { value: DocumentDatabaseFieldValue; revision?: string; explicitRetry?: boolean }, refreshFallback = fallback) {
     const draft = this.get(key)
     if (!draft || draft.operation || draft.status === 'saved') return
     this.revokeRead(draft)
     const submitted = observed ?? { value: draft.observedValue, revision: draft.revision }
+    const settled = draft.status === 'failed' ? draft : draft.settled
+    // Inspecting a failed value must not retry its write implicitly.
+    if (!observed?.explicitRetry && settled?.status === 'failed'
+      && canonicalText(settled.raw) === canonicalText(value)) {
+      this.publish(key, { ...draft, status: 'failed', message: settled.message, action: 'retry', settled: undefined,
+        readOperation: null, readLease: null })
+      return
+    }
+    const newerProps = submitted.revision !== undefined && submitted.revision !== draft.revision
+      || canonicalText(submitted.value) !== canonicalText(draft.observedValue)
+    const baseline = newerProps ? submitted.value : draft.baseline
+    // Preserve a write ACK against lagging props, but honor a newer server value.
+    if (!observed?.explicitRetry && canonicalText(value) === canonicalText(baseline)) {
+      const feedback = !newerProps && settled?.status === 'saved'
+        && canonicalText(settled.raw) === canonicalText(value) ? settled : undefined
+      this.publish(key, { ...draft, raw: formatTextDraft(value), baseline: value, status: 'saved',
+        observedValue: newerProps ? submitted.value : draft.observedValue,
+        revision: newerProps ? submitted.revision : draft.revision,
+        message: feedback?.message ?? '', action: feedback?.action ?? null, settled: undefined,
+        readOperation: null, readLease: null })
+      return
+    }
     const operation = Symbol()
     this.publish(key, { ...draft, observedValue: submitted.value,
       revision: submitted.revision, operation, readOperation: null, readLease: null,
-      status: 'saving', message: '', action: draft.action === 'retry' ? 'retry' : null })
+      status: 'saving', message: '', action: draft.action === 'retry' ? 'retry' : null, settled: undefined })
     let result: void | DatabaseValueCommitResult
     try { result = await change(value) }
     catch { result = { status: 'failed', message: fallback } }
@@ -147,4 +180,8 @@ export class DatabaseTextDraftCache {
       }
     }
   }
+}
+
+function canonicalText(value: DocumentDatabaseFieldValue): string | null {
+  return formatTextDraft(value).trim() || null
 }

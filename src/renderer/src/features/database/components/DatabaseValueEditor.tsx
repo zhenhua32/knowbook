@@ -98,11 +98,13 @@ export function DatabaseValueEditor({
     return <input aria-label={column.name} className="catalog-cell-input" onBlur={() => setIsEditing(false)} onChange={(event) => void onChangeValue(event.target.value || null)} onFocus={() => setIsEditing(true)} type="date" value={typeof value === 'string' ? value : ''} />
   }
 
-  const commit = (nextDraft: string) => {
+  const commit = (nextDraft: string, explicitRetry = false) => {
     const nextValue = nextDraft.trim() || null
     if (!blurText) { void onChangeValue(nextValue); return }
+    if (!cache.get(key) && nextValue === (formatTextDraft(value).trim() || null)) return
     if (!cache.get(key) || cache.get(key)?.raw !== nextDraft) cache.edit(key, value, nextDraft, textDraftRevision)
-    void cache.commit(key, nextValue, onChangeValue, text.formFailed, { value, revision: textDraftRevision }, text.savedRefreshFailed)
+    void cache.commit(key, nextValue, onChangeValue, text.formFailed,
+      { value, revision: textDraftRevision, explicitRetry }, text.savedRefreshFailed)
   }
   const control = (
     <input
@@ -147,7 +149,7 @@ export function DatabaseValueEditor({
     {control}
     {cell?.action && <button aria-busy={pending || reading || undefined} aria-disabled={pending || reading || undefined}
       aria-describedby={message ? feedbackId : undefined} className="dbw-quiet-button" type="button" title={message || undefined}
-      onClick={() => { if (cell.action === 'retry') commit(cell.raw); else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed) }}>
+      onClick={() => { if (cell.action === 'retry') commit(cell.raw, true); else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed) }}>
       {cell.action === 'retry' ? text.retry : text.refresh}
     </button>}
     {message && <span className="sr-only dbw-text-cell-feedback" id={feedbackId} role={cell?.status === 'failed' ? 'alert' : 'status'}>{message}</span>}
