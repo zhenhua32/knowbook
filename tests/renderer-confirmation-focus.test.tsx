@@ -8,10 +8,14 @@ import { setActiveUiLanguage } from '../src/renderer/src/i18n'
 
 async function withConfirmation(markup: string, run: (context: {
   document: Document
-  open: (opener: HTMLElement, onConfirm?: () => void | Promise<void>) => Promise<void>
+  window: JSDOM['window']
+  open: (opener: HTMLElement, onConfirm?: () => void | Promise<void>, options?: { canReturnFocus?: () => boolean }) => Promise<void>
   confirm: () => Promise<void>
   cancel: () => Promise<void>
   frames: FrameRequestCallback[]
+  focusCalls: HTMLElement[]
+  foreground: (value: boolean) => void
+  change: (callback: () => void) => Promise<void>
   runFrames: () => Promise<void>
 }) => Promise<void>) {
   const dom = new JSDOM(`<!doctype html><html><body>${markup}<input id="editor" /><div id="mount"></div></body></html>`, { pretendToBeVisual: true })
@@ -19,6 +23,27 @@ async function withConfirmation(markup: string, run: (context: {
   dom.window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
   const frames: FrameRequestCallback[] = []
   dom.window.requestAnimationFrame = (callback) => { frames.push(callback); return frames.length }
+  // Retain held callbacks even when cancelled: tests can model an already-copied scheduler callback being delivered late.
+  dom.window.cancelAnimationFrame = () => {}
+  let foreground = true
+  Object.defineProperty(dom.window.document, 'hasFocus', { configurable: true, value: () => foreground })
+  dom.window.HTMLElement.prototype.getBoundingClientRect = function () { return new dom.window.DOMRect(0, 0, 400, 80) }
+  dom.window.HTMLElement.prototype.getClientRects = function () {
+    let element: HTMLElement | null = this
+    if (!element.isConnected) return [] as unknown as DOMRectList
+    while (element) {
+      const style = dom.window.getComputedStyle(element)
+      if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true'
+        || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse'
+        || element instanceof dom.window.HTMLDialogElement && !element.open) return [] as unknown as DOMRectList
+      element = element.parentElement
+    }
+    return [this.getBoundingClientRect()] as unknown as DOMRectList
+  }
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'clientHeight', { configurable: true, get() { return 80 } })
+  Object.defineProperty(dom.window.HTMLElement.prototype, 'scrollHeight', { configurable: true, get() { return 80 } })
+  const focusCalls: HTMLElement[] = [], nativeFocus = dom.window.HTMLElement.prototype.focus
+  dom.window.HTMLElement.prototype.focus = function (options) { focusCalls.push(this); nativeFocus.call(this, options) }
   const keys = ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'IS_REACT_ACT_ENVIRONMENT'] as const
   const originals = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
   for (const key of keys) Object.defineProperty(globalThis, key, {
@@ -31,11 +56,12 @@ async function withConfirmation(markup: string, run: (context: {
   }
   try {
     setActiveUiLanguage('en-US')
-    await run({ document: dom.window.document, frames,
-      open: async (opener, onConfirm = () => undefined) => {
+    await run({ document: dom.window.document, window: dom.window, frames, focusCalls,
+      foreground: value => { foreground = value }, change: async callback => { await act(async () => callback()) },
+      open: async (opener, onConfirm = () => undefined, options = {}) => {
         opener.focus()
         await act(async () => root.render(<ConfirmationDialog title="Delete document" description="Delete this document?"
-          returnFocus={opener} onConfirm={onConfirm} onCancel={close} onComplete={close} />))
+          returnFocus={opener} canReturnFocus={options.canReturnFocus} onConfirm={onConfirm} onCancel={close} onComplete={close} />))
         assert.equal(dom.window.document.activeElement, dom.window.document.querySelector('.app-confirm-dialog .secondary-button'))
       },
       confirm: () => click('.app-confirm-dialog .danger-button'),
@@ -153,4 +179,97 @@ test('delayed opener recovery does not override focus moved after the confirmati
     await runFrames()
     assert.equal(document.activeElement, editor)
   })
+})
+
+test('an enabled delayed opener is restored exactly once even if its consumed RAF callback is delivered again', async () => {
+  await withConfirmation('<button id="opener">Open confirmation</button>', async ({ document, open, cancel, frames, focusCalls, runFrames, change }) => {
+    const opener = document.getElementById('opener') as HTMLButtonElement
+    await open(opener)
+    opener.disabled = true
+    await cancel()
+    assert.equal(document.activeElement, document.body)
+    assert.equal(frames.length, 1)
+    const callback = frames[0]
+    opener.disabled = false
+    focusCalls.length = 0
+    await runFrames()
+    assert.equal(document.activeElement, opener)
+    assert.equal(focusCalls.filter(element => element === opener).length, 1)
+    await change(() => callback(0))
+    assert.equal(document.activeElement, opener)
+    assert.equal(focusCalls.filter(element => element === opener).length, 1, 'The close lease is consumed before the delegated native focus call')
+  })
+})
+
+test('editor focus followed by blur back to BODY permanently cancels a delayed opener lease', async () => {
+  await withConfirmation('<button id="opener">Open confirmation</button>', async ({ document, open, cancel, frames, focusCalls, runFrames, change }) => {
+    const opener = document.getElementById('opener') as HTMLButtonElement, editor = document.getElementById('editor')!
+    await open(opener)
+    opener.disabled = true
+    await cancel()
+    const callback = frames[0]
+    opener.disabled = false
+    await change(() => { editor.focus(); editor.blur() })
+    assert.equal(document.activeElement, document.body)
+    focusCalls.length = 0
+    await runFrames()
+    await change(() => callback(0))
+    assert.equal(document.activeElement, document.body)
+    assert.equal(focusCalls.length, 0)
+  })
+})
+
+test('new pointer, keyboard, IME or window-blur activity cannot revive delayed close focus when foreground resumes', async () => {
+  for (const activity of ['pointer', 'key', 'composition', 'window-blur'] as const) await withConfirmation('<button id="opener">Open confirmation</button>',
+    async ({ document, window, open, cancel, frames, focusCalls, foreground, runFrames, change }) => {
+      const opener = document.getElementById('opener') as HTMLButtonElement, editor = document.getElementById('editor')!
+      await open(opener)
+      opener.disabled = true
+      await cancel()
+      const callback = frames[0]
+      opener.disabled = false
+      await change(() => {
+        if (activity === 'pointer') editor.dispatchEvent(new window.Event('pointerdown', { bubbles: true }))
+        else if (activity === 'key') editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+        else if (activity === 'composition') editor.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+        else { foreground(false); window.dispatchEvent(new window.Event('blur')) }
+      })
+      focusCalls.length = 0
+      await runFrames()
+      await change(() => {
+        if (activity === 'composition') editor.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }))
+        foreground(true)
+        window.dispatchEvent(new window.Event('focus'))
+        callback(0)
+      })
+      assert.equal(document.activeElement, document.body)
+      assert.equal(focusCalls.length, 0, `New ${activity} activity permanently abandons close restoration`)
+    })
+})
+
+test('foreign modal, unfocused document or canReturnFocus veto consumes delayed close focus without later replay', async () => {
+  for (const blocker of ['foreign-modal', 'document-unfocused', 'owner-veto'] as const) await withConfirmation('<button id="opener">Open confirmation</button>',
+    async ({ document, open, cancel, frames, focusCalls, foreground, runFrames, change }) => {
+      const opener = document.getElementById('opener') as HTMLButtonElement
+      let allowed = true
+      await open(opener, undefined, { canReturnFocus: () => allowed })
+      opener.disabled = true
+      await cancel()
+      const callback = frames[0]
+      opener.disabled = false
+      const foreign = document.createElement('dialog')
+      foreign.open = true
+      foreign.setAttribute('aria-modal', 'true')
+      if (blocker === 'foreign-modal') document.body.append(foreign)
+      else if (blocker === 'document-unfocused') foreground(false)
+      else allowed = false
+      focusCalls.length = 0
+      await runFrames()
+      foreign.remove()
+      foreground(true)
+      allowed = true
+      await change(() => callback(0))
+      assert.equal(document.activeElement, document.body)
+      assert.equal(focusCalls.length, 0, `${blocker} must not postpone focus until an unrelated later turn`)
+    })
 })

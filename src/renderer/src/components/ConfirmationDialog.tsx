@@ -13,19 +13,31 @@ export type ConfirmationOptions = {
   note?: string
   children?: ReactNode
   onConfirm: () => void | Promise<void>
+  canReturnFocus?: () => boolean
+  /** Delegate the closing handoff instead of restoring the original opener. */
+  onReturnFocus?: () => void
+}
+
+function isVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
 }
 
 export function ConfirmationDialog({ title, description, confirmLabel = title, tone = 'danger', note, children,
-  onConfirm, onCancel, onComplete = onCancel, returnFocus, canReturnFocus,
-}: ConfirmationOptions & { onCancel: () => void; onComplete?: () => void; returnFocus?: HTMLElement | null; canReturnFocus?: () => boolean }) {
+  onConfirm, onCancel, onComplete = onCancel, returnFocus, canReturnFocus, onReturnFocus,
+}: ConfirmationOptions & { onCancel: () => void; onComplete?: () => void; returnFocus?: HTMLElement | null }) {
   const dialog = useRef<HTMLDialogElement>(null), cancel = useRef<HTMLButtonElement>(null)
   const heading = useRef<HTMLHeadingElement>(null), body = useRef<HTMLDivElement>(null)
   const failure = useRef<HTMLParagraphElement>(null)
   const lock = useRef(false), mounted = useRef(false), composing = useRef(false)
   const dismiss = useRef(onCancel)
   const restoreAllowed = useRef(canReturnFocus)
+  const returnDelegate = useRef(onReturnFocus), cancelReturn = useRef<(() => void) | null>(null)
+  const attentive = useRef(true)
   dismiss.current = onCancel
   restoreAllowed.current = canReturnFocus
+  returnDelegate.current = onReturnFocus
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [scrollable, setScrollable] = useState({ heading: false, body: false })
   const titleId = useId(), descriptionId = useId(), noteId = useId()
@@ -66,13 +78,22 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   }, [measureScrollability])
 
   useEffect(() => {
+    cancelReturn.current?.()
     mounted.current = true
-    const previous = returnFocus === undefined ? document.activeElement as HTMLElement | null : returnFocus
+    const element = dialog.current!, owner = element.ownerDocument, view = owner.defaultView!
+    const previous = returnFocus === undefined ? owner.activeElement as HTMLElement | null : returnFocus
     const previousTree = previous?.closest<HTMLElement>('[role="tree"]') ?? null
-    const element = dialog.current!
+    const parentModal = previous?.closest<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]') ?? null
+    const hasForeignModal = () => [...owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
+      .some(modal => modal !== element && modal !== parentModal && !modal.contains(element) && isVisible(modal))
     element.showModal()
     measureScrollability()
     cancel.current?.focus()
+    attentive.current = true
+    const abandonAttention = () => { attentive.current = false }
+    const focusMoved = (event: FocusEvent) => { if (!element.contains(event.target as Node)) abandonAttention() }
+    owner.addEventListener('focusin', focusMoved, true)
+    view.addEventListener('blur', abandonAttention)
     const keydown = (event: KeyboardEvent) => {
       if (!element.open) return
       if (isImeKeyboardEvent(event, composing.current)) {
@@ -88,34 +109,67 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
       // Keep application/editor shortcuts from changing the action's target.
       event.stopPropagation()
     }
-    window.addEventListener('keydown', keydown, true)
+    view.addEventListener('keydown', keydown, true)
     return () => {
       mounted.current = false
-      window.removeEventListener('keydown', keydown, true)
-      const active = document.activeElement
-      const shouldRestore = active === document.body || active === previous || element.contains(active)
+      view.removeEventListener('keydown', keydown, true)
+      owner.removeEventListener('focusin', focusMoved, true)
+      view.removeEventListener('blur', abandonAttention)
+      const active = owner.activeElement
+      const shouldRestore = attentive.current && (active === owner.body || active === previous || element.contains(active))
       element.close()
-      const restore = () => {
-        if (restoreAllowed.current && !restoreAllowed.current()) return
-        const current = document.activeElement
-        // An action may navigate or open another dialog before this one unmounts.
-        if (!shouldRestore || (current !== document.body && current !== previous && !element.contains(current))) return
-        if (previous?.isConnected) {
-          if (!previous.matches(':disabled')) previous.focus({ preventScroll: true })
-          return
-        }
-        // Deleting a tree item removes its opener; return to the same tree's new keyboard entry.
-        if (!previousTree?.isConnected || previousTree.closest('[hidden], [inert], [aria-hidden="true"]')) return
-        const next = previousTree.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')
-        if (next && !next.closest('[hidden], [inert], [aria-hidden="true"]')) next.focus({ preventScroll: true })
+      const allowed = () => {
+        const current = owner.activeElement
+        return shouldRestore && owner.hasFocus() && !hasForeignModal()
+          && (!restoreAllowed.current || restoreAllowed.current())
+          && (current === owner.body || current === previous || element.contains(current))
       }
-      restore()
-      // The opener can remain disabled until the awaiting action has settled.
-      if (shouldRestore && previous?.matches(':disabled')) window.requestAnimationFrame?.(restore)
+      if (returnDelegate.current) {
+        if (allowed()) returnDelegate.current()
+        return
+      }
+      if (!allowed()) return
+      const target = () => previous?.isConnected ? previous
+        : previousTree?.isConnected ? previousTree.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]') ?? null : null
+      let pending = true, frame: number | null = null
+      const abandon = () => {
+        pending = false
+        if (frame !== null) view.cancelAnimationFrame(frame)
+        frame = null
+        owner.removeEventListener('pointerdown', abandon, true)
+        owner.removeEventListener('keydown', abandon, true)
+        owner.removeEventListener('compositionstart', abandon, true)
+        owner.removeEventListener('focusin', abandon, true)
+        view.removeEventListener('blur', abandon)
+        if (cancelReturn.current === abandon) cancelReturn.current = null
+      }
+      const restore = () => {
+        if (!pending) return
+        const next = target(), permitted = allowed() && !!next && isVisible(next) && !next.matches(':disabled, [aria-disabled="true"]')
+        abandon()
+        if (permitted) next!.focus({ preventScroll: true })
+      }
+      const next = target()
+      if (next?.matches(':disabled') && isVisible(next)) {
+        // Wait once for the awaiting owner to re-enable its opener; a new
+        // interaction permanently revokes even a copied callback.
+        cancelReturn.current = abandon
+        owner.addEventListener('pointerdown', abandon, true)
+        owner.addEventListener('keydown', abandon, true)
+        owner.addEventListener('compositionstart', abandon, true)
+        owner.addEventListener('focusin', abandon, true)
+        view.addEventListener('blur', abandon)
+        frame = view.requestAnimationFrame(restore)
+      } else restore()
     }
   }, [returnFocus, measureScrollability])
 
-  useEffect(() => { if (!busy) cancel.current?.focus() }, [busy])
+  const focusCancel = () => {
+    const element = dialog.current, owner = element?.ownerDocument, active = owner?.activeElement
+    if (mounted.current && attentive.current && element?.open && owner?.hasFocus()
+      && (active === owner.body || element.contains(active ?? null))) cancel.current?.focus()
+  }
+  useEffect(() => { if (!busy) focusCancel() }, [busy])
 
   const execute = async () => {
     if (lock.current) return
@@ -128,7 +182,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
       if (mounted.current) setError(getErrorMessage(cause, zh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
     } finally {
       lock.current = false
-      if (mounted.current) { setBusy(false); cancel.current?.focus() }
+      if (mounted.current) { setBusy(false); focusCancel() }
     }
   }
 

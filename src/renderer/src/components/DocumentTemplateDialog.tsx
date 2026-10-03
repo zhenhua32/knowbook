@@ -32,6 +32,7 @@ function flattenTree(nodes: DocumentTreeNode[]): DocumentTreeNode[] {
 export default function DocumentTemplateDialog({ isZh, documentTree, initialParentId = null, onClose, onCreate }: Props) {
   const dialog = useRef<HTMLDialogElement>(null), search = useRef<HTMLInputElement>(null)
   const mounted = useRef(false), lock = useRef(false), composing = useRef(false), loadSequence = useRef(0)
+  const deleteSession = useRef(0)
   const automaticTitle = useRef('')
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]), [selectedId, setSelectedId] = useState('')
   const [category, setCategory] = useState<'all' | 'builtIn' | 'custom'>('all'), [query, setQuery] = useState('')
@@ -75,6 +76,7 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
     search.current?.focus()
     return () => {
       mounted.current = false
+      deleteSession.current++
       loadSequence.current++
       element.close()
       const restore = () => { if (previous?.isConnected && !previous.matches(':disabled')) previous.focus({ preventScroll: true }) }
@@ -119,6 +121,9 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   const remove = async () => {
     if (!selected || selected.builtIn || lock.current || composing.current) return
     const target = selected
+    const element = dialog.current!, session = ++deleteSession.current
+    const isCurrentDelete = () => mounted.current && deleteSession.current === session && dialog.current === element && element.isConnected
+    let operation: ReturnType<typeof actionFocus.begin> = null
     lock.current = true
     setBusy('delete')
     setError('')
@@ -126,9 +131,21 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
       await confirmAction({ title: isZh ? `删除模板“${target.name}”` : `Delete template “${target.name}”`,
         description: isZh ? '删除后无法恢复。使用这个模板创建的文档会保留。' : 'This template cannot be recovered after deletion. Documents created from it will remain.',
         confirmLabel: isZh ? '删除模板' : 'Delete template',
+        canReturnFocus: isCurrentDelete,
+        onReturnFocus: () => {
+          const owner = element.ownerDocument, view = owner.defaultView
+          if (!isCurrentDelete() || !view || !element.open || !owner.hasFocus() || !element.getClientRects().length
+            || element.closest('[hidden], [inert], [aria-hidden="true"]')) return
+          const style = view.getComputedStyle(element)
+          if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return
+          // The closing confirmation authorizes this handoff. Begin listening
+          // only after it closes, so confirming or cancelling is not a veto.
+          element.focus({ preventScroll: true })
+          operation = actionFocus.begin()
+        },
         onConfirm: async () => {
           await window.knowbook.deleteDocumentTemplate(target.id)
-          if (!mounted.current) return
+          if (!isCurrentDelete()) return
           const next = templates.filter(template => template.id !== target.id)
           setTemplates(next)
           setSelectedId(previous => next.some(template => template.id === previous) ? previous
@@ -136,12 +153,12 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
         }
       })
     } catch (cause) {
-      if (mounted.current) setError(getErrorMessage(cause, isZh ? '无法删除模板，请重试。' : 'Could not delete the template. Please retry.'))
+      if (isCurrentDelete()) setError(getErrorMessage(cause, isZh ? '无法删除模板，请重试。' : 'Could not delete the template. Please retry.'))
     } finally {
-      lock.current = false
-      if (mounted.current) {
+      if (isCurrentDelete()) {
+        lock.current = false
         setBusy(null)
-        window.requestAnimationFrame(() => { if (mounted.current) search.current?.focus() })
+        actionFocus.restore(operation, () => search.current)
       }
     }
   }
