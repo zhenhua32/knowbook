@@ -223,7 +223,8 @@ test(`quick capture keeps short viewport controls reachable in ${language} @elec
     await expect(save(page)).toBeDisabled()
     await expect(cancel(page)).toBeDisabled()
     await expect(capture(page)).toHaveAttribute('aria-busy', 'true')
-    for (let i = 0; i < 3; i++) await page.keyboard.press('Control+Enter')
+    // No newer input: this layout case also verifies normal failure autofocus.
+    // Repeated busy-state input is covered by the focus ownership scenarios.
     const pending = await record(page, app, testInfo, `${language}-short-capture-pending-single-flight`)
     expect(pending.main.calls).toHaveLength(1)
     expect(pending.main.calls[0].input).toEqual({ content: draft, title: 'Invalid/title', parentId })

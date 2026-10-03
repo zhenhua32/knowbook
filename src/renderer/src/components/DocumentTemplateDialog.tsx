@@ -7,6 +7,7 @@ import { confirmAction } from '../confirmAction'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
 import { MarkdownContent } from './MarkdownContent'
 import './document-capture.css'
 
@@ -39,6 +40,7 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   const [busy, setBusy] = useState<'create' | 'delete' | null>(null)
   const labelId = useId(), hintId = useId(), previewId = useId(), formId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
+  const actionFocus = useDialogActionFocus(dialog)
   const preferred = templates.find(template => template.id === selectedId)
   const visible = templates.filter(template => (category === 'all' || (category === 'builtIn') === template.builtIn)
     && `${template.name} ${template.description}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
@@ -96,19 +98,20 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
   const create = async () => {
     if (!selected || loading || loadError || lock.current || composing.current) return
     lock.current = true
+    const operation = actionFocus.begin()
+    if (!operation) { lock.current = false; return }
     setBusy('create')
     setError('')
-    dialog.current?.focus()
     try {
       await onCreate({ templateId: selected.id, title: title.trim() || undefined, parentId: parentId || null, language: isZh ? 'zh-CN' : 'en-US' })
-      if (mounted.current) onClose()
+      if (mounted.current && actionFocus.isCurrent(operation)) { actionFocus.cancel(operation); onClose() }
     } catch (cause) {
-      if (mounted.current) setError(getErrorMessage(cause, isZh ? '创建失败，已保留标题和位置，请重试。' : 'Could not create the document. Your title and location are preserved. Please retry.'))
+      if (mounted.current && actionFocus.isCurrent(operation)) setError(getErrorMessage(cause, isZh ? '创建失败，已保留标题和位置，请重试。' : 'Could not create the document. Your title and location are preserved. Please retry.'))
     } finally {
-      lock.current = false
-      if (mounted.current) {
+      if (mounted.current && actionFocus.isCurrent(operation)) {
+        lock.current = false
         setBusy(null)
-        window.requestAnimationFrame(() => { if (mounted.current) dialog.current?.querySelector<HTMLInputElement>('[name="document-title"]')?.focus() })
+        actionFocus.restore(operation, () => dialog.current?.querySelector<HTMLInputElement>('[name="document-title"]') ?? null)
       }
     }
   }

@@ -4,6 +4,7 @@ import type { DocumentBlockDraft } from '@shared/contracts'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
 import './document-capture.css'
 
 type Props = {
@@ -19,6 +20,7 @@ export default function SaveDocumentTemplateDialog({ isZh, source, onClose, onSa
   const [name, setName] = useState(source.title), [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const labelId = useId(), hintId = useId(), variablesId = useId(), formId = useId()
+  const actionFocus = useDialogActionFocus(dialog)
 
   useEffect(() => {
     mounted.current = true
@@ -45,19 +47,20 @@ export default function SaveDocumentTemplateDialog({ isZh, source, onClose, onSa
       return
     }
     lock.current = true
+    const operation = actionFocus.begin()
+    if (!operation) { lock.current = false; return }
     setBusy(true)
     setError('')
-    dialog.current?.focus()
     try {
       await window.knowbook.saveDocumentTemplate({ ...source, name: name.trim(), description: description.trim() })
-      if (mounted.current) { onSaved(); onClose() }
+      if (mounted.current && actionFocus.isCurrent(operation)) { actionFocus.cancel(operation); onSaved(); onClose() }
     } catch (cause) {
-      if (mounted.current) setError(getErrorMessage(cause, isZh ? '保存模板失败，输入已保留，请重试。' : 'Could not save the template. Your input is preserved. Please retry.'))
+      if (mounted.current && actionFocus.isCurrent(operation)) setError(getErrorMessage(cause, isZh ? '保存模板失败，输入已保留，请重试。' : 'Could not save the template. Your input is preserved. Please retry.'))
     } finally {
-      lock.current = false
-      if (mounted.current) {
+      if (mounted.current && actionFocus.isCurrent(operation)) {
+        lock.current = false
         setBusy(false)
-        window.requestAnimationFrame(() => { if (mounted.current) nameInput.current?.focus() })
+        actionFocus.restore(operation, () => nameInput.current)
       }
     }
   }

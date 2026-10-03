@@ -4,6 +4,7 @@ import type { CreateQuickNoteInput, DocumentTreeNode } from '@shared/contracts'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
 import './document-capture.css'
 
 type Props = {
@@ -31,6 +32,7 @@ export default function QuickCaptureDialog({ isZh, documentTree, onClose, onSave
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const labelId = useId(), hintId = useId(), formId = useId(), keyboardHintId = useId()
   const parents = useMemo(() => flattenTree(documentTree), [documentTree])
+  const actionFocus = useDialogActionFocus(dialog)
 
   useLayoutEffect(() => {
     mounted.current = true
@@ -123,24 +125,20 @@ export default function QuickCaptureDialog({ isZh, documentTree, onClose, onSave
       return
     }
     lock.current = true
+    const operation = actionFocus.begin()
+    if (!operation) { lock.current = false; return }
     setBusy(true)
     setError('')
-    dialog.current?.focus()
     try {
       await onSave({ content, title: title.trim() || undefined, parentId: parentId || null })
-      if (mounted.current) onClose()
+      if (mounted.current && actionFocus.isCurrent(operation)) { actionFocus.cancel(operation); onClose() }
     } catch (cause) {
-      if (mounted.current) setError(getErrorMessage(cause, isZh ? '保存记录失败，内容已保留，请重试。' : 'Could not save the note. Your content is preserved. Please retry.'))
+      if (mounted.current && actionFocus.isCurrent(operation)) setError(getErrorMessage(cause, isZh ? '保存记录失败，内容已保留，请重试。' : 'Could not save the note. Your content is preserved. Please retry.'))
     } finally {
-      lock.current = false
-      if (mounted.current) {
+      if (mounted.current && actionFocus.isCurrent(operation)) {
+        lock.current = false
         setBusy(false)
-        window.requestAnimationFrame(() => {
-          if (mounted.current) {
-            contentInput.current?.focus()
-            adjustBodyLayout.current?.()
-          }
-        })
+        actionFocus.restore(operation, () => contentInput.current, () => adjustBodyLayout.current?.())
       }
     }
   }

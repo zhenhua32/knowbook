@@ -212,7 +212,9 @@ test(`template filtering keeps preview and creation coherent in ${language} @ele
     expect(pending.state.fieldsetDisabled).toBe(true)
     await settle(app, 0)
     await expect(picker(page).getByRole('alert')).toHaveText('Document title cannot contain path separators, control characters, or dot segments')
-    await expect(title(page)).toBeFocused()
+    // The newer busy-state key/pointer attempts revoke the original autofocus.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    await expect(picker(page)).toBeFocused()
     await expect(title(page)).toHaveValue('Invalid/template/title')
     await expect(parent(page)).toHaveValue(ids.parentId)
     await expect(search(page)).toHaveValue('Selection Beta')
@@ -223,6 +225,7 @@ test(`template filtering keeps preview and creation coherent in ${language} @ele
     expect(await readStored(page, language)).toEqual(before)
 
     const correctedTitle = 'Created from visible Beta'
+    await title(page).click()
     await page.keyboard.press('ControlOrMeta+A')
     await page.keyboard.type(correctedTitle)
     await page.keyboard.press('Enter')
