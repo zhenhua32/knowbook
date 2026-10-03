@@ -666,7 +666,13 @@ export function DatabaseWorkspace({
         toDocumentFieldValue(record.fieldValues[field.id]),
         value
       )
-      if (nextValue !== undefined) await updateValue(record, field, nextValue)
+      if (nextValue !== undefined) {
+        const result = await updateValue(record, field, nextValue)
+        if (result && result.status === 'saved' && result.refresh) {
+          try { await result.refresh(() => true) }
+          catch { /* The write succeeded; the refresh callback already reports its failure. */ }
+        }
+      }
     }
   }
 
