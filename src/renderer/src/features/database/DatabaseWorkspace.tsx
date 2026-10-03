@@ -38,6 +38,7 @@ import { CreateRecordDialog, DatabaseRecordDrawer } from './components/DatabaseR
 import { DatabaseConfirmDialog, DatabaseFormDialog } from './components/DatabaseDialogs'
 import { DatabaseValueEditor } from './components/DatabaseValueEditor'
 import type { DatabaseDeletion } from './model/databaseDeletion'
+import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from './model/databaseTextDrafts'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -49,6 +50,7 @@ type DatabaseWorkspaceProps = {
   locale: string
   savedViews: DatabaseSavedView[]
   viewDraftCache?: Map<string, DatabaseViewConfigV1>
+  textDraftCache?: DatabaseTextDraftCache
   selectedColumns: DocumentDatabaseColumn[]
   selectedRecordIds: string[]
   onActiveViewIdChange: (viewId: string) => void
@@ -87,6 +89,7 @@ export function DatabaseWorkspace({
   locale,
   savedViews,
   viewDraftCache,
+  textDraftCache,
   selectedColumns,
   selectedRecordIds,
   onActiveViewIdChange,
@@ -100,6 +103,9 @@ export function DatabaseWorkspace({
   onSelectedRecordIdsChange
 }: DatabaseWorkspaceProps) {
   const text = useMemo(() => getDatabaseWorkspaceText(locale), [locale])
+  const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
+  if (!localTextDraftCache.current) localTextDraftCache.current = new DatabaseTextDraftCache()
+  const cellDrafts = textDraftCache ?? localTextDraftCache.current
   const sources = useMemo(() => adaptDatabaseSources(databases), [databases])
   const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? sources[0]
   const currentSourceIdRef = useRef(currentSource?.id)
@@ -198,6 +204,10 @@ export function DatabaseWorkspace({
   const records = useMemo(() => !currentSource ? [] : currentSource.kind === 'document-catalog'
     ? adaptCatalogRecords(currentSource.id, catalogDocuments)
     : adaptCustomRecords(currentSource.id, entities, catalogDocuments), [catalogDocuments, currentSource, entities])
+  useLayoutEffect(() => {
+    if (currentSource) cellDrafts.prune(currentSource.id, new Set(records.map(record => record.id)),
+      new Set(fields.filter(field => field.role === 'property' && field.type === 'text').map(field => field.id)))
+  }, [cellDrafts, currentSource?.id, fields, records])
 
   const { activeView, activateCreatedView, baseConfig, dirty, draft, replaceDraft, updateDraft } = useDatabaseViewDraft({
     activeViewId,
@@ -548,15 +558,38 @@ export function DatabaseWorkspace({
     }
   }
 
-  const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => {
-    await run(async () => {
+  const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue): Promise<void | DatabaseValueCommitResult> => {
+    const write = async () => {
       if (currentSource.kind === 'document-catalog') {
         await window.knowbook.updateDocumentDatabaseValue({ documentId: record.id, columnId: field.id, value })
       } else {
         await window.knowbook.updateDatabaseEntity({ entityId: record.id, fieldValues: { [field.id]: value } })
       }
-      await refresh(activeViewId)
-    })
+    }
+    if (field.type !== 'text') {
+      await run(async () => { await write(); await refresh(activeViewId) })
+      return
+    }
+    const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
+    if (!ownsSource()) return { status: 'failed', message: text.formFailed }
+    try { await write() }
+    catch (error) {
+      if (ownsSource()) reportError(error)
+      return { status: 'failed', message: text.formFailed }
+    }
+    // Keep an accepted write in its original cache, but never refresh a new
+    // source through the previous workspace's callback.
+    if (!ownsSource()) return { status: 'saved', value }
+    try { await refresh() }
+    catch {
+      if (ownsSource()) onMessage(text.savedRefreshFailed, 'error')
+      return { status: 'saved', value, refreshError: text.savedRefreshFailed }
+    }
+    return { status: 'saved', value, refreshConfirmed: true }
+  }
+  const refreshTextValues = async () => {
+    if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession) throw new Error(text.savedRefreshFailed)
+    await refresh()
   }
 
   const updateLinkedDocument = async (record: DatabaseRecord, documentId: string | null) => {
@@ -806,7 +839,7 @@ export function DatabaseWorkspace({
           </div>
         ) : null}
         {!empty && draft.layout === 'table' ? (
-          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={updateValue} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
+          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={updateValue} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
         ) : null}
         {!empty && draft.layout === 'board' ? <DatabaseBoardView field={boardField} groups={boardGroups} onMoveRecord={moveBoardRecord} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} sourceKind={currentSource.kind} text={text} /> : null}
         {!empty && draft.layout === 'cards' ? <DatabaseCardView fields={draft.cardFieldIds.length > 0 ? visibleFields.filter((field) => draft.cardFieldIds.includes(field.id) || field.role === 'title') : visibleFields} locale={locale} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} /> : null}

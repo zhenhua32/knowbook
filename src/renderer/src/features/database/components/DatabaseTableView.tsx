@@ -4,6 +4,7 @@ import { DATABASE_SYSTEM_FIELD_IDS } from '@shared/database-workspace'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
+import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
 
 export function DatabaseTableView({
   documents,
@@ -19,7 +20,9 @@ export function DatabaseTableView({
   onSelect,
   onColumnWidthChange,
   onUpdateDocument,
-  onUpdateValue
+  onUpdateValue,
+  onRefreshValue,
+  textDraftCache
 }: {
   documents: DocumentCatalogEntry[]
   fields: DatabaseField[]
@@ -34,8 +37,13 @@ export function DatabaseTableView({
   onSelect: (recordId: string, selected: boolean) => void
   onColumnWidthChange: (fieldId: string, width: number) => void
   onUpdateDocument: (record: DatabaseRecord, documentId: string | null) => Promise<void>
-  onUpdateValue: (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => Promise<void>
+  onUpdateValue: (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => Promise<void | DatabaseValueCommitResult>
+  onRefreshValue?: () => Promise<void>
+  textDraftCache?: DatabaseTextDraftCache
 }) {
+  const localCache = useRef<DatabaseTextDraftCache | null>(null)
+  if (!localCache.current) localCache.current = new DatabaseTextDraftCache()
+  const cellDrafts = textDraftCache ?? localCache.current
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
@@ -157,6 +165,11 @@ export function DatabaseTableView({
                     <DatabaseValueEditor
                       column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }}
                       onChangeValue={(value) => onUpdateValue(record, field, value)}
+                      onRefreshValue={onRefreshValue}
+                      text={text}
+                      textDraftCache={cellDrafts}
+                      textDraftKey={JSON.stringify([record.databaseId, record.id, field.id])}
+                      textDraftRevision={record.updatedAt}
                       value={toDocumentValue(record.fieldValues[field.id])}
                     />
                   ) : <ReadOnlyValue field={field} locale={locale} record={record} />}

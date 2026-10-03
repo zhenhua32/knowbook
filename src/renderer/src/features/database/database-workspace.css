@@ -375,6 +375,11 @@
 .dbw-inline-select:hover,
 .dbw-table .catalog-cell-input:hover,
 .dbw-table .catalog-cell-input:focus { border-color: var(--dbw-line-strong); background: #fff; }
+.dbw-text-cell-editor { display: flex; gap: 4px; }
+.dbw-text-cell-editor input { min-width: 0; }
+.dbw-text-cell-editor button { flex-shrink: 0; min-height: 32px; padding: 0 4px; }
+.dbw-text-cell-editor button[aria-busy] { cursor: progress; }
+.dbw-text-cell-editor input[aria-invalid] { border-color: var(--kb-danger) !important; }
 .dbw-table .catalog-cell-multi-select { min-height: 34px; height: 34px; }
 .dbw-empty-value { color: #b3b6c0; }
 .dbw-tag-list { display: flex; gap: 4px; overflow: hidden; }

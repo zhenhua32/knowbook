@@ -11,6 +11,7 @@ import type {
 } from '@shared/contracts'
 import { getErrorMessage } from '../utils/errorMessage'
 import { withoutDatabaseField, type DatabaseDeletion } from '../features/database/model/databaseDeletion'
+import type { DatabaseTextDraftCache } from '../features/database/model/databaseTextDrafts'
 
 export const BOARD_GROUP_BY_PARENT = '__parent__'
 
@@ -20,6 +21,7 @@ export type DatabaseEntityFilterScope = '' | '__document__' | string
 export type DatabaseEntitySortMode = DatabaseSavedViewSortMode
 
 export function useDatabaseDomainState(isActive = true) {
+  const databaseTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('')
   const deferredCatalogQuery = useDeferredValue(catalogQuery)
   const [databaseWorkspaceView, setDatabaseWorkspaceView] = useState<DatabaseWorkspaceView>('catalog')
@@ -241,6 +243,7 @@ export function useDatabaseDomainState(isActive = true) {
   }, [databaseEntityFilterScope, selectedDatabaseColumns])
 
   return {
+    databaseTextDraftCache,
     acknowledgeDatabase,
     acknowledgeWorkspaceRead,
     acknowledgeDeletion,

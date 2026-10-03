@@ -109,9 +109,9 @@ test('background value refresh does not clobber an open catalog cell editor', ()
     /if \(isEditing\)/,
     'the value-sync effect must skip while the unified cell editor is open'
   )
-  assert.match(
-    effectBody,
-    /}, \[isEditing, value\]\)/,
-    'the effect must re-run when editing state changes'
-  )
+  const dependencyMatch = effectBody.match(/},\s*\[([^\]]*)\]\)/)
+  assert.ok(dependencyMatch, 'the value-sync effect must declare its dependencies')
+  const dependencies = new Set(dependencyMatch[1].split(',').map(name => name.trim()))
+  assert.ok(dependencies.has('isEditing') && dependencies.has('value'),
+    'the effect must re-run when editing state or the persisted value changes')
 })

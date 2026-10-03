@@ -4,7 +4,8 @@ import type { useDocumentsDomainState } from '../hooks/useDocumentsDomainState'
 import type { usePluginsDomain } from '../hooks/usePluginsDomain'
 import type { useWorkspaceDocumentManagement } from '../hooks/useWorkspaceDocumentManagement'
 
-export type DatabaseDomainState = ReturnType<typeof useDatabaseDomainState>
+export type DatabaseDomainState = Omit<ReturnType<typeof useDatabaseDomainState>, 'databaseTextDraftCache'>
+  & Partial<Pick<ReturnType<typeof useDatabaseDomainState>, 'databaseTextDraftCache'>>
 export type DocumentsDomainState = ReturnType<typeof useDocumentsDomainState>
 export type AiDomainState = ReturnType<typeof useAiDomain>
 export type PluginsDomainState = ReturnType<typeof usePluginsDomain>

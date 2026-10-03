@@ -1,17 +1,31 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import type { DocumentDatabaseColumn, DocumentDatabaseFieldValue } from '@shared/contracts'
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
+import { getDatabaseWorkspaceText, type DatabaseWorkspaceText } from '../databaseText'
+import { DatabaseTextDraftCache, formatTextDraft, type DatabaseTextDraft, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
+
+const cellMessages = ['en-US', 'zh-CN'].map(getDatabaseWorkspaceText)
 
 export function DatabaseValueEditor({
   column,
   value,
   onChangeValue,
-  textCommitMode = 'blur'
+  textCommitMode = 'blur',
+  textDraftCache,
+  textDraftKey,
+  textDraftRevision,
+  onRefreshValue,
+  text = getDatabaseWorkspaceText('en-US')
 }: {
   column: DocumentDatabaseColumn
   value: DocumentDatabaseFieldValue
-  onChangeValue: (value: DocumentDatabaseFieldValue) => void | Promise<void>
+  onChangeValue: (value: DocumentDatabaseFieldValue) => void | Promise<void | DatabaseValueCommitResult>
   textCommitMode?: 'blur' | 'change'
+  textDraftCache?: DatabaseTextDraftCache
+  textDraftKey?: string
+  textDraftRevision?: string
+  onRefreshValue?: () => Promise<void>
+  text?: DatabaseWorkspaceText
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(formatDraft(value))
@@ -19,13 +33,28 @@ export function DatabaseValueEditor({
   const composing = useRef(false)
   const cancelBlurCommit = useRef(false)
   const focusValue = useRef(value)
+  const localCache = useRef<DatabaseTextDraftCache | null>(null)
+  if (!localCache.current) localCache.current = new DatabaseTextDraftCache()
+  const cache = textDraftCache ?? localCache.current
+  const key = textDraftKey ?? JSON.stringify(['', '', column.id])
+  const blurText = column.type === 'text' && textCommitMode === 'blur'
+  const cell = useSyncExternalStore(listener => blurText ? cache.subscribe(key, listener) : () => {},
+    () => blurText ? cache.get(key) : undefined, () => blurText ? cache.get(key) : undefined)
+  const focusDraft = useRef<DatabaseTextDraft | undefined>(undefined)
+  const root = useRef<HTMLSpanElement>(null), feedbackId = useId()
+  const pending = Boolean(cell?.operation)
+  const message = pending ? cell?.status === 'refreshing' ? text.cellRefreshing : text.saving
+    : localizeCellMessage(cell?.message ?? '', text)
   const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(column.type === 'multi-select' && isEditing)
 
+  useLayoutEffect(() => {
+    if (blurText) cache.sync(key, value, textDraftRevision)
+  }, [blurText, cache, key, value, textDraftRevision, cell])
   useEffect(() => {
     if (isEditing) return
-    setDraft(formatDraft(value))
+    if (!blurText) setDraft(formatDraft(value))
     setMultiDraft(Array.isArray(value) ? value : [])
-  }, [isEditing, value])
+  }, [blurText, isEditing, value])
 
   if (column.type === 'checkbox') {
     return <span className="dbw-checkbox-editor"><input aria-label={column.name} checked={value === true} onChange={(event) => void onChangeValue(event.target.checked)} type="checkbox" /></span>
@@ -61,19 +90,27 @@ export function DatabaseValueEditor({
     return <input aria-label={column.name} className="catalog-cell-input" onBlur={() => setIsEditing(false)} onChange={(event) => void onChangeValue(event.target.value || null)} onFocus={() => setIsEditing(true)} type="date" value={typeof value === 'string' ? value : ''} />
   }
 
-  const commit = (nextDraft: string) => void onChangeValue(nextDraft.trim() || null)
-  return (
+  const commit = (nextDraft: string) => {
+    const nextValue = nextDraft.trim() || null
+    if (!blurText) { void onChangeValue(nextValue); return }
+    if (!cache.get(key) || cache.get(key)?.raw !== nextDraft) cache.edit(key, value, nextDraft, textDraftRevision)
+    void cache.commit(key, nextValue, onChangeValue, text.formFailed, { value, revision: textDraftRevision })
+  }
+  const control = (
     <input
       aria-label={column.name}
+      aria-busy={blurText && pending || undefined}
+      aria-invalid={cell?.status === 'failed' || undefined}
+      aria-describedby={message ? feedbackId : undefined}
       className="catalog-cell-input"
       onBlur={(event) => {
         composing.current = false
         setIsEditing(false)
-        if (textCommitMode === 'blur' && !cancelBlurCommit.current) commit(event.currentTarget.value)
+        if (textCommitMode === 'blur' && !cancelBlurCommit.current && !root.current?.contains(event.relatedTarget as Node | null)) commit(event.currentTarget.value)
         cancelBlurCommit.current = false
       }}
-      onChange={(event) => { setDraft(event.target.value); if (textCommitMode === 'change') commit(event.target.value) }}
-      onFocus={() => { focusValue.current = value; cancelBlurCommit.current = false; setIsEditing(true) }}
+      onChange={(event) => { if (blurText) cache.edit(key, value, event.target.value, textDraftRevision); else setDraft(event.target.value); if (textCommitMode === 'change') commit(event.target.value) }}
+      onFocus={() => { focusValue.current = value; focusDraft.current = cache.get(key); cancelBlurCommit.current = false; setIsEditing(true) }}
       onCompositionStart={() => { composing.current = true }}
       onCompositionEnd={() => { composing.current = false }}
       onKeyDown={(event) => {
@@ -86,14 +123,33 @@ export function DatabaseValueEditor({
           event.preventDefault()
           event.stopPropagation()
           cancelBlurCommit.current = true
-          setDraft(formatDraft(focusValue.current))
+          if (blurText) cache.restore(key, focusDraft.current)
+          else setDraft(formatDraft(focusValue.current))
           if (textCommitMode === 'change') void onChangeValue(focusValue.current)
           event.currentTarget.blur()
         }
       }}
-      value={draft}
+      readOnly={blurText && pending}
+      title={message || undefined}
+      value={blurText ? cell?.raw ?? formatTextDraft(value) : draft}
     />
   )
+  if (!blurText) return control
+  return <span className="dbw-text-cell-editor" ref={root}>
+    {control}
+    {cell?.action && <button aria-busy={pending || undefined} aria-disabled={pending || undefined}
+      aria-describedby={message ? feedbackId : undefined} className="dbw-quiet-button" type="button" title={message || undefined}
+      onClick={() => { if (cell.action === 'retry') commit(cell.raw); else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed) }}>
+      {cell.action === 'retry' ? text.retry : text.refresh}
+    </button>}
+    {message && <span className="sr-only dbw-text-cell-feedback" id={feedbackId} role={cell?.status === 'failed' ? 'alert' : 'status'}>{message}</span>}
+  </span>
+}
+
+function localizeCellMessage(message: string, text: DatabaseWorkspaceText): string {
+  if (cellMessages.some(source => source.formFailed === message)) return text.formFailed
+  if (cellMessages.some(source => source.savedRefreshFailed === message)) return text.savedRefreshFailed
+  return message
 }
 
 function formatDraft(value: DocumentDatabaseFieldValue): string {

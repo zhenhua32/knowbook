@@ -10,6 +10,7 @@ import { DatabaseWorkspace } from '../features/database/DatabaseWorkspace'
 import { RecoveryState } from '../components/RecoveryState'
 import { withoutDatabaseField, type DatabaseDeletion } from '../features/database/model/databaseDeletion'
 import { getErrorMessage } from '../utils/errorMessage'
+import { DatabaseTextDraftCache } from '../features/database/model/databaseTextDrafts'
 
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -51,6 +52,9 @@ export function DatabasePage({
   const refreshGeneration = useRef(0)
   const createdSource = useRef<string | null>(null)
   const viewDraftCache = useRef(new Map<string, DatabaseViewConfigV1>())
+  const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
+  const textDraftCache = database.databaseTextDraftCache ?? localTextDraftCache
+  if (!textDraftCache.current) textDraftCache.current = new DatabaseTextDraftCache()
   const deletionRevision = useRef(0)
   const [deletionRecovery, setDeletionRecovery] = useState<{ sourceId: string; sourceGeneration: number; revision: number; error: string; busy: boolean } | null>(null)
   const sourceSession = useRef({ renderedId: database.databaseEntityDatabaseId, currentId: database.databaseEntityDatabaseId, generation: 0 })
@@ -227,6 +231,7 @@ export function DatabasePage({
       onSelectedRecordIdsChange={database.setSelectedDatabaseEntityIds}
       savedViews={database.databaseSavedViews}
       viewDraftCache={viewDraftCache.current}
+      textDraftCache={textDraftCache.current}
       selectedColumns={database.selectedDatabaseColumns}
       selectedRecordIds={database.selectedDatabaseEntityIds}
     />
