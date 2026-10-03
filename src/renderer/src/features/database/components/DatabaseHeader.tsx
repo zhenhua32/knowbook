@@ -10,7 +10,9 @@ type DatabaseHeaderProps = {
   onCreateRecord: () => void
   onDeleteDatabase: () => void
   onEditDatabase: (returnTarget: HTMLElement | null) => void
+  onRefresh: () => void | Promise<void>
   onSourceChange: (sourceId: string) => void
+  refreshing: boolean
 }
 
 export function DatabaseHeader({
@@ -21,7 +23,9 @@ export function DatabaseHeader({
   onCreateRecord,
   onDeleteDatabase,
   onEditDatabase,
-  onSourceChange
+  onRefresh,
+  onSourceChange,
+  refreshing
 }: DatabaseHeaderProps) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -105,6 +109,13 @@ export function DatabaseHeader({
       </div>
 
       <div className="dbw-header-actions">
+        <button aria-label={text.refreshDatabase} title={text.refreshDatabase} aria-busy={refreshing || undefined}
+          aria-disabled={refreshing || undefined} className="dbw-icon-button dbw-refresh-button" type="button"
+          onPointerDown={(event) => { if (event.isPrimary && event.button === 0) event.preventDefault() }}
+          onClick={() => { void onRefresh() }}>
+          <span aria-hidden="true">{refreshing ? '…' : '↻'}</span>
+        </button>
+        {refreshing ? <span className="sr-only" role="status">{text.refreshingDatabase}</span> : null}
         <button className="dbw-primary-button" onClick={onCreateRecord} type="button">
           <span aria-hidden="true">＋</span>
           {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}

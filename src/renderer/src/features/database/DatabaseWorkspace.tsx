@@ -119,6 +119,8 @@ export function DatabaseWorkspace({
   }
   const viewSession = viewSessionRef.current
   const mounted = useRef(false)
+  const refreshRequestRef = useRef<{ source: typeof fieldSourceSession } | null>(null)
+  const [refreshingSource, setRefreshingSource] = useState<typeof fieldSourceSession | null>(null)
   useLayoutEffect(() => {
     mounted.current = true
     return () => { mounted.current = false }
@@ -292,6 +294,23 @@ export function DatabaseWorkspace({
     }
   }
   const refresh = (preferredViewId?: string) => onRefresh(currentSource.id, preferredViewId)
+  const refreshDatabase = async () => {
+    const shouldContinue = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
+    if (!shouldContinue() || refreshRequestRef.current?.source === fieldSourceSession) return
+    const request = { source: fieldSourceSession }
+    refreshRequestRef.current = request
+    setRefreshingSource(fieldSourceSession)
+    try { await onRefresh(currentSource.id, undefined, shouldContinue) }
+    catch (error) {
+      console.warn('Database refresh failed.', error)
+      if (shouldContinue()) onMessage(text.refreshFailed, 'error')
+    } finally {
+      if (refreshRequestRef.current === request) {
+        refreshRequestRef.current = null
+        if (mounted.current) setRefreshingSource(previous => previous === request.source ? null : previous)
+      }
+    }
+  }
   const runFieldMutation = async <T,>(mutate: () => Promise<T>, onSaved?: (result: T) => void) => {
     let result: T
     try {
@@ -774,7 +793,9 @@ export function DatabaseWorkspace({
         onCreateRecord={createDocumentOrRecord}
         onDeleteDatabase={() => openConfirm({ kind: 'database', id: currentSource.id, name: currentSource.name })}
         onEditDatabase={(returnTarget) => openDatabaseForm('edit-database', returnTarget)}
+        onRefresh={refreshDatabase}
         onSourceChange={switchSource}
+        refreshing={refreshingSource === fieldSourceSession}
         sources={sources}
         text={text}
       />

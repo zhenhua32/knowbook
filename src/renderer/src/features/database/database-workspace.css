@@ -165,6 +165,7 @@
   cursor: pointer;
 }
 .dbw-icon-button:hover { background: var(--dbw-soft); color: var(--dbw-text); }
+.dbw-refresh-button[aria-busy='true'] { cursor: progress; }
 .dbw-menu-wrap { position: relative; }
 .dbw-popover {
   position: absolute;
