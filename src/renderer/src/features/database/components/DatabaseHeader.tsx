@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { DatabaseSource } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
+
+function isVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return Boolean(style && style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse')
+}
 
 type DatabaseHeaderProps = {
   currentSource: DatabaseSource
@@ -33,6 +40,24 @@ export function DatabaseHeader({
   const rootRef = useRef<HTMLDivElement | null>(null)
   const sourceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const composingTarget = useRef<EventTarget | null>(null)
+
+  const closeOnEscape = (event: ReactKeyboardEvent<HTMLElement>, open: boolean,
+    close: (open: boolean) => void, trigger: HTMLButtonElement | null) => {
+    if (!open || event.defaultPrevented || event.key !== 'Escape'
+      || isImeKeyboardEvent(event.nativeEvent, composingTarget.current === event.target)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const scope = event.currentTarget, owner = scope.ownerDocument, active = owner.activeElement
+    const ownsFocus = scope.contains(active) || active === trigger
+    close(false)
+    composingTarget.current = null
+    if (!ownsFocus || !trigger || active === trigger || !owner.hasFocus() || trigger.ownerDocument !== owner
+      || trigger.disabled || trigger.getAttribute('aria-disabled') === 'true' || !isVisible(scope) || !isVisible(trigger)) return
+    const foreignModal = Array.from(owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"], [role="alertdialog"]'))
+      .some(modal => !modal.contains(rootRef.current) && isVisible(modal))
+    if (!foreignModal) trigger.focus({ preventScroll: true })
+  }
 
   useEffect(() => {
     const close = (event: MouseEvent) => {
@@ -51,7 +76,10 @@ export function DatabaseHeader({
   const customSources = filteredSources.filter((source) => source.kind === 'custom')
 
   return (
-    <header className="dbw-header" ref={rootRef}>
+    <header className="dbw-header" ref={rootRef}
+      onCompositionStartCapture={event => { composingTarget.current = event.target }}
+      onCompositionEndCapture={() => { composingTarget.current = null }}
+      onBlurCapture={event => { if (composingTarget.current === event.target) composingTarget.current = null }}>
       <div className="dbw-identity">
         <span aria-hidden="true" className="dbw-database-mark">▦</span>
         <div className="dbw-source-wrap">
@@ -59,6 +87,7 @@ export function DatabaseHeader({
             aria-expanded={pickerOpen}
             className="dbw-source-trigger"
             ref={sourceTriggerRef}
+            onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}
             onClick={() => {
               setPickerOpen((open) => !open)
               setMenuOpen(false)
@@ -72,7 +101,8 @@ export function DatabaseHeader({
           <p>{currentSource.kind === 'document-catalog' ? text.catalogDescription : currentSource.description || text.customDescription}</p>
 
           {pickerOpen ? (
-            <div className="dbw-popover dbw-source-picker" role="dialog">
+            <div className="dbw-popover dbw-source-picker" role="dialog"
+              onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}>
               <label className="dbw-search-field dbw-source-search">
                 <span aria-hidden="true">⌕</span>
                 <input
@@ -127,6 +157,7 @@ export function DatabaseHeader({
               aria-expanded={menuOpen}
               className="dbw-icon-button"
               ref={settingsTriggerRef}
+              onKeyDown={event => closeOnEscape(event, menuOpen, setMenuOpen, settingsTriggerRef.current)}
               onClick={() => {
                 setMenuOpen((open) => !open)
                 setPickerOpen(false)
@@ -134,7 +165,8 @@ export function DatabaseHeader({
               type="button"
             >•••</button>
             {menuOpen ? (
-              <div className="dbw-popover dbw-action-menu">
+              <div className="dbw-popover dbw-action-menu"
+                onKeyDown={event => closeOnEscape(event, menuOpen, setMenuOpen, settingsTriggerRef.current)}>
                 <button onClick={() => { setMenuOpen(false); onEditDatabase(settingsTriggerRef.current) }} type="button">{text.editDatabase}</button>
                 <button className="dbw-danger-text" onClick={() => { setMenuOpen(false); onDeleteDatabase() }} type="button">{text.deleteDatabase}</button>
               </div>
