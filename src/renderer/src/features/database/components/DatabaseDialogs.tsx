@@ -115,6 +115,7 @@ export function DatabaseConfirmDialog({
   title,
   returnFocus,
   canReturnFocus,
+  onReturnFocus,
   onCancel,
   onConfirm
 }: {
@@ -125,10 +126,11 @@ export function DatabaseConfirmDialog({
   title: string
   returnFocus?: HTMLElement | null
   canReturnFocus?: () => boolean
+  onReturnFocus?: () => void
   onCancel: () => void
   onConfirm: () => void | Promise<void>
 }) {
   if (!open) return null
   return <ConfirmationDialog title={title} description={body} note={text.dangerCannotUndo} confirmLabel={confirmLabel}
-    onCancel={onCancel} onConfirm={onConfirm} returnFocus={returnFocus} canReturnFocus={canReturnFocus} />
+    onCancel={onCancel} onConfirm={onConfirm} returnFocus={returnFocus} canReturnFocus={canReturnFocus} onReturnFocus={onReturnFocus} />
 }

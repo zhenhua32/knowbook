@@ -169,10 +169,11 @@ export function DatabaseWorkspace({
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
   const confirmSessionRef = useRef(0)
   const [confirmSession, setConfirmSession] = useState(0)
-  const confirmOwner = useRef({ source: fieldSourceSession, view: viewSession, returnFocus: null as HTMLElement | null })
-  const openConfirm = (target: ConfirmTarget) => {
+  const confirmOwner = useRef({ source: fieldSourceSession, view: viewSession, returnFocus: null as HTMLElement | null,
+    cancelOpener: null as HTMLElement | null, acknowledged: false })
+  const openConfirm = (target: ConfirmTarget, cancelOpener: HTMLElement | null = null) => {
     confirmOwner.current = { source: fieldSourceSessionRef.current, view: viewSessionRef.current,
-      returnFocus: document.querySelector<HTMLInputElement>('.dbw-main-search input') }
+      returnFocus: document.querySelector<HTMLInputElement>('.dbw-main-search input'), cancelOpener, acknowledged: false }
     setConfirmSession(++confirmSessionRef.current)
     setConfirmTarget(target)
   }
@@ -737,6 +738,7 @@ export function DatabaseWorkspace({
       ?? sources.find(source => source.id !== currentSource.id)
     let completedView = owner.view
     if (owned) {
+      owner.acknowledged = true
       if (target.kind === 'view' && target.id === activeViewId) {
         selectView(savedViews.find(view => view.id !== target.id)?.id ?? '')
         completedView = viewSessionRef.current
@@ -804,9 +806,10 @@ export function DatabaseWorkspace({
         dirty={dirty}
         newViewTriggerRef={newViewTriggerRef}
         onCreateView={(layout, returnTarget) => openViewForm('create-view', layout, undefined, returnTarget)}
-        onDeleteView={(view) => {
-          if (savedViews.length <= 1) { onMessage(locale.startsWith('zh') ? '数据库至少需要保留一个视图。' : 'A database must keep at least one view.'); return }
-          openConfirm({ kind: 'view', id: view.id, name: view.name })
+        onDeleteView={(view, cancelOpener) => {
+          if (savedViews.length <= 1) { onMessage(locale.startsWith('zh') ? '数据库至少需要保留一个视图。' : 'A database must keep at least one view.'); return false }
+          openConfirm({ kind: 'view', id: view.id, name: view.name }, cancelOpener)
+          return true
         }}
         onMoveView={(viewId, targetViewId) => {
           const reordered = [...savedViews]
@@ -824,6 +827,7 @@ export function DatabaseWorkspace({
         onRenameView={(view, returnTarget) => openViewForm('rename-view', view.config.layout, view, returnTarget)}
         onSelectView={selectView}
         savedViews={savedViews}
+        sourceSessionKey={fieldSourceSession}
         text={text}
       />
       <DatabaseViewToolbar
@@ -934,6 +938,14 @@ export function DatabaseWorkspace({
         withDescription={formMode === 'create-database' || formMode === 'edit-database'} />
       <DatabaseConfirmDialog body={confirmTarget ? `“${confirmTarget.name}”` : ''} confirmLabel={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord}
         key={`confirm-${confirmSession}`} returnFocus={confirmOwner.current.returnFocus}
+        onReturnFocus={confirmTarget?.kind === 'view' && confirmOwner.current.cancelOpener ? () => {
+          const owner = confirmOwner.current
+          const target = owner.acknowledged ? owner.returnFocus : owner.cancelOpener
+          if (!target?.isConnected || !document.hasFocus() || target.matches(':disabled, [aria-disabled="true"]')
+            || target.closest('[hidden], [inert], [aria-hidden="true"]') || !target.getClientRects().length) return
+          const style = window.getComputedStyle(target)
+          if (style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse') target.focus({ preventScroll: true })
+        } : undefined}
         canReturnFocus={() => mounted.current && fieldSourceSessionRef.current === confirmOwner.current.source
           && confirmSessionRef.current === confirmSession + 1}
         onCancel={() => closeConfirm(confirmSession)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />

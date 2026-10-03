@@ -169,8 +169,13 @@ async function withDeletes(run: (context: Context) => Promise<void>, locale = 'e
           await click(dom.window.document.querySelector<HTMLButtonElement>('.dbw-header-actions .dbw-menu-wrap > button')!)
           const button = [...dom.window.document.querySelectorAll<HTMLButtonElement>('.dbw-action-menu button')].find(item => item.textContent === text.deleteDatabase)!
           await click(button)
-        } else if (kind === 'view') await click(dom.window.document.querySelector<HTMLButtonElement>('.dbw-view-tab-wrap.is-active .dbw-view-tab-menu')!)
-        else if (kind === 'field') {
+        } else if (kind === 'view') {
+          await click(dom.window.document.querySelector<HTMLButtonElement>('.dbw-view-tab-wrap.is-active .dbw-view-tab-menu')!)
+          const button = [...dom.window.document.querySelectorAll<HTMLButtonElement>('.dbw-view-actions-menu button')]
+            .find(item => item.textContent === text.deleteView)
+          assert.ok(button)
+          await click(button)
+        } else if (kind === 'field') {
           if (!dom.window.document.querySelector('.dbw-field-drawer')) {
             const fieldsButton = [...dom.window.document.querySelectorAll<HTMLButtonElement>('.dbw-toolbar-button')].find(button => button.textContent?.includes(text.fields))!
             await click(fieldsButton); await flushFrames()
