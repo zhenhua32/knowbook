@@ -85,8 +85,9 @@ export class DatabaseTextDraftCache {
       authority.confirmed = true
       const current = this.get(key)
       if (!current || this.savedAuthority(current) !== authority || current.status !== 'saved' || current.action !== 'refresh'
-        || current.operation || current.readOperation) continue
-      // The same read can still have other guarded Page updates to publish.
+        || current.operation) continue
+      // Committed records/schema retire stale read progress, not its physical flight
+      // or the same read's remaining guarded metadata publication lease.
       this.publish(key)
     }
   }
