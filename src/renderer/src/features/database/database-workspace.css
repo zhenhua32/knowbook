@@ -13,6 +13,7 @@
   --dbw-accent-soft: #eeefff;
   --dbw-danger: #b33e3e;
   position: relative;
+  flex-shrink: 0;
   width: min(100%, 1760px);
   min-width: 0;
   min-height: calc(100vh - 64px);
@@ -56,6 +57,7 @@
   position: relative;
   z-index: 8;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -78,7 +80,8 @@
   align-items: center;
 }
 
-.dbw-identity { min-width: 0; flex: 1; gap: 14px; }
+/* Reserve readable identity space before actions wrap within the header. */
+.dbw-identity { min-width: 0; flex: 1 1 280px; gap: 14px; }
 .dbw-database-mark {
   display: grid;
   flex: 0 0 auto;
@@ -543,7 +546,6 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
   .content.page-database { padding: 12px; }
   .page-database .dbw-shell { min-height: calc(100vh - 24px); border-radius: 13px; }
   .dbw-header { align-items: flex-start; flex-wrap: wrap; min-height: 110px; padding: 16px; }
-  .dbw-header-actions { margin-left: 56px; }
   .dbw-source-wrap > p { max-width: calc(100vw - 120px); }
   .dbw-view-tabs { padding-left: 10px; }
   .dbw-toolbar { padding-inline: 10px; }
