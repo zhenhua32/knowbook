@@ -24,6 +24,17 @@ function isVisible(element: HTMLElement): boolean {
   return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
 }
 
+type ConfirmationAction = {
+  dialog: HTMLDialogElement
+  parentModal: HTMLElement | null
+  canFocus: boolean
+  canReveal: boolean
+  failed: boolean
+  watchingScroll: boolean
+  scrollTop: [number, number]
+  cleanup: () => void
+}
+
 export function ConfirmationDialog({ title, description, confirmLabel = title, tone = 'danger', note, children,
   onConfirm, onCancel, onComplete = onCancel, returnFocus, canReturnFocus, onReturnFocus,
 }: ConfirmationOptions & { onCancel: () => void; onComplete?: () => void; returnFocus?: HTMLElement | null }) {
@@ -35,6 +46,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   const restoreAllowed = useRef(canReturnFocus)
   const returnDelegate = useRef(onReturnFocus), cancelReturn = useRef<(() => void) | null>(null)
   const attentive = useRef(true)
+  const action = useRef<ConfirmationAction | null>(null), originModal = useRef<HTMLElement | null>(null)
   dismiss.current = onCancel
   restoreAllowed.current = canReturnFocus
   returnDelegate.current = onReturnFocus
@@ -42,6 +54,23 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   const [scrollable, setScrollable] = useState({ heading: false, body: false })
   const titleId = useId(), descriptionId = useId(), noteId = useId()
   const zh = getActiveUiText().language === 'zh-CN'
+
+  const cancelActionAttention = useCallback((request: ConfirmationAction) => {
+    request.canFocus = false
+    request.canReveal = false
+    request.cleanup()
+    request.cleanup = () => {}
+  }, [])
+  const isCurrentAction = (request: ConfirmationAction) => mounted.current && action.current === request
+    && dialog.current === request.dialog && request.dialog.isConnected
+  const hasForeignActionModal = (request: ConfirmationAction) => [...request.dialog.ownerDocument.querySelectorAll<HTMLElement>(
+    'dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
+    .some(modal => modal !== request.dialog && modal !== request.parentModal && !modal.contains(request.dialog) && isVisible(modal))
+
+  useLayoutEffect(() => () => {
+    if (action.current) cancelActionAttention(action.current)
+    action.current = null
+  }, [cancelActionAttention])
 
   const measureScrollability = useCallback(() => {
     if (!dialog.current?.open || !dialog.current.isConnected) return
@@ -54,12 +83,33 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
   useLayoutEffect(measureScrollability)
 
   useLayoutEffect(() => {
-    const port = body.current, message = failure.current
-    if (!error || !mounted.current || !dialog.current?.open || !port || !message) return
-    // Reveal a new failure inside the details scrollport without moving focus
-    // or scrolling the fixed heading and actions.
-    port.scrollTop += message.getBoundingClientRect().top - port.getBoundingClientRect().top - port.clientTop
-  }, [error])
+    const request = action.current
+    if (!request || !isCurrentAction(request)) return
+    if (busy && !request.watchingScroll) {
+      // Clearing the previous error can clamp an old scroll position. Read
+      // the committed layout before treating later scrolling as new reading.
+      body.current?.getBoundingClientRect()
+      heading.current?.getBoundingClientRect()
+      request.scrollTop = [body.current?.scrollTop ?? 0, heading.current?.scrollTop ?? 0]
+      request.watchingScroll = true
+    }
+    if (busy || !request.failed || (!request.canFocus && !request.canReveal)) return
+    const owner = request.dialog.ownerDocument, target = cancel.current
+    if (!request.dialog.open || !owner.hasFocus() || !isVisible(request.dialog) || hasForeignActionModal(request)) {
+      cancelActionAttention(request)
+      return
+    }
+    if (request.canFocus && target?.matches(':disabled, [aria-disabled="true"]')) return
+    const canFocus = request.canFocus && target && request.dialog.contains(target) && isVisible(target)
+      && (owner.activeElement === request.dialog || owner.activeElement === owner.body)
+    const canReveal = request.canReveal, port = body.current, message = failure.current
+    // Consume both qualifications before our own scrolling and focus events.
+    cancelActionAttention(request)
+    if (canReveal && error && port && message) {
+      port.scrollTop += message.getBoundingClientRect().top - port.getBoundingClientRect().top - port.clientTop
+    }
+    if (canFocus) target.focus()
+  })
 
   useEffect(() => {
     const view = dialog.current?.ownerDocument.defaultView
@@ -84,6 +134,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     const previous = returnFocus === undefined ? owner.activeElement as HTMLElement | null : returnFocus
     const previousTree = previous?.closest<HTMLElement>('[role="tree"]') ?? null
     const parentModal = previous?.closest<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]') ?? null
+    originModal.current = owner.activeElement?.closest<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]') ?? parentModal
     const hasForeignModal = () => [...owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
       .some(modal => modal !== element && modal !== parentModal && !modal.contains(element) && isVisible(modal))
     element.showModal()
@@ -112,6 +163,7 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
     view.addEventListener('keydown', keydown, true)
     return () => {
       mounted.current = false
+      if (action.current) cancelActionAttention(action.current)
       view.removeEventListener('keydown', keydown, true)
       owner.removeEventListener('focusin', focusMoved, true)
       view.removeEventListener('blur', abandonAttention)
@@ -162,27 +214,66 @@ export function ConfirmationDialog({ title, description, confirmLabel = title, t
         frame = view.requestAnimationFrame(restore)
       } else restore()
     }
-  }, [returnFocus, measureScrollability])
-
-  const focusCancel = () => {
-    const element = dialog.current, owner = element?.ownerDocument, active = owner?.activeElement
-    if (mounted.current && attentive.current && element?.open && owner?.hasFocus()
-      && (active === owner.body || element.contains(active ?? null))) cancel.current?.focus()
-  }
-  useEffect(() => { if (!busy) focusCancel() }, [busy])
+  }, [returnFocus, measureScrollability, cancelActionAttention])
 
   const execute = async () => {
     if (lock.current) return
     lock.current = true
+    if (action.current) cancelActionAttention(action.current)
+    const element = dialog.current!, owner = element.ownerDocument, view = owner.defaultView!, origin = owner.activeElement
+    const request: ConfirmationAction = {
+      dialog: element, parentModal: originModal.current, canFocus: false, canReveal: false,
+      failed: false, watchingScroll: false, scrollTop: [0, 0], cleanup: () => {}
+    }
+    action.current = request
+    const eligible = mounted.current && element.open && owner.hasFocus() && isVisible(element)
+      && origin instanceof view.HTMLElement && element.contains(origin) && isVisible(origin)
+      && !origin.matches(':disabled, [aria-disabled="true"]') && !hasForeignActionModal(request)
+    if (eligible) element.focus()
+    request.canFocus = request.canReveal = eligible && owner.activeElement === element
+    if (request.canFocus) {
+      const abandon = () => cancelActionAttention(request)
+      const focusMoved = (event: FocusEvent) => { if (event.target !== element) abandon() }
+      const blurred = (event: FocusEvent) => { if (event.target === element) abandon() }
+      const scrolled = () => {
+        if (request.watchingScroll && ((body.current?.scrollTop ?? 0) !== request.scrollTop[0]
+          || (heading.current?.scrollTop ?? 0) !== request.scrollTop[1])) request.canReveal = false
+      }
+      owner.addEventListener('pointerdown', abandon, true)
+      view.addEventListener('keydown', abandon, true)
+      owner.addEventListener('compositionstart', abandon, true)
+      owner.addEventListener('focusin', focusMoved, true)
+      element.addEventListener('focusout', blurred)
+      view.addEventListener('blur', abandon)
+      element.addEventListener('wheel', abandon, true)
+      body.current?.addEventListener('scroll', scrolled)
+      heading.current?.addEventListener('scroll', scrolled)
+      const port = body.current, title = heading.current
+      request.cleanup = () => {
+        owner.removeEventListener('pointerdown', abandon, true)
+        view.removeEventListener('keydown', abandon, true)
+        owner.removeEventListener('compositionstart', abandon, true)
+        owner.removeEventListener('focusin', focusMoved, true)
+        element.removeEventListener('focusout', blurred)
+        view.removeEventListener('blur', abandon)
+        element.removeEventListener('wheel', abandon, true)
+        port?.removeEventListener('scroll', scrolled)
+        title?.removeEventListener('scroll', scrolled)
+      }
+    }
     setBusy(true)
     setError('')
-    dialog.current?.focus()
-    try { await onConfirm(); if (mounted.current) onComplete() }
+    try {
+      await onConfirm()
+      if (isCurrentAction(request)) { cancelActionAttention(request); onComplete() }
+    }
     catch (cause) {
-      if (mounted.current) setError(getErrorMessage(cause, zh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
+      if (isCurrentAction(request)) {
+        request.failed = true
+        setError(getErrorMessage(cause, zh ? '操作失败，请重试。' : 'Action failed. Please retry.'))
+      }
     } finally {
-      lock.current = false
-      if (mounted.current) { setBusy(false); focusCancel() }
+      if (isCurrentAction(request)) { lock.current = false; setBusy(false) }
     }
   }
 

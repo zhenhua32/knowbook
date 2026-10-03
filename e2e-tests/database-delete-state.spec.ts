@@ -174,17 +174,19 @@ async function tabTo(page: Page, target: Locator, phase: string, direction: 'Tab
   await expect(target).toBeFocused()
 }
 
-async function confirmWithKeyboard(page: Page, app: ElectronApplication, expectedCalls: number, retry = false) {
+async function confirmWithKeyboard(page: Page, app: ElectronApplication, expectedCalls: number, options: { retry?: boolean; repeatWhilePending?: boolean } = {}) {
   const dialog = confirmation(page)
   await expect(dialog.getByRole('button', { name: uiText('Cancel', '取消'), exact: true })).toBeFocused()
   await page.keyboard.press('Shift+Tab')
-  const confirm = retry ? dialog.getByRole('button', { name: uiText('Retry', '重试'), exact: true }) : dialog.locator('.danger-button')
+  const confirm = options.retry ? dialog.getByRole('button', { name: uiText('Retry', '重试'), exact: true }) : dialog.locator('.danger-button')
   await expect(confirm).toBeFocused()
   await page.keyboard.press('Enter')
   await expect.poll(async () => (await state(app)).calls.length).toBe(expectedCalls)
-  await page.keyboard.press('Enter')
-  await page.keyboard.press('Space')
-  await page.keyboard.press('Escape')
+  if (options.repeatWhilePending !== false) {
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Space')
+    await page.keyboard.press('Escape')
+  }
   expect((await state(app)).calls).toHaveLength(expectedCalls)
   await expect(dialog).toHaveAttribute('aria-busy', 'true')
   await expect(dialog.getByRole('button', { name: uiText('Cancel', '取消'), exact: true })).toBeDisabled()
@@ -387,7 +389,8 @@ test('a real record deletion failure can retry once and bulk deletion never repe
       await tabTo(page, drawer.getByRole('button', { name: 'Delete record', exact: true }), 'record-title-to-delete')
       await page.keyboard.press('Enter')
       await expect(confirmation(page)).toContainText(deleted.title)
-      await confirmWithKeyboard(page, app, 1)
+      // Keep the first failure uninterrupted; repeated pending keys are checked on its real retry below.
+      await confirmWithKeyboard(page, app, 1, { repeatWhilePending: false })
       await record(page, app, testInfo, 'en-record-delete-pending')
       await finishDelete(app, page, 1, { failure: true })
       await expect(confirmation(page).getByRole('alert')).toContainText('The record could not be deleted yet.')
@@ -398,7 +401,7 @@ test('a real record deletion failure can retry once and bulk deletion never repe
       expect(await page.evaluate(id => window.knowbook.getDatabaseEntities(id), fixture.database.id)).toEqual(fixture.entities)
       expect((await state(app)).acknowledged).toEqual([])
       await setRecordDeleteFailure(app, deleted.id, false)
-      await confirmWithKeyboard(page, app, 2, true)
+      await confirmWithKeyboard(page, app, 2, { retry: true })
       await finishDelete(app, page, 1, { holdRefresh: true })
       await record(page, app, testInfo, 'en-record-delete-ack-refresh-held')
       await expect(confirmation(page)).toHaveCount(0)

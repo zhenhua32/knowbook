@@ -32,6 +32,7 @@ async function withLayout(run: (context: Context) => Promise<void>, options: { m
   }
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true }
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false }
+  Object.defineProperty(dom.window.document, 'hasFocus', { configurable: true, value: () => true })
   const metrics: Metrics = { headingClient: 72, headingScroll: 72, bodyClient: 140, bodyScroll: 100, errorGrowth: 0, errorOffset: 100, ...options.metrics }
   const reads: Context['reads'] = []
   const metric = (element: HTMLElement, scrolling: boolean) => {
@@ -52,6 +53,18 @@ async function withLayout(run: (context: Context) => Promise<void>, options: { m
       return new dom.window.DOMRect(0, 20 + metrics.errorOffset - port.scrollTop, 280, metrics.errorGrowth)
     }
     return new dom.window.DOMRect(0, 0, 300, 40)
+  }
+  dom.window.HTMLElement.prototype.getClientRects = function () {
+    let element: HTMLElement | null = this
+    if (!element.isConnected) return [] as unknown as DOMRectList
+    while (element) {
+      const style = dom.window.getComputedStyle(element)
+      if (element.hidden || element.hasAttribute('inert') || element.getAttribute('aria-hidden') === 'true'
+        || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse'
+        || element instanceof dom.window.HTMLDialogElement && !element.open) return [] as unknown as DOMRectList
+      element = element.parentElement
+    }
+    return [this.getBoundingClientRect()] as unknown as DOMRectList
   }
   const focusCalls: HTMLElement[] = [], nativeFocus = dom.window.HTMLElement.prototype.focus
   dom.window.HTMLElement.prototype.focus = function (options) { focusCalls.push(this); nativeFocus.call(this, options) }
@@ -183,12 +196,6 @@ test('controlled children and complete failure text survive asynchronous confirm
     assert.equal(context.dialog().querySelector('fieldset')!.disabled, true)
     await context.change(() => context.choice('keep').click())
     assert.equal(radio.checked, true)
-    await context.change(() => {
-      const escape = new context.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
-      context.dialog().dispatchEvent(escape)
-      assert.equal(escape.defaultPrevented, true)
-    })
-    assert.equal(context.calls.cancel, 0)
     const reason = 'Failure details retained in full.\n' + '<img src=x onerror="unexpected()">'.repeat(8)
     await context.change(() => context.requests[0].reject(new Error(reason)))
     assert.equal(context.dialog().querySelector('[role="alert"]')!.textContent, reason)
@@ -214,6 +221,13 @@ test('controlled children and complete failure text survive asynchronous confirm
     assert.equal(context.requests.length, 2)
     assert.equal(context.requests[1].choice, 'remove')
     assert.equal(context.dialog().querySelectorAll('[role="alert"]').length, 0)
+    // This intentional new pending key forfeits failure focus; exercise its close lock on the successful retry instead.
+    await context.change(() => {
+      const escape = new context.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      context.dialog().dispatchEvent(escape)
+      assert.equal(escape.defaultPrevented, true)
+    })
+    assert.equal(context.calls.cancel, 0)
     await context.change(() => context.requests[1].resolve())
     assert.equal(context.calls.complete, 1)
     assert.equal(context.document.querySelectorAll('.app-confirm-dialog').length, 0)

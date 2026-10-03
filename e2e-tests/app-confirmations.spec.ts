@@ -74,7 +74,10 @@ test('confirmation keeps the target on failure and prevents duplicate execution 
     expect(await calls()).toBe(1)
     await app.evaluate(({ ipcMain }) => { ipcMain.emit('knowbook:test-release-delete') })
     await expect(dialog.getByRole('alert')).toContainText('Controlled deletion failure')
-    await expect(dialog.getByRole('button', { name: uiText('Cancel', '取消') })).toBeFocused()
+    await expect(dialog).toHaveAttribute('aria-busy', 'false')
+    // The newer pending keyboard activity owns focus; a failure must not move it to Cancel.
+    await expect(dialog).toBeFocused()
+    await expect(dialog.getByRole('button', { name: uiText('Cancel', '取消') })).toBeEnabled()
     await dialog.getByRole('button', { name: uiText('Retry', '重试') }).click()
     await expect(dialog).toHaveCount(0)
     expect(await calls()).toBe(2)
