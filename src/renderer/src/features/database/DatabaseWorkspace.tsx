@@ -57,7 +57,7 @@ type DatabaseWorkspaceProps = {
   onCurrentDatabaseIdChange: (databaseId: string) => void
   onMessage: AppMessageHandler
   onOpenDocument: (documentId: string) => void
-  onRefresh: (databaseId?: string, preferredViewId?: string) => Promise<void>
+  onRefresh: (databaseId?: string, preferredViewId?: string, shouldContinue?: () => boolean) => Promise<void | boolean>
   onSavedDatabase?: (database: DocumentDatabase, options?: { activate?: boolean }) => void
   onDeleted?: (deletion: DatabaseDeletion) => void | Promise<void>
   onSavedView?: (view: DatabaseSavedView) => void
@@ -577,19 +577,21 @@ export function DatabaseWorkspace({
       if (ownsSource()) reportError(error)
       return { status: 'failed', message: text.formFailed }
     }
-    // Keep an accepted write in its original cache, but never refresh a new
-    // source through the previous workspace's callback.
-    if (!ownsSource()) return { status: 'saved', value }
-    try { await refresh() }
-    catch {
-      if (ownsSource()) onMessage(text.savedRefreshFailed, 'error')
-      return { status: 'saved', value, refreshError: text.savedRefreshFailed }
-    }
-    return { status: 'saved', value, refreshConfirmed: true }
+    // End the write lock at its ACK; subsequent reads have separate ownership.
+    return { status: 'saved', value, refresh: async (isCurrent) => {
+      const shouldContinue = () => ownsSource() && isCurrent()
+      if (!shouldContinue()) return false
+      try { return await onRefresh(currentSource.id, undefined, shouldContinue) }
+      catch (error) {
+        if (shouldContinue()) onMessage(text.savedRefreshFailed, 'error')
+        throw error
+      }
+    } }
   }
-  const refreshTextValues = async () => {
-    if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession) throw new Error(text.savedRefreshFailed)
-    await refresh()
+  const refreshTextValues = async (isCurrent: () => boolean) => {
+    const shouldContinue = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession && isCurrent()
+    if (!shouldContinue()) return false
+    return await onRefresh(currentSource.id, undefined, shouldContinue)
   }
 
   const updateLinkedDocument = async (record: DatabaseRecord, documentId: string | null) => {

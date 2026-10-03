@@ -99,7 +99,9 @@ test('background value refresh does not clobber an open catalog cell editor', ()
 
   const cellIndex = source.indexOf('export function DatabaseValueEditor')
   assert.ok(cellIndex !== -1, 'the unified database value editor must exist')
-  const cellSource = source.slice(cellIndex, cellIndex + 2500)
+  const componentSource = source.slice(cellIndex)
+  const nextTopLevelFunction = componentSource.search(/\r?\n(?:export\s+)?function\s/)
+  const cellSource = nextTopLevelFunction === -1 ? componentSource : componentSource.slice(0, nextTopLevelFunction)
 
   const effectIndex = cellSource.indexOf('useEffect(() => {')
   const effectEnd = cellSource.indexOf('})', cellSource.indexOf('}, [', effectIndex))

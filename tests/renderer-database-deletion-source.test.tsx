@@ -59,7 +59,7 @@ const catalog = (): DocumentCatalogEntry[] => [{ id: 'document', title: 'Documen
 type DataRead = { id: string; called: Set<string>; columns: ReturnType<typeof deferred<DocumentDatabaseColumn[]>>;
   entities: ReturnType<typeof deferred<DatabaseEntity[]>>; views: ReturnType<typeof deferred<DatabaseSavedView[]>> }
 type PageRead = { home: ReturnType<typeof deferred<HomeData>>; documents: ReturnType<typeof deferred<DocumentCatalogPage>>;
-  list: ReturnType<typeof deferred<DocumentDatabase[]>>; data: DataRead; completion: Promise<void> }
+  list: ReturnType<typeof deferred<DocumentDatabase[]>>; data: DataRead; completion: ReturnType<WorkspaceProps['onRefresh']> }
 const fieldLabels = { title: 'Title', path: 'Path', parent: 'Parent', linkedDocument: 'Document',
   blockCount: 'Blocks', linkCount: 'Links', childCount: 'Children', createdAt: 'Created', updatedAt: 'Updated' }
 type Context = {
@@ -195,7 +195,7 @@ async function withDeletionSource(run: (context: Context) => Promise<void>) {
         read.views.resolve(views(read.id))
       }),
       startRefresh: async () => {
-        let completion!: Promise<void>
+        let completion!: ReturnType<WorkspaceProps['onRefresh']>
         await change(() => { completion = workspace.onRefresh(); void completion.catch(() => {}) })
         const pending = refreshes.at(-1)!
         pending.completion = completion

@@ -24,7 +24,7 @@ export function DatabaseValueEditor({
   textDraftCache?: DatabaseTextDraftCache
   textDraftKey?: string
   textDraftRevision?: string
-  onRefreshValue?: () => Promise<void>
+  onRefreshValue?: (isCurrent: () => boolean) => Promise<void | boolean>
   text?: DatabaseWorkspaceText
 }) {
   const [isEditing, setIsEditing] = useState(false)
@@ -43,13 +43,21 @@ export function DatabaseValueEditor({
   const focusDraft = useRef<DatabaseTextDraft | undefined>(undefined)
   const root = useRef<HTMLSpanElement>(null), feedbackId = useId()
   const pending = Boolean(cell?.operation)
-  const message = pending ? cell?.status === 'refreshing' ? text.cellRefreshing : text.saving
-    : localizeCellMessage(cell?.message ?? '', text)
+  const reading = Boolean(cell?.readOperation)
+  const message = pending ? text.saving : reading ? text.cellRefreshing : localizeCellMessage(cell?.message ?? '', text)
   const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(column.type === 'multi-select' && isEditing)
 
   useLayoutEffect(() => {
     if (blurText) cache.sync(key, value, textDraftRevision)
   }, [blurText, cache, key, value, textDraftRevision, cell])
+  useLayoutEffect(() => {
+    if (!blurText || !focusDraft.current?.operation || !cell || cell.operation
+      || (cell.status !== 'saved' && cell.status !== 'failed')) return
+    const container = root.current
+    if (container && container.querySelector('input') === container.ownerDocument.activeElement) {
+      focusDraft.current = cell
+    }
+  }, [blurText, cell])
   useEffect(() => {
     if (isEditing) return
     if (!blurText) setDraft(formatDraft(value))
@@ -94,7 +102,7 @@ export function DatabaseValueEditor({
     const nextValue = nextDraft.trim() || null
     if (!blurText) { void onChangeValue(nextValue); return }
     if (!cache.get(key) || cache.get(key)?.raw !== nextDraft) cache.edit(key, value, nextDraft, textDraftRevision)
-    void cache.commit(key, nextValue, onChangeValue, text.formFailed, { value, revision: textDraftRevision })
+    void cache.commit(key, nextValue, onChangeValue, text.formFailed, { value, revision: textDraftRevision }, text.savedRefreshFailed)
   }
   const control = (
     <input
@@ -137,7 +145,7 @@ export function DatabaseValueEditor({
   if (!blurText) return control
   return <span className="dbw-text-cell-editor" ref={root}>
     {control}
-    {cell?.action && <button aria-busy={pending || undefined} aria-disabled={pending || undefined}
+    {cell?.action && <button aria-busy={pending || reading || undefined} aria-disabled={pending || reading || undefined}
       aria-describedby={message ? feedbackId : undefined} className="dbw-quiet-button" type="button" title={message || undefined}
       onClick={() => { if (cell.action === 'retry') commit(cell.raw); else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed) }}>
       {cell.action === 'retry' ? text.retry : text.refresh}

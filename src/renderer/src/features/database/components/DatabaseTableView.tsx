@@ -38,7 +38,7 @@ export function DatabaseTableView({
   onColumnWidthChange: (fieldId: string, width: number) => void
   onUpdateDocument: (record: DatabaseRecord, documentId: string | null) => Promise<void>
   onUpdateValue: (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => Promise<void | DatabaseValueCommitResult>
-  onRefreshValue?: () => Promise<void>
+  onRefreshValue?: (isCurrent: () => boolean) => Promise<void | boolean>
   textDraftCache?: DatabaseTextDraftCache
 }) {
   const localCache = useRef<DatabaseTextDraftCache | null>(null)

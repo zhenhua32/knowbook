@@ -85,13 +85,15 @@ export function DatabasePage({
 
   const refreshWorkspace = useCallback(async (
     targetDatabaseId?: string,
-    preferredViewId?: string
+    preferredViewId?: string,
+    shouldContinue?: () => boolean
   ) => {
-    if (!mounted.current) return
+    if (!mounted.current || shouldContinue?.() === false) return false
     const targetId = targetDatabaseId ?? sourceSession.current.currentId
     const requestId = ++refreshGeneration.current
     const sessionId = sourceSession.current.generation
-    const isCurrentRequest = () => mounted.current && requestId === refreshGeneration.current && sessionId === sourceSession.current.generation
+    const isCurrentRequest = () => mounted.current && requestId === refreshGeneration.current
+      && sessionId === sourceSession.current.generation && shouldContinue?.() !== false
     const isCurrentSource = () => isCurrentRequest() && targetId === sourceSession.current.currentId
     const targetDatabase = latest.current.database.databases.find((candidate) => candidate.id === targetId)
     let result
@@ -106,21 +108,24 @@ export function DatabasePage({
       ])
     } catch (error) {
       if (isCurrentRequest()) throw error
-      return
+      return false
     }
-    if (!isCurrentRequest()) return
+    if (!isCurrentRequest()) return false
     const [home, documents, databases, columns, entities, views] = result
     const refreshedTarget = databases.find((candidate) => candidate.id === targetId) ?? targetDatabase
     const current = latest.current
     // Creating or deleting a database refreshes the shared catalog before the
     // workspace switches sources. Target data must wait for its own source.
-    current.onHomeDataChange(home)
-    current.onCatalogDocumentsChange(documents)
-    current.database.setDatabases(databases)
+    // This read has already passed its request guard. A subsequent intentional
+    // source switch must retain its global metadata; cell edits can still veto it.
+    const canPublishGlobal = () => shouldContinue?.() !== false
+    current.onHomeDataChange(previous => canPublishGlobal() ? home : previous)
+    current.onCatalogDocumentsChange(previous => canPublishGlobal() ? documents : previous)
+    current.database.setDatabases(previous => canPublishGlobal() ? databases : previous)
     if (refreshedTarget?.kind === 'document-catalog') {
-      current.onCatalogColumnsChange(columns)
+      current.onCatalogColumnsChange(previous => canPublishGlobal() ? columns : previous)
     }
-    if (!isCurrentSource()) return
+    if (!isCurrentSource()) return false
     current.database.setSelectedDatabaseColumns(previous => isCurrentSource() ? columns : previous)
     current.database.setDatabaseEntities(previous => isCurrentSource() ? entities : previous)
     current.database.setDatabaseSavedViews(previous => isCurrentSource() ? views : previous)
@@ -130,6 +135,7 @@ export function DatabasePage({
       return views.some((view) => view.id === candidateId) ? candidateId : views[0]?.id ?? ''
     })
     current.database.acknowledgeWorkspaceRead(targetId)
+    return true
   }, [])
 
   const acknowledgeSavedView = useCallback((view: DatabaseSavedView) => {
