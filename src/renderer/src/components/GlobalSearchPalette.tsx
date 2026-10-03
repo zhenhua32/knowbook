@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { GlobalSearchResult } from '@shared/contracts'
 import type { DocumentsDomainState } from '../types/appDomains'
@@ -14,6 +14,21 @@ import { searchResultDocumentLink } from '../utils/searchResultLink'
 import './global-search.css'
 
 type PaletteItem = { id: string; result: GlobalSearchResult } | { id: string; command: PaletteCommand }
+type ResultActionFocus = {
+  dialog: HTMLDialogElement; origin: HTMLElement; sequence: number; query: string
+  ready: boolean; disabledBlur: boolean; cleanup: () => void
+}
+
+function isVisible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return style?.display !== 'none' && style?.visibility !== 'hidden' && style?.visibility !== 'collapse'
+}
+
+function hasForeignModal(dialog: HTMLDialogElement): boolean {
+  return [...dialog.ownerDocument.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
+    .some(element => element !== dialog && !element.contains(dialog) && isVisible(element))
+}
 
 export default function GlobalSearchPalette({ documents, shell, workspace }: {
   documents: DocumentsDomainState; shell: AppShellState; workspace: WorkspaceOperationsState
@@ -26,6 +41,13 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
   const mounted = useRef(false), actionSequence = useRef(0)
   const zh = shell.isZh
   const query = documents.globalSearchQuery
+  const currentQuery = useRef(query), openFocus = useRef<ResultActionFocus | null>(null)
+  currentQuery.current = query
+  const cancelOpenFocus = (request = openFocus.current) => {
+    if (!request) return
+    request.cleanup()
+    if (openFocus.current === request) openFocus.current = null
+  }
   const commandsOnly = query.trimStart().startsWith('>')
   const commands = matchPaletteCommands(createPaletteCommands(documents, shell, workspace), query)
   const results: GlobalSearchResult[] = commandsOnly ? [] : query.trim() ? documents.globalSearchResults
@@ -40,6 +62,24 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
   const selectedIndex = items.findIndex((item) => item.id === selected?.id)
   const selectedResult = selected && 'result' in selected ? selected.result : null
   const primaryLabel = selectedResult?.blockId ? (zh ? '定位内容块' : 'Go to block') : (zh ? '打开文档' : 'Open document')
+
+  useLayoutEffect(() => () => { cancelOpenFocus() }, [])
+  useLayoutEffect(() => {
+    const request = openFocus.current
+    if (!request) return
+    const element = request.dialog, owner = element.ownerDocument, target = input.current
+    const active = owner.activeElement
+    if (!mounted.current || dialog.current !== element || request.sequence !== actionSequence.current
+      || request.query !== query || !element.open || !isVisible(element) || !owner.hasFocus() || hasForeignModal(element)
+      || !request.origin.isConnected || (active !== request.origin && !(active === owner.body && request.disabledBlur))) {
+      cancelOpenFocus(request)
+      return
+    }
+    if (!request.ready || busy !== null) return
+    const allowed = target && element.contains(target) && isVisible(target) && !target.matches(':disabled, [aria-disabled="true"]')
+    cancelOpenFocus(request)
+    if (allowed) target.focus()
+  })
 
   useEffect(() => {
     mounted.current = true
@@ -62,10 +102,50 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     if (executing.current) return
     executing.current = true
     const sequence = ++actionSequence.current
+    const actionQuery = currentQuery.current
+    cancelOpenFocus()
+    let request: ResultActionFocus | null = null
+    const element = dialog.current, owner = element?.ownerDocument, view = owner?.defaultView, origin = owner?.activeElement
+    if (action !== 'copy' && mounted.current && element && owner && view && origin instanceof view.HTMLElement
+      && element.open && element.contains(origin) && isVisible(element) && isVisible(origin)
+      && !origin.matches(':disabled, [aria-disabled="true"]') && owner.hasFocus() && !hasForeignModal(element)) {
+      const candidate: ResultActionFocus = { dialog: element, origin, sequence, query: actionQuery, ready: false, disabledBlur: false, cleanup: () => {} }
+      const abandon = () => cancelOpenFocus(candidate)
+      const focusMoved = (event: FocusEvent) => {
+        if (event.target === owner.body && (candidate.disabledBlur || origin.matches(':disabled'))) {
+          candidate.disabledBlur = true
+          return
+        }
+        abandon()
+      }
+      const blurred = (event: FocusEvent) => {
+        if (event.target !== origin) return
+        if (origin.matches(':disabled') && (event.relatedTarget === null || event.relatedTarget === owner.body)) {
+          candidate.disabledBlur = true
+          return
+        }
+        abandon()
+      }
+      owner.addEventListener('pointerdown', abandon, true)
+      view.addEventListener('keydown', abandon, true)
+      owner.addEventListener('compositionstart', abandon, true)
+      owner.addEventListener('focusin', focusMoved, true)
+      owner.addEventListener('focusout', blurred, true)
+      view.addEventListener('blur', abandon)
+      candidate.cleanup = () => {
+        owner.removeEventListener('pointerdown', abandon, true)
+        view.removeEventListener('keydown', abandon, true)
+        owner.removeEventListener('compositionstart', abandon, true)
+        owner.removeEventListener('focusin', focusMoved, true)
+        owner.removeEventListener('focusout', blurred, true)
+        view.removeEventListener('blur', abandon)
+      }
+      openFocus.current = request = candidate
+    }
     setBusy(action === 'copy' ? 'copy' : 'open')
     setFeedback(null)
     const report = (message: string, error = false) => {
-      if (mounted.current && sequence === actionSequence.current) setFeedback({ itemId: item.id, message, error })
+      if (mounted.current && sequence === actionSequence.current && actionQuery === currentQuery.current) setFeedback({ itemId: item.id, message, error })
     }
     try {
       if (action === 'copy') {
@@ -73,11 +153,13 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
         report(zh ? '文档链接已复制，可粘贴到其他文档。' : 'Document link copied. Paste it into another document.')
       } else if (!await documents.handleGlobalSearchNavigate(item.result, action === 'document')) {
         report(zh ? '未能切换文档，草稿和搜索已保留。请处理保存错误后重试。' : 'Could not switch documents. Your draft and search are preserved. Resolve the save error and retry.', true)
-        input.current?.focus()
+        if (request && openFocus.current === request) request.ready = true
       }
     } catch (error) {
+      if (request) cancelOpenFocus(request)
       report(getErrorMessage(error, action === 'copy' ? (zh ? '复制失败，请重试。' : 'Copy failed. Please retry.') : (zh ? '打开失败，请重试。' : 'Could not open the result. Please retry.')), true)
     } finally {
+      if (request && !request.ready) cancelOpenFocus(request)
       executing.current = false
       if (mounted.current) setBusy(null)
     }
