@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { DatabaseSource } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
@@ -34,6 +34,7 @@ export function DatabaseHeader({
   onSourceChange,
   refreshing
 }: DatabaseHeaderProps) {
+  const sourcePickerId = useId()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -85,6 +86,8 @@ export function DatabaseHeader({
         <div className="dbw-source-wrap">
           <button
             aria-expanded={pickerOpen}
+            aria-haspopup="dialog"
+            aria-controls={pickerOpen ? sourcePickerId : undefined}
             className="dbw-source-trigger"
             ref={sourceTriggerRef}
             onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}
@@ -101,7 +104,7 @@ export function DatabaseHeader({
           <p>{currentSource.kind === 'document-catalog' ? text.catalogDescription : currentSource.description || text.customDescription}</p>
 
           {pickerOpen ? (
-            <div className="dbw-popover dbw-source-picker" role="dialog"
+            <div className="dbw-popover dbw-source-picker" role="dialog" id={sourcePickerId} aria-label={text.chooseDatabase}
               onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}>
               <label className="dbw-search-field dbw-source-search">
                 <span aria-hidden="true">⌕</span>

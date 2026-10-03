@@ -2,7 +2,7 @@ export function getDatabaseWorkspaceText(locale: string) {
   const zh = locale.toLowerCase().startsWith('zh')
   return zh ? {
     workspace: '数据库工作台', allDocuments: '全部文档', system: '系统', custom: '自定义数据库',
-    searchDatabase: '搜索数据库…', noDatabases: '没有匹配的数据库', newDatabase: '新建数据库', newDocument: '新建文档', newRecord: '新建记录',
+    chooseDatabase: '选择数据库', searchDatabase: '搜索数据库…', noDatabases: '没有匹配的数据库', newDatabase: '新建数据库', newDocument: '新建文档', newRecord: '新建记录',
     all: '全部', newView: '新建视图', table: '表格', board: '看板', cards: '卡片',
     search: '搜索记录…', filter: '筛选', sort: '排序', group: '分组', fields: '字段',
     records: (count: number) => `${count} 条记录`, saveChanges: '保存更改', saved: '已保存',
@@ -41,7 +41,7 @@ export function getDatabaseWorkspaceText(locale: string) {
     viewRenameWaitsForSave: '请等待视图保存完成，再提交重命名。', waitingForSave: '等待保存…'
   } : {
     workspace: 'Database workspace', allDocuments: 'All documents', system: 'System', custom: 'Custom databases',
-    searchDatabase: 'Search databases…', noDatabases: 'No matching databases', newDatabase: 'New database', newDocument: 'New document', newRecord: 'New record',
+    chooseDatabase: 'Choose database', searchDatabase: 'Search databases…', noDatabases: 'No matching databases', newDatabase: 'New database', newDocument: 'New document', newRecord: 'New record',
     all: 'All', newView: 'New view', table: 'Table', board: 'Board', cards: 'Cards',
     search: 'Search records…', filter: 'Filter', sort: 'Sort', group: 'Group', fields: 'Fields',
     records: (count: number) => `${count} records`, saveChanges: 'Save changes', saved: 'Saved',
