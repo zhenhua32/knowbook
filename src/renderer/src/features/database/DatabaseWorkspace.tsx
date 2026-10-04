@@ -42,6 +42,7 @@ import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from './model/
 import { DatabaseMultiSelectCellCache, multiSelectSchema } from './model/databaseMultiSelectCells'
 import { selectCellSchema } from './model/databaseSelectCells'
 import { checkboxCellSchema } from './model/databaseCheckboxCells'
+import { dateDraftFieldId, dateDraftKey } from './model/databaseDateCells'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -217,7 +218,8 @@ export function DatabaseWorkspace({
     : adaptCustomRecords(currentSource.id, entities, catalogDocuments), [catalogDocuments, currentSource, entities])
   useLayoutEffect(() => {
     if (currentSource) cellDrafts.prune(currentSource.id, new Set(records.map(record => record.id)),
-      new Set(fields.filter(field => field.role === 'property' && field.type === 'text').map(field => field.id)))
+      new Set(fields.filter(field => field.role === 'property' && (field.type === 'text' || field.type === 'date'))
+        .map(field => field.type === 'date' ? dateDraftFieldId(field.id) : field.id)))
   }, [cellDrafts, currentSource?.id, fields, records])
   useLayoutEffect(() => {
     if (currentSource) multiCells.prune(currentSource.id, new Set(records.map(record => record.id)),
@@ -601,15 +603,17 @@ export function DatabaseWorkspace({
       }
     }
     const choiceCell = fromTextCell && (field.type === 'multi-select' || field.type === 'select' || field.type === 'checkbox')
-    if (field.type !== 'text' && !choiceCell) {
+    const dateCell = fromTextCell && field.type === 'date'
+    if (field.type !== 'text' && !choiceCell && !dateCell) {
       await run(async () => { await write(); await refresh(activeViewId) })
       return
     }
     const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
-    const failureMessage = choiceCell ? field.type === 'checkbox' ? text.checkboxSaveFailed
+    const failureMessage = dateCell ? text.dateSaveFailed : choiceCell ? field.type === 'checkbox' ? text.checkboxSaveFailed
       : field.type === 'select' ? text.selectSaveFailed : text.multiSelectSaveFailed : text.formFailed
     if (!ownsSource()) return { status: 'failed', message: failureMessage }
-    const cellKey = JSON.stringify([record.databaseId, record.id, field.id])
+    const baseCellKey = JSON.stringify([record.databaseId, record.id, field.id])
+    const cellKey = dateCell ? dateDraftKey(baseCellKey) : baseCellKey
     const cellOperation = choiceCell ? multiCells.get(cellKey)?.operation : fromTextCell ? cellDrafts.get(cellKey)?.operation : null
     try { await write() }
     catch (error) {

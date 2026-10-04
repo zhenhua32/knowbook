@@ -383,11 +383,20 @@
 .dbw-inline-select:hover,
 .dbw-table .catalog-cell-input:hover,
 .dbw-table .catalog-cell-input:focus { border-color: var(--dbw-line-strong); background: #fff; }
-.dbw-text-cell-editor { display: flex; gap: 4px; }
-.dbw-text-cell-editor input { min-width: 0; }
-.dbw-text-cell-editor button { flex-shrink: 0; min-height: 32px; padding: 0 4px; }
-.dbw-text-cell-editor button[aria-busy] { cursor: progress; }
-.dbw-text-cell-editor input[aria-invalid] { border-color: var(--kb-danger) !important; }
+.dbw-text-cell-editor,
+.dbw-date-cell-editor { display: flex; gap: 4px; }
+.dbw-text-cell-editor input,
+.dbw-date-cell-editor input { min-width: 0; }
+.dbw-text-cell-editor button,
+.dbw-date-cell-editor button { flex-shrink: 0; min-height: 32px; padding: 0 4px; }
+.dbw-text-cell-editor button[aria-busy],
+.dbw-date-cell-editor button[aria-busy] { cursor: progress; }
+.dbw-text-cell-editor input[aria-invalid],
+.dbw-date-cell-editor input[aria-invalid] { border-color: var(--kb-danger) !important; }
+.dbw-date-cell-editor { align-items: center; font-weight: 400; }
+.dbw-table .dbw-date-cell-editor input { padding-inline: 2px; }
+.dbw-date-cell-editor button,
+.dbw-date-cell-editor small { flex: 0 0 32px; text-align: center; }
 .dbw-text-cell-editor.dbw-select-cell-editor { align-items: center; font-weight: 400; }
 .dbw-select-cell-editor select { min-width: 0; flex: 1; }
 .dbw-select-cell-editor small { flex-shrink: 0; white-space: nowrap; }

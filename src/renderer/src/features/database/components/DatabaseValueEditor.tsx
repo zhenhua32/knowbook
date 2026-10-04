@@ -6,6 +6,7 @@ import { DatabaseTextDraftCache, formatTextDraft, type DatabaseTextDraft, type D
 import { DatabaseMultiSelectCellCache, multiSelectChoices, multiSelectSchema } from '../model/databaseMultiSelectCells'
 import { adaptSelectCellChange, selectCellChoices, selectCellSchema } from '../model/databaseSelectCells'
 import { adaptCheckboxCellChange, checkboxCellChoices, checkboxCellSchema } from '../model/databaseCheckboxCells'
+import { dateDraftKey } from '../model/databaseDateCells'
 import { appNotifications } from '../../../app-notifications'
 
 const cellMessages = ['en-US', 'zh-CN'].map(getDatabaseWorkspaceText)
@@ -35,14 +36,17 @@ export function DatabaseValueEditor({
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(formatDraft(value))
+  const [dateIncomplete, setDateIncomplete] = useState(false)
   const composing = useRef(false)
   const cancelBlurCommit = useRef(false)
   const focusValue = useRef(value)
   const localCache = useRef<DatabaseTextDraftCache | null>(null)
   if (!localCache.current) localCache.current = new DatabaseTextDraftCache()
   const cache = textDraftCache ?? localCache.current
-  const key = textDraftKey ?? JSON.stringify(['', '', column.id])
-  const blurText = column.type === 'text' && textCommitMode === 'blur'
+  const isDate = column.type === 'date'
+  const baseKey = textDraftKey ?? JSON.stringify(['', '', column.id])
+  const key = isDate ? dateDraftKey(baseKey) : baseKey
+  const blurText = (column.type === 'text' || isDate) && textCommitMode === 'blur'
   const isMulti = column.type === 'multi-select'
   const isSelect = column.type === 'select'
   const isCheckbox = column.type === 'checkbox'
@@ -59,10 +63,18 @@ export function DatabaseValueEditor({
   const root = useRef<HTMLSpanElement>(null), feedbackId = useId()
   const pending = Boolean(cell?.operation)
   const reading = Boolean(cell?.readOperation)
-  const message = pending ? text.saving : reading ? text.cellRefreshing : localizeCellMessage(cell?.message ?? '', text)
+  const message = pending ? text.saving : dateIncomplete ? text.dateIncomplete
+    : reading ? text.cellRefreshing : localizeCellMessage(cell?.message ?? '', text)
   const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(isMulti && isEditing,
     Boolean(multiCell?.operation || multiCell?.valid && multiCell.schema === multiSchema && (multiCell.readOperation || multiCell.message)))
 
+  useLayoutEffect(() => {
+    focusDraft.current = undefined
+    focusValue.current = value
+    composing.current = false
+    cancelBlurCommit.current = false
+    setDateIncomplete(false)
+  }, [cache, key, column.type, textCommitMode])
   useLayoutEffect(() => {
     if (blurText) cache.sync(key, value, textDraftRevision)
   }, [blurText, cache, key, value, textDraftRevision, cell])
@@ -168,32 +180,38 @@ export function DatabaseValueEditor({
     )
   }
 
-  if (column.type === 'date') {
-    return <input aria-label={column.name} className="catalog-cell-input" onBlur={() => setIsEditing(false)} onChange={(event) => void onChangeValue(event.target.value || null)} onFocus={() => setIsEditing(true)} type="date" value={typeof value === 'string' ? value : ''} />
-  }
-
-  const commit = (nextDraft: string, explicitRetry = false) => {
+  const commit = (nextDraft: string, explicitRetry = false, badInput = false) => {
+    // An unfinished native date segment has an empty value, but is not a clear.
+    if (isDate && textCommitMode === 'blur') {
+      const incomplete = badInput || nextDraft !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(nextDraft)
+      setDateIncomplete(incomplete)
+      if (incomplete) return
+    }
     const nextValue = nextDraft.trim() || null
     if (!blurText) { void onChangeValue(nextValue); return }
     if (!cache.get(key) && nextValue === (formatTextDraft(value).trim() || null)) return
     if (!cache.get(key) || cache.get(key)?.raw !== nextDraft) cache.edit(key, value, nextDraft, textDraftRevision)
-    void cache.commit(key, nextValue, onChangeValue, text.formFailed,
+    void cache.commit(key, nextValue, onChangeValue, isDate ? text.dateSaveFailed : text.formFailed,
       { value, revision: textDraftRevision, explicitRetry }, text.savedRefreshFailed)
+    // Date Enter keeps focus; rebase its Escape snapshot when this write settles.
+    const accepted = isDate ? cache.get(key) : undefined
+    const input = root.current?.querySelector('input')
+    if (accepted?.operation && input === input?.ownerDocument.activeElement) focusDraft.current = accepted
   }
   const control = (
     <input
       aria-label={column.name}
       aria-busy={blurText && pending || undefined}
-      aria-invalid={cell?.status === 'failed' || undefined}
+      aria-invalid={dateIncomplete || cell?.status === 'failed' || undefined}
       aria-describedby={message ? feedbackId : undefined}
       className="catalog-cell-input"
       onBlur={(event) => {
         composing.current = false
         setIsEditing(false)
-        if (textCommitMode === 'blur' && !cancelBlurCommit.current && !root.current?.contains(event.relatedTarget as Node | null)) commit(event.currentTarget.value)
+        if (textCommitMode === 'blur' && !cancelBlurCommit.current && !root.current?.contains(event.relatedTarget as Node | null)) commit(event.currentTarget.value, false, event.currentTarget.validity.badInput)
         cancelBlurCommit.current = false
       }}
-      onChange={(event) => { if (blurText) cache.edit(key, value, event.target.value, textDraftRevision); else setDraft(event.target.value); if (textCommitMode === 'change') commit(event.target.value) }}
+      onChange={(event) => { if (isDate) setDateIncomplete(false); if (blurText) cache.edit(key, value, event.target.value, textDraftRevision); else setDraft(event.target.value); if (textCommitMode === 'change') commit(event.target.value) }}
       onFocus={() => { focusValue.current = value; focusDraft.current = cache.get(key); cancelBlurCommit.current = false; setIsEditing(true) }}
       onCompositionStart={() => { composing.current = true }}
       onCompositionEnd={() => { composing.current = false }}
@@ -202,11 +220,16 @@ export function DatabaseValueEditor({
           event.stopPropagation()
           return
         }
-        if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() }
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          if (isDate) { if (blurText) commit(event.currentTarget.value, false, event.currentTarget.validity.badInput) }
+          else event.currentTarget.blur()
+        }
         if (event.key === 'Escape') {
           event.preventDefault()
           event.stopPropagation()
           cancelBlurCommit.current = true
+          setDateIncomplete(false)
           if (blurText) cache.restore(key, focusDraft.current)
           else setDraft(formatDraft(focusValue.current))
           if (textCommitMode === 'change') void onChangeValue(focusValue.current)
@@ -214,24 +237,34 @@ export function DatabaseValueEditor({
         }
       }}
       readOnly={blurText && pending}
+      type={isDate ? 'date' : undefined}
       title={message || undefined}
       value={blurText ? cell?.raw ?? formatTextDraft(value) : draft}
     />
   )
   if (!blurText) return control
-  return <span className="dbw-text-cell-editor" ref={root}>
+  return <span className={isDate ? 'dbw-date-cell-editor' : 'dbw-text-cell-editor'} ref={root}>
     {control}
+    {isDate && pending && <small aria-hidden="true">…</small>}
     {cell?.action && <button aria-busy={pending || reading || undefined} aria-disabled={pending || reading || undefined}
+      aria-label={isDate ? cell.action === 'retry' ? text.retry : text.refresh : undefined}
       aria-describedby={message ? feedbackId : undefined} className="dbw-quiet-button" type="button" title={message || undefined}
-      onClick={() => { if (cell.action === 'retry') commit(cell.raw, true); else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed) }}>
-      {cell.action === 'retry' ? text.retry : text.refresh}
+      onClick={() => {
+        if (cell.action === 'retry') {
+          const input = isDate ? root.current?.querySelector('input') : undefined
+          commit(input?.value ?? cell.raw, true, input?.validity.badInput)
+        } else if (onRefreshValue) void cache.refresh(key, onRefreshValue, text.savedRefreshFailed)
+      }}>
+      {isDate ? '↻' : cell.action === 'retry' ? text.retry : text.refresh}
     </button>}
-    {message && <span className="sr-only dbw-text-cell-feedback" id={feedbackId} role={cell?.status === 'failed' ? 'alert' : 'status'}>{message}</span>}
+    {message && <span className={`sr-only ${isDate ? 'dbw-date-cell-feedback' : 'dbw-text-cell-feedback'}`} id={feedbackId}
+      role={dateIncomplete || cell?.status === 'failed' ? 'alert' : 'status'}>{message}</span>}
   </span>
 }
 
 function localizeCellMessage(message: string, text: DatabaseWorkspaceText): string {
   if (cellMessages.some(source => source.formFailed === message)) return text.formFailed
+  if (cellMessages.some(source => source.dateSaveFailed === message)) return text.dateSaveFailed
   if (cellMessages.some(source => source.savedRefreshFailed === message)) return text.savedRefreshFailed
   return message
 }
