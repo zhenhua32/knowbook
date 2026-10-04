@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { setImmediate as nextTurn } from 'node:timers/promises'
 import { WorkspaceEventBus } from '../src/main/event-bus'
+import { listenOnFetchSafePort } from './helpers/http-server'
 import {
   createKnowbookFullTrustServices,
   type KnowbookFullTrustServiceOptions
@@ -263,12 +264,9 @@ async function withAiServer(
   const server = createServer((request, response) => {
     Promise.resolve(handler(request, response)).catch((error: unknown) => response.destroy(error as Error))
   })
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  assert.ok(address && typeof address === 'object')
+  const port = await listenOnFetchSafePort(server)
   try {
-    await run(`http://127.0.0.1:${address.port}/v1`)
+    await run(`http://127.0.0.1:${port}/v1`)
   } finally {
     const closed = once(server, 'close')
     server.closeAllConnections()
