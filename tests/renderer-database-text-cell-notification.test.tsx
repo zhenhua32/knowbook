@@ -10,6 +10,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, setActiveUiLanguage, type UiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -192,6 +193,8 @@ for (const options of [{ kind: 'custom', locale: 'en-US' }, { kind: 'catalog', l
       assert.deepEqual(disk(), originals)
       assert.equal(reads.length, 0)
       assert.equal(appNotifications.getSnapshot().length, 1)
+      await waitForRenderer(() => document.querySelector('.app-notification-message')?.textContent === text.formFailed,
+        'The notification Host must render the localized text save failure before inspecting its message')
       assert.equal(document.querySelector('.app-notification-message')?.textContent, text.formFailed,
         'the real notify → store → Host chain must not show the technical cause')
       assert.equal(appNotifications.getSnapshot()[0].message, text.formFailed)

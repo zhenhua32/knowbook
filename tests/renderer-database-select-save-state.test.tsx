@@ -11,6 +11,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, getUiText, setActiveUiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -253,6 +254,8 @@ test('a rejected select write restores the saved choice and leaves a local failu
     assert.deepEqual(context.requests[0].payload, { entityId: record.id, fieldValues: { status: 'Red' } })
     await context.reject(0)
     assert.equal(appNotifications.getSnapshot().length, 1)
+    await waitForRenderer(() => context.document.querySelectorAll('.app-notification [role="alert"]').length === 1,
+      'The notification Host must render the failed select write before checking its alert')
     assert.equal(context.document.querySelectorAll('.app-notification [role="alert"]').length, 1,
       'the real Workspace failure has settled and reached the notification Host')
     assert.equal(context.writes(), 0)

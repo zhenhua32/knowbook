@@ -3,6 +3,7 @@ import test from 'node:test'
 import { register } from 'node:module'
 import { act, createElement, StrictMode } from 'react'
 import { JSDOM } from 'jsdom'
+import { waitForRenderer } from './helpers/renderer-async'
 import type { DocumentTemplate, DocumentTreeNode, SaveDocumentTemplateInput } from '../src/shared/contracts'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -39,7 +40,7 @@ type Context = {
   opener: HTMLButtonElement; outside: HTMLInputElement; dialog: () => HTMLDialogElement; primary: () => HTMLInputElement | HTMLTextAreaElement
   initial: () => HTMLElement; cancel: () => HTMLButtonElement; child: () => HTMLDialogElement | null
   change: (callback: () => void) => Promise<void>; fill: (input: Input, value: string) => Promise<void>; prepare: () => Promise<void>
-  cancelParent: () => Promise<void>; submit: () => Promise<void>; succeed: (index?: number) => Promise<void>
+  cancelParent: () => Promise<void>; openChild: () => Promise<void>; submit: () => Promise<void>; succeed: (index?: number) => Promise<void>
   flush: () => Promise<void>; replay: (callbacks: FrameRequestCallback[]) => Promise<void>; render: () => Promise<void>; remove: () => Promise<void>
   foreground: (value: boolean) => void; draft: () => string[]; payload: () => unknown
 }
@@ -172,6 +173,15 @@ async function withDialog(kind: Kind, run: (context: Context) => Promise<void>, 
         focusCalls.length = 0; history.length = 0
       },
       cancelParent: () => change(() => { cancel().focus(); cancel().click() }),
+      openChild: async () => {
+        await change(() => {
+          const remove = dialog().querySelector<HTMLButtonElement>('.document-template-delete')!
+          remove.focus(); remove.click()
+        })
+        // The lazy confirmation import can finish after the click's act scope.
+        await waitForRenderer(() => child()?.open === true && dialog().getAttribute('aria-busy') === 'true',
+          'The real template deletion confirmation must finish opening')
+      },
       submit: () => change(() => {
         primary().focus(); primary().setSelectionRange(2, 7)
         const event = new dom.window.Event('submit', { bubbles: true, cancelable: true })
@@ -184,16 +194,22 @@ async function withDialog(kind: Kind, run: (context: Context) => Promise<void>, 
       // Release the real confirmation's single-flight root before tearing down its DOM.
       await change(() => { for (const request of requests) if (!request.settled) { request.settled = true; request.resolve(alpha) } })
       const currentChild = child()
-      if (currentChild) await change(() => currentChild.querySelector<HTMLButtonElement>('footer .secondary-button')?.click())
-      if (rootMounted) { rootMounted = false; await act(async () => root.unmount()) }
-    } finally {
-      dom.window.Node.prototype.removeChild = nativeRemoveChild
-      setActiveUiLanguage('zh-CN')
-      for (const [key, descriptor] of originals) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-        else Reflect.deleteProperty(globalThis, key)
+      if (currentChild) {
+        await change(() => currentChild.querySelector<HTMLButtonElement>('footer .secondary-button')?.click())
+        await waitForRenderer(() => child() === null, 'The real confirmation must close before its DOM is torn down')
       }
-      dom.window.close()
+    } finally {
+      try {
+        if (rootMounted) { rootMounted = false; await act(async () => root.unmount()) }
+      } finally {
+        dom.window.Node.prototype.removeChild = nativeRemoveChild
+        setActiveUiLanguage('zh-CN')
+        for (const [key, descriptor] of originals) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+          else Reflect.deleteProperty(globalThis, key)
+        }
+        dom.window.close()
+      }
     }
   }
 }
@@ -426,8 +442,8 @@ test('StrictMode setup replay cancels the old delayed opener return before the a
 test('a genuine nested template confirmation can return to Search and then close its parent back to the original opener once', async () => {
   for (const outcome of ['cancel', 'success'] as const) await withDialog('create-template', async context => {
     await context.prepare()
-    const draft = context.draft(), remove = context.dialog().querySelector<HTMLButtonElement>('.document-template-delete')!
-    await context.change(() => { remove.focus(); remove.click() })
+    const draft = context.draft()
+    await context.openChild()
     assert.equal(context.child()?.open, true)
     assert.equal(context.dialog().contains(context.child()), false)
     const child = context.child()!, childCancel = child.querySelector<HTMLButtonElement>('footer .secondary-button')!
@@ -458,8 +474,8 @@ test('a genuine nested template confirmation can return to Search and then close
 test('legitimate keyboard and IME activity in the nested child preserve parent closing attention through the normal handoff', async () => {
   for (const activity of ['key', 'composition'] as const) await withDialog('create-template', async context => {
     await context.prepare()
-    const draft = context.draft(), remove = context.dialog().querySelector<HTMLButtonElement>('.document-template-delete')!
-    await context.change(() => { remove.focus(); remove.click() })
+    const draft = context.draft()
+    await context.openChild()
     const child = context.child()!, cancel = child.querySelector<HTMLButtonElement>('footer .secondary-button')!
     await context.change(() => {
       if (activity === 'key') child.dispatchEvent(new context.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
@@ -485,8 +501,8 @@ test('legitimate keyboard and IME activity in the nested child preserve parent c
 test('window blur or focus outside the nested family then BODY permanently relinquishes parent closing attention', async () => {
   for (const activity of ['window-blur', 'outside-body'] as const) await withDialog('create-template', async context => {
     await context.prepare()
-    const draft = context.draft(), remove = context.dialog().querySelector<HTMLButtonElement>('.document-template-delete')!
-    await context.change(() => { remove.focus(); remove.click() })
+    const draft = context.draft()
+    await context.openChild()
     const child = context.child()!, cancel = child.querySelector<HTMLButtonElement>('footer .secondary-button')!
     await context.change(() => {
       if (activity === 'window-blur') context.window.dispatchEvent(new context.window.Event('blur'))

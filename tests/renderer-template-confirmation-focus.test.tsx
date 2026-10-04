@@ -3,6 +3,7 @@ import test from 'node:test'
 import { register } from 'node:module'
 import { act, createElement } from 'react'
 import { JSDOM } from 'jsdom'
+import { waitForRenderer } from './helpers/renderer-async'
 import type { DocumentTemplate, DocumentTreeNode } from '../src/shared/contracts'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -143,23 +144,38 @@ async function withTemplates(run: (context: Context) => Promise<void>) {
         await flush()
         focusCalls.length = 0
       },
-      openRemove: () => change(() => { removeButton().focus(); removeButton().click() }),
+      openRemove: async () => {
+        await change(() => { removeButton().focus(); removeButton().click() })
+        // confirmAction awaits a dynamic import before creating its separate React root.
+        // act around the click alone cannot flush that external module job.
+        await waitForRenderer(() => child()?.open === true && dialog().getAttribute('aria-busy') === 'true',
+          'The real template deletion confirmation must finish opening')
+      },
       cancelChild: () => change(() => { childCancel().focus(); childCancel().click() }),
       confirmChild: () => change(() => { childConfirm().focus(); childConfirm().click() }) }
     await run(context)
   } finally {
-    // Finish any genuine separate-root confirmation so confirmAction's single-flight state cannot leak to another test.
-    await change(() => {
-      for (const request of requests) if (!request.settled) { request.settled = true; request.resolve() }
-    })
-    if (child() && !childCancel().disabled) await change(() => childCancel().click())
-    if (mounted) { mounted = false; await act(async () => root.unmount()) }
-    setActiveUiLanguage('zh-CN')
-    for (const [key, descriptor] of originals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
-      else Reflect.deleteProperty(globalThis, key)
+    try {
+      // Finish any genuine separate-root confirmation so confirmAction's single-flight state cannot leak to another test.
+      await change(() => {
+        for (const request of requests) if (!request.settled) { request.settled = true; request.resolve() }
+      })
+      if (child() && !childCancel().disabled) {
+        await change(() => childCancel().click())
+        await waitForRenderer(() => child() === null, 'The real confirmation must close before its DOM is torn down')
+      }
+    } finally {
+      try {
+        if (mounted) { mounted = false; await act(async () => root.unmount()) }
+      } finally {
+        setActiveUiLanguage('zh-CN')
+        for (const [key, descriptor] of originals) {
+          if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+          else Reflect.deleteProperty(globalThis, key)
+        }
+        dom.window.close()
+      }
     }
-    dom.window.close()
   }
 }
 

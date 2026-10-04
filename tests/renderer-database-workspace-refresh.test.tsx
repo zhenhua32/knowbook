@@ -10,6 +10,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, setActiveUiLanguage, type UiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -233,6 +234,9 @@ for (const options of [{ kind: 'custom', locale: 'en-US' }, { kind: 'catalog', l
       assert.equal(writes.length, 1)
       assert.equal(appNotifications.getSnapshot().length, 1)
       assert.equal(appNotifications.getSnapshot()[0].message, text.savedRefreshFailed)
+      // Preloading the module does not settle React.lazy's first import promise.
+      await waitForRenderer(() => Boolean(document.querySelector('.app-notification-message')),
+        'The notification list must finish its first lazy import before inspecting the refresh warning')
       assert.equal(document.querySelector('.app-notification-message')?.textContent, text.savedRefreshFailed)
       const label = options.locale === 'zh-CN' ? '刷新数据库' : 'Refresh database'
       const refresh = [...document.querySelectorAll<HTMLButtonElement>('.dbw-header button')]

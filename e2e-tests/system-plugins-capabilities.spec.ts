@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -221,10 +221,12 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
       await expect.poll(() => frame.locator('body').evaluate(() => new URL(location.href).searchParams.get('popupName'))).toBeTruthy()
       await expect(frame.locator('#http')).toHaveText('http-ok')
       await expect(frame.locator('#socket')).toHaveText('capability-websocket')
-      const popupPromise = current.app.waitForEvent('window')
-      await frame.locator('#popup').click()
-      const popup = await popupPromise
+      const [popup] = await Promise.all([
+        current.app.waitForEvent('window'),
+        activateBackgroundFrameButton(frame.locator('#popup'))
+      ])
       await expect(popup.locator('#popup-ready')).toHaveText('capability-popup')
+      await expectBackgroundPopup(current, popup)
       expect(await popup.evaluate(() => typeof (globalThis as any).require)).toBe('function')
       const opaqueElement = current.page.locator('iframe[title="V2 capability comparison"]')
       await expect(opaqueElement).toHaveAttribute('sandbox', 'allow-scripts')
@@ -240,8 +242,8 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
         catch (error) { return (error as Error).name }
       }, `${origin}/v2-must-not-load`).catch(() => 'frame-replaced')).toBe('TypeError')
       snapshots.push({ v2NetworkDenial: 'Actual opaque frame fetch rejected with TypeError; controlled server received no request.' })
-      await opaqueFrame.locator('#v2-popup-attack').click()
-      await opaqueFrame.locator('#v2-navigation-attack').click()
+      await activateBackgroundFrameButton(opaqueFrame.locator('#v2-popup-attack'))
+      await activateBackgroundFrameButton(opaqueFrame.locator('#v2-navigation-attack'))
       await new Promise(resolve => setTimeout(resolve, 500))
       expect(await current.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(windowCount)
       expect(requests).not.toContain('/v2-must-not-load')
@@ -487,6 +489,7 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
       disposalFrame.locator('body').evaluate(() => { window.open('/popup', new URL(location.href).searchParams.get('popupName')!) })
     ])
     await expect(disposalPopup.locator('#popup-ready')).toHaveText('capability-popup')
+    await expectBackgroundPopup(current, disposalPopup)
     // Playwright otherwise auto-accepts beforeunload dialogs, overriding the
     // native veto under test. Electron may cancel before CDP handles it.
     disposalPopup.on('dialog', dialog => {
@@ -516,6 +519,21 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     await current.app.evaluate(() => {
       const objects = (globalThis as any).__knowbookCapabilityObjects
       objects.popupClosed = false
+      // Keep the native Menu and SDK disposal, while avoiding an OS popup in a
+      // background test. Verify that disposal calls closePopup and its callback.
+      objects.popupCalls = 0
+      objects.popupCloseCalls = 0
+      let onClose: (() => void) | undefined
+      objects.menu.popup = (options: Electron.PopupOptions) => {
+        objects.popupCalls += 1
+        onClose = options.callback
+      }
+      objects.menu.closePopup = () => {
+        objects.popupCloseCalls += 1
+        const callback = onClose
+        onClose = undefined
+        callback?.()
+      }
       objects.menu.popup({ window: objects.window, callback: () => { objects.popupClosed = true } })
     })
     await current.page.evaluate(async (id) => window.knowbook.setSystemPluginEnabled({ pluginId: id, enabled: false }), pluginId)
@@ -529,6 +547,10 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
     })).toEqual({ windowDestroyed: true, trayDestroyed: true, clipboardSha256: restoredClipboardSha256 })
     expect(await current.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1)
     await expect.poll(() => current!.app.evaluate(() => (globalThis as any).__knowbookCapabilityObjects.popupClosed)).toBe(true)
+    expect(await current.app.evaluate(() => {
+      const objects = (globalThis as any).__knowbookCapabilityObjects
+      return { opened: objects.popupCalls, closed: objects.popupCloseCalls }
+    })).toEqual({ opened: 1, closed: 1 })
     expect(disposalPopup.isClosed()).toBe(true)
     expect((await getPluginSummary(current))!.managedResources).toEqual([])
     const disposedSummary = (await getPluginSummary(current))!
@@ -643,6 +665,25 @@ test('one reviewed plugin exercises native, desktop, dedicated preload and rende
 
 function reg(args: string[]): void {
   execFileSync('reg.exe', args, { windowsHide: true, stdio: 'pipe' })
+}
+
+async function activateBackgroundFrameButton(button: Locator): Promise<void> {
+  // Chromium's offscreen iframe hit testing can discard CDP mouse clicks while
+  // Playwright reports success. Activate the real DOM handler without native focus;
+  // window.open/navigation still pass through the packaged host's policy guards.
+  expect(await button.evaluate(element => {
+    let activated = false
+    element.addEventListener('click', () => { activated = true }, { once: true })
+    ;(element as HTMLButtonElement).click()
+    return activated
+  })).toBe(true)
+}
+
+async function expectBackgroundPopup(context: ElectronAppContext, popup: Page): Promise<void> {
+  const window = await context.app.browserWindow(popup)
+  expect(await window.evaluate(window => ({
+    visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable()
+  }))).toEqual({ visible: false, focused: false, focusable: false })
 }
 async function getPluginSummary(context: ElectronAppContext) {
   return context.page.evaluate(async id => (await window.knowbook.listSystemPlugins()).find(item => item.pluginId === id), pluginId)

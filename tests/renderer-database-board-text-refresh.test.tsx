@@ -10,6 +10,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, setActiveUiLanguage, type UiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -212,6 +213,8 @@ test('Board text write failure reports its original domain reason, reads nothing
       assert.equal(appNotifications.getSnapshot().length, 1)
       assert.equal(appNotifications.getSnapshot()[0].message, cause.message)
       assert.notEqual(appNotifications.getSnapshot()[0].message, text.formFailed)
+      await waitForRenderer(() => document.querySelector('.app-notification-message')?.textContent === cause.message,
+        'The notification Host must render the failed Board write before inspecting its message')
       assert.equal(document.querySelector('.app-notification-message')?.textContent, cause.message)
       assert.equal(document.querySelector('.dbw-text-cell-feedback'), null)
       await drop('Target', 'New group')

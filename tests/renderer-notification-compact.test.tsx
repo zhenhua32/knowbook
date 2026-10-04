@@ -5,6 +5,7 @@ import { act, createElement, StrictMode } from 'react'
 import { JSDOM } from 'jsdom'
 import type { AppNotificationInput } from '../src/shared/app-notification'
 import { appNotifications } from '../src/renderer/src/app-notifications'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -253,6 +254,9 @@ test('compact summaries follow the latest updated live record and responsive cha
       show({ title: 'Saved', message: 'First document is ready', level: 'success', persistent: true })
       show({ title: 'Newer information', message: 'A later-created notice', level: 'info', persistent: true })
     })
+    // Preloading the module does not settle React.lazy's first import promise.
+    await waitForRenderer(() => context.document.querySelectorAll('.app-notification').length === 3,
+      'The notification list must finish its first lazy import before inspecting notification cards')
     assert.equal(context.document.querySelectorAll('.app-notification').length, 3)
     assert.equal(context.document.querySelectorAll('.app-notification-summary').length, 0)
     const taskId = String(appNotifications.getSnapshot()[0].id)

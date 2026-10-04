@@ -12,6 +12,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, getUiText, setActiveUiLanguage, type UiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 // Only styles are omitted: Page, Workspace, Table, Editor, and notification Host
 // all execute their production callbacks and use the Page's real draft cache.
@@ -308,6 +309,8 @@ for (const { locale, freshValue } of [{ locale: 'en-US', freshValue: 'Beta' },
       assert.equal(editor.querySelector('.dbw-text-cell-feedback')?.textContent, text.savedRefreshFailed)
       assert.equal(editor.querySelector('button')?.textContent, text.refresh)
       assert.equal(appNotifications.getSnapshot().length, 1)
+      await waitForRenderer(() => document.querySelector('.app-notification-message')?.textContent === text.savedRefreshFailed,
+        'The notification Host must render the catalog refresh failure before inspecting its message')
       assert.equal(document.querySelector('.app-notification-message')?.textContent, text.savedRefreshFailed)
       await act(async () => { field.focus(); field.setSelectionRange(1, 3) })
       if (freshValue !== 'Beta') externalWrite(freshValue)

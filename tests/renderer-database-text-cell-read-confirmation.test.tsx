@@ -12,6 +12,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, getUiText, setActiveUiLanguage, type UiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 // Only styles are omitted: Page, Workspace, Table, Editor, and notification Host
 // all execute their production callbacks and use the Page's real draft cache.
@@ -319,6 +320,8 @@ for (const { locale, freshValue } of [{ locale: 'en-US', freshValue: 'Beta' },
       assert.equal(editor.querySelector('.dbw-text-cell-feedback')?.textContent, text.savedRefreshFailed)
       assert.equal(editor.querySelectorAll('button').length, 1)
       assert.equal(appNotifications.getSnapshot().length, 1)
+      await waitForRenderer(() => document.querySelector('.app-notification-message')?.textContent === text.savedRefreshFailed,
+        'The notification Host must finish its first lazy import before checking the catalog refresh failure')
       assert.equal(document.querySelector('.app-notification-message')?.textContent, text.savedRefreshFailed)
       const refresh = editor.querySelector<HTMLButtonElement>('button')
       assert.ok(refresh)

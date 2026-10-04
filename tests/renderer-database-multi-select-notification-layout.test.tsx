@@ -9,6 +9,7 @@ import type { DocumentDatabaseColumn, DocumentDatabaseFieldValue } from '../src/
 import { appNotifications } from '../src/renderer/src/app-notifications'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import type { DatabaseValueCommitResult } from '../src/renderer/src/features/database/model/databaseTextDrafts'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -206,7 +207,14 @@ async function withLayout(run: (context: {
         for (const listener of [...mediaListeners]) { const event = new dom.window.Event('change'); if (typeof listener === 'function') listener(event); else listener.handleEvent(event) }
         dom.window.dispatchEvent(new dom.window.Event('resize'))
       }); await flush() },
-      notice: async () => { let notice!: AppNotificationHandle; await change(() => { notice = appNotifications.show({ title: 'Read failed', message: text.savedRefreshFailed, level: 'error' }) }); await flush(); return notice },
+      notice: async () => {
+        let notice!: AppNotificationHandle
+        await change(() => { notice = appNotifications.show({ title: 'Read failed', message: text.savedRefreshFailed, level: 'error' }) })
+        await waitForRenderer(() => document.querySelector('.app-notification-message')?.textContent === text.savedRefreshFailed,
+          'The notification Host must render the refresh failure before measuring the menu around it')
+        await flush()
+        return notice
+      },
       observedResize: async target => {
         const active = observers.filter(observer => !observer.disconnected && observer.targets.has(target))
         assert.ok(active.length > 0, 'a resize must reach observers actually watching this element')

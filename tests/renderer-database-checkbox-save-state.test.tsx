@@ -11,6 +11,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, getUiText, setActiveUiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -337,6 +338,8 @@ test('a durable checkbox ACK survives its separate read failure and offers read-
     assert.deepEqual(context.schema(), schema)
     assert.deepEqual(context.owner(), owner)
     assert.equal(appNotifications.getSnapshot().length, 1)
+    await waitForRenderer(() => context.document.querySelectorAll('.app-notification [role="alert"]').length === 1,
+      'The notification Host must render the checkbox refresh failure before checking its alert')
     assert.equal(context.document.querySelectorAll('.app-notification [role="alert"]').length, 1)
     assert.equal(context.field() === input && context.document.activeElement === input, true)
     assert.equal(context.focusCalls.length, 0)

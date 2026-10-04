@@ -9,6 +9,7 @@ import { appNotifications } from '../src/renderer/src/app-notifications'
 import { notify } from '../src/renderer/src/notify'
 import { getActiveUiText, setActiveUiLanguage } from '../src/renderer/src/i18n'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
+import { waitForRenderer } from './helpers/renderer-async'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -236,6 +237,8 @@ for (const locale of ['en-US', 'zh-CN'] as const) {
       assert.equal(context.writes(), 0)
       await context.reject(new Error('The isolated multi-select write was rejected.'))
       assert.equal(appNotifications.getSnapshot().length, 1, 'the actual Workspace failure must reach notify and the notification store')
+      await waitForRenderer(() => context.document.querySelectorAll('.app-notification [role="alert"]').length === 1,
+        'The notification Host must finish its first lazy import before checking the failed multi-select save')
       assert.equal(context.document.querySelectorAll('.app-notification [role="alert"]').length, 1,
         'the real notification Host must have rendered the completed failure before checking rollback')
       const text = getDatabaseWorkspaceText(locale)
