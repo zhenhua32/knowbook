@@ -792,8 +792,13 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 .dbw-checkbox-editor {
   display: flex;
   align-items: center;
+  gap: 4px;
   min-height: var(--kb-control-height-compact);
 }
+.dbw-record-form .dbw-checkbox-editor { font-weight: 400; }
+.dbw-checkbox-editor small { white-space: nowrap; }
+.dbw-checkbox-editor button { flex-shrink: 0; min-height: 32px; padding: 0 4px; }
+.dbw-checkbox-editor button[aria-busy] { cursor: progress; }
 
 .dbw-shell input[type='checkbox'] {
   flex: 0 0 16px;

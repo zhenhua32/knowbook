@@ -41,6 +41,7 @@ import type { DatabaseDeletion } from './model/databaseDeletion'
 import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from './model/databaseTextDrafts'
 import { DatabaseMultiSelectCellCache, multiSelectSchema } from './model/databaseMultiSelectCells'
 import { selectCellSchema } from './model/databaseSelectCells'
+import { checkboxCellSchema } from './model/databaseCheckboxCells'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -220,8 +221,9 @@ export function DatabaseWorkspace({
   }, [cellDrafts, currentSource?.id, fields, records])
   useLayoutEffect(() => {
     if (currentSource) multiCells.prune(currentSource.id, new Set(records.map(record => record.id)),
-      new Map(fields.filter(field => field.role === 'property' && (field.type === 'multi-select' || field.type === 'select'))
-        .map(field => [field.id, field.type === 'select' ? selectCellSchema(field.options) : multiSelectSchema(field.options)])))
+      new Map(fields.filter(field => field.role === 'property' && (field.type === 'multi-select' || field.type === 'select' || field.type === 'checkbox'))
+        .map(field => [field.id, field.type === 'checkbox' ? checkboxCellSchema()
+          : field.type === 'select' ? selectCellSchema(field.options) : multiSelectSchema(field.options)])))
   }, [multiCells, currentSource?.id, fields, records])
 
   const { activeView, activateCreatedView, baseConfig, dirty, draft, replaceDraft, updateDraft } = useDatabaseViewDraft({
@@ -598,13 +600,14 @@ export function DatabaseWorkspace({
         await window.knowbook.updateDatabaseEntity({ entityId: record.id, fieldValues: { [field.id]: value } })
       }
     }
-    const choiceCell = fromTextCell && (field.type === 'multi-select' || field.type === 'select')
+    const choiceCell = fromTextCell && (field.type === 'multi-select' || field.type === 'select' || field.type === 'checkbox')
     if (field.type !== 'text' && !choiceCell) {
       await run(async () => { await write(); await refresh(activeViewId) })
       return
     }
     const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
-    const failureMessage = choiceCell ? field.type === 'select' ? text.selectSaveFailed : text.multiSelectSaveFailed : text.formFailed
+    const failureMessage = choiceCell ? field.type === 'checkbox' ? text.checkboxSaveFailed
+      : field.type === 'select' ? text.selectSaveFailed : text.multiSelectSaveFailed : text.formFailed
     if (!ownsSource()) return { status: 'failed', message: failureMessage }
     const cellKey = JSON.stringify([record.databaseId, record.id, field.id])
     const cellOperation = choiceCell ? multiCells.get(cellKey)?.operation : fromTextCell ? cellDrafts.get(cellKey)?.operation : null

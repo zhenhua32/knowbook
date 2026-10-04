@@ -5,6 +5,7 @@ import { getDatabaseWorkspaceText, type DatabaseWorkspaceText } from '../databas
 import { DatabaseTextDraftCache, formatTextDraft, type DatabaseTextDraft, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
 import { DatabaseMultiSelectCellCache, multiSelectChoices, multiSelectSchema } from '../model/databaseMultiSelectCells'
 import { adaptSelectCellChange, selectCellChoices, selectCellSchema } from '../model/databaseSelectCells'
+import { adaptCheckboxCellChange, checkboxCellChoices, checkboxCellSchema } from '../model/databaseCheckboxCells'
 import { appNotifications } from '../../../app-notifications'
 
 const cellMessages = ['en-US', 'zh-CN'].map(getDatabaseWorkspaceText)
@@ -44,11 +45,12 @@ export function DatabaseValueEditor({
   const blurText = column.type === 'text' && textCommitMode === 'blur'
   const isMulti = column.type === 'multi-select'
   const isSelect = column.type === 'select'
-  const isChoice = isMulti || isSelect
+  const isCheckbox = column.type === 'checkbox'
+  const isChoice = isMulti || isSelect || isCheckbox
   const localMultiCache = useRef<DatabaseMultiSelectCellCache | null>(null)
   if (!localMultiCache.current) localMultiCache.current = new DatabaseMultiSelectCellCache()
   const multiCache = multiSelectCache ?? localMultiCache.current
-  const multiSchema = isSelect ? selectCellSchema(column.options) : multiSelectSchema(column.options)
+  const multiSchema = isSelect ? selectCellSchema(column.options) : isCheckbox ? checkboxCellSchema() : multiSelectSchema(column.options)
   const multiCell = useSyncExternalStore(listener => isChoice ? multiCache.subscribe(key, listener) : () => {},
     () => isChoice ? multiCache.get(key) : undefined, () => isChoice ? multiCache.get(key) : undefined)
   const cell = useSyncExternalStore(listener => blurText ? cache.subscribe(key, listener) : () => {},
@@ -65,8 +67,9 @@ export function DatabaseValueEditor({
     if (blurText) cache.sync(key, value, textDraftRevision)
   }, [blurText, cache, key, value, textDraftRevision, cell])
   useLayoutEffect(() => {
-    if (isChoice) multiCache.sync(key, isSelect ? selectCellChoices(value) : value, textDraftRevision, multiSchema)
-  }, [isChoice, isSelect, multiCache, key, value, textDraftRevision, multiSchema, multiCell])
+    if (isChoice) multiCache.sync(key, isSelect ? selectCellChoices(value) : isCheckbox ? checkboxCellChoices(value) : value,
+      textDraftRevision, multiSchema)
+  }, [isChoice, isSelect, isCheckbox, multiCache, key, value, textDraftRevision, multiSchema, multiCell])
   useLayoutEffect(() => {
     if (!blurText || !focusDraft.current?.operation || !cell || cell.operation
       || (cell.status !== 'saved' && cell.status !== 'failed')) return
@@ -81,7 +84,27 @@ export function DatabaseValueEditor({
   }, [blurText, isEditing, value])
 
   if (column.type === 'checkbox') {
-    return <span className="dbw-checkbox-editor"><input aria-label={column.name} checked={value === true} onChange={(event) => void onChangeValue(event.target.checked)} type="checkbox" /></span>
+    const valid = multiCell?.valid && multiCell.schema === multiSchema
+    const checked = valid ? multiCell.choices.includes('checked') : value === true
+    const saving = Boolean(multiCell?.operation), refreshing = Boolean(valid && multiCell.readOperation)
+    const checkboxMessage = saving ? text.saving : refreshing ? text.cellRefreshing
+      : valid && multiCell.message === 'save' ? text.checkboxSaveFailed
+      : valid && multiCell.message === 'refresh' ? text.savedRefreshFailed : ''
+    return <span className="dbw-checkbox-editor">
+      <input aria-label={column.name} checked={checked} type="checkbox" aria-disabled={saving || undefined}
+        aria-busy={saving || refreshing || undefined} aria-describedby={checkboxMessage ? feedbackId : undefined}
+        title={checkboxMessage || undefined} onChange={(event) => {
+          multiCache.commit(key, checkboxCellChoices(event.currentTarget.checked), checkboxCellChoices(value),
+            textDraftRevision, multiSchema, adaptCheckboxCellChange(onChangeValue))
+        }} />
+      {saving && <small aria-hidden="true">{text.saving}</small>}
+      {valid && multiCell.action === 'refresh' && onRefreshValue && <button type="button" className="dbw-quiet-button"
+        aria-disabled={refreshing || undefined} aria-busy={refreshing || undefined}
+        aria-describedby={checkboxMessage ? feedbackId : undefined} title={checkboxMessage || undefined}
+        onClick={() => void multiCache.refresh(key, onRefreshValue)}>{text.refresh}</button>}
+      {checkboxMessage && <span className="sr-only dbw-checkbox-cell-feedback" id={feedbackId}
+        role={valid && multiCell.message === 'save' && !saving ? 'alert' : 'status'}>{checkboxMessage}</span>}
+    </span>
   }
 
   if (column.type === 'select') {
