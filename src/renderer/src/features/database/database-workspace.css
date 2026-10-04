@@ -443,6 +443,7 @@
 .dbw-board-card button:focus-visible strong { display: block; -webkit-line-clamp: unset; }
 .dbw-board-card strong { color: var(--dbw-text); font-size: 12px; }
 .dbw-board-card small { display: block; margin-top: 7px; overflow: hidden; color: var(--kb-text-soft); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.dbw-board-card button:focus-visible small { white-space: normal; overflow-wrap: anywhere; }
 .dbw-board-empty { margin: 18px 8px; color: #a1a5b0; text-align: center; font-size: 11px; }
 .dbw-board-load-more { padding: 8px; border: 1px dashed #d7d9e2; border-radius: 7px; background: transparent; color: var(--dbw-accent); cursor: pointer; font-size: 11px; }
 .dbw-empty-state { display: grid; min-height: 430px; place-content: center; justify-items: center; padding: 40px; text-align: center; }
