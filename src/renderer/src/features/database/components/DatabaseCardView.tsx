@@ -32,7 +32,9 @@ export function DatabaseCardView({
     <div className="dbw-card-grid" data-testid="database-card-view">
       {records.slice(0, limit).map((record) => (
         <article className={`dbw-record-card${selectedIds.has(record.id) ? ' is-selected' : ''}`} key={record.id}>
-          <input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} className="dbw-card-checkbox" onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
+          <label className="dbw-checkbox-hit-target dbw-card-checkbox-target">
+            <input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} className="dbw-card-checkbox" onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
+          </label>
           <button className="dbw-card-body" onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
             <span aria-hidden="true" className="dbw-card-icon">{sourceKind === 'document-catalog' ? '▤' : '▦'}</span>
             <strong title={record.title}>{record.title}</strong>

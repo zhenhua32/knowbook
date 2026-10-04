@@ -364,7 +364,7 @@
 .dbw-table tbody tr.is-selected td { background: #f3f4ff; }
 .dbw-table tbody tr:not(.dbw-virtual-spacer) { height: 64px; }
 .dbw-table .dbw-virtual-spacer td { padding: 0; border: 0; background: transparent !important; }
-.dbw-table .dbw-select-column { position: sticky; left: 0; z-index: 2; width: 44px; min-width: 44px; padding-inline: 13px; background: var(--dbw-bg); }
+.dbw-table .dbw-select-column { position: sticky; left: 0; z-index: 2; width: 44px; min-width: 44px; padding-inline: 5px; background: var(--dbw-bg); }
 .dbw-table th.dbw-select-column { z-index: 4; background: #f8f9fb; }
 .dbw-table .dbw-title-column { position: sticky; left: 44px; z-index: 2; width: 270px; min-width: 270px; background: #fff; box-shadow: 1px 0 0 var(--dbw-line); }
 .dbw-table th.dbw-title-column { z-index: 4; background: #f8f9fb; }
@@ -409,7 +409,7 @@
 .dbw-record-card { position: relative; min-height: 190px; overflow: hidden; border: 1px solid var(--dbw-line); border-radius: 12px; background: #fff; box-shadow: 0 3px 10px rgba(35,40,55,.035); }
 .dbw-record-card:hover { border-color: #d8daea; box-shadow: 0 8px 22px rgba(35,40,55,.075); transform: translateY(-1px); }
 .dbw-record-card.is-selected { border-color: #aaaeea; box-shadow: 0 0 0 2px rgba(98,104,220,.12); }
-.dbw-card-checkbox { position: absolute; z-index: 2; top: 13px; right: 13px; }
+.dbw-card-checkbox-target { position: absolute; z-index: 2; top: 5px; right: 5px; }
 .dbw-card-body { display: flex; flex-direction: column; align-items: stretch; width: 100%; height: 100%; padding: 17px; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .dbw-card-body > * { flex-shrink: 0; }
 .dbw-shell .dbw-card-body:focus-visible { outline: 2px solid var(--dbw-accent); outline-offset: -3px; border-radius: 10px; }
@@ -808,6 +808,24 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 .dbw-checkbox-editor small { white-space: nowrap; }
 .dbw-checkbox-editor button { flex-shrink: 0; min-height: 32px; padding: 0 4px; }
 .dbw-checkbox-editor button[aria-busy] { cursor: progress; }
+
+.dbw-shell .dbw-checkbox-hit-target {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dbw-checkbox-hit-target:hover { background: var(--dbw-soft); }
+.dbw-checkbox-hit-target:has(input[aria-disabled='true']) { cursor: progress; }
+.dbw-checkbox-hit-target:has(input:disabled) { cursor: not-allowed; }
+.dbw-table .dbw-checkbox-editor > .dbw-checkbox-hit-target,
+.dbw-record-form .dbw-checkbox-editor > .dbw-checkbox-hit-target { margin-inline-start: -8px; }
 
 .dbw-shell input[type='checkbox'] {
   flex: 0 0 16px;

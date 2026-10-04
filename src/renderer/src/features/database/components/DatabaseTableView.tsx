@@ -154,7 +154,11 @@ export function DatabaseTableView({
           {startIndex > 0 ? <tr aria-hidden="true" className="dbw-virtual-spacer"><td colSpan={fields.length + 1} style={{ height: startIndex * rowHeight }} /></tr> : null}
           {visibleRecords.map((record) => (
             <tr className={selectedIds.has(record.id) ? 'is-selected' : ''} key={record.id}>
-              <td className="dbw-select-column" tabIndex={-1}><input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" /></td>
+              <td className="dbw-select-column" tabIndex={-1}>
+                <label className="dbw-checkbox-hit-target">
+                  <input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
+                </label>
+              </td>
               {fields.map((field) => (
                 <td className={field.role === 'title' ? 'dbw-title-column' : field.role === 'system' ? 'is-system' : ''} key={field.id} style={{ minWidth: columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180), width: columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180) }} tabIndex={-1}>
                   {field.role === 'title' ? (

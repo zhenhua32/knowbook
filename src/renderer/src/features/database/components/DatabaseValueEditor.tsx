@@ -103,12 +103,14 @@ export function DatabaseValueEditor({
       : valid && multiCell.message === 'save' ? text.checkboxSaveFailed
       : valid && multiCell.message === 'refresh' ? text.savedRefreshFailed : ''
     return <span className="dbw-checkbox-editor">
-      <input aria-label={column.name} checked={checked} type="checkbox" aria-disabled={saving || undefined}
-        aria-busy={saving || refreshing || undefined} aria-describedby={checkboxMessage ? feedbackId : undefined}
-        title={checkboxMessage || undefined} onChange={(event) => {
-          multiCache.commit(key, checkboxCellChoices(event.currentTarget.checked), checkboxCellChoices(value),
-            textDraftRevision, multiSchema, adaptCheckboxCellChange(onChangeValue))
-        }} />
+      <label className="dbw-checkbox-hit-target">
+        <input aria-label={column.name} checked={checked} type="checkbox" aria-disabled={saving || undefined}
+          aria-busy={saving || refreshing || undefined} aria-describedby={checkboxMessage ? feedbackId : undefined}
+          title={checkboxMessage || undefined} onChange={(event) => {
+            multiCache.commit(key, checkboxCellChoices(event.currentTarget.checked), checkboxCellChoices(value),
+              textDraftRevision, multiSchema, adaptCheckboxCellChange(onChangeValue))
+          }} />
+      </label>
       {saving && <small aria-hidden="true">{text.saving}</small>}
       {valid && multiCell.action === 'refresh' && onRefreshValue && <button type="button" className="dbw-quiet-button"
         aria-disabled={refreshing || undefined} aria-busy={refreshing || undefined}
