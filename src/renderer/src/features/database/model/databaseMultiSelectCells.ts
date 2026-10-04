@@ -132,7 +132,7 @@ export class DatabaseMultiSelectCellCache {
     this.readLeases.set(key, lease)
     const started = { ...cell, readLease: lease, readOperation: Symbol('multi-select-read'), message: '' as const }
     this.publish(key, started)
-    await this.read(key, lease, read, started)
+    await this.read(key, lease, read, cell)
   }
   private read(key: string, lease: ReadLease, read: (isCurrent: () => boolean) => Promise<void | boolean>, started: DatabaseMultiSelectCell) {
     const previous = this.readFlights.get(key)

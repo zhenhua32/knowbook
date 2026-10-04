@@ -4,6 +4,7 @@ import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 import { getDatabaseWorkspaceText, type DatabaseWorkspaceText } from '../databaseText'
 import { DatabaseTextDraftCache, formatTextDraft, type DatabaseTextDraft, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
 import { DatabaseMultiSelectCellCache, multiSelectChoices, multiSelectSchema } from '../model/databaseMultiSelectCells'
+import { adaptSelectCellChange, selectCellChoices, selectCellSchema } from '../model/databaseSelectCells'
 import { appNotifications } from '../../../app-notifications'
 
 const cellMessages = ['en-US', 'zh-CN'].map(getDatabaseWorkspaceText)
@@ -42,12 +43,14 @@ export function DatabaseValueEditor({
   const key = textDraftKey ?? JSON.stringify(['', '', column.id])
   const blurText = column.type === 'text' && textCommitMode === 'blur'
   const isMulti = column.type === 'multi-select'
+  const isSelect = column.type === 'select'
+  const isChoice = isMulti || isSelect
   const localMultiCache = useRef<DatabaseMultiSelectCellCache | null>(null)
   if (!localMultiCache.current) localMultiCache.current = new DatabaseMultiSelectCellCache()
   const multiCache = multiSelectCache ?? localMultiCache.current
-  const multiSchema = multiSelectSchema(column.options)
-  const multiCell = useSyncExternalStore(listener => isMulti ? multiCache.subscribe(key, listener) : () => {},
-    () => isMulti ? multiCache.get(key) : undefined, () => isMulti ? multiCache.get(key) : undefined)
+  const multiSchema = isSelect ? selectCellSchema(column.options) : multiSelectSchema(column.options)
+  const multiCell = useSyncExternalStore(listener => isChoice ? multiCache.subscribe(key, listener) : () => {},
+    () => isChoice ? multiCache.get(key) : undefined, () => isChoice ? multiCache.get(key) : undefined)
   const cell = useSyncExternalStore(listener => blurText ? cache.subscribe(key, listener) : () => {},
     () => blurText ? cache.get(key) : undefined, () => blurText ? cache.get(key) : undefined)
   const focusDraft = useRef<DatabaseTextDraft | undefined>(undefined)
@@ -62,8 +65,8 @@ export function DatabaseValueEditor({
     if (blurText) cache.sync(key, value, textDraftRevision)
   }, [blurText, cache, key, value, textDraftRevision, cell])
   useLayoutEffect(() => {
-    if (isMulti) multiCache.sync(key, value, textDraftRevision, multiSchema)
-  }, [isMulti, multiCache, key, value, textDraftRevision, multiSchema, multiCell])
+    if (isChoice) multiCache.sync(key, isSelect ? selectCellChoices(value) : value, textDraftRevision, multiSchema)
+  }, [isChoice, isSelect, multiCache, key, value, textDraftRevision, multiSchema, multiCell])
   useLayoutEffect(() => {
     if (!blurText || !focusDraft.current?.operation || !cell || cell.operation
       || (cell.status !== 'saved' && cell.status !== 'failed')) return
@@ -82,11 +85,31 @@ export function DatabaseValueEditor({
   }
 
   if (column.type === 'select') {
+    const valid = multiCell?.valid && multiCell.schema === multiSchema
+    const selected = valid ? multiCell.choices[0] ?? '' : typeof value === 'string' ? value : ''
+    const saving = Boolean(multiCell?.operation), refreshing = Boolean(valid && multiCell.readOperation)
+    const selectMessage = saving ? text.saving : refreshing ? text.cellRefreshing
+      : valid && multiCell.message === 'save' ? text.selectSaveFailed
+      : valid && multiCell.message === 'refresh' ? text.savedRefreshFailed : ''
     return (
-      <select aria-label={column.name} className="catalog-cell-input" onChange={(event) => void onChangeValue(event.target.value || null)} value={typeof value === 'string' ? value : ''}>
-        <option value="">—</option>
-        {column.options.map((option) => <option key={option} value={option}>{option}</option>)}
-      </select>
+      <span className="dbw-text-cell-editor dbw-select-cell-editor">
+        <select aria-label={column.name} className="catalog-cell-input" aria-disabled={saving || undefined}
+          aria-busy={saving || refreshing || undefined} aria-describedby={selectMessage ? feedbackId : undefined}
+          title={selectMessage || undefined} value={selected} onChange={(event) => {
+            multiCache.commit(key, selectCellChoices(event.currentTarget.value), selectCellChoices(value),
+              textDraftRevision, multiSchema, adaptSelectCellChange(onChangeValue))
+          }}>
+          <option value="">—</option>
+          {column.options.map((option) => <option key={option} value={option}>{option}</option>)}
+        </select>
+        {saving && <small aria-hidden="true">{text.saving}</small>}
+        {valid && multiCell.action === 'refresh' && onRefreshValue && <button type="button" className="dbw-quiet-button"
+          aria-disabled={refreshing || undefined} aria-busy={refreshing || undefined}
+          aria-describedby={selectMessage ? feedbackId : undefined} title={selectMessage || undefined}
+          onClick={() => void multiCache.refresh(key, onRefreshValue)}>{text.refresh}</button>}
+        {selectMessage && <span className="sr-only dbw-select-cell-feedback" id={feedbackId}
+          role={valid && multiCell.message === 'save' && !saving ? 'alert' : 'status'}>{selectMessage}</span>}
+      </span>
     )
   }
 

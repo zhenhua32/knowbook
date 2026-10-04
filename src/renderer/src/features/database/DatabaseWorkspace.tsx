@@ -40,6 +40,7 @@ import { DatabaseValueEditor } from './components/DatabaseValueEditor'
 import type { DatabaseDeletion } from './model/databaseDeletion'
 import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from './model/databaseTextDrafts'
 import { DatabaseMultiSelectCellCache, multiSelectSchema } from './model/databaseMultiSelectCells'
+import { selectCellSchema } from './model/databaseSelectCells'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -219,8 +220,8 @@ export function DatabaseWorkspace({
   }, [cellDrafts, currentSource?.id, fields, records])
   useLayoutEffect(() => {
     if (currentSource) multiCells.prune(currentSource.id, new Set(records.map(record => record.id)),
-      new Map(fields.filter(field => field.role === 'property' && field.type === 'multi-select')
-        .map(field => [field.id, multiSelectSchema(field.options)])))
+      new Map(fields.filter(field => field.role === 'property' && (field.type === 'multi-select' || field.type === 'select'))
+        .map(field => [field.id, field.type === 'select' ? selectCellSchema(field.options) : multiSelectSchema(field.options)])))
   }, [multiCells, currentSource?.id, fields, records])
 
   const { activeView, activateCreatedView, baseConfig, dirty, draft, replaceDraft, updateDraft } = useDatabaseViewDraft({
@@ -597,22 +598,22 @@ export function DatabaseWorkspace({
         await window.knowbook.updateDatabaseEntity({ entityId: record.id, fieldValues: { [field.id]: value } })
       }
     }
-    const multiCell = fromTextCell && field.type === 'multi-select'
-    if (field.type !== 'text' && !multiCell) {
+    const choiceCell = fromTextCell && (field.type === 'multi-select' || field.type === 'select')
+    if (field.type !== 'text' && !choiceCell) {
       await run(async () => { await write(); await refresh(activeViewId) })
       return
     }
     const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
-    const failureMessage = multiCell ? text.multiSelectSaveFailed : text.formFailed
+    const failureMessage = choiceCell ? field.type === 'select' ? text.selectSaveFailed : text.multiSelectSaveFailed : text.formFailed
     if (!ownsSource()) return { status: 'failed', message: failureMessage }
     const cellKey = JSON.stringify([record.databaseId, record.id, field.id])
-    const cellOperation = multiCell ? multiCells.get(cellKey)?.operation : fromTextCell ? cellDrafts.get(cellKey)?.operation : null
+    const cellOperation = choiceCell ? multiCells.get(cellKey)?.operation : fromTextCell ? cellDrafts.get(cellKey)?.operation : null
     try { await write() }
     catch (error) {
-      console.warn(multiCell ? 'Database multi-select cell save failed.' : 'Database text cell save failed.', error)
+      console.warn(choiceCell ? 'Database choice cell save failed.' : 'Database text cell save failed.', error)
       if (ownsSource()) {
         if (!fromTextCell) reportError(error)
-        else if (cellOperation && (multiCell ? multiCells.get(cellKey)?.valid && multiCells.get(cellKey)?.operation === cellOperation
+        else if (cellOperation && (choiceCell ? multiCells.get(cellKey)?.valid && multiCells.get(cellKey)?.operation === cellOperation
           : cellDrafts.get(cellKey)?.operation === cellOperation)) onMessage(failureMessage, 'error')
       }
       return { status: 'failed', message: failureMessage }
