@@ -72,7 +72,7 @@ async function seed(page: Page, language: 'en-US' | 'zh-CN', feature: 'ai' | 'br
   await page.setViewportSize({ width: 760, height: language === 'zh-CN' ? 850 : 640 })
   const time = new Date('2026-10-02T00:00:00Z')
   await page.clock.install({ time })
-  await page.clock.pauseAt(new Date(time.getTime() + 1))
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
 }
 
 async function openPanel(page: Page, feature: 'ai' | 'bridge') {
@@ -117,12 +117,26 @@ async function expectFeedback(feedback: Locator, buttons: Locator) {
   expect(after!.y - before!.y - before!.height).toBeLessThan(48)
 }
 
+async function dismissNotification(page: Page, toast: Locator) {
+  const viewport = page.viewportSize()!
+  // Compact windows expose a summary and history, while individual dismiss
+  // controls are available in the expanded notification list.
+  try {
+    await page.setViewportSize({ width: Math.max(viewport.width, 1000), height: Math.max(viewport.height, 800) })
+    await expect(toast).toBeVisible()
+    await toast.getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true }).click()
+  } finally {
+    await page.setViewportSize(viewport)
+  }
+  await expect(toast).toHaveCount(0)
+}
+
 async function dismissButKeepHistory(page: Page, reason: string, localError: Locator) {
   const toast = page.locator('.app-notifications .app-notification').filter({ hasText: reason })
   await expect(toast).toHaveCount(1)
   const id = await toast.getAttribute('data-notification-id')
-  await toast.getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true }).click()
-  await expect(toast).toHaveCount(0)
+  await expect(page.getByTestId('notification-summary')).toContainText(reason)
+  await dismissNotification(page, toast)
   await expect(localError).toContainText(reason)
   await page.getByRole('button', { name: /Notification center|通知中心/ }).click()
   const center = page.getByRole('dialog', { name: uiText('Notification center', '通知中心'), exact: true })
@@ -311,7 +325,7 @@ test('bridge save and token failures retain their owner across reads and invalid
     await finish(app)
     await expect(save).toBeEnabled()
     await expect(error).toHaveCount(0)
-    const savedToast = page.locator('.app-notifications .app-notification-success').filter({ hasText: '网页剪藏桥接设置已保存。' })
+    const savedToast = page.locator('.app-notifications > .app-notification.app-notification-success').filter({ hasText: '网页剪藏桥接设置已保存。' })
     await expect(savedToast).toHaveCount(1)
     const savedToastId = await savedToast.getAttribute('data-notification-id')
     expect(Boolean(savedToastId)).toBe(true)
@@ -331,7 +345,7 @@ test('bridge save and token failures retain their owner across reads and invalid
     await expect(port).toHaveValue('1e4')
     await expect(enabled).toBeChecked()
     await expect(token).toHaveValue(originalToken)
-    const rotationErrorToast = page.locator('.app-notifications .app-notification-error').filter({ hasText: 'Controlled token rotation failure' })
+    const rotationErrorToast = page.locator('.app-notifications > .app-notification.app-notification-error').filter({ hasText: 'Controlled token rotation failure' })
     await expect(rotationErrorToast).toHaveCount(1)
     const rotationErrorToastId = await rotationErrorToast.getAttribute('data-notification-id')
     expect(Boolean(rotationErrorToastId)).toBe(true)
@@ -372,9 +386,9 @@ test('bridge save and token failures retain their owner across reads and invalid
     expect(await page.evaluate(() => window.knowbook.getWebClipBridgeStatus())).toMatchObject({ enabled: false, configuredPort: 5432, running: false, port: null, endpoint: null })
     await expect(token).toHaveAttribute('readonly', '')
     await expect(endpoint).toHaveAttribute('readonly', '')
-    const rotatedToast = page.locator('.app-notifications .app-notification-success').filter({ hasText: '网页剪藏桥接令牌已刷新。' })
+    const rotatedToast = page.locator('.app-notifications > .app-notification.app-notification-success').filter({ hasText: '网页剪藏桥接令牌已刷新。' })
     await expect(rotatedToast).toHaveCount(1)
-    await rotatedToast.getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true }).click()
+    await dismissNotification(page, rotatedToast)
     await expect(rotatedToast).toHaveCount(0)
     const copyToken = panel.getByRole('button', { name: uiText('Copy token', '复制令牌'), exact: true })
     const tokenField = panel.locator('.settings-bridge-copy-field[data-copy-kind="token"]')

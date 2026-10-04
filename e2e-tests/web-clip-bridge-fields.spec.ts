@@ -110,7 +110,9 @@ async function setup(page: Page, app: ElectronApplication, language: 'en-US' | '
   await page.setViewportSize({ width: 760, height: language === 'zh-CN' ? 850 : 640 })
   const time = new Date('2026-10-02T00:00:00Z')
   await page.clock.install({ time })
-  await page.clock.pauseAt(new Date(time.getTime() + 1))
+  // Installation starts a running clock; leave time for the next protocol call before pausing.
+  const pauseTime = await page.evaluate(() => Date.now() + 1000)
+  await page.clock.pauseAt(pauseTime)
   await openBridge(page)
 }
 
@@ -177,10 +179,17 @@ async function expectNoTokenMetadata(field: Locator, token: string) {
 }
 
 async function dismissSuccessNotifications(page: Page) {
-  const dismiss = page.locator('.app-notifications .app-notification-success').getByRole('button', {
-    name: uiText('Dismiss notification', '关闭通知'), exact: true
-  })
-  while (await dismiss.count()) await dismiss.first().click()
+  const viewport = page.viewportSize()!
+  const successCards = page.locator('.app-notifications > .app-notification.app-notification-success')
+  try {
+    await page.setViewportSize({ width: Math.max(viewport.width, 1000), height: Math.max(viewport.height, 800) })
+    await expect(page.getByTestId('notification-summary')).toHaveCount(0)
+    const dismiss = successCards.getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true })
+    while (await dismiss.count()) await dismiss.first().click()
+    await expect(successCards).toHaveCount(0)
+  } finally {
+    await page.setViewportSize(viewport)
+  }
 }
 
 async function record(page: Page, app: ElectronApplication, field: Locator, token: Locator, testInfo: TestInfo, phase: string) {
@@ -342,10 +351,13 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       }
       await expect(copy).toBeEnabled()
       await expect(copy).toBeFocused()
-      const failure = page.locator('.app-notifications .app-notification-error')
+      const failure = page.locator('.app-notifications > .app-notification.app-notification-error')
       await expect(failure).toHaveCount(1)
       await expect(failure.locator('.app-notification-message')).toHaveText(uiText('Copy failed.', '复制失败。'))
       const notificationId = await failure.getAttribute('data-notification-id')
+      const summary = page.getByTestId('notification-summary')
+      await expect(summary).toHaveAttribute('data-notification-id', notificationId!)
+      await expect(summary.locator('.app-notification-message')).toHaveText(uiText('Copy failed.', '复制失败。'))
       await record(page, app, field, current.token, testInfo, `${failedKind}-failure-toast-kept-open`)
       // Keep the persistent failure toast and the paused clock intact: no dismiss, forced click, or error scrolling.
       await expectWholeField(field)

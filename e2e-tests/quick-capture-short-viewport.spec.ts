@@ -15,10 +15,6 @@ const title = (page: Page) => capture(page).getByRole('textbox', { name: uiText(
 const save = (page: Page) => capture(page).getByRole('button', { name: uiText('Save note', '保存记录'), exact: true })
 const cancel = (page: Page) => capture(page).getByRole('button', { name: uiText('Cancel', '取消'), exact: true })
 const parent = (page: Page) => capture(page).getByRole('combobox', { name: uiText('Parent folder', '父目录'), exact: true })
-// Both references were measured in their own old-out 1180x850 screenshot,
-// before changing the layout. A newly stretched form is not its own oracle.
-const oldNaturalHeight = { 'en-US': 575.1458740234375, 'zh-CN': 553.697937 }
-
 async function installProbe(app: ElectronApplication) {
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
@@ -87,10 +83,26 @@ async function record(page: Page, app: ElectronApplication, testInfo: TestInfo, 
     }
     const modal = document.querySelector<HTMLDialogElement>('.document-quick-capture-dialog')
     const body = modal?.querySelector<HTMLElement>('.document-capture-body'), active = document.activeElement
+    const fieldset = body?.querySelector('fieldset')
+    const verticalBox = (element: Element) => {
+      const style = getComputedStyle(element)
+      return ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']
+        .reduce((height, property) => height + (Number.parseFloat(style[property as keyof CSSStyleDeclaration] as string) || 0), 0)
+    }
+    const verticalMargin = (element: Element) => {
+      const style = getComputedStyle(element)
+      return (Number.parseFloat(style.marginTop) || 0) + (Number.parseFloat(style.marginBottom) || 0)
+    }
+    // Measure the fields' natural content independently of the flex body's
+    // allocated height, so a stretched form cannot become its own oracle.
+    const intrinsicBodyHeight = body && fieldset ? rect(fieldset).height + verticalMargin(fieldset) + verticalBox(body) : null
+    const intrinsicModalHeight = modal && intrinsicBodyHeight !== null ? verticalBox(modal)
+      + Array.from(modal.children).reduce((height, child) => height
+        + (child === body ? intrinsicBodyHeight : rect(child).height) + verticalMargin(child), 0) : null
     const alert = modal?.querySelector<HTMLElement>('[role="alert"]')
     return { viewport: { width: innerWidth, height: innerHeight }, active: { tag: active?.tagName, isBody: active === document.body },
-      modal: modal ? { ...box(modal), scrollTop: modal.scrollTop, clientHeight: modal.clientHeight, scrollHeight: modal.scrollHeight, ariaBusy: modal.getAttribute('aria-busy') } : null,
-      body: body ? { ...box(body), scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight } : null,
+      modal: modal ? { ...box(modal), intrinsicHeight: intrinsicModalHeight, scrollTop: modal.scrollTop, clientHeight: modal.clientHeight, scrollHeight: modal.scrollHeight, ariaBusy: modal.getAttribute('aria-busy') } : null,
+      body: body ? { ...box(body), intrinsicHeight: intrinsicBodyHeight, scrollTop: body.scrollTop, clientHeight: body.clientHeight, scrollHeight: body.scrollHeight } : null,
       heading: modal?.querySelector('h2') ? box(modal.querySelector('h2')!) : null,
       header: modal?.querySelector('header') ? box(modal.querySelector('header')!) : null,
       footer: modal?.querySelector('footer') ? box(modal.querySelector('footer')!) : null,
@@ -129,6 +141,19 @@ async function expectFocusedFieldReachable(target: Locator, state: Awaited<Retur
   expect(focused[0].centerHit).toBe(true)
   await expect(target).toBeFocused()
   await expect(target).toBeInViewport({ ratio: 1 })
+}
+
+function expectNaturalLayout(state: Awaited<ReturnType<typeof record>>['state']) {
+  expect(state.modal?.intrinsicHeight).not.toBeNull()
+  expect(state.body?.intrinsicHeight).not.toBeNull()
+  expect(Math.abs(state.modal!.rect.height - state.modal!.intrinsicHeight!)).toBeLessThanOrEqual(1)
+  expect(Math.abs(state.body!.rect.height - state.body!.intrinsicHeight!)).toBeLessThanOrEqual(1)
+  expect(state.modal!.scrollHeight).toBeLessThanOrEqual(state.modal!.clientHeight + 1)
+  expect(state.body!.scrollHeight).toBeLessThanOrEqual(state.body!.clientHeight + 1)
+  for (const field of [...state.inputs, state.parent!]) {
+    expect(field.visibleRatio).toBe(1)
+    expect(field.centerHit).toBe(true)
+  }
 }
 
 async function resizeFocusedField(page: Page, app: ElectronApplication, testInfo: TestInfo, target: Locator, phase: string, requireError = false) {
@@ -186,12 +211,12 @@ test(`quick capture keeps short viewport controls reachable in ${language} @elec
     const natural = await record(page, app, testInfo, `${language}-wide-natural-quick-capture`)
     expect(natural.main.calls).toEqual([])
     expect(natural.state.notifications).toBe(0)
-    expect(Math.abs(natural.state.modal!.rect.height - oldNaturalHeight[language])).toBeLessThanOrEqual(2)
+    expectNaturalLayout(natural.state)
     await expectActionsReachable(page, natural.state)
     await page.setViewportSize({ width: 760, height: 850 })
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const naturalNarrow = await record(page, app, testInfo, `${language}-narrow-tall-natural-quick-capture`)
-    expect(Math.abs(naturalNarrow.state.modal!.rect.height - oldNaturalHeight[language])).toBeLessThanOrEqual(2)
+    expectNaturalLayout(naturalNarrow.state)
     await expectFocusedFieldReachable(content(page), naturalNarrow.state)
     await expectActionsReachable(page, naturalNarrow.state)
     await page.keyboard.press('Escape')

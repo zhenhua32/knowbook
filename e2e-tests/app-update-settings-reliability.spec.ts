@@ -104,7 +104,7 @@ async function seed(page: Page, language: 'en-US' | 'zh-CN') {
 async function pausePolling(page: Page) {
   const time = new Date('2026-10-02T00:00:00.000Z')
   await page.clock.install({ time })
-  await page.clock.pauseAt(new Date(time.getTime() + 1))
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
 }
 
 async function openUpdates(page: Page) {

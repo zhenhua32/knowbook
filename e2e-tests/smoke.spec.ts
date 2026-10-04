@@ -35,14 +35,19 @@ test.describe('Application Shell Smoke @electron', () => {
       await expect(page.locator('[data-testid="database-grid"]')).toBeVisible()
 
       await openRailPage(page, 'AI Assistant', 'AI 助手')
-      await expect(page.getByRole('heading', { name: uiText('Document AI assistant', '文档智能助手') })).toBeVisible()
+      const documentAssistant = page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手'), exact: true })
+      await expect(documentAssistant).toBeVisible()
+      await expect(documentAssistant).toHaveAttribute('aria-selected', 'true')
 
       await openRailPage(page, 'Plugins', '插件中心')
       await expect(page.getByRole('heading', { name: uiText('Workspace extensions', '工作区扩展') })).toBeVisible()
       await expect(page.locator('.plugin-item').first()).toBeVisible()
 
       await openRailPage(page, 'Settings', '配置中心')
-      await expect(page.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置') })).toBeVisible()
+      await page.getByRole('tab', { name: 'AI', exact: true }).click()
+      const aiSettings = page.getByRole('tabpanel', { name: 'AI', exact: true })
+      await expect(aiSettings).toBeVisible()
+      await expect(aiSettings.getByRole('button', { name: uiText('Save AI settings', '保存 AI 设置'), exact: true })).toBeVisible()
 
       await openRailPage(page, 'Documents', '文档')
       await expect(page.locator('[data-testid="workspace-grid"]')).toBeVisible()

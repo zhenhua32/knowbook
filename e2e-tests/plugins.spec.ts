@@ -13,6 +13,16 @@ async function openPage(page: Page, en: string, zh: string): Promise<void> {
   await expect(button).toHaveClass(/active/)
 }
 
+async function openActivityPulseSettings(page: Page) {
+  await openPage(page, 'Settings', '配置中心')
+  await page.getByRole('tab', { name: uiText('Appearance', '外观'), exact: true }).click()
+  const panel = page.getByRole('tabpanel', { name: uiText('Appearance', '外观'), exact: true })
+  await expect(panel).toBeVisible()
+  const settings = panel.getByTestId('activity-pulse-settings')
+  await expect(settings).toBeVisible()
+  return settings
+}
+
 async function selectInstallDirectory(context: ElectronAppContext, sourceDirectory: string): Promise<void> {
   await context.app.evaluate(({ dialog }, path) => {
     Object.defineProperty(dialog, 'showMessageBox', { configurable: true, value: async () => ({ response: 0, checkboxChecked: false }) })
@@ -179,8 +189,7 @@ test.describe('Plugin systems @electron', () => {
       }, { message: 'Activity Pulse Main and Renderer must activate after the confirmed restart' }).toBe('active')
       await openPage(context.page, 'Dashboard', '总览')
       await expect(context.page.getByTestId('activity-pulse-dashboard')).toBeVisible()
-      await openPage(context.page, 'Settings', '配置中心')
-      const settings = context.page.getByTestId('activity-pulse-settings')
+      const settings = await openActivityPulseSettings(context.page)
       await settings.getByLabel('摘要前缀').fill('E2E 前缀：')
       await settings.getByRole('button', { name: '保存摘要前缀' }).click()
       await expect(settings.getByRole('status')).toHaveText('摘要前缀已保存。')
@@ -204,8 +213,8 @@ test.describe('Plugin systems @electron', () => {
       await closeElectronApp(context, { preserveUserData: true })
       context = null
       context = await launchElectronApp({}, { userDataRoot: retainedRoot })
-      await openPage(context.page, 'Settings', '配置中心')
-      await expect(context.page.getByTestId('activity-pulse-settings').getByLabel('摘要前缀')).toHaveValue('E2E 前缀：')
+      const restoredSettings = await openActivityPulseSettings(context.page)
+      await expect(restoredSettings.getByLabel('摘要前缀')).toHaveValue('E2E 前缀：')
       const activeRevision = await context.page.evaluate(async () => {
         const plugin = (await window.knowbook.listSystemPlugins()).find((item) => item.pluginId === 'activity-pulse')
         return `sha256:${plugin!.currentArtifactSha256}`

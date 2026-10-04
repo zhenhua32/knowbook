@@ -210,7 +210,8 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await installProbe(app)
       const time = new Date('2026-10-02T00:00:00Z')
       await page.clock.install({ time })
-      await page.clock.pauseAt(new Date(time.getTime() + 1))
+      // install leaves the clock running; pick a future anchor after it completes.
+      await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
       await openBridge(page)
       const current = controls(page)
       await expect(current.scope).toBeVisible()

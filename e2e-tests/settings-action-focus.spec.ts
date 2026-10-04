@@ -148,7 +148,8 @@ test('manual WebDAV Reload restores focus on failure and success while backgroun
     await seedWebDav(page)
     const now = new Date('2026-10-02T00:00:00Z')
     await page.clock.install({ time: now })
-    await page.clock.pauseAt(new Date(now.getTime() + 1))
+    // install leaves the clock running; pick a future anchor after it completes.
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000))
     await installProbe(app, 'webdav', true)
     const { section, reload, url, username } = await openWebDav(page)
     await expect.poll(async () => (await readProbe(app)).reads).toBe(1)

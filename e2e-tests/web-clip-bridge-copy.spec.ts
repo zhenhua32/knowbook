@@ -90,7 +90,9 @@ async function seed(page: Page, app: ElectronApplication, language: 'en-US' | 'z
   await page.setViewportSize({ width: 760, height: language === 'zh-CN' ? 850 : 640 })
   const time = new Date('2026-10-02T00:00:00Z')
   await page.clock.install({ time })
-  await page.clock.pauseAt(new Date(time.getTime() + 1))
+  // Installation starts a running clock; leave time for the next protocol call before pausing.
+  const pauseTime = await page.evaluate(() => Date.now() + 1000)
+  await page.clock.pauseAt(pauseTime)
 }
 
 function bridgeControls(page: Page) {
@@ -176,8 +178,18 @@ async function expectMutationBlocksCopy(controls: BridgeControls, app: ElectronA
 }
 
 async function dismissNotifications(page: Page) {
-  const dismiss = page.locator('.app-notifications').getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true })
-  while (await dismiss.count()) await dismiss.first().click()
+  const viewport = page.viewportSize()!
+  try {
+    // Compact summaries retain hidden full cards; dismiss through visible controls.
+    await page.setViewportSize({ width: Math.max(viewport.width, 1000), height: Math.max(viewport.height, 800) })
+    await expect(page.getByTestId('notification-summary')).toHaveCount(0)
+    const dismiss = page.locator('.app-notifications > .app-notification')
+      .getByRole('button', { name: uiText('Dismiss notification', '关闭通知'), exact: true })
+    while (await dismiss.count()) await dismiss.first().click()
+    await expect(page.locator('.app-notifications')).toHaveCount(0)
+  } finally {
+    await page.setViewportSize(viewport)
+  }
 }
 
 async function record(page: Page, app: ElectronApplication, controls: BridgeControls, testInfo: TestInfo, phase: string) {
@@ -227,7 +239,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(controls.copyToken).toBeEnabled()
       await expect(controls.copyEndpoint).toBeFocused()
       await expect(controls.feedback.getByRole('status')).toHaveCount(0)
-      await expect(page.locator('.app-notifications .app-notification-error .app-notification-message')).toHaveText(uiText('Copy failed.', '复制失败。'))
+      await expect(page.locator('.app-notifications > .app-notification.app-notification-error .app-notification-message')).toHaveText(uiText('Copy failed.', '复制失败。'))
       await record(page, app, controls, testInfo, 'endpoint-copy-failure')
       await dismissNotifications(page)
       await enter(page, controls.copyEndpoint)
@@ -238,7 +250,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await finishCopy(app)
       await expect(controls.copyEndpoint).toBeEnabled()
       await expect(controls.copyEndpoint).toBeFocused()
-      await expect(page.locator('.app-notifications').getByText(uiText('Web clip bridge endpoint copied.', '网页剪藏提交地址已复制。'), { exact: true })).toBeVisible()
+      await expect(page.getByTestId('notification-summary').getByText(uiText('Web clip bridge endpoint copied.', '网页剪藏提交地址已复制。'), { exact: true })).toBeVisible()
       await dismissNotifications(page)
 
       await controls.copyEndpoint.focus()
@@ -292,7 +304,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await finishCopy(app)
       await expect(controls.copyToken).toBeEnabled()
       await expect(controls.copyToken).toBeFocused()
-      await expect(page.locator('.app-notifications').getByText(uiText('Web clip bridge token copied.', '网页剪藏令牌已复制。'), { exact: true })).toBeVisible()
+      await expect(page.getByTestId('notification-summary').getByText(uiText('Web clip bridge token copied.', '网页剪藏令牌已复制。'), { exact: true })).toBeVisible()
       await dismissNotifications(page)
       expect(await page.evaluate(async () => {
         const status = await window.knowbook.getWebClipBridgeStatus()

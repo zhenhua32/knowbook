@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocumentLinkCheck, DocumentLinkIssueReason } from '@shared/contracts'
+import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import './document-link-check.css'
 
 const labels: Record<DocumentLinkIssueReason, [string, string]> = {
@@ -49,7 +50,10 @@ export default function DocumentLinkCheckDialog({ documentId, isZh, onFlush, onC
     return () => { active = false }
   }, [documentId, revision, isZh])
   return createPortal(<dialog ref={dialog} className="document-link-check" aria-labelledby={labelId}
-    onCancel={(event) => { event.preventDefault(); onClose() }} onKeyDown={(event) => event.stopPropagation()}>
+    onCancel={(event) => { event.preventDefault(); onClose() }} onKeyDown={(event) => {
+      trapFocusWithinDialog(event.nativeEvent, event.currentTarget)
+      event.stopPropagation()
+    }}>
     <header><h3 id={labelId}>{isZh ? '检查链接' : 'Check links'}</h3>
       <button type="button" className="secondary-button" onClick={onClose}>{isZh ? '关闭' : 'Close'}</button></header>
     {busy && <p role="status">{isZh ? '正在保存并检查本地链接…' : 'Saving and checking local links…'}</p>}
