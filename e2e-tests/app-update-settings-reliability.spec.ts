@@ -293,7 +293,11 @@ test('controlled update checks lock synchronously, recover in place and reject s
     await expect(checkError).toHaveCount(0)
     await expect(readError).toHaveCount(0)
     await expect(panel.locator('.meta-grid')).toContainText('You already have the latest version.')
-    await expect(page.locator('.app-notification-message').filter({ hasText: 'Update status refreshed.' })).toHaveCount(1)
+    // Compact windows also render a summary of the same notification. Count
+    // actual notification records so the summary does not appear as a second check.
+    await expect(page.locator('.app-notifications > .app-notification .app-notification-message')
+      .filter({ hasText: 'Update status refreshed.' })).toHaveCount(1)
+    await expect(page.getByTestId('notification-summary')).toContainText('Update status refreshed.')
     await finishRead(app, { ...readyState, status: 'checking', message: 'A stale read must not return.', canInstall: false })
     await expect(panel.locator('.meta-grid')).toContainText('You already have the latest version.')
     await expect(check).toBeEnabled()

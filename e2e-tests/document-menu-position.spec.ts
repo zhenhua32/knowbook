@@ -16,7 +16,7 @@ async function createRootDocument(page: Page, title: string) {
   await getTitleInput(page).fill(title)
   await getSummaryInput(page).fill(`Menu summary ${title}`)
   await page.getByRole('button', { name: uiText('Save', '保存') }).click()
-  await expect(page.locator('.preview-panel .panel-head h3')).toHaveText(title)
+  await expect(page.locator('.preview-panel .document-header-title')).toHaveText(title)
   await expect(page.locator('.document-path')).toContainText(title)
 }
 

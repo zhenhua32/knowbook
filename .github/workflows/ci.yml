@@ -71,28 +71,67 @@ jobs:
       - name: Build application
         run: npm run build
 
+      - name: Upload built application for desktop acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-e2e-build
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  electron-e2e:
+    name: Electron E2E (shard ${{ matrix.shard }}/3)
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Keep every shard's diagnostics when another shard fails.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download validated application build
+        uses: actions/download-artifact@v8
+        with:
+          name: electron-e2e-build
+          path: out/
+
       - name: Install CJK fonts for desktop acceptance
         run: |
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
 
       - name: Run Electron E2E tests
-        run: xvfb-run --auto-servernum npx playwright test --grep @electron
+        # One worker per runner preserves the isolated performance measurements.
+        # Failures still fail the job, but stop before exhausting its time budget.
+        run: xvfb-run --auto-servernum npx playwright test --grep @electron --workers=1 --shard=${{ matrix.shard }}/3 --max-failures=5
 
       - name: Upload Markdown input frame report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: markdown-input-frame-report
+          name: markdown-input-frame-report-shard-${{ matrix.shard }}
           path: test-results/markdown-input-frame-report.json
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Electron E2E failure evidence
-        if: failure()
+      - name: Upload Electron E2E evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: electron-e2e-failure
+          name: electron-e2e-evidence-shard-${{ matrix.shard }}
           path: |
             playwright-report/**
             test-results/electron/**
@@ -103,7 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: markdown-workflow-report
+          name: markdown-workflow-report-shard-${{ matrix.shard }}
           path: |
             test-results/markdown-workflow-knowbook.json
             test-results/markdown-workflow-knowbook.png
@@ -118,7 +157,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: markdown-source-report
+          name: markdown-source-report-shard-${{ matrix.shard }}
           path: |
             test-results/markdown-source-*.json
             test-results/markdown-source-*.png

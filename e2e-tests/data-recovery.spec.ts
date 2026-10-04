@@ -88,8 +88,10 @@ test('backup versions restore with native confirmation and preserve a safety cop
       await window.knowbook.triggerBackup()
       return documentId
     })
-    await page.keyboard.press('Control+6')
-    await page.getByRole('button', { name: uiText('View backup versions', '查看备份版本') }).click()
+    await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
+    await page.getByRole('tab', { name: uiText('Storage & recovery', '存储与恢复'), exact: true }).click()
+    const storage = page.getByRole('tabpanel', { name: uiText('Storage & recovery', '存储与恢复'), exact: true })
+    await storage.getByRole('button', { name: uiText('View backup versions', '查看备份版本'), exact: true }).click()
     const dialog = page.locator('.data-recovery-dialog')
     await expect(dialog.locator('aside li')).toHaveCount(3)
     await dialog.locator('aside li button').nth(1).click()

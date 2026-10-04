@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { dragTreeDocument } from './helpers/document-tree-drag'
 
 function treeButton(page: Page, title: string) {
   return page.locator('.tree-button').filter({ has: page.locator('.tree-document-title', { hasText: new RegExp(`^${title}$`) }) })
@@ -92,13 +93,14 @@ test.describe('Document tree collapse @electron', () => {
       const ids = await seedTree(page)
       const parentToggle = treeRow(page, 'Tree parent').locator('.tree-expand-toggle')
       await parentToggle.click()
-      await treeButton(page, 'Tree other').dragTo(treeButton(page, 'Tree parent'))
+      await dragTreeDocument(page, 'Tree other', treeButton(page, 'Tree parent'))
       await expect.poll(() => page.evaluate(async (id) => {
         const catalog = await window.knowbook.getDocumentCatalog()
         return catalog.find((document) => document.id === id)?.parentId
       }, ids.other)).toBe(ids.parent)
       await expect(parentToggle).toHaveAttribute('aria-expanded', 'true')
       await expect(treeButton(page, 'Tree other')).toBeVisible()
+      await expect(treeRow(page, 'Tree parent')).toBeFocused()
 
       await treeButton(page, 'Tree parent').click()
       await parentToggle.click()

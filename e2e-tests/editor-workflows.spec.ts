@@ -18,7 +18,7 @@ function getSummaryInput(page: Page): Locator {
 }
 
 function getPreviewTitle(page: Page): Locator {
-  return page.locator('.preview-panel .panel-head h3')
+  return page.locator('.preview-panel .document-header-title')
 }
 
 function getBodyEditor(page: Page, bodyIndex: number): Locator {

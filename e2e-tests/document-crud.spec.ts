@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { dragTreeDocument } from './helpers/document-tree-drag'
 
 function getTitleInput(page: Page) {
   return page.locator('.document-summary-card .editor-input').first()
@@ -37,7 +38,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await getSummaryInput(page).fill(nextSummary)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
-      await expect(page.locator('.preview-panel .panel-head h3')).toHaveText(nextTitle)
+      await expect(page.locator('.preview-panel .document-header-title')).toHaveText(nextTitle)
       await expect(page.locator('.document-path')).toContainText(nextTitle)
 
       await getSummaryInput(page).fill(incrementallyUpdatedSummary)
@@ -183,7 +184,7 @@ test.describe('Document CRUD Operations @electron', () => {
       }, targetTitle)
       expect(targetId).not.toBeNull()
 
-      await getTreeButton(page, sourceTitle).dragTo(getTreeButton(page, targetTitle))
+      await dragTreeDocument(page, sourceTitle, getTreeButton(page, targetTitle))
       await expect.poll(() => page.evaluate(async (source) => {
         const catalog = await window.knowbook.getDocumentCatalog()
         const sourceDocument = catalog.find((document) => document.title === source)
@@ -192,14 +193,15 @@ test.describe('Document CRUD Operations @electron', () => {
         parentId: targetId,
         path: `${targetTitle}/${sourceTitle}`
       })
+      await expect(page.getByRole('treeitem', { name: sourceTitle, exact: true })).toBeFocused()
 
-      const nestedSource = getTreeButton(page, sourceTitle)
-      await nestedSource.dragTo(page.locator('.root-drop-zone-compact'))
+      await dragTreeDocument(page, sourceTitle, page.locator('.root-drop-zone-compact'))
       await expect.poll(() => page.evaluate(async (title) => {
         const catalog = await window.knowbook.getDocumentCatalog()
         const document = catalog.find((entry) => entry.title === title)
         return document ? { parentId: document.parentId, path: document.path } : null
       }, sourceTitle)).toEqual({ parentId: null, path: sourceTitle })
+      await expect(page.getByRole('treeitem', { name: sourceTitle, exact: true })).toBeFocused()
     })
   })
 
@@ -221,7 +223,7 @@ test.describe('Document CRUD Operations @electron', () => {
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
       await expect(getTitleInput(page)).toHaveValue(`${duplicateTitle} 1`)
-      await expect(page.locator('.preview-panel .panel-head h3')).toHaveText(`${duplicateTitle} 1`)
+      await expect(page.locator('.preview-panel .document-header-title')).toHaveText(`${duplicateTitle} 1`)
       await expect(page.locator('.document-path')).toContainText(`${duplicateTitle} 1`)
     })
   })

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
-import type { AddressInfo } from 'node:net'
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { listenOnFetchSafePort } from '../tests/helpers/http-server'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type MockAiRequest = {
@@ -19,7 +19,7 @@ function getBodyEditor(page: Page): Locator {
 }
 
 function getPreviewTitle(page: Page): Locator {
-  return page.locator('.preview-panel .panel-head h3')
+  return page.locator('.document-header-title')
 }
 
 function getSummaryInput(page: Page): Locator {
@@ -76,14 +76,10 @@ async function startMockAiServer(summary: string, responseDelayMs = 0): Promise<
     })
   })
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', () => resolve())
-  })
-
-  const address = server.address() as AddressInfo
+  const port = await listenOnFetchSafePort(server)
 
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `http://127.0.0.1:${port}`,
     requests,
     close: () =>
       new Promise<void>((resolve, reject) => {
@@ -241,7 +237,7 @@ test.describe('AI Settings @electron', () => {
       await saveAiSettings(page, 'https://example.invalid/v1', 'gpt-4.1-mini')
 
       await openAiPage(page)
-      await expect(page.getByRole('main').getByText(`AI Config Doc ${suffix}`, { exact: true })).toBeVisible()
+      await expect(page.locator('.ai-context-description').getByText(`AI Config Doc ${suffix}`, { exact: true })).toBeVisible()
       await expect(runAutomationsButton).toBeEnabled()
     })
   })

@@ -10,7 +10,7 @@ function getBodyEditor(page: Page): Locator {
 }
 
 function getPreviewTitle(page: Page): Locator {
-  return page.locator('.preview-panel .panel-head h3')
+  return page.locator('.preview-panel .document-header-title')
 }
 
 function getTreeButton(page: Page, title: string): Locator {

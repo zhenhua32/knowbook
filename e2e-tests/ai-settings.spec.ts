@@ -341,8 +341,6 @@ test('clearing an AI key cancels safely, retries the saved configuration and pre
     await expect(fields.clear).toHaveText('正在清除…')
     await expect(dialog).toHaveAttribute('aria-busy', 'true')
     await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeDisabled()
-    await page.keyboard.press('Enter')
-    await page.keyboard.press('Escape')
     await expect(dialog).toBeVisible()
     expect((await readProbe(app)).writes).toHaveLength(2)
     expect(await readStoredAiConfig(app)).toEqual(beforeClear)
@@ -362,6 +360,14 @@ test('clearing an AI key cancels safely, retries the saved configuration and pre
     await expect.poll(async () => (await readProbe(app)).pendingUpdates).toBe(1)
     expect((await readProbe(app)).writes.slice(1)).toEqual([clearPayload, clearPayload])
     await expectMutationLocked(panel, fields, true)
+    // New keyboard activity revokes automatic failure-focus recovery. Exercise
+    // the pending keyboard guard on the successful retry, after the first
+    // failure has verified its undisturbed return to Cancel.
+    await page.keyboard.press('Enter')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeVisible()
+    expect((await readProbe(app)).writes).toHaveLength(3)
+    expect(await readStoredAiConfig(app)).toEqual(beforeClear)
     await finishUpdate(app)
     await expect(dialog).toHaveCount(0)
     await expect(fields.clear).toBeFocused()
