@@ -5,6 +5,7 @@ import { DatabaseValueEditor } from './DatabaseValueEditor'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
 import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
+import { DatabaseMultiSelectCellCache } from '../model/databaseMultiSelectCells'
 
 export function DatabaseTableView({
   documents,
@@ -22,7 +23,8 @@ export function DatabaseTableView({
   onUpdateDocument,
   onUpdateValue,
   onRefreshValue,
-  textDraftCache
+  textDraftCache,
+  multiSelectCache
 }: {
   documents: DocumentCatalogEntry[]
   fields: DatabaseField[]
@@ -40,10 +42,14 @@ export function DatabaseTableView({
   onUpdateValue: (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue) => Promise<void | DatabaseValueCommitResult>
   onRefreshValue?: (isCurrent: () => boolean) => Promise<void | boolean>
   textDraftCache?: DatabaseTextDraftCache
+  multiSelectCache?: DatabaseMultiSelectCellCache
 }) {
   const localCache = useRef<DatabaseTextDraftCache | null>(null)
   if (!localCache.current) localCache.current = new DatabaseTextDraftCache()
   const cellDrafts = textDraftCache ?? localCache.current
+  const localMultiSelectCache = useRef<DatabaseMultiSelectCellCache | null>(null)
+  if (!localMultiSelectCache.current) localMultiSelectCache.current = new DatabaseMultiSelectCellCache()
+  const multiSelectCells = multiSelectCache ?? localMultiSelectCache.current
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
@@ -168,6 +174,7 @@ export function DatabaseTableView({
                       onRefreshValue={onRefreshValue}
                       text={text}
                       textDraftCache={cellDrafts}
+                      multiSelectCache={multiSelectCells}
                       textDraftKey={JSON.stringify([record.databaseId, record.id, field.id])}
                       textDraftRevision={record.updatedAt}
                       value={toDocumentValue(record.fieldValues[field.id])}

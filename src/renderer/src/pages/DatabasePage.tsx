@@ -11,6 +11,7 @@ import { RecoveryState } from '../components/RecoveryState'
 import { withoutDatabaseField, type DatabaseDeletion } from '../features/database/model/databaseDeletion'
 import { getErrorMessage } from '../utils/errorMessage'
 import { DatabaseTextDraftCache } from '../features/database/model/databaseTextDrafts'
+import { DatabaseMultiSelectCellCache } from '../features/database/model/databaseMultiSelectCells'
 
 type DatabasePageProps = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -34,6 +35,8 @@ type DatabasePageProps = {
 type SavedRefreshPublication = {
   cache: DatabaseTextDraftCache
   snapshot: ReturnType<DatabaseTextDraftCache['captureSavedRefresh']>
+  multiSelectCache: DatabaseMultiSelectCellCache | null
+  multiSelectSnapshot: ReturnType<DatabaseMultiSelectCellCache['captureSavedRefresh']>
   isCurrent: () => boolean
   catalog: boolean
   records: DocumentCatalogEntry[] | DatabaseDomainState['databaseEntities']
@@ -65,6 +68,9 @@ export function DatabasePage({
   const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
   const textDraftCache = database.databaseTextDraftCache ?? localTextDraftCache
   if (!textDraftCache.current) textDraftCache.current = new DatabaseTextDraftCache()
+  const localMultiSelectCache = useRef<DatabaseMultiSelectCellCache | null>(null)
+  const multiSelectCache = database.databaseMultiSelectCellCache ?? localMultiSelectCache
+  if (!multiSelectCache.current) multiSelectCache.current = new DatabaseMultiSelectCellCache()
   const savedRefreshPublication = useRef<SavedRefreshPublication | null>(null)
   const [, pulseRefreshPublication] = useState(0)
   const deletionRevision = useRef(0)
@@ -95,6 +101,9 @@ export function DatabasePage({
     if (records !== pending.records || columns !== pending.columns) return
     savedRefreshPublication.current = null
     pending.cache.confirmSavedRefresh(pending.snapshot)
+    if (multiSelectCache.current === pending.multiSelectCache) {
+      pending.multiSelectCache?.confirmSavedRefresh(pending.multiSelectSnapshot)
+    }
   })
 
   const changeCurrentDatabase = useCallback((databaseId: string) => {
@@ -125,6 +134,8 @@ export function DatabasePage({
     const targetDatabase = latest.current.database.databases.find((candidate) => candidate.id === targetId)
     const cache = latest.current.database.databaseTextDraftCache?.current ?? localTextDraftCache.current
     const snapshot = cache?.captureSavedRefresh(targetId)
+    const multiCache = latest.current.database.databaseMultiSelectCellCache?.current ?? localMultiSelectCache.current
+    const multiSnapshot = multiCache?.captureSavedRefresh(targetId)
     let result
     try {
       result = await Promise.all([
@@ -158,9 +169,10 @@ export function DatabasePage({
       current.onCatalogColumnsChange(previous => canPublishGlobal() ? columns : previous)
     }
     if (!isCurrentSource()) return false
-    if (cache && snapshot?.size) {
+    if (cache && snapshot && (snapshot.size || multiSnapshot?.size)) {
       const catalog = refreshedTarget?.kind === 'document-catalog'
       savedRefreshPublication.current = { cache, snapshot, isCurrent: isCurrentSource, catalog,
+        multiSelectCache: multiCache, multiSelectSnapshot: multiSnapshot ?? new Map(),
         records: catalog ? documents : entities, columns }
       pulseRefreshPublication(previous => previous + 1)
     }
@@ -276,6 +288,7 @@ export function DatabasePage({
       savedViews={database.databaseSavedViews}
       viewDraftCache={viewDraftCache.current}
       textDraftCache={textDraftCache.current}
+      multiSelectCache={multiSelectCache.current}
       selectedColumns={database.selectedDatabaseColumns}
       selectedRecordIds={database.selectedDatabaseEntityIds}
     />

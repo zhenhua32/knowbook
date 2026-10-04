@@ -857,6 +857,8 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 }
 
 .dbw-multi-editor-menu label:hover { background: var(--dbw-soft); }
+.dbw-multi-feedback { margin: 4px 6px; color: var(--dbw-muted); font-size: 12px; }
+.dbw-multi-feedback[role="alert"] { color: var(--dbw-danger); }
 
 /* Keep the database workbench on the same dark surface system as other management pages. */
 :root[data-theme='dark'] .content.page-database {

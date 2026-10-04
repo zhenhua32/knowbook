@@ -3,6 +3,8 @@ import type { DocumentDatabaseColumn, DocumentDatabaseFieldValue } from '@shared
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 import { getDatabaseWorkspaceText, type DatabaseWorkspaceText } from '../databaseText'
 import { DatabaseTextDraftCache, formatTextDraft, type DatabaseTextDraft, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
+import { DatabaseMultiSelectCellCache, multiSelectChoices, multiSelectSchema } from '../model/databaseMultiSelectCells'
+import { appNotifications } from '../../../app-notifications'
 
 const cellMessages = ['en-US', 'zh-CN'].map(getDatabaseWorkspaceText)
 
@@ -12,6 +14,7 @@ export function DatabaseValueEditor({
   onChangeValue,
   textCommitMode = 'blur',
   textDraftCache,
+  multiSelectCache,
   textDraftKey,
   textDraftRevision,
   onRefreshValue,
@@ -22,6 +25,7 @@ export function DatabaseValueEditor({
   onChangeValue: (value: DocumentDatabaseFieldValue) => void | Promise<void | DatabaseValueCommitResult>
   textCommitMode?: 'blur' | 'change'
   textDraftCache?: DatabaseTextDraftCache
+  multiSelectCache?: DatabaseMultiSelectCellCache
   textDraftKey?: string
   textDraftRevision?: string
   onRefreshValue?: (isCurrent: () => boolean) => Promise<void | boolean>
@@ -29,7 +33,6 @@ export function DatabaseValueEditor({
 }) {
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(formatDraft(value))
-  const [multiDraft, setMultiDraft] = useState<string[]>(Array.isArray(value) ? value : [])
   const composing = useRef(false)
   const cancelBlurCommit = useRef(false)
   const focusValue = useRef(value)
@@ -38,6 +41,13 @@ export function DatabaseValueEditor({
   const cache = textDraftCache ?? localCache.current
   const key = textDraftKey ?? JSON.stringify(['', '', column.id])
   const blurText = column.type === 'text' && textCommitMode === 'blur'
+  const isMulti = column.type === 'multi-select'
+  const localMultiCache = useRef<DatabaseMultiSelectCellCache | null>(null)
+  if (!localMultiCache.current) localMultiCache.current = new DatabaseMultiSelectCellCache()
+  const multiCache = multiSelectCache ?? localMultiCache.current
+  const multiSchema = multiSelectSchema(column.options)
+  const multiCell = useSyncExternalStore(listener => isMulti ? multiCache.subscribe(key, listener) : () => {},
+    () => isMulti ? multiCache.get(key) : undefined, () => isMulti ? multiCache.get(key) : undefined)
   const cell = useSyncExternalStore(listener => blurText ? cache.subscribe(key, listener) : () => {},
     () => blurText ? cache.get(key) : undefined, () => blurText ? cache.get(key) : undefined)
   const focusDraft = useRef<DatabaseTextDraft | undefined>(undefined)
@@ -45,11 +55,15 @@ export function DatabaseValueEditor({
   const pending = Boolean(cell?.operation)
   const reading = Boolean(cell?.readOperation)
   const message = pending ? text.saving : reading ? text.cellRefreshing : localizeCellMessage(cell?.message ?? '', text)
-  const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(column.type === 'multi-select' && isEditing)
+  const { detailsRef, menuRef, menuStyle } = useMultiSelectMenuPosition(isMulti && isEditing,
+    Boolean(multiCell?.operation || multiCell?.valid && multiCell.schema === multiSchema && (multiCell.readOperation || multiCell.message)))
 
   useLayoutEffect(() => {
     if (blurText) cache.sync(key, value, textDraftRevision)
   }, [blurText, cache, key, value, textDraftRevision, cell])
+  useLayoutEffect(() => {
+    if (isMulti) multiCache.sync(key, value, textDraftRevision, multiSchema)
+  }, [isMulti, multiCache, key, value, textDraftRevision, multiSchema, multiCell])
   useLayoutEffect(() => {
     if (!blurText || !focusDraft.current?.operation || !cell || cell.operation
       || (cell.status !== 'saved' && cell.status !== 'failed')) return
@@ -61,7 +75,6 @@ export function DatabaseValueEditor({
   useEffect(() => {
     if (isEditing) return
     if (!blurText) setDraft(formatDraft(value))
-    setMultiDraft(Array.isArray(value) ? value : [])
   }, [blurText, isEditing, value])
 
   if (column.type === 'checkbox') {
@@ -78,17 +91,32 @@ export function DatabaseValueEditor({
   }
 
   if (column.type === 'multi-select') {
+    const valid = multiCell?.valid && multiCell.schema === multiSchema
+    const multiDraft = valid ? multiCell.choices : multiSelectChoices(value)
+    const saving = Boolean(multiCell?.operation), refreshing = Boolean(valid && multiCell.readOperation)
+    const multiMessage = saving ? text.saving : refreshing ? text.cellRefreshing
+      : valid && multiCell.message === 'save' ? text.multiSelectSaveFailed
+      : valid && multiCell.message === 'refresh' ? text.savedRefreshFailed : ''
     return (
       <details className="dbw-multi-editor" onToggle={(event) => setIsEditing(event.currentTarget.open)} ref={detailsRef}>
-        <summary aria-label={column.name} title={multiDraft.join(' · ')}>{multiDraft.length > 0 ? multiDraft.join(' · ') : '—'}</summary>
+        <summary aria-label={column.name} aria-busy={saving || refreshing || undefined}
+          aria-describedby={multiMessage ? feedbackId : undefined} title={multiDraft.join(' · ')}>
+          {saving ? text.saving : multiDraft.length > 0 ? multiDraft.join(' · ') : '—'}
+        </summary>
         <div className="dbw-multi-editor-menu" ref={menuRef} style={menuStyle}>
           {column.options.map((option) => (
-            <label key={option}><input checked={multiDraft.includes(option)} onChange={(event) => {
+            <label key={option}><input aria-disabled={saving || undefined} aria-busy={saving || undefined}
+              aria-describedby={multiMessage ? feedbackId : undefined} checked={multiDraft.includes(option)} onChange={(event) => {
               const next = event.target.checked ? [...new Set([...multiDraft, option])] : multiDraft.filter((item) => item !== option)
-              setMultiDraft(next)
-              void onChangeValue(next.length > 0 ? next : null)
+              multiCache.commit(key, next, value, textDraftRevision, multiSchema, onChangeValue)
             }} type="checkbox" />{option}</label>
           ))}
+          {multiMessage && <p className="dbw-multi-feedback" id={feedbackId}
+            role={valid && multiCell.message === 'save' && !saving ? 'alert' : 'status'}>{multiMessage}</p>}
+          {valid && multiCell.action === 'refresh' && onRefreshValue && <button type="button" className="dbw-quiet-button"
+            aria-busy={refreshing || undefined} aria-disabled={refreshing || undefined}
+            aria-describedby={multiMessage ? feedbackId : undefined} title={multiMessage || undefined}
+            onClick={() => void multiCache.refresh(key, onRefreshValue)}>{text.refresh}</button>}
         </div>
       </details>
     )
@@ -167,7 +195,7 @@ function formatDraft(value: DocumentDatabaseFieldValue): string {
   return typeof value === 'string' ? value : ''
 }
 
-function useMultiSelectMenuPosition(open: boolean) {
+function useMultiSelectMenuPosition(open: boolean, feedback: boolean) {
   const detailsRef = useRef<HTMLDetailsElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const [menuStyle, setMenuStyle] = useState<CSSProperties>()
@@ -176,14 +204,19 @@ function useMultiSelectMenuPosition(open: boolean) {
     if (!open) return
     const details = detailsRef.current
     const menu = menuRef.current
-    if (!details || !menu) return
+    const view = details?.ownerDocument.defaultView
+    if (!details || !menu || !view) return
+    const owner = details.ownerDocument
+    let disposed = false, frame: number | null = null
+    const observed = new Set<Element>(), lists = new Set<Element>()
 
     const update = () => {
+      if (disposed || !details.isConnected || !menu.isConnected) return
       const anchor = details.getBoundingClientRect()
-      const bounds = { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth }
+      const bounds = { top: 0, bottom: view.innerHeight, left: 0, right: view.innerWidth }
       // Stay inside every clipping ancestor, including the table/form scroller.
       for (let parent = details.parentElement; parent; parent = parent.parentElement) {
-        const style = window.getComputedStyle(parent)
+        const style = view.getComputedStyle(parent)
         const rect = parent.getBoundingClientRect()
         if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
           bounds.top = Math.max(bounds.top, rect.top + parent.clientTop)
@@ -196,34 +229,90 @@ function useMultiSelectMenuPosition(open: boolean) {
       }
 
       const gap = 4
-      const below = Math.max(0, bounds.bottom - anchor.bottom - gap * 2)
-      const above = Math.max(0, anchor.top - bounds.top - gap * 2)
       const desiredHeight = Math.min(220, menu.scrollHeight + 2)
-      const opensAbove = desiredHeight > below && above > below
-      const width = Math.min(Math.max(anchor.width, 180), Math.max(0, bounds.right - bounds.left - gap * 2))
-      const left = Math.max(bounds.left + gap, Math.min(anchor.left, bounds.right - width - gap)) - anchor.left
+      const width = Math.min(Math.max(anchor.width, feedback ? 240 : 180), Math.max(0, bounds.right - bounds.left - gap * 2))
+      const clampLeft = (left: number) => Math.max(bounds.left + gap, Math.min(left, bounds.right - width - gap))
+      const originalLeft = clampLeft(anchor.left)
+      const obstacles = [...owner.querySelectorAll<HTMLElement>('.app-notifications > .app-notification, .app-notifications > .app-notification-summary')]
+        .flatMap(card => {
+          const style = view.getComputedStyle(card), rect = card.getBoundingClientRect()
+          if (!card.getClientRects().length || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') return []
+          const list = card.parentElement!.getBoundingClientRect()
+          const visible = { left: Math.max(0, rect.left, list.left), right: Math.min(view.innerWidth, rect.right, list.right),
+            top: Math.max(0, rect.top, list.top), bottom: Math.min(view.innerHeight, rect.bottom, list.bottom) }
+          return visible.right > visible.left && visible.bottom > visible.top ? [visible] : []
+        })
+      const candidates = new Set([originalLeft])
+      for (const obstacle of obstacles) {
+        candidates.add(clampLeft(obstacle.left - width - gap))
+        candidates.add(clampLeft(obstacle.right + gap))
+      }
+      const placements = [...candidates].map(left => {
+        let below = Math.max(0, bounds.bottom - anchor.bottom - gap * 2)
+        let above = Math.max(0, anchor.top - bounds.top - gap * 2)
+        for (const obstacle of obstacles) {
+          if (left + width <= obstacle.left || left >= obstacle.right) continue
+          if (obstacle.bottom > anchor.bottom + gap && obstacle.top < bounds.bottom - gap) {
+            below = Math.min(below, Math.max(0, obstacle.top - anchor.bottom - gap * 2))
+          }
+          if (obstacle.top < anchor.top - gap && obstacle.bottom > bounds.top + gap) {
+            above = Math.min(above, Math.max(0, anchor.top - obstacle.bottom - gap * 2))
+          }
+        }
+        const aboveAnchor = desiredHeight > below && above > below
+        return { left, aboveAnchor, capacity: aboveAnchor ? above : below, distance: Math.abs(left - originalLeft) }
+      }).sort((left, right) => {
+        const leftFits = left.capacity >= desiredHeight, rightFits = right.capacity >= desiredHeight
+        if (leftFits !== rightFits) return leftFits ? -1 : 1
+        return leftFits ? left.distance - right.distance : right.capacity - left.capacity || left.distance - right.distance
+      })
+      const placement = placements[0]
       const next: CSSProperties = {
-        top: opensAbove ? 'auto' : 'calc(100% + 4px)',
-        bottom: opensAbove ? 'calc(100% + 4px)' : 'auto',
-        left,
+        top: placement.aboveAnchor ? 'auto' : 'calc(100% + 4px)',
+        bottom: placement.aboveAnchor ? 'calc(100% + 4px)' : 'auto',
+        left: placement.left - anchor.left,
         width,
-        maxHeight: Math.min(220, opensAbove ? above : below)
+        maxHeight: Math.min(220, placement.capacity)
       }
       setMenuStyle((current) => current && Object.keys(next).every((key) => current[key as keyof CSSProperties] === next[key as keyof CSSProperties]) ? current : next)
     }
 
-    update()
-    const observer = new ResizeObserver(update)
-    observer.observe(details)
-    observer.observe(menu)
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
+    const schedule = () => {
+      if (disposed || frame !== null) return
+      frame = view.requestAnimationFrame(() => { frame = null; if (!disposed) { observeToasts(); update() } })
     }
-  }, [open])
+    const observer = typeof view.ResizeObserver === 'undefined' ? null : new view.ResizeObserver(schedule)
+    const toastObserver = new view.MutationObserver(schedule)
+    const observeToasts = () => {
+      const nextLists = [...owner.querySelectorAll('.app-notifications')]
+      if (nextLists.length !== lists.size || nextLists.some(list => !lists.has(list))) {
+        toastObserver.disconnect()
+        lists.clear()
+        for (const list of nextLists) { lists.add(list); toastObserver.observe(list, { childList: true, subtree: true }) }
+      }
+      const next = new Set<Element>([details, menu, ...nextLists, ...nextLists.flatMap(list =>
+        [...list.querySelectorAll('.app-notification, .app-notification-summary')].filter(card => card.getClientRects().length > 0))])
+      for (const target of observed) if (!next.has(target)) { observer?.unobserve(target); observed.delete(target) }
+      for (const target of next) if (!observed.has(target)) { observer?.observe(target); observed.add(target) }
+    }
+    const bodyObserver = new view.MutationObserver(schedule)
+    bodyObserver.observe(owner.body, { childList: true })
+    const unsubscribe = appNotifications.subscribe(schedule)
+    observeToasts()
+    update()
+    view.addEventListener('resize', schedule)
+    view.addEventListener('scroll', schedule, true)
+    return () => {
+      disposed = true
+      if (frame !== null) view.cancelAnimationFrame(frame)
+      unsubscribe()
+      observer?.disconnect()
+      toastObserver.disconnect()
+      bodyObserver.disconnect()
+      view.removeEventListener('resize', schedule)
+      view.removeEventListener('scroll', schedule, true)
+    }
+  }, [open, feedback])
 
   return { detailsRef, menuRef, menuStyle }
 }

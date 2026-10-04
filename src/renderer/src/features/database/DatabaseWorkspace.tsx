@@ -39,6 +39,7 @@ import { DatabaseConfirmDialog, DatabaseFormDialog } from './components/Database
 import { DatabaseValueEditor } from './components/DatabaseValueEditor'
 import type { DatabaseDeletion } from './model/databaseDeletion'
 import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from './model/databaseTextDrafts'
+import { DatabaseMultiSelectCellCache, multiSelectSchema } from './model/databaseMultiSelectCells'
 
 type DatabaseWorkspaceProps = {
   activeViewId: string
@@ -51,6 +52,7 @@ type DatabaseWorkspaceProps = {
   savedViews: DatabaseSavedView[]
   viewDraftCache?: Map<string, DatabaseViewConfigV1>
   textDraftCache?: DatabaseTextDraftCache
+  multiSelectCache?: DatabaseMultiSelectCellCache
   selectedColumns: DocumentDatabaseColumn[]
   selectedRecordIds: string[]
   onActiveViewIdChange: (viewId: string) => void
@@ -90,6 +92,7 @@ export function DatabaseWorkspace({
   savedViews,
   viewDraftCache,
   textDraftCache,
+  multiSelectCache,
   selectedColumns,
   selectedRecordIds,
   onActiveViewIdChange,
@@ -106,6 +109,9 @@ export function DatabaseWorkspace({
   const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
   if (!localTextDraftCache.current) localTextDraftCache.current = new DatabaseTextDraftCache()
   const cellDrafts = textDraftCache ?? localTextDraftCache.current
+  const localMultiSelectCache = useRef<DatabaseMultiSelectCellCache | null>(null)
+  if (!localMultiSelectCache.current) localMultiSelectCache.current = new DatabaseMultiSelectCellCache()
+  const multiCells = multiSelectCache ?? localMultiSelectCache.current
   const sources = useMemo(() => adaptDatabaseSources(databases), [databases])
   const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? sources[0]
   const currentSourceIdRef = useRef(currentSource?.id)
@@ -211,6 +217,11 @@ export function DatabaseWorkspace({
     if (currentSource) cellDrafts.prune(currentSource.id, new Set(records.map(record => record.id)),
       new Set(fields.filter(field => field.role === 'property' && field.type === 'text').map(field => field.id)))
   }, [cellDrafts, currentSource?.id, fields, records])
+  useLayoutEffect(() => {
+    if (currentSource) multiCells.prune(currentSource.id, new Set(records.map(record => record.id)),
+      new Map(fields.filter(field => field.role === 'property' && field.type === 'multi-select')
+        .map(field => [field.id, multiSelectSchema(field.options)])))
+  }, [multiCells, currentSource?.id, fields, records])
 
   const { activeView, activateCreatedView, baseConfig, dirty, draft, replaceDraft, updateDraft } = useDatabaseViewDraft({
     activeViewId,
@@ -586,22 +597,25 @@ export function DatabaseWorkspace({
         await window.knowbook.updateDatabaseEntity({ entityId: record.id, fieldValues: { [field.id]: value } })
       }
     }
-    if (field.type !== 'text') {
+    const multiCell = fromTextCell && field.type === 'multi-select'
+    if (field.type !== 'text' && !multiCell) {
       await run(async () => { await write(); await refresh(activeViewId) })
       return
     }
     const ownsSource = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
-    if (!ownsSource()) return { status: 'failed', message: text.formFailed }
+    const failureMessage = multiCell ? text.multiSelectSaveFailed : text.formFailed
+    if (!ownsSource()) return { status: 'failed', message: failureMessage }
     const cellKey = JSON.stringify([record.databaseId, record.id, field.id])
-    const cellOperation = fromTextCell ? cellDrafts.get(cellKey)?.operation : null
+    const cellOperation = multiCell ? multiCells.get(cellKey)?.operation : fromTextCell ? cellDrafts.get(cellKey)?.operation : null
     try { await write() }
     catch (error) {
-      console.warn('Database text cell save failed.', error)
+      console.warn(multiCell ? 'Database multi-select cell save failed.' : 'Database text cell save failed.', error)
       if (ownsSource()) {
         if (!fromTextCell) reportError(error)
-        else if (cellOperation && cellDrafts.get(cellKey)?.operation === cellOperation) onMessage(text.formFailed, 'error')
+        else if (cellOperation && (multiCell ? multiCells.get(cellKey)?.valid && multiCells.get(cellKey)?.operation === cellOperation
+          : cellDrafts.get(cellKey)?.operation === cellOperation)) onMessage(failureMessage, 'error')
       }
-      return { status: 'failed', message: text.formFailed }
+      return { status: 'failed', message: failureMessage }
     }
     // End the write lock at its ACK; subsequent reads have separate ownership.
     return { status: 'saved', value, refresh: async (isCurrent) => {
@@ -878,7 +892,7 @@ export function DatabaseWorkspace({
           </div>
         ) : null}
         {!empty && draft.layout === 'table' ? (
-          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={(record, field, value) => updateValue(record, field, value, true)} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
+          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={(record, field, value) => updateValue(record, field, value, true)} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} multiSelectCache={multiCells} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
         ) : null}
         {!empty && draft.layout === 'board' ? <DatabaseBoardView field={boardField} groups={boardGroups} onMoveRecord={moveBoardRecord} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} sourceKind={currentSource.kind} text={text} /> : null}
         {!empty && draft.layout === 'cards' ? <DatabaseCardView fields={draft.cardFieldIds.length > 0 ? visibleFields.filter((field) => draft.cardFieldIds.includes(field.id) || field.role === 'title') : visibleFields} locale={locale} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} /> : null}
