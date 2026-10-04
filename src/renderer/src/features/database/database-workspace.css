@@ -405,7 +405,7 @@
 .dbw-tag-list { display: flex; gap: 4px; overflow: hidden; }
 .dbw-tag { max-width: 100%; flex: 0 0 auto; padding: 2px 6px; overflow: hidden; border-radius: 10px; background: #eef0f7; color: #626879; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
-.dbw-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(245px, 100%), 1fr)); gap: 12px; max-height: calc(100vh - 304px); min-height: 420px; padding: 18px; overflow: auto; }
+.dbw-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(245px, 100%), 1fr)); align-content: start; gap: 12px; max-height: calc(100vh - 304px); min-height: 420px; padding: 18px; overflow: auto; }
 .dbw-record-card { position: relative; min-height: 190px; overflow: hidden; border: 1px solid var(--dbw-line); border-radius: 12px; background: #fff; box-shadow: 0 3px 10px rgba(35,40,55,.035); }
 .dbw-record-card:hover { border-color: #d8daea; box-shadow: 0 8px 22px rgba(35,40,55,.075); transform: translateY(-1px); }
 .dbw-record-card.is-selected { border-color: #aaaeea; box-shadow: 0 0 0 2px rgba(98,104,220,.12); }
