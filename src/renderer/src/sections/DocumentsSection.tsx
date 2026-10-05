@@ -3,7 +3,7 @@ import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../componen
 import { markdownTaskPatch } from '@shared/markdownTasks'
 import { hasAdvancedMarkdown } from '@shared/markdownDocument'
 import { documentSummaryText } from '@shared/documentSummary'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ComponentProps, type KeyboardEventHandler, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { DocumentDetail, LinkedDocument } from '@shared/contracts'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSearchPanel } from '../components/BlockSearchPanel'
@@ -127,6 +127,8 @@ export function DocumentsSection({
   emptyDocumentStateText
 }: DocumentsSectionProps) {
   const workspaceGridRef = useRef<HTMLElement | null>(null)
+  const stopAuxPanelResizeRef = useRef<(() => void) | null>(null)
+  const [workspaceWidth, setWorkspaceWidth] = useState(0)
   const [isResizingAuxPanel, setIsResizingAuxPanel] = useState(false)
   const documentReady = Boolean(selectedDocument && !previewHeaderProps.detailLoading)
   const onToggleMarkdownTask = useCallback((offset: number, checked: boolean) => {
@@ -162,6 +164,7 @@ export function DocumentsSection({
   </MarkdownBlockNodesContext.Provider>
   const auxPanelProps = documentsAuxPanelProps?.isOpen && documentReady ? documentsAuxPanelProps : null
   const showAuxPanel = Boolean(auxPanelProps)
+  const isAuxPanelStacked = showAuxPanel && workspaceWidth > 0 && workspaceWidth < 710
   const viewport = useDocumentViewport({
     documentId: documentReady ? selectedDocument?.id ?? null : null,
     reading: isReadingMode,
@@ -170,39 +173,55 @@ export function DocumentsSection({
     onRevealBlock
   })
 
+  useLayoutEffect(() => {
+    const workspace = workspaceGridRef.current
+    if (!workspace) return
+    const measure = () => {
+      const width = workspace.getBoundingClientRect().width
+      // Only hand off focus owned by the separator that will disappear.
+      // Background resizes and auxiliary inputs keep their current focus.
+      if (width > 0 && width < 710 && document.hasFocus()
+        && document.activeElement === workspace.querySelector('.document-aux-resizer')) {
+        workspace.querySelector<HTMLButtonElement>('.document-header-aux-button')?.focus({ preventScroll: true })
+      }
+      setWorkspaceWidth(width)
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(workspace)
+    return () => observer.disconnect()
+  }, [])
+
   const clampAuxPanelWidth = useCallback((candidateWidth: number) => {
-    const containerWidth = workspaceGridRef.current?.getBoundingClientRect().width ?? 0
     const minWidth = 280
-    const maxWidth = containerWidth > 0
-      ? Math.min(760, Math.max(minWidth, containerWidth - 420))
+    const maxWidth = workspaceWidth > 0
+      ? Math.min(760, Math.max(minWidth, workspaceWidth - 430))
       : 760
 
     return Math.max(minWidth, Math.min(Math.round(candidateWidth), maxWidth))
-  }, [])
+  }, [workspaceWidth])
 
-  const effectiveAuxPanelWidth = showAuxPanel ? clampAuxPanelWidth(auxPanelWidth) : auxPanelWidth
+  const effectiveAuxPanelWidth = showAuxPanel && !isAuxPanelStacked ? clampAuxPanelWidth(auxPanelWidth) : auxPanelWidth
 
-  useEffect(() => {
-    if (!showAuxPanel || effectiveAuxPanelWidth === auxPanelWidth) {
-      return
-    }
-
-    onAuxPanelWidthChange(effectiveAuxPanelWidth)
-  }, [auxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+  // Window and sidebar changes affect the presentation, not the saved width.
+  // End an active drag before a resize changes its coordinate system.
+  useLayoutEffect(() => {
+    stopAuxPanelResizeRef.current?.()
+  }, [workspaceWidth, showAuxPanel])
 
   useEffect(() => {
     return () => {
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
+      stopAuxPanelResizeRef.current?.()
     }
   }, [])
 
   const handleAuxPanelResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!showAuxPanel) {
+    if (!showAuxPanel || isAuxPanelStacked) {
       return
     }
 
     event.preventDefault()
+    stopAuxPanelResizeRef.current?.()
 
     const startClientX = event.clientX
     const startWidth = effectiveAuxPanelWidth
@@ -223,15 +242,17 @@ export function DocumentsSection({
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('pointerup', stopResizing)
       window.removeEventListener('pointercancel', stopResizing)
+      stopAuxPanelResizeRef.current = null
     }
 
+    stopAuxPanelResizeRef.current = stopResizing
     window.addEventListener('pointermove', handlePointerMove)
     window.addEventListener('pointerup', stopResizing)
     window.addEventListener('pointercancel', stopResizing)
-  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, isAuxPanelStacked, onAuxPanelWidthChange, showAuxPanel])
 
   const handleAuxPanelResizeKeyDown: KeyboardEventHandler<HTMLDivElement> = useCallback((event) => {
-    if (!showAuxPanel) {
+    if (!showAuxPanel || isAuxPanelStacked) {
       return
     }
 
@@ -254,7 +275,7 @@ export function DocumentsSection({
 
     event.preventDefault()
     onAuxPanelWidthChange(clampAuxPanelWidth(nextWidth))
-  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, onAuxPanelWidthChange, showAuxPanel])
+  }, [clampAuxPanelWidth, effectiveAuxPanelWidth, isAuxPanelStacked, onAuxPanelWidthChange, showAuxPanel])
 
   const workspaceGridStyle = useMemo<CSSProperties | undefined>(() => {
     if (!showAuxPanel) {
@@ -268,7 +289,7 @@ export function DocumentsSection({
 
   return (
     <section
-      className={`workspace-grid${showAuxPanel ? ' workspace-grid-with-aux' : ''}${isResizingAuxPanel ? ' workspace-grid-resizing' : ''}`}
+      className={`workspace-grid${showAuxPanel ? ' workspace-grid-with-aux' : ''}${isAuxPanelStacked ? ' workspace-grid-stacked-aux' : ''}${isResizingAuxPanel ? ' workspace-grid-resizing' : ''}`}
       data-testid="workspace-grid"
       ref={workspaceGridRef}
       style={workspaceGridStyle}
@@ -376,7 +397,7 @@ export function DocumentsSection({
         )}
       </article>
 
-      {showAuxPanel ? (
+      {showAuxPanel && !isAuxPanelStacked ? (
         <div
           aria-label={previewHeaderProps.isZh ? '调整辅助区宽度' : 'Resize auxiliary panel'}
           aria-orientation="vertical"

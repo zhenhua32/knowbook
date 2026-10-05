@@ -4,6 +4,7 @@ import type { UiText } from '../i18n'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { AiAnswerCard } from './AiAnswerCard'
 import { AiRequestError } from './AiRequestError'
+import { useAuxiliaryFocusVisibility } from '../hooks/useAuxiliaryFocusVisibility'
 
 type DocumentsAuxPanelProps = {
   ui: UiText
@@ -87,6 +88,8 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
   const canAsk = canUseAi && !aiAsking && Boolean(aiPromptDraft.trim())
   const canFindRelated = documentReady && !aiContextSearching && Boolean(aiPromptDraft.trim())
   const canClip = documentReady && !webClipBusy && Boolean(webClipUrlDraft.trim())
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  useAuxiliaryFocusVisibility(scrollRef)
 
   if (!isOpen) {
     return (
@@ -101,7 +104,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
   }
 
   return (
-    <div className="document-aux-sidebar-content" data-testid="document-aux-scroll-region">
+    <div className="document-aux-sidebar-content" data-testid="document-aux-scroll-region" ref={scrollRef}>
       {relationContent}
       {selectionAiContent ?? null}
 
