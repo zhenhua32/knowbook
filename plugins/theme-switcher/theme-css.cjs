@@ -142,7 +142,8 @@ ${rule(`.eyebrow, .panel-label, .stat-label, .pill, .mini-hint, .empty-text,
   .plugin-card-meta, .plugin-inspector-title small, .plugin-inspector-head code, .plugin-overview-card small,
   .plugin-lifecycle-card li span, .plugin-lifecycle-card li code`, 'color: var(--ts-text-muted);')}
 ${rule('.global-search-snippet, .document-summary-preview, .settings-card-description, .settings-release-notes', 'color: var(--ts-text-soft);')}
-${rule('.inline-link, .inline-link-block, .plugin-text-action, .plugin-ai-action, .slash-command-id, .slash-command-search-icon', 'color: var(--ts-accent);')}
+${rule('.inline-link-block, .plugin-text-action, .plugin-ai-action, .slash-command-id, .slash-command-search-icon', 'color: var(--ts-accent);')}
+${rule('.inline-link', 'color: var(--ts-accent-strong);')}
 ${rule('.context-menu-item-danger', 'color: var(--ts-danger);')}
 ${rule(`.document-header-shell, .global-search-header, .context-menu-section,
   .document-aux-sidebar-content > * + *, .plugin-detail-grid, .plugin-detail-grid > div,

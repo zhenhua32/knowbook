@@ -400,8 +400,6 @@ dt,
   border: 1px solid rgba(47, 111, 237, 0.18);
   border-radius: 999px;
   padding: 10px 14px;
-  background: rgba(255, 251, 245, 0.9);
-  color: #18429f;
   cursor: pointer;
 }
 
@@ -1853,8 +1851,8 @@ dt,
   border-radius: 999px;
   padding: 2px 8px;
   margin: 0 2px;
-  background: rgba(47, 111, 237, 0.12);
-  color: #1d4aa9;
+  background: var(--kb-accent-soft);
+  color: var(--kb-accent-strong);
   cursor: pointer;
 }
 
