@@ -2008,9 +2008,8 @@ del {
 }
 
 .relation-panel {
+  min-width: 0;
   padding: 14px;
-  border-radius: 18px;
-  background: rgba(246, 240, 228, 0.76);
 }
 
 .relation-list {
@@ -5402,6 +5401,19 @@ select:focus-visible {
   border: 1px solid var(--kb-line);
   border-radius: 12px;
   background: var(--kb-canvas);
+}
+
+.relation-panel-empty {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.relation-panel-empty > .empty-text {
+  margin: 0;
+  font-size: 13px;
 }
 
 .relation-chip {

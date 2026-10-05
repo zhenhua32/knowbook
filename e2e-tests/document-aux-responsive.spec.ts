@@ -292,7 +292,11 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const width of [760, 90
       expect(wide.state.question!.focused).toBe(true); expect(wide.state.savedWidth).toBe('360')
       expect(wide.state.workspace!.box.width).toBeGreaterThanOrEqual(710)
       expect(wide.state.aside!.box.left).toBeGreaterThanOrEqual(wide.state.preview!.box.right)
-      expect(wide.state.auxScroll!.top).toBeCloseTo(Math.min(beforeResizeTop, wide.state.auxScroll!.maximum), 1)
+      // scrollHeight/clientHeight are integers; scrollTop retains subpixels at
+      // system display scaling, so a clamped maximum can differ by under 1px.
+      const maximum = wide.state.auxScroll!.maximum
+      expect(Math.abs(wide.state.auxScroll!.top - Math.min(beforeResizeTop, maximum)))
+        .toBeLessThanOrEqual(beforeResizeTop >= maximum ? 1 : .05)
       const separator = page.locator('.document-aux-resizer')
       await tabTo(page, separator, true); await page.keyboard.press('ArrowLeft'); await twoFrames(page)
       // The actual reverse Tab route visits the URL field. Native focus may

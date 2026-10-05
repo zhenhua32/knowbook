@@ -73,7 +73,7 @@ function RelationList({
   onSelect: (documentId: string) => void
 }) {
   return (
-    <section className="relation-panel">
+    <section className={`relation-panel${links.length === 0 ? ' relation-panel-empty' : ''}`}>
       <p className="panel-label">{title}</p>
       {links.length > 0 ? (
         <div className="relation-list">
