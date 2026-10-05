@@ -271,7 +271,7 @@ export function DatabaseWorkspace({
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (target?.closest('[role="dialog"], [role="alertdialog"], .dbw-action-menu, .dbw-menu-wrap > button[aria-expanded="true"], .dbw-new-view-menu[open]')) return
+      if (target?.closest('[role="dialog"], [role="alertdialog"], .dbw-action-menu, .dbw-menu-wrap > button[aria-expanded="true"], .dbw-new-view-menu[open], .dbw-toolbar-menu[open]')) return
       const isTyping = target?.matches('input, textarea, select, [contenteditable="true"]')
       if (event.key === '/' && !isTyping) {
         event.preventDefault()
