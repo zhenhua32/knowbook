@@ -9,10 +9,10 @@ type Language = 'en-US' | 'zh-CN'
 type Handler = (event: unknown, ...input: unknown[]) => unknown | Promise<unknown>
 type Request = { channel: string; input: unknown[] }
 type Probe = { requests: Request[]; writes: Request[]; failures: Array<Request & { reason: string }> }
-type ProbeGlobal = typeof globalThis & { __toolbarScopeProbe?: Probe }
-const sourceName = 'Toolbar shortcut source'
-const viewName = 'Original toolbar table'
-const recordTitle = 'Original selected toolbar record'
+type ProbeGlobal = typeof globalThis & { __toolbarPopoverProbe?: Probe }
+const sourceName = 'Toolbar popover source'
+const viewName = 'Original popover table'
+const recordTitle = 'Original selected popover record'
 type MenuKind = 'filter' | 'sort'
 
 async function twoFrames(page: Page) {
@@ -20,7 +20,7 @@ async function twoFrames(page: Page) {
 }
 
 async function tabTo(page: Page, target: Locator, reverse = false) {
-  for (let step = 0; step < 64; step++) {
+  for (let step = 0; step < 256; step++) {
     if (await target.evaluate(element => document.activeElement === element)) return
     await page.keyboard.press(reverse ? 'Shift+Tab' : 'Tab')
   }
@@ -59,7 +59,7 @@ async function installProbe(app: ElectronApplication) {
   await app.evaluate(({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
     const probe: Probe = { requests: [], writes: [], failures: [] }
-    ;(globalThis as ProbeGlobal).__toolbarScopeProbe = probe
+    ;(globalThis as ProbeGlobal).__toolbarPopoverProbe = probe
     for (const [channel, original] of Array.from(handlers.entries())) {
       if (!/^knowbook:(create|update|delete|rename|move|save)-/.test(channel)) continue
       ipcMain.removeHandler(channel)
@@ -129,6 +129,20 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
   const state = await page.evaluate(kind => {
     const menu = document.querySelectorAll<HTMLDetailsElement>('.dbw-toolbar-menu')[kind === 'filter' ? 0 : 1]
     const confirm = document.querySelector<HTMLDialogElement>('.app-confirm-dialog'), active = document.activeElement
+    const popup = menu.querySelector<HTMLElement>('.dbw-config-popover')!, summary = menu.querySelector('summary')!
+    const shell = menu.closest('.dbw-shell')!, shellRect = shell.getBoundingClientRect()
+    const rectangle = (element: Element) => { const box = element.getBoundingClientRect(); return {
+      left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width, height: box.height } }
+    const popupRect = rectangle(popup), triggerRect = rectangle(summary)
+    const add = popup.querySelector<HTMLElement>('.dbw-add-config-row')!, addRect = add.getBoundingClientRect()
+    const hit = document.elementFromPoint(addRect.left + addRect.width / 2, addRect.top + addRect.height / 2)
+    const visibleControls = Array.from(popup.querySelectorAll<HTMLElement>('button, input, select')).flatMap(control => {
+      const box = rectangle(control), x = box.left + box.width / 2, y = box.top + box.height / 2
+      if (!box.width || !box.height || x <= popupRect.left || x >= popupRect.right || y <= popupRect.top || y >= popupRect.bottom) return []
+      const top = document.elementFromPoint(x, y)
+      return [{ tag: control.tagName, label: control.getAttribute('aria-label'), box,
+        centerHit: top === control || Boolean(top && control.contains(top)) }]
+    })
     return { theme: document.documentElement.dataset.theme, viewport: { width: innerWidth, height: innerHeight },
       source: document.querySelector('.dbw-source-trigger')?.getAttribute('title'),
       activeView: document.querySelector('.dbw-view-tab-wrap.is-active > .dbw-view-tab')?.getAttribute('title'),
@@ -139,6 +153,15 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
       menuOpen: menu.open, controls: Array.from(menu.querySelectorAll('summary, button, input, select')).map(element => ({
         tag: element.tagName, label: element.getAttribute('aria-label'), text: element.textContent?.slice(0, 120), focused: element === active,
         value: element instanceof HTMLInputElement || element instanceof HTMLSelectElement ? element.value : null })),
+      openMenus: document.querySelectorAll('.dbw-toolbar-menu[open]').length,
+      geometry: { popup: popupRect, trigger: triggerRect, bounds: {
+        left: Math.max(10, shellRect.left + 10), right: Math.min(innerWidth - 10, shellRect.right - 10),
+        top: Math.max(10, shellRect.top + 10), bottom: Math.min(innerHeight - 10, shellRect.bottom - 10) },
+        gapToTrigger: Math.min(Math.abs(popupRect.top - triggerRect.bottom), Math.abs(triggerRect.top - popupRect.bottom)),
+        horizontalOverlap: Math.min(popupRect.right, triggerRect.right) - Math.max(popupRect.left, triggerRect.left),
+        clientWidth: popup.clientWidth, scrollWidth: popup.scrollWidth, clientHeight: popup.clientHeight,
+        scrollHeight: popup.scrollHeight, scrollTop: popup.scrollTop, visibleControls,
+        add: rectangle(add), addCenterHit: hit === add || Boolean(hit && add.contains(hit)) },
       filterCount: document.querySelectorAll('.dbw-filter-row').length, sortCount: document.querySelectorAll('.dbw-config-row').length,
       dirty: document.querySelector('.dbw-unsaved-dot') !== null,
       confirmCount: document.querySelectorAll('.app-confirm-dialog').length,
@@ -150,7 +173,7 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
   }, kind)
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
     visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
-  const probe = await app.evaluate(() => (globalThis as ProbeGlobal).__toolbarScopeProbe!)
+  const probe = await app.evaluate(() => (globalThis as ProbeGlobal).__toolbarPopoverProbe!)
   const stored = await readStored(page, app, language)
   const result = { phase, language, kind, steps, observations: await observations(page), state, windows, probe, before, stored }
   const path = info.outputPath(`${language}-${kind}-${phase}.json`)
@@ -171,145 +194,147 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
   return result
 }
 
+function expectAnchored(result: Awaited<ReturnType<typeof record>>) {
+  const { popup, bounds, gapToTrigger, horizontalOverlap, clientWidth, scrollWidth } = result.state.geometry
+  expect(result.state.menuOpen).toBe(true)
+  expect(result.state.openMenus).toBe(1)
+  expect(popup.width).toBeGreaterThan(0)
+  expect(popup.height).toBeGreaterThan(0)
+  expect(gapToTrigger, 'Popover must follow its own summary rather than the full wrapped toolbar').toBeLessThanOrEqual(9)
+  expect(horizontalOverlap).toBeGreaterThan(0)
+  expect(popup.left).toBeGreaterThanOrEqual(bounds.left - 1)
+  expect(popup.right).toBeLessThanOrEqual(bounds.right + 1)
+  expect(popup.top).toBeGreaterThanOrEqual(bounds.top - 1)
+  expect(popup.bottom).toBeLessThanOrEqual(bounds.bottom + 1)
+  expect(scrollWidth - clientWidth).toBeLessThanOrEqual(1)
+  expect(result.state.geometry.visibleControls.length).toBeGreaterThan(0)
+  expect(result.state.geometry.visibleControls.every(control => control.centerHit), 'Visible popup controls must remain above the header and view tabs').toBe(true)
+  expect(result.state.confirmCount).toBe(0)
+}
+
 for (const language of ['en-US', 'zh-CN'] as const) for (const kind of ['filter', 'sort'] as const) {
-  test(`${kind} toolbar menu owns keyboard shortcuts without deleting selected records in ${language} @electron`, async ({}, info) => {
-    test.setTimeout(150_000)
+  test(`${kind} popover follows its summary and dismisses without losing drafts in ${language} @electron`, async ({}, info) => {
+    test.setTimeout(180_000)
     test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
     await withElectronApp(async ({ page, app }) => {
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.message))
       await prepare(page, language)
+      await page.setViewportSize({ width: language === 'en-US' ? 1100 : 980, height: 760 })
       await installProbe(app)
       await installObservations(page)
-      const before = await readStored(page, app, language)
-      const text = getDatabaseWorkspaceText(language)
+      const before = await readStored(page, app, language), text = getDatabaseWorkspaceText(language)
       const menu = page.locator('.dbw-toolbar-menu').nth(kind === 'filter' ? 0 : 1)
-      const summary = menu.locator('summary')
-      const remove = menu.locator(kind === 'filter' ? '.dbw-filter-row button' : '.dbw-config-row button').first()
-      const add = menu.locator('.dbw-add-config-row')
+      const summary = menu.locator('summary'), popup = menu.locator('.dbw-config-popover')
       const rows = menu.locator(kind === 'filter' ? '.dbw-filter-row' : '.dbw-config-row')
-      const query = page.locator('.dbw-main-search input')
-      const source = page.locator('.dbw-source-trigger')
-      const newView = page.locator('.dbw-new-view-menu > summary')
-      const fields = page.locator('.dbw-toolbar > .dbw-toolbar-button')
+      const owner = kind === 'filter' ? rows.first().locator('input') : rows.first().locator('select').nth(1)
+      const add = menu.locator('.dbw-add-config-row')
+      const peer = page.locator('.dbw-toolbar-menu').nth(kind === 'filter' ? 1 : 0)
+      const query = page.locator('.dbw-main-search input'), fields = page.locator('.dbw-toolbar > .dbw-toolbar-button')
       const steps: unknown[] = []
-      await summary.click()
-      await expect(menu).toHaveJSProperty('open', true)
-      const firstOwner = kind === 'filter' ? menu.locator('.dbw-popover-heading button') : remove
-      await tabTo(page, firstOwner)
-      await expect(firstOwner).toBeFocused()
-      steps.push({ phase: 'first-owner', owner: await firstOwner.evaluate(element => ({ tag: element.tagName,
-        label: element.getAttribute('aria-label'), text: element.textContent, focused: document.activeElement === element })) })
-      await page.keyboard.press('Delete')
-      await twoFrames(page)
-      const initial = await record(page, app, info, language, kind, before, 'first-delete-before-business-oracle', steps)
-      expect(initial.state.confirmCount, 'Menu Delete must not target selected canvas records').toBe(0)
-      expect(initial.observations.keys.at(-1)?.defaultPrevented).toBe(false)
-      await expect(firstOwner).toBeFocused()
-
-      const keys = ['Delete', '/', 'Control+Shift+L', 'Control+Shift+V'] as const
-      const owners: Array<[string, Locator]> = [['summary', summary], ['remove', remove], ['add', add],
-        ['field-select', rows.first().locator('select').nth(0)], ['operator-select', rows.first().locator('select').nth(1)]]
-      if (kind === 'filter') owners.push(['clear', firstOwner])
-      for (const [name, owner] of owners) {
-        const reverse = await owner.evaluate(element => Boolean(document.activeElement
-          && element.compareDocumentPosition(document.activeElement) & Node.DOCUMENT_POSITION_FOLLOWING))
-        await tabTo(page, owner, reverse)
-        for (const key of keys) {
-          const prior = await observations(page)
-          await page.keyboard.press(key)
-          await twoFrames(page)
-          const after = await observations(page)
-          steps.push({ owner: name, key, focusBefore: prior.focus.length, focusAfter: after.focus.length,
-            event: after.keys.at(-1), focused: await owner.evaluate(element => document.activeElement === element) })
-          await expect(owner).toBeFocused()
-          expect(after.focus).toEqual(prior.focus)
-          expect(after.keys.at(-1)?.defaultPrevented).toBe(false)
-          await expect(page.locator('.app-confirm-dialog')).toHaveCount(0)
-          await expect(menu).toHaveJSProperty('open', true)
-        }
-      }
-      if (kind === 'filter') {
-        // The input keeps its native editing/paste behavior. This key only
-        // tests canvas focus ownership and does not read the user's clipboard.
-        const value = menu.locator('.dbw-filter-row input')
-        await tabTo(page, value)
-        const prior = await observations(page)
-        await page.keyboard.press('Control+Shift+L')
+      const open = async () => {
+        if (!(await menu.evaluate(element => (element as HTMLDetailsElement).open))) await summary.click()
+        await expect(menu).toHaveJSProperty('open', true)
+        await expect(popup).toBeVisible()
         await twoFrames(page)
-        await expect(value).toBeFocused()
-        expect((await observations(page)).focus).toEqual(prior.focus)
-        await expect(value).toHaveValue('Original')
       }
-      const matrix = await record(page, app, info, language, kind, before, 'open-control-keyboard-matrix', steps)
-      expect(matrix.state.confirmCount).toBe(0)
-      expect(matrix.state.dirty).toBe(false)
+      await open()
+      const initial = await record(page, app, info, language, kind, before, 'first-open-before-anchor-business-oracle', steps)
+      expectAnchored(initial)
 
-      // Ordinary Enter continues to add/remove rules in the local draft.
+      await tabTo(page, owner)
+      await page.keyboard.press('Escape')
+      await expect(menu).toHaveJSProperty('open', false)
+      await expect(summary).toBeFocused()
+      const escape = await record(page, app, info, language, kind, before, 'escape-closes-and-returns-summary', steps)
+      expect(escape.state.dirty).toBe(false)
+
+      await page.keyboard.press('Enter')
+      await expect(menu).toHaveJSProperty('open', true)
+      await tabTo(page, owner)
+      if (kind === 'filter') await owner.fill('Original ')
+      else await owner.selectOption('desc')
+      // Composition is an explicit renderer fixture; real navigation and
+      // ordinary Escape use the actual browser keyboard, without OS IME UI.
+      await owner.dispatchEvent('compositionstart', { data: '文' })
+      await page.keyboard.press('Escape')
+      await expect(menu).toHaveJSProperty('open', true)
+      await expect(owner).toBeFocused()
+      await owner.dispatchEvent('compositionend', { data: '文' })
+      await page.keyboard.press('Escape')
+      await expect(menu).toHaveJSProperty('open', false)
+      await expect(summary).toBeFocused()
+      const draft = await record(page, app, info, language, kind, before, 'ime-keeps-draft-ordinary-escape-dismisses', steps)
+      expect(draft.state.dirty).toBe(true)
+      await open()
+      await expect(owner).toHaveValue(kind === 'filter' ? 'Original ' : 'desc')
+      await popup.locator('strong').first().click()
+      await expect(menu).toHaveJSProperty('open', true)
+      const inside = await record(page, app, info, language, kind, before, 'internal-pointer-keeps-current-draft', steps)
+      expectAnchored(inside)
+
+      await peer.locator('summary').click()
+      await expect(peer).toHaveJSProperty('open', true)
+      await expect(menu).toHaveJSProperty('open', false)
+      await expect(page.locator('.dbw-toolbar-menu[open]')).toHaveCount(1)
+      await summary.click()
+      await expect(peer).toHaveJSProperty('open', false)
+      await expect(menu).toHaveJSProperty('open', true)
+      await expect(owner).toHaveValue(kind === 'filter' ? 'Original ' : 'desc')
+      await twoFrames(page)
+      const exclusive = await record(page, app, info, language, kind, before, 'peer-menus-exclusive-draft-retained', steps)
+      expectAnchored(exclusive)
+
       await tabTo(page, add)
-      await page.keyboard.press('Enter')
-      await expect(rows).toHaveCount(2)
-      const added = await record(page, app, info, language, kind, before, 'enter-add-local-rule', steps)
-      expect(added.state.dirty).toBe(true)
-      await summary.click()
+      const focusBefore = (await observations(page)).focus.length
+      await tabTo(page, fields)
       await expect(menu).toHaveJSProperty('open', false)
-      await page.getByRole('button', { name: text.resetView, exact: true }).click()
-      await expect(rows).toHaveCount(1)
-      await summary.click()
-      await expect(menu).toHaveJSProperty('open', true)
-      await tabTo(page, remove)
-      await page.keyboard.press('Enter')
-      if (kind === 'filter') await expect(rows).toHaveCount(0)
-      else {
-        // Empty sorting is repaired to the existing updated-at fallback.
-        await expect(rows).toHaveCount(1)
-        await expect(rows.first().locator('select').nth(0)).toHaveValue('__updated_at__')
-        await expect(rows.first().locator('select').nth(1)).toHaveValue('desc')
-      }
-      const removed = await record(page, app, info, language, kind, before, 'enter-remove-local-rule', steps)
-      expect(removed.state.dirty).toBe(true)
-      await summary.click()
-      await expect(menu).toHaveJSProperty('open', false)
-      await page.getByRole('button', { name: text.resetView, exact: true }).click()
-      await expect(rows).toHaveCount(1)
-      await summary.click()
-      await expect(menu).toHaveJSProperty('open', true)
+      await expect(fields).toBeFocused()
+      expect((await observations(page)).focus.length).toBe(focusBefore)
+      const departure = await record(page, app, info, language, kind, before, 'real-tab-away-closes-without-return-focus', steps)
+      expect(departure.state.dirty).toBe(true)
 
-      // Closed summaries and controls reached by leaving an open menu still
-      // own canvas shortcuts. Only Cancel is activated in Delete dialogs.
-      for (const mode of ['closed-summary', 'outside-menu-dismissal'] as const) {
-        await tabTo(page, summary, true)
-        await page.keyboard.press('Enter')
-        await expect(menu).toHaveJSProperty('open', mode !== 'closed-summary')
-        const owner = mode === 'closed-summary' ? summary : fields
-        for (const key of keys) {
-          await tabTo(page, owner)
-          await expect(owner).toBeFocused()
-          await expect(menu).toHaveJSProperty('open', false)
-          await page.keyboard.press(key)
-          await twoFrames(page)
-          expect((await observations(page)).keys.at(-1)?.defaultPrevented).toBe(true)
-          if (key === '/') await expect(query).toBeFocused()
-          else if (key === 'Control+Shift+L') await expect(source).toBeFocused()
-          else if (key === 'Control+Shift+V') await expect(newView).toBeFocused()
-          else {
-            const confirmation = await record(page, app, info, language, kind, before, mode + '-canvas-delete-confirm', steps)
-            expect(confirmation.state.confirmCount).toBe(1)
-            expect(confirmation.state.confirm?.heading).toContain(language === 'zh-CN' ? '删除记录' : 'Delete record')
-            expect(confirmation.state.confirm?.body).toContain(text.selected(1))
-            const cancel = page.locator('.app-confirm-dialog').getByRole('button', { name: text.cancel, exact: true })
-            await tabTo(page, cancel)
-            await page.keyboard.press('Enter')
-            await expect(page.locator('.app-confirm-dialog')).toHaveCount(0)
-            await expect(query).toBeFocused()
-          }
-          steps.push({ mode, key, observations: await observations(page) })
-          await expect(menu).toHaveJSProperty('open', false)
-        }
-        const canvas = await record(page, app, info, language, kind, before, mode + '-canvas-shortcuts-preserved', steps)
-        expect(canvas.state.confirmCount).toBe(0)
-        expect(canvas.state.dirty).toBe(false)
-      }
+      await open()
+      const pointerBefore = (await observations(page)).focus.length
+      await query.click()
+      await expect(menu).toHaveJSProperty('open', false)
+      await expect(query).toBeFocused()
+      expect((await observations(page)).focus.length).toBe(pointerBefore)
+      const outside = await record(page, app, info, language, kind, before, 'outside-pointer-closes-without-return-focus', steps)
+      expect(outside.state.dirty).toBe(true)
+      await page.getByRole('button', { name: text.resetView, exact: true }).click()
+      await open()
+      await expect(owner).toHaveValue(kind === 'filter' ? 'Original' : 'asc')
+
+      await page.setViewportSize({ width: 820, height: 480 })
+      await tabTo(page, add)
+      for (let count = 0; count < 20; count++) await page.keyboard.press('Enter')
+      await expect(rows).toHaveCount(21)
+      await tabTo(page, summary, true)
+      await tabTo(page, add)
+      await expect(add).toBeFocused()
+      await twoFrames(page)
+      const narrow = await record(page, app, info, language, kind, before, 'short-narrow-long-rules-native-tab-reaches-add', steps)
+      expectAnchored(narrow)
+      expect(narrow.state.geometry.scrollTop).toBeGreaterThan(0)
+      expect(narrow.state.geometry.scrollHeight).toBeGreaterThan(narrow.state.geometry.clientHeight)
+      expect(narrow.state.geometry.addCenterHit).toBe(true)
+
+      await page.setViewportSize({ width: 1280, height: 860 })
+      await twoFrames(page)
+      const resized = await record(page, app, info, language, kind, before, 'resize-reanchors-with-local-draft', steps)
+      expectAnchored(resized)
+      expect(resized.state[kind === 'filter' ? 'filterCount' : 'sortCount']).toBe(21)
+      await page.keyboard.press('Escape')
+      await expect(menu).toHaveJSProperty('open', false)
+      await expect(summary).toBeFocused()
+      await page.getByRole('button', { name: text.resetView, exact: true }).click()
+      const final = await record(page, app, info, language, kind, before, 'final-reset-preserves-source-view-records-and-schema', steps)
+      expect(final.state.menuOpen).toBe(false)
+      expect(final.state.dirty).toBe(false)
+      expect(final.state.filterCount).toBe(1)
+      expect(final.state.sortCount).toBe(1)
+      expect(final.state.confirmCount).toBe(0)
       expect(errors).toEqual([])
     }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
   })

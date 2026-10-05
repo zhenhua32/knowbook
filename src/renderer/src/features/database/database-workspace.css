@@ -285,6 +285,7 @@
 }
 .dbw-main-search { width: clamp(190px, 24vw, 330px); }
 .dbw-toolbar-menu { position: static; }
+.dbw-toolbar:has(.dbw-toolbar-menu[open]) { z-index: 9; }
 .dbw-toolbar-menu > summary,
 .dbw-toolbar-button,
 .dbw-toolbar-select {
@@ -310,6 +311,7 @@
 .dbw-toolbar-select select { max-width: 88px; padding: 0; border: 0; outline: 0; background: transparent; color: #5f6473; cursor: pointer; }
 .dbw-config-popover { top: calc(100% + 7px); left: 10px; width: 390px; max-width: calc(100% - 20px); padding: 12px; }
 .dbw-filter-popover { width: 560px; }
+.dbw-config-popover { overscroll-behavior: contain; scrollbar-gutter: stable; }
 .dbw-popover-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
 .dbw-popover-heading button { border: 0; background: transparent; color: var(--dbw-muted); cursor: pointer; font-size: 12px; }
 .dbw-config-row,

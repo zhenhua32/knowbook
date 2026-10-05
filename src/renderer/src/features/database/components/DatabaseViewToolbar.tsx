@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
 import type {
   DatabaseField,
   DatabaseFilterOperator,
@@ -8,9 +8,80 @@ import type {
 } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { LayoutIcon } from './DatabaseViewTabs'
+import { useToolbarPopoverPosition } from '../../../hooks/useToolbarPopoverPosition'
+import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
+
+function visible(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
+  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
+  return Boolean(style && style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse')
+}
+
+function ToolbarMenu({ summary, summaryClassName, popoverClassName, scopeKey, children }: {
+  summary: ReactNode; summaryClassName?: string; popoverClassName?: string; scopeKey?: unknown; children: ReactNode
+}) {
+  const detailsRef = useRef<HTMLDetailsElement | null>(null), popoverRef = useRef<HTMLDivElement | null>(null)
+  const composingTarget = useRef<EventTarget | null>(null)
+  const [open, setOpen] = useState(false)
+  const style = useToolbarPopoverPosition(detailsRef, popoverRef, open)
+  const close = () => {
+    if (detailsRef.current) detailsRef.current.open = false
+    setOpen(false)
+    composingTarget.current = null
+  }
+  useLayoutEffect(close, [scopeKey])
+  useEffect(() => {
+    const details = detailsRef.current, owner = details?.ownerDocument, view = owner?.defaultView
+    if (!details || !owner || !view) return
+    const outside = (event: Event) => {
+      if (details.open && !details.contains(event.target as Node | null)) close()
+    }
+    owner.addEventListener('pointerdown', outside, true)
+    owner.addEventListener('focusin', outside, true)
+    view.addEventListener('blur', close)
+    return () => {
+      owner.removeEventListener('pointerdown', outside, true)
+      owner.removeEventListener('focusin', outside, true)
+      view.removeEventListener('blur', close)
+    }
+  }, [])
+  const escape = (event: ReactKeyboardEvent<HTMLDetailsElement>) => {
+    const details = event.currentTarget
+    if (!details.open || event.defaultPrevented || event.key !== 'Escape'
+      || isImeKeyboardEvent(event.nativeEvent, composingTarget.current === event.target)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const owner = details.ownerDocument, active = owner.activeElement
+    const trigger = details.querySelector<HTMLElement>(':scope > summary')
+    const canReturn = details.contains(active) && owner.hasFocus() && visible(details) && trigger && visible(trigger)
+      && !trigger.matches(':disabled, [aria-disabled="true"]')
+      && !Array.from(owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"], [role="alertdialog"]'))
+        .some(modal => !modal.contains(details) && visible(modal))
+    close()
+    if (canReturn && trigger && trigger !== active) trigger.focus({ preventScroll: true })
+  }
+  return <details className="dbw-toolbar-menu" ref={detailsRef} onKeyDown={escape}
+    onToggle={event => {
+      const details = event.currentTarget
+      if (details.open) {
+        details.closest('.dbw-toolbar')?.querySelectorAll<HTMLDetailsElement>('.dbw-toolbar-menu[open]').forEach(peer => {
+          if (peer !== details) peer.open = false
+        })
+      }
+      setOpen(details.open)
+      if (!details.open) composingTarget.current = null
+    }}
+    onCompositionStartCapture={event => { composingTarget.current = event.target }}
+    onCompositionEndCapture={() => { composingTarget.current = null }}
+    onBlurCapture={event => { if (composingTarget.current === event.target) composingTarget.current = null }}>
+    <summary className={summaryClassName}>{summary}</summary>
+    <div className={`dbw-popover dbw-config-popover${popoverClassName ? ` ${popoverClassName}` : ''}`} ref={popoverRef} style={style}>{children}</div>
+  </details>
+}
 
 export function DatabaseViewToolbar({
   config,
+  scopeKey,
   dirty,
   saving = false,
   fields,
@@ -23,6 +94,7 @@ export function DatabaseViewToolbar({
   onSaveAs
 }: {
   config: DatabaseViewConfigV1
+  scopeKey?: unknown
   dirty: boolean
   saving?: boolean
   fields: DatabaseField[]
@@ -57,11 +129,8 @@ export function DatabaseViewToolbar({
         ) : null}
       </label>
 
-      <details className="dbw-toolbar-menu">
-        <summary className={filterRules.length > 0 ? 'is-active' : ''}>
-          <span aria-hidden="true">◇</span>{text.filter}{filterRules.length > 0 ? <b>{filterRules.length}</b> : null}
-        </summary>
-        <div className="dbw-popover dbw-config-popover dbw-filter-popover">
+      <ToolbarMenu scopeKey={scopeKey} summaryClassName={filterRules.length > 0 ? 'is-active' : ''} popoverClassName="dbw-filter-popover"
+        summary={<><span aria-hidden="true">◇</span>{text.filter}{filterRules.length > 0 ? <b>{filterRules.length}</b> : null}</>}>
           <div className="dbw-popover-heading">
             <strong>{text.filter}</strong>
             {filterRules.length > 0 ? (
@@ -107,12 +176,10 @@ export function DatabaseViewToolbar({
             }}
             type="button"
           >＋ {text.addFilter}</button>
-        </div>
-      </details>
+      </ToolbarMenu>
 
-      <details className="dbw-toolbar-menu">
-        <summary className={config.sorts.length > 0 ? 'is-active' : ''}><span aria-hidden="true">⇅</span>{text.sort}</summary>
-        <div className="dbw-popover dbw-config-popover">
+      <ToolbarMenu scopeKey={scopeKey} summaryClassName={config.sorts.length > 0 ? 'is-active' : ''}
+        summary={<><span aria-hidden="true">⇅</span>{text.sort}</>}>
           <strong>{text.sort}</strong>
           {config.sorts.map((sort, index) => (
             <div className="dbw-config-row" key={`${sort.fieldId}-${index}`}>
@@ -149,8 +216,7 @@ export function DatabaseViewToolbar({
             }}
             type="button"
           >＋ {text.sort}</button>
-        </div>
-      </details>
+      </ToolbarMenu>
 
       <label className="dbw-toolbar-select">
         <span aria-hidden="true">≡</span>

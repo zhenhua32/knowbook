@@ -218,15 +218,16 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const kind of ['Filter', 
         context.assertContext()
       }
 
-      for (const scope of ['closed-summary', 'outside-open-menu'] as const) {
+      for (const scope of ['closed-summary', 'outside-menu-dismissal'] as const) {
         await context.change(() => { summary.focus(); summary.click() })
-        assert.equal(menu.open, scope === 'outside-open-menu')
+        assert.equal(menu.open, scope === 'outside-menu-dismissal')
         const owner = scope === 'closed-summary' ? summary
           : document.querySelector<HTMLButtonElement>('.dbw-header-actions > .dbw-primary-button')!
         assert.ok(owner)
         for (const shortcut of shortcuts) {
           await context.change(() => owner.focus())
           assert.equal(document.activeElement === owner, true)
+          assert.equal(menu.open, false, 'Actual external focus dismisses the toolbar menu without disabling canvas shortcuts')
           const event = await context.key(owner, shortcut.key, shortcut.init)
           assert.equal(event.defaultPrevented, true, `${scope}: canvas ${shortcut.key} must remain available`)
           if (shortcut.destination === 'records') {
@@ -250,7 +251,7 @@ for (const locale of ['en-US', 'zh-CN'] as const) for (const kind of ['Filter', 
             assert.equal(document.querySelectorAll('.app-confirm-dialog').length, 0)
           }
           assert.equal(document.querySelectorAll('.dbw-form-dialog').length, 0)
-          assert.equal(menu.open, scope === 'outside-open-menu')
+          assert.equal(menu.open, false)
           context.assertContext()
         }
       }

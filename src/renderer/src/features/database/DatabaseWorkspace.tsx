@@ -854,6 +854,7 @@ export function DatabaseWorkspace({
       />
       <DatabaseViewToolbar
         config={draft}
+        scopeKey={viewSession}
         dirty={dirty}
         saving={savingViews.has(viewSaveKey)}
         fields={fields}
