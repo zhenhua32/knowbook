@@ -211,10 +211,11 @@
 }
 .dbw-source-option:hover,
 .dbw-source-option[aria-current='true'] { background: var(--dbw-accent-soft); }
+.page-database .dbw-source-option:focus-visible { outline-offset: -2px; }
 .dbw-source-option-icon { display: grid; flex: 0 0 auto; width: 30px; height: 30px; place-items: center; border-radius: 8px; background: var(--dbw-soft); color: #626879; }
 .dbw-source-option-copy { min-width: 0; flex: 1; }
 .dbw-source-option-copy strong,
-.dbw-source-option-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dbw-source-option-copy small { display: block; white-space: normal; overflow-wrap: anywhere; }
 .dbw-source-option-copy small { margin-top: 1px; color: var(--dbw-muted); font-size: 11px; }
 .dbw-system-badge { flex: 0 0 auto; padding: 2px 6px; border-radius: 5px; background: #eceef3; color: #74798a; font-size: 10px; white-space: nowrap; }
 .dbw-menu-create { width: 100%; padding: 9px; border: 0; border-top: 1px solid var(--dbw-line); background: transparent; color: var(--dbw-accent); text-align: left; cursor: pointer; font-weight: 650; }
