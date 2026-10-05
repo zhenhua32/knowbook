@@ -285,11 +285,14 @@ for (const language of ['en-US', 'zh-CN'] as const) {
                 { nextKey: key, fromSource, direction: fromSource ? 'Tab' : 'Shift+Tab', steps }, before)
             })
             if (openMenu) {
-              // Shift+Tab moves to the genuine external New record control;
-              // keep the menu OPEN to prove suppression is target scoped.
+              // Reopen for every key, then follow genuine Shift+Tab out of its
+              // own scope. Dismissal preserves the outside canvas shortcuts.
+              if (await settings.getAttribute('aria-expanded') === 'false') await page.keyboard.press('Enter')
+              await expect(settings).toHaveAttribute('aria-expanded', 'true')
+              await expect(page.locator('.dbw-action-menu')).toHaveCount(1)
               await page.keyboard.press('Shift+Tab')
               await expect(primary).toBeFocused()
-              await expect(page.locator('.dbw-action-menu')).toHaveCount(1)
+              await expect(page.locator('.dbw-action-menu')).toHaveCount(0)
             } else {
               await expect(settings).toBeFocused()
               await expect(settings).toHaveAttribute('aria-expanded', 'false')
@@ -302,7 +305,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
               await expect(confirm.locator('.app-confirm-body')).toContainText(language === 'zh-CN' ? '已选 1 条' : '1 selected')
               await expect(cancel).toBeFocused()
               const selectedDanger = await record(page, app, cdp, info, language,
-                language + (openMenu ? '-external-new-record-with-menu-open' : '-closed-settings-trigger') + '-native-delete-opens-only-selected-record-confirm',
+                language + (openMenu ? '-external-new-record-after-menu-dismissal' : '-closed-settings-trigger') + '-native-delete-opens-only-selected-record-confirm',
                 { owner: openMenu ? 'external-new-record' : 'closed-settings-trigger', key, context }, before)
               expect(selectedDanger.state.confirmCount).toBe(1)
               expect(selectedDanger.writes).toEqual([])
@@ -325,7 +328,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
         await page.keyboard.press('Escape')
         await expect(page.locator('.dbw-action-menu')).toHaveCount(0)
         await expect(settings).toBeFocused()
-        const final = await record(page, app, cdp, info, language, language + '-closed-trigger-and-open-menu-external-focus-preserve-normal-canvas-shortcuts', canvasSteps, before)
+        const final = await record(page, app, cdp, info, language, language + '-closed-trigger-and-menu-dismissal-preserve-normal-canvas-shortcuts', canvasSteps, before)
         expect(final.writes).toEqual([])
         expect(final.stored).toEqual(before)
         expect(final.state.confirmCount).toBe(0)

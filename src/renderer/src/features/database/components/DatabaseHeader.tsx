@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { DatabaseSource } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
@@ -11,6 +11,7 @@ function isVisible(element: HTMLElement): boolean {
 
 type DatabaseHeaderProps = {
   currentSource: DatabaseSource
+  sourceSessionKey?: unknown
   sources: DatabaseSource[]
   text: DatabaseWorkspaceText
   onCreateDatabase: (returnTarget: HTMLElement | null) => void
@@ -24,6 +25,7 @@ type DatabaseHeaderProps = {
 
 export function DatabaseHeader({
   currentSource,
+  sourceSessionKey,
   sources,
   text,
   onCreateDatabase,
@@ -41,7 +43,22 @@ export function DatabaseHeader({
   const rootRef = useRef<HTMLDivElement | null>(null)
   const sourceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const sourcePickerRef = useRef<HTMLDivElement | null>(null)
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null)
   const composingTarget = useRef<EventTarget | null>(null)
+
+  const closePopup = (close: (open: boolean) => void, popup: HTMLElement | null, trigger: HTMLElement | null) => {
+    close(false)
+    const target = composingTarget.current as Node | null
+    if (popup?.contains(target) || trigger?.contains(target) || (target && !target.isConnected)) composingTarget.current = null
+  }
+  const closePicker = () => closePopup(setPickerOpen, sourcePickerRef.current, sourceTriggerRef.current)
+  const closeMenu = () => closePopup(setMenuOpen, settingsMenuRef.current, settingsTriggerRef.current)
+
+  useLayoutEffect(() => {
+    if (pickerOpen) closePicker()
+    if (menuOpen) closeMenu()
+  }, [currentSource.id, currentSource.kind, sourceSessionKey])
 
   const closeOnEscape = (event: ReactKeyboardEvent<HTMLElement>, open: boolean,
     close: (open: boolean) => void, trigger: HTMLButtonElement | null) => {
@@ -61,14 +78,25 @@ export function DatabaseHeader({
   }
 
   useEffect(() => {
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setPickerOpen(false)
-        setMenuOpen(false)
-      }
+    const owner = rootRef.current?.ownerDocument, view = owner?.defaultView
+    if (!owner || !view) return
+    const outside = (event: Event) => {
+      const target = event.target as Node | null, picker = sourcePickerRef.current, menu = settingsMenuRef.current
+      if (picker && !picker.contains(target) && !sourceTriggerRef.current?.contains(target)) closePicker()
+      if (menu && !menu.contains(target) && !settingsTriggerRef.current?.contains(target)) closeMenu()
     }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
+    const blur = () => {
+      if (sourcePickerRef.current) closePicker()
+      if (settingsMenuRef.current) closeMenu()
+    }
+    owner.addEventListener('pointerdown', outside, true)
+    owner.addEventListener('focusin', outside, true)
+    view.addEventListener('blur', blur)
+    return () => {
+      owner.removeEventListener('pointerdown', outside, true)
+      owner.removeEventListener('focusin', outside, true)
+      view.removeEventListener('blur', blur)
+    }
   }, [])
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -93,7 +121,7 @@ export function DatabaseHeader({
             onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}
             onClick={() => {
               setPickerOpen((open) => !open)
-              setMenuOpen(false)
+              if (settingsMenuRef.current) closeMenu()
             }}
             title={currentSource.kind === 'document-catalog' ? text.allDocuments : currentSource.name}
             type="button"
@@ -104,7 +132,7 @@ export function DatabaseHeader({
           <p>{currentSource.kind === 'document-catalog' ? text.catalogDescription : currentSource.description || text.customDescription}</p>
 
           {pickerOpen ? (
-            <div className="dbw-popover dbw-source-picker" role="dialog" id={sourcePickerId} aria-label={text.chooseDatabase}
+            <div className="dbw-popover dbw-source-picker" role="dialog" id={sourcePickerId} aria-label={text.chooseDatabase} ref={sourcePickerRef}
               onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}>
               <label className="dbw-search-field dbw-source-search">
                 <span aria-hidden="true">⌕</span>
@@ -163,12 +191,12 @@ export function DatabaseHeader({
               onKeyDown={event => closeOnEscape(event, menuOpen, setMenuOpen, settingsTriggerRef.current)}
               onClick={() => {
                 setMenuOpen((open) => !open)
-                setPickerOpen(false)
+                if (sourcePickerRef.current) closePicker()
               }}
               type="button"
             >•••</button>
             {menuOpen ? (
-              <div className="dbw-popover dbw-action-menu"
+              <div className="dbw-popover dbw-action-menu" ref={settingsMenuRef}
                 onKeyDown={event => closeOnEscape(event, menuOpen, setMenuOpen, settingsTriggerRef.current)}>
                 <button onClick={() => { setMenuOpen(false); onEditDatabase(settingsTriggerRef.current) }} type="button">{text.editDatabase}</button>
                 <button className="dbw-danger-text" onClick={() => { setMenuOpen(false); onDeleteDatabase() }} type="button">{text.deleteDatabase}</button>

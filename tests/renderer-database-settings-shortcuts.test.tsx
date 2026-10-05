@@ -240,9 +240,9 @@ test('Database settings Edit, Delete and expanded trigger all preserve the curre
   }
 })
 
-test('Closed settings and a focused control outside an open menu retain the existing canvas shortcuts', async () => {
+test('Closed settings and actual outside focus retain the existing canvas shortcuts after menu dismissal', async () => {
   for (const locale of ['en-US', 'zh-CN'] as const) {
-    for (const scope of ['closed-trigger', 'outside-open-menu'] as const) {
+    for (const scope of ['closed-trigger', 'outside-menu-dismissal'] as const) {
       await withWorkspace(locale, async context => {
         const raw = ' Keep selected '
         await context.fillQuery(raw)
@@ -253,9 +253,13 @@ test('Closed settings and a focused control outside an open menu retain the exis
           : context.document.querySelector<HTMLButtonElement>('.dbw-header-actions > .dbw-primary-button')!
         assert.ok(owner)
         for (const shortcut of shortcuts) {
+          if (scope === 'outside-menu-dismissal') {
+            if (trigger.getAttribute('aria-expanded') === 'false') await context.openSettings()
+            assert.equal(context.document.querySelectorAll('.dbw-action-menu').length, 1)
+          }
           await context.change(() => owner.focus())
           assert.equal(context.document.activeElement === owner, true)
-          assert.equal(trigger.getAttribute('aria-expanded'), scope === 'closed-trigger' ? 'false' : 'true')
+          assert.equal(trigger.getAttribute('aria-expanded'), 'false')
           const event = await context.key(owner, shortcut.key, shortcut.init)
           assert.equal(event.defaultPrevented, true, `${scope}: Existing canvas shortcut must still be accepted`)
           if (shortcut.destination === 'records') {
@@ -278,7 +282,7 @@ test('Closed settings and a focused control outside an open menu retain the exis
             assert.equal(context.document.activeElement === expected, true)
             assert.equal(context.document.querySelectorAll('.app-confirm-dialog').length, 0)
           }
-          assert.equal(context.document.querySelectorAll('.dbw-action-menu').length, scope === 'closed-trigger' ? 0 : 1)
+          assert.equal(context.document.querySelectorAll('.dbw-action-menu').length, 0)
           assertCurrentContext(context, raw)
         }
       })

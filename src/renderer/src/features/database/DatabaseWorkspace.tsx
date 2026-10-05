@@ -813,6 +813,7 @@ export function DatabaseWorkspace({
     <section className="dbw-shell" data-testid="database-grid">
       <DatabaseHeader
         currentSource={currentSource}
+        sourceSessionKey={fieldSourceSession}
         onCreateDatabase={(returnTarget) => openDatabaseForm('create-database', returnTarget)}
         onCreateRecord={createDocumentOrRecord}
         onDeleteDatabase={() => openConfirm({ kind: 'database', id: currentSource.id, name: currentSource.name })}
