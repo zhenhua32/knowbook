@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import type { DatabaseSource } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
+import { useSourcePickerPosition } from '../../../hooks/useSourcePickerPosition'
 
 function isVisible(element: HTMLElement): boolean {
   if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
@@ -41,10 +42,12 @@ export function DatabaseHeader({
   const [menuOpen, setMenuOpen] = useState(false)
   const [query, setQuery] = useState('')
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const sourceWrapRef = useRef<HTMLDivElement | null>(null)
   const sourceTriggerRef = useRef<HTMLButtonElement | null>(null)
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null)
   const sourcePickerRef = useRef<HTMLDivElement | null>(null)
   const settingsMenuRef = useRef<HTMLDivElement | null>(null)
+  const sourcePickerStyle = useSourcePickerPosition(sourceWrapRef, sourcePickerRef, pickerOpen)
   const composingTarget = useRef<EventTarget | null>(null)
 
   const closePopup = (close: (open: boolean) => void, popup: HTMLElement | null, trigger: HTMLElement | null) => {
@@ -111,7 +114,7 @@ export function DatabaseHeader({
       onBlurCapture={event => { if (composingTarget.current === event.target) composingTarget.current = null }}>
       <div className="dbw-identity">
         <span aria-hidden="true" className="dbw-database-mark">▦</span>
-        <div className="dbw-source-wrap">
+        <div className="dbw-source-wrap" ref={sourceWrapRef}>
           <button
             aria-expanded={pickerOpen}
             aria-haspopup="dialog"
@@ -132,7 +135,7 @@ export function DatabaseHeader({
           <p>{currentSource.kind === 'document-catalog' ? text.catalogDescription : currentSource.description || text.customDescription}</p>
 
           {pickerOpen ? (
-            <div className="dbw-popover dbw-source-picker" role="dialog" id={sourcePickerId} aria-label={text.chooseDatabase} ref={sourcePickerRef}
+            <div className="dbw-popover dbw-source-picker" role="dialog" id={sourcePickerId} aria-label={text.chooseDatabase} ref={sourcePickerRef} style={sourcePickerStyle}
               onKeyDown={event => closeOnEscape(event, pickerOpen, setPickerOpen, sourceTriggerRef.current)}>
               <label className="dbw-search-field dbw-source-search">
                 <span aria-hidden="true">⌕</span>

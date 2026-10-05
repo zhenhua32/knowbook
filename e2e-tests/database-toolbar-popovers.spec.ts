@@ -321,6 +321,12 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const kind of ['filter'
       expect(narrow.state.geometry.addCenterHit).toBe(true)
 
       await page.setViewportSize({ width: 1280, height: 860 })
+      // The breakpoint animates sidebar width; observe its settled layout before
+      // checking the popover's unchanged geometry contract.
+      await expect.poll(() => page.locator('.sidebar').evaluate(element => {
+        element.getBoundingClientRect()
+        return element.getAnimations().length
+      })).toBe(0)
       await twoFrames(page)
       const resized = await record(page, app, info, language, kind, before, 'resize-reanchors-with-local-draft', steps)
       expectAnchored(resized)
