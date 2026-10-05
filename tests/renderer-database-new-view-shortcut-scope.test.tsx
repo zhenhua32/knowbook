@@ -297,8 +297,8 @@ test('all four open New view owners and their icon descendants yield every canva
   })
 })
 
-test('closed New view and actual outside focus preserve the canvas shortcuts even while the menu is open', async () => {
-  for (const locale of ['en-US', 'zh-CN'] as const) for (const scope of ['closed-summary', 'outside-open-menu'] as const) {
+test('closed New view and actual outside focus preserve the canvas shortcuts after menu dismissal', async () => {
+  for (const locale of ['en-US', 'zh-CN'] as const) for (const scope of ['closed-summary', 'outside-menu-dismissal'] as const) {
     await withNewViewScope(locale, async context => {
       await context.open()
       if (scope === 'closed-summary') await context.change(() => context.summary().click())
@@ -308,7 +308,7 @@ test('closed New view and actual outside focus preserve the canvas shortcuts eve
       for (const shortcut of canvasKeys) {
         await context.change(() => owner.focus())
         assert.equal(context.document.activeElement === owner, true)
-        assert.equal(context.menu().open, scope === 'outside-open-menu')
+        assert.equal(context.menu().open, false, 'Real outside focus dismisses New view before canvas shortcuts')
         const event = await context.key(owner, shortcut.key, shortcut.init)
         assert.equal(event.defaultPrevented, true, `${scope}: the canvas still owns ${shortcut.key}`)
         if (shortcut.destination === 'records') {
@@ -328,7 +328,7 @@ test('closed New view and actual outside focus preserve the canvas shortcuts eve
           assert.equal(context.document.activeElement === expected, true)
           assert.equal(context.document.querySelectorAll('.app-confirm-dialog').length, 0)
         }
-        assert.equal(context.menu().open, scope === 'outside-open-menu')
+        assert.equal(context.menu().open, false)
         context.assertContext()
       }
     })

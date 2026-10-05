@@ -12,7 +12,7 @@ function visible(element: HTMLElement): boolean {
   return Boolean(style && style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse')
 }
 
-function canFocus(trigger: HTMLButtonElement, menu: HTMLElement | null): boolean {
+function canFocus(trigger: HTMLElement, menu: HTMLElement | null): boolean {
   const owner = trigger.ownerDocument
   return owner.hasFocus() && visible(trigger) && !trigger.matches(':disabled, [aria-disabled="true"]')
     && !Array.from(owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"], [role="alertdialog"]'))
@@ -46,12 +46,58 @@ export function DatabaseViewTabs({
 }) {
   const [draggingViewId, setDraggingViewId] = useState<string | null>(null)
   const localTriggerRef = useRef<HTMLElement | null>(null)
+  const newViewMenuRef = useRef<HTMLDetailsElement | null>(null)
   const triggerRef = newViewTriggerRef ?? localTriggerRef
   const [menu, setMenu] = useState<ViewMenu | null>(null)
   const menuId = useId()
   const composingTarget = useRef<EventTarget | null>(null)
+  const closeNewView = () => {
+    if (newViewMenuRef.current) newViewMenuRef.current.open = false
+    composingTarget.current = null
+  }
   const menuView = menu ? savedViews.find(view => view.id === menu.viewId && view.databaseId === menu.databaseId) : undefined
-  useLayoutEffect(() => { setMenu(null); composingTarget.current = null }, [activeViewId, sourceSessionKey])
+  useLayoutEffect(() => { setMenu(null); closeNewView() }, [activeViewId, sourceSessionKey])
+  useEffect(() => {
+    const details = newViewMenuRef.current, owner = details?.ownerDocument, view = owner?.defaultView
+    if (!details || !owner || !view) return
+    const outside = (event: Event) => {
+      if (details.open && !details.contains(event.target as Node | null)) closeNewView()
+    }
+    const bodyEscape = (event: KeyboardEvent) => {
+      // Clicking non-focusable popup padding blurs a native button to BODY
+      // without focusin. Dismiss that vacant scope without returning focus.
+      if (!details.open || !owner.hasFocus() || owner.activeElement !== owner.body || event.target !== owner.body
+        || event.defaultPrevented || event.key !== 'Escape'
+        || isImeKeyboardEvent(event, composingTarget.current === event.target)) return
+      if (Array.from(owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"], [role="alertdialog"]'))
+        .some(modal => !modal.contains(details) && visible(modal))) return
+      event.preventDefault()
+      event.stopPropagation()
+      closeNewView()
+    }
+    owner.addEventListener('pointerdown', outside, true)
+    owner.addEventListener('focusin', outside, true)
+    owner.addEventListener('keydown', bodyEscape)
+    view.addEventListener('blur', closeNewView)
+    return () => {
+      owner.removeEventListener('pointerdown', outside, true)
+      owner.removeEventListener('focusin', outside, true)
+      owner.removeEventListener('keydown', bodyEscape)
+      view.removeEventListener('blur', closeNewView)
+    }
+  }, [])
+  const newViewEscape = (event: ReactKeyboardEvent<HTMLDetailsElement>) => {
+    const details = event.currentTarget
+    if (!details.open || event.defaultPrevented || event.key !== 'Escape'
+      || isImeKeyboardEvent(event.nativeEvent, composingTarget.current === event.target)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const owner = details.ownerDocument, active = owner.activeElement, trigger = triggerRef.current
+    const canReturn = details.contains(active) && visible(details) && trigger
+      && trigger === details.querySelector(':scope > summary') && trigger.ownerDocument === owner && canFocus(trigger, details)
+    closeNewView()
+    if (canReturn && trigger && trigger !== active) trigger.focus({ preventScroll: true })
+  }
   useLayoutEffect(() => {
     if (menu && (!menuView || !visible(menu.trigger))) setMenu(null)
   }, [menu, menuView])
@@ -100,6 +146,7 @@ export function DatabaseViewTabs({
               aria-controls={menu?.viewId === view.id ? menuId : undefined}
               className="dbw-view-tab-menu"
               onClick={event => {
+                closeNewView()
                 if (menu?.viewId === view.id) { setMenu(null); return }
                 const trigger = event.currentTarget, bounds = trigger.getBoundingClientRect()
                 setMenu({ viewId: view.id, databaseId: view.databaseId, trigger, x: bounds.left, y: bounds.bottom + 4 })
@@ -121,12 +168,13 @@ export function DatabaseViewTabs({
         ))}
       </div>
 
-      <details className="dbw-new-view-menu">
+      <details className="dbw-new-view-menu" ref={newViewMenuRef} onKeyDown={newViewEscape}
+        onToggle={event => { if (event.currentTarget.open) setMenu(null) }}>
         <summary ref={triggerRef}><span aria-hidden="true">＋</span>{text.newView}</summary>
         <div className="dbw-popover dbw-layout-menu">
-          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('table', target) }} type="button"><LayoutIcon layout="table" />{text.table}</button>
-          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('board', target) }} type="button"><LayoutIcon layout="board" />{text.board}</button>
-          <button onClick={(event) => { const target = triggerRef.current; event.currentTarget.closest('details')?.removeAttribute('open'); onCreateView('cards', target) }} type="button"><LayoutIcon layout="cards" />{text.cards}</button>
+          <button onClick={() => { const target = triggerRef.current; closeNewView(); onCreateView('table', target) }} type="button"><LayoutIcon layout="table" />{text.table}</button>
+          <button onClick={() => { const target = triggerRef.current; closeNewView(); onCreateView('board', target) }} type="button"><LayoutIcon layout="board" />{text.board}</button>
+          <button onClick={() => { const target = triggerRef.current; closeNewView(); onCreateView('cards', target) }} type="button"><LayoutIcon layout="cards" />{text.cards}</button>
         </div>
       </details>
       {menu && menuView ? <ViewActionsMenu id={menuId} anchor={menu} view={menuView} text={text}

@@ -253,9 +253,9 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       }
 
       const canvasObservations: unknown[] = []
-      // Closed summary is a normal canvas control. Opening the details alone
-      // must also leave outside controls eligible for the same shortcuts.
-      for (const mode of ['closed-summary', 'open-menu-outside-view-tab'] as const) {
+      // Closed summary is a normal canvas control. Leaving open details must
+      // dismiss the menu while keeping outside canvas shortcuts available.
+      for (const mode of ['closed-summary', 'outside-menu-dismissal'] as const) {
         steps.push({ mode, tabs: await tabTo(page, summary, true, 24) })
         await page.keyboard.press('Enter')
         await expect(page.locator('.dbw-new-view-menu')).toHaveJSProperty('open', mode !== 'closed-summary')
@@ -266,6 +266,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
           const fromSource = await source.evaluate(element => document.activeElement === element)
           steps.push({ mode, key, tabs: await tabTo(page, owner, !fromSource, 24) })
           await expect(owner).toBeFocused()
+          await expect(page.locator('.dbw-new-view-menu')).toHaveJSProperty('open', false)
           const contextBefore = await readContext(page)
           await page.keyboard.press(key)
           await twoFrames(page)
@@ -292,7 +293,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
         const canvas = await record(page, app, info, language, { steps, observations: canvasObservations }, before,
           language + '-' + mode + '-keeps-canvas-shortcuts')
         expectUnchanged(canvas, before)
-        expect(canvas.state.menuOpen).toBe(mode !== 'closed-summary')
+        expect(canvas.state.menuOpen).toBe(false)
         expect(canvas.state.confirmCount).toBe(0)
       }
 
