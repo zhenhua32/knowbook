@@ -13,7 +13,12 @@ export function useDocumentsUiState() {
       return DEFAULT_DOCUMENTS_AUX_PANEL_WIDTH
     }
 
-    const stored = Number(window.localStorage.getItem(DOCUMENTS_AUX_PANEL_WIDTH_STORAGE_KEY))
+    const savedWidth = window.localStorage.getItem(DOCUMENTS_AUX_PANEL_WIDTH_STORAGE_KEY)
+    if (savedWidth === null || savedWidth.trim() === '') {
+      return DEFAULT_DOCUMENTS_AUX_PANEL_WIDTH
+    }
+
+    const stored = Number(savedWidth)
     return Number.isFinite(stored)
       ? clampDocumentsAuxPanelWidth(stored)
       : DEFAULT_DOCUMENTS_AUX_PANEL_WIDTH
