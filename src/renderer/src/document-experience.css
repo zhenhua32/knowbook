@@ -66,12 +66,19 @@
   z-index: 30;
 }
 .document-outline-popover .toc-panel {
+  display: flex;
+  flex-direction: column;
   margin: 0;
   max-height: min(60vh, 560px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
   background: var(--kb-canvas);
   box-shadow: 0 12px 36px rgb(23 29 44 / 16%);
+}
+.document-outline-popover .toc-panel > :not(nav) { flex-shrink: 0; }
+.document-outline-popover .toc-panel > nav {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .outline-filter {
   width: 100%;

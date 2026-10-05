@@ -1,5 +1,5 @@
 import type { HeadingLevel } from '@shared/markdownEngine'
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 
 type DocumentOutlineItem = {
@@ -39,6 +39,21 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
   const isZh = props.isZh ?? true
   const [query, setQuery] = useState('')
   const composingRef = useRef(false)
+  const listRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    // Reveal the reading location when opening the outline, without moving
+    // focus or following it again after the user scrolls or filters the list.
+    const list = listRef.current
+    const current = list?.querySelector<HTMLElement>('[aria-current="location"]')
+    if (!list || !current || list.clientHeight <= 0) return
+    const top = list.getBoundingClientRect().top + list.clientTop
+    const bounds = current.getBoundingClientRect()
+    // Leave space for fractional scroll rounding and the row's focus ring.
+    if (bounds.top < top) list.scrollTop += bounds.top - top - 4
+    else if (bounds.bottom > top + list.clientHeight) {
+      list.scrollTop += Math.min(bounds.top - top - 4, bounds.bottom - top - list.clientHeight + 4)
+    }
+  }, [])
   const filteredItems = useMemo(() => {
     const term = query.trim().toLocaleLowerCase()
     if (!term) return items
@@ -118,7 +133,7 @@ export function DocumentOutlinePanel(props: DocumentOutlinePanelProps) {
         }}
         onChange={(event) => setQuery(event.target.value)} /> : null}
       {filteredItems.length === 0 ? <p className="empty-text">{noMatchText}</p> : null}
-      <nav aria-label={title}>
+      <nav ref={listRef} aria-label={title}>
         <ol className="toc-list">
           {renderGroups(groups)}
         </ol>
