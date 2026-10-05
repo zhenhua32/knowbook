@@ -805,8 +805,6 @@ dt,
   width: 100%;
   padding: 6px 10px;
   border-radius: 8px;
-  background: rgba(246, 240, 228, 0.82);
-  color: #1f1d19;
   font-size: 13px;
   overflow: hidden;
   box-sizing: border-box;
@@ -4148,9 +4146,9 @@ select:focus-visible {
   padding: 2px 5px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 5px;
-  color: #69758d;
+  color: var(--kb-sidebar-text);
   font-family: inherit;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .sidebar-section-heading {
@@ -4170,7 +4168,7 @@ select:focus-visible {
 }
 
 .sidebar-section-count {
-  color: #667188;
+  color: var(--kb-sidebar-muted);
   font-size: 10px;
   font-weight: 600;
 }
@@ -4407,8 +4405,8 @@ select:focus-visible {
 }
 
 .tree-button > small {
-  color: #59647a;
-  font-size: 9px;
+  color: var(--kb-sidebar-text);
+  font-size: 10px;
   opacity: 0;
   transition: opacity 120ms ease;
 }
