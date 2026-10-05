@@ -3,6 +3,7 @@ import test from 'node:test'
 import { register } from 'node:module'
 import { act, createElement } from 'react'
 import { JSDOM } from 'jsdom'
+import { waitForRenderer } from './helpers/renderer-async'
 import type { CreateDocumentFromTemplateInput, DocumentTemplate, DocumentTreeNode } from '../src/shared/contracts'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -172,6 +173,8 @@ test('deleting a filtered fallback targets the visible template, retains the fil
   await withTemplates(async context => {
     await context.fill(context.search(), 'needle')
     await context.change(() => context.dialog().querySelector<HTMLButtonElement>('.document-template-delete')!.click())
+    await waitForRenderer(() => context.document.querySelector<HTMLDialogElement>('.app-confirm-dialog')?.open === true
+      && context.dialog().getAttribute('aria-busy') === 'true', 'The real template deletion confirmation must finish opening')
     assert.equal(context.document.querySelector('.app-confirm-dialog h2')!.textContent?.includes('Beta'), true,
       'The confirmation describes the visible fallback rather than a hidden preferred template')
     await context.change(() => {

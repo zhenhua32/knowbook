@@ -35,12 +35,13 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
 }) {
   const dialog = useRef<HTMLDialogElement>(null), input = useRef<HTMLInputElement>(null), composing = useRef(false)
   const executing = useRef(false), listId = useId(), titleId = useId(), hintId = useId()
-  const [activeId, setActiveId] = useState('')
+  const [active, setActive] = useState({ query: documents.globalSearchQuery, id: '' })
   const [busy, setBusy] = useState<'open' | 'copy' | null>(null)
   const [feedback, setFeedback] = useState<{ itemId: string; message: string; error: boolean } | null>(null)
   const mounted = useRef(false), actionSequence = useRef(0)
   const zh = shell.isZh
   const query = documents.globalSearchQuery
+  if (active.query !== query) setActive({ query, id: '' })
   const currentQuery = useRef(query), openFocus = useRef<ResultActionFocus | null>(null)
   currentQuery.current = query
   const cancelOpenFocus = (request = openFocus.current) => {
@@ -58,7 +59,10 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     ...commands.map((command) => ({ id: command.id, command }))
   ]
   const available = items.filter((item) => !('command' in item && item.command.disabledReason))
-  const selected = available.find((item) => item.id === activeId) || available[0]
+  const searchPending = !commandsOnly && Boolean(query.trim()) && documents.globalSearchLoading
+  // A pending document search must not turn Enter into an unchosen command.
+  const selected = (active.query === query ? available.find((item) => item.id === active.id) : undefined)
+    || (searchPending ? undefined : available[0])
   const selectedIndex = items.findIndex((item) => item.id === selected?.id)
   const selectedResult = selected && 'result' in selected ? selected.result : null
   const primaryLabel = selectedResult?.blockId ? (zh ? '定位内容块' : 'Go to block') : (zh ? '打开文档' : 'Open document')
@@ -97,7 +101,8 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     if (selectedIndex >= 0) document.getElementById(`${listId}-${selectedIndex}`)?.scrollIntoView({ block: 'nearest' })
   }, [listId, selectedIndex, selected?.id])
 
-  const updateQuery = (value: string) => { actionSequence.current++; setFeedback(null); setActiveId(''); documents.updateGlobalSearchQuery(value) }
+  const select = (id: string) => setActive({ query, id })
+  const updateQuery = (value: string) => { actionSequence.current++; setFeedback(null); setActive({ query: value, id: '' }); documents.updateGlobalSearchQuery(value) }
   const runResultAction = async (item: PaletteItem & { result: GlobalSearchResult }, action: 'open' | 'document' | 'copy') => {
     if (executing.current) return
     executing.current = true
@@ -199,8 +204,10 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
         const current = available.findIndex((item) => item.id === selected?.id)
-        const next = available[(current + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length]
-        if (next) setActiveId(next.id)
+        const nextIndex = current < 0 ? (event.key === 'ArrowDown' ? 0 : available.length - 1)
+          : (current + (event.key === 'ArrowDown' ? 1 : -1) + available.length) % available.length
+        const next = available[nextIndex]
+        if (next) select(next.id)
       }
       if (event.key === 'Enter' && !event.altKey && !event.shiftKey) { event.preventDefault(); execute(selected, event.ctrlKey || event.metaKey) }
     }}>
@@ -219,17 +226,18 @@ export default function GlobalSearchPalette({ documents, shell, workspace }: {
     <div className="global-search-results" tabIndex={-1}>
       {!commandsOnly && documents.globalSearchLoading && <p className="mini-hint" role="status">{shell.ui.globalSearchLoading}</p>}
       {!commandsOnly && documents.globalSearchError && <RecoveryState compact title={zh ? '搜索暂时不可用' : 'Search is unavailable'}
-        description={zh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'} error={documents.globalSearchError} onRetry={documents.retryGlobalSearch} />}
+        description={zh ? '关键词已保留，可以重试。' : 'Your query is preserved. Try again.'} error={documents.globalSearchError}
+        onRetry={() => { setActive({ query, id: '' }); documents.retryGlobalSearch() }} />}
       {!query.trim() && <p className="mini-hint">{zh ? '搜索所有文档标题和内容块，输入 > 查找命令。' : 'Search all document titles and blocks, or type > for commands.'}</p>}
       {!documents.globalSearchLoading && !documents.globalSearchError && query.trim() && items.length === 0 && <p className="mini-hint" role="status">{shell.ui.globalSearchNoResults}</p>}
-      <div id={listId} role="listbox" aria-busy={Boolean(busy)} aria-label={zh ? '搜索结果与命令' : 'Results and commands'}>
+      <div id={listId} role="listbox" aria-busy={Boolean(busy) || searchPending} aria-label={zh ? '搜索结果与命令' : 'Results and commands'}>
         {items.map((item, index) => <div key={item.id}>
           {(index === 0 || ('command' in item && 'result' in items[index - 1])) && <div className="palette-section-label" role="presentation">
             {'command' in item ? (zh ? '命令' : 'Commands') : query.trim() ? (zh ? '文档' : 'Documents') : (zh ? '最近更新' : 'Recently updated')}</div>}
           <button type="button" role="option" id={`${listId}-${index}`} aria-selected={selected?.id === item.id}
             disabled={'command' in item && Boolean(item.command.disabledReason)} tabIndex={-1}
             className={`${'result' in item ? 'global-search-result' : 'palette-command'} palette-option`}
-            onMouseMove={() => { if (!executing.current) setActiveId(item.id) }} onClick={() => { setActiveId(item.id); execute(item) }}>
+            onMouseMove={() => { if (!executing.current) select(item.id) }} onClick={() => { select(item.id); execute(item) }}>
             {'result' in item ? <>
               <div className="global-search-result-header"><span className="global-search-doc-path" title={item.result.documentPath}><SearchMatchText text={item.result.documentPath} query={query} /></span>
                 <span className={`global-search-match-badge global-search-match-${item.result.matchType === 'title' ? 'title' : 'block'}`}>
