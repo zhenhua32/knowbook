@@ -2,6 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type Keybo
 import type { DocumentTreeNode } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
+import { useTreeTitlePreview } from '../hooks/useTreeTitlePreview'
 
 type DocumentTreeProps = {
   nodes: DocumentTreeNode[]
@@ -74,6 +75,7 @@ export const DocumentTree = memo(function DocumentTree({
   const [focusRevision, setFocusRevision] = useState(0)
   const allNodes = useMemo(() => flattenDocumentTree(nodes), [nodes])
   const nodesById = useMemo(() => new Map(allNodes.map((entry) => [entry.node.id, entry])), [allNodes])
+  const preview = useTreeTitlePreview(nodesById, Boolean(draggingDocumentId), ui.locale.startsWith('zh'))
   const selectedPath = useMemo(() => {
     const path: string[] = []
     let id = selectedDocumentId
@@ -214,6 +216,7 @@ export const DocumentTree = memo(function DocumentTree({
     const { node, parentId } = entry
     if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
       event.preventDefault(); event.stopPropagation()
+      preview.dismiss(node.id)
       focusRow(node.id)
       const rect = event.currentTarget.getBoundingClientRect()
       onOpenContextMenu(node, rect.left + Math.min(24 + Math.min(entry.depth, MAX_TREE_INDENT_DEPTH) * 12, rect.width), rect.bottom)
@@ -243,9 +246,11 @@ export const DocumentTree = memo(function DocumentTree({
   }
 
   return (
+    <>
     <div
       className="tree-virtual-scroll"
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      onWheelCapture={() => preview.dismiss()}
+      onScroll={(event) => { preview.scrolled(); setScrollTop(event.currentTarget.scrollTop) }}
       ref={scrollRef}
     >
       <ul className="tree-list tree-list-virtual" role="tree" aria-label={ui.locale.startsWith('zh') ? '文档树' : 'Document tree'} style={{ height: totalHeight }}>
@@ -261,6 +266,7 @@ export const DocumentTree = memo(function DocumentTree({
               aria-expanded={hasChildren ? isExpanded : undefined}
               aria-level={depth + 1}
               aria-label={node.title}
+              aria-describedby={preview.ownerId === node.id ? preview.id : undefined}
               aria-posinset={position}
               aria-setsize={siblingCount}
               aria-selected={selectedDocumentId === node.id}
@@ -269,8 +275,15 @@ export const DocumentTree = memo(function DocumentTree({
               role="treeitem"
               tabIndex={rovingId === node.id ? 0 : -1}
               ref={(row) => { if (row) rowsRef.current.set(node.id, row); else rowsRef.current.delete(node.id) }}
-              onFocusCapture={() => { hadTreeFocusRef.current = true; setFocusedId(node.id) }}
+              onPointerEnter={(event) => preview.enter(node.id, event.currentTarget)}
+              onPointerLeave={() => preview.leave()}
+              onPointerDownCapture={() => preview.dismiss(node.id)}
+              onFocusCapture={(event) => {
+                hadTreeFocusRef.current = true; setFocusedId(node.id)
+                if (event.target === event.currentTarget) preview.focus(node.id, event.currentTarget)
+              }}
               onBlurCapture={(event) => {
+                if (event.target === event.currentTarget) preview.blur(node.id)
                 if (event.relatedTarget && !scrollRef.current?.contains(event.relatedTarget as Node)) hadTreeFocusRef.current = false
               }}
               onKeyDown={(event) => handleKeyDown(event, entry, rowIndex)}
@@ -302,10 +315,12 @@ export const DocumentTree = memo(function DocumentTree({
                 draggable
                 onContextMenu={(event) => {
                   event.preventDefault()
+                  preview.dismiss(node.id)
                   focusRow(node.id)
                   onOpenContextMenu(node, event.clientX, event.clientY)
                 }}
                 onDragStart={(event) => {
+                  preview.dismiss(node.id)
                   event.dataTransfer.effectAllowed = 'move'
                   event.dataTransfer.setData('text/plain', node.id)
                   onDragStart(node.id)
@@ -342,6 +357,8 @@ export const DocumentTree = memo(function DocumentTree({
         })}
       </ul>
     </div>
+    {preview.content}
+    </>
   )
 })
 
