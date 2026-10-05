@@ -998,7 +998,7 @@ function createWindow(): ElectronBrowserWindow {
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 880,
-    minWidth: 1180,
+    minWidth: 760,
     minHeight: 760,
     backgroundColor: '#f3f5f9',
     title: 'KnowBook',
