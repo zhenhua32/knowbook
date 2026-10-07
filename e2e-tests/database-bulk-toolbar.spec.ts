@@ -119,6 +119,29 @@ export async function chooseField(page: Page, id: string): Promise<void> {
   await expect(select).toHaveValue(id)
 }
 
+async function fieldAccessibility(page: Page, language: Language, fields: { id: string; name: string }[], info: TestInfo, phase: string): Promise<void> {
+  const label = language === 'zh-CN' ? '批量编辑字段' : 'Bulk edit field'
+  const select = page.locator('.dbw-bulk-field-editor').getByRole('combobox', { name: label, exact: true })
+  await expect(select).toHaveCount(1)
+  const value = await select.inputValue()
+  const field = fields.find(field => field.id === value)
+  expect(field).toBeDefined()
+  await expect(select).toHaveAccessibleName(label)
+  await expect(select).toHaveAttribute('title', field!.name)
+  const session = await page.context().newCDPSession(page)
+  try {
+    const { root } = await session.send('DOM.getDocument')
+    const { nodeId } = await session.send('DOM.querySelector', { nodeId: root.nodeId, selector: '.dbw-bulk-field-editor > select' })
+    const { nodes } = await session.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false })
+    const node = nodes.find(node => node.role?.value === 'combobox')
+    writeFileSync(info.outputPath(`${phase}-field-accessibility.json`), JSON.stringify({ language, field, nodes }, null, 2))
+    expect(node?.ignored).toBe(false)
+    expect(node?.name?.value).toBe(label)
+    expect(node?.value?.value).toBe(field!.name)
+    expect(node?.description?.value).toBe(field!.name)
+  } finally { await session.detach() }
+}
+
 export async function selectSource(page: Page, language: Language, custom: boolean): Promise<void> {
   const name = custom ? sourceName : getDatabaseWorkspaceText(language).allDocuments
   if (await page.locator('.dbw-source-trigger').getAttribute('title') !== name) {
@@ -272,7 +295,10 @@ for (const { language, theme } of [{ language: 'en-US', theme: 'light' }, { lang
       const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
       const fixture = await prepare(page, language, theme), text = getDatabaseWorkspaceText(language)
       await resize(page, app); const before = await stored(page, app); await installProbe(app)
-      const capture = async (phase: string, state: Parameters<typeof verify>[2]) => { const layout = await record(page, app, tempRoot, info, phase); verify(layout, language, state); return layout }
+      const capture = async (phase: string, state: Parameters<typeof verify>[2]) => {
+        if (state.custom) await fieldAccessibility(page, language, fixture.fields, info, phase)
+        const layout = await record(page, app, tempRoot, info, phase); verify(layout, language, state); return layout
+      }
       const ordinary = { custom: true, selected: 2, maxRows: 2 }
       await selectRows(page, ['Bulk record 1', 'Bulk record 2']); await page.locator('.dbw-main-search input').click()
       await chooseField(page, fixture.fields[0].id); await capture('text-field-focused', ordinary)

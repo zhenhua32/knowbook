@@ -875,7 +875,8 @@ export function DatabaseWorkspace({
           <button onClick={() => onSelectedRecordIdsChange([])} type="button">{text.clearSelection}</button>
           {currentSource.kind === 'custom' && bulkField ? (
             <div className="dbw-bulk-field-editor">
-              <select onChange={(event) => { setBulkFieldId(event.target.value); setBulkValue(null) }} value={bulkField.id}>
+              <select aria-label={text.bulkEditField} title={bulkField.name}
+                onChange={(event) => { setBulkFieldId(event.target.value); setBulkValue(null) }} value={bulkField.id}>
                 {propertyFields.map((field) => <option key={field.id} value={field.id}>{field.name}</option>)}
               </select>
               <DatabaseValueEditor column={{ id: bulkField.id, name: bulkField.name, type: bulkField.type, options: bulkField.options, sortOrder: bulkField.sortOrder }} onChangeValue={setBulkValue} textCommitMode="change" value={bulkValue} />
