@@ -121,6 +121,42 @@ const fieldSelect = (row: HTMLElement) => row.querySelectorAll<HTMLSelectElement
 const conditionSelect = (row: HTMLElement) => row.querySelectorAll<HTMLSelectElement>('select')[1]
 const valueControl = (row: HTMLElement) => row.querySelector<HTMLInputElement | HTMLSelectElement>('.dbw-filter-value')!
 
+test('grouping keeps a stable accessible name and a full selected-name hint through draft, reset, save and reload', async () => {
+  const groupName = 'Project status — 研究项目的完整进展状态'
+  const groupFields = fields.map(item => item.id === 'status' ? { ...item, name: groupName } : item)
+  for (const locale of ['en-US', 'zh-CN']) {
+    await withToolbar({ config: normalizeDatabaseViewConfig(view()), fields: groupFields, locale }, async ({ document, text, config, saved, changes, select, click, button, reload }) => {
+      const group = document.querySelector<HTMLSelectElement>('.dbw-toolbar-select select')!
+      const original = cloneDatabaseViewConfig(config())
+      assert.equal(group.getAttribute('aria-label'), text.group)
+      assert.equal(group.title, text.noGrouping)
+      assert.equal(group.value, '')
+      assert.equal(changes(), 0)
+      await select(group, 'status')
+      assert.equal(group.getAttribute('aria-label'), text.group)
+      assert.equal(group.title, groupName)
+      assert.equal(group.value, 'status')
+      assert.deepEqual(config(), { ...original, groupBy: { fieldId: 'status' } })
+      assert.deepEqual(saved(), original, 'Choosing a grouping only changes the draft')
+      await click(button(text.resetView))
+      assert.equal(group.title, text.noGrouping)
+      assert.deepEqual(config(), original)
+      await select(group, 'status')
+      await click(button(text.saveChanges))
+      assert.deepEqual(saved(), { ...original, groupBy: { fieldId: 'status' } })
+      await select(group, '')
+      assert.equal(group.title, text.noGrouping)
+      assert.equal(config().groupBy.fieldId, null)
+      assert.equal(saved().groupBy.fieldId, 'status')
+      await reload()
+      assert.equal(group.getAttribute('aria-label'), text.group)
+      assert.equal(group.title, groupName)
+      assert.equal(group.value, 'status')
+      assert.deepEqual(config(), saved())
+    })
+  }
+})
+
 test('new filter rules choose a compatible default operator and value for each field type', async () => {
   const defaults = [
     ['__title__', 'contains', ''], ['done', 'is-checked', undefined], ['status', 'equals', ''],

@@ -1109,3 +1109,18 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 .page-database .dbw-view-tab-list :is(.dbw-view-tab, .dbw-view-tab-menu):focus-visible {
   outline-offset: -2px;
 }
+
+/* Keep the selected database grouping readable. */
+.page-database .dbw-toolbar > .dbw-toolbar-select {
+  padding-inline: 5px;
+}
+
+.page-database .dbw-toolbar > .dbw-toolbar-select select {
+  max-width: 96px;
+}
+
+@media (max-width: 1320px) {
+  .page-database .dbw-toolbar > .dbw-toolbar-select {
+    padding-inline: 3px;
+  }
+}

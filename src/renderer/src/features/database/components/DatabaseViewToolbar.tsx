@@ -109,6 +109,7 @@ export function DatabaseViewToolbar({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const filterRules = config.filters.rules.filter((rule): rule is DatabaseFilterRule => !('rules' in rule))
   const groupableFields = fields.filter((field) => field.role !== 'title' && field.id !== '__created_at__' && field.id !== '__updated_at__')
+  const selectedGroupName = groupableFields.find((field) => field.id === config.groupBy.fieldId)?.name ?? text.noGrouping
 
   return (
     <div className="dbw-toolbar">
@@ -221,7 +222,8 @@ export function DatabaseViewToolbar({
       <label className="dbw-toolbar-select">
         <span aria-hidden="true">≡</span>
         <span>{text.group}</span>
-        <select onChange={(event) => onChange((current) => ({ ...current, groupBy: { fieldId: event.target.value || null } }))} value={config.groupBy.fieldId ?? ''}>
+        <select aria-label={text.group} title={selectedGroupName}
+          onChange={(event) => onChange((current) => ({ ...current, groupBy: { fieldId: event.target.value || null } }))} value={config.groupBy.fieldId ?? ''}>
           <option value="">{text.noGrouping}</option>
           {groupableFields.map((field) => <option key={field.id} value={field.id}>{field.name}</option>)}
         </select>
