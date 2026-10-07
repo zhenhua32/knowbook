@@ -584,9 +584,9 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
   line-height: var(--kb-leading-body);
 }
 
-.dbw-header {
-  min-height: 108px;
-  padding: 22px 26px;
+.page-database .dbw-shell > .dbw-header {
+  min-height: 76px;
+  padding: 12px 20px;
 }
 
 .dbw-source-trigger {
@@ -594,10 +594,10 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
   line-height: 32px;
 }
 
-.dbw-source-wrap > p {
-  margin-top: 5px;
-  font-size: var(--kb-type-body);
-  line-height: 22px;
+.page-database .dbw-shell > .dbw-header > .dbw-identity > .dbw-source-wrap > p {
+  margin-top: 2px;
+  font-size: var(--kb-type-label);
+  line-height: 18px;
 }
 
 .dbw-primary-button,
