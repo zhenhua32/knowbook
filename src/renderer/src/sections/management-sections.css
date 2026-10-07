@@ -60,14 +60,16 @@
   flex-shrink: 0;
 }
 
-.management-page .stats-grid {
-  gap: 16px;
+.page-dashboard > .stats-grid {
+  gap: 12px;
 }
 
-.management-page .stat-card {
-  min-height: 112px;
-  padding: 20px;
-  gap: 8px;
+.page-dashboard > .stats-grid > .stat-card {
+  min-width: 0;
+  min-height: 86px;
+  padding: 14px 16px;
+  gap: 6px;
+  overflow-wrap: anywhere;
 }
 
 .management-page .stat-label {
@@ -79,10 +81,15 @@
   text-transform: none;
 }
 
-.management-page .stat-card strong {
+.page-dashboard > .stats-grid > .stat-card > strong {
   color: var(--kb-text);
-  font-size: var(--kb-type-metric);
-  line-height: 36px;
+  font-size: 24px;
+  line-height: 28px;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-dashboard > .stats-grid > .stat-card-status > strong {
+  font-size: 16px;
 }
 
 .management-page .event-feed {

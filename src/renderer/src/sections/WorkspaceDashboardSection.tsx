@@ -78,7 +78,7 @@ export function WorkspaceDashboardSection({
           <span className="stat-label">{ui.linksLabel}</span>
           <strong>{summary.links}</strong>
         </article>
-        <article className="stat-card">
+        <article className="stat-card stat-card-status">
           <span className="stat-label">{ui.aiLabel}</span>
           <strong>{ui.aiReadyState(isAiEnabled, hasAiApiKey)}</strong>
         </article>
