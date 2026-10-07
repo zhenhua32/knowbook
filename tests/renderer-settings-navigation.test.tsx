@@ -72,22 +72,48 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost', pretendToBeVisual: true })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   let syncReads = 0
+  let compactNavigation = false
+  let navigationMediaChanged: () => void = () => undefined
+  let mediaListenerRemovals = 0
+  const resizeObservers: NavigationResizeObserver[] = []
+  class NavigationResizeObserver {
+    readonly observed = new Set<Element>()
+    disconnected = false
+    constructor(private readonly callback: () => void) { resizeObservers.push(this) }
+    observe(element: Element) { this.observed.add(element) }
+    disconnect() { this.disconnected = true; this.observed.clear() }
+    notify() { if (!this.disconnected) this.callback() }
+  }
+  const media = {
+    get matches() { return compactNavigation },
+    addEventListener: (_event: string, callback: () => void) => { navigationMediaChanged = callback },
+    removeEventListener: () => { mediaListenerRemovals++; navigationMediaChanged = () => undefined }
+  }
+  Object.defineProperty(dom.window, 'matchMedia', { value: () => media })
   const status: WebDavSyncStatus = { config: { ...DEFAULT_WEBDAV_SYNC_CONFIG }, hasPassword: false,
     phase: 'idle', lastSyncAt: null, message: '', uploaded: 0, downloaded: 0, merged: 0, progress: null, conflicts: [] }
   Object.defineProperty(dom.window, 'knowbook', { value: { getWebDavSyncStatus: async () => { syncReads++; return status } } })
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement, IS_REACT_ACT_ENVIRONMENT: true })) {
+    HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement,
+    ResizeObserver: NavigationResizeObserver, IS_REACT_ACT_ENVIRONMENT: true })) {
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
     Object.defineProperty(globalThis, key, { configurable: true, value })
   }
   const { createRoot } = await import('react-dom/client')
   const container = dom.window.document.getElementById('mount')!
   const root = createRoot(container)
+  let rootMounted = true
+  let isSettingsPage = true
+  let requestedCategory: SettingsProps['requestedCategory'] = null
+  let categoryRequestsHandled = 0
+  const onCategoryRequestHandled = () => { categoryRequestsHandled++ }
   function Harness() {
     const [model, setModel] = useState('saved-model')
     const [port, setPort] = useState('3030')
-    return <DashboardSettingsSection {...settingsProps(true)} aiModelDraft={model} onAiModelChange={setModel}
-      webClipBridgePortDraft={port} onWebClipBridgePortChange={setPort} />
+    return <><button type="button" aria-label="Shell navigation fixture">Open settings fixture</button>
+      <DashboardSettingsSection {...settingsProps(true)} isSettingsPage={isSettingsPage}
+        aiModelDraft={model} onAiModelChange={setModel} webClipBridgePortDraft={port} onWebClipBridgePortChange={setPort}
+        requestedCategory={requestedCategory} onCategoryRequestHandled={onCategoryRequestHandled} /></>
   }
   const tab = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(item => item.textContent === label)!
   const panel = (label: string) => dom.window.document.getElementById(tab(label).getAttribute('aria-controls')!)!
@@ -100,6 +126,8 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
   }
   try {
     await act(async () => root.render(<Harness />))
+    assert.equal(container.querySelector('[role="tablist"]')!.getAttribute('aria-orientation'), 'vertical')
+    assert.equal(resizeObservers.length, 0, 'Wide vertical navigation does not need a resize observer')
     assert.equal(syncReads, 0, 'sync must not load until its category is opened')
     tab('通用').focus()
     await act(async () => tab('通用').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
@@ -137,8 +165,103 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
     await select('存储与恢复')
     assert.match(panel('存储与恢复').textContent!, /local\/knowbook.db/)
     assert.match(panel('存储与恢复').textContent!, /Open recovery fixture/)
-  } finally {
+    const list = container.querySelector<HTMLElement>('[role="tablist"]')!
+    let navigationWidth = 220
+    const elementPrototype = dom.window.HTMLElement.prototype
+    const originalClientWidth = Object.getOwnPropertyDescriptor(elementPrototype, 'clientWidth')
+      ?? Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'clientWidth')!
+    const originalBounds = elementPrototype.getBoundingClientRect
+    Object.defineProperty(elementPrototype, 'clientWidth', { configurable: true, get() {
+      return this.getAttribute('role') === 'tablist' ? navigationWidth : originalClientWidth.get!.call(this)
+    } })
+    elementPrototype.getBoundingClientRect = function () {
+      if (this.getAttribute('role') === 'tablist') return new dom.window.DOMRect(0, 0, navigationWidth, 40)
+      if (this.getAttribute('role') === 'tab') {
+        const parent = this.parentElement!
+        const index = [...parent.children].indexOf(this)
+        return new dom.window.DOMRect(index * 100 - parent.scrollLeft, 0, 100, 40)
+      }
+      return originalBounds.call(this)
+    }
+    const activeObserver = (target: HTMLElement) => {
+      const active = resizeObservers.filter(observer => !observer.disconnected)
+      assert.equal(active.length, 1, 'Only the visible compact navigation may be observed')
+      assert.ok(active[0].observed.has(target))
+      return active[0]
+    }
+    const recovery = panel('存储与恢复').querySelector<HTMLButtonElement>('button')!
+    recovery.focus()
+    container.scrollTop = 150
+    compactNavigation = true
+    await act(async () => navigationMediaChanged())
+    assert.equal(container.querySelector('[role="tablist"]')!.getAttribute('aria-orientation'), 'horizontal')
+    assert.equal(list.scrollLeft, 180, 'Narrowing the window must reveal the selected category')
+    assert.equal(dom.window.document.activeElement, recovery, 'Revealing a category must leave form focus alone')
+    assert.equal(container.scrollTop, 150, 'Revealing a category must not scroll the settings page vertically')
+    activeObserver(list)
+    await act(async () => tab('存储与恢复').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })))
+    assert.equal(dom.window.document.activeElement, tab('网页剪藏'))
+    assert.equal(port.value, '4040', 'Responsive navigation must preserve the category draft')
+    const focusBeforeRequest = dom.window.document.activeElement
+    requestedCategory = 'appearance'
+    await act(async () => root.render(<Harness />))
+    assert.equal(tab('外观').getAttribute('aria-selected'), 'true')
+    assert.equal(list.scrollLeft, 480, 'An external category request must also reveal its selected tab')
+    assert.equal(dom.window.document.activeElement, focusBeforeRequest, 'An external request must not move focus while revealing its tab')
+    assert.equal(categoryRequestsHandled, 1)
+    const appearanceInput = panel('外观').querySelector<HTMLInputElement>('input')!
+    appearanceInput.focus()
+    navigationWidth = 180
+    await act(async () => activeObserver(list).notify())
+    assert.equal(list.scrollLeft, 520, 'Shrinking 800 to 760 within the compact breakpoint must reveal the selected category again')
+    assert.equal(dom.window.document.activeElement, appearanceInput, 'A container resize must preserve form focus')
+    assert.equal(container.scrollTop, 150, 'A container resize must preserve vertical scroll')
+    assert.equal(categoryRequestsHandled, 1, 'A resize must not replay an already handled category request')
+
+    requestedCategory = null
+    await act(async () => root.render(<Harness />))
+    list.scrollLeft = 0
+    requestedCategory = 'appearance'
+    await act(async () => root.render(<Harness />))
+    assert.equal(list.scrollLeft, 520, 'Requesting the current category must reveal it even without a selection change')
+    assert.equal(dom.window.document.activeElement, appearanceInput)
+    assert.equal(container.scrollTop, 150)
+    assert.equal(categoryRequestsHandled, 2, 'Each external request must be handled exactly once')
+    requestedCategory = null
+    await act(async () => root.render(<Harness />))
+
+    const shellNavigation = container.querySelector<HTMLButtonElement>('[aria-label="Shell navigation fixture"]')!
+    shellNavigation.focus()
+    isSettingsPage = false
+    await act(async () => root.render(<Harness />))
+    assert.equal(container.querySelector('[role="tablist"]'), null)
+    assert.ok(resizeObservers.every(observer => observer.disconnected), 'Leaving settings must disconnect its navigation observer')
+    isSettingsPage = true
+    await act(async () => root.render(<Harness />))
+    const returnedList = container.querySelector<HTMLElement>('[role="tablist"]')!
+    assert.notEqual(returnedList, list)
+    assert.equal(tab('外观').getAttribute('aria-selected'), 'true')
+    assert.equal(returnedList.scrollLeft, 520, 'Returning from dashboard must reveal the retained active category in the new navigation')
+    assert.equal(dom.window.document.activeElement, shellNavigation, 'Returning to settings must not steal shell navigation focus')
+    assert.equal(container.scrollTop, 150)
+    activeObserver(returnedList)
+    await select('AI')
+    assert.equal(panel('AI').querySelectorAll<HTMLInputElement>('input[type="text"]')[1].value, 'unsaved-model')
+    await select('网页剪藏')
+    assert.equal(panel('网页剪藏').querySelector<HTMLInputElement>('input[inputmode="numeric"]')!.value, '4040')
+    compactNavigation = false
+    await act(async () => navigationMediaChanged())
+    assert.equal(container.querySelector('[role="tablist"]')!.getAttribute('aria-orientation'), 'vertical')
+    assert.ok(resizeObservers.every(observer => observer.disconnected), 'Wide navigation must disconnect its resize observer')
+    compactNavigation = true
+    await act(async () => navigationMediaChanged())
+    activeObserver(returnedList)
     await act(async () => root.unmount())
+    rootMounted = false
+    assert.ok(resizeObservers.every(observer => observer.disconnected), 'Unmounting must disconnect the last navigation observer')
+    assert.equal(mediaListenerRemovals, 1)
+  } finally {
+    if (rootMounted) await act(async () => root.unmount())
     for (const [key, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)
       else Reflect.deleteProperty(globalThis, key)

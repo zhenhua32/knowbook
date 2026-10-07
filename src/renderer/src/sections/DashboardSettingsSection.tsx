@@ -8,6 +8,17 @@ const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
 
+function revealCategoryTab(tab: HTMLButtonElement | undefined): void {
+  const list = tab?.parentElement
+  if (!tab || !list) return
+  const bounds = list.getBoundingClientRect()
+  const tabBounds = tab.getBoundingClientRect()
+  const left = bounds.left + list.clientLeft
+  const right = left + list.clientWidth
+  if (tabBounds.left < left) list.scrollLeft += tabBounds.left - left
+  else if (tabBounds.right > right) list.scrollLeft += tabBounds.right - right
+}
+
 type DashboardSettingsSectionProps = {
   ui: UiText
   isZh: boolean
@@ -161,6 +172,7 @@ export function DashboardSettingsSection({
   onCategoryRequestHandled
 }: DashboardSettingsSectionProps) {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
+  const [compactNavigation, setCompactNavigation] = useState(false)
   const [syncMounted, setSyncMounted] = useState(false)
   const [visibleBridgeToken, setVisibleBridgeToken] = useState<string | null>(null)
   const tabsId = useId()
@@ -180,6 +192,7 @@ export function DashboardSettingsSection({
   const staleCheckFeedback = appUpdateCheckError && (appUpdateState?.status === 'not-available' || appUpdateState?.status === 'idle')
   const updateStatusText = updateCheckBusy ? ui.updateStatusChecking : staleCheckFeedback ? ui.appUpdateCheckFailed
     : !appUpdateState && appUpdateLoading ? ui.common.loading : getAppUpdateStatusText(appUpdateState, ui)
+  const tabListRef = useRef<HTMLDivElement>(null)
   const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'general', label: isZh ? '通用' : 'General' },
@@ -194,6 +207,24 @@ export function DashboardSettingsSection({
     if (category === 'sync') setSyncMounted(true)
     setActiveCategory(category)
   }
+  useLayoutEffect(() => {
+    const query = window.matchMedia?.('(max-width: 820px)')
+    if (!query) return undefined
+    const updateNavigation = () => setCompactNavigation(query.matches)
+    updateNavigation()
+    query.addEventListener('change', updateNavigation)
+    return () => query.removeEventListener('change', updateNavigation)
+  }, [])
+  useLayoutEffect(() => {
+    if (!isSettingsPage || !compactNavigation || !tabListRef.current) return undefined
+    // A request can reveal the current category without changing activeCategory.
+    const revealActiveCategory = () => revealCategoryTab(tabRefs.current[activeCategory])
+    revealActiveCategory()
+    if (typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(revealActiveCategory)
+    observer.observe(tabListRef.current)
+    return () => observer.disconnect()
+  }, [activeCategory, compactNavigation, isSettingsPage, requestedCategory])
   useLayoutEffect(() => {
     setVisibleBridgeToken(null)
   }, [bridgeToken, activeCategory, isSettingsPage])
@@ -238,7 +269,7 @@ export function DashboardSettingsSection({
       <section className={`detail-grid${isSettingsPage ? ' settings-layout' : ''}`}>
         {isSettingsPage ? (
           <nav className="settings-category-nav" aria-label={isZh ? '设置分类' : 'Settings categories'}>
-            <div role="tablist" aria-label={isZh ? '设置分类' : 'Settings categories'} aria-orientation="vertical">
+            <div ref={tabListRef} role="tablist" aria-label={isZh ? '设置分类' : 'Settings categories'} aria-orientation={compactNavigation ? 'horizontal' : 'vertical'}>
               {categories.map((category, index) => (
                 <button
                   aria-controls={`${tabsId}-panel-${category.id}`}
@@ -246,6 +277,7 @@ export function DashboardSettingsSection({
                   id={`${tabsId}-tab-${category.id}`}
                   key={category.id}
                   onClick={() => selectCategory(category.id)}
+                  onFocus={(event) => { if (compactNavigation) revealCategoryTab(event.currentTarget) }}
                   onKeyDown={(event) => navigateCategory(event, index)}
                   ref={(element) => { if (element) tabRefs.current[category.id] = element }}
                   role="tab"
