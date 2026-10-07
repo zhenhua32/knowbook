@@ -1192,3 +1192,13 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 .page-database .dbw-toolbar > .dbw-toolbar-select select:focus-visible {
   outline-color: var(--dbw-accent);
 }
+
+/* Keep record selection actions compact without shrinking editors. */
+.page-database .dbw-selection-toolbar {
+  gap: 6px;
+  padding-inline: 10px;
+}
+
+.page-database .dbw-selection-toolbar button {
+  padding-inline: 6px;
+}
