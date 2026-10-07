@@ -121,6 +121,13 @@ module.exports = async (api) => {
     .theme-switcher-settings .theme-switcher-feedback[role='alert'] { color: var(--kb-danger, #d1455b); }
     @media (prefers-reduced-motion: reduce) { .theme-switcher-settings button.theme-switcher-option { transition: none; } }
     @media (max-width: 620px) { .theme-switcher-settings { padding: 16px; } .theme-switcher-settings .theme-switcher-heading { flex-direction: column; } }
+    /* Appearance theme picker integration. */
+    .settings-category-panel .plugin-full-trust-view[data-full-trust-plugin='theme-switcher'],
+    .settings-category-panel .plugin-full-trust-view[data-full-trust-plugin='theme-switcher'] .theme-switcher-settings {
+      padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+    }
+    .settings-category-panel .plugin-full-trust-view[data-full-trust-plugin='theme-switcher'] .theme-switcher-settings button { scroll-margin-block: 8px; }
+    /* End appearance theme picker integration. */
   `, { id: 'theme-switcher-controls' })
   // The initial theme callback runs when this revision commits, after its CSS is installed.
   api.subscribeToTheme(() => { committed = true; applyTheme() })

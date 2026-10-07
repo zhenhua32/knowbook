@@ -237,6 +237,10 @@ ${rule('.document-summary-card.document-heading .document-title-input:hover',
     'background: color-mix(in srgb, var(--ts-accent-soft) 35%, transparent);')}
 ${rule('.document-summary-card.document-heading .document-title-input:focus',
     'background: color-mix(in srgb, var(--ts-accent-soft) 45%, transparent); border-color: transparent; box-shadow: 0 2px 0 var(--ts-accent);')}
+/* Appearance theme picker integration. */
+${rule(".settings-category-panel .plugin-full-trust-view[data-full-trust-plugin='theme-switcher']",
+    'background: transparent;')}
+/* End appearance theme picker integration. */
 ${root} ::placeholder { color: var(--ts-text-muted); }
 ${root} ::selection { background: var(--ts-accent-soft); color: var(--ts-text); }
 ${root} * { scrollbar-color: var(--ts-line-strong) transparent; }
