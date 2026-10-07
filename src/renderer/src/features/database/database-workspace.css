@@ -1068,3 +1068,30 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
   background: rgba(104, 39, 51, 0.32);
   color: var(--dbw-danger);
 }
+
+/* Responsive database toolbar: keep controls and save actions reachable. */
+.page-database .dbw-toolbar {
+  flex-wrap: wrap;
+}
+
+.page-database .dbw-toolbar > .dbw-main-search {
+  flex: 1 1 180px;
+  min-width: 180px;
+  max-width: 330px;
+}
+
+.page-database .dbw-toolbar > .dbw-save-actions {
+  margin-left: auto;
+}
+
+@media (max-width: 1320px) {
+  .page-database .dbw-toolbar {
+    gap: 4px;
+  }
+
+  .page-database .dbw-toolbar > .dbw-toolbar-menu > summary,
+  .page-database .dbw-toolbar > .dbw-toolbar-select,
+  .page-database .dbw-toolbar > .dbw-toolbar-button {
+    padding-inline: 7px;
+  }
+}
