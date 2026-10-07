@@ -1,6 +1,52 @@
 .sidebar-workspace-navigation .sidebar-workspace-rail {
+  align-items: stretch;
   gap: 10px;
   padding: 12px 12px 10px;
+}
+
+.sidebar-workspace-navigation:not(.collapsed) .sidebar-workspace-rail {
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-padding-block: 6px;
+}
+
+.sidebar-workspace-navigation:not(.collapsed) .sidebar-workspace-rail .nav-icon-btn {
+  scroll-margin-block: 6px;
+}
+
+.sidebar-workspace-navigation:not(.collapsed) .workspace-nav-content,
+.sidebar-workspace-navigation:not(.collapsed) .tree-nav-section {
+  min-height: min-content;
+}
+
+.sidebar-workspace-navigation:not(.collapsed) .tree-wrapper {
+  /* The virtual spacer must not set the sidebar's intrinsic minimum height. */
+  contain: size;
+  min-height: 84px;
+}
+
+.sidebar-workspace-navigation .pinned-section-shell {
+  display: flex;
+  flex-direction: column;
+  max-height: 96px;
+}
+
+.sidebar-workspace-navigation .pinned-section-compact {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  min-height: 0;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.sidebar-workspace-navigation .pinned-doc-item-compact {
+  flex-shrink: 0;
+}
+
+.sidebar-workspace-navigation .pinned-doc-item-compact:focus-visible {
+  outline: 2px solid var(--kb-sidebar-text);
+  outline-offset: -2px;
 }
 
 .sidebar-workspace-navigation .brand-mini-copy small {
@@ -22,30 +68,33 @@
 }
 
 .sidebar-primary-navigation {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
-.sidebar-secondary-navigation,
+.sidebar-secondary-navigation {
+  grid-template-columns: 1fr;
+}
+
 .sidebar-management-navigation {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .sidebar-workspace-navigation .sidebar-primary-navigation .nav-icon-btn {
-  flex-direction: column;
-  justify-content: center;
-  gap: 3px;
-  height: 46px;
-  padding: 4px 5px;
-  font-size: 12px;
-  font-weight: 600;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 9px;
+  height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .sidebar-workspace-navigation .sidebar-secondary-navigation .nav-icon-btn,
 .sidebar-workspace-navigation .sidebar-management-navigation .nav-icon-btn {
-  gap: 7px;
+  gap: 9px;
   height: 36px;
-  padding: 0 8px;
-  font-size: 12px;
+  padding: 0 10px;
+  font-size: 13px;
   font-weight: 500;
 }
 
@@ -57,6 +106,13 @@
 
 .sidebar-workspace-navigation .sidebar-section-heading {
   min-height: 30px;
+  font-size: 12px;
+}
+
+.sidebar-workspace-navigation .sidebar-section-count,
+.sidebar-workspace-navigation .sidebar-search-button span,
+.sidebar-workspace-navigation .sidebar-search-button kbd {
+  font-size: 12px;
 }
 
 .sidebar-workspace-navigation .sidebar-capture-actions {
@@ -135,7 +191,7 @@
 .sidebar-workspace-navigation .sidebar-create-button:focus-visible,
 .sidebar-workspace-navigation .sidebar-search-button:focus-visible,
 .sidebar-workspace-navigation .icon-btn:focus-visible {
-  outline: 2px solid #a7aeff;
+  outline: 2px solid var(--kb-sidebar-text);
   outline-offset: 2px;
 }
 
