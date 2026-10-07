@@ -223,6 +223,9 @@ ${root} :is(.editor-input, .editor-textarea, .editor-select):focus {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ts-accent) 18%, transparent);
 }
 
+${rule('.management-page .hero, .management-page .management-page-header, .management-page .plugin-page-hero',
+    'background: transparent; border-color: transparent; box-shadow: none;')}
+
 /* Keep the document's writing header flat, including its editable title.
  * These selectors outrank the generic card and input overrides above while
  * preserving the host's subtle hover surface and clear focused baseline. */

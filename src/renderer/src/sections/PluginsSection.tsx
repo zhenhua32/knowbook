@@ -270,11 +270,10 @@ export function PluginsSection({
     <section className="plugins-page">
       <header className="plugin-page-hero">
         <div className="plugin-page-heading">
-          <span className="plugin-page-kicker">{isZh ? '扩展与自动化' : 'Extensions & automations'}</span>
           <h3>{ui.pluginsTitle}</h3>
           <p>{isZh
-            ? '集中管理插件的运行状态、版本与权限，并随时让 AI 在现有插件上继续迭代。'
-            : 'Manage runtime status, versions, and permissions, then keep iterating on existing plugins with AI.'}</p>
+            ? '管理已安装插件、运行状态与权限。'
+            : 'Manage installed plugins, runtime status, and permissions.'}</p>
         </div>
         <div className="plugin-toolbar">
           <button className="danger-button" disabled={pluginInventoryBusy} onClick={onInstallSystemPluginFromFolder} type="button">

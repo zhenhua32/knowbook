@@ -19,20 +19,18 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 28px;
-  min-height: 148px;
-  padding: 28px 30px;
-  overflow: hidden;
-  border: 1px solid #dfe3ff;
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at 90% 10%, rgba(255, 255, 255, 0.9), transparent 26%),
-    linear-gradient(115deg, #f7f7ff 0%, #eef0ff 58%, #f6f1ff 100%);
-  box-shadow: 0 18px 42px rgba(67, 74, 177, 0.08);
+  gap: 20px;
+  min-height: 72px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .plugin-page-heading {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .plugin-page-kicker {
@@ -51,7 +49,7 @@
 
 .plugin-page-heading p {
   max-width: 680px;
-  margin: 10px 0 0;
+  margin: 6px 0 0;
   color: var(--kb-text-soft);
 }
 
@@ -1156,11 +1154,9 @@
 }
 
 :root[data-theme='dark'] .plugin-page-hero {
-  border-color: rgba(137, 145, 255, 0.2);
-  background:
-    radial-gradient(circle at 90% 10%, rgba(91, 99, 232, 0.14), transparent 28%),
-    linear-gradient(115deg, #252b3b, #22283a 58%, #29263a);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.18);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme='dark'] :is(
@@ -1207,8 +1203,9 @@
 }
 
 .plugin-page-heading h3 {
-  font-size: var(--kb-type-display);
-  line-height: var(--kb-leading-display);
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 32px;
 }
 
 .plugin-page-heading p {
