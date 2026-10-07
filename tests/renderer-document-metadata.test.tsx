@@ -12,7 +12,7 @@ test('an opening article title leaves a clearly labelled, editable document name
       compactTitleLabel, editLabel: 'Properties', collapseLabel: 'Collapse properties', onTitleChange: () => {}, onSummaryChange: () => {}
     }))
     const dom = new JSDOM(html)
-    const input = dom.window.document.querySelector<HTMLInputElement>('.document-title-input')!
+    const input = dom.window.document.querySelector<HTMLTextAreaElement>('.document-title-input')!
     const label = dom.window.document.querySelector<HTMLLabelElement>('.document-title-label')!
     assert.equal(label.textContent, compactTitleLabel)
     assert.equal(label.htmlFor, input.id)
@@ -29,7 +29,7 @@ async function withMetadata(run: (context: { document: Document; window: JSDOM['
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost' })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document,
-    navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, IS_REACT_ACT_ENVIRONMENT: true })) {
+    navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement, IS_REACT_ACT_ENVIRONMENT: true })) {
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
     Object.defineProperty(globalThis, key, { configurable: true, value })
   }
@@ -58,7 +58,7 @@ async function withMetadata(run: (context: { document: Document; window: JSDOM['
 
 test('the document title edits immediately while optional metadata stays collapsed', async () => {
   await withMetadata(async ({ document, window, changes }) => {
-    const title = document.querySelector<HTMLInputElement>('.document-title-input')!
+    const title = document.querySelector<HTMLTextAreaElement>('.document-title-input')!
     const toggle = document.querySelector<HTMLButtonElement>('.document-summary-edit-button')!
     assert.equal(title.value, '文档标题')
     assert.equal(title.getAttribute('aria-label'), '标题')
@@ -66,7 +66,7 @@ test('the document title edits immediately while optional metadata stays collaps
     assert.equal(document.querySelector('.editor-textarea'), null)
     assert.equal(document.querySelector('.document-updated'), null)
     await act(async () => {
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(title, '直接修改标题')
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(title, '直接修改标题')
       title.dispatchEvent(new window.Event('input', { bubbles: true }))
     })
     assert.deepEqual(changes, ['直接修改标题'])
@@ -110,5 +110,30 @@ test('Escape leaves title and summary IME candidates intact before closing prope
     await act(async () => summary.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))
     assert.equal(toggle.getAttribute('aria-expanded'), 'false')
     assert.equal(document.activeElement, toggle)
+  })
+})
+
+test('a wrapping title retains a single-line name and Enter respects IME composition', async () => {
+  await withMetadata(async ({ document, window, changes }) => {
+    const title = document.querySelector<HTMLTextAreaElement>('.document-title-input')!
+    assert.equal(title.tagName, 'TEXTAREA')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(title, '粘贴的标题\n第二行\r\n第三行')
+      title.dispatchEvent(new window.Event('input', { bubbles: true }))
+    })
+    assert.deepEqual(changes, ['粘贴的标题 第二行 第三行'])
+    assert.equal(title.value, '粘贴的标题 第二行 第三行')
+
+    const enter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => title.dispatchEvent(enter))
+    assert.equal(enter.defaultPrevented, true)
+    await act(async () => title.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })))
+    const candidateEnter = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => title.dispatchEvent(candidateEnter))
+    assert.equal(candidateEnter.defaultPrevented, false)
+    await act(async () => title.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+    const fallbackEnter = new window.KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })
+    await act(async () => title.dispatchEvent(fallbackEnter))
+    assert.equal(fallbackEnter.defaultPrevented, false)
   })
 })

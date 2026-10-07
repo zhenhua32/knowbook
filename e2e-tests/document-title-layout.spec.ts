@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import type { ElectronApplication } from 'playwright'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
@@ -20,6 +21,34 @@ async function readDocument(page: Page) {
   const toggle = page.locator('.document-view-toggle')
   if (await toggle.getAttribute('aria-pressed') !== 'true') await toggle.click()
   await expect(page.locator('.preview-panel')).toHaveClass(/preview-panel-reading/)
+}
+
+async function useMossTheme(page: Page) {
+  await expect.poll(async () => {
+    const plugin = (await page.evaluate(() => window.knowbook.listSystemPlugins())).find(plugin => plugin.pluginId === 'theme-switcher')
+    return plugin?.status === 'active' && plugin.runtimeStatus === 'active'
+  }).toBe(true)
+  await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
+  await page.getByRole('tab', { name: uiText('Appearance', '外观') }).click()
+  await expect(page.getByTestId('theme-switcher-settings')).toBeVisible()
+  await page.getByTestId('theme-option-moss').click()
+  await expect(page.getByTestId('theme-option-moss')).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('html')).toHaveAttribute('data-knowbook-theme-switcher', 'moss')
+  await expect.poll(() => page.evaluate(async () => {
+    const plugin = (await window.knowbook.listSystemPlugins()).find(plugin => plugin.pluginId === 'theme-switcher')
+    if (!plugin?.currentArtifactSha256) throw new Error('The moss theme must have an installed artifact.')
+    return window.knowbook.invokeSystemPluginMain({ pluginId: 'theme-switcher', revisionHash: `sha256:${plugin.currentArtifactSha256}`, method: 'get-state' })
+  })).toMatchObject({ selectedThemeId: 'moss' })
+}
+
+async function resizeDocumentWindow(page: Page, app: ElectronApplication, width: number) {
+  const size = await app.evaluate(({ BrowserWindow }, width) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    window.setSize(width, 1000)
+    return window.getContentSize()
+  }, width)
+  await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight])).toEqual(size)
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 
 test.describe('Document title layout @electron', () => {
@@ -159,6 +188,158 @@ test.describe('Document title layout @electron', () => {
       expect(saved?.title).toBe(title)
       expect(saved?.summary).toBe(defaultSummary)
       expect(saved?.blocks.map(({ id, type, content }) => ({ id, type, content }))).toEqual(blocks.map(({ id, type, content }) => ({ id, type, content })))
+    })
+  })
+
+  test('the long imported article uses a compact transparent name row and one readable H1 in the moss theme', async ({}, testInfo) => {
+    await withElectronApp(async ({ app, page }) => {
+      await resizeDocumentWindow(page, app, 1600)
+      await useMossTheme(page)
+      const title = '16 万 Star 的 OpenCode 彻底重写: API 全部重做、Bun 换 Node、桌面端迁移 Electron'
+      const sourceTitle = '16万 Star 的 OpenCode 彻底重写：API 全部重做、 Bun 换 Node、 桌面端迁移 Electron'
+      const blocks: DocumentBlockDraft[] = [
+        { id: 'opencode-title', type: 'heading-1', content: sourceTitle, checked: false, depth: 0 },
+        { id: 'opencode-body', type: 'paragraph', content: '2026 年，OpenCode 已经是一款现象级的开源项目。', checked: false, depth: 0 }
+      ]
+      const id = await openDocument(page, title, defaultSummary, blocks)
+      const titleInput = page.locator('.document-title-input')
+      const auxiliary = page.locator('.document-header-aux-button')
+      if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+      await expect(page.locator('html')).toHaveAttribute('data-knowbook-theme-switcher', 'moss')
+      await expect(titleInput).toHaveValue(title)
+      await expect(page.locator('.document-title-field-compact')).toBeVisible()
+      await expect(page.locator('[data-block-id="opencode-title"] textarea')).toHaveValue(sourceTitle)
+
+      for (const width of [1600, 1000]) {
+        await resizeDocumentWindow(page, app, width)
+        const layout = await titleInput.evaluate(input => {
+          const card = input.closest('.document-summary-card')!
+          const cardBounds = card.getBoundingClientRect()
+          const cardStyle = getComputedStyle(card)
+          const titleStyle = getComputedStyle(input)
+          const heading = document.querySelector('[data-block-id="opencode-title"] textarea')!
+          const panel = document.querySelector('.preview-panel')!
+          return {
+            fontSize: parseFloat(titleStyle.fontSize),
+            borders: [titleStyle.borderTopColor, titleStyle.borderRightColor, titleStyle.borderBottomColor, titleStyle.borderLeftColor],
+            background: cardStyle.backgroundColor,
+            shadow: cardStyle.boxShadow,
+            height: cardBounds.height,
+            headingFontSize: parseFloat(getComputedStyle(heading).fontSize),
+            headingGap: heading.getBoundingClientRect().top - cardBounds.bottom,
+            overflow: panel.scrollWidth - panel.clientWidth,
+            clippedTitle: input.scrollHeight - input.clientHeight
+          }
+        })
+        expect(layout.fontSize).toBe(16)
+        expect(layout.borders).toEqual(Array(4).fill('rgba(0, 0, 0, 0)'))
+        expect(layout.background).toBe('rgba(0, 0, 0, 0)')
+        expect(layout.shadow).toBe('none')
+        expect(layout.height).toBeLessThan(width === 1000 ? 110 : 80)
+        expect(layout.headingFontSize).toBeGreaterThanOrEqual(24)
+        expect(layout.headingFontSize).toBeLessThanOrEqual(28)
+        expect(layout.headingGap).toBeGreaterThanOrEqual(0)
+        expect(layout.headingGap).toBeLessThan(48)
+        expect(layout.overflow).toBeLessThanOrEqual(1)
+        expect(layout.clippedTitle).toBeLessThanOrEqual(2)
+        await page.screenshot({ path: testInfo.outputPath(`opencode-moss-editing-${width}.png`), animations: 'disabled' })
+      }
+
+      await titleInput.focus()
+      const focusedStyle = await titleInput.evaluate(input => {
+        const style = getComputedStyle(input)
+        return { border: style.borderBottomColor, shadow: style.boxShadow }
+      })
+      expect(focusedStyle.border).toBe('rgba(0, 0, 0, 0)')
+      expect(focusedStyle.shadow).toContain('0px 2px 0px')
+      await readDocument(page)
+      await expect(page.locator('.document-reading-summary')).toHaveCount(0)
+      await expect(page.locator('.preview-panel h1')).toHaveCount(1)
+      const heading = page.locator('.document-reading-row[data-block-id="opencode-title"] h1')
+      await expect(heading).toHaveText(sourceTitle)
+      const reading = await heading.evaluate(element => {
+        const navigation = document.querySelector('.document-navigation')!
+        const panel = document.querySelector('.preview-panel')!
+        return {
+          fontSize: parseFloat(getComputedStyle(element).fontSize),
+          gap: element.getBoundingClientRect().top - navigation.getBoundingClientRect().bottom,
+          overflow: panel.scrollWidth - panel.clientWidth
+        }
+      })
+      expect(reading.fontSize).toBeLessThanOrEqual(28)
+      expect(reading.gap).toBeGreaterThanOrEqual(0)
+      expect(reading.gap).toBeLessThan(96)
+      expect(reading.overflow).toBeLessThanOrEqual(1)
+      await page.screenshot({ path: testInfo.outputPath('opencode-moss-reading-narrow.png'), animations: 'disabled' })
+      const saved = await page.evaluate(id => window.knowbook.getDocumentDetail(id), id)
+      expect(saved?.title).toBe(title)
+      expect(saved?.summary).toBe(defaultSummary)
+      expect(saved?.blocks.map(({ id, type, content }) => ({ id, type, content }))).toEqual(blocks.map(({ id, type, content }) => ({ id, type, content })))
+    })
+  })
+
+  test('an independent long title wraps completely, resizes and saves edits without introducing newlines', async ({}, testInfo) => {
+    await withElectronApp(async ({ app, page }) => {
+      await resizeDocumentWindow(page, app, 1600)
+      const title = '从知识采集到长期整理：围绕 OpenCode、Electron 与本地优先工作流的完整研究记录，以及团队如何维护长篇文档的标题、来源、上下文和后续行动，让复杂内容在不同窗口尺寸下都能清楚阅读'
+      const summary = '独立标题的摘要保持原样。'
+      const blocks: DocumentBlockDraft[] = [
+        { id: 'long-title-body', type: 'paragraph', content: '这份文档从普通正文开始，长标题必须完整展示。', checked: false, depth: 0 }
+      ]
+      const id = await openDocument(page, title, summary, blocks)
+      const titleInput = page.locator('.document-title-input')
+      const auxiliary = page.locator('.document-header-aux-button')
+      if (await auxiliary.getAttribute('aria-pressed') === 'true') await auxiliary.click()
+      await expect(titleInput).toHaveValue(title)
+      await expect(page.locator('.document-title-field-compact')).toHaveCount(0)
+      expect(await titleInput.evaluate(input => input.tagName)).toBe('TEXTAREA')
+
+      const heights: number[] = []
+      for (const [index, width] of [1600, 1000, 1600].entries()) {
+        await resizeDocumentWindow(page, app, width)
+        const layout = await titleInput.evaluate(input => {
+          const style = getComputedStyle(input)
+          const panel = document.querySelector('.preview-panel')!
+          return {
+            height: input.getBoundingClientRect().height,
+            lineHeight: parseFloat(style.lineHeight),
+            fontSize: parseFloat(style.fontSize),
+            clippedTitle: input.scrollHeight - input.clientHeight,
+            overflow: panel.scrollWidth - panel.clientWidth
+          }
+        })
+        expect(layout.fontSize).toBeGreaterThanOrEqual(24)
+        expect(layout.fontSize).toBeLessThanOrEqual(28)
+        expect(layout.height).toBeGreaterThan(layout.lineHeight * 1.5)
+        expect(layout.clippedTitle).toBeLessThanOrEqual(2)
+        expect(layout.overflow).toBeLessThanOrEqual(1)
+        heights.push(layout.height)
+        await expect(titleInput).toHaveValue(title)
+        await page.screenshot({ path: testInfo.outputPath(`independent-long-title-${index}-${width}.png`), animations: 'disabled' })
+      }
+      expect(heights[1]).toBeGreaterThan(heights[0] + 10)
+      expect(Math.abs(heights[2] - heights[0])).toBeLessThanOrEqual(2)
+
+      await titleInput.focus()
+      await titleInput.press('Control+End')
+      await titleInput.press('Enter')
+      await expect(titleInput).toHaveValue(title)
+      await expect(titleInput).toBeFocused()
+      const editedTitle = `${title}中文`
+      // The actual CDP composition flow is covered by the inline-title test.
+      await page.keyboard.insertText('中文')
+      await expect(titleInput).toHaveValue(editedTitle)
+      await expect.poll(async () => {
+        const saved = await page.evaluate(id => window.knowbook.getDocumentDetail(id), id)
+        return { title: saved?.title, summary: saved?.summary, blocks: saved?.blocks.map(({ id, type, content }) => ({ id, type, content })) }
+      }).toEqual({ title: editedTitle, summary, blocks: blocks.map(({ id, type, content }) => ({ id, type, content })) })
+      await expect(page.locator('.document-save-status')).toHaveClass(/status-saved/)
+      await page.reload()
+      await page.locator('.tree-button').filter({ has: page.locator('.tree-document-title', { hasText: editedTitle }) }).first().click()
+      await expect(titleInput).toHaveValue(editedTitle)
+      await readDocument(page)
+      await expect(page.locator('.preview-panel h1')).toHaveCount(1)
+      await expect(page.locator('.document-reading-summary h1')).toHaveText(editedTitle)
     })
   })
 

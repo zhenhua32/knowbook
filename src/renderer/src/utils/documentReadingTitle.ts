@@ -3,7 +3,13 @@ import type { MarkdownDocumentModel } from '@shared/markdownDocument'
 import { getHeadingLevel, markdownEngine } from '@shared/markdownEngine'
 import { markdownInlineText } from '@shared/markdownHeadingText'
 
+// Ignore typography around CJK text and separators while retaining English word
+// boundaries, letter case and numbers so genuinely different headings stay visible.
 const comparableTitle = (text: string) => text.normalize('NFC').trim().replace(/\s+/g, ' ')
+  .replace(/[：﹕]/g, ':').replace(/[，﹐]/g, ',').replace(/､/g, '、')
+  .replace(/\s*([:,、])\s*/g, '$1')
+  .replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]) (?=[\p{Script=Latin}\p{N}])/gu, '$1')
+  .replace(/([\p{Script=Latin}\p{N}]) (?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])/gu, '$1')
 
 /** Use an existing opening H1 as the reading title without changing its block. */
 export function matchingOpeningTitleIndex(title: string, rows: Array<{ block: DocumentBlockDraft; index: number }>,

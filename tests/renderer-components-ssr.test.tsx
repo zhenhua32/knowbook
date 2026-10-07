@@ -77,7 +77,7 @@ test('DocumentSummaryCard SSR exposes the title while keeping properties collaps
   assert.equal(html.includes('aria-label="Title"'), true)
   assert.equal(html.includes('Updated now'), false)
   assert.equal(html.includes('Edit properties'), true)
-  assert.equal(html.includes('value="Product"'), true)
+  assert.match(html, /<textarea[^>]*class="editor-input document-title-input"[^>]*>Product<\/textarea>/)
   assert.equal(html.includes('Summary text'), false)
   assert.equal(html.includes('aria-expanded="false"'), true)
 })

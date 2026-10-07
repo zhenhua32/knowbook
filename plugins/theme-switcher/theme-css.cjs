@@ -222,6 +222,18 @@ ${root} :is(.editor-input, .editor-textarea, .editor-select):focus {
   border-color: var(--ts-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ts-accent) 18%, transparent);
 }
+
+/* Keep the document's writing header flat, including its editable title.
+ * These selectors outrank the generic card and input overrides above while
+ * preserving the host's subtle hover surface and clear focused baseline. */
+${rule('.preview-panel > .document-summary-card.document-heading',
+    'background: transparent; border-color: transparent; box-shadow: none;')}
+${rule('.document-summary-card.document-heading .document-title-input',
+    'background: transparent; color: var(--ts-text); border-color: transparent; box-shadow: none;')}
+${rule('.document-summary-card.document-heading .document-title-input:hover',
+    'background: color-mix(in srgb, var(--ts-accent-soft) 35%, transparent);')}
+${rule('.document-summary-card.document-heading .document-title-input:focus',
+    'background: color-mix(in srgb, var(--ts-accent-soft) 45%, transparent); border-color: transparent; box-shadow: 0 2px 0 var(--ts-accent);')}
 ${root} ::placeholder { color: var(--ts-text-muted); }
 ${root} ::selection { background: var(--ts-accent-soft); color: var(--ts-text); }
 ${root} * { scrollbar-color: var(--ts-line-strong) transparent; }

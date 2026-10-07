@@ -5,13 +5,16 @@
   z-index: 20;
   flex-shrink: 0;
   width: 100%;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   background: var(--kb-canvas);
 }
 
 .document-sticky-header .document-header-shell {
   position: static;
+  min-height: 48px;
   margin-bottom: 0;
+  padding-block: 6px;
+  box-shadow: none;
 }
 
 .document-navigation { position: relative; }
@@ -19,7 +22,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 44px;
+  min-height: 36px;
   color: var(--kb-text-soft);
 }
 .document-navigation-button {
@@ -120,26 +123,32 @@
 
 /* A writing surface with a directly editable title and optional metadata. */
 .preview-panel > .document-summary-card.document-heading {
-  padding: 0 4px 8px;
+  padding: 0 4px 4px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 .document-summary-card .editor-input.document-title-input {
+  display: block;
   width: 100%;
   min-width: 0;
-  height: 48px;
+  height: auto;
+  min-height: 40px;
+  field-sizing: content;
+  resize: none;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   padding: 2px 0;
   border-color: transparent;
   border-radius: 5px;
   background: transparent;
   color: var(--kb-text);
   font-family: inherit;
-  font-size: clamp(24px, 2.1vw, 30px);
+  font-size: clamp(24px, 2vw, 28px);
   font-weight: 650;
-  line-height: 1.4;
-  letter-spacing: -0.02em;
+  line-height: 1.45;
+  letter-spacing: -0.015em;
 }
 .document-summary-card .editor-input.document-title-input:hover {
   background: color-mix(in srgb, var(--kb-accent-soft) 35%, transparent);
@@ -149,19 +158,29 @@
   background: color-mix(in srgb, var(--kb-accent-soft) 45%, transparent);
   box-shadow: 0 2px 0 var(--kb-accent);
 }
-.document-title-field-compact { display: flex; align-items: center; gap: 12px; }
+.document-heading-compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0 12px;
+}
+.document-title-field-compact { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .document-title-label { flex-shrink: 0; color: var(--kb-text-muted); font-size: 12px; }
 .document-title-field-compact .editor-input.document-title-input {
   flex: 1;
-  height: 36px;
+  min-height: 32px;
   font-size: 16px;
   font-weight: 500;
   letter-spacing: 0;
 }
 .document-heading .document-summary-card-head { gap: 10px; margin-top: 4px; }
+.document-heading .document-path { margin: 0; }
+.document-heading .document-path[hidden] { display: none; }
+.document-heading .document-summary-card-head:has(.document-path[hidden]) { justify-content: flex-end; }
+.document-heading-compact .document-summary-card-head { margin-top: 0; }
 .document-heading .document-path { color: var(--kb-text-muted); font-size: 12px; }
 .document-heading .document-summary-edit-button {
-  min-height: 36px;
+  min-height: 32px;
   font-size: 12px;
   font-weight: 400;
 }
@@ -170,6 +189,7 @@
   outline-offset: 1px;
 }
 .document-heading .document-properties {
+  grid-column: 1 / -1;
   gap: 8px;
   margin-top: 10px;
   padding: 12px 14px;
@@ -180,6 +200,13 @@
 .document-heading .document-properties .editor-label { font-size: 12px; letter-spacing: 0; }
 .document-heading .document-updated { margin: 0; font-size: 12px; }
 .preview-panel:not(.preview-panel-reading) > .preview-section { margin-top: 10px; }
+.block-inline-textarea.type-heading-1 {
+  padding: 8px 2px 4px;
+  font-size: clamp(24px, 2vw, 28px);
+  font-weight: 650;
+  line-height: 1.45;
+  letter-spacing: -0.015em;
+}
 .document-editor-help {
   display: flex;
   align-items: center;
@@ -257,7 +284,7 @@
 .document-save-status.status-error { color: var(--danger, #b42318); }
 .document-save-status.status-pending { color: var(--text-secondary, #667085); }
 .section-collapse-toggle { position: absolute; left: 24px; top: 18px; z-index: 2; color: var(--kb-text-muted); }
-.block-editor-row[data-heading-level="1"] .section-collapse-toggle { top: calc(6px + clamp(25px, 2.2vw, 34px) * .64); }
+.block-editor-row[data-heading-level="1"] .section-collapse-toggle { top: calc(6px + clamp(24px, 2vw, 28px) * .64); }
 .block-editor-row[data-heading-level] .block-hover-controls { position: relative; left: -22px; }
 .block-editor-row[data-heading-level] .block-collapse-toggle { font-size: 16px; }
 .toc-item-row { display: flex; align-items: center; gap: 3px; }

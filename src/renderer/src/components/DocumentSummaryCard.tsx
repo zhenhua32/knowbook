@@ -36,31 +36,36 @@ export function DocumentSummaryCard(props: DocumentSummaryCardProps) {
   const composingRef = useRef(false)
 
   return (
-    <div className={`document-summary-card document-heading${isEditing ? ' document-summary-card-editing' : ''}`}
+    <div className={`document-summary-card document-heading${compactTitleLabel ? ' document-heading-compact' : ''}${isEditing ? ' document-summary-card-editing' : ''}`}
       onCompositionStart={() => { composingRef.current = true }}
       onCompositionEnd={() => { composingRef.current = false }}
       onBlur={() => { composingRef.current = false }}
       onKeyDown={(event) => {
+        if ((event.target as HTMLElement).id === titleId
+          && event.key === 'Enter' && !isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
+          event.preventDefault()
+          return
+        }
         if (!isEditing || event.key !== 'Escape' || isImeKeyboardEvent(event.nativeEvent, composingRef.current)) return
         event.preventDefault()
         event.stopPropagation()
         setIsEditing(false)
         toggleRef.current?.focus()
       }}>
-      <div className={`document-title-field${compactTitleLabel ? ' document-title-field-compact' : ''}`}>
+      <div className={`document-title-field${compactTitleLabel ? ' document-title-field-compact' : ''}`} title={path}>
         {compactTitleLabel ? <label className="document-title-label" htmlFor={titleId}>{compactTitleLabel}</label> : null}
-        <input
+        <textarea
           aria-label={compactTitleLabel ?? titleLabel}
           className="editor-input document-title-input"
           id={titleId}
-          onChange={(event) => onTitleChange(event.target.value)}
+          onChange={(event) => onTitleChange(event.target.value.replace(/[\r\n]+/g, ' '))}
           placeholder={titleLabel}
-          type="text"
+          rows={1}
           value={title}
         />
       </div>
       <div className="document-summary-card-head">
-        <p className="document-path" title={path}>{path}</p>
+        <p className="document-path" title={path} hidden={Boolean(compactTitleLabel) || !path.includes('/')}>{path}</p>
         <button aria-expanded={isEditing} aria-controls={isEditing ? fieldsId : undefined} ref={toggleRef}
           className="document-summary-edit-button" onClick={() => setIsEditing((current) => !current)} type="button">
           <PropertiesIcon />
