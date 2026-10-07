@@ -124,7 +124,7 @@ async function keyboardGroup(page: Page, fieldId: string): Promise<void> {
   await expect(select).toHaveValue(fieldId)
 }
 
-type State = { value: string; name: string; query: string; dirty: boolean; selected?: number; focused?: boolean; long?: boolean }
+type State = { value: string; name: string; query: string; dirty: boolean; selected?: number; focused?: boolean; long?: boolean; hovered?: boolean }
 async function record(page: Page, app: ElectronApplication, tempRoot: string, info: TestInfo, language: Language, phase: string, state: State) {
   await settle(page)
   const select = page.locator('.dbw-toolbar-select select'), text = getDatabaseWorkspaceText(language)
@@ -169,32 +169,78 @@ async function record(page: Page, app: ElectronApplication, tempRoot: string, in
           hit: hit === element || Boolean(hit && element.contains(hit)), inside: box.left >= bounds.left - 1 && box.right <= bounds.right + 1 && box.top >= bounds.top - 1 && box.bottom <= bounds.bottom + 1 }
       })
     let left = 0, top = 0, right = innerWidth, bottom = innerHeight
+    const ancestors = []
     for (let ancestor = selected.parentElement; ancestor; ancestor = ancestor.parentElement) {
       const style = getComputedStyle(ancestor), bounds = ancestor.getBoundingClientRect()
-      if (/hidden|clip|auto|scroll/.test(style.overflowX)) { left = Math.max(left, bounds.left + ancestor.clientLeft); right = Math.min(right, bounds.left + ancestor.clientLeft + ancestor.clientWidth) }
-      if (/hidden|clip|auto|scroll/.test(style.overflowY)) { top = Math.max(top, bounds.top + ancestor.clientTop); bottom = Math.min(bottom, bounds.top + ancestor.clientTop + ancestor.clientHeight) }
+      const border = { left: parseFloat(style.borderLeftWidth), right: parseFloat(style.borderRightWidth), top: parseFloat(style.borderTopWidth), bottom: parseFloat(style.borderBottomWidth) }
+      const gutter = { x: Math.max(0, ancestor.offsetHeight - ancestor.clientHeight - Math.round(border.top + border.bottom)),
+        y: Math.max(0, ancestor.offsetWidth - ancestor.clientWidth - Math.round(border.left + border.right)) }
+      const client = { left: bounds.left + border.left, right: bounds.right - border.right - gutter.y, top: bounds.top + border.top, bottom: bounds.bottom - border.bottom - gutter.x }
+      ancestors.push({ className: ancestor.className, bounds: bounds.toJSON(), border, gutter, client, overflowX: style.overflowX, overflowY: style.overflowY })
+      if (/^(hidden|clip|auto|scroll)$/.test(style.overflowX)) { left = Math.max(left, client.left); right = Math.min(right, client.right) }
+      if (/^(hidden|clip|auto|scroll)$/.test(style.overflowY)) { top = Math.max(top, client.top); bottom = Math.min(bottom, client.bottom) }
     }
     const extent = css.outlineStyle === 'none' ? 0 : Math.max(0, parseFloat(css.outlineWidth) + parseFloat(css.outlineOffset))
     const focusVisible = selected.matches(':focus-visible'), input = toolbar.querySelector<HTMLInputElement>('.dbw-main-search input')!, inputCss = getComputedStyle(input)
-    return { inner: [innerWidth, innerHeight], toolbar: rectangle(toolbar), rowCount: rows.length, groups, controls,
+    type RGBA = [number, number, number, number]
+    const parse = (raw: string): RGBA | null => {
+      if (raw === 'transparent') return [0, 0, 0, 0]
+      const match = raw.match(/^rgba?\((.+)\)$/)
+      if (!match) return null
+      const parts = match[1].trim().split(/[\s,/]+/), rgb = parts.slice(0, 3).map(value => value.endsWith('%') ? parseFloat(value) * 2.55 : Number(value))
+      const alpha = parts[3] === undefined ? 1 : parts[3].endsWith('%') ? parseFloat(parts[3]) / 100 : Number(parts[3])
+      return parts.length >= 3 && parts.length <= 4 && [...rgb, alpha].every(Number.isFinite) ? [rgb[0], rgb[1], rgb[2], alpha] : null
+    }
+    const over = (front: RGBA, back: RGBA): RGBA => {
+      const alpha = front[3] + back[3] * (1 - front[3])
+      return [0, 1, 2].map(index => alpha ? (front[index] * front[3] + back[index] * back[3] * (1 - front[3])) / alpha : 0).concat(alpha) as RGBA
+    }
+    const luminance = (rgba: RGBA) => rgba.slice(0, 3).map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+      .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0)
+    const contrast = (first: RGBA, second: RGBA) => (Math.max(luminance(first), luminance(second)) + .05) / (Math.min(luminance(first), luminance(second)) + .05)
+    const surface = (start: HTMLElement | null) => {
+      const layers = []
+      for (let element = start; element; element = element.parentElement) {
+        const style = getComputedStyle(element)
+        layers.unshift({ tag: element.tagName, className: element.className, raw: style.backgroundColor, rgba: parse(style.backgroundColor), image: style.backgroundImage, opacity: style.opacity })
+      }
+      let startIndex = -1
+      layers.forEach((layer, index) => { if (layer.rgba?.[3] === 1) startIndex = index })
+      const unsupported = layers.filter(layer => Number(layer.opacity) !== 1).map(layer => `opacity:${layer.opacity}:${layer.className}`)
+      if (startIndex < 0) unsupported.push('No opaque background establishes the painted surface')
+      let rgba: RGBA = [0, 0, 0, 0]
+      for (const layer of layers.slice(Math.max(0, startIndex))) {
+        if (!layer.rgba || layer.image !== 'none') unsupported.push(`background:${layer.raw}:${layer.image}:${layer.className}`)
+        if (layer.rgba) rgba = over(layer.rgba, rgba)
+      }
+      return { layers, rgba, unsupported }
+    }
+    const outside = surface(selected.parentElement), inside = surface(selected), ring = parse(css.outlineColor)
+    const ratios = ring ? [outside, inside].map(paint => contrast(over(ring, paint.rgba), paint.rgba)) : []
+    const probe = document.createElement('span'); probe.style.color = 'var(--dbw-accent)'; probe.style.visibility = 'hidden'; probe.style.position = 'fixed'
+    selected.parentElement!.append(probe)
+    let accent: RGBA | null
+    try { accent = parse(getComputedStyle(probe).color) } finally { probe.remove() }
+    return { inner: [innerWidth, innerHeight], dpr: devicePixelRatio, theme: document.documentElement.dataset.theme,
+      palette: document.documentElement.getAttribute('data-knowbook-theme-switcher'), toolbar: rectangle(toolbar), rowCount: rows.length, groups, controls,
       searchWidth: input.clientWidth - parseFloat(inputCss.paddingLeft) - parseFloat(inputCss.paddingRight),
       group: { bounds: rectangle(selected), selectedText: selected.selectedOptions[0]?.textContent, value: selected.value,
         title: selected.getAttribute('title'), ariaLabel: selected.getAttribute('aria-label'), requiredNativeWidth, maxWidth: css.maxWidth,
         options: Array.from(selected.options).map(option => ({ value: option.value, text: option.textContent })),
-        focusVisible, outline: { extent, width: css.outlineWidth, offset: css.outlineOffset, color: css.outlineColor, style: css.outlineStyle },
+        focusVisible, hovered: selected.matches(':hover'), outline: { extent, width: css.outlineWidth, offset: css.outlineOffset, color: css.outlineColor, style: css.outlineStyle },
+        contrast: { ring, accent, outside, inside, ratios, minimum: ratios.length ? Math.min(...ratios) : null },
+        ancestors, ringBounds: { left: box.left - extent, right: box.right + extent, top: box.top - extent, bottom: box.bottom + extent },
         clip: { left, top, right, bottom }, clipped: box.left - extent < left - .5 || box.top - extent < top - .5 || box.right + extent > right + .5 || box.bottom + extent > bottom + .5 },
       selectedRecords: document.querySelectorAll('tbody tr.is-selected').length,
       horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth }
   })
-  writeFileSync(info.outputPath(`${phase}.json`), JSON.stringify({ phase, state, native, tempRoot, layout }, null, 2))
+  const box = layout.group.bounds, margin = layout.group.outline.extent + 2
+  const x = Math.max(0, box.left - margin), y = Math.max(0, box.top - margin)
+  const focusCrop = state.focused ? { x, y, width: Math.min(layout.inner[0], box.right + margin) - x, height: Math.min(layout.inner[1], box.bottom + margin) - y } : null
+  writeFileSync(info.outputPath(`${phase}.json`), JSON.stringify({ phase, state, native, tempRoot, layout, focusCrop }, null, 2))
   await page.screenshot({ path: info.outputPath(`${phase}.png`) })
   await select.screenshot({ path: info.outputPath(`${phase}-native-select.png`) })
-  if (state.focused) {
-    const box = layout.group.bounds, margin = layout.group.outline.extent + 2
-    const x = Math.max(0, box.left - margin), y = Math.max(0, box.top - margin)
-    await page.screenshot({ path: info.outputPath(`${phase}-native-focus.png`), clip: {
-      x, y, width: Math.min(layout.inner[0], box.right + margin) - x, height: Math.min(layout.inner[1], box.bottom + margin) - y } })
-  }
+  if (focusCrop) await page.screenshot({ path: info.outputPath(`${phase}-native-focus.png`), clip: focusCrop })
   expect(native.userData.toLowerCase()).toBe(tempRoot.toLowerCase()); expect(native.windows).toHaveLength(1)
   expect(native.windows[0].minimum).toEqual([760, 760]); expect(native.windows[0].content).toEqual(layout.inner)
   expect(native.windows[0].bounds.width).toBe(native.windows[0].size[0]); expect(native.windows[0].bounds.height).toBe(native.windows[0].size[1])
@@ -213,7 +259,13 @@ async function record(page: Page, app: ElectronApplication, tempRoot: string, in
     await expect(select).toBeFocused(); expect(layout.group.focusVisible).toBe(true)
     expect(layout.group.outline.style).not.toBe('none'); expect(parseFloat(layout.group.outline.width)).toBeGreaterThan(0)
     expect(layout.group.clipped, 'Real Tab focus outline remains fully inside clipping ancestors').toBe(false)
+    expect(layout.group.outline.style).toBe('solid'); expect(parseFloat(layout.group.outline.width)).toBe(2); expect(parseFloat(layout.group.outline.offset)).toBe(2)
+    expect(layout.group.contrast.ring).not.toBeNull(); expect(layout.group.contrast.accent).not.toBeNull()
+    expect(layout.group.contrast.ring).toEqual(layout.group.contrast.accent); expect(layout.group.contrast.ring![3]).toBe(1)
+    expect(layout.group.contrast.outside.unsupported).toEqual([]); expect(layout.group.contrast.inside.unsupported).toEqual([])
+    expect(layout.group.contrast.minimum).not.toBeNull(); expect(layout.group.contrast.minimum!).toBeGreaterThanOrEqual(3)
   }
+  if (state.hovered !== undefined) expect(layout.group.hovered).toBe(state.hovered)
   return layout
 }
 
@@ -277,7 +329,14 @@ for (const { language, theme } of [{ language: 'en-US', theme: 'light' }, { lang
         await selectSource(page, language, custom)
         for (const width of [760, 1280]) {
           await resize(page, app, width); await focusGroup(page)
-          await record(page, app, tempRoot, info, language, `${custom ? 'custom' : 'catalog'}-${width}-clean`, { ...normal, focused: true })
+          const clean = await record(page, app, tempRoot, info, language, `${custom ? 'custom' : 'catalog'}-${width}-clean`, { ...normal, focused: true })
+          if (custom && width === 760) {
+            const box = clean.group.bounds
+            await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2)
+            await record(page, app, tempRoot, info, language, 'custom-760-clean-hover', { ...normal, focused: true, hovered: true })
+            const input = (await page.locator('.dbw-main-search input').boundingBox())!
+            await page.mouse.move(input.x + input.width / 2, input.y + input.height / 2)
+          }
           await page.locator('.dbw-main-search input').fill('Original'); await focusGroup(page)
           await record(page, app, tempRoot, info, language, `${custom ? 'custom' : 'catalog'}-${width}-dirty`, { ...normal, query: 'Original', dirty: true, focused: true })
           await reset(page)
@@ -313,3 +372,43 @@ for (const { language, theme } of [{ language: 'en-US', theme: 'light' }, { lang
     }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
   })
 }
+
+test('native Group focus remains readable in all six real palettes @electron', async ({}, info) => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.'); test.setTimeout(180_000)
+  await withElectronApp(async ({ page, app, tempRoot }) => {
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+    const language = 'en-US', fixture = await prepare(page, language, 'light'), text = getDatabaseWorkspaceText(language)
+    await selectSource(page, language, true); await resize(page, app, 760)
+    await expect.poll(() => page.evaluate(async () => (await window.knowbook.listSystemPlugins())
+      .find(plugin => plugin.pluginId === 'theme-switcher')?.runtimeStatus)).toBe('active')
+    const before = await stored(page, app, language); await installProbe(app)
+    writeFileSync(info.outputPath('palette-before.json'), JSON.stringify(before, null, 2))
+    const calls = [], select = page.locator('.dbw-toolbar-select select')
+    for (const themeId of ['cloud', 'paper', 'moss', 'bay', 'midnight', 'violet']) {
+      const call = await page.evaluate(async themeId => {
+        const plugin = (await window.knowbook.listSystemPlugins()).find(plugin => plugin.pluginId === 'theme-switcher')!
+        const request = { pluginId: plugin.pluginId, revisionHash: `sha256:${plugin.currentArtifactSha256}`, method: 'set-theme', input: { themeId } }
+        return { request, response: await window.knowbook.invokeSystemPluginMain(request) }
+      }, themeId)
+      calls.push(call); writeFileSync(info.outputPath('palette-calls.json'), JSON.stringify(calls, null, 2))
+      await expect(page.locator('html')).toHaveAttribute('data-knowbook-theme-switcher', themeId)
+      await focusGroup(page); await keyboardGroup(page, '')
+      await record(page, app, tempRoot, info, language, `${themeId}-no-group`, { value: '', name: text.noGrouping, query: '', dirty: false, focused: true })
+      await keyboardGroup(page, fixture.stageId)
+      const stage = { value: fixture.stageId, name: fixture.stageName, query: '', dirty: true, focused: true }
+      const layout = await record(page, app, tempRoot, info, language, `${themeId}-stage`, stage)
+      // Use the measured, already exposed target without locator auto-scrolling.
+      const box = layout.group.bounds
+      await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2)
+      await expect.poll(() => select.evaluate(element => element.matches(':hover'))).toBe(true)
+      await page.keyboard.press('Shift+Tab'); await expect(select).not.toBeFocused()
+      await page.keyboard.press('Tab'); await expect(select).toBeFocused()
+      await record(page, app, tempRoot, info, language, `${themeId}-hover-keyboard-return`, { ...stage, hovered: true })
+      await keyboardGroup(page, ''); await expect(page.locator('.dbw-save-button')).toBeDisabled()
+      await expect(page.locator('.dbw-save-actions > .dbw-quiet-button')).toHaveCount(0)
+    }
+    const after = await stored(page, app, language), requests = await writes(app)
+    writeFileSync(info.outputPath('palette-persistence.json'), JSON.stringify({ scope: 'Business API/schema/nine tables; explicit theme calls may write plugin KV.', before, after, requests, calls }, null, 2))
+    expect(after).toEqual(before); expect(requests).toEqual([]); expect(errors).toEqual([])
+  })
+})

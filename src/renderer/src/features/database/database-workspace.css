@@ -1187,3 +1187,8 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 .page-database .dbw-shell .dbw-search-field > button:focus-visible {
   outline-color: var(--dbw-accent);
 }
+
+/* Keep the database grouping focus clearly visible. */
+.page-database .dbw-toolbar > .dbw-toolbar-select select:focus-visible {
+  outline-color: var(--dbw-accent);
+}
