@@ -1095,3 +1095,17 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
     padding-inline: 7px;
   }
 }
+
+/* Compact database view tabs with focus kept inside the scroll strip. */
+.page-database .dbw-view-tabs {
+  min-height: 44px;
+  padding-top: 4px;
+}
+
+.page-database .dbw-view-tabs :is(.dbw-view-tab, .dbw-view-tab-menu, .dbw-new-view-menu > summary):focus-visible {
+  outline-color: var(--dbw-accent);
+}
+
+.page-database .dbw-view-tab-list :is(.dbw-view-tab, .dbw-view-tab-menu):focus-visible {
+  outline-offset: -2px;
+}

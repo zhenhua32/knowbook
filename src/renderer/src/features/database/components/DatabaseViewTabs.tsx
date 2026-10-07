@@ -1,10 +1,21 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react'
 import type { DatabaseSavedView, DatabaseSavedViewLayoutMode } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { useViewportMenuPosition } from '../../../hooks/useViewportMenuPosition'
 import { isImeKeyboardEvent } from '../../../utils/imeKeyboard'
 
 type ViewMenu = { viewId: string; databaseId: string; trigger: HTMLButtonElement; x: number; y: number }
+
+function revealFocusedViewTab(event: ReactFocusEvent<HTMLDivElement>): void {
+  const strip = event.currentTarget, target = event.target
+  if (!target.matches('button.dbw-view-tab, button.dbw-view-tab-menu') || !target.matches(':focus-visible')) return
+  const bounds = target.getBoundingClientRect(), viewport = strip.getBoundingClientRect()
+  const left = viewport.left + strip.clientLeft, right = left + strip.clientWidth
+  // Native focus scrolling can leave a long tab partly clipped. Reveal its
+  // whole button inside this strip without moving the outer page vertically.
+  if (bounds.left < left) strip.scrollLeft += bounds.left - left
+  else if (bounds.right > right) strip.scrollLeft += bounds.right - right
+}
 
 function visible(element: HTMLElement): boolean {
   if (!element.isConnected || element.closest('[hidden], [inert], [aria-hidden="true"]') || !element.getClientRects().length) return false
@@ -106,7 +117,7 @@ export function DatabaseViewTabs({
       onCompositionStartCapture={event => { composingTarget.current = event.target }}
       onCompositionEndCapture={() => { composingTarget.current = null }}
       onBlurCapture={event => { if (composingTarget.current === event.target) composingTarget.current = null }}>
-      <div className="dbw-view-tab-list">
+      <div className="dbw-view-tab-list" onFocus={revealFocusedViewTab}>
         {savedViews.length === 0 ? (
           <button aria-current="page" className="dbw-view-tab is-active" type="button">
             <LayoutIcon layout="table" />
@@ -205,15 +216,24 @@ function ViewActionsMenu({ id, anchor, view, text, onClose, onRename, onDelete }
       if (!menu.contains(target) && !anchor.trigger.contains(target)) close.current()
     }
     const dismiss = () => close.current()
+    const scrolled = (event: Event) => {
+      if (event.target === anchor.trigger.closest('.dbw-view-tab-list')) {
+        const bounds = anchor.trigger.getBoundingClientRect()
+        // Focus scrolling can finish before the menu opens but dispatch later.
+        // Its anchor is already measured at that position, so keep the menu.
+        if (Math.abs(bounds.left - anchor.x) < 0.5 && Math.abs(bounds.bottom + 4 - anchor.y) < 0.5) return
+      }
+      dismiss()
+    }
     owner.addEventListener('pointerdown', outside, true)
     owner.addEventListener('focusin', outside, true)
-    owner.addEventListener('scroll', dismiss, true)
+    owner.addEventListener('scroll', scrolled, true)
     window.addEventListener('resize', dismiss)
     window.addEventListener('blur', dismiss)
     return () => {
       owner.removeEventListener('pointerdown', outside, true)
       owner.removeEventListener('focusin', outside, true)
-      owner.removeEventListener('scroll', dismiss, true)
+      owner.removeEventListener('scroll', scrolled, true)
       window.removeEventListener('resize', dismiss)
       window.removeEventListener('blur', dismiss)
     }

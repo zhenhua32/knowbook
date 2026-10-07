@@ -293,6 +293,66 @@ test('DatabaseViewTabs yields handled and IME keys until composition ends or mov
   }
 })
 
+test('DatabaseViewTabs keeps a menu usable when a delayed strip scroll leaves its opener in place', async () => {
+  for (const locale of ['en-US', 'zh-CN'] as const) {
+    await withViewTabs(locale, async context => {
+      const before = structuredClone(context.data)
+      const list = context.document.querySelector<HTMLElement>('.dbw-view-tab-list')!
+      const delayedScroll = new context.window.Event('scroll')
+      const trigger = await openMenu(context), menu = popup(context, trigger)
+      const rename = action(context, trigger, context.text.rename), remove = action(context, trigger, context.text.deleteView)
+      context.focusCalls.length = 0
+      // Native focus may finish moving the strip before its scroll event is
+      // delivered. Its unchanged opener must keep the newly opened menu alive.
+      await context.change(() => list.dispatchEvent(delayedScroll))
+      assert.equal(popup(context, trigger) === menu, true)
+      assert.equal(context.document.activeElement === rename, true)
+      assert.equal(context.focusCalls.length, 0)
+      await context.key(rename, 'ArrowDown')
+      assert.equal(context.document.activeElement === remove, true)
+      await context.key(remove, 'ArrowUp')
+      assert.equal(context.document.activeElement === rename, true)
+      await context.key(rename, 'Escape')
+      closed(context, trigger)
+      assert.equal(context.document.activeElement === trigger, true)
+      const returns = context.focusCalls.filter(call => call.element === trigger)
+      assert.equal(returns.length, 1)
+      assert.equal(returns[0].options?.preventScroll, true)
+      noActions(context)
+      assert.deepEqual(context.data, before)
+    })
+  }
+})
+
+test('DatabaseViewTabs other owner scrolls still dismiss an anchored menu without restoring focus', async () => {
+  for (const mode of ['document', 'outer-container'] as const) {
+    await withViewTabs(mode === 'document' ? 'en-US' : 'zh-CN', async context => {
+      const before = structuredClone(context.data), trigger = await openMenu(context)
+      const originalBounds = trigger.getBoundingClientRect().toJSON()
+      context.focusCalls.length = 0
+      await context.change(() => {
+        const owner = mode === 'document' ? context.document : context.document.getElementById('mount')!
+        if (mode === 'outer-container') (owner as HTMLElement).scrollTop = 40
+        owner.dispatchEvent(new context.window.Event('scroll'))
+      })
+      assert.deepEqual(trigger.getBoundingClientRect().toJSON(), originalBounds,
+        'Only the tab strip may keep its menu when the opener position is unchanged')
+      closed(context, trigger)
+      assert.equal(context.focusCalls.length, 0)
+      const outside = context.document.getElementById('outside') as HTMLInputElement
+      outside.value = 'New query owner'
+      await context.change(() => outside.focus())
+      context.focusCalls.length = 0
+      await context.render()
+      assert.equal(context.document.activeElement === outside, true)
+      assert.equal(context.focusCalls.length, 0)
+      assert.equal(outside.value, 'New query owner')
+      noActions(context)
+      assert.deepEqual(context.data, before)
+    })
+  }
+})
+
 test('DatabaseViewTabs leaving the menu or changing its source, active view or owner only dismisses without cleanup focus', async () => {
   for (const mode of ['focus', 'pointer', 'list-scroll', 'resize', 'window-blur', 'active-view', 'source', 'removed-view', 'unmount'] as const) {
     await withViewTabs(mode === 'source' || mode === 'active-view' ? 'zh-CN' : 'en-US', async context => {
@@ -306,7 +366,11 @@ test('DatabaseViewTabs leaving the menu or changing its source, active view or o
         new context.window.MouseEvent('pointerdown', { bubbles: true, button: 0 })))
       if (mode === 'list-scroll') await context.change(() => {
         const list = context.document.querySelector<HTMLElement>('.dbw-view-tab-list')!
-        list.scrollLeft = 40
+        const initialScroll = list.scrollLeft, initialBounds = trigger.getBoundingClientRect()
+        // JSDOM has no layout: model the real opener moving with its strip.
+        trigger.getBoundingClientRect = () => new context.window.DOMRect(
+          initialBounds.x - (list.scrollLeft - initialScroll), initialBounds.y, initialBounds.width, initialBounds.height)
+        list.scrollLeft += 40
         list.dispatchEvent(new context.window.Event('scroll'))
       })
       if (mode === 'resize') await context.change(() => context.window.dispatchEvent(new context.window.Event('resize')))
