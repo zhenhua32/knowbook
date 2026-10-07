@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { DatabaseField, DatabaseRecord, DatabaseSourceKind } from '@shared/contracts'
 import { DATABASE_SYSTEM_FIELD_IDS } from '@shared/database-workspace'
 import type { DatabaseWorkspaceText } from '../databaseText'
 import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
+import { useDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseCardView({
   fields,
@@ -27,9 +28,11 @@ export function DatabaseCardView({
 }) {
   const summaryFields = fields.filter((field) => field.role !== 'title').slice(0, 4)
   const [limit, setLimit] = useState(120)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  useDatabaseResizeFocus(scrollRef)
 
   return (
-    <div className="dbw-card-grid" data-testid="database-card-view">
+    <div className="dbw-card-grid" data-testid="database-card-view" ref={scrollRef}>
       {records.slice(0, limit).map((record) => (
         <article className={`dbw-record-card${selectedIds.has(record.id) ? ' is-selected' : ''}`} key={record.id}>
           <label className="dbw-checkbox-hit-target dbw-card-checkbox-target">

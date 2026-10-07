@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { DatabaseField, DatabaseRecord, DatabaseSourceKind } from '@shared/contracts'
 import type { DatabaseWorkspaceText } from '../databaseText'
+import { useDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseBoardView({
   field,
@@ -22,9 +23,11 @@ export function DatabaseBoardView({
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [overGroupId, setOverGroupId] = useState<string | null>(null)
   const [groupLimits, setGroupLimits] = useState<Record<string, number>>({})
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  useDatabaseResizeFocus(scrollRef)
 
   return (
-    <div className="dbw-board" data-testid="database-board-view">
+    <div className="dbw-board" data-testid="database-board-view" ref={scrollRef}>
       {groups.map((group) => (
         <section
           className={`dbw-board-column${overGroupId === group.id ? ' is-drag-over' : ''}`}

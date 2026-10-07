@@ -1124,3 +1124,47 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
     padding-inline: 3px;
   }
 }
+
+/* Size the database data viewport from the remaining workspace height. */
+.content.page-database > :not(.dbw-shell) {
+  flex-shrink: 0;
+}
+
+.page-database .dbw-shell {
+  display: grid;
+  flex: 1 1 0;
+  min-height: min-content;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(128px, 1fr);
+}
+
+.page-database .dbw-shell:has(> .dbw-selection-toolbar) {
+  grid-template-rows: auto auto auto auto minmax(128px, 1fr);
+}
+
+.page-database .dbw-canvas {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.page-database .dbw-canvas > :is(.dbw-table-scroll, .dbw-card-grid, .dbw-board, .dbw-empty-state) {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+}
+
+.page-database .dbw-empty-state {
+  overflow: auto;
+  align-content: safe center;
+}
+
+.page-database .dbw-card-grid {
+  grid-auto-rows: minmax(min-content, auto);
+}
+
+.page-database .dbw-table :is(.catalog-cell-input, .dbw-inline-select):focus-visible {
+  outline-offset: -2px;
+}

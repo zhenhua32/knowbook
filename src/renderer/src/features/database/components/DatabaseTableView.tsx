@@ -6,6 +6,7 @@ import type { DatabaseWorkspaceText } from '../databaseText'
 import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
 import { DatabaseTextDraftCache, type DatabaseValueCommitResult } from '../model/databaseTextDrafts'
 import { DatabaseMultiSelectCellCache } from '../model/databaseMultiSelectCells'
+import { revealDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseTableView({
   documents,
@@ -70,9 +71,21 @@ export function DatabaseTableView({
   useLayoutEffect(() => {
     const node = scrollRef.current
     if (!node) return
+    let measuredHeight: number | null = null
+    let measuredHeaderHeight: number | null = null
     const update = () => {
-      setViewportHeight(node.clientHeight || 600)
-      setHeaderHeight(node.querySelector('thead')?.getBoundingClientRect().height ?? 0)
+      const height = node.clientHeight
+      const nextHeaderHeight = node.querySelector('thead')?.getBoundingClientRect().height ?? 0
+      // Resizing the data area can hide the control that caused a selection
+      // toolbar to appear. Reveal it before recalculating the virtual slice.
+      if (height > 0 && measuredHeight !== null && (height !== measuredHeight || nextHeaderHeight !== measuredHeaderHeight)) {
+        revealDatabaseResizeFocus(node, nextHeaderHeight)
+        setScrollTop(node.scrollTop)
+      }
+      measuredHeight = height
+      measuredHeaderHeight = nextHeaderHeight
+      setViewportHeight(height || 600)
+      setHeaderHeight(nextHeaderHeight)
     }
     update()
     if (typeof ResizeObserver === 'undefined') {
