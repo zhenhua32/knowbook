@@ -163,14 +163,30 @@ async function enter(page: Page, button: Locator) {
   await page.keyboard.press('Enter')
 }
 
-async function expectWholeField(field: Locator) {
+async function expectWholeField(field: Locator, feedbackState: 'visible' | 'empty' = 'visible') {
   await expect(field).toBeInViewport({ ratio: 1 })
   await expect(field.locator('input')).toBeInViewport({ ratio: 1 })
   await expect(field.locator('.settings-actions')).toBeInViewport({ ratio: 1 })
-  await expect(field.locator('.settings-bridge-copy-feedback')).toBeInViewport({ ratio: 1 })
+  const feedbackRegion = field.locator('.settings-bridge-copy-feedback')
   const actions = await field.locator('.settings-actions').boundingBox()
-  const feedback = await field.locator('.settings-bridge-copy-feedback').boundingBox()
-  expect(actions).not.toBeNull(); expect(feedback).not.toBeNull()
+  expect(actions).not.toBeNull()
+  if (feedbackState === 'empty') {
+    await expect(feedbackRegion).toBeEmpty()
+    await expect(feedbackRegion).toBeHidden()
+    expect(await feedbackRegion.boundingBox()).toBeNull()
+    const geometry = await field.evaluate(element => ({
+      feedbackHeight: element.querySelector('.settings-bridge-copy-feedback')!.getBoundingClientRect().height,
+      fieldBottom: element.getBoundingClientRect().bottom,
+      actionsBottom: element.querySelector('.settings-actions')!.getBoundingClientRect().bottom
+    }))
+    expect(geometry.feedbackHeight).toBe(0)
+    expect(Math.abs(geometry.fieldBottom - geometry.actionsBottom), 'An empty feedback region leaves no trailing row or gap').toBeLessThanOrEqual(1)
+    return
+  }
+  await expect(feedbackRegion).not.toBeEmpty()
+  await expect(feedbackRegion).toBeInViewport({ ratio: 1 })
+  const feedback = await feedbackRegion.boundingBox()
+  expect(feedback).not.toBeNull()
   expect(actions!.y + actions!.height).toBeLessThanOrEqual(feedback!.y + 1)
   expect(feedback!.y - actions!.y - actions!.height).toBeLessThan(48)
 }
@@ -366,7 +382,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(summary.locator('.app-notification-message')).toHaveText(uiText('Copy failed.', '复制失败。'))
       await record(page, app, field, current.token, testInfo, `${failedKind}-failure-toast-kept-open`)
       // Keep the persistent failure toast and the paused clock intact: no dismiss, forced click, or error scrolling.
-      await expectWholeField(field)
+      await expectWholeField(field, 'empty')
       await expectHit(copy)
       const copiesBeforeRetry = (await counts(app)).copies
       await copy.click()
@@ -384,6 +400,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect(copy).toBeEnabled()
       await expect(copy).toBeFocused()
       await expect(failure).toHaveAttribute('data-notification-id', notificationId!)
+      await expectWholeField(field, 'empty')
       await expect(current.token).toHaveAttribute('type', 'password')
       await expectNoTokenMetadata(current.tokenField, newToken)
       await record(page, app, field, current.token, testInfo, `${failedKind}-mouse-retry-with-failure-toast-preserved`)
