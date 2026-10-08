@@ -254,6 +254,9 @@ export function useAiState({
     }
 
     const requestId = ++aiAnswerRequestIdRef.current
+    // A new question also replaces its reference context. Late results or
+    // errors from the previous note search must not repopulate that context.
+    aiContextRequestIdRef.current += 1
     const isCurrentRequest = () => (
       aiAnswerRequestIdRef.current === requestId && selectedDocumentIdRef.current === requestedDocumentId
     )
@@ -264,6 +267,7 @@ export function useAiState({
     setAiFailedPrompt('')
     setAiContextError('')
     setAiContextResults([])
+    setAiContextSearching(false)
     setAiContextHasSearched(false)
 
     try {

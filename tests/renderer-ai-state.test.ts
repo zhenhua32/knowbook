@@ -244,6 +244,95 @@ for (const outcome of ['success', 'failure'] as const) {
   })
 }
 
+for (const outcome of ['success', 'failure'] as const) {
+  for (const action of ['question', 'retry'] as const) {
+    test(`starting an AI ${action} discards a previous note search's late ${outcome}`, async () => {
+      await withAiState(async ({ state, answers, searches }) => {
+        let answer!: Promise<void>
+        if (action === 'retry') {
+          await act(async () => { answer = state().askAiOnSelectedDocument() })
+          await act(async () => { answers[0].reject(new Error('请求失败')); await answer })
+        }
+        await act(async () => state().setAiPromptDraft('旧检索关键词'))
+        let oldSearch!: Promise<void>
+        await act(async () => { oldSearch = state().findRelatedNotesForPrompt() })
+        assert.equal(state().aiContextSearching, true)
+        await act(async () => state().setAiPromptDraft('新问题'))
+        await act(async () => { answer = action === 'retry'
+          ? state().retryFailedAiRequest() : state().askAiOnSelectedDocument() })
+        const expectedPrompt = action === 'retry' ? '查找资料' : '新问题'
+        assert.equal(answers.at(-1)!.input.prompt, expectedPrompt)
+        assert.equal(state().aiContextSearching, false, 'a replaced search must not keep the new question busy')
+        assert.equal(state().aiContextHasSearched, false)
+        await act(async () => { answers.at(-1)!.resolve({ answer: '当前问题回答', references: [] }); await answer })
+        await act(async () => {
+          if (outcome === 'success') searches[0].resolve([relatedNote('旧检索资料')])
+          else searches[0].reject(new Error('旧检索失败'))
+          await oldSearch
+        })
+        assert.equal(state().aiAnswer, '当前问题回答')
+        assert.equal(state().aiAnsweredPrompt, expectedPrompt)
+        assert.deepEqual(state().aiContextResults, [])
+        assert.equal(state().aiContextError, '')
+        assert.equal(state().aiContextSearching, false)
+        assert.equal(state().aiContextHasSearched, false)
+      })
+    })
+  }
+
+  test(`an obsolete note search's ${outcome} cannot finish a search started after the new question`, async () => {
+    await withAiState(async ({ state, answers, searches }) => {
+      let oldSearch!: Promise<void>
+      let answer!: Promise<void>
+      let newSearch!: Promise<void>
+      await act(async () => { oldSearch = state().findRelatedNotesForPrompt() })
+      await act(async () => state().setAiPromptDraft('新问题'))
+      await act(async () => {
+        answer = state().askAiOnSelectedDocument()
+        newSearch = state().findRelatedNotesForPrompt()
+      })
+      assert.equal(searches[1].input.query, '新问题')
+      await act(async () => {
+        if (outcome === 'success') searches[0].resolve([relatedNote('旧检索资料')])
+        else searches[0].reject(new Error('旧检索失败'))
+        await oldSearch
+      })
+      assert.equal(state().aiContextSearching, true, 'the old finally must not cancel the new search loading state')
+      assert.equal(state().aiContextHasSearched, false)
+      assert.deepEqual(state().aiContextResults, [])
+      assert.equal(state().aiContextError, '')
+      await act(async () => {
+        searches[1].resolve([relatedNote('新问题资料')])
+        answers[0].resolve({ answer: '新问题回答', references: [] })
+        await Promise.all([newSearch, answer])
+      })
+      assert.deepEqual(state().aiContextResults, [relatedNote('新问题资料')])
+      assert.equal(state().aiContextError, '')
+      assert.equal(state().aiContextSearching, false)
+      assert.equal(state().aiContextHasSearched, true)
+      assert.equal(state().aiAnswer, '新问题回答')
+    })
+  })
+}
+
+test('empty questions and retries without a failed question preserve an active local note search', async () => {
+  await withAiState(async ({ state, answers, searches }) => {
+    let search!: Promise<void>
+    await act(async () => { search = state().findRelatedNotesForPrompt() })
+    await act(async () => state().setAiPromptDraft('   '))
+    await act(async () => {
+      await state().askAiOnSelectedDocument()
+      await state().retryFailedAiRequest()
+    })
+    assert.equal(answers.length, 0)
+    assert.equal(state().aiContextSearching, true)
+    await act(async () => { searches[0].resolve([relatedNote('仍有效的本地资料')]); await search })
+    assert.deepEqual(state().aiContextResults, [relatedNote('仍有效的本地资料')])
+    assert.equal(state().aiContextHasSearched, true)
+    assert.equal(state().aiContextSearching, false)
+  })
+})
+
 test('current AI errors still appear and finish their own loading states', async () => {
   await withAiState(async ({ state, answers, searches }) => {
     let answerPending!: Promise<void>
@@ -355,6 +444,9 @@ for (const availability of [{ enabled: false, hasApiKey: true }, { enabled: true
       let search!: Promise<void>
       await act(async () => { search = state().findRelatedNotesForPrompt() })
       assert.equal(searches.length, 1)
+      await act(async () => { await state().askAiOnSelectedDocument() })
+      assert.equal(answers.length, 0)
+      assert.equal(state().aiContextSearching, true, 'unavailable AI must not invalidate a valid local search')
       await act(async () => { searches[0].resolve([]); await search })
       assert.equal(state().aiContextHasSearched, true)
     }, availability)

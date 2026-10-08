@@ -34,16 +34,16 @@ async function installDeferredAi(app: ElectronApplication): Promise<void> {
     ipcMain.on('knowbook:test-ai-request-ids', (_event, reply: (ids: { answers: string[]; searches: string[] }) => void) => {
       reply({ answers: answers.map(item => item.documentId), searches: searches.map(item => item.documentId) })
     })
-    ipcMain.on('knowbook:test-settle-ai', (_event, input: { index: number; fail: boolean; marker: string }) => {
+    ipcMain.on('knowbook:test-settle-ai', (_event, input: { index: number; fail: boolean; marker: string; scope?: 'answer' | 'search' }) => {
       const answer = answers[input.index]
       const search = searches[input.index]
-      if (!answer || !search) throw new Error(`Missing deferred AI request ${input.index}`)
+      if ((input.scope !== 'search' && !answer) || (input.scope !== 'answer' && !search)) throw new Error(`Missing deferred AI request ${input.index}`)
       if (input.fail) {
-        answer.reject(new Error(`${input.marker} answer error`))
-        search.reject(new Error(`${input.marker} search error`))
+        if (input.scope !== 'search') answer.reject(new Error(`${input.marker} answer error`))
+        if (input.scope !== 'answer') search.reject(new Error(`${input.marker} search error`))
       } else {
-        answer.resolve({ answer: `${input.marker} answer`, references: [] })
-        search.resolve([{
+        if (input.scope !== 'search') answer.resolve({ answer: `${input.marker} answer`, references: [] })
+        if (input.scope !== 'answer') search.resolve([{
           documentId: 'test-related-document', title: `${input.marker} related note`, path: input.marker,
           summary: '', snippet: `${input.marker} snippet`, score: 1
         }])
@@ -72,8 +72,8 @@ async function startRequests(page: Page, app: ElectronApplication, expectedIds: 
   const search = panel.getByRole('button', { name: uiText('Find related notes', '查找相关笔记') })
   await expect(ask).toBeEnabled()
   await expect(search).toBeEnabled()
-  await search.click()
   await ask.click()
+  await search.click()
   await expect.poll(() => app.evaluate(({ ipcMain }) => new Promise((resolve) => {
     ipcMain.emit('knowbook:test-ai-request-ids', null, resolve)
   }))).toEqual({ answers: expectedIds, searches: expectedIds })
@@ -87,10 +87,10 @@ async function expectBusyAndEmpty(page: Page): Promise<void> {
   await expect(panel.locator('.ai-answer, .ai-context-card, .ai-request-error, .document-aux-ai-search-error')).toHaveCount(0)
 }
 
-async function settleRequests(app: ElectronApplication, index: number, marker: string, fail = false): Promise<void> {
+async function settleRequests(app: ElectronApplication, index: number, marker: string, fail = false, scope?: 'answer' | 'search'): Promise<void> {
   await app.evaluate(({ ipcMain }, input) => {
     ipcMain.emit('knowbook:test-settle-ai', null, input)
-  }, { index, marker, fail })
+  }, { index, marker, fail, scope })
 }
 
 async function expectCurrentResults(page: Page, marker: string): Promise<void> {
@@ -138,3 +138,57 @@ test('returning to a document rejects results from its previous AI session @elec
     await expectCurrentResults(page, 'Current A')
   })
 })
+
+for (const surface of ['workspace', 'auxiliary'] as const) {
+  for (const outcome of ['success', 'failure'] as const) {
+    const order = surface === 'workspace' ? 'before searching again' : 'while a newer search is pending'
+    test(`${surface} new AI question discards an older related-note ${outcome} ${order} @electron`, async ({}, testInfo) => {
+      await withElectronApp(async ({ page, app }) => {
+        const ids = await createDocuments(page)
+        await installDeferredAi(app)
+        await openDocumentAssistant(page, 'AI Context A')
+        if (surface === 'workspace') await page.getByTitle(uiText('AI Assistant', 'AI 助手')).first().click()
+        const panel = surface === 'workspace' ? page.locator('.ai-document-workspace') : page.locator('.document-aux-ai-section')
+        if (surface === 'workspace') await panel.locator('.ai-related-notes > summary').click()
+        const prompt = panel.locator('textarea')
+        const find = panel.getByRole('button', { name: uiText('Find related notes', '查找相关笔记'), exact: true })
+        const searching = panel.getByRole('button', { name: uiText('Searching...', '搜索中...'), exact: true })
+        const references = panel.locator('.ai-context-card, .ai-context-error, .document-aux-ai-search-error')
+        await prompt.fill('Obsolete question about the first topic')
+        await find.click()
+        await expect(searching).toBeDisabled()
+        await prompt.fill('Current question about a different topic')
+        await prompt.press('Control+Enter')
+        await expect(panel.getByRole('button', { name: uiText('Thinking...', '思考中...'), exact: true })).toBeDisabled()
+        await expect(find).toBeEnabled()
+        await expect(references).toHaveCount(0)
+        if (surface === 'auxiliary') {
+          await find.click()
+          await expect(searching).toBeDisabled()
+        }
+        await expect.poll(() => app.evaluate(({ ipcMain }) => new Promise(resolve => {
+          ipcMain.emit('knowbook:test-ai-request-ids', null, resolve)
+        }))).toEqual({ answers: [ids.a], searches: surface === 'workspace' ? [ids.a] : [ids.a, ids.a] })
+        await settleRequests(app, 0, 'Obsolete topic', outcome === 'failure', 'search')
+        await settleRequests(app, 0, 'Current question', false, 'answer')
+        await expect(panel.locator('.ai-answer-content')).toHaveText('Current question answer')
+        // Let the older IPC catch/finally reach the renderer before checking ownership.
+        await page.waitForTimeout(200)
+        if (surface === 'auxiliary') await expect(searching).toBeDisabled()
+        else await expect(find).toBeEnabled()
+        await expect(references).toHaveCount(0)
+        if (surface === 'workspace') {
+          await find.click()
+          await expect(searching).toBeDisabled()
+        }
+        await settleRequests(app, 1, 'Current topic', false, 'search')
+        await expect(panel.locator('.ai-context-title')).toHaveText('Current topic related note')
+        await expect(find).toBeEnabled()
+        await expect(panel.locator('.ai-context-error, .document-aux-ai-search-error')).toHaveCount(0)
+        await expect(prompt).toHaveValue('Current question about a different topic')
+        await expect(panel.locator('.ai-answer-content')).toHaveText('Current question answer')
+        await panel.screenshot({ path: testInfo.outputPath(`${surface}-current-sources-after-old-${outcome}.png`) })
+      }, { PLAYWRIGHT_ELECTRON_LOCALE: surface === 'workspace' ? 'en-US' : 'zh-CN' })
+    })
+  }
+}
