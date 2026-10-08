@@ -82,6 +82,8 @@
 
 /* Reserve readable identity space before actions wrap within the header. */
 .dbw-identity { min-width: 0; flex: 1 1 280px; gap: 14px; }
+/* Keep the catalog's identifying description readable before actions wrap. */
+.dbw-header-catalog > .dbw-identity { flex-basis: max-content; }
 .dbw-database-mark {
   display: grid;
   flex: 0 0 auto;

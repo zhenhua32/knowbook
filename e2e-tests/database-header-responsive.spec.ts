@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
+import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type Language = 'en-US' | 'zh-CN'
@@ -97,7 +98,7 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
   const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
     visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable()
   })))
-  const state = await page.locator('.dbw-header').evaluate((header, { language, custom }) => {
+  const state = await page.locator('.dbw-header').evaluate((header, { language, custom, catalogDescription }) => {
     const box = (element: Element) => {
       const rect = element.getBoundingClientRect()
       return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height }
@@ -169,9 +170,9 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
       header: box(header), identity: box(header.querySelector('.dbw-identity')!), actions: box(header.querySelector('.dbw-header-actions')!),
       title: { ...textMetric(title, custom ? title.textContent ?? '' : language === 'zh-CN' ? '全部文档' : 'All documents'),
         tooltip: header.querySelector<HTMLButtonElement>('.dbw-source-trigger')!.title },
-      description: textMetric(description, custom ? description.textContent ?? '' : language === 'zh-CN' ? '工作区中的全部文档，可使用字段进行分类和组织。' : 'All workspace documents'),
+      description: textMetric(description, custom ? description.textContent ?? '' : catalogDescription),
       buttons, horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1 }
-  }, { language, custom })
+  }, { language, custom, catalogDescription: getDatabaseWorkspaceText(language).catalogDescription })
   const stored = await readStored(page, app, language)
   const path = info.outputPath(phase + '.json')
   writeFileSync(path, JSON.stringify({ phase, windows, writes, state, stored }, null, 2))
@@ -292,14 +293,14 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       // Readability, not a particular flex basis or forced row count: the
       // catalog title and its identifying description must actually be visible.
       expect(narrow.state.title.text).toBe(language === 'zh-CN' ? '全部文档' : 'All documents')
-      expect((narrow.state.description.text ?? '').startsWith(narrow.state.description.expected)).toBe(true)
+      expect(narrow.state.description.text).toBe(narrow.state.description.expected)
       expect(narrow.state.title.visibleGlyphs).toBe(narrow.state.title.glyphCount)
       expect(narrow.state.title.scrollWidth).toBeLessThanOrEqual(narrow.state.title.clientWidth + 1)
       expect(narrow.state.description.visibleGlyphs).toBe(narrow.state.description.glyphCount)
-      if (language === 'zh-CN') expect(narrow.state.description.scrollWidth).toBeLessThanOrEqual(narrow.state.description.clientWidth + 1)
+      expect(narrow.state.description.scrollWidth).toBeLessThanOrEqual(narrow.state.description.clientWidth + 1)
       expect(narrow.state.actions.top).toBeGreaterThanOrEqual(narrow.state.identity.bottom - 1)
 
-      // The readable taller Header must leave real content usable below it.
+      // The readable Header must leave one reachable data viewport below it.
       // Wheel the actual table port, prove the last title is reachable, then
       // return to the first row without navigating or changing any record.
       const port = page.getByTestId('database-table-view')
@@ -313,7 +314,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.mouse.wheel(0, 2_000)
       await expect.poll(() => canvas.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
       const outerScroll = await record(page, app, info, language, language + '-real-outer-wheel-before-inner-table-scroll')
-      expect(outerScroll.state.scroll.canvas).toBeGreaterThan(0)
+      expect(outerScroll.state.scroll.canvas).toBe(0)
       expect(outerScroll.state.scroll.ancestors.find(ancestor => ancestor.className === 'dbw-shell')?.scrollTop).toBe(0)
       expect(outerScroll.writes).toEqual([])
       expect(outerScroll.stored).toEqual(before)
@@ -333,9 +334,8 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(content.surface.scrollTop).toBeGreaterThan(0)
       await page.mouse.wheel(0, -1_000)
       await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(0)
-      // A legitimate outer page scroll may be needed to reach a 420px table
-      // port below the Header. Restore it through real wheel input on padding,
-      // rather than demanding that the whole port fit beside the Header.
+      // Wheel input on page padding must leave the workbench in place;
+      // the table port owns data scrolling beside the visible Header.
       await page.mouse.move(canvasBox.x + 3, Math.max(3, canvasBox.y + 80))
       await page.mouse.wheel(0, -2_000)
       await expect.poll(() => canvas.evaluate(element => element.scrollTop)).toBe(0)

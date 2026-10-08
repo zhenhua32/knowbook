@@ -108,7 +108,7 @@ export function DatabaseHeader({
   const customSources = filteredSources.filter((source) => source.kind === 'custom')
 
   return (
-    <header className="dbw-header" ref={rootRef}
+    <header className={`dbw-header${currentSource.kind === 'document-catalog' ? ' dbw-header-catalog' : ''}`} ref={rootRef}
       onCompositionStartCapture={event => { composingTarget.current = event.target }}
       onCompositionEndCapture={() => { composingTarget.current = null }}
       onBlurCapture={event => { if (composingTarget.current === event.target) composingTarget.current = null }}>

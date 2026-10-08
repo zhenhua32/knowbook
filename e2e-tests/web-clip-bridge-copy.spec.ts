@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from 'electron'
 import type { ElectronApplication } from 'playwright'
 import type { UpdateWebClipBridgeSettingsInput, WebClipBridgeStatus } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { revealWholeField } from './helpers/viewport'
 
 type ReadHandler = (event: IpcMainInvokeEvent) => WebClipBridgeStatus | Promise<WebClipBridgeStatus>
 type MutationHandler = (event: IpcMainInvokeEvent, input: UpdateWebClipBridgeSettingsInput) => WebClipBridgeStatus | Promise<WebClipBridgeStatus>
@@ -59,13 +60,18 @@ async function copiedExactText(app: ElectronApplication, expected: string) {
 }
 
 async function finishCopy(app: ElectronApplication, failure: 'empty' | 'obsolete' | null = null) {
-  await app.evaluate((_electron, failure) => {
+  const acknowledgement = await app.evaluate((_electron, failure) => {
     const pending = (globalThis as ProbeGlobal).__knowbookBridgeCopyProbe!.pendingCopies.shift()
     if (!pending) throw new Error('No pending clipboard write')
-    if (failure === 'empty') pending.reject(new Error(''))
-    else if (failure === 'obsolete') pending.reject(new Error('Error: Obsolete clipboard failure'))
-    else pending.resolve()
+    // Acknowledge the inspector request before settling its separate deferred IPC fixture.
+    setImmediate(() => {
+      if (failure === 'empty') pending.reject(new Error(''))
+      else if (failure === 'obsolete') pending.reject(new Error('Error: Obsolete clipboard failure'))
+      else pending.resolve()
+    })
+    return { scheduled: true, failure }
   }, failure)
+  expect(acknowledgement).toEqual({ scheduled: true, failure })
 }
 
 async function finishMutation(app: ElectronApplication) {
@@ -137,7 +143,10 @@ async function expectHit(control: Locator) {
 }
 
 async function enter(page: Page, control: Locator) {
-  await control.scrollIntoViewIfNeeded()
+  const copyField = control.locator('xpath=ancestor::*[@data-copy-kind][1]')
+  // Reveal the input, action and feedback together before checking the exact viewport boundary.
+  if (await copyField.count()) await revealWholeField(page, copyField)
+  else await control.scrollIntoViewIfNeeded()
   await expectHit(control)
   await control.focus()
   await expect(control).toBeFocused()
@@ -223,7 +232,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       const controls = await openBridge(page)
       const endpointText = await controls.endpoint.inputValue()
       const originalToken = await controls.token.inputValue()
-      await controls.copyEndpoint.scrollIntoViewIfNeeded()
+      await revealWholeField(page, controls.endpointField)
       await expectHit(controls.copyEndpoint)
       await controls.copyEndpoint.click()
       await expect.poll(async () => (await counts(app)).pendingCopies).toBe(1)
@@ -355,7 +364,7 @@ test('copy acknowledgements respect user focus changes and become silent after a
     await expect(controls.copyToken).toBeEnabled()
 
     const originalToken = await controls.token.inputValue()
-    await controls.copyToken.scrollIntoViewIfNeeded()
+    await revealWholeField(page, controls.tokenField)
     await expectHit(controls.copyToken)
     await controls.copyToken.click()
     await expect.poll(async () => (await counts(app)).pendingCopies).toBe(1)

@@ -208,10 +208,25 @@ async function clearSelection(page: Page, language: Language): Promise<void> {
 
 async function openView(page: Page, language: Language, layout: Layout): Promise<void> {
   await clearSelection(page, language)
-  await page.locator('.dbw-view-tab').filter({ hasText: `Viewport ${layout}` }).click()
+  const target = await page.evaluate(async layout => {
+    const sourceId = localStorage.getItem('knowbook.database.last-source')!
+    const views = await window.knowbook.getDatabaseSavedViews(sourceId)
+    return { sourceId, viewId: views.find(view => view.name === `Viewport ${layout}`)!.id }
+  }, layout)
+  const tab = page.locator('.dbw-view-tab').filter({ hasText: `Viewport ${layout}` })
+  await tab.click()
+  await expect(tab).toHaveAttribute('aria-current', 'page')
+  await expect.poll(() => page.evaluate(sourceId => localStorage.getItem(`knowbook.database.last-view.${sourceId}`), target.sourceId)).toBe(target.viewId)
+  // View hydration can remove the old view's transient Reset button.
+  await settle(page)
   const reset = page.locator('.dbw-save-actions > .dbw-quiet-button')
   if (await reset.isVisible()) await reset.click()
   await settle(page)
+  await expect(reset).toHaveCount(0)
+  await expect(tab).toHaveAttribute('aria-current', 'page')
+  const text = getDatabaseWorkspaceText(language)
+  await expect(page.locator('.dbw-layout-switcher').getByRole('button', { name: text[layout], exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('.dbw-main-search input')).toHaveValue('')
 }
 
 test.describe('database data viewport', () => {

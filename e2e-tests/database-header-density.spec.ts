@@ -197,10 +197,9 @@ async function recordHeader(page: Page, app: ElectronApplication, tempRoot: stri
     expect(state.title.textOverflow).toBe('ellipsis')
     expect(state.title.glyphs.slice(0, 8).every(glyph => glyph.visible)).toBe(true)
   }
-  if (short) expect(state.description.glyphs.every(glyph => glyph.visible)).toBe(true)
-  else if (!custom) {
-    const prefix = language === 'zh-CN' ? '工作区中的全部文档' : 'All workspace documents'
-    expect(state.description.glyphs.slice(0, Array.from(prefix).filter(glyph => glyph.trim()).length).every(glyph => glyph.visible)).toBe(true)
+  if (short || !custom) {
+    expect(state.description.glyphs.every(glyph => glyph.visible)).toBe(true)
+    expect(state.description.scrollWidth).toBeLessThanOrEqual(state.description.clientWidth + 1)
   } else expect(state.description.glyphs.slice(0, 8).every(glyph => glyph.visible)).toBe(true)
   return state
 }

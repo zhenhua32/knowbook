@@ -72,12 +72,72 @@ export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
   await expect(summaryInput).toBeVisible()
 }
 
+/** Wait for committed built-in renderers before a fixture can reload their first page. */
+export async function waitForBuiltinPluginReadiness(
+  { app, page }: Pick<ElectronAppContext, 'app' | 'page'>,
+  { freshProfile = false, safeMode = false }: { freshProfile?: boolean; safeMode?: boolean } = {}
+) {
+  const rendererPid = await app.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows()[0].webContents.getOSProcessId()
+  ))
+  const readState = () => page.evaluate(async () => {
+    const plugins = (await window.knowbook.listSystemPlugins())
+      .filter(plugin => plugin.pluginId === 'theme-switcher' || plugin.pluginId === 'document-translator')
+    const registry = window.knowbookFullTrust
+    const contributions = [
+      { pluginId: 'theme-switcher', slot: 'settings.sections', contributionId: 'theme-switcher-settings' },
+      { pluginId: 'document-translator', slot: 'documents.header.menu', contributionId: 'translate-document' }
+    ].map(({ pluginId, slot, contributionId }) => ({
+      pluginId,
+      entries: registry?.getSlotContributions(slot as 'settings.sections' | 'documents.header.menu')
+        .filter(contribution => contribution.plugin.id === pluginId)
+        .map(contribution => ({ id: contribution.id, plugin: contribution.plugin })),
+      contributionId
+    }))
+    return { plugins, contributions, activating: registry?.currentPlugin ?? null }
+  })
+  let state: Awaited<ReturnType<typeof readState>> | undefined
+  try {
+    await expect.poll(async () => {
+      state = await readState()
+      if (state.plugins.length !== 2 || state.activating) return false
+      return state.contributions.every(({ pluginId, entries, contributionId }) => {
+        const plugin = state!.plugins.find(plugin => plugin.pluginId === pluginId)
+        if (!plugin || plugin.source !== 'builtin' || !entries) return false
+        if (freshProfile && (plugin.lastError !== null || !plugin.enabled || plugin.safeModeDisabled || plugin.status === 'failed')) {
+          throw new Error(`Fresh built-in plugin failed: ${pluginId}`)
+        }
+        // Safe boot registers artifacts without executing them. A preserved opt-out
+        // remains disabled; neither case should be repaired by this read-only barrier.
+        if (safeMode || (!freshProfile && (!plugin.enabled || plugin.safeModeDisabled))) {
+          if (plugin.runtimeStatus !== null || entries.length !== 0) return false
+          if (!safeMode && plugin.status !== 'disabled' && plugin.status !== 'safe-mode-disabled') return false
+          if (!freshProfile) return true
+          const hash = plugin.pendingArtifactSha256 ?? plugin.currentArtifactSha256
+          return Boolean(hash && plugin.availablePackages.some(record => record.artifactSha256 === hash && record.status === 'ready'))
+        }
+        if (!plugin.enabled || plugin.safeModeDisabled || plugin.status !== 'active' || plugin.runtimeStatus !== 'active'
+          || !plugin.currentArtifactSha256 || plugin.pendingArtifactSha256 !== null) return false
+        const record = plugin.availablePackages.find(record => record.artifactSha256 === plugin.currentArtifactSha256 && record.status === 'ready')
+        return Boolean(record && plugin.recentRuns.some(run => run.component === 'renderer' && run.packageId === record.packageId
+          && run.status === 'ready' && run.readyAt && run.stoppedAt === null && run.error === null && run.pid === rendererPid)
+          && entries.some(entry => entry.id === contributionId && entry.plugin.revisionHash === `sha256:${plugin.currentArtifactSha256}`))
+      })
+    }, { timeout: 30_000, message: 'Both built-in plugins must commit before the fixture can reload' }).toBe(true)
+    return { rendererPid, ...state! }
+  } catch (error) {
+    throw new Error(`Built-in startup readiness failed.\n${JSON.stringify({ rendererPid, freshProfile, safeMode, state }, null, 2)}\n${String(error)}`, { cause: error })
+  }
+}
+
 export async function launchElectronApp(
   extraEnv: Record<string, string> = {},
   options: ElectronLaunchOptions = {}
 ): Promise<ElectronAppContext> {
   const target = getElectronLaunchTarget(extraEnv.KNOWBOOK_E2E_EXECUTABLE ?? process.env.KNOWBOOK_E2E_EXECUTABLE)
   const tempRoot = options.userDataRoot ?? mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
+  const freshProfile = !existsSync(join(tempRoot, 'storage', 'knowbook.db'))
+  const restoredSafeMode = existsSync(join(tempRoot, 'database-restore-safe-mode.json'))
   const env: Record<string, string> = {
     ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
     ...extraEnv,
@@ -124,6 +184,9 @@ export async function launchElectronApp(
     if (nativeWindows.some(window => window.visible || window.focused || window.focusable)) {
       throw new Error(`Electron tests must remain in the background: ${JSON.stringify(nativeWindows)}`)
     }
+    await waitForBuiltinPluginReadiness({ app, page }, {
+      freshProfile, safeMode: restoredSafeMode || env.KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE === '1'
+    })
     childProcess.stdout?.off('data', captureStartupOutput)
     childProcess.stderr?.off('data', captureStartupOutput)
 

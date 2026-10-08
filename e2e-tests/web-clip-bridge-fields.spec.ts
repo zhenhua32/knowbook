@@ -3,6 +3,7 @@ import type { IpcMainInvokeEvent } from 'electron'
 import type { ElectronApplication } from 'playwright'
 import type { UpdateWebClipBridgeSettingsInput, WebClipBridgeStatus } from '../src/shared/contracts'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { revealWholeField } from './helpers/viewport'
 
 type ReadHandler = (event: IpcMainInvokeEvent) => WebClipBridgeStatus | Promise<WebClipBridgeStatus>
 type MutationHandler = (event: IpcMainInvokeEvent, input: UpdateWebClipBridgeSettingsInput) => WebClipBridgeStatus | Promise<WebClipBridgeStatus>
@@ -73,7 +74,7 @@ async function finishReads(app: ElectronApplication) {
 }
 
 async function finishCopy(app: ElectronApplication, fail = false) {
-  await app.evaluate((_electron, fail) => {
+  const acknowledgement = await app.evaluate((_electron, fail) => {
     const pending = (globalThis as ProbeGlobal).__knowbookBridgeFieldProbe!.pendingCopies.shift()
     if (!pending) throw new Error('No pending clipboard write')
     // Settle the IPC independently of the inspector evaluation that controls this deferred fixture.
@@ -81,7 +82,9 @@ async function finishCopy(app: ElectronApplication, fail = false) {
       if (fail) pending.reject(new Error(''))
       else pending.resolve()
     })
+    return { scheduled: true, failure: fail }
   }, fail)
+  expect(acknowledgement).toEqual({ scheduled: true, failure: fail })
 }
 
 async function copiedExactText(app: ElectronApplication, text: string) {
@@ -150,7 +153,10 @@ async function expectHit(control: Locator) {
 }
 
 async function enter(page: Page, button: Locator) {
-  await button.scrollIntoViewIfNeeded()
+  const copyField = button.locator('xpath=ancestor::*[@data-copy-kind][1]')
+  // Reveal the input, action and feedback together before checking the exact viewport boundary.
+  if (await copyField.count()) await revealWholeField(page, copyField)
+  else await button.scrollIntoViewIfNeeded()
   await expectHit(button)
   await button.focus()
   await expect(button).toBeFocused()

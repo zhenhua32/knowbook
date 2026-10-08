@@ -193,7 +193,8 @@ for (const { language, theme, palette } of cases) test(`Truncated tree titles re
     // The initial selected document can be offscreen in the virtual tree. Native
     // Tab enters its retained roving LI; Home reveals the first real root.
     const currentRoving = page.locator('.tree-node[role="treeitem"][tabindex="0"]')
-    await expect(currentRoving).toHaveCount(1); await tabTo(page, search, true)
+    // Documents navigation precedes Search; enter the sidebar in its forward Tab order.
+    await expect(currentRoving).toHaveCount(1); await tabTo(page, search)
     await page.keyboard.press('Tab'); await tabTo(page, currentRoving); await expect(currentRoving).toBeFocused()
     await page.keyboard.press('Home'); await expect(parent).toBeFocused(); await page.keyboard.press('Enter')
     await ready('parent'); await installProbe(app)
