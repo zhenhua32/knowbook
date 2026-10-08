@@ -103,7 +103,8 @@ test('v3-only installation does not display a misleading empty workspace message
   try {
     assert.equal(dom.window.document.querySelector('.plugin-overview-card strong')?.textContent, '1')
     assert.equal(dom.window.document.querySelector('.plugin-inspector'), null)
-    assert.match(dom.window.document.querySelector('.plugin-inventory-panel .plugin-empty-state')!.textContent!, /No dynamic plugins installed yet/)
+    assert.equal(dom.window.document.querySelector('.plugin-inventory-panel'), null)
+    assert.equal(dom.window.document.querySelector('.plugin-empty-state'), null)
     assert.match(dom.window.document.body.textContent!, /Activity Pulse/)
   } finally {
     dom.window.close()
@@ -123,16 +124,27 @@ test('workspace plugins expand one inline detail at a time and retain independen
   const calls: unknown[] = []
   const { createRoot } = await import('react-dom/client')
   const root = createRoot(dom.window.document.getElementById('root')!)
+  let sectionProps = props()
+  const renderSection = (changes: Partial<ComponentProps<typeof PluginsSection>>) => {
+    sectionProps = { ...sectionProps, ...changes }
+    root.render(<PluginsSection {...sectionProps} />)
+  }
   try {
-    await act(async () => root.render(<PluginsSection {...props({
+    await act(async () => renderSection({
       pluginV2Installations: [dynamicPlugin, {
         ...dynamicPlugin, pluginId: 'builtin-notes', name: 'Built-in notes', source: 'builtin',
         enabled: false, activeRunId: null
       }],
+      systemPlugins: [
+        systemPlugin({ pluginId: 'theme-switcher', name: 'Theme switcher', source: 'builtin' }),
+        systemPlugin({ pluginId: 'translator', name: 'Translator', enabled: false, status: 'disabled' }),
+        systemPlugin({ pluginId: 'pending-plugin', name: 'Pending plugin', status: 'pending-restart' }),
+        systemPlugin({ pluginId: 'failed-plugin', name: 'Failed plugin', status: 'failed', lastError: 'Startup failed' })
+      ],
       onInstallSystemPluginFromFolder: () => { calls.push('install-system') },
       onSetPluginV2Enabled: (plugin, enabled) => { calls.push([plugin.pluginId, enabled]) },
       onRemovePluginV2: (plugin) => { calls.push(['remove', plugin.pluginId]) }
-    })} />))
+    }))
     const button = (label: string) => [...dom.window.document.querySelectorAll('button')]
       .find((element) => element.textContent?.includes(label))!
     const document = dom.window.document
@@ -182,11 +194,62 @@ test('workspace plugins expand one inline detail at a time and retain independen
     assert.equal(inspector(), null, 'Clearing search must not reopen stale details')
     assert.equal(document.querySelectorAll('.plugin-item').length, 2)
 
+    await setQuery('theme-switcher')
+    assert.equal(document.querySelector('.plugin-inventory-panel'), null, 'Search must not leave an empty sandbox panel ahead of matching v3 plugins')
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 1)
+    assert.match(document.querySelector('.system-plugin-installation')!.textContent!, /Theme switcher/)
+    await setQuery('')
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 4)
+    const pending = document.querySelector('.system-plugin-installation [title="pending-restart"]')!
+    assert.equal(pending.textContent, 'Pending restart')
+    assert.ok(pending.classList.contains('plugin-status-loading'), 'Pending restart must not appear to be running')
+    await act(async () => button('Disabled').click())
+    assert.equal(document.querySelectorAll('.plugin-item').length, 1)
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 1)
+    assert.match(document.querySelector('.system-plugin-installation')!.textContent!, /Translator/)
+    await act(async () => button('Running').click())
+    assert.equal(document.querySelectorAll('.plugin-item').length, 1)
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 1)
+    assert.match(document.querySelector('.system-plugin-installation')!.textContent!, /Theme switcher/)
+    await act(async () => button('Attention').click())
+    assert.equal(document.querySelectorAll('.plugin-item').length, 0)
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 1)
+    assert.match(document.querySelector('.system-plugin-installation')!.textContent!, /Failed plugin/)
+    await setQuery('no-match')
+    assert.match(document.querySelector('.plugin-empty-state')!.textContent!, /No matching plugins/)
+    assert.equal(document.querySelectorAll('.system-plugin-installation').length, 0)
+    await setQuery('')
+    await act(async () => button('All').click())
+
     await act(async () => button('Install Full Trust').click())
     await act(async () => toggle('Dynamic notes').click())
     await act(async () => button('Disable plugin').click())
     await act(async () => button('Uninstall plugin').click())
     assert.deepEqual(calls, ['install-system', ['dynamic-notes', false], ['remove', 'dynamic-notes']])
+
+    await act(async () => button('Disabled').click())
+    const enable = [...document.querySelectorAll<HTMLButtonElement>('.system-plugin-installation button')]
+      .find(item => item.textContent === 'Enable after restart')!
+    await act(async () => { enable.focus(); enable.click(); renderSection({ pluginBusyId: 'translator' }) })
+    // Match Chromium's loss of focus when the initiating button is disabled.
+    enable.disabled = false; enable.blur(); enable.disabled = true
+    assert.equal(document.activeElement, document.body)
+    await act(async () => renderSection({ pluginBusyId: null, systemPlugins: sectionProps.systemPlugins.map(item => item.pluginId === 'translator'
+      ? { ...item, enabled: true, status: 'pending-restart' } : item) }))
+    const disabledFilter = button('Disabled')
+    assert.equal(document.activeElement, disabledFilter, 'Removing the focused v3 card after an enable action must return focus to its active filter')
+
+    const sandboxEnable = document.querySelector<HTMLInputElement>('input[aria-label="Enable Built-in notes"]')!
+    await act(async () => { sandboxEnable.focus(); sandboxEnable.click(); renderSection({ pluginBusyId: 'builtin-notes' }) })
+    const search = document.querySelector<HTMLInputElement>('input[type="search"]')!
+    search.focus()
+    await act(async () => renderSection({ pluginBusyId: null, pluginV2Installations: sectionProps.pluginV2Installations.map(item => item.pluginId === 'builtin-notes'
+      ? { ...item, enabled: true, activeRunId: 'started-run' } : item) }))
+    assert.equal(document.activeElement, search, 'An async mutation must not steal focus after the user moves to search')
+
+    search.blur()
+    await act(async () => renderSection({ systemPlugins: sectionProps.systemPlugins.slice(1) }))
+    assert.equal(document.activeElement, document.body, 'A later background refresh must not reuse an old action focus request')
   } finally {
     await act(async () => root.unmount())
     for (const key of globalKeys) {

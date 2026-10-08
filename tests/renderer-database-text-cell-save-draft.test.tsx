@@ -359,7 +359,7 @@ async function withWorkspace(run: (context: {
       const count = node.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length
       const padding = [...node.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
         .reduce((total, item) => total + Number.parseFloat(item.style.height), 0)
-      return 42 + count * 64 + padding
+      return 42 + count * 56 + padding
     } })
   dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
     return new dom.window.DOMRect(0, 0, 180, this.tagName === 'THEAD' ? 42 : 32)

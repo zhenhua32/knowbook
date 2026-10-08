@@ -3,7 +3,7 @@ import { useId, useRef, useState, type ReactNode } from 'react'
 export function AiTaskSwitcher({ isZh, documentContent, extensionContent }: {
   isZh: boolean
   documentContent: ReactNode
-  extensionContent: ReactNode
+  extensionContent: ReactNode | ((isVisible: boolean) => ReactNode)
 }) {
   const [task, setTask] = useState<'document' | 'extension'>('document')
   const id = useId()
@@ -30,7 +30,7 @@ export function AiTaskSwitcher({ isZh, documentContent, extensionContent }: {
       {documentContent}
     </div>
     <div className="ai-task-panel" role="tabpanel" id={`${id}-extension-panel`} aria-labelledby={`${id}-extension-tab`} hidden={task !== 'extension'}>
-      {extensionContent}
+      {typeof extensionContent === 'function' ? extensionContent(task === 'extension') : extensionContent}
     </div>
   </div>
 }

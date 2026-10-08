@@ -109,8 +109,8 @@ test.describe('Database layout details @electron', () => {
       const longRow = page.locator('.dbw-table tbody tr').filter({ hasText: longTitle })
       await expect(longRow).toBeVisible()
       const longRowHeight = (await longRow.boundingBox())!.height
-      expect(longRowHeight).toBeGreaterThanOrEqual(63)
-      expect(longRowHeight).toBeLessThanOrEqual(65)
+      expect(longRowHeight).toBeGreaterThanOrEqual(55)
+      expect(longRowHeight).toBeLessThanOrEqual(57)
 
       // Check the same accessible controls in the edit drawer, not only creation.
       await longRow.locator('.dbw-record-title').click()
@@ -160,6 +160,54 @@ test.describe('Database layout details @electron', () => {
       await expect(menu.getByRole('checkbox', { name: 'Gold', exact: true })).toBeChecked()
       await expectWithin(menu, table)
       await page.screenshot({ path: testInfo.outputPath('database-bottom-multiselect.png'), fullPage: true })
+    })
+  })
+
+  test('a short window keeps table, board and cards inside one reachable data viewport', async ({}, testInfo) => {
+    await withElectronApp(async ({ page, app }) => {
+      await page.evaluate(async () => {
+        const database = await window.knowbook.createDocumentDatabase({ name: 'Short viewport data' })
+        const status = await window.knowbook.createDocumentDatabaseColumn({ databaseId: database.id,
+          name: 'Status', type: 'select', options: ['Ready'] })
+        for (let index = 0; index < 30; index++) await window.knowbook.createDatabaseEntity({ databaseId: database.id,
+          title: `Short record ${String(index).padStart(2, '0')}`, fieldValues: { [status.id]: 'Ready' } })
+        const fields = ['__title__', status.id]
+        const view = await window.knowbook.createDatabaseSavedView({ databaseId: database.id, name: 'Short data', config: {
+          version: 1, layout: 'table', query: '', filters: { operator: 'and', rules: [] },
+          sorts: [{ fieldId: '__title__', direction: 'asc' }], groupBy: { fieldId: status.id },
+          visibleFieldIds: fields, fieldOrder: fields, columnWidths: {}, cardFieldIds: [status.id] } })
+        localStorage.setItem('knowbook.database.last-source', database.id)
+        localStorage.setItem('knowbook.database.last-view.' + database.id, view.id)
+      })
+      await page.reload()
+      await app.evaluate(({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows()[0]
+        window.setMinimumSize(680, 400)
+        window.setSize(760, 440)
+      })
+      await page.setViewportSize({ width: 760, height: 440 })
+      await expect.poll(() => page.evaluate(() => innerHeight)).toBe(440)
+      await page.getByTitle(uiText('Database', '数据库'), { exact: true }).click()
+      for (const { label, selector, recordSelector } of [
+        { label: uiText('Table', '表格'), selector: '.dbw-table-scroll', recordSelector: '.dbw-record-title' },
+        { label: uiText('Board', '看板'), selector: '.dbw-board', recordSelector: '.dbw-board-card button' },
+        { label: uiText('Cards', '卡片'), selector: '.dbw-card-grid', recordSelector: '.dbw-card-body' }
+      ]) {
+        await page.locator('.dbw-layout-switcher').getByRole('button', { name: label, exact: true }).click()
+        const port = page.locator(selector)
+        await expect(port).toBeVisible()
+        const bounds = (await port.boundingBox())!
+        expect(bounds.height).toBeGreaterThan(80)
+        expect(bounds.y + bounds.height).toBeLessThanOrEqual(440)
+        expect(await page.locator('.content.page-database').evaluate(node => node.scrollHeight - node.clientHeight)).toBeLessThanOrEqual(1)
+        await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+        await page.mouse.wheel(0, 10_000)
+        await expect.poll(() => port.evaluate(node => node.scrollTop)).toBeGreaterThan(0)
+        const last = port.locator(recordSelector).filter({ hasText: 'Short record 29' })
+        await expect(last).toBeInViewport()
+        expect(await page.locator('.dbw-shell').evaluate(node => node.scrollTop)).toBe(0)
+        await page.screenshot({ path: testInfo.outputPath(`short-${selector.slice(1)}.png`) })
+      }
     })
   })
 })

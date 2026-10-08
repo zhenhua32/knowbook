@@ -12,6 +12,7 @@ const hostTokens = `
   --kb-sidebar-raised: var(--ts-sidebar-raised);
   --kb-sidebar-text: var(--ts-sidebar-text);
   --kb-sidebar-muted: var(--ts-sidebar-muted);
+  --kb-sidebar-focus: var(--ts-sidebar-focus);
   --kb-text: var(--ts-text);
   --kb-text-soft: var(--ts-text-soft);
   --kb-text-muted: var(--ts-text-muted);
@@ -40,6 +41,12 @@ function luminance(hex) {
   return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
 }
 
+/** @param {string} first @param {string} second */
+function contrast(first, second) {
+  const values = [luminance(first), luminance(second)]
+  return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05)
+}
+
 /**
  * Self-contained CSS; no @imports, font downloads, layout or host-theme writes.
  * A repeated plugin attribute gives overrides precedence over lazy host CSS,
@@ -59,9 +66,12 @@ function buildThemeCss(themes) {
       return `--ts-${token}: ${value};`
     })
     const onAccent = luminance(theme.colors.accent) > 0.179 ? '#101827' : '#ffffff'
+    const sidebarFocus = contrast(theme.colors.accent, theme.colors.sidebar) >= 3
+      ? theme.colors.accent : theme.colors.sidebarText
     return `:root[data-knowbook-theme-switcher='${theme.id}'] {
       ${declarations.join('\n      ')}
       --ts-on-accent: ${onAccent};
+      --ts-sidebar-focus: ${sidebarFocus};
       --ts-color-scheme: ${theme.mode};
       --ts-shadow-panel: 0 10px 30px rgba(0, 0, 0, ${theme.mode === 'dark' ? '0.16' : '0.055'});
     }`
@@ -97,13 +107,13 @@ ${rule(`.panel, .hero, .stat-card, .plugin-item, .plugin-dashboard-card,
   .plugin-inventory-panel .plugin-item, .plugin-lifecycle-card,
   .system-plugin-request, .plugin-customizer, .plugin-technical-details > details`, surface)}
 ${rule(`.panel, .hero, .stat-card, .management-page-header, .settings-group,
-  .settings-card, .document-summary-card, .plugin-dashboard-card`, 'box-shadow: var(--ts-shadow-panel);')}
+  .settings-card, .document-summary-card, .plugin-dashboard-card`, 'box-shadow: none;')}
 ${rule(`.document-aux-sidebar, .event-feed-item, .ai-context-card, .relation-chip,
   .empty-preview, .block-media-source-toggle, .assistant-tool-event,
   .assistant-lifecycle-event, .assistant-revision-preview pre, .inline-code,
   .block-math, .block-math-preview, .slash-command-search,
   .plugin-customizer-context span`, raised)}
-${rule('.plugin-page-hero, .panel-accent, .assistant-message-user', selected)}
+${rule('.panel-accent, .assistant-message-user', selected)}
 ${rule(`input, textarea, select, .editor-input, .editor-textarea, .editor-select,
   .compact-select, .table-search, .secondary-button, .document-header-icon-button,
   .plugin-search, .plugin-customizer-close`, surface)}
@@ -176,7 +186,7 @@ ${rule(`.sidebar .nav-icon-btn:hover, .sidebar .nav-icon-btn.active,
   .sidebar .tree-button-active, .sidebar .pinned-doc-item-active,
   .sidebar .sidebar-search-button:hover, .sidebar .sidebar-create-button:hover,
   .sidebar .root-drop-zone-active`,
-    'background: var(--ts-sidebar-raised); color: var(--ts-sidebar-text); border-color: var(--ts-sidebar-muted);')}
+    'background: var(--ts-sidebar-raised); color: var(--ts-sidebar-text); border-color: transparent;')}
 ${rule('.sidebar .rail-horizontal, .sidebar .tree-children', 'border-color: var(--ts-sidebar-raised);')}
 ${rule('.brand-mark-mini, .dbw-database-mark', 'background: var(--ts-accent); color: var(--ts-on-accent);')}
 
@@ -222,9 +232,35 @@ ${root} :is(.editor-input, .editor-textarea, .editor-select):focus {
   border-color: var(--ts-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ts-accent) 18%, transparent);
 }
+${rule('.sidebar :is(button, input, textarea, select, summary, .tree-node, .tree-expand-toggle):focus-visible',
+    'outline-color: var(--ts-sidebar-focus);')}
 
+/* Palette changes must not turn flat page headers and reading areas into cards. */
 ${rule('.management-page .hero, .management-page .management-page-header, .management-page .plugin-page-hero',
     'background: transparent; border-color: transparent; box-shadow: none;')}
+${rule('.management-page .workspace-search-results-panel',
+    'background: transparent; border-color: transparent; box-shadow: none;')}
+${rule(".settings-category-panel .plugin-full-trust-view[data-full-trust-plugin='theme-switcher']",
+    'padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;')}
+${rule('.page-database .dbw-board-column',
+    'background: var(--ts-surface-raised); border-color: transparent; box-shadow: none;')}
+${rule('.page-database .dbw-board-column.is-drag-over',
+    'background: var(--ts-accent-soft); border-color: var(--ts-accent); box-shadow: inset 0 0 0 1px var(--ts-accent);')}
+${rule('.page-ai .assistant-transcript, .page-ai .assistant-message-assistant, .page-ai .ai-answer',
+    'background: transparent; border-color: transparent; box-shadow: none;')}
+${rule('.assistant-message-user', selected)}
+${rule('.assistant-lifecycle-event',
+    'background: var(--ts-surface-raised); color: var(--ts-text-soft); border-left-color: var(--ts-accent);')}
+${rule('.assistant-lifecycle-succeeded, .assistant-lifecycle-passed',
+    'background: color-mix(in srgb, var(--ts-success) 8%, var(--ts-surface)); border-left-color: var(--ts-success);')}
+${rule('.assistant-lifecycle-failed',
+    'background: color-mix(in srgb, var(--ts-danger) 8%, var(--ts-surface)); border-left-color: var(--ts-danger);')}
+${rule('.assistant-lifecycle-warning, .assistant-lifecycle-queued',
+    'background: color-mix(in srgb, var(--ts-accent) 8%, var(--ts-surface)); border-left-color: var(--ts-accent);')}
+${rule('.assistant-workbench .assistant-approval',
+    'background: color-mix(in srgb, var(--ts-accent) 7%, var(--ts-surface)); border-color: color-mix(in srgb, var(--ts-accent) 35%, var(--ts-line)); color: var(--ts-text);')}
+${rule('.assistant-approval.assistant-approval-high',
+    'background: color-mix(in srgb, var(--ts-danger) 7%, var(--ts-surface)); border-color: color-mix(in srgb, var(--ts-danger) 45%, var(--ts-line));')}
 
 /* Keep the document's writing header flat, including its editable title.
  * These selectors outrank the generic card and input overrides above while

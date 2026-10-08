@@ -324,7 +324,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(failed.ipc.failedReads[0]).toMatchObject({ channel: 'knowbook:get-database-entities', input: ids.databaseId,
         phase: 'save', kind: 'temporary-ipc-reply' })
       expectOnlyTargetFieldChanged(before, failed.stored, ids)
-      expect(failed.state.rowHeight).toBeCloseTo(64, 0)
+      expect(failed.state.rowHeight).toBeCloseTo(56, 0)
       expect(failed.state.ratio).toBeCloseTo(1, 5)
       expect(failed.state.hit).toBe(true)
 

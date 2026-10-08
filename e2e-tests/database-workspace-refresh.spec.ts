@@ -451,7 +451,7 @@ for (const { language, kind } of cases) {
       expect(pending.state.selection).toEqual(selection)
       expect(pending.state.focusCalls).toEqual([])
       expect(pending.state.readOnly).toBe(false)
-      expect(pending.state.rowHeight).toBeCloseTo(64, 0)
+      expect(pending.state.rowHeight).toBeCloseTo(56, 0)
       expect(pending.state.ratio).toBeCloseTo(1, 5)
       expect(pending.state.hit).toBe(true)
       expect(pending.ipc.requests).toEqual([expectedRequest(ids)])

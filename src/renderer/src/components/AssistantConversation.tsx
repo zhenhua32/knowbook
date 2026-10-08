@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { AiAnswerContent } from './AiAnswerContent'
 import type {
@@ -17,6 +17,9 @@ type AssistantConversationProps = {
   newSessionTitle?: string
   onDraftChange?: (draft: string) => void
   showConfigurationHint?: boolean
+  isVisible?: boolean
+  transcriptBefore?: ReactNode
+  transcriptAfter?: ReactNode
 }
 
 export function AssistantConversation({
@@ -27,7 +30,10 @@ export function AssistantConversation({
   initialDraft = '',
   newSessionTitle,
   onDraftChange,
-  showConfigurationHint = true
+  showConfigurationHint = true,
+  isVisible = true,
+  transcriptBefore,
+  transcriptAfter
 }: AssistantConversationProps) {
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<AssistantSessionId | null>(null)
@@ -38,12 +44,15 @@ export function AssistantConversation({
   const [error, setError] = useState('')
   const transcriptRef = useRef<HTMLDivElement>(null)
   const keepTranscriptPinnedRef = useRef(true)
+  const transcriptScrollTopRef = useRef(0)
+  const transcriptWasVisibleRef = useRef(isVisible)
   const draftRef = useRef(initialDraft)
   const onDraftChangeRef = useRef(onDraftChange)
   const selectedIdRef = useRef(selectedId)
   const eventsRequestId = useRef(0)
   const sessionsRequestId = useRef(0)
   const selectionVersion = useRef(0)
+  const composingRef = useRef(false)
   if (selectedIdRef.current !== selectedId) {
     selectedIdRef.current = selectedId
     selectionVersion.current += 1
@@ -122,10 +131,18 @@ export function AssistantConversation({
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current
-    if (transcript && keepTranscriptPinnedRef.current) {
+    const becameVisible = isVisible && !transcriptWasVisibleRef.current
+    transcriptWasVisibleRef.current = isVisible
+    // Hidden task panels have no scroll geometry. Apply the existing pin or
+    // reading position after the panel is laid out, without resetting intent.
+    if (!isVisible || !transcript) return
+    if (keepTranscriptPinnedRef.current) {
       transcript.scrollTop = transcript.scrollHeight
+    } else if (becameVisible) {
+      transcript.scrollTop = transcriptScrollTopRef.current
     }
-  }, [projection, selected?.activeTurnId])
+    transcriptScrollTopRef.current = transcript.scrollTop
+  }, [projection, selected?.activeTurnId, error, isVisible])
 
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
     keepTranscriptPinnedRef.current = true
@@ -256,12 +273,17 @@ export function AssistantConversation({
 
       <div
         aria-live="polite"
+        aria-label={isZh ? '扩展助手对话' : 'Extension assistant conversation'}
         className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`}
         onScroll={(event) => {
+          if (!isVisible || event.currentTarget.clientHeight === 0) return
+          transcriptScrollTopRef.current = event.currentTarget.scrollTop
           keepTranscriptPinnedRef.current = isTranscriptNearBottom(event.currentTarget)
         }}
         ref={transcriptRef}
+        tabIndex={0}
       >
+        {transcriptBefore}
         {projection.items.length === 0 ? (
           <p className="mini-hint">
             {isZh
@@ -289,8 +311,6 @@ export function AssistantConversation({
           )
         ))}
         {selected?.activeTurnId ? <p className="mini-hint">{isZh ? '助手任务进行中；继续发送会转向当前任务，审批等待时会排入下一轮。' : 'The turn is active. New messages steer it, or queue behind an approval.'}</p> : null}
-      </div>
-
       {projection.approvals.map((approval) => (
         <div className={`assistant-approval assistant-approval-${approval.payload.risk}`} key={approval.payload.approvalId}>
           <div>
@@ -317,18 +337,24 @@ export function AssistantConversation({
       ))}
 
       {!canUseAi && showConfigurationHint ? (
-        <p className="mini-hint ai-context-error">
+        <p className="mini-hint ai-context-error" role="status">
           {isZh ? '请先在设置中启用 AI 并保存 API Key。' : 'Enable AI and save an API key in Settings first.'}
         </p>
       ) : null}
-      {error ? <p className="mini-hint ai-context-error">{error}</p> : null}
+      {error ? <p className="mini-hint ai-context-error" role="alert">{error}</p> : null}
+      {transcriptAfter}
+      </div>
       <div className="assistant-composer">
         <textarea
+          aria-label={isZh ? '扩展需求' : 'Extension request'}
           className="editor-textarea"
           disabled={!canUseAi}
           onChange={(event) => commitDraft(event.target.value)}
+          onCompositionStart={() => { composingRef.current = true }}
+          onCompositionEnd={() => { composingRef.current = false }}
+          onBlur={() => { composingRef.current = false }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !isImeKeyboardEvent(event.nativeEvent)) {
+            if (event.key === 'Enter' && !event.shiftKey && !isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
               event.preventDefault()
               void send()
             }
@@ -341,6 +367,7 @@ export function AssistantConversation({
           {busy ? (isZh ? '执行中' : 'Working') : (isZh ? '发送' : 'Send')}
         </button>
       </div>
+      <p className="assistant-composer-hint">{isZh ? 'Enter 发送 · Shift + Enter 换行' : 'Enter to send · Shift + Enter for a new line'}</p>
     </div>
   )
 }

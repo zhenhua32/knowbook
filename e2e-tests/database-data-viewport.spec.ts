@@ -185,7 +185,7 @@ function recorder(page: Page, app: ElectronApplication, tempRoot: string, info: 
     expect(native.windows[0].bounds.width).toBe(native.windows[0].size[0]); expect(native.windows[0].bounds.height).toBe(native.windows[0].size[1])
     expect(native.windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
     expect(metrics.horizontalOverflow).toBeLessThanOrEqual(1)
-    for (const height of metrics.rows) expect(height).toBeCloseTo(64, 1)
+    for (const height of metrics.rows) expect(height).toBeCloseTo(56, 1)
     for (const height of metrics.spacers) expect(height).toBeGreaterThanOrEqual(0)
     if (normal) {
       const data = metrics.port ?? metrics.empty!

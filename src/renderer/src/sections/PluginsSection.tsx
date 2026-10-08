@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   PluginV2Details,
   PluginV2InstallationSummary,
@@ -62,6 +62,30 @@ function getInventoryStatus(item: InventoryPlugin): 'running' | 'disabled' | 'at
   if (item.plugin.quarantined || item.plugin.lastError) return 'attention'
   if (!item.plugin.enabled) return 'disabled'
   return item.plugin.activeRunId ? 'running' : 'stopped'
+}
+
+function getSystemInventoryStatus(plugin: SystemPluginSummary): ReturnType<typeof getInventoryStatus> {
+  if (plugin.safeModeDisabled || plugin.lastError || plugin.status === 'failed' || plugin.status === 'safe-mode-disabled') return 'attention'
+  if (!plugin.enabled || plugin.status === 'disabled' || plugin.status === 'uninstall-pending') return 'disabled'
+  return plugin.status === 'active' ? 'running' : 'stopped'
+}
+
+function matchesInventoryFilter(status: ReturnType<typeof getInventoryStatus>, filter: PluginFilter): boolean {
+  return filter === 'all' || status === filter
+}
+
+function systemStatusLabel(plugin: SystemPluginSummary, isZh: boolean): string {
+  if (plugin.safeModeDisabled) return isZh ? '安全停用' : 'Safe mode disabled'
+  const labels: Record<SystemPluginSummary['status'], [string, string]> = {
+    disabled: ['已停用', 'Disabled'],
+    'pending-restart': ['待重启', 'Pending restart'],
+    starting: ['启动中', 'Starting'],
+    active: ['运行中', 'Running'],
+    failed: ['运行失败', 'Failed'],
+    'safe-mode-disabled': ['安全停用', 'Safe mode disabled'],
+    'uninstall-pending': ['待卸载', 'Uninstall pending']
+  }
+  return labels[plugin.status][isZh ? 0 : 1]
 }
 
 function statusLabel(status: ReturnType<typeof getInventoryStatus>, isZh: boolean): string {
@@ -161,6 +185,50 @@ export function PluginsSection({
   const [pluginV2DetailsReload, setPluginV2DetailsReload] = useState(0)
   const customizerDialogRef = useRef<HTMLElement>(null)
   const customizerReturnFocusRef = useRef<HTMLElement | null>(null)
+  const filterButtonRefs = useRef<Partial<Record<PluginFilter, HTMLButtonElement>>>({})
+  const inventoryActionFocusRef = useRef<{ trigger: HTMLElement; wasDisabled: boolean } | null>(null)
+
+  const runInventoryAction = (action: () => void, trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null) => {
+    inventoryActionFocusRef.current = trigger && document.activeElement === trigger
+      ? { trigger, wasDisabled: false } : null
+    action()
+  }
+
+  useEffect(() => {
+    const abandon = () => { inventoryActionFocusRef.current = null }
+    const focusMoved = (event: FocusEvent) => {
+      const request = inventoryActionFocusRef.current
+      if (request && event.target !== request.trigger && event.target !== document.body) abandon()
+    }
+    document.addEventListener('focusin', focusMoved, true)
+    document.addEventListener('pointerdown', abandon, true)
+    document.addEventListener('keydown', abandon, true)
+    window.addEventListener('blur', abandon)
+    return () => {
+      document.removeEventListener('focusin', focusMoved, true)
+      document.removeEventListener('pointerdown', abandon, true)
+      document.removeEventListener('keydown', abandon, true)
+      window.removeEventListener('blur', abandon)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    const request = inventoryActionFocusRef.current
+    if (!request) return
+    const active = document.activeElement
+    if (active && active !== document.body && active !== request.trigger) {
+      inventoryActionFocusRef.current = null
+      return
+    }
+    if (!request.trigger.isConnected) {
+      inventoryActionFocusRef.current = null
+      filterButtonRefs.current[filter]?.focus({ preventScroll: true })
+    } else if (request.trigger.matches(':disabled')) {
+      request.wasDisabled = true
+    } else if (request.wasDisabled) {
+      inventoryActionFocusRef.current = null
+    }
+  })
 
   const inventory = useMemo<InventoryPlugin[]>(() => pluginV2Installations.map((plugin) => ({
     key: plugin.pluginId,
@@ -170,18 +238,21 @@ export function PluginsSection({
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filteredInventory = inventory.filter((item) => {
     const status = getInventoryStatus(item)
-    const matchesFilter = filter === 'all'
-      || (filter === 'attention' ? status === 'attention' : status === filter)
+    const matchesFilter = matchesInventoryFilter(status, filter)
     const name = item.plugin.name.toLocaleLowerCase()
     const id = item.plugin.pluginId.toLocaleLowerCase()
     const description = item.plugin.description.toLocaleLowerCase()
     return matchesFilter && (!normalizedQuery || `${name} ${id} ${description}`.includes(normalizedQuery))
   })
+  const filteredSystemPlugins = systemPlugins.filter((plugin) => (
+    matchesInventoryFilter(getSystemInventoryStatus(plugin), filter)
+      && (!normalizedQuery || `${plugin.name} ${plugin.pluginId} ${plugin.description}`.toLocaleLowerCase().includes(normalizedQuery))
+  ))
   const selected = filteredInventory.find((item) => item.key === selectedKey) ?? null
   const runningCount = inventory.filter((item) => getInventoryStatus(item) === 'running').length
-    + systemPlugins.filter((plugin) => plugin.status === 'active' && !plugin.safeModeDisabled && !plugin.lastError).length
+    + systemPlugins.filter((plugin) => getSystemInventoryStatus(plugin) === 'running').length
   const attentionCount = inventory.filter((item) => getInventoryStatus(item) === 'attention').length
-    + systemPlugins.filter((plugin) => plugin.safeModeDisabled || plugin.lastError || plugin.status === 'failed').length
+    + systemPlugins.filter((plugin) => getSystemInventoryStatus(plugin) === 'attention').length
   const aiCreatedCount = pluginV2Installations.filter((plugin) => plugin.source === 'dynamic').length
 
   useEffect(() => {
@@ -287,76 +358,58 @@ export function PluginsSection({
         <div className="plugin-overview-card">
           <span>{isZh ? '已安装' : 'Installed'}</span>
           <strong>{inventory.length + systemPlugins.length}</strong>
-          <small>{isZh ? '工作区扩展' : 'workspace extensions'}</small>
         </div>
         <div className="plugin-overview-card plugin-overview-running">
           <span>{isZh ? '正在运行' : 'Active now'}</span>
           <strong>{runningCount}</strong>
-          <small>{isZh ? '运行实例健康' : 'healthy runtimes'}</small>
         </div>
         <div className="plugin-overview-card plugin-overview-ai">
           <span>{isZh ? 'AI 创建' : 'AI created'}</span>
           <strong>{aiCreatedCount}</strong>
-          <small>{isZh ? '可继续对话定制' : 'ready to customize'}</small>
         </div>
         <div className={`plugin-overview-card ${attentionCount > 0 ? 'plugin-overview-attention' : ''}`}>
           <span>{isZh ? '需要处理' : 'Needs attention'}</span>
           <strong>{attentionCount}</strong>
-          <small>{isZh ? '错误或安全隔离' : 'errors or quarantine'}</small>
         </div>
       </div>
 
-      <div className="plugin-management-layout">
+      <div className="plugin-inventory-toolbar">
+        <label className="plugin-search">
+          <span aria-hidden="true">⌕</span>
+          <input aria-label={isZh ? '搜索插件' : 'Search plugins'} onChange={(event) => setQuery(event.target.value)}
+            placeholder={isZh ? '搜索所有插件' : 'Search all plugins'} type="search" value={query} />
+        </label>
+        <div className="plugin-filter-tabs" role="group" aria-label={isZh ? '插件筛选' : 'Plugin filters'}>
+          {(['all', 'running', 'disabled', 'attention'] as const).map((item) => {
+            const labels: Record<PluginFilter, string> = {
+              all: isZh ? '全部' : 'All', running: isZh ? '运行中' : 'Running',
+              disabled: isZh ? '已停用' : 'Disabled', attention: isZh ? '需处理' : 'Attention'
+            }
+            return <button aria-pressed={filter === item} className={filter === item ? 'active' : ''} key={item}
+              ref={(element) => { if (element) filterButtonRefs.current[item] = element }}
+              onClick={() => setFilter(item)} type="button">{labels[item]}</button>
+          })}
+        </div>
+      </div>
+
+      {filteredInventory.length > 0 ? <div className="plugin-management-layout">
         <article className="panel plugin-inventory-panel">
           <div className="plugin-inventory-head">
             <div>
               <h4>{isZh ? '工作区插件' : 'Workspace plugins'}</h4>
               <p>{isZh ? '展开查看插件功能、权限和运行详情。' : 'Expand a plugin to view its features, permissions, and runtime details.'}</p>
             </div>
-            <label className="plugin-search">
-              <span aria-hidden="true">⌕</span>
-              <input
-                aria-label={isZh ? '搜索插件' : 'Search plugins'}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={isZh ? '搜索名称或 ID' : 'Search name or ID'}
-                type="search"
-                value={query}
-              />
-            </label>
           </div>
-          <aside className="plugin-kind-note" aria-label={isZh ? '工作区插件说明' : 'About workspace plugins'}>
-            <strong>{isZh ? '沙箱运行 · 按权限访问' : 'Sandboxed · Permission-based access'}</strong>
+          <details className="plugin-kind-note" aria-label={isZh ? '工作区插件说明' : 'About workspace plugins'}>
+            <summary>{isZh ? '沙箱运行 · 按权限访问' : 'Sandboxed · Permission-based access'}</summary>
             <p>{isZh
               ? '在隔离环境中运行，只能通过已授权接口使用应用功能，适合文档整理、摘要和活动统计。'
               : 'Runs in an isolated environment and uses application features through authorized APIs. Suited to document organization, summaries, and activity tracking.'}</p>
             <p>{isZh
               ? '“内置”表示插件来源；沙箱插件和完全信任插件都可以随应用内置。'
               : '“Built-in” describes the source. Both sandboxed and Full Trust plugins can be included with the app.'}</p>
-          </aside>
-          <div className="plugin-filter-tabs" role="tablist" aria-label={isZh ? '插件筛选' : 'Plugin filters'}>
-            {(['all', 'running', 'disabled', 'attention'] as const).map((item) => {
-              const labels: Record<PluginFilter, string> = {
-                all: isZh ? '全部' : 'All',
-                running: isZh ? '运行中' : 'Running',
-                disabled: isZh ? '已停用' : 'Disabled',
-                attention: isZh ? '需处理' : 'Attention'
-              }
-              return (
-                <button
-                  aria-selected={filter === item}
-                  className={filter === item ? 'active' : ''}
-                  key={item}
-                  onClick={() => setFilter(item)}
-                  role="tab"
-                  type="button"
-                >
-                  {labels[item]}
-                </button>
-              )
-            })}
-          </div>
+          </details>
 
-          {filteredInventory.length > 0 ? (
             <div className="plugin-list">
               {filteredInventory.map((item) => {
                 const isSelected = selected?.key === item.key
@@ -395,7 +448,7 @@ export function PluginsSection({
                             aria-label={isZh ? `启用 ${item.plugin.name}` : `Enable ${item.plugin.name}`}
                             checked={item.plugin.enabled}
                             disabled={busy || item.plugin.quarantined}
-                            onChange={(event) => onSetPluginV2Enabled(item.plugin, event.target.checked)}
+                            onChange={(event) => runInventoryAction(() => onSetPluginV2Enabled(item.plugin, event.target.checked), event.currentTarget)}
                             type="checkbox"
                           />
                           <span aria-hidden="true" />
@@ -423,12 +476,12 @@ export function PluginsSection({
                         </button>
                       ) : null}
                       {item.plugin.quarantined ? (
-                        <button className="plugin-text-action" disabled={busy} onClick={() => onRecoverPluginV2Installation(item.plugin.pluginId)} type="button">
+                        <button className="plugin-text-action" disabled={busy} onClick={() => runInventoryAction(() => onRecoverPluginV2Installation(item.plugin.pluginId))} type="button">
                           {isZh ? '解除隔离' : 'Clear quarantine'}
                         </button>
                       ) : null}
                       {item.plugin.enabled && !item.plugin.activeRunId && !item.plugin.quarantined ? (
-                        <button className="plugin-text-action" disabled={busy} onClick={() => onSetPluginV2Enabled(item.plugin, true)} type="button">
+                        <button className="plugin-text-action" disabled={busy} onClick={() => runInventoryAction(() => onSetPluginV2Enabled(item.plugin, true))} type="button">
                           {isZh ? '重新启动' : 'Restart'}
                         </button>
                       ) : null}
@@ -447,9 +500,9 @@ export function PluginsSection({
                           isZh={isZh}
                           onCustomize={() => openPluginCustomizer(item.plugin)}
                           onReloadDetails={() => setPluginV2DetailsReload((current) => current + 1)}
-                          onRecover={() => onRecoverPluginV2Installation(pluginId)}
-                          onRemove={() => onRemovePluginV2(item.plugin)}
-                          onSetEnabled={(enabled) => onSetPluginV2Enabled(item.plugin, enabled)}
+                          onRecover={() => runInventoryAction(() => onRecoverPluginV2Installation(pluginId))}
+                          onRemove={() => runInventoryAction(() => onRemovePluginV2(item.plugin))}
+                          onSetEnabled={(enabled) => runInventoryAction(() => onSetPluginV2Enabled(item.plugin, enabled))}
                           plugin={item.plugin}
                         />
                       </section>
@@ -458,36 +511,29 @@ export function PluginsSection({
                 )
               })}
             </div>
-          ) : (
-            <div className="plugin-empty-state">
-              <span aria-hidden="true">⌕</span>
-              <strong>{inventory.length === 0 ? ui.noDynamicPlugins : (isZh ? '没有匹配的插件' : 'No matching plugins')}</strong>
-              {inventory.length > 0 ? <p>{isZh ? '试试其他关键词或筛选条件。' : 'Try another keyword or filter.'}</p> : null}
-            </div>
-          )}
         </article>
-      </div>
+      </div> : null}
 
-      {systemPlugins.length > 0 ? (
+      {filteredSystemPlugins.length > 0 ? (
         <section className="panel plugin-security-requests">
           <div className="plugin-section-title">
             <div><span>System Plugin v3</span><h4>{isZh ? '已安装的 Full Trust 插件' : 'Installed Full Trust plugins'}</h4></div>
             <div className="plugin-item-actions">
               <button className="secondary-button" onClick={onRestartInSystemPluginSafeMode} type="button">{isZh ? '安全模式重启' : 'Restart in safe mode'}</button>
-              <strong>{systemPlugins.length}</strong>
+              <strong>{filteredSystemPlugins.length}</strong>
             </div>
           </div>
-          <aside className="plugin-kind-note" aria-label={isZh ? 'Full Trust 插件说明' : 'About Full Trust plugins'}>
-            <strong>{isZh ? '完全信任 · 完整本机访问' : 'Full Trust · Full local access'}</strong>
+          <details className="plugin-kind-note" aria-label={isZh ? 'Full Trust 插件说明' : 'About Full Trust plugins'}>
+            <summary>{isZh ? '完全信任 · 完整本机访问' : 'Full Trust · Full local access'}</summary>
             <p>{isZh
               ? '直接在应用和本机环境中运行，可访问文件、数据库和网络，并修改应用界面，适合全局主题、系统集成和后台服务。'
               : 'Runs directly in the application and local environment, with access to files, databases, the network, and the app interface. Suited to global themes, system integrations, and background services.'}</p>
             <p>{isZh
               ? '仅安装你信任的外部插件；风险声明用于告知，不会像沙箱权限一样限制插件能力。'
               : 'Only install external plugins you trust. Risk declarations describe access; they do not restrict capabilities like sandbox permissions.'}</p>
-          </aside>
+          </details>
           <div className="system-plugin-request-list">
-            {systemPlugins.map((plugin) => {
+            {filteredSystemPlugins.map((plugin) => {
               const builtin = plugin.source === 'builtin'
               const busy = pluginBusyId === plugin.pluginId || pluginInventoryBusy
               const failureStages = getSystemPluginFailureStages(plugin.lastError)
@@ -522,7 +568,7 @@ export function PluginsSection({
                     <div className="system-plugin-summary-main">
                       <div className="plugin-item-head">
                         <div><strong>{plugin.name}</strong><p>{plugin.publisher} · {plugin.pluginId} · {isZh ? '来源：' : 'Source: '}{builtin ? (isZh ? '内置' : 'Built-in') : (isZh ? '用户安装' : 'Installed')} · {isZh ? '版本：' : 'Version: '}{plugin.currentVersion ?? plugin.pendingVersion ?? '—'}</p></div>
-                        <span className={`plugin-status ${plugin.safeModeDisabled || plugin.lastError ? 'plugin-status-error' : plugin.enabled ? 'plugin-status-running' : 'plugin-status-disabled'}`}>{plugin.status}</span>
+                        <span className={`plugin-status plugin-status-${getSystemInventoryStatus(plugin) === 'attention' ? 'error' : plugin.status === 'starting' || plugin.status === 'pending-restart' ? 'loading' : getSystemInventoryStatus(plugin)}`} title={plugin.status}>{systemStatusLabel(plugin, isZh)}</span>
                       </div>
                       {plugin.description ? <p>{plugin.description}</p> : null}
                       {builtin ? <p className="system-plugin-source-note">{isZh ? '随 KnowBook 提供和更新，可停用。' : 'Included and updated with KnowBook. Can be disabled.'}</p> : null}
@@ -538,10 +584,10 @@ export function PluginsSection({
                           {isZh ? '申请登录启动' : 'Request login startup'}
                         </button>
                       ) : null}
-                      <button className="secondary-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => onSetSystemPluginEnabled(plugin, !plugin.enabled)} type="button">
+                      <button className="secondary-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => runInventoryAction(() => onSetSystemPluginEnabled(plugin, !plugin.enabled))} type="button">
                         {plugin.enabled ? (isZh ? '停用' : 'Disable') : (isZh ? '启用（重启后）' : 'Enable after restart')}
                       </button>
-                      {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => onRecoverSystemPlugin(plugin)} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
+                      {plugin.safeModeDisabled ? <button className="secondary-button" disabled={busy} onClick={() => runInventoryAction(() => onRecoverSystemPlugin(plugin))} type="button">{isZh ? '解除安全停用' : 'Recover'}</button> : null}
                       {!builtin && rollbackTarget ? <button className="secondary-button" disabled={busy} onClick={() => onRollbackSystemPlugin(plugin, rollbackTarget.packageId)} type="button">{isZh ? `回滚到 ${rollbackTarget.version}` : `Roll back to ${rollbackTarget.version}`}</button> : null}
                       {!builtin ? <button className="danger-button" disabled={busy || plugin.status === 'uninstall-pending'} onClick={() => {
                         uninstallReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -673,6 +719,17 @@ export function PluginsSection({
             })}
           </div>
         </section>
+      ) : null}
+
+      {filteredInventory.length === 0 && filteredSystemPlugins.length === 0 ? (
+        <div className="plugin-empty-state">
+          <strong>{inventory.length + systemPlugins.length === 0
+            ? (isZh ? '尚未安装插件' : 'No plugins installed yet')
+            : (isZh ? '没有匹配的插件' : 'No matching plugins')}</strong>
+          <p>{inventory.length + systemPlugins.length === 0
+            ? (isZh ? '安装可信插件来扩展工作区。' : 'Install a trusted plugin to extend your workspace.')
+            : (isZh ? '试试其他关键词或筛选条件。' : 'Try another keyword or filter.')}</p>
+        </div>
       ) : null}
 
       {systemPluginInstallRequests.length > 0 ? (

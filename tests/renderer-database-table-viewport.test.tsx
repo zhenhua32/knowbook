@@ -45,7 +45,7 @@ async function withViewport(run: (context: {
       measurements.push({ count, top: element.scrollTop })
       const padding = [...element.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
         .reduce((total, cell) => total + Number.parseFloat(cell.style.height), 0)
-      return 42 + count * 64 + padding
+      return 42 + count * 56 + padding
     } })
   const originalRect = dom.window.HTMLElement.prototype.getBoundingClientRect
   dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
@@ -116,10 +116,10 @@ test('deep scrolling then filtering 1000 records to five renders results before 
 test('a larger viewport clamps an old bottom position and still includes the last record with nonnegative spacers', async () => {
   await withViewport(async ({ document, scroll, render, move, resize }) => {
     await render(records)
-    await move(64042 - 600, 245)
+    await move(56042 - 600, 245)
     assert.equal(titles(document).at(-1), 'Record 999')
     await resize(1200)
-    assert.equal(scroll().scrollTop, 64042 - 1200)
+    assert.equal(scroll().scrollTop, 56042 - 1200)
     assert.equal(scroll().scrollLeft, 245)
     assert.equal(titles(document).at(-1), 'Record 999')
     assert.ok(rows(document).length > 0)
@@ -152,14 +152,15 @@ test('reordering or replacing a same-sized result set retains a valid position i
   await withViewport(async ({ document, scroll, render, move }) => {
     await render(records)
     await move(12000, 80)
+    const firstRecordIndex = Number(titles(document)[0]!.replace('Record ', ''))
     await render([...records].reverse())
     assert.equal(scroll().scrollTop, 12000)
     assert.equal(scroll().scrollLeft, 80)
     assert.ok(rows(document).length > 0)
-    assert.ok(titles(document)[0]!.startsWith('Record 8'))
+    assert.equal(titles(document)[0], `Record ${records.length - 1 - firstRecordIndex}`)
     await render(records.map(record => ({ ...record, id: `other-${record.id}`, title: `Other ${record.title}` })))
     assert.equal(scroll().scrollTop, 12000)
-    assert.ok(titles(document)[0]!.startsWith('Other Record 1'))
+    assert.equal(titles(document)[0], `Other Record ${firstRecordIndex}`)
     assert.ok(spacers(document).every(height => height >= 0))
   })
 })
@@ -168,10 +169,10 @@ test('overrunning the last interval and reducing to a shorter nonempty list neve
   await withViewport(async ({ document, scroll, render, move }) => {
     await render(records)
     await move(1_000_000, 320)
-    assert.equal(scroll().scrollTop, 64042 - 600)
+    assert.equal(scroll().scrollTop, 56042 - 600)
     assert.equal(titles(document).at(-1), 'Record 999')
     await render(records.slice(0, 20))
-    assert.equal(scroll().scrollTop, 1322 - 600)
+    assert.equal(scroll().scrollTop, 1162 - 600)
     assert.equal(scroll().scrollLeft, 320)
     assert.equal(titles(document).at(-1), 'Record 19')
     assert.ok(rows(document).length > 0)

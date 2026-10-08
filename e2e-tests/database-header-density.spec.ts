@@ -155,7 +155,7 @@ async function recordHeader(page: Page, app: ElectronApplication, tempRoot: stri
         fontSize: style.fontSize, lineHeight: style.lineHeight, marginTop: style.marginTop, textOverflow: style.textOverflow, whiteSpace: style.whiteSpace }
     }
     const css = getComputedStyle(header), content = header.closest<HTMLElement>('.content')!
-    return { inner: [innerWidth, innerHeight], header: rectangle(header), minHeight: css.minHeight, padding: css.padding,
+    return { inner: [innerWidth, innerHeight], header: rectangle(header), minHeight: css.minHeight, padding: css.padding, rowGap: css.rowGap,
       identity: rectangle(header.querySelector('.dbw-identity')!), actionsBox: rectangle(header.querySelector('.dbw-header-actions')!),
       content: rectangle(content), horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       title: text(header.querySelector<HTMLElement>('.dbw-source-trigger > span:first-child')!), tooltip: header.querySelector('.dbw-source-trigger')!.getAttribute('title'),
@@ -176,9 +176,12 @@ async function recordHeader(page: Page, app: ElectronApplication, tempRoot: stri
   expect(native.windows.every(window => !window.visible && !window.focused && !window.focusable)).toBe(true)
   expect(writes).toEqual([]); expect(state.horizontalOverflow).toBeLessThanOrEqual(1)
   expect(state.minHeight).toBe('76px'); expect(state.padding).toBe('12px 20px')
+  expect(state.rowGap).toBe(width <= 900 ? '10px' : '16px')
+  expect(state.identity.height).toBe(52); expect(state.actionsBox.height).toBe(40)
   const sameRow = Math.min(state.identity.bottom, state.actionsBox.bottom) - Math.max(state.identity.top, state.actionsBox.top) > 1
-  expect(state.header.height, 'Actual compact header height follows its real row arrangement').toBeGreaterThanOrEqual(sameRow ? 77 : 133)
-  expect(state.header.height, 'Compact header must leave available space for data').toBeLessThanOrEqual(sameRow ? 78 : 134)
+  const expectedHeight = sameRow ? 77 : width <= 900 ? 127 : 133
+  expect(state.header.height, 'Actual compact header height follows its real row arrangement').toBeGreaterThanOrEqual(expectedHeight)
+  expect(state.header.height, 'Compact header must leave available space for data').toBeLessThanOrEqual(expectedHeight + 1)
   expect(state.title.fontSize).toBe('24px'); expect(state.title.lineHeight).toBe('32px')
   expect(state.title.text).toBe(name); expect(state.tooltip).toBe(name)
   expect(state.description.text).toBe(description); expect(state.description.fontSize).toBe('13px')

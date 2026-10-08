@@ -128,7 +128,7 @@ test.describe('System Plugin v3 @electron', () => {
       expect(prepared?.artifactSha256).toMatch(/^[a-f0-9]{64}$/)
 
       await openPluginsPage(first.page)
-      const request = first.page.locator('.system-plugin-request').filter({
+      const request = first.page.locator('.system-plugin-request:not(.system-plugin-installation)').filter({
         hasText: 'Full Trust Acceptance'
       }).first()
       await expect(request).toBeVisible()
@@ -161,8 +161,12 @@ test.describe('System Plugin v3 @electron', () => {
       await exactId.fill(pluginId)
       await expect(confirm).toBeEnabled()
       await confirm.click()
+      await expect(request.locator('.plugin-status')).toHaveText('confirmed-restart-required')
+      const pendingInstallation = first.page.locator('.system-plugin-installation').filter({
+        hasText: 'Full Trust Acceptance'
+      }).first()
       await expect.poll(async () => {
-        const status = await request.locator('.plugin-status').textContent()
+        const status = await pendingInstallation.locator('.plugin-status').getAttribute('title')
         if (status === 'pending-restart') return status
         const message = await first?.page.locator('.app-notifications').textContent().catch(() => null)
         const logRoot = retainedRoot
@@ -175,6 +179,10 @@ test.describe('System Plugin v3 @electron', () => {
         return detail ? `${status ?? 'unknown'}: ${detail}` : (status ?? 'unknown')
       }, { message: 'Full Trust confirmation must publish and prepare the exact artifact' })
         .toBe('pending-restart')
+      const pendingPlugin = await first.page.evaluate(async (id) => (
+        (await window.knowbook.getPluginHomeData()).systemPlugins.find(plugin => plugin.pluginId === id)
+      ), pluginId)
+      expect(pendingPlugin).toMatchObject({ pluginId, status: 'pending-restart', pendingArtifactSha256: prepared!.artifactSha256 })
 
       await closeElectronApp(first, { preserveUserData: true })
       first = null
@@ -419,10 +427,10 @@ test.describe('System Plugin v3 @electron', () => {
       expect(requests).toContain('/navigated')
 
       await openPluginsPage(restarted.page)
-      const installed = restarted.page.locator('.system-plugin-request').filter({
+      const installed = restarted.page.locator('.system-plugin-installation').filter({
         hasText: 'Full Trust Acceptance'
       }).first()
-      await expect(installed.locator('.plugin-status')).toHaveText('active')
+      await expect(installed.locator('.plugin-status')).toHaveAttribute('title', 'active')
 
       await restarted.page.evaluate(async (id) => {
         await window.knowbook.setSystemPluginEnabled({ pluginId: id, enabled: false })

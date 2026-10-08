@@ -166,7 +166,7 @@ test.describe('Plugin systems @electron', () => {
       expect(prepared?.pluginId).toBe('activity-pulse')
       expect(prepared?.status).toBe('awaiting-confirmation')
       await openPage(context.page, 'Plugins', '插件中心')
-      const request = context.page.locator('.system-plugin-request').filter({ hasText: 'Activity Pulse' }).first()
+      const request = context.page.locator('.system-plugin-request:not(.system-plugin-installation)').filter({ hasText: 'Activity Pulse' }).first()
       await expect(request).toContainText(`SHA-256: ${prepared!.artifactSha256}`)
       const confirm = request.getByRole('button', { name: uiText('Confirm system install', '确认系统安装') })
       await expect(confirm).toBeDisabled()
@@ -175,7 +175,15 @@ test.describe('Plugin systems @electron', () => {
       await expect(confirm).toBeDisabled()
       await request.locator('.plugin-field input').fill('activity-pulse')
       await confirm.click()
-      await expect(request.locator('.plugin-status')).toHaveText('pending-restart')
+      await expect(request.locator('.plugin-status')).toHaveText('confirmed-restart-required')
+      const pendingInstallation = context.page.locator('.system-plugin-installation').filter({ hasText: 'Activity Pulse' }).first()
+      await expect(pendingInstallation.locator('.plugin-status')).toHaveAttribute('title', 'pending-restart')
+      const pendingPlugin = await context.page.evaluate(async () => (
+        (await window.knowbook.getPluginHomeData()).systemPlugins.find(plugin => plugin.pluginId === 'activity-pulse')
+      ))
+      expect(pendingPlugin).toMatchObject({
+        pluginId: 'activity-pulse', status: 'pending-restart', pendingArtifactSha256: prepared!.artifactSha256
+      })
       await openPage(context.page, 'Dashboard', '总览')
       await expect(context.page.getByTestId('activity-pulse-dashboard')).toHaveCount(0)
       await closeElectronApp(context, { preserveUserData: true })

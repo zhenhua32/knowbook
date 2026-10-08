@@ -83,7 +83,7 @@ async function withWorkspace(locale: 'en-US' | 'zh-CN', run: (context: {
     if (!element.classList.contains('dbw-table-scroll')) return 0
     const padding = [...element.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
       .reduce((sum, spacer) => sum + Number.parseFloat(spacer.style.height), 0)
-    return 40 + element.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 64 + padding
+    return 40 + element.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 56 + padding
   } })
   const focusCalls: HTMLElement[] = [], nativeFocus = dom.window.HTMLElement.prototype.focus
   dom.window.HTMLElement.prototype.focus = function (settings) { focusCalls.push(this); nativeFocus.call(this, settings) }

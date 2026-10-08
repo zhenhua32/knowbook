@@ -545,7 +545,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(falseReadFailed.stored).toEqual(acknowledgedFalse.stored)
       expect(falseReadFailed.state.checked).toBe(false)
       expect(falseReadFailed.state.focused).toBe(true)
-      expect(falseReadFailed.state.rowHeight).toBe(64)
+      expect(falseReadFailed.state.rowHeight).toBe(56)
       expect(falseReadFailed.state.source).toBe(sourceName)
       expect(falseReadFailed.state.view).toBe(viewName)
       expect(falseReadFailed.state.query).toBe('Original')

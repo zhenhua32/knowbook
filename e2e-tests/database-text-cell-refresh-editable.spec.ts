@@ -250,7 +250,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(pending.ipc.held[0].settled).toBe(false)
       expect(pending.ipc.held[0].snapshot.find(entity => entity.id === ids.entityId)?.fieldValues[ids.fieldId]).toBe(valueA)
       expect(pending.state.value).toBe(valueA)
-      expect(pending.state.rowHeight).toBeCloseTo(64, 0)
+      expect(pending.state.rowHeight).toBeCloseTo(56, 0)
       expect(pending.state.ratio).toBeCloseTo(1, 5)
       expect(pending.state.hit).toBe(true)
       await expect(cell.input).toBeEditable()
@@ -357,7 +357,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(finished.ipc.reads.filter(read => read.databaseId === ids.databaseId)).toEqual([
         { databaseId: ids.databaseId, held: true }, { databaseId: ids.databaseId, held: false }
       ])
-      expect(finished.state.rowHeight).toBeCloseTo(64, 0)
+      expect(finished.state.rowHeight).toBeCloseTo(56, 0)
       expect(finished.state.ratio).toBeCloseTo(1, 5)
       expect(finished.state.hit).toBe(true)
       expect(finished.state.query).toBe('')

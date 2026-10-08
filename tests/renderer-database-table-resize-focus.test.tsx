@@ -12,6 +12,10 @@ const fields: DatabaseField[] = [
 ]
 const records: DatabaseRecord[] = Array.from({ length: 1000 }, (_, index) => ({ id: `record-${index}`, databaseId: 'db',
   title: `Record ${index}`, documentId: null, fieldValues: { notes: `Notes ${index}` }, createdAt: '2026-10-01', updatedAt: '2026-10-01' }))
+const rowHeight = 56
+const headerHeight = 42
+const inputHeight = 32
+const totalHeight = headerHeight + records.length * rowHeight
 const rows = (document: Document) => [...document.querySelectorAll<HTMLTableRowElement>('tbody tr:not(.dbw-virtual-spacer)')]
 const titles = (document: Document) => rows(document).map(row => row.querySelector('strong')!.textContent)
 const spacers = (document: Document) => [...document.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')].map(cell => Number.parseFloat(cell.style.height))
@@ -42,7 +46,7 @@ async function withViewport(run: (context: {
       const count = element.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length
       const padding = [...element.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
         .reduce((total, cell) => total + Number.parseFloat(cell.style.height), 0)
-      return 42 + count * 64 + padding
+      return headerHeight + count * rowHeight + padding
     } })
   const originalRect = dom.window.HTMLElement.prototype.getBoundingClientRect
   dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
@@ -51,7 +55,7 @@ async function withViewport(run: (context: {
       toJSON: () => ({ top, height })
     }) as DOMRect
     if (this.classList.contains('dbw-table-scroll')) return rectangle(100, viewportHeight)
-    if (this.tagName === 'THEAD') return rectangle(100, 42)
+    if (this.tagName === 'THEAD') return rectangle(100, headerHeight)
     const row = this.closest<HTMLTableRowElement>('tbody tr:not(.dbw-virtual-spacer)')
     const port = row?.closest<HTMLElement>('.dbw-table-scroll')
     if (row && port && this.tagName === 'INPUT') {
@@ -59,7 +63,7 @@ async function withViewport(run: (context: {
       const first = row.parentElement!.firstElementChild
       const before = first?.classList.contains('dbw-virtual-spacer')
         ? Number.parseFloat(first.querySelector<HTMLElement>('td')!.style.height) : 0
-      return rectangle(100 + 42 + before + bodyRows.indexOf(row) * 64 + 16 - port.scrollTop, 32)
+      return rectangle(100 + headerHeight + before + bodyRows.indexOf(row) * rowHeight + (rowHeight - inputHeight) / 2 - port.scrollTop, inputHeight)
     }
     return originalRect.call(this)
   }
@@ -102,7 +106,7 @@ test('shrinking a viewport reveals its focused bottom text cell before trimming 
   await withViewport(async ({ document, scroll, render, move, resize }) => {
     await render(records)
     await resize(1200)
-    await move(64042 - 1200, 245)
+    await move(totalHeight - 1200, 245)
     const input = rows(document).at(-1)!.querySelector<HTMLInputElement>('input[aria-label="Notes"]')!
     const node = input
     await act(async () => {
@@ -120,12 +124,12 @@ test('shrinking a viewport reveals its focused bottom text cell before trimming 
     assert.ok(scroll().scrollTop > oldTop, 'only the table scroll position should reveal the cell below the new bottom edge')
     assert.equal(scroll().scrollLeft, 245)
     const control = node.getBoundingClientRect(), port = scroll().getBoundingClientRect()
-    assert.ok(control.top >= port.top + 42 && control.bottom <= port.top + scroll().clientHeight,
+    assert.ok(control.top >= port.top + headerHeight && control.bottom <= port.top + scroll().clientHeight,
       'the same cell is visible below the sticky header and above the new viewport bottom')
     assert.equal(titles(document).at(-1), 'Record 999')
     assert.ok(spacers(document).every(height => Number.isFinite(height) && height >= 0))
     await resize(1200)
-    assert.equal(scroll().scrollTop, 64042 - 1200, 'growing the viewport still applies the existing bottom clamp')
+    assert.equal(scroll().scrollTop, totalHeight - 1200, 'growing the viewport still applies the existing bottom clamp')
     assert.equal(scroll().scrollLeft, 245)
     assert.equal(document.activeElement, node)
     assert.equal(rows(document).at(-1)!.querySelector('input[aria-label="Notes"]'), node)

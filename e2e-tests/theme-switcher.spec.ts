@@ -190,6 +190,26 @@ test('built-in v3 Theme Switcher activates automatically, preserves palettes and
     const palettes = new Map<string, Record<string, string>>()
     for (const theme of themes) {
       await chooseTheme(context.page, theme, 'light')
+      await context.page.keyboard.press('Tab')
+      const sidebarControl = context.page.locator('.sidebar .nav-icon-btn').first()
+      await sidebarControl.focus()
+      const focusContrast = await sidebarControl.evaluate(element => {
+        const luminance = (color: string) => {
+          const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(value => {
+            const channel = value / 255
+            return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+          })
+          return r * 0.2126 + g * 0.7152 + b * 0.0722
+        }
+        const style = getComputedStyle(element)
+        const outline = luminance(style.outlineColor)
+        const background = luminance(getComputedStyle(element.closest('.sidebar')!).backgroundColor)
+        return { visible: element.matches(':focus-visible'), width: parseFloat(style.outlineWidth),
+          ratio: (Math.max(outline, background) + 0.05) / (Math.min(outline, background) + 0.05) }
+      })
+      expect(focusContrast.visible).toBe(true)
+      expect(focusContrast.width).toBeGreaterThanOrEqual(2)
+      expect(focusContrast.ratio, `${theme.id} sidebar keyboard focus contrast`).toBeGreaterThanOrEqual(3)
       const surfaces = await readSurfaces(context.page)
       expect(surfaces['.shell:background']).not.toBe('rgba(0, 0, 0, 0)')
       expect(surfaces['.sidebar:background']).not.toBe('rgba(0, 0, 0, 0)')

@@ -238,7 +238,7 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, phas
 }
 
 function expectGeometry(state: Awaited<ReturnType<typeof record>>['state'], buttonName?: RegExp) {
-  expect(state.rowHeight).toBeCloseTo(64, 0)
+  expect(state.rowHeight).toBeCloseTo(56, 0)
   expect(state.ratio).toBeCloseTo(1, 5)
   expect(state.hit).toBe(true)
   if (buttonName) {

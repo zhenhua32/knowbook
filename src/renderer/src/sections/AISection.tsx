@@ -72,49 +72,42 @@ export function AISection(props: AISectionProps) {
     </div> : null}
     <AiTaskSwitcher isZh={isZh} documentContent={
       <article className="panel ai-document-workspace">
-        <div className="ai-context-picker">
-          <label htmlFor={contextId}>{isZh ? '文档上下文' : 'Document context'}</label>
-          <select id={contextId} className="editor-select" value={contextDocumentId ?? ''}
-            onChange={event => { if (event.target.value) onSelectContextDocument(event.target.value) }}>
-            <option value="" disabled>{isZh ? '选择一篇文档' : 'Choose a document'}</option>
-            {documentOptions.map(document => <option key={document.id} value={document.id}>
-              {document.path || document.title}
-            </option>)}
-          </select>
-          {documentReady ? <button type="button" className="ai-context-open" onClick={() => onOpenDocument(selectedDocument!.id)}>
-            {isZh ? '打开文档' : 'Open document'} <span aria-hidden="true">↗</span>
-          </button> : null}
-        </div>
-        {contextDocumentLoading ? <p className="ai-context-loading" role="status">{isZh ? '正在加载文档上下文…' : 'Loading document context…'}</p>
-          : documentReady ? <p className="ai-context-description">{isZh ? '围绕' : 'Working with'} <strong>{selectedDocument!.title}</strong> {isZh ? '提问，回答会参考这篇文档。' : '— answers use this document as context.'}</p>
-            : <div className="ai-context-empty"><strong>{isZh ? '先选择一篇文档' : 'Choose a document first'}</strong>
-              <p>{isZh ? '在上方选择文档，即可总结要点、解释内容或寻找改进方向。' : 'Select a document above to summarize, explain, or explore improvements.'}</p></div>}
-        <div className="ai-panel">
-          <label className="ai-prompt-label" htmlFor={promptId}>{isZh ? '你想了解什么？' : 'What would you like to know?'}</label>
-          <textarea id={promptId} className="editor-textarea ai-document-prompt" rows={3}
-            value={aiPromptDraft} onChange={event => onAiPromptChange(event.target.value)}
-            disabled={!documentReady} placeholder={ui.askAiPlaceholder}
-            onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
-            onBlur={() => { composing.current = false }} onKeyDown={event => {
-              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !isImeKeyboardEvent(event.nativeEvent, composing.current) && canAsk) {
-                event.preventDefault(); onAskAi()
-              }
-            }} />
-          {!aiPromptDraft.trim() && documentReady ? <div className="ai-prompt-suggestions">
-            {suggestions.map(prompt => <button key={prompt} type="button" onClick={() => onAiPromptChange(prompt)}>{prompt}</button>)}
-          </div> : null}
-          <div className="ai-document-actions">
-            <button className="primary-button" disabled={!canAsk} onClick={onAskAi} type="button" aria-keyshortcuts="Control+Enter Meta+Enter">
-              {aiAsking ? ui.thinking : ui.askAiLabel}
-            </button>
-            <span className="ai-send-shortcut">{isZh ? 'Ctrl / ⌘ + Enter 发送' : 'Ctrl / ⌘ + Enter to send'}</span>
+        <div className="ai-context-bar">
+          <div className="ai-context-picker">
+            <label htmlFor={contextId}>{isZh ? '文档上下文' : 'Document context'}</label>
+            <select id={contextId} className="editor-select" value={contextDocumentId ?? ''}
+              onChange={event => { if (event.target.value) onSelectContextDocument(event.target.value) }}>
+              <option value="" disabled>{isZh ? '选择一篇文档' : 'Choose a document'}</option>
+              {documentOptions.map(document => <option key={document.id} value={document.id}>
+                {document.path || document.title}
+              </option>)}
+            </select>
+            {documentReady ? <button type="button" className="ai-context-open" onClick={() => onOpenDocument(selectedDocument!.id)}>
+              {isZh ? '打开文档' : 'Open document'} <span aria-hidden="true">↗</span>
+            </button> : null}
             <button className="secondary-button ai-summary-action" disabled={!documentReady || aiAutomationsRunning || !canUseAi}
               onClick={onRunEnabledAutomations} type="button">{aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}</button>
           </div>
+          {contextDocumentLoading ? <p className="ai-context-loading" role="status">{isZh ? '正在加载文档上下文…' : 'Loading document context…'}</p>
+            : documentReady ? <p className="ai-context-description"><strong>{selectedDocument!.title}</strong><span>{isZh ? '已加入提问上下文' : 'Included in your question context'}</span></p> : null}
+        </div>
+        <div className="ai-document-reading" role="region" aria-label={isZh ? '文档助手回答与参考' : 'Document assistant answers and sources'} tabIndex={0}>
           {aiAsking ? <div className="ai-answer-pending" role="status"><span className="ai-thinking-dot" aria-hidden="true" />{isZh ? '正在结合文档思考…' : 'Thinking with your document…'}</div> : null}
           {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
             busy={aiAsking} canRetry={documentReady && canUseAi} onRetry={onRetryAi} /> : null}
           {aiAnswer && !aiAnswerError && !aiAsking ? <AiAnswerCard content={aiAnswer} prompt={aiAnsweredPrompt} isZh={isZh} /> : null}
+          {!aiAnswer && !aiAnswerError && !aiAsking ? <div className="ai-document-welcome">
+            <span className="ai-welcome-icon" aria-hidden="true">✦</span>
+            <h3>{documentReady ? (isZh ? '从一个问题开始' : 'Start with a question') : (isZh ? '先选择一篇文档' : 'Choose a document first')}</h3>
+            <p>{documentReady ? (isZh ? '总结要点、解释概念，或探索下一步。' : 'Summarize the key points, explain a concept, or explore next steps.')
+              : (isZh ? '在上方选择文档，再围绕内容提问。' : 'Select a document above, then ask about its content.')}</p>
+            {documentReady ? <div className="ai-prompt-suggestions">
+              {suggestions.map(prompt => <button key={prompt} type="button" onClick={() => {
+                onAiPromptChange(prompt)
+                document.getElementById(promptId)?.focus({ preventScroll: true })
+              }}>{prompt}<span aria-hidden="true">↗</span></button>)}
+            </div> : null}
+          </div> : null}
           <details className="ai-related-notes" key={contextDocumentId ?? 'none'}>
             <summary>{isZh ? '相关笔记' : 'Related notes'}{aiContextResults.length > 0 ? <span>{aiContextResults.length}</span> : null}</summary>
             <div className="ai-related-notes-content">
@@ -136,15 +129,32 @@ export function AISection(props: AISectionProps) {
             </div>
           </details>
         </div>
+        <div className="ai-panel ai-document-composer">
+          <label className="ai-prompt-label" htmlFor={promptId}>{isZh ? '你想了解什么？' : 'What would you like to know?'}</label>
+          <textarea id={promptId} className="editor-textarea ai-document-prompt" rows={3}
+            value={aiPromptDraft} onChange={event => onAiPromptChange(event.target.value)}
+            disabled={!documentReady} placeholder={ui.askAiPlaceholder}
+            onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
+            onBlur={() => { composing.current = false }} onKeyDown={event => {
+              if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !isImeKeyboardEvent(event.nativeEvent, composing.current) && canAsk) {
+                event.preventDefault(); onAskAi()
+              }
+            }} />
+          <div className="ai-document-actions">
+            <button className="primary-button" disabled={!canAsk} onClick={onAskAi} type="button" aria-keyshortcuts="Control+Enter Meta+Enter">
+              {aiAsking ? ui.thinking : ui.askAiLabel}
+            </button>
+            <span className="ai-send-shortcut">{isZh ? 'Ctrl / ⌘ + Enter 发送' : 'Ctrl / ⌘ + Enter to send'}</span>
+          </div>
+        </div>
       </article>
-    } extensionContent={
+    } extensionContent={isVisible => (
       <article className="panel ai-extension-workspace">
         <div className="ai-extension-heading"><h3>{isZh ? '为你的工作方式添加能力' : 'Add a capability to your workflow'}</h3>
           <p>{isZh ? '描述想要的扩展或自动化。助手会准备实现，并在启用前让你确认。' : 'Describe an extension or automation. The assistant prepares it for your review before activation.'}</p></div>
-        {extensionTools}
-        <AssistantConversation activeDocumentId={documentReady ? selectedDocument!.id : null} aiEnabled={aiEnabled} hasApiKey={hasApiKey} isZh={isZh} showConfigurationHint={false} />
-        {extensionMessageCards}
+        <AssistantConversation activeDocumentId={documentReady ? selectedDocument!.id : null} aiEnabled={aiEnabled} hasApiKey={hasApiKey} isZh={isZh} showConfigurationHint={false}
+          isVisible={isVisible} transcriptBefore={extensionTools} transcriptAfter={extensionMessageCards} />
       </article>
-    } />
+    )} />
   </>
 }

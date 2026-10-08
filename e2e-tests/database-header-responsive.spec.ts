@@ -300,7 +300,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(narrow.state.description.scrollWidth).toBeLessThanOrEqual(narrow.state.description.clientWidth + 1)
       expect(narrow.state.actions.top).toBeGreaterThanOrEqual(narrow.state.identity.bottom - 1)
 
-      // The readable Header must leave one reachable data viewport below it.
+      // The compact Header must leave a single usable data viewport below it.
       // Wheel the actual table port, prove the last title is reachable, then
       // return to the first row without navigating or changing any record.
       const port = page.getByTestId('database-table-view')
@@ -334,7 +334,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(content.surface.scrollTop).toBeGreaterThan(0)
       await page.mouse.wheel(0, -1_000)
       await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(0)
-      // Wheel input on page padding must leave the workbench in place;
+      // Wheel input on page padding must leave the workbench in place; only
       // the table port owns data scrolling beside the visible Header.
       await page.mouse.move(canvasBox.x + 3, Math.max(3, canvasBox.y + 80))
       await page.mouse.wheel(0, -2_000)

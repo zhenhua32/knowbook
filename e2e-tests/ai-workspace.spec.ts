@@ -67,16 +67,30 @@ async function installAnswers(app: ElectronApplication) {
 }
 
 test('missing AI setup opens the AI category and consumes the requested settings category @electron', async ({}, testInfo) => {
-  await withElectronApp(async ({ page }) => {
+  await withElectronApp(async ({ page, app }) => {
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window.setMinimumSize(680, 520)
+      window.setSize(1000, 620)
+    })
     await seedDocuments(page)
     await openAi(page)
+    expect(await page.evaluate(() => window.innerHeight)).toBeLessThan(650)
     await expect(page.locator('.ai-readiness')).toBeVisible()
     await expect(page.locator('.ai-document-workspace')).toBeVisible()
     await expect(page.locator('.ai-extension-workspace')).not.toBeVisible()
     await expect(page.locator('.ai-related-notes-content')).not.toBeVisible()
     await expect(page.getByRole('button', { name: uiText('Ask AI', '询问 AI'), exact: true })).toBeDisabled()
     await expectButtonTargets(page)
+    await expect(page.locator('.ai-document-prompt')).toBeInViewport({ ratio: 1 })
+    await expect(page.getByRole('button', { name: uiText('Configure AI', '配置 AI'), exact: true })).toBeInViewport({ ratio: 1 })
+    expect(await page.locator('.content.page-ai').evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1)
     await page.screenshot({ path: testInfo.outputPath('ai-default-unconfigured.png'), fullPage: true })
+    await page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') }).click()
+    await expect(page.locator('.assistant-composer textarea')).toBeDisabled()
+    await expect(page.locator('.assistant-composer textarea')).toBeInViewport({ ratio: 1 })
+    await expect(page.locator('.assistant-composer-hint')).toBeInViewport({ ratio: 1 })
+    await expect(page.getByRole('button', { name: uiText('Configure AI', '配置 AI'), exact: true })).toBeInViewport({ ratio: 1 })
     await page.getByRole('button', { name: uiText('Configure AI', '配置 AI'), exact: true }).click()
     await expect(page.getByRole('tab', { name: 'AI', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('tab', { name: uiText('General', '通用'), exact: true }).click()
@@ -182,5 +196,153 @@ test('AI task switches preserve drafts and approvals and render safe Markdown wi
     await expectButtonTargets(page)
     await page.screenshot({ path: testInfo.outputPath('ai-extension-dark-narrow.png'), fullPage: true })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  })
+})
+
+test('restored approvals are visible on the first task switch without resetting history reading after later switches @electron', async ({}, testInfo) => {
+  await withElectronApp(async ({ page, app }) => {
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window.setMinimumSize(680, 520)
+      window.setSize(1000, 820)
+    })
+    await seedDocuments(page, true)
+    await installAnswers(app)
+    await app.evaluate(({ ipcMain }) => {
+      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '0'
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> })._invokeHandlers
+      const readEvents = handlers.get('knowbook:get-assistant-session-events')!
+      ipcMain.removeHandler('knowbook:get-assistant-session-events')
+      ipcMain.handle('knowbook:get-assistant-session-events', async (event, ...args) => {
+        const events = await readEvents(event, ...args) as Array<{ id: string; sessionId: string; seq: number; type: string; payload: { text?: string } }>
+        const history = events.filter(item => item.type === 'assistant.message')
+          .map(item => ({ ...item, payload: { ...item.payload, text: item.payload.text!.repeat(35) } }))
+        const additions = Array.from({ length: Number(process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES) }, (_, index) => ({
+          id: `hidden-message-${index}`, sessionId: 'workspace-app', seq: index + 3, surface: 'conversation',
+          type: 'assistant.message', createdAt: '2026-10-01T02:00:00Z',
+          payload: { turnId: 'turn', stepId: `hidden-step-${index}`, text: `Background progress ${index}` }
+        }))
+        return [...history, ...additions, ...events.filter(item => item.type !== 'assistant.message')]
+      })
+      return { configured: true }
+    })
+    await openAi(page)
+    const documentTab = page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手') })
+    const extensionTab = page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') })
+    const transcript = page.locator('.assistant-transcript')
+    const approval = page.locator('.assistant-approval')
+    // Wait for restoration while the extension panel is still hidden. Neither
+    // a click on the approval nor scrollIntoView may repair the tested layout.
+    await expect(page.locator('.assistant-message')).toHaveCount(1)
+    await expect(approval).toHaveCount(1)
+    await expect(transcript).not.toBeVisible()
+    expect(await transcript.evaluate(element => element.scrollHeight)).toBe(0)
+    await extensionTab.click()
+    await expect(approval).toBeInViewport({ ratio: 1 })
+    for (const button of await approval.getByRole('button').all()) await expect(button).toBeInViewport({ ratio: 1 })
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
+    expect(await transcript.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(1000)
+    await page.screenshot({ path: testInfo.outputPath('ai-restored-approval-first-visible.png') })
+
+    const bounds = await transcript.boundingBox()
+    expect(bounds).not.toBeNull()
+    await page.mouse.move(bounds!.x + 12, bounds!.y + bounds!.height / 2)
+    await page.mouse.wheel(0, -480)
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeGreaterThan(100)
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    const readingTop = await transcript.evaluate(element => element.scrollTop)
+    await documentTab.click()
+    await app.evaluate(({ BrowserWindow }) => {
+      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '1'
+      BrowserWindow.getAllWindows()[0].webContents.send('knowbook:assistant-session-changed', { sessionId: 'workspace-app', lastSeq: 3 })
+      return { sent: true }
+    })
+    await expect(page.locator('.assistant-message')).toHaveCount(2)
+    await extensionTab.click()
+    await expect.poll(() => transcript.evaluate(element => element.scrollTop)).toBeCloseTo(readingTop, 0)
+    expect(await transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeGreaterThan(100)
+    await expect(approval.getByRole('button').first()).not.toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath('ai-restored-history-position.png') })
+
+    await transcript.focus()
+    await page.keyboard.press('Control+End')
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
+    await documentTab.click()
+    await app.evaluate(({ BrowserWindow }) => {
+      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '2'
+      BrowserWindow.getAllWindows()[0].webContents.send('knowbook:assistant-session-changed', { sessionId: 'workspace-app', lastSeq: 4 })
+      return { sent: true }
+    })
+    await expect(page.locator('.assistant-message')).toHaveCount(3)
+    await extensionTab.click()
+    await expect(approval.getByRole('button').first()).toBeInViewport({ ratio: 1 })
+    await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
+  })
+})
+
+test('short AI workspaces keep input and approvals reachable with one content scroller in light and dark palettes @electron', async ({}, testInfo) => {
+  await withElectronApp(async ({ page, app }) => {
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0]
+      window.setMinimumSize(680, 520)
+      window.setSize(1000, 620)
+    })
+    await seedDocuments(page, true)
+    await installAnswers(app)
+    await app.evaluate(({ ipcMain }) => {
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> })._invokeHandlers
+      const readEvents = handlers.get('knowbook:get-assistant-session-events')!
+      ipcMain.removeHandler('knowbook:get-assistant-session-events')
+      ipcMain.handle('knowbook:get-assistant-session-events', async (event, ...args) => {
+        const events = await readEvents(event, ...args) as Array<{ id: string; payload: { text?: string; summary?: string; revisionPreview?: unknown } }>
+        return events.map(item => item.payload.text ? { ...item, payload: { ...item.payload, text: item.payload.text.repeat(25) } }
+          : { ...item, payload: { ...item.payload, summary: `${item.payload.summary}\n${'Review permissions and the exact artifact. '.repeat(40)}`,
+            revisionPreview: { changes: 'Source changes for approval.\n'.repeat(100) } } })
+      })
+    })
+    await openAi(page)
+    expect(await page.evaluate(() => window.innerHeight)).toBeLessThan(650)
+    for (const themeId of ['moss', 'midnight']) {
+      await page.evaluate(async themeId => {
+        const plugin = (await window.knowbook.listSystemPlugins()).find(item => item.pluginId === 'theme-switcher')!
+        await window.knowbook.invokeSystemPluginMain({ pluginId: plugin.pluginId, revisionHash: `sha256:${plugin.currentArtifactSha256}`,
+          method: 'set-theme', input: { themeId } })
+      }, themeId)
+      await expect(page.locator('html')).toHaveAttribute('data-knowbook-theme-switcher', themeId)
+      const prompt = page.locator('.ai-document-prompt')
+      await prompt.fill('Question in a short window')
+      await prompt.press('Control+Enter')
+      await expect(page.locator('.ai-answer')).toBeVisible()
+      await expect(prompt).toBeInViewport({ ratio: 1 })
+      await expect(page.getByRole('button', { name: uiText('Ask AI', '询问 AI'), exact: true })).toBeInViewport({ ratio: 1 })
+      await expect(page.locator('.ai-document-reading')).toHaveCSS('overflow-y', 'auto')
+      expect(await page.locator('.content.page-ai').evaluate(element => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1)
+      await page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') }).click()
+      const approval = page.locator('.assistant-approval')
+      if (await approval.locator('details').getAttribute('open') === null) await approval.locator('summary').click()
+      const reject = approval.getByRole('button', { name: uiText('Reject', '拒绝'), exact: true })
+      await reject.scrollIntoViewIfNeeded()
+      await expect(reject).toBeInViewport()
+      await page.locator('.assistant-composer textarea').fill('Extension request with a multiline draft\n'.repeat(8))
+      await expect(page.locator('.assistant-composer textarea')).toBeInViewport({ ratio: 1 })
+      await expect(page.locator('.assistant-composer button')).toBeInViewport({ ratio: 1 })
+      await expect(page.locator('.assistant-composer-hint')).toBeInViewport({ ratio: 1 })
+      const layout = await page.locator('.content.page-ai').evaluate(element => {
+        const transcript = element.querySelector<HTMLElement>('.assistant-transcript')!
+        const composer = element.querySelector<HTMLElement>('.assistant-composer')!
+        const workspace = element.querySelector<HTMLElement>('.ai-extension-workspace')!
+        const hint = element.querySelector<HTMLElement>('.assistant-composer-hint')!
+        return { pageOverflow: element.scrollHeight - element.clientHeight, transcriptOverflow: transcript.scrollHeight - transcript.clientHeight,
+          transcriptBottom: transcript.getBoundingClientRect().bottom, composerTop: composer.getBoundingClientRect().top,
+          workspaceBottom: workspace.getBoundingClientRect().bottom, hintBottom: hint.getBoundingClientRect().bottom }
+      })
+      expect(layout.pageOverflow).toBeLessThanOrEqual(1)
+      expect(layout.transcriptOverflow).toBeGreaterThan(100)
+      expect(layout.transcriptBottom).toBeLessThanOrEqual(layout.composerTop)
+      expect(layout.hintBottom).toBeLessThanOrEqual(layout.workspaceBottom - 6)
+      await expectButtonTargets(page)
+      await page.screenshot({ path: testInfo.outputPath(`ai-short-${themeId}.png`) })
+      await page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手') }).click()
+    }
   })
 })

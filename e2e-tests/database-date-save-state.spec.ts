@@ -285,7 +285,7 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
   expect(state.view).toBe(viewName)
   expect(state.query).toBe('Original')
   expect(state.notes).toBe('Original Notes')
-  expect(state.rowHeight).toBe(64)
+  expect(state.rowHeight).toBe(56)
   return { state, layout, ipc, stored }
 }
 

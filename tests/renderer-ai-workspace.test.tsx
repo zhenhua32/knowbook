@@ -93,7 +93,103 @@ test('task switching keeps document and extension drafts, conversation and appro
       assert.equal(document.querySelector('.assistant-composer textarea'), extensionPrompt)
       assert.equal(extensionPrompt.value, '尚未发送的扩展需求')
       assert.equal(document.querySelectorAll('.assistant-approval button').length, 2)
+      assert.equal(document.querySelector('.assistant-transcript')?.contains(document.querySelector('.assistant-approval')), true,
+        'approval content scrolls with the conversation instead of pushing the composer away')
     })
+})
+
+test('extension submission preserves IME composition and Shift+Enter before sending on Enter', async () => {
+  const sent: unknown[] = []
+  await withWorkspace({ listAssistantSessions: async () => [session('app')], getAssistantSessionEvents: async () => [],
+    sendAssistantMessage: async (input: unknown) => { sent.push(input) } }, async ({ document, window, render }) => {
+    await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true,
+      isZh: true, initialDraft: '中文扩展需求' }))
+    const prompt = document.querySelector<HTMLTextAreaElement>('.assistant-composer textarea')!
+    assert.equal(prompt.getAttribute('aria-label'), '扩展需求')
+    await act(async () => {
+      prompt.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
+      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    assert.equal(sent.length, 0)
+    assert.equal(prompt.value, '中文扩展需求')
+    await act(async () => {
+      prompt.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }))
+      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true }))
+      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }))
+    })
+    assert.equal(sent.length, 0)
+    await act(async () => prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
+    assert.deepEqual(sent, [{ sessionId: 'app', text: '中文扩展需求', mode: 'auto' }])
+    assert.equal(prompt.value, '')
+  })
+})
+
+test('opening a restored hidden conversation reveals its approval and preserves an unpinned reading position', async () => {
+  const approval = { id: 'approval-event', sessionId: 'app', workspaceId: 'workspace', seq: 21,
+    createdAt: '2026-10-01T01:00:00Z', surface: 'conversation', type: 'approval.requested',
+    payload: { turnId: 'turn', toolCallId: 'call', approvalId: 'approval', pluginId: 'sample', revisionId: 'revision',
+      scope: { kind: 'session', workspaceId: 'workspace', sessionId: 'app' }, permissions: [],
+      summary: 'Review the restored extension', risk: 'low', expiresAt: '2099-01-01T00:00:00Z' } }
+  const history = Array.from({ length: 20 }, (_, index) => ({ ...message('app', 'History ' + index),
+    id: 'message-' + index, seq: index + 1, payload: { turnId: 'turn', stepId: 'step-' + index, text: 'History ' + index } }))
+  let events = [...history, approval]
+  let notify!: (change: { sessionId: string; lastSeq: number }) => void
+  await withWorkspace({ listAssistantSessions: async () => [session('app')], getAssistantSessionEvents: async () => events,
+    onAssistantSessionChanged: (listener: typeof notify) => { notify = listener; return () => {} } },
+  async ({ document, window, render }) => {
+    let storedScrollTop = 0
+    // Model a long transcript whose geometry disappears under a hidden panel.
+    // Setting scrollTop while hidden clamps to zero, just as a non-laid-out box.
+    Object.defineProperties(window.HTMLElement.prototype, {
+      clientHeight: { configurable: true, get(this: HTMLElement) {
+        return this.classList.contains('assistant-transcript') && !this.closest('[hidden]') ? 400 : 0
+      } },
+      scrollHeight: { configurable: true, get(this: HTMLElement) {
+        return this.classList.contains('assistant-transcript') && !this.closest('[hidden]')
+          ? this.querySelectorAll('.assistant-message').length * 300 + 200 : 0
+      } },
+      scrollTop: { configurable: true, get(this: HTMLElement) { return this.closest('[hidden]') ? 0 : storedScrollTop },
+        set(this: HTMLElement, value: number) { storedScrollTop = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)) } }
+    })
+    await render(createElement(AiTaskSwitcher, { isZh: false, documentContent: createElement('p', null, 'Document task'),
+      extensionContent: (isVisible: boolean) => createElement(AssistantConversation,
+        { activeDocumentId: null, aiEnabled: true, hasApiKey: true, isZh: false, isVisible }) }))
+    const transcript = document.querySelector<HTMLElement>('.assistant-transcript')!
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+    assert.equal(transcript.querySelectorAll('.assistant-message').length, 20)
+    assert.equal(transcript.querySelectorAll('.assistant-approval button').length, 2)
+    assert.equal(transcript.scrollHeight, 0)
+    assert.equal(storedScrollTop, 0)
+    await act(async () => tabs[1].click())
+    assert.equal(transcript.scrollTop, transcript.scrollHeight - transcript.clientHeight,
+      'the first visible layout must expose the pending approval at the end of a restored long conversation')
+    await act(async () => {
+      transcript.scrollTop = 220
+      transcript.dispatchEvent(new window.Event('scroll', { bubbles: true }))
+      tabs[0].click()
+    })
+    await act(async () => {
+      transcript.dispatchEvent(new window.Event('scroll', { bubbles: true }))
+      events = [...history, { ...message('app', 'New content while hidden'), id: 'new-message', seq: 22 }, approval]
+      notify({ sessionId: 'app', lastSeq: 22 })
+    })
+    await act(async () => tabs[1].click())
+    assert.equal(transcript.querySelectorAll('.assistant-message').length, 21)
+    assert.equal(transcript.scrollTop, 220, 'switching tasks must preserve the user\'s history-reading position')
+    await act(async () => {
+      transcript.scrollTop = transcript.scrollHeight
+      transcript.dispatchEvent(new window.Event('scroll', { bubbles: true }))
+      tabs[0].click()
+    })
+    await act(async () => {
+      events = [...events.slice(0, -1), { ...message('app', 'Another hidden update'), id: 'last-message', seq: 23,
+        payload: { turnId: 'turn', stepId: 'last-step', text: 'Another hidden update' } }, approval]
+      notify({ sessionId: 'app', lastSeq: 23 })
+    })
+    await act(async () => tabs[1].click())
+    assert.equal(transcript.scrollTop, transcript.scrollHeight - transcript.clientHeight,
+      'users who returned to the bottom still follow new conversation content')
+  })
 })
 
 for (const outcome of ['success', 'failure'] as const) {

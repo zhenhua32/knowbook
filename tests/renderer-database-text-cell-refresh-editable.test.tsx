@@ -61,7 +61,7 @@ async function withWorkspace(run: (context: {
       if (!node.classList.contains('dbw-table-scroll')) return 0
       const padding = [...node.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
         .reduce((total, item) => total + Number.parseFloat(item.style.height), 0)
-      return 42 + node.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 64 + padding
+      return 42 + node.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 56 + padding
     } })
   dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
     return new dom.window.DOMRect(0, 0, 180, this.tagName === 'THEAD' ? 42 : 32)

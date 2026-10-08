@@ -55,7 +55,7 @@ export function DatabaseTableView({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
   const [headerHeight, setHeaderHeight] = useState(0)
-  const rowHeight = 64
+  const rowHeight = 56
   const tableWidth = 44 + fields.reduce((width, field) => width + (columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180)), 0)
   const overscan = 8
   // Keep data edits and reordering at the current position; only limit scrolling

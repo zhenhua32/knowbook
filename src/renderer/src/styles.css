@@ -6248,8 +6248,8 @@ select:focus-visible {
 }
 /* ===== Management UI system v1: dashboard, database, AI, plugins, settings ===== */
 .content.management-page {
-  gap: 20px;
-  padding: 28px 32px 48px;
+  gap: 16px;
+  padding: 24px 28px;
   color: var(--kb-text);
   font-size: var(--kb-type-body);
   line-height: var(--kb-leading-body);
@@ -6298,10 +6298,10 @@ select:focus-visible {
   margin: 0;
   color: var(--kb-accent);
   font-size: var(--kb-type-caption);
-  font-weight: 700;
+  font-weight: 600;
   line-height: var(--kb-leading-caption);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .management-page :is(.hero h2, .management-page-heading h2) {
@@ -6323,16 +6323,21 @@ select:focus-visible {
 }
 
 .management-page .panel {
-  padding: 24px;
-  border-radius: 18px;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.management-page .stat-card {
+  box-shadow: none;
 }
 
 .management-page .panel-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 16px;
 }
 
 .management-page .panel-head h3 {
@@ -6340,7 +6345,7 @@ select:focus-visible {
   color: var(--kb-text);
   font-family: inherit;
   font-size: var(--kb-type-title-lg);
-  font-weight: 700;
+  font-weight: 650;
   line-height: var(--kb-leading-title);
 }
 
@@ -6552,6 +6557,10 @@ select:focus-visible {
 
 :root[data-theme='dark'] .management-page :is(.hero, .management-page-header) {
   background: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme='dark'] .management-page :is(.panel, .stat-card) {
   box-shadow: none;
 }
 

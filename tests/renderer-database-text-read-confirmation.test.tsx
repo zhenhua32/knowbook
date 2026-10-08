@@ -121,7 +121,7 @@ async function withPage(locale: UiLanguage, run: (context: {
         if (!node.classList.contains('dbw-table-scroll')) return 0
         const spacers = [...node.querySelectorAll<HTMLElement>('.dbw-virtual-spacer td')]
           .reduce((height, cell) => height + (Number.parseFloat(cell.style.height) || 0), 0)
-        return 42 + node.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 64 + spacers
+        return 42 + node.querySelectorAll('tbody tr:not(.dbw-virtual-spacer)').length * 56 + spacers
       } })
     dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
       return this.tagName === 'THEAD' ? new dom.window.DOMRect(0, 0, 600, 42) : nativeRect.call(this)

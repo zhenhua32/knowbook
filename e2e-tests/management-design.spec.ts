@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 const managementPages = [
@@ -15,7 +15,114 @@ async function openManagementPage(page: Page, en: string, zh: string, ready: str
   await expect(page.locator(ready)).toBeVisible()
 }
 
-test('management pages keep the readable typography and responsive canvas contract', async () => {
+async function settingsToggleColors(toggle: Locator) {
+  await expect.poll(() => toggle.evaluate(element => element.getAnimations({ subtree: true })
+    .filter(animation => animation.playState === 'running' || animation.pending).length)).toBe(0)
+  return toggle.evaluate(element => {
+    const rgba = (value: string): number[] => {
+      const match = /^rgba?\(([^)]+)\)$/.exec(value)
+      if (!match) throw new Error(`Unsupported computed switch color: ${value}`)
+      const channels = match[1].split(',').map(Number)
+      if (channels.length === 3) channels.push(1)
+      if (channels.length !== 4 || !channels.every(Number.isFinite)) throw new Error(`Invalid computed switch color: ${value}`)
+      return channels
+    }
+    const luminance = (color: number[]): number => color.slice(0, 3)
+      .map(channel => channel / 255)
+      .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+      .reduce((total, channel, index) => total + channel * [0.2126, 0.7152, 0.0722][index], 0)
+    const contrast = (first: number[], second: number[]): number => {
+      const values = [luminance(first), luminance(second)]
+      return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05)
+    }
+    const style = getComputedStyle(element), thumb = getComputedStyle(element, '::before')
+    const trackColor = rgba(style.backgroundColor), thumbColor = rgba(thumb.backgroundColor)
+    const backgrounds: number[][] = []
+    for (let node = element.parentElement; node; node = node.parentElement) {
+      const ancestor = getComputedStyle(node)
+      if (ancestor.backgroundImage !== 'none' || Number(ancestor.opacity) !== 1) throw new Error('Switch contrast needs a known solid surface.')
+      const color = rgba(ancestor.backgroundColor)
+      backgrounds.push(color)
+      if (color[3] === 1) break
+    }
+    let surface = backgrounds.pop()
+    if (!surface || surface[3] !== 1 || trackColor[3] !== 1 || thumbColor[3] !== 1 || Number(style.opacity) !== 1) {
+      throw new Error('Enabled switches must expose opaque track, thumb and surface colors.')
+    }
+    for (const front of backgrounds.reverse()) {
+      surface = [...front.slice(0, 3).map((channel, index) => channel * front[3] + surface![index] * (1 - front[3])), 1]
+    }
+    const focusColor = rgba(style.outlineColor)
+    return {
+      checked: (element as HTMLInputElement).checked,
+      track: style.backgroundColor, thumb: thumb.backgroundColor, surface,
+      trackContrast: contrast(trackColor, surface), thumbContrast: contrast(thumbColor, trackColor),
+      thumbOffset: thumb.transform === 'none' ? 0 : new DOMMatrixReadOnly(thumb.transform).m41,
+      focusVisible: element.matches(':focus-visible'), outlineStyle: style.outlineStyle,
+      outlineWidth: Number.parseFloat(style.outlineWidth), outlineAlpha: focusColor[3],
+      focusContrast: contrast(focusColor, surface)
+    }
+  })
+}
+
+test('settings switches retain visible states and native label and keyboard interaction in every built-in palette @electron', async ({}, info) => {
+  test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
+  test.setTimeout(120_000)
+  await withElectronApp(async ({ page }) => {
+    await page.evaluate(async () => window.knowbook.saveSetting('ui.language', 'en-US'))
+    const stored = (await page.evaluate(() => window.knowbook.getHomeData())).aiConfig
+    const evidence: unknown[] = []
+    for (const palette of ['light', 'dark', 'cloud', 'paper', 'moss', 'bay', 'midnight', 'violet']) {
+      if (palette === 'light' || palette === 'dark') {
+        await page.evaluate(async theme => window.knowbook.saveSetting('appearance.theme', theme), palette)
+        await page.reload()
+        await expect(page.locator('html')).toHaveAttribute('data-theme', palette)
+        await expect(page.locator('html')).not.toHaveAttribute('data-knowbook-theme-switcher')
+      }
+      await openManagementPage(page, 'Settings', '配置中心', '.settings-layout')
+      if (palette !== 'light' && palette !== 'dark') {
+        await page.getByRole('tab', { name: 'Appearance', exact: true }).click()
+        await page.getByTestId(`theme-option-${palette}`).click()
+        await expect(page.getByTestId(`theme-option-${palette}`)).toHaveAttribute('aria-pressed', 'true')
+        await expect(page.locator('html')).toHaveAttribute('data-knowbook-theme-switcher', palette)
+      }
+      const tab = page.getByRole('tab', { name: 'AI', exact: true })
+      await tab.click()
+      const row = page.locator('.settings-ai-panel .toggle-row').first()
+      const toggle = row.getByRole('checkbox')
+      await expect(toggle).toBeEnabled()
+      const initiallyChecked = await toggle.isChecked()
+      await page.keyboard.press('Tab')
+      await expect(toggle).toBeFocused()
+      const initial = await settingsToggleColors(toggle)
+      expect(initial.focusVisible, `${palette} keyboard focus is visible`).toBe(true)
+      expect(initial.outlineStyle).toBe('solid')
+      expect(initial.outlineWidth).toBeGreaterThanOrEqual(2)
+      expect(initial.outlineAlpha).toBe(1)
+      expect(initial.focusContrast, `${palette} focus ring contrast`).toBeGreaterThanOrEqual(3)
+
+      // Clicking the text must activate the whole native label, not just the thumb.
+      await row.locator('span').click()
+      await expect(toggle).toBeChecked({ checked: !initiallyChecked })
+      const changed = await settingsToggleColors(toggle)
+      for (const [state, sample] of [['initial', initial], ['changed', changed]] as const) {
+        expect(sample.trackContrast, `${palette} ${state} track against its panel`).toBeGreaterThanOrEqual(3)
+        expect(sample.thumbContrast, `${palette} ${state} thumb against its track`).toBeGreaterThanOrEqual(3)
+        expect(sample.thumbOffset, `${palette} ${state} position indicates the checked state`).toBe(sample.checked ? 16 : 0)
+      }
+      await tab.click()
+      await page.keyboard.press('Tab')
+      await expect(toggle).toBeFocused()
+      await page.keyboard.press('Space')
+      await expect(toggle).toBeChecked({ checked: initiallyChecked })
+      evidence.push({ palette, initial, changed })
+    }
+    expect((await page.evaluate(() => window.knowbook.getHomeData())).aiConfig).toEqual(stored)
+    await info.attach('settings-switch-computed-colors', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' })
+  })
+})
+
+test('management pages keep the readable typography and responsive canvas contract @electron', async () => {
   test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
   test.slow()
 
@@ -54,7 +161,7 @@ test('management pages keep the readable typography and responsive canvas contra
   })
 })
 
-test('management layouts use the available minimum-window space without compressed auxiliary columns', async () => {
+test('management layouts use the available minimum-window space without compressed auxiliary columns @electron', async () => {
   test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
   await withElectronApp(async ({ page }) => {
@@ -78,8 +185,16 @@ test('management layouts use the available minimum-window space without compress
     await openManagementPage(page, 'AI Assistant', 'AI 助手', '.management-page-header')
     await page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') }).click()
     await expect(page.locator('.assistant-transcript.is-empty')).toBeVisible()
-    const emptyTranscriptHeight = await page.locator('.assistant-transcript.is-empty').evaluate((element) => element.getBoundingClientRect().height)
-    expect(emptyTranscriptHeight).toBeLessThanOrEqual(180)
+    await expect(page.locator('.assistant-composer textarea')).toBeInViewport()
+    await expect(page.locator('.assistant-composer button')).toBeInViewport()
+    const assistantLayout = await page.locator('.content.page-ai').evaluate((element) => {
+      const transcript = element.querySelector<HTMLElement>('.assistant-transcript')!
+      const composer = element.querySelector<HTMLElement>('.assistant-composer')!
+      return { pageOverflow: element.scrollHeight - element.clientHeight,
+        transcriptBottom: transcript.getBoundingClientRect().bottom, composerTop: composer.getBoundingClientRect().top }
+    })
+    expect(assistantLayout.pageOverflow).toBeLessThanOrEqual(1)
+    expect(assistantLayout.transcriptBottom).toBeLessThanOrEqual(assistantLayout.composerTop)
 
     await openManagementPage(page, 'Plugins', '插件中心', '.plugins-page')
     await expect(page.locator('.plugin-inspector')).toHaveCount(0)
@@ -103,7 +218,7 @@ test('management layouts use the available minimum-window space without compress
   })
 })
 
-test('dark management surfaces keep primary text readable and use one coherent database palette', async () => {
+test('dark management surfaces keep primary text readable and use one coherent database palette @electron', async () => {
   test.skip(!hasBuiltElectronApp(), 'Built Electron app not found. Run npm run build before E2E tests.')
 
   await withElectronApp(async ({ page }) => {
