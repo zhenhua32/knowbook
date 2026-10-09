@@ -28,7 +28,7 @@ function settingsProps(isZh: boolean): SettingsProps {
     aiRelatedNotesEnabledDraft: false, onAiRelatedNotesEnabledChange: noop,
     aiBaseUrlDraft: '', onAiBaseUrlChange: noop, aiModelDraft: '', onAiModelChange: noop,
     aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop, aiSaving: false, aiClearingApiKey: false,
-    aiSaveError: '',
+    aiSaveError: '', aiSettingsDirty: false, onResetAiSettingsDraft: noop,
     onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
     appUpdateState: null, appUpdateRefreshing: false, onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
     appUpdateLoading: false, appUpdateLoadError: null, appUpdateCheckError: null, appUpdateCanCheck: false,
@@ -64,6 +64,27 @@ test('settings opens general preferences first, with accessible category panels 
         const panel = dom.window.document.getElementById(tab.getAttribute('aria-controls')!)!
         assert.equal(panel.getAttribute('aria-labelledby'), tab.id)
       }
+    } finally { dom.window.close() }
+  }
+})
+
+test('AI settings SSR exposes localized clean or unsaved status and keeps discard in the keyboard route', () => {
+  for (const isZh of [true, false]) for (const dirty of [false, true]) {
+    const dom = new JSDOM(renderToStaticMarkup(<DashboardSettingsSection {...settingsProps(isZh)} aiSettingsDirty={dirty} />))
+    try {
+      const panel = dom.window.document.querySelector('.settings-ai-panel')!
+      const status = panel.querySelector('[role="status"]')!
+      assert.ok(status)
+      assert.equal(status.textContent, dirty
+        ? (isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.')
+        : (isZh ? '没有未保存的修改。' : 'No unsaved changes.'))
+      assert.equal(status.closest('[aria-busy="true"]'), null)
+      const discard = [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent ===
+        (isZh ? '撤销未保存修改' : 'Discard unsaved changes'))
+      assert.ok(discard)
+      assert.equal(discard.disabled, false, 'A clean form keeps the existing discard focus stop')
+      assert.equal(discard.getAttribute('aria-disabled'), String(!dirty))
+      assert.equal(discard.type, 'button')
     } finally { dom.window.close() }
   }
 })

@@ -410,7 +410,8 @@
   overflow-wrap: anywhere;
 }
 
-.settings-form-actions:is(.is-working, .has-error) {
+.settings-form-actions:is(.is-working, .has-error),
+.settings-ai-panel .settings-form-actions:focus-within {
   position: sticky;
   bottom: max(12px, var(--kb-notification-clearance, 0px));
   z-index: 1;
@@ -499,6 +500,16 @@
 
 .management-page .settings-actions {
   align-items: center;
+}
+
+.settings-ai-panel .settings-discard-button[aria-disabled='true'] {
+  opacity: .55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  border-color: var(--kb-line-strong);
+  background: var(--kb-canvas);
+  color: var(--kb-text-soft);
 }
 
 .management-page :is(.settings-card-description, .settings-release-notes) {

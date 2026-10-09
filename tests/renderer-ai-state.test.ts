@@ -134,6 +134,49 @@ function assertEmptySession(state: ReturnType<typeof useAiState>) {
   assert.equal(state.aiContextHasSearched, false)
 }
 
+test('discarding AI settings preserves in-flight questions, related notes and their completed results', async () => {
+  await withAiState(async ({ state, answers, searches }) => {
+    let answerPending!: Promise<void>, searchPending!: Promise<void>
+    await act(async () => {
+      answerPending = state().askAiOnSelectedDocument()
+      searchPending = state().findRelatedNotesForPrompt()
+      state().setAiModelDraft('unsaved-model')
+      state().setAiApiKeyDraft('unsaved-key')
+    })
+    assert.equal(state().aiSettingsDirty, true)
+    await act(async () => state().resetAiSettingsDraft())
+    assert.equal(state().aiSettingsDirty, false)
+    assert.equal(state().aiModelDraft, '')
+    assert.equal(state().aiApiKeyDraft, '')
+    assert.equal(state().aiPromptDraft, '  查找资料  ')
+    assert.equal(state().aiAsking, true, 'Discarding configuration does not cancel the active question')
+    assert.equal(state().aiContextSearching, true, 'Discarding configuration does not cancel the active note retrieval')
+    assert.equal(answers.length, 1)
+    assert.equal(searches.length, 1)
+    const notes = [relatedNote('保留的笔记')]
+    await act(async () => {
+      answers[0].resolve({ answer: '保留的回答', references: [] })
+      searches[0].resolve(notes)
+      await Promise.all([answerPending, searchPending])
+    })
+    assert.equal(state().aiAnswer, '保留的回答')
+    assert.equal(state().aiAnsweredPrompt, '查找资料')
+    assert.deepEqual(state().aiContextResults, notes)
+    assert.equal(state().aiAsking, false)
+    assert.equal(state().aiContextSearching, false)
+    await act(async () => state().setAiBaseUrlDraft('https://unsaved.example/v1'))
+    await act(async () => state().resetAiSettingsDraft())
+    assert.equal(state().aiSettingsDirty, false)
+    assert.equal(state().aiBaseUrlDraft, '')
+    assert.equal(state().aiAnswer, '保留的回答')
+    assert.equal(state().aiAnsweredPrompt, '查找资料')
+    assert.deepEqual(state().aiContextResults, notes)
+    assert.equal(state().aiPromptDraft, '  查找资料  ')
+    assert.equal(answers.length, 1)
+    assert.equal(searches.length, 1)
+  })
+})
+
 for (const outcome of ['success', 'failure'] as const) {
   for (const selection of [['b'], [null], ['b', 'a']]) {
     test(`AI session ignores late ${outcome} after selecting ${selection.join(' then ') || 'no document'}`, async () => {

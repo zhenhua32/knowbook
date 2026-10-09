@@ -26,7 +26,7 @@ const initialConfig: AiConfig = { enabled: true, baseUrl: 'https://saved.example
 type State = ReturnType<typeof useAiState>
 type Drafts = { enabled: boolean; baseUrl: string; model: string; autoSummaryOnSave: boolean;
   relatedNotesEnabled: boolean; apiKey: string }
-type View = { drafts: Drafts; config: AiConfig; saving: boolean; clearing: boolean; saveError: string }
+type View = { drafts: Drafts; config: AiConfig; saving: boolean; clearing: boolean; saveError: string; dirty: boolean }
 type Request = ReturnType<typeof deferred<AiConfig>> & { input: UpdateAiConfigInput }
 type Context = {
   state: () => State; view: () => View; document: Document;
@@ -59,7 +59,8 @@ function setDrafts(state: State, drafts: Partial<Drafts>) {
   if (drafts.apiKey !== undefined) state.setAiApiKeyDraft(drafts.apiKey)
 }
 
-async function withSettings(run: (context: Context) => Promise<void>, language: 'zh-CN' | 'en-US' = 'en-US') {
+async function withSettings(run: (context: Context) => Promise<void>, language: 'zh-CN' | 'en-US' = 'en-US',
+  options: { publishSavedConfiguration?: boolean } = {}) {
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost', pretendToBeVisual: true })
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', '') }
   dom.window.HTMLDialogElement.prototype.close = function () { this.removeAttribute('open') }
@@ -97,12 +98,12 @@ async function withSettings(run: (context: Context) => Promise<void>, language: 
     const onAiConfigChange = useCallback((next: AiConfig) => {
       changes.push(next)
       configuration = next
-      setConfig(next)
+      if (options.publishSavedConfiguration !== false) setConfig(next)
     }, [])
     state = useAiState({ aiConfig: config, selectedDocumentId: null, ui: getUiText(language), onAiConfigChange,
       onHomeDataChange: () => { homeChanges++ }, onSelectedDocumentChange: () => {},
       onDraftSummaryChange: () => {}, onMessage: (message, level) => messages.push([message, level]) })
-    const view: View = { config, saving: state.aiSaving, clearing: state.aiClearingApiKey, saveError: state.aiSaveError,
+    const view: View = { config, saving: state.aiSaving, clearing: state.aiClearingApiKey, saveError: state.aiSaveError, dirty: state.aiSettingsDirty,
       drafts: { enabled: state.aiEnabledDraft, baseUrl: state.aiBaseUrlDraft, model: state.aiModelDraft,
         autoSummaryOnSave: state.aiAutoSummaryOnSaveDraft, relatedNotesEnabled: state.aiRelatedNotesEnabledDraft,
         apiKey: state.aiApiKeyDraft } }
@@ -170,6 +171,109 @@ const editedDrafts: Drafts = { enabled: false, baseUrl: ' https://draft.example/
 const acknowledgedConfig: AiConfig = { enabled: false, baseUrl: 'https://draft.example/v1', model: 'draft-model',
   autoSummaryOnSave: true, relatedNotesEnabled: false, hasApiKey: true }
 
+test('AI settings dirty state tracks each public field exactly and clears when changes are restored', async () => {
+  await withSettings(async context => {
+    assert.equal(context.view().dirty, false)
+    const edits: Partial<Drafts>[] = [
+      { enabled: false }, { baseUrl: initialConfig.baseUrl + ' ' }, { model: 'another-model' },
+      { autoSummaryOnSave: true }, { relatedNotesEnabled: false }
+    ]
+    for (const edit of edits) {
+      await context.edit(edit)
+      assert.equal(context.view().dirty, true, `A changed ${Object.keys(edit)[0]} is an unsaved draft`)
+      await context.edit(draftsFrom(initialConfig))
+      assert.equal(context.view().dirty, false, 'Restoring saved values clears dirty state without an IPC write')
+    }
+    await context.edit({ apiKey: 'replacement-key' })
+    assert.equal(context.view().dirty, true, 'An unknown replacement key is unsaved even when a key is already stored')
+    await context.edit({ apiKey: '' })
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.requests.length, 0)
+    assert.equal(context.homeReads(), 0)
+    assert.deepEqual(context.changes, [])
+    assert.deepEqual(context.messages, [])
+  })
+})
+
+test('external saved settings can converge with dirty values while preserving a replacement key draft', async () => {
+  await withSettings(async context => {
+    await context.edit({ model: 'externally-saved-model' })
+    assert.equal(context.view().dirty, true)
+    const retainedDrafts = context.view().drafts
+    const converged = { ...initialConfig, model: 'externally-saved-model' }
+    await context.external(converged)
+    assert.deepEqual(context.view().drafts, retainedDrafts, 'Only the saved model baseline changes; all six draft values remain untouched')
+    assert.deepEqual(context.view().drafts, draftsFrom(converged))
+    assert.equal(context.view().dirty, false, 'Baseline-only convergence must clear dirty state even without a draft update')
+    const latest = { ...initialConfig, enabled: false, baseUrl: 'https://external.example/v1', model: 'externally-saved-model',
+      autoSummaryOnSave: true, relatedNotesEnabled: false }
+    await context.external(latest)
+    assert.deepEqual(context.view().drafts, draftsFrom(latest))
+    assert.equal(context.view().dirty, false, 'The authoritative saved baseline now matches the retained local model')
+    await context.edit({ apiKey: 'replacement-key' })
+    await context.external({ ...latest, hasApiKey: false })
+    assert.equal(context.view().drafts.apiKey, 'replacement-key')
+    assert.equal(context.view().dirty, true, 'The saved hasApiKey flag cannot acknowledge an unsaved replacement credential')
+    await context.edit({ apiKey: '' })
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.requests.length, 0)
+    assert.deepEqual(context.changes, [])
+    assert.deepEqual(context.messages, [])
+  })
+})
+
+test('a save acknowledgement establishes the clean baseline before the parent configuration or home data refreshes', async () => {
+  await withSettings(async context => {
+    const capturedReset = context.state().resetAiSettingsDraft
+    await context.edit(editedDrafts)
+    const saving = await context.start(() => context.state().saveAiConfig())
+    assert.equal(context.view().dirty, true)
+    await context.settle(() => context.requests[0].resolve(acknowledgedConfig), saving.completion)
+    assert.deepEqual(context.view().config, initialConfig, 'This harness intentionally does not publish the acknowledged parent configuration')
+    assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig))
+    assert.equal(context.view().dirty, false)
+    await context.edit({ model: 'another-unsaved-model', apiKey: 'another-unsaved-key' })
+    assert.equal(context.view().dirty, true)
+    await context.settle(capturedReset)
+    assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig), 'Even a previously captured reset uses the most recently acknowledged baseline')
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.requests.length, 1, 'Discarding a draft does not send another settings mutation')
+    assert.equal(context.homeReads(), 0)
+    assert.equal(context.homeChanges(), 0)
+    assert.deepEqual(context.changes, [acknowledgedConfig])
+    assert.deepEqual(context.messages, [[getUiText('en-US').aiSettingsSaved, undefined]])
+  }, 'en-US', { publishSavedConfiguration: false })
+})
+
+test('discard restores the latest external baseline and clears a failed save without changing saved settings or notifications', async () => {
+  for (const language of ['zh-CN', 'en-US'] as const) await withSettings(async context => {
+    const capturedReset = context.state().resetAiSettingsDraft
+    await context.edit(editedDrafts)
+    const failed = await context.start(() => context.state().saveAiConfig())
+    const reason = 'The current draft could not be stored'
+    await context.settle(() => context.requests[0].reject(new Error(reason)), failed.completion)
+    assert.equal(context.view().dirty, true)
+    assert.equal(context.view().saveError, reason)
+    const latest = { ...initialConfig, enabled: false, baseUrl: 'https://latest.example/v1', model: 'latest-saved-model',
+      autoSummaryOnSave: true, relatedNotesEnabled: false, hasApiKey: false }
+    await context.external(latest)
+    assert.equal(context.view().dirty, true)
+    assert.equal(context.view().saveError, reason)
+    const notices = [...context.messages]
+    await context.settle(capturedReset)
+    assert.deepEqual(context.view().config, latest)
+    assert.deepEqual(context.view().drafts, draftsFrom(latest))
+    assert.equal(context.view().drafts.apiKey, '')
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.view().saveError, '')
+    assert.equal(context.requests.length, 1)
+    assert.equal(context.homeReads(), 0)
+    assert.equal(context.homeChanges(), 0)
+    assert.deepEqual(context.changes, [])
+    assert.deepEqual(context.messages, notices, 'Discard is a local operation, not a new save success or failure notification')
+  }, language)
+})
+
 test('AI settings acquire a synchronous save lock, block every draft setter and clear action, and synchronize the public acknowledgement', async () => {
   await withSettings(async context => {
     await context.edit(editedDrafts)
@@ -179,6 +283,7 @@ test('AI settings acquire a synchronous save lock, block every draft setter and 
     await act(async () => {
       const current = context.state()
       first = current.saveAiConfig()
+      current.resetAiSettingsDraft()
       setDrafts(current, draftsFrom(initialConfig, 'bypass-key'))
       duplicate = current.saveAiConfig()
       clear = current.clearAiApiKey()
@@ -186,11 +291,13 @@ test('AI settings acquire a synchronous save lock, block every draft setter and 
     assert.equal(context.requests.length, 1)
     assert.deepEqual(context.requests[0].input, settingsInput(editedDrafts))
     assert.deepEqual(context.view().drafts, editedDrafts)
+    assert.equal(context.view().dirty, true)
     assert.equal(context.view().saving, true)
     assert.equal(context.view().clearing, false)
     assert.equal(context.document.querySelector('.app-confirm-dialog'), null)
     await context.settle(() => context.requests[0].resolve(acknowledgedConfig), Promise.all([first, duplicate, clear]).then(() => {}))
     assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig))
+    assert.equal(context.view().dirty, false)
     assert.deepEqual(context.view().config, acknowledgedConfig)
     assert.equal(context.view().saving, false)
     assert.deepEqual(context.changes, [acknowledgedConfig])
@@ -208,6 +315,7 @@ test('a failed AI settings save retains all six drafts, reports the clean error 
       const reason = 'Permission denied. Keep the current draft.'
       await context.settle(() => context.requests[0].reject(new Error("Error invoking remote method 'knowbook:update-ai-config': Error: " + reason)), failed.completion)
       assert.deepEqual(context.view().drafts, editedDrafts)
+      assert.equal(context.view().dirty, true)
       assert.deepEqual(context.view().config, initialConfig)
       assert.equal(context.view().saving, false)
       assert.equal(context.view().saveError, reason)
@@ -218,6 +326,7 @@ test('a failed AI settings save retains all six drafts, reports the clean error 
       assert.deepEqual(context.requests[1].input, context.requests[0].input)
       await context.settle(() => context.requests[1].resolve(acknowledgedConfig), retry.completion)
       assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig))
+      assert.equal(context.view().dirty, false)
       assert.equal(context.view().saving, false)
       assert.equal(context.view().saveError, '')
       assert.deepEqual(context.messages.at(-1), [getUiText(language).aiSettingsSaved, undefined])
@@ -229,10 +338,12 @@ test('a failed AI settings save retains all six drafts, reports the clean error 
 test('a key-only successful save clears the secret draft even when the public configuration is completely unchanged', async () => {
   await withSettings(async context => {
     await context.edit({ apiKey: 'replacement-key' })
+    assert.equal(context.view().dirty, true)
     const saving = await context.start(() => context.state().saveAiConfig())
     assert.deepEqual(context.requests[0].input, settingsInput(draftsFrom(initialConfig, 'replacement-key')))
     await context.settle(() => context.requests[0].resolve({ ...initialConfig }), saving.completion)
     assert.deepEqual(context.view().drafts, draftsFrom(initialConfig))
+    assert.equal(context.view().dirty, false)
     assert.deepEqual(context.view().config, initialConfig)
     assert.equal(context.view().saving, false)
     assert.equal(context.changes.length, 1)
@@ -269,6 +380,7 @@ test('opening the clear-key confirmation owns the operation until cancel, preser
     await act(async () => {
       const current = context.state()
       opening = current.clearAiApiKey()
+      current.resetAiSettingsDraft()
       duplicate = current.clearAiApiKey()
       save = current.saveAiConfig()
     })
@@ -278,6 +390,9 @@ test('opening the clear-key confirmation owns the operation until cancel, preser
     assert.equal(context.view().saving, false)
     assert.equal(context.view().clearing, false)
     assert.deepEqual(context.view().drafts, editedDrafts)
+    await context.settle(() => context.state().resetAiSettingsDraft())
+    assert.deepEqual(context.view().drafts, editedDrafts, 'An idle-looking confirmation still owns the synchronous settings lock')
+    assert.equal(context.view().dirty, true)
     await context.cancel(Promise.all([opening, duplicate, save]).then(() => {}))
     assert.equal(context.document.querySelector('.app-confirm-dialog'), null)
     assert.deepEqual(context.view().drafts, editedDrafts)
@@ -306,6 +421,7 @@ test('clear-key confirmation submits the latest saved settings instead of dirty 
     const currentDrafts = context.view().drafts
     await act(async () => {
       setDrafts(context.state(), editedDrafts)
+      context.state().resetAiSettingsDraft()
       void context.state().saveAiConfig()
       void context.state().clearAiApiKey()
     })
@@ -339,6 +455,10 @@ test('a failed clear-key attempt keeps the real modal retryable, retains operati
     assert.equal(context.view().clearing, false)
     assert.equal(context.view().drafts.model, 'unsaved-model')
     assert.equal(context.view().drafts.apiKey, 'unsaved-key')
+    const failedClearDrafts = context.view().drafts
+    await context.settle(() => context.state().resetAiSettingsDraft())
+    assert.deepEqual(context.view().drafts, failedClearDrafts, 'A retryable clear confirmation retains ownership even after its mutation failed')
+    assert.equal(context.view().dirty, true)
     await context.start(() => context.state().saveAiConfig())
     await context.start(() => context.state().clearAiApiKey())
     assert.equal(context.requests.length, 1)
@@ -369,6 +489,7 @@ for (const outcome of ['success', 'failure'] as const) {
       await context.render(nextConfig)
       await old.saveAiConfig()
       await old.clearAiApiKey()
+      old.resetAiSettingsDraft()
       assert.equal(context.requests.length, 1)
       assert.equal(context.document.querySelector('.app-confirm-dialog'), null)
       await context.settle(() => outcome === 'success' ? context.requests[0].resolve(acknowledgedConfig)

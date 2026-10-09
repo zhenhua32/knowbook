@@ -45,6 +45,8 @@ type DashboardSettingsSectionProps = {
   onClearAiApiKey: () => void
   aiSaving: boolean
   aiSaveError: string
+  aiSettingsDirty: boolean
+  onResetAiSettingsDraft: () => void
   aiClearingApiKey: boolean
   onSaveAiConfig: () => void | Promise<void>
   onOpenPlugins: () => void
@@ -135,6 +137,8 @@ export function DashboardSettingsSection({
   onClearAiApiKey,
   aiSaving,
   aiSaveError,
+  aiSettingsDirty,
+  onResetAiSettingsDraft,
   aiClearingApiKey,
   onSaveAiConfig,
   onOpenPlugins,
@@ -373,12 +377,19 @@ export function DashboardSettingsSection({
                 </fieldset>
                 <div className={`settings-form-actions${aiSaving ? ' is-working' : ''}${aiSaveError ? ' has-error' : ''}`}>
                 <div className="settings-action-feedback">
+                  {!aiSaving && <p className="mini-hint" role="status">{aiSettingsDirty
+                    ? (isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.')
+                    : (isZh ? '没有未保存的修改。' : 'No unsaved changes.')}</p>}
                   {aiSaveError && <p className="settings-ai-save-error" role="alert">{aiSaveError}</p>}
                   {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
                 </div>
                 <div className="settings-actions">
                   <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={event => runAiAction(event.currentTarget, onSaveAiConfig)} type="button">
                     {aiSaving && !aiClearingApiKey ? ui.common.saving : ui.saveAiSettings}
+                  </button>
+                  <button className="secondary-button settings-discard-button" disabled={aiSaving} aria-disabled={!aiSettingsDirty || aiSaving}
+                    onClick={() => { if (aiSettingsDirty) onResetAiSettingsDraft() }} type="button">
+                    {isZh ? '撤销未保存修改' : 'Discard unsaved changes'}
                   </button>
                   <button className="secondary-button" onClick={onOpenPlugins} type="button">
                     {isZh ? '打开插件中心' : 'Open plugin center'}

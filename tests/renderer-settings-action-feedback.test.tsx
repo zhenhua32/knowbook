@@ -22,7 +22,7 @@ function initialProps(isZh: boolean): Props {
     aiEnabledDraft: true, onAiEnabledChange: noop, aiAutoSummaryOnSaveDraft: false, onAiAutoSummaryOnSaveChange: noop,
     aiRelatedNotesEnabledDraft: true, onAiRelatedNotesEnabledChange: noop, aiBaseUrlDraft: 'https://example.invalid/v1', onAiBaseUrlChange: noop,
     aiModelDraft: 'unsaved-model', onAiModelChange: noop, aiApiKeyDraft: 'unsaved-key', onAiApiKeyChange: noop, onClearAiApiKey: noop,
-    aiSaving: false, aiSaveError: '', aiClearingApiKey: false, onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
+    aiSaving: false, aiSaveError: '', aiSettingsDirty: false, onResetAiSettingsDraft: noop, aiClearingApiKey: false, onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
     appUpdateState: null, appUpdateRefreshing: false, appUpdateLoading: false, appUpdateLoadError: null,
     appUpdateCheckError: null, appUpdateCanCheck: false, onReloadAppUpdateState: async () => undefined,
     onCheckForAppUpdates: noop, onInstallAppUpdate: noop,
@@ -169,10 +169,10 @@ test('AI save failure keeps all displayed drafts and restores its initiating but
   await withSettings(false, async context => {
     const requests: Array<ReturnType<typeof deferred>> = []
     const { ai, ui, document, patch, patchNow } = context
-    await patch({ onSaveAiConfig: () => {
+    await patch({ aiSettingsDirty: true, onSaveAiConfig: () => {
       const pending = deferred(); requests.push(pending)
       patchNow({ aiSaving: true, aiSaveError: '' })
-      return pending.promise.then(() => patchNow({ aiApiKeyDraft: '', aiSaveError: '' }),
+      return pending.promise.then(() => patchNow({ aiApiKeyDraft: '', aiSaveError: '', aiSettingsDirty: false }),
         () => patchNow({ aiSaveError: `${ui.aiSettingsSaveFailed} No connection.` }))
         .finally(() => patchNow({ aiSaving: false }))
     } })
@@ -194,7 +194,85 @@ test('AI save failure keeps all displayed drafts and restores its initiating but
     assertFocused(document, save)
     assert.equal(ai.querySelector<HTMLInputElement>('#ai-api-key')!.value, '')
     assert.equal(ai.querySelector('.settings-ai-save-error'), null)
-    assert.equal(ai.querySelector('[role="status"]'), null, 'The UI must not add a second success message')
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, 'No unsaved changes.', 'Persistent clean-draft status is distinct from the transient save notification')
+  })
+})
+
+test('AI discard clears dirty feedback locally, preserves its focus stop and updates status in either language', async () => {
+  for (const isZh of [true, false]) await withSettings(isZh, async context => {
+    let resets = 0, saves = 0, clears = 0
+    const { ai, document, patch, patchNow } = context
+    const clean = isZh ? '没有未保存的修改。' : 'No unsaved changes.'
+    const unsaved = isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.'
+    const discardLabel = isZh ? '撤销未保存修改' : 'Discard unsaved changes'
+    await patch({ onSaveAiConfig: () => { saves++ }, onClearAiApiKey: () => { clears++ }, onResetAiSettingsDraft: () => {
+      resets++
+      patchNow({ aiSettingsDirty: false, aiSaveError: '', aiApiKeyDraft: '', aiModelDraft: 'latest-saved-model' })
+    } })
+    await context.select('AI')
+    const discard = button(ai, discardLabel)
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, clean)
+    assert.equal(discard.disabled, false)
+    assert.equal(discard.getAttribute('aria-disabled'), 'true')
+    await context.activate(discard)
+    assert.equal(resets, 0, 'Clicking an aria-disabled clean-form action does not call reset')
+    assertFocused(document, discard)
+
+    const model = ai.querySelectorAll<HTMLInputElement>('input[type="text"]')[1]
+    await act(async () => model.focus())
+    await patch({ aiSettingsDirty: true, aiSaveError: 'Previous save failed; retain this draft.' })
+    assertFocused(document, model)
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, unsaved)
+    assert.equal(ai.querySelector('[role="status"]')?.closest('[aria-busy="true"]'), null)
+    assert.equal(discard.getAttribute('aria-disabled'), 'false')
+    assert.match(ai.querySelector('[role="alert"]')!.textContent!, /Previous save failed/)
+    assert.equal(ai.querySelector('[role="status"]')?.nextElementSibling, ai.querySelector('[role="alert"]'), 'Dirty feedback precedes a potentially long failure message')
+    assert.equal(ai.querySelector('[role="status"]')!.textContent!.includes('unsaved-key'), false)
+    await context.activate(discard)
+    assert.equal(resets, 1)
+    assert.equal(discard.disabled, false)
+    assert.equal(discard.getAttribute('aria-disabled'), 'true')
+    assertFocused(document, discard)
+    assert.equal(ai.querySelectorAll('[role="status"]').length, 1)
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, clean)
+    assert.equal(ai.querySelector('[role="alert"]'), null)
+    assert.equal(ai.querySelector<HTMLInputElement>('#ai-api-key')!.value, '')
+    assert.equal(model.value, 'latest-saved-model')
+    await context.activate(discard)
+    assert.equal(resets, 1, 'A second activation after discarding remains a no-op without losing focus')
+    assertFocused(document, discard)
+
+    await patch({ isZh: !isZh, ui: getUiText(isZh ? 'en-US' : 'zh-CN'), uiLanguage: isZh ? 'en-US' : 'zh-CN' })
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, isZh ? 'No unsaved changes.' : '没有未保存的修改。')
+    assert.equal(button(ai, isZh ? 'Discard unsaved changes' : '撤销未保存修改'), discard)
+    assertFocused(document, discard)
+    assert.equal(saves, 0)
+    assert.equal(clears, 0)
+  })
+})
+
+test('AI save and key-clear busy states show only progress and block the discard action', async () => {
+  for (const isZh of [true, false]) for (const clearing of [false, true]) await withSettings(isZh, async context => {
+    let resets = 0
+    await context.select('AI')
+    await context.patch({ aiSettingsDirty: true, aiSaving: true, aiClearingApiKey: clearing, onResetAiSettingsDraft: () => { resets++ } })
+    const discard = button(context.ai, isZh ? '撤销未保存修改' : 'Discard unsaved changes')
+    const statuses = context.ai.querySelectorAll('[role="status"]')
+    assert.equal(statuses.length, 1)
+    assert.equal(statuses[0].textContent, clearing
+      ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…')
+      : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…'))
+    assert.equal(statuses[0].closest('[aria-busy="true"]'), null)
+    assert.equal(context.ai.querySelector('fieldset')!.disabled, true)
+    assert.equal(discard.disabled, true)
+    assert.equal(discard.getAttribute('aria-disabled'), 'true')
+    await act(async () => discard.click())
+    assert.equal(resets, 0)
+    await context.patch({ aiSaving: false, aiClearingApiKey: false })
+    assert.equal(discard.disabled, false)
+    assert.equal(discard.getAttribute('aria-disabled'), 'false')
+    assert.equal(context.ai.querySelector('[role="status"]')?.textContent,
+      isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.')
   })
 })
 

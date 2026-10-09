@@ -40,6 +40,7 @@ export function useAiState({
   onMessage
 }: UseAiStateParams) {
   const [settingsDraft, setSettingsDraft] = useState(() => createAiSettingsDraft(aiConfig))
+  const [savedSettings, setSavedSettings] = useState(() => createAiSettingsDraft(aiConfig))
   const settingsDraftRef = useRef(settingsDraft)
   const savedConfigRef = useRef(aiConfig)
   const settingsMountedRef = useRef(false)
@@ -52,6 +53,8 @@ export function useAiState({
     autoSummaryOnSave: aiAutoSummaryOnSaveDraft, relatedNotesEnabled: aiRelatedNotesEnabledDraft,
     apiKey: aiApiKeyDraft
   } = settingsDraft
+  const aiSettingsDirty = (Object.keys(settingsDraft) as Array<keyof AiSettingsDraft>)
+    .some(key => settingsDraft[key] !== savedSettings[key])
   const [aiSaving, setAiSaving] = useState(false)
   const [aiClearingApiKey, setAiClearingApiKey] = useState(false)
   const [aiSaveError, setAiSaveError] = useState('')
@@ -91,6 +94,11 @@ export function useAiState({
       apiKey: mode === 'clear' ? '' : draft.apiKey
     }
     savedConfigRef.current = config
+    setSavedSettings(previousSettings => {
+      const nextSettings = createAiSettingsDraft(config)
+      return (Object.keys(nextSettings) as Array<keyof AiSettingsDraft>).some(key => nextSettings[key] !== previousSettings[key])
+        ? nextSettings : previousSettings
+    })
     if ((Object.keys(next) as Array<keyof AiSettingsDraft>).some((key) => next[key] !== draft[key])) {
       settingsDraftRef.current = next
       setSettingsDraft(next)
@@ -117,6 +125,14 @@ export function useAiState({
   const setAiAutoSummaryOnSaveDraft = useCallback((value: SetStateAction<boolean>) => updateAiDraft('autoSummaryOnSave', value), [updateAiDraft])
   const setAiRelatedNotesEnabledDraft = useCallback((value: SetStateAction<boolean>) => updateAiDraft('relatedNotesEnabled', value), [updateAiDraft])
   const setAiApiKeyDraft = useCallback((value: SetStateAction<string>) => updateAiDraft('apiKey', value), [updateAiDraft])
+
+  const resetAiSettingsDraft = useCallback(() => {
+    if (!settingsMountedRef.current || settingsLockedRef.current) return
+    const next = createAiSettingsDraft(savedConfigRef.current)
+    settingsDraftRef.current = next
+    setSettingsDraft(next)
+    setAiSaveError('')
+  }, [])
 
   const resetAiSession = useCallback(() => {
     aiAnswerRequestIdRef.current += 1
@@ -341,6 +357,8 @@ export function useAiState({
     aiSaving,
     aiClearingApiKey,
     aiSaveError,
+    aiSettingsDirty,
+    resetAiSettingsDraft,
     aiPromptDraft,
     setAiPromptDraft,
     aiAnswer,

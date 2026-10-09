@@ -32,7 +32,7 @@ function initialProps(isZh: boolean): Props {
     aiRelatedNotesEnabledDraft: false, onAiRelatedNotesEnabledChange: noop, aiBaseUrlDraft: '', onAiBaseUrlChange: noop,
     aiModelDraft: '', onAiModelChange: noop, aiApiKeyDraft: '', onAiApiKeyChange: noop, onClearAiApiKey: noop,
     aiSaving: false, aiClearingApiKey: false, onSaveAiConfig: noop, onOpenPlugins: noop, onRestoreBackup: noop, onBackupNow: noop,
-    aiSaveError: '',
+    aiSaveError: '', aiSettingsDirty: false, onResetAiSettingsDraft: noop,
     appUpdateState: null, appUpdateRefreshing: false, appUpdateLoading: false, appUpdateLoadError: null,
     appUpdateCheckError: null, appUpdateCanCheck: false, onReloadAppUpdateState: async () => undefined,
     onCheckForAppUpdates: noop, onInstallAppUpdate: noop,

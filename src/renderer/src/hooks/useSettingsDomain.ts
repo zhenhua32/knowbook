@@ -18,6 +18,8 @@ type UseSettingsDomainParams = {
   aiSaving: boolean
   aiClearingApiKey: boolean
   aiSaveError: string
+  aiSettingsDirty: boolean
+  onResetAiSettingsDraft: () => void
   isSettingsPage: boolean
   isZh: boolean
   loading: boolean
@@ -52,6 +54,8 @@ export function useSettingsDomain({
   aiSaving,
   aiClearingApiKey,
   aiSaveError,
+  aiSettingsDirty,
+  onResetAiSettingsDraft,
   isSettingsPage,
   isZh,
   loading,
@@ -91,6 +95,8 @@ export function useSettingsDomain({
     aiSaving,
     aiClearingApiKey,
     aiSaveError,
+    aiSettingsDirty,
+    onResetAiSettingsDraft,
     appUpdateRefreshing: settingsState.appUpdateRefreshing,
     appUpdateState: settingsState.appUpdateState,
     appUpdateLoading: settingsState.appUpdateLoading,
