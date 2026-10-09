@@ -14,7 +14,8 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
   isActive: boolean; isZh: boolean; request: WorkspaceSearchRequest | null
 }) {
   const [input, setInput] = useState<WorkspaceSearchInput>({ ...defaultWorkspaceSearchInput })
-  const [result, setResult] = useState<WorkspaceSearchPage | null>(null)
+  const [publication, setPublication] = useState<{ result: WorkspaceSearchPage; token: number } | null>(null)
+  const result = publication?.result ?? null
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [facets, setFacets] = useState<WorkspaceSearchFacets>({ tags: [], blockTypes: [] })
@@ -31,6 +32,9 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
   const [facetRefresh, setFacetRefresh] = useState(0)
   const [savedRefresh, setSavedRefresh] = useState(0)
   const mounted = useRef(false), searchSequence = useRef(0), facetSequence = useRef(0), savedListSequence = useRef(0)
+  // A publication retains its initiating command, even when the store clamps
+  // its page number. Refreshes and replacement criteria get a new identity.
+  const requestToken = useRef(0)
   const saving = useRef(false), latestRequest = useRef<number | null>(null), savedContext = useRef(0)
   const normalizedInput = useRef<{ input: WorkspaceSearchInput; refresh: number } | null>(null)
   const active = useRef(isActive)
@@ -42,15 +46,22 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
     latestRequest.current = request.sequence
     savedContext.current++
     searchSequence.current++
+    requestToken.current++
     setInput({ ...defaultWorkspaceSearchInput, query: request.query })
     setSavedId(''); setSavedName(''); setSavedError(''); setSavedFeedback('')
   }, [request?.sequence, request?.query])
 
-  const invalidate = () => { searchSequence.current++; setError(''); setLoading(true) }
+  const invalidate = () => {
+    searchSequence.current++
+    const token = ++requestToken.current
+    setError(''); setLoading(true)
+    return token
+  }
   const updateInput = (patch: Partial<WorkspaceSearchInput>) => {
     savedContext.current++
-    invalidate()
+    const token = invalidate()
     setInput((current) => ({ ...current, ...patch, page: patch.page ?? 1 }))
+    return token
   }
   const clearFilters = () => {
     savedContext.current++
@@ -63,20 +74,22 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
 
   useEffect(() => window.knowbook.onWorkspaceMutated(() => {
     searchSequence.current++; facetSequence.current++
+    requestToken.current++
     setRefresh((value) => value + 1); setFacetRefresh((value) => value + 1)
   }), [])
 
   useEffect(() => {
     const sequence = ++searchSequence.current
+    const token = requestToken.current
     const alreadyLoaded = normalizedInput.current?.input === input && normalizedInput.current.refresh === refresh
     normalizedInput.current = null
-    if (!isActive) { setLoading(false); return }
+    if (!isActive) { requestToken.current++; setLoading(false); return }
     if (alreadyLoaded) return
     setLoading(true); setError('')
     const timer = setTimeout(() => {
       void window.knowbook.searchWorkspace(input).then((page) => {
         if (mounted.current && active.current && sequence === searchSequence.current) {
-          setResult(page); setLoading(false)
+          setPublication({ result: page, token }); setLoading(false)
           if (page.page !== input.page) {
             const normalized = { ...input, page: page.page }
             normalizedInput.current = { input: normalized, refresh }
@@ -165,7 +178,8 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
       if (mounted.current && context === savedContext.current) setSavedError(getErrorMessage(cause, isZh ? '删除失败，请重试。' : 'Could not delete. Please retry.'))
     } finally { saving.current = false; if (mounted.current) setSavedBusy(false) }
   }
-  return { input, result, loading, error, facets, facetError, savedSearches, savedListError, savedLoading, savedBusy,
+  return { input, result, requestToken: requestToken.current, resultToken: publication?.token ?? null,
+    loading, error, facets, facetError, savedSearches, savedListError, savedLoading, savedBusy,
     savedId, savedName, savedError, savedFeedback,
     setSavedId: (value: string) => { savedContext.current++; setSavedId(value) },
     setSavedName: (value: string) => { savedContext.current++; setSavedName(value) }, updateInput, clearFilters, retry,

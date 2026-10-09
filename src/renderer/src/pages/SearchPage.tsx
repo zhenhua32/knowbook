@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import type { WorkspaceSearchInput, WorkspaceSearchResult } from '@shared/workspace-search'
 import { defaultWorkspaceSearchInput, useWorkspaceSearch, type WorkspaceSearchRequest } from '../hooks/useWorkspaceSearch'
@@ -47,6 +47,10 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
   const search = useWorkspaceSearch({ isActive, isZh, request })
   const { input, result, loading } = search
   const id = useId(), queryInput = useRef<HTMLInputElement>(null)
+  const resultsHeading = useRef<HTMLHeadingElement>(null)
+  const paginationIntent = useRef<{
+    token: number; trigger: HTMLButtonElement; requestSequence: number | undefined; isZh: boolean; cleanup: () => void
+  } | null>(null)
   const filterToggle = useRef<HTMLButtonElement>(null), composing = useRef(false)
   const mounted = useRef(false), actionLock = useRef(false), actionSequence = useRef(0)
   const current = useRef({ isActive, input, result, requestSequence: request?.sequence })
@@ -93,6 +97,56 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
     setFeedback((previous) => previous && !hasActionOwner(previous.context) ? null : previous)
   }, [result])
   useEffect(() => { if (isActive) queryInput.current?.focus({ preventScroll: true }) }, [isActive, request?.sequence])
+
+  const cancelPaginationIntent = () => {
+    const intent = paginationIntent.current
+    paginationIntent.current = null
+    intent?.cleanup()
+  }
+  const canReadResults = () => {
+    const target = resultsHeading.current
+    return target?.isConnected && !target.closest('[hidden], [inert], [aria-hidden="true"]')
+      && target.checkVisibility?.({ checkVisibilityCSS: true }) !== false
+      && document.visibilityState === 'visible' && document.hasFocus() && !document.querySelector('dialog[open]')
+  }
+  const changePage = (nextPage: number, trigger: HTMLButtonElement) => {
+    cancelPaginationIntent()
+    const ownsAttention = isActive && document.activeElement === trigger && canReadResults()
+    const token = search.updateInput({ page: nextPage })
+    if (!ownsAttention) return
+    // Listen after the activating click/key event. Any subsequent interaction
+    // gives up this one-shot continuation, even if focus later returns.
+    const cancel = () => cancelPaginationIntent()
+    const onFocus = (event: FocusEvent) => { if (event.target !== trigger && event.target !== document.body) cancel() }
+    const onVisibility = () => { if (document.visibilityState !== 'visible') cancel() }
+    const attentionEvents = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'compositionstart'] as const
+    for (const event of attentionEvents) document.addEventListener(event, cancel, true)
+    document.addEventListener('focusin', onFocus, true)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('blur', cancel)
+    paginationIntent.current = { token, trigger, requestSequence: request?.sequence, isZh, cleanup: () => {
+      for (const event of attentionEvents) document.removeEventListener(event, cancel, true)
+      document.removeEventListener('focusin', onFocus, true)
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('blur', cancel)
+    } }
+  }
+  useLayoutEffect(() => () => cancelPaginationIntent(), [])
+  useLayoutEffect(() => {
+    const intent = paginationIntent.current
+    if (!intent) return
+    if (!isActive || intent.token !== search.requestToken || intent.requestSequence !== request?.sequence
+      || intent.isZh !== isZh || search.error || !canReadResults()) {
+      cancelPaginationIntent()
+      return
+    }
+    if (loading) return
+    cancelPaginationIntent()
+    if (search.resultToken !== intent.token || (document.activeElement !== intent.trigger && document.activeElement !== document.body)) return
+    const target = resultsHeading.current!
+    target.focus({ preventScroll: true })
+    target.scrollIntoView({ block: 'start', behavior: 'instant' })
+  }, [isActive, isZh, request?.sequence, search.requestToken, search.resultToken, loading, search.error])
 
   const runAction = async (item: WorkspaceSearchResult, action: SearchAction) => {
     if (actionLock.current || loading) return
@@ -229,8 +283,8 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
 
     <section className="panel workspace-search-results-panel" aria-label={choose('搜索结果', 'Search results')} aria-busy={loading}>
       <div className="workspace-search-results-head">
-        <div><h3>{choose('搜索结果', 'Search results')}</h3>
-          <p data-testid="workspace-search-total" data-total-number={result?.total ?? 0} role="status" aria-live="polite">
+        <div><h3 ref={resultsHeading} tabIndex={-1} aria-describedby={`${id}-results-total ${id}-page-range`}>{choose('搜索结果', 'Search results')}</h3>
+          <p id={`${id}-results-total`} data-testid="workspace-search-total" data-total-number={result?.total ?? 0} role="status" aria-live="polite">
             {loading ? choose('正在搜索…', 'Searching…') : search.error ? choose('搜索未完成', 'Search did not complete') : result ? choose(`共 ${result.total} 条结果`, `${result.total} results`) : choose('准备搜索', 'Ready to search')}
           </p></div>
         <div className="workspace-search-result-options">
@@ -297,9 +351,9 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
             </article>})}
           </div>}
       <nav className="workspace-search-pagination" aria-label={choose('搜索分页', 'Search pagination')}>
-        <span>{result && result.total > 0 ? choose(`${from}–${to} / ${result.total} 条 · 第 ${page} / ${pages} 页`, `${from}–${to} of ${result.total} · Page ${page} of ${pages}`) : choose('第 1 页', 'Page 1')}</span>
-        <div><button type="button" className="secondary-button" disabled={loading || Boolean(search.error) || page <= 1} onClick={() => search.updateInput({ page: page - 1 })}>{choose('上一页', 'Previous page')}</button>
-          <button type="button" className="secondary-button" disabled={loading || Boolean(search.error) || !result || page >= pages} onClick={() => search.updateInput({ page: page + 1 })}>{choose('下一页', 'Next page')}</button></div>
+        <span id={`${id}-page-range`}>{result && result.total > 0 ? choose(`${from}–${to} / ${result.total} 条 · 第 ${page} / ${pages} 页`, `${from}–${to} of ${result.total} · Page ${page} of ${pages}`) : choose('第 1 页', 'Page 1')}</span>
+        <div><button type="button" className="secondary-button" disabled={loading || Boolean(search.error) || page <= 1} onClick={(event) => changePage(page - 1, event.currentTarget)}>{choose('上一页', 'Previous page')}</button>
+          <button type="button" className="secondary-button" disabled={loading || Boolean(search.error) || !result || page >= pages} onClick={(event) => changePage(page + 1, event.currentTarget)}>{choose('下一页', 'Next page')}</button></div>
       </nav>
     </section>
   </div>

@@ -46,7 +46,8 @@
 .workspace-search-inline-error { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 12px; font-size: 13px; }
 .workspace-search-inline-error p { margin: 0; }
 .workspace-search-results-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
-.workspace-search-results-head h3 { margin: 0 0 5px; font-size: 18px; }
+.workspace-search-results-head h3 { margin: 0 0 5px; font-size: 18px; scroll-margin-block: 8px; }
+.workspace-search-results-head h3:focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 3px; border-radius: 3px; }
 .workspace-search-results-head p { margin: 0; color: var(--kb-text-muted); font-size: 13px; }
 .workspace-search-result-options { display: flex; gap: 12px; min-width: 0; }
 .workspace-search-sort { width: 190px; }
