@@ -28,7 +28,7 @@
 .document-capture-field textarea { resize: vertical; }
 .document-capture-field input::placeholder, .document-capture-field textarea::placeholder { color: var(--kb-text-muted); }
 .document-capture-field :disabled { opacity: .65; }
-.document-capture-dialog :is(button, input, select, textarea, [tabindex]):focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 3px; }
+.document-capture-dialog :is(button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--kb-accent); outline-offset: 3px; }
 .document-capture-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .document-capture-hint { margin: 14px 0; color: var(--kb-text-soft); font-size: var(--kb-type-caption); line-height: 1.7; }
 .document-capture-error { margin: 16px 24px; padding: 12px; border: 1px solid var(--kb-danger); border-radius: var(--kb-radius-sm); color: var(--kb-danger); font-size: var(--kb-type-label); line-height: 1.7; white-space: pre-wrap; }
@@ -65,6 +65,10 @@
 .document-template-details { min-width: 0; padding: 22px 24px; }
 .document-template-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .document-template-preview-heading h3 { margin: 0; font-size: var(--kb-type-title-md); }
+.document-template-full-description { margin: 0 0 14px; font-size: var(--kb-type-label); line-height: 1.7; }
+.document-template-full-description > summary { border-radius: var(--kb-radius-sm); color: var(--kb-text-soft); cursor: pointer; }
+.document-template-full-description > summary:hover { color: var(--kb-text); }
+.document-template-full-description > p { margin: 10px 0 0; padding: 12px 14px; border-radius: var(--kb-radius-sm); color: var(--kb-text-soft); background: var(--kb-bg); white-space: pre-wrap; overflow-wrap: anywhere; }
 .document-template-delete { padding: 6px 8px; border: 0; border-radius: var(--kb-radius-sm); color: var(--kb-danger); background: transparent; font-size: var(--kb-type-caption); cursor: pointer; }
 .document-template-preview { max-height: min(34dvh, 320px); min-height: 100px; padding: 20px; overflow: auto; border: 1px solid var(--kb-line); border-radius: var(--kb-radius-md); font-size: var(--kb-type-body); line-height: 1.75; }
 .document-template-preview > h4 { margin: 0 0 14px; font-size: var(--kb-type-title-md); }

@@ -265,3 +265,70 @@ test('category selection evaluates the remembered template rather than a tempora
     assert.deepEqual(context.creates, [{ templateId: 'd', title: 'Delta title', parentId: null, language: 'en-US' }])
   }, { templates: [alpha, delta, beta] })
 })
+
+test('full descriptions follow the effective template without interpreting text, losing drafts or changing creation payloads', async () => {
+  const longDescription = Array.from({ length: 12 }, (_, index) => `Alpha usage paragraph ${index + 1}: review the source before creating a document.`).join('\n')
+    + '\n<img src=x onerror="unexpected()"> {{title}} **literal text**\nAlpha description tail marker'
+  const describedAlpha = { ...alpha, description: longDescription }
+  const describedBeta = { ...beta, description: 'Beta description only\nBeta complete ending' }
+  const withoutDescription = { ...gamma, name: 'Blank template', description: '' }
+  for (const isZh of [false, true]) await withTemplates(async context => {
+    const description = () => {
+      const element = context.dialog().querySelector<HTMLDetailsElement>('.document-template-full-description')
+      assert.ok(element, 'The effective template has a disclosure for its complete description')
+      return element
+    }
+    const expectDescription = (text: string, open = false) => {
+      const element = description(), body = element.querySelector('p')
+      assert.equal(element.open, open)
+      assert.equal(element.querySelector('summary')?.textContent, isZh ? '完整模板说明' : 'Full template description')
+      assert.ok(body)
+      assert.equal(body.textContent, text, 'The explanation preserves every paragraph and the matching tail')
+      assert.equal(body.childElementCount, 0, 'Markup and template variables remain literal description text')
+      return element
+    }
+    const first = expectDescription(longDescription)
+    await context.change(() => first.querySelector('summary')!.click())
+    expectDescription(longDescription, true)
+    assert.equal(context.preview().includes(longDescription), false, 'Template metadata is separate from the document body preview')
+
+    await context.fill(context.title(), 'Manual title after reading the description')
+    await context.change(() => {
+      context.parent().value = 'parent'
+      context.parent().dispatchEvent(new context.window.Event('change', { bubbles: true }))
+    })
+    await context.fill(context.search(), 'Alpha description tail marker')
+    assert.equal(context.items().length, 1)
+    expectDescription(longDescription, true)
+    assert.equal(context.title().value, 'Manual title after reading the description')
+    assert.equal(context.parent().value, 'parent')
+
+    // The visible fallback changes even though Alpha remains the remembered selection.
+    await context.fill(context.search(), 'Beta')
+    const fallback = expectDescription(describedBeta.description)
+    assert.equal(context.title().value, 'Manual title after reading the description')
+    assert.equal(context.parent().value, 'parent')
+    await context.change(() => fallback.querySelector('summary')!.click())
+    expectDescription(describedBeta.description, true)
+    await context.fill(context.search(), 'No template matches this explanation')
+    assert.equal(context.dialog().querySelector('.document-template-full-description'), null, 'No stale explanation remains when the effective selection is empty')
+    assert.equal(context.preview(), '')
+    assert.equal(context.primary().disabled, true)
+    await context.change(() => context.primary().click())
+    assert.deepEqual(context.creates, [])
+
+    await context.fill(context.search(), '')
+    expectDescription(longDescription)
+    assert.equal(context.title().value, 'Manual title after reading the description')
+    assert.equal(context.parent().value, 'parent')
+    await context.fill(context.search(), 'Blank template')
+    assert.equal(context.items().length, 1)
+    assert.equal(context.dialog().querySelector('.document-template-full-description'), null, 'A template without a description has no empty disclosure')
+
+    await context.fill(context.search(), 'Beta')
+    expectDescription(describedBeta.description)
+    await context.submit()
+    assert.deepEqual(context.creates, [{ templateId: 'b', title: 'Manual title after reading the description', parentId: 'parent',
+      language: isZh ? 'zh-CN' : 'en-US' }], 'Reading metadata never adds a description field to the creation request')
+  }, { isZh, templates: [describedAlpha, describedBeta, withoutDescription] })
+})

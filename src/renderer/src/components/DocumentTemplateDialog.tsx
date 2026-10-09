@@ -203,6 +203,10 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
         {selected && !loading && !loadError ? <>
           <div className="document-template-preview-heading"><h3 id={previewId}>{isZh ? '内容预览' : 'Content preview'}</h3>
             {!selected.builtIn && <button type="button" className="document-template-delete" disabled={Boolean(busy)} onClick={() => { void remove() }}>{isZh ? '删除模板' : 'Delete template'}</button>}</div>
+          {selected.description && <details key={selected.id} className="document-template-full-description">
+            <summary>{isZh ? '完整模板说明' : 'Full template description'}</summary>
+            <p>{selected.description}</p>
+          </details>}
           <article className="document-template-preview" aria-labelledby={previewId} tabIndex={0}>
             {!selected.blocks[0]?.type.startsWith('heading') && <h4>{previewTitle}</h4>}
             {selected.summary && <p className="document-template-summary">{expandDocumentTemplateVariables(selected.summary, previewTitle, date)}</p>}
