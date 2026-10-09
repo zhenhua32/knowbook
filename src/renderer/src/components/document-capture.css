@@ -46,6 +46,10 @@
 .document-quick-capture-dialog > .document-capture-body { flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 12px; }
 .document-quick-capture-dialog > .document-capture-error { box-sizing: border-box; max-height: min(96px, 20dvh); overflow: auto; }
 .document-template-dialog { width: min(980px, calc(100vw - 32px)); }
+.document-template-dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+.document-template-dialog > :not(.document-template-workspace) { flex-shrink: 0; }
+.document-template-dialog > .document-template-workspace { flex: 1 1 auto; min-height: 0; overflow: auto; scroll-padding-block: 12px; }
+.document-template-dialog > .document-capture-error { box-sizing: border-box; max-height: min(96px, 20dvh); overflow: auto; }
 .document-template-workspace { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); }
 .document-template-browser { min-width: 0; padding: 22px; border-right: 1px solid var(--kb-line); background: var(--kb-bg); }
 .document-template-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0; }
