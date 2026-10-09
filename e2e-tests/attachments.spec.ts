@@ -17,16 +17,16 @@ async function createDocument(page: Page) {
   return id
 }
 
-async function imageFixture(page: Page): Promise<Buffer> {
-  const base64 = await page.evaluate(() => {
-    const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360
+async function imageFixture(page: Page, size = { width: 640, height: 360 }): Promise<Buffer> {
+  const base64 = await page.evaluate(size => {
+    const canvas = document.createElement('canvas'); canvas.width = size.width; canvas.height = size.height
     const context = canvas.getContext('2d')!
-    context.fillStyle = '#1e293b'; context.fillRect(0, 0, 640, 360)
+    context.fillStyle = '#1e293b'; context.fillRect(0, 0, size.width, size.height)
     context.fillStyle = '#5eead4'; context.fillRect(40, 45, 560, 36)
     context.fillStyle = '#64748b'; context.fillRect(40, 110, 350, 18); context.fillRect(40, 150, 480, 18)
     context.fillStyle = '#3b82f6'; context.fillRect(40, 220, 120, 95); context.fillStyle = '#a78bfa'; context.fillRect(190, 195, 120, 120)
     return canvas.toDataURL('image/png').split(',')[1]
-  })
+  }, size)
   return Buffer.from(base64, 'base64')
 }
 
@@ -79,6 +79,143 @@ test('choose attachments, preview and zoom images, save copies, and keep media a
     await page.reload(); await page.locator('.tree-button', { hasText: 'Attachment workspace' }).click()
     await expect(page.locator('.block-rich-media-image')).toBeVisible()
     expect(await page.locator('.block-rich-media-image').evaluate((node: HTMLImageElement) => node.naturalWidth)).toBe(640)
+  })
+})
+
+test('large image zoom follows its displayed fit size after resizing the preview @electron', async ({}, testInfo) => {
+  await withElectronApp(async ({ page }) => {
+    await page.setViewportSize({ width: 1360, height: 880 })
+    await createDocument(page)
+    const image = await imageFixture(page, { width: 4000, height: 2400 })
+    await page.getByRole('button', { name: uiText('Images and attachments', '图片与附件'), exact: true }).click()
+    const dialog = page.locator('.attachment-dialog')
+    await dialog.locator('input[type=file]').setInputFiles({ name: 'large-preview.png', mimeType: 'image/png', buffer: image })
+    await expect(dialog.locator('.attachment-card')).toHaveCount(1)
+    await dialog.getByRole('button', { name: uiText('Preview', '预览'), exact: true }).click()
+    const preview = page.locator('.attachment-image-dialog'), picture = preview.locator('img')
+    await expect(picture).toBeVisible()
+    await expect(preview.getByRole('status')).toContainText('4000 × 2400')
+    const displayedSize = () => picture.evaluate((node: HTMLImageElement) => {
+      const bounds = node.getBoundingClientRect()
+      return { width: bounds.width, height: bounds.height }
+    })
+    const fit = preview.getByRole('button', { name: uiText('Fit to window', '适应窗口'), exact: true })
+    const observations: Record<string, unknown> = {}
+
+    const checkZoomFromFit = async (viewport: string) => {
+      await expect(preview.getByRole('status')).toContainText(/Fit|自适应/)
+      const fitted = await displayedSize()
+      expect(fitted.width).toBeGreaterThan(0)
+      expect(fitted.width).toBeLessThan(2000)
+      await expect.poll(() => preview.locator('.attachment-image-stage').evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
+      await preview.getByRole('button', { name: uiText('Zoom out', '缩小'), exact: true }).click()
+      await expect.poll(async () => (await displayedSize()).width).toBeLessThan(fitted.width - 1)
+      const smaller = await displayedSize()
+      expect(smaller.height).toBeLessThan(fitted.height)
+      expect(smaller.width).toBeGreaterThan(fitted.width / 2)
+      await fit.click()
+      await expect.poll(async () => Math.abs((await displayedSize()).width - fitted.width)).toBeLessThan(1)
+      await preview.getByRole('button', { name: uiText('Zoom in', '放大'), exact: true }).click()
+      await expect.poll(async () => (await displayedSize()).width).toBeGreaterThan(fitted.width + 1)
+      const larger = await displayedSize()
+      expect(larger.height).toBeGreaterThan(fitted.height)
+      expect(larger.width).toBeLessThanOrEqual(fitted.width * 1.5)
+      await page.screenshot({ path: testInfo.outputPath(`large-image-zoom-${viewport}.png`) })
+      await fit.click()
+      await expect.poll(async () => Math.abs((await displayedSize()).width - fitted.width)).toBeLessThan(1)
+      observations[viewport] = { fitted, smaller, larger }
+      return fitted
+    }
+
+    const wide = await checkZoomFromFit('wide')
+    await page.setViewportSize({ width: 760, height: 880 })
+    await expect.poll(async () => (await displayedSize()).width).toBeLessThan(wide.width * .9)
+    await checkZoomFromFit('narrow')
+    await page.setViewportSize({ width: 1360, height: 880 })
+    await expect.poll(async () => Math.abs((await displayedSize()).width - wide.width)).toBeLessThan(1)
+    await testInfo.attach('large-image-displayed-sizes', { body: Buffer.from(JSON.stringify(observations, null, 2)), contentType: 'application/json' })
+  })
+})
+
+test('very tall images retain usable zoom below one percent and preserve manual zoom on resize @electron', async ({}, testInfo) => {
+  test.setTimeout(90_000)
+  await withElectronApp(async ({ page }) => {
+    await page.setViewportSize({ width: 760, height: 400 })
+    await createDocument(page)
+    const image = await imageFixture(page, { width: 160, height: 32000 })
+    await page.getByRole('button', { name: uiText('Images and attachments', '图片与附件'), exact: true }).click()
+    const dialog = page.locator('.attachment-dialog')
+    await dialog.locator('input[type=file]').setInputFiles({ name: 'tall-preview.png', mimeType: 'image/png', buffer: image })
+    await expect(dialog.locator('.attachment-card')).toHaveCount(1)
+    await dialog.getByRole('button', { name: uiText('Preview', '预览'), exact: true }).click()
+    const preview = page.locator('.attachment-image-dialog'), picture = preview.locator('img'), status = preview.getByRole('status')
+    const fit = preview.getByRole('button', { name: uiText('Fit to window', '适应窗口'), exact: true })
+    const zoomOut = preview.getByRole('button', { name: uiText('Zoom out', '缩小'), exact: true })
+    const zoomIn = preview.getByRole('button', { name: uiText('Zoom in', '放大'), exact: true })
+    const actualSize = preview.getByRole('button', { name: uiText('Actual size', '原始大小'), exact: true })
+    const displayedHeight = () => picture.evaluate((node: HTMLImageElement) => node.getBoundingClientRect().height)
+    const displayedPercent = async () => Number((await status.innerText()).match(/^([\d.]+)%/)?.[1])
+    await expect(status).toContainText('160 × 32000')
+    const fittedHeight = await displayedHeight()
+    expect(fittedHeight).toBeGreaterThan(10)
+    expect(fittedHeight).toBeLessThan(320)
+    await zoomOut.click()
+    await expect.poll(displayedHeight).toBeLessThan(fittedHeight - 1)
+    const manualHeight = await displayedHeight()
+    expect(await displayedPercent()).toBeGreaterThan(0)
+    expect(await displayedPercent()).toBeLessThan(1)
+    await page.screenshot({ path: testInfo.outputPath('tall-image-small-zoom.png') })
+
+    await page.setViewportSize({ width: 1360, height: 880 })
+    await expect.poll(async () => Math.abs(await displayedHeight() - manualHeight)).toBeLessThan(1)
+    await actualSize.click()
+    await expect(status).toContainText(/^100%/)
+    await expect.poll(displayedHeight).toBe(32000)
+    await fit.click()
+    await expect(status).toContainText(/Fit|自适应/)
+    await expect.poll(displayedHeight).toBeGreaterThan(fittedHeight * 1.5)
+    await page.setViewportSize({ width: 760, height: 400 })
+    await expect.poll(async () => Math.abs(await displayedHeight() - fittedHeight)).toBeLessThan(1)
+
+    let shrinkSteps = 0
+    while (await zoomOut.isEnabled() && shrinkSteps < 64) {
+      const before = await displayedHeight(), previousStatus = await status.innerText()
+      await zoomOut.click()
+      await expect(status).not.toHaveText(previousStatus)
+      expect(await displayedHeight()).toBeLessThanOrEqual(before)
+      shrinkSteps++
+    }
+    await expect(zoomOut).toBeDisabled()
+    const minimumHeight = await displayedHeight()
+    expect(minimumHeight).toBeGreaterThan(0)
+    expect(await displayedPercent()).toBeGreaterThan(0)
+    await zoomIn.click()
+    await expect.poll(displayedHeight).toBeGreaterThan(minimumHeight)
+    await expect(zoomOut).toBeEnabled()
+
+    await actualSize.click()
+    await expect(status).toContainText(/^100%/)
+    await expect.poll(displayedHeight).toBe(32000)
+    let enlargeSteps = 0
+    while (await zoomIn.isEnabled() && enlargeSteps < 16) {
+      const before = await displayedHeight(), previousStatus = await status.innerText()
+      await zoomIn.click()
+      await expect(status).not.toHaveText(previousStatus)
+      expect(await displayedHeight()).toBeGreaterThan(before)
+      enlargeSteps++
+    }
+    await expect(zoomIn).toBeDisabled()
+    await expect(status).toContainText(/^400%/)
+    await expect.poll(displayedHeight).toBe(128000)
+    await fit.click()
+    await expect(status).toContainText(/Fit|自适应/)
+    await expect.poll(async () => Math.abs(await displayedHeight() - fittedHeight)).toBeLessThan(1)
+    await expect(zoomOut).toBeEnabled()
+    await expect(zoomIn).toBeEnabled()
+    await testInfo.attach('tall-image-zoom-observations', {
+      body: Buffer.from(JSON.stringify({ fittedHeight, manualHeight, minimumHeight, shrinkSteps, enlargeSteps }, null, 2)),
+      contentType: 'application/json'
+    })
   })
 })
 
