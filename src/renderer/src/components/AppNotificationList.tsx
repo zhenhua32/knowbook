@@ -33,6 +33,22 @@ export default function AppNotificationList({ notifications, history, open, onCl
   const liveIds = new Set(notifications.map((item) => item.id))
   // Updates reorder history, while a running task keeps its original toast slot.
   const latest = [...history].reverse().find((item) => liveIds.has(item.id)) ?? notifications.at(-1)
+  const closeToast = (id: number) => {
+    const list = listRef.current
+    const cards = list ? Array.from(list.querySelectorAll<HTMLElement>(':scope > .app-notification')) : []
+    const index = cards.findIndex((card) => card.dataset.notificationId === String(id))
+    const focused = document.activeElement
+    const ownedFocus = cards[index]?.contains(focused)
+    const adjacent = cards[index + 1] ?? cards[index - 1]
+    const target = list?.classList.contains('is-compact') && cards.length > 1
+      ? list.querySelector<HTMLButtonElement>('.app-notification-summary-open')
+      : adjacent?.querySelector<HTMLButtonElement>('.app-notification-close') ?? returnFocusRef?.current
+    // Capture the continuation before the last toast unmounts the whole list.
+    props.onDismiss(id)
+    if (!ownedFocus || !target?.isConnected) return
+    if (document.activeElement !== focused && document.activeElement !== document.body) return
+    target.focus({ preventScroll: true })
+  }
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
     const media = window.matchMedia(compactNotificationQuery)
@@ -98,7 +114,7 @@ export default function AppNotificationList({ notifications, history, open, onCl
       {compact && latest && <NotificationSummary notification={latest} count={notifications.length} isZh={props.isZh} onOpenCenter={onOpenCenter}
         onMouseEnter={() => setSummaryHovered(true)} onMouseLeave={() => setSummaryHovered(false)}
         onFocus={() => setSummaryFocused(true)} onBlur={() => setSummaryFocused(false)} />}
-      {notifications.map((notification) => <NotificationCard key={notification.id} notification={notification} {...props}
+      {notifications.map((notification) => <NotificationCard key={notification.id} notification={notification} {...props} onCloseToast={closeToast}
         pausedExternally={compact && notification.id === latest?.id && (summaryHovered || summaryFocused)} />)}
     </section>}
     {open && <NotificationCenter history={history} onClose={onClose} returnFocusRef={returnFocusRef} {...props} />}
@@ -177,7 +193,11 @@ function NotificationCenter({ history, onClose, returnFocusRef, ...props }: Noti
   </dialog>
 }
 
-function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete, pausedExternally }: NotificationProps & { notification: AppNotification; pausedExternally?: boolean }) {
+function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete, pausedExternally, onCloseToast }: NotificationProps & {
+  notification: AppNotification
+  pausedExternally?: boolean
+  onCloseToast?: (id: number) => void
+}) {
   const cardRef = useRef<HTMLElement>(null)
   const actionLock = useRef(false)
   const actionFocus = useRef<{ index: number; label: string } | null>(null)
@@ -259,7 +279,7 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
       </div> : null}
       {error && <p className="app-notification-action-error" role="alert">{error}</p>}
     </div>
-    {!historyMode && <button className="app-notification-close" type="button" onClick={() => onDismiss(notification.id)}
+    {!historyMode && <button className="app-notification-close" type="button" onClick={() => (onCloseToast ?? onDismiss)(notification.id)}
       aria-label={isZh ? '关闭通知' : 'Dismiss notification'}
       title={running ? (isZh ? '收起提示，任务继续运行' : 'Hide notification; the task continues') : (isZh ? '关闭通知' : 'Dismiss notification')}>×</button>}
   </article>
