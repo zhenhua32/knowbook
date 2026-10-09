@@ -156,6 +156,7 @@ function NotificationCenter({ history, onClose, returnFocusRef, ...props }: Noti
   returnFocusRef?: RefObject<HTMLElement | null>
 }) {
   const ref = useRef<HTMLDialogElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
     const dialog = ref.current!
     const previous = document.activeElement as HTMLElement | null
@@ -176,13 +177,20 @@ function NotificationCenter({ history, onClose, returnFocusRef, ...props }: Noti
         <div><h2 id="notification-center-title">{props.isZh ? '通知中心' : 'Notification center'}</h2>
           <p>{running > 0 ? (props.isZh ? `${running} 个任务进行中 · ` : `${running} running · `) : ''}
             {props.isZh ? '最近 100 条记录，保存在本机' : 'Last 100 notifications, saved on this device'}</p></div>
-        <button type="button" className="app-notification-close" autoFocus onClick={onClose}
+        <button ref={closeButtonRef} type="button" className="app-notification-close" autoFocus onClick={onClose}
           aria-label={props.isZh ? '关闭通知中心' : 'Close notification center'}>×</button>
       </header>
       <div className="notification-center-toolbar">
         <span>{props.isZh ? `共 ${history.length} 条` : `${history.length} notification${history.length === 1 ? '' : 's'}`}</span>
         <button type="button" className="secondary-button" disabled={!history.some((item) => item.level !== 'progress')}
-          onClick={appNotifications.clearCompleted}>{props.isZh ? '清除已结束通知' : 'Clear completed'}</button>
+          onClick={(event) => {
+            const button = event.currentTarget
+            const ownedFocus = document.activeElement === button
+            appNotifications.clearCompleted()
+            if (ownedFocus && (document.activeElement === button || document.activeElement === document.body)) {
+              closeButtonRef.current?.focus({ preventScroll: true })
+            }
+          }}>{props.isZh ? '清除已结束通知' : 'Clear completed'}</button>
       </div>
       <div className="notification-center-list">
         {history.length === 0 && <p className="notification-center-empty">{props.isZh ? '暂无通知。操作结果和任务进度会显示在这里。' : 'No notifications yet. Results and task progress will appear here.'}</p>}
