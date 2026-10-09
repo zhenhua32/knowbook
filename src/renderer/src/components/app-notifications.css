@@ -45,6 +45,7 @@
 .app-notification-actions button:hover { background: var(--kb-accent-soft, #f0f1fe); }
 .app-notification-actions button:disabled { opacity: .55; cursor: not-allowed; }
 .app-notification-close { flex-shrink: 0; min-width: 28px; min-height: 28px; padding: 0 2px; border: 0; background: transparent; color: var(--kb-text-muted, #657089); font-size: 20px; line-height: 22px; cursor: pointer; }
+.app-notification:focus-visible,
 .app-notification button:focus-visible,
 .app-notification-summary button:focus-visible { outline: 2px solid var(--kb-accent, #6266dc); outline-offset: 2px; }
 .app-notification-action-error { margin: 6px 0 0; color: var(--notification-alert, #ba364b); overflow-wrap: anywhere; }

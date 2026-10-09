@@ -178,8 +178,11 @@ function NotificationCenter({ history, onClose, returnFocusRef, ...props }: Noti
 }
 
 function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, historyMode, onActionComplete, pausedExternally }: NotificationProps & { notification: AppNotification; pausedExternally?: boolean }) {
+  const cardRef = useRef<HTMLElement>(null)
   const actionLock = useRef(false)
+  const actionFocus = useRef<{ index: number; label: string } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [actionSettlement, setActionSettlement] = useState(0)
   const [error, setError] = useState('')
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
@@ -187,15 +190,32 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
   const level = notification.level ?? 'info'
   const running = level === 'progress'
   const persistent = running || level === 'error' || notification.persistent || Boolean(notification.actions?.length)
+  useLayoutEffect(() => {
+    if (busy) return
+    const previous = actionFocus.current
+    actionFocus.current = null
+    const card = cardRef.current
+    // Only continue focus still owned by this task; the user may have left it.
+    if (!previous || !card || document.activeElement !== card) return
+    const action = notification.actions?.[previous.index]
+    if (action?.label !== previous.label || action.disabled) return
+    card.querySelectorAll<HTMLButtonElement>('.app-notification-actions button')[previous.index]?.focus({ preventScroll: true })
+  }, [busy, notification.actions, actionSettlement])
   useEffect(() => {
     if (historyMode || persistent || paused || pausedExternally) return
     const timer = setTimeout(() => onDismiss(notification.id), 6_000)
     return () => clearTimeout(timer)
   }, [notification, onDismiss, paused, pausedExternally, persistent, historyMode])
 
-  const runAction = async (action: AppNotificationAction) => {
+  const runAction = async (action: AppNotificationAction, index: number, button: HTMLButtonElement) => {
     if (actionLock.current || action.disabled) return
     actionLock.current = true
+    const card = cardRef.current
+    if (card && document.activeElement === button) {
+      // Progress may remove the button. Keep its keyboard position on the card.
+      card.focus({ preventScroll: true })
+      actionFocus.current = { index, label: action.label }
+    }
     setBusy(true)
     setError('')
     try {
@@ -210,10 +230,12 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
     } finally {
       actionLock.current = false
       setBusy(false)
+      // Synchronous failures can batch both busy updates into the same render.
+      setActionSettlement((settlement) => settlement + 1)
     }
   }
 
-  return <article className={`app-notification app-notification-${level}`} data-notification-id={notification.id}
+  return <article ref={cardRef} tabIndex={-1} className={`app-notification app-notification-${level}`} data-notification-id={notification.id}
     onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
     onFocusCapture={() => setFocusWithin(true)} onBlurCapture={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusWithin(false)
@@ -233,7 +255,7 @@ function NotificationCard({ notification, isZh, onDismiss, onOpenDocument, histo
       </div>}
       {notification.actions?.length ? <div className="app-notification-actions">
         {notification.actions.map((action, index) => <button key={index} type="button" disabled={busy || action.disabled}
-          onClick={() => { void runAction(action) }}>{action.label}</button>)}
+          onClick={(event) => { void runAction(action, index, event.currentTarget) }}>{action.label}</button>)}
       </div> : null}
       {error && <p className="app-notification-action-error" role="alert">{error}</p>}
     </div>
