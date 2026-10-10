@@ -22,9 +22,9 @@ test('AI answers render headings, lists, tables and code without executing HTML 
   dom.window.close()
 })
 
-function session(id: string) {
+function session(id: string, lastSeq = 1) {
   return { id, workspaceId: 'workspace', title: id, activeDocumentId: null, modelConfig: {}, status: 'active', activeTurnId: null,
-    lastSeq: 1, createdAt: '2026-10-01T01:00:00Z', updatedAt: '2026-10-01T01:00:00Z' }
+    lastSeq, createdAt: '2026-10-01T01:00:00Z', updatedAt: '2026-10-01T01:00:00Z' }
 }
 function message(sessionId: string, text: string) {
   return { id: sessionId + '-message', sessionId, workspaceId: 'workspace', seq: 1, createdAt: '2026-10-01T01:00:00Z', surface: 'conversation',
@@ -60,7 +60,7 @@ test('task switching keeps document and extension drafts, conversation and appro
   const approval = { id: 'approval-event', sessionId: 'app', workspaceId: 'workspace', seq: 2, createdAt: '2026-10-01T01:00:00Z', surface: 'conversation',
     type: 'approval.requested', payload: { turnId: 'turn', toolCallId: 'call', approvalId: 'approval', pluginId: 'sample', revisionId: 'revision',
       scope: { kind: 'session', workspaceId: 'workspace', sessionId: 'app' }, permissions: [], summary: '请确认这个扩展', risk: 'low', expiresAt: '2099-01-01T00:00:00Z' } }
-  await withWorkspace({ listAssistantSessions: async () => [session('app')], getAssistantSessionEvents: async () => [message('app', '**现有对话**'), approval] },
+  await withWorkspace({ listAssistantSessions: async () => [session('app', 2)], getAssistantSessionEvents: async () => [message('app', '**现有对话**'), approval] },
     async ({ document, window, render }) => {
       function DocumentPrompt() {
         const [draft, setDraft] = useState('文档问题')
@@ -100,7 +100,7 @@ test('task switching keeps document and extension drafts, conversation and appro
 
 test('extension submission preserves IME composition and Shift+Enter before sending on Enter', async () => {
   const sent: unknown[] = []
-  await withWorkspace({ listAssistantSessions: async () => [session('app')], getAssistantSessionEvents: async () => [],
+  await withWorkspace({ listAssistantSessions: async () => [session('app', 0)], getAssistantSessionEvents: async () => [],
     sendAssistantMessage: async (input: unknown) => { sent.push(input) } }, async ({ document, window, render }) => {
     await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true,
       isZh: true, initialDraft: '中文扩展需求' }))
@@ -134,7 +134,8 @@ test('opening a restored hidden conversation reveals its approval and preserves 
     id: 'message-' + index, seq: index + 1, payload: { turnId: 'turn', stepId: 'step-' + index, text: 'History ' + index } }))
   let events = [...history, approval]
   let notify!: (change: { sessionId: string; lastSeq: number }) => void
-  await withWorkspace({ listAssistantSessions: async () => [session('app')], getAssistantSessionEvents: async () => events,
+  await withWorkspace({ listAssistantSessions: async () => [session('app', events.at(-1)!.seq)],
+    getAssistantSessionEvents: async (_id: string, afterSeq: number, limit: number) => events.filter(event => event.seq > afterSeq).slice(0, limit),
     onAssistantSessionChanged: (listener: typeof notify) => { notify = listener; return () => {} } },
   async ({ document, window, render }) => {
     let storedScrollTop = 0
@@ -170,7 +171,7 @@ test('opening a restored hidden conversation reveals its approval and preserves 
     })
     await act(async () => {
       transcript.dispatchEvent(new window.Event('scroll', { bubbles: true }))
-      events = [...history, { ...message('app', 'New content while hidden'), id: 'new-message', seq: 22 }, approval]
+      events = [...events, { ...message('app', 'New content while hidden'), id: 'new-message', seq: 22 }]
       notify({ sessionId: 'app', lastSeq: 22 })
     })
     await act(async () => tabs[1].click())
@@ -182,8 +183,8 @@ test('opening a restored hidden conversation reveals its approval and preserves 
       tabs[0].click()
     })
     await act(async () => {
-      events = [...events.slice(0, -1), { ...message('app', 'Another hidden update'), id: 'last-message', seq: 23,
-        payload: { turnId: 'turn', stepId: 'last-step', text: 'Another hidden update' } }, approval]
+      events = [...events, { ...message('app', 'Another hidden update'), id: 'last-message', seq: 23,
+        payload: { turnId: 'turn', stepId: 'last-step', text: 'Another hidden update' } }]
       notify({ sessionId: 'app', lastSeq: 23 })
     })
     await act(async () => tabs[1].click())
@@ -234,7 +235,7 @@ for (const action of ['message', 'approval'] as const) {
     const approval = { id: 'approval-event', sessionId: 'a', workspaceId: 'workspace', seq: 2, createdAt: '2026-10-01T01:00:00Z', surface: 'conversation',
       type: 'approval.requested', payload: { turnId: 'turn', toolCallId: 'call', approvalId: 'approval', pluginId: 'sample', revisionId: 'revision',
         scope: { kind: 'session', workspaceId: 'workspace', sessionId: 'a' }, permissions: [], summary: '确认扩展', risk: 'low', expiresAt: '2099-01-01T00:00:00Z' } }
-    await withWorkspace({ listAssistantSessions: async () => [session('a'), session('b')],
+    await withWorkspace({ listAssistantSessions: async () => [session('a', 2), session('b')],
       getAssistantSessionEvents: async (id: string) => id === 'a' ? [message(id, '会话 A'), approval] : [message(id, '会话 B')],
       sendAssistantMessage: pending, resolveAssistantApproval: pending }, async ({ document, window, render }) => {
       await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true, isZh: true, initialDraft: 'A 的未发送问题' }))

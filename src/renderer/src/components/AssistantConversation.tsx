@@ -8,6 +8,20 @@ import type {
   AssistantSessionSummary
 } from '@shared/assistant-session'
 
+type AssistantEventSnapshot = {
+  sessionId: AssistantSessionId
+  selectionVersion: number
+  lastSeq: number
+  events: AssistantEvent[]
+}
+
+type AssistantEventRead = {
+  sessionId: AssistantSessionId
+  selectionVersion: number
+  targetSeq: number
+  promise: Promise<void>
+}
+
 type AssistantConversationProps = {
   activeDocumentId: string | null
   aiEnabled: boolean
@@ -42,6 +56,11 @@ export function AssistantConversation({
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [eventLoadError, setEventLoadError] = useState('')
+  const mountedRef = useRef(false)
+  const sessionsRef = useRef<AssistantSessionSummary[]>([])
+  const eventSnapshotRef = useRef<AssistantEventSnapshot | null>(null)
+  const eventReadRef = useRef<AssistantEventRead | null>(null)
   const transcriptRef = useRef<HTMLDivElement>(null)
   const keepTranscriptPinnedRef = useRef(true)
   const transcriptScrollTopRef = useRef(0)
@@ -62,6 +81,17 @@ export function AssistantConversation({
     onDraftChangeRef.current = onDraftChange
   }, [onDraftChange])
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      eventsRequestId.current += 1
+      sessionsRequestId.current += 1
+      eventReadRef.current = null
+      eventSnapshotRef.current = null
+    }
+  }, [])
+
   const commitDraft = useCallback((next: string) => {
     draftRef.current = next
     setDraft(next)
@@ -69,29 +99,72 @@ export function AssistantConversation({
   }, [])
 
   const refreshSessions = useCallback(async () => {
+    if (!mountedRef.current) return
     const requestId = ++sessionsRequestId.current
     try {
       const next = await window.knowbook.listAssistantSessions()
-      if (sessionsRequestId.current !== requestId) return
+      if (!mountedRef.current || sessionsRequestId.current !== requestId) return
+      sessionsRef.current = next
       setSessions(next)
       setSelectedId((current) => current && next.some((session) => session.id === current)
         ? current
         : next[0]?.id ?? null)
     } catch (reason) {
-      if (sessionsRequestId.current === requestId) throw reason
+      if (mountedRef.current && sessionsRequestId.current === requestId) throw reason
     }
   }, [])
 
-  const refreshEvents = useCallback(async (sessionId: AssistantSessionId) => {
-    if (selectedIdRef.current !== sessionId) return
-    const requestId = ++eventsRequestId.current
-    const isCurrent = () => selectedIdRef.current === sessionId && eventsRequestId.current === requestId
-    try {
-      const next = await window.knowbook.getAssistantSessionEvents(sessionId, 0, 1_000)
-      if (isCurrent()) setEvents(next)
-    } catch (reason) {
-      if (isCurrent()) throw reason
+  const refreshEvents = useCallback((sessionId: AssistantSessionId, throughSeq?: number): Promise<void> => {
+    if (!mountedRef.current || selectedIdRef.current !== sessionId) return Promise.resolve()
+    const version = selectionVersion.current
+    const targetSeq = throughSeq ?? sessionsRef.current.find(session => session.id === sessionId)?.lastSeq ?? 0
+    const active = eventReadRef.current
+    if (active?.sessionId === sessionId && active.selectionVersion === version) {
+      active.targetSeq = Math.max(active.targetSeq, targetSeq)
+      return active.promise
     }
+    const snapshot = eventSnapshotRef.current
+    if (snapshot?.sessionId === sessionId && snapshot.selectionVersion === version && snapshot.lastSeq >= targetSeq) {
+      return Promise.resolve()
+    }
+    const requestId = ++eventsRequestId.current
+    const read: AssistantEventRead = { sessionId, selectionVersion: version, targetSeq, promise: Promise.resolve() }
+    const isCurrent = () => mountedRef.current && selectedIdRef.current === sessionId
+      && selectionVersion.current === version && eventsRequestId.current === requestId
+    const finish = () => { if (eventReadRef.current === read) eventReadRef.current = null }
+    eventReadRef.current = read
+    read.promise = Promise.resolve().then(async () => {
+      try {
+        // Notifications extend the next finite snapshot instead of interrupting
+        // every page of an active stream. Publish only complete snapshots.
+        while (isCurrent()) {
+          const through = read.targetSeq
+          const saved = eventSnapshotRef.current
+          const base = saved?.sessionId === sessionId && saved.selectionVersion === version ? saved : null
+          const next = [...(base?.events ?? [])]
+          let afterSeq = base?.lastSeq ?? 0
+          while (afterSeq < through) {
+            const page = await window.knowbook.getAssistantSessionEvents(sessionId, afterSeq, 1_000)
+            if (!isCurrent()) return
+            const included = page.filter(event => event.seq <= through)
+            const lastSeq = included.at(-1)?.seq ?? afterSeq
+            if (lastSeq <= afterSeq) throw new Error('Assistant event history could not be read completely.')
+            next.push(...included)
+            afterSeq = lastSeq
+          }
+          if (!isCurrent()) return
+          eventSnapshotRef.current = { sessionId, selectionVersion: version, lastSeq: afterSeq, events: next }
+          setEvents(next)
+          setEventLoadError('')
+          if (read.targetSeq <= afterSeq) return
+        }
+      } catch (reason) {
+        if (isCurrent()) setEventLoadError(errorMessage(reason))
+      } finally {
+        finish()
+      }
+    })
+    return read.promise
   }, [])
 
   useEffect(() => {
@@ -110,24 +183,30 @@ export function AssistantConversation({
 
   useEffect(() => {
     keepTranscriptPinnedRef.current = true
-    setEvents([])
+    const saved = eventSnapshotRef.current
+    setEvents(saved?.sessionId === selectedId && saved.selectionVersion === selectionVersion.current ? saved.events : [])
     setError('')
+    setEventLoadError('')
     if (!selectedId) {
       return
     }
-    void refreshEvents(selectedId).catch((reason) => setError(errorMessage(reason)))
+    void refreshEvents(selectedId)
   }, [refreshEvents, selectedId])
 
   useEffect(() => window.knowbook.onAssistantSessionChanged((change) => {
     void refreshSessions().catch((reason) => setError(errorMessage(reason)))
-    if (change.sessionId === selectedId) {
-      void refreshEvents(change.sessionId).catch((reason) => setError(errorMessage(reason)))
+    if (change.sessionId === selectedIdRef.current) {
+      void refreshEvents(change.sessionId, change.lastSeq)
     }
-  }), [refreshEvents, refreshSessions, selectedId])
+  }), [refreshEvents, refreshSessions])
 
   const projection = useMemo(() => projectEvents(events), [events])
   const selected = sessions.find((session) => session.id === selectedId) ?? null
   const canUseAi = aiEnabled && hasApiKey
+
+  useEffect(() => {
+    if (selected) void refreshEvents(selected.id, selected.lastSeq)
+  }, [refreshEvents, selected?.id, selected?.lastSeq])
 
   useLayoutEffect(() => {
     const transcript = transcriptRef.current
@@ -142,7 +221,7 @@ export function AssistantConversation({
       transcript.scrollTop = transcriptScrollTopRef.current
     }
     transcriptScrollTopRef.current = transcript.scrollTop
-  }, [projection, selected?.activeTurnId, error, isVisible])
+  }, [projection, selected?.activeTurnId, error, eventLoadError, isVisible])
 
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
     keepTranscriptPinnedRef.current = true
@@ -156,7 +235,8 @@ export function AssistantConversation({
     selectedIdRef.current = created.id
     selectionVersion.current += 1
     setSelectedId(created.id)
-    setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
+    sessionsRef.current = [created, ...sessionsRef.current.filter(session => session.id !== created.id)]
+    setSessions(sessionsRef.current)
     setLoading(false)
     setEvents([])
     return created
@@ -179,7 +259,7 @@ export function AssistantConversation({
       const request = window.knowbook.sendAssistantMessage({ sessionId: session.id, text, mode: 'auto' })
       setBusy(false)
       void request
-        .then(() => Promise.all([refreshSessions(), refreshEvents(session.id)]))
+        .then(async () => { await refreshSessions(); await refreshEvents(session.id) })
         .catch((reason) => {
           if (!isCurrent()) return
           if (!draftRef.current) commitDraft(text)
@@ -206,7 +286,7 @@ export function AssistantConversation({
       const request = window.knowbook.resolveAssistantApproval({ sessionId: selectedId, approvalId, decision })
       setBusy(false)
       void request
-        .then(() => Promise.all([refreshSessions(), refreshEvents(selectedId)]))
+        .then(async () => { await refreshSessions(); await refreshEvents(selectedId) })
         .catch((reason) => { if (isCurrent()) setError(errorMessage(reason)) })
     } catch (reason) {
       if (!isCurrent()) return
@@ -223,7 +303,8 @@ export function AssistantConversation({
     const isCurrent = () => selectedIdRef.current === selectedId && selectionVersion.current === version
     try {
       await window.knowbook.cancelAssistantTurn(selectedId)
-      await Promise.all([refreshSessions(), refreshEvents(selectedId)])
+      await refreshSessions()
+      await refreshEvents(selectedId)
     } catch (reason) {
       if (isCurrent()) setError(errorMessage(reason))
     } finally {
@@ -341,7 +422,7 @@ export function AssistantConversation({
           {isZh ? '请先在设置中启用 AI 并保存 API Key。' : 'Enable AI and save an API key in Settings first.'}
         </p>
       ) : null}
-      {error ? <p className="mini-hint ai-context-error" role="alert">{error}</p> : null}
+      {error || eventLoadError ? <p className="mini-hint ai-context-error" role="alert">{error || eventLoadError}</p> : null}
       {transcriptAfter}
       </div>
       <div className="assistant-composer">

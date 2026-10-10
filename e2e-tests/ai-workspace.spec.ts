@@ -33,20 +33,30 @@ async function expectButtonTargets(page: Page) {
   expect(undersized).toEqual([])
 }
 
-async function installAnswers(app: ElectronApplication) {
-  await app.evaluate(({ ipcMain }) => {
+async function installAnswers(app: ElectronApplication, restoredHistory = false) {
+  await app.evaluate(({ ipcMain, BrowserWindow }, restoredHistory) => {
     process.env.KNOWBOOK_AI_WORKSPACE_REQUESTS = '[]'
     process.env.KNOWBOOK_AI_WORKSPACE_APPROVAL = ''
+    process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '0'
     const session = { id: 'workspace-app', workspaceId: 'workspace', title: 'Existing extension conversation', activeDocumentId: null,
       modelConfig: {}, status: 'active', activeTurnId: null, lastSeq: 2, createdAt: '2026-10-01T01:00:00Z', updatedAt: '2026-10-01T01:00:00Z' }
-    const assistantMessage = { id: 'message', sessionId: session.id, workspaceId: 'workspace', seq: 1,
+    const assistantMessage = { id: 'message', sessionId: session.id, seq: 1,
       createdAt: '2026-10-01T01:00:00Z', surface: 'conversation', type: 'assistant.message',
-      payload: { turnId: 'turn', stepId: 'step', text: '## Extension plan\n\n**Existing conversation**\n\n- Prepare the extension\n- Review permissions' } }
-    const approval = { id: 'approval', sessionId: session.id, workspaceId: 'workspace', seq: 2,
-      createdAt: '2026-10-01T01:00:00Z', surface: 'conversation', type: 'approval.requested',
+      payload: { turnId: 'turn', stepId: 'step', text: '## Extension plan\n\n**Existing conversation**\n\n- Prepare the extension\n- Review permissions'.repeat(restoredHistory ? 35 : 1) } }
+    const approval = { id: 'approval', sessionId: session.id, seq: 2,
+      createdAt: '2026-10-01T01:00:00Z', surface: 'trajectory', type: 'approval.requested',
       payload: { turnId: 'turn', toolCallId: 'call', approvalId: 'approval', pluginId: 'sample', revisionId: 'revision',
         scope: { kind: 'session', workspaceId: 'workspace', sessionId: session.id }, permissions: [], summary: 'Review the prepared extension', risk: 'low', expiresAt: '2099-01-01T00:00:00Z' } }
     let approved = false
+    const events: Array<{ id: string; sessionId: string; seq: number; createdAt: string; surface: string;
+      type: string; payload: Record<string, unknown> }> = [assistantMessage, approval]
+    const appendEvent = (type: string, surface: string, payload: Record<string, unknown>) => {
+      const seq = session.lastSeq + 1
+      const createdAt = '2026-10-01T02:00:00Z'
+      events.push({ id: `event-${seq}`, sessionId: session.id, seq, createdAt, surface, type, payload })
+      session.lastSeq = seq
+      session.updatedAt = createdAt
+    }
     for (const channel of ['knowbook:ask-ai-about-document', 'knowbook:search-semantic-notes', 'knowbook:list-assistant-sessions',
       'knowbook:get-assistant-session-events', 'knowbook:resolve-assistant-approval']) ipcMain.removeHandler(channel)
     ipcMain.handle('knowbook:ask-ai-about-document', (_event, input: { documentId: string; prompt: string }) => {
@@ -57,13 +67,27 @@ async function installAnswers(app: ElectronApplication) {
     })
     ipcMain.handle('knowbook:search-semantic-notes', () => [])
     ipcMain.handle('knowbook:list-assistant-sessions', () => [session])
-    ipcMain.handle('knowbook:get-assistant-session-events', () => approved ? [assistantMessage] : [assistantMessage, approval])
+    ipcMain.handle('knowbook:get-assistant-session-events', (_event, sessionId: string, afterSeq = 0, limit = 500) => {
+      if (sessionId !== session.id) throw new Error('Unknown assistant session')
+      return events.filter(item => item.seq > afterSeq).slice(0, limit)
+    })
     ipcMain.handle('knowbook:resolve-assistant-approval', (_event, input: { decision: string }) => {
       process.env.KNOWBOOK_AI_WORKSPACE_APPROVAL = input.decision
-      approved = true
+      if (!approved) {
+        appendEvent('approval.resolved', 'trajectory', { approvalId: 'approval', decision: input.decision })
+        approved = true
+      }
       return { sessionId: session.id, turnId: 'turn', status: 'completed' }
     })
-  })
+    if (restoredHistory) {
+      ipcMain.on('knowbook:test-append-hidden-assistant-message', () => {
+        const index = Number(process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES)
+        appendEvent('assistant.message', 'conversation', { turnId: 'turn', stepId: `hidden-step-${index}`, text: `Background progress ${index}` })
+        process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = String(index + 1)
+        BrowserWindow.getAllWindows()[0].webContents.send('knowbook:assistant-session-changed', { sessionId: session.id, lastSeq: session.lastSeq })
+      })
+    }
+  }, restoredHistory)
 }
 
 test('missing AI setup opens the AI category and consumes the requested settings category @electron', async ({}, testInfo) => {
@@ -207,25 +231,7 @@ test('restored approvals are visible on the first task switch without resetting 
       window.setSize(1000, 820)
     })
     await seedDocuments(page, true)
-    await installAnswers(app)
-    await app.evaluate(({ ipcMain }) => {
-      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '0'
-      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown> })._invokeHandlers
-      const readEvents = handlers.get('knowbook:get-assistant-session-events')!
-      ipcMain.removeHandler('knowbook:get-assistant-session-events')
-      ipcMain.handle('knowbook:get-assistant-session-events', async (event, ...args) => {
-        const events = await readEvents(event, ...args) as Array<{ id: string; sessionId: string; seq: number; type: string; payload: { text?: string } }>
-        const history = events.filter(item => item.type === 'assistant.message')
-          .map(item => ({ ...item, payload: { ...item.payload, text: item.payload.text!.repeat(35) } }))
-        const additions = Array.from({ length: Number(process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES) }, (_, index) => ({
-          id: `hidden-message-${index}`, sessionId: 'workspace-app', seq: index + 3, surface: 'conversation',
-          type: 'assistant.message', createdAt: '2026-10-01T02:00:00Z',
-          payload: { turnId: 'turn', stepId: `hidden-step-${index}`, text: `Background progress ${index}` }
-        }))
-        return [...history, ...additions, ...events.filter(item => item.type !== 'assistant.message')]
-      })
-      return { configured: true }
-    })
+    await installAnswers(app, true)
     await openAi(page)
     const documentTab = page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手') })
     const extensionTab = page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') })
@@ -252,9 +258,8 @@ test('restored approvals are visible on the first task switch without resetting 
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const readingTop = await transcript.evaluate(element => element.scrollTop)
     await documentTab.click()
-    await app.evaluate(({ BrowserWindow }) => {
-      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '1'
-      BrowserWindow.getAllWindows()[0].webContents.send('knowbook:assistant-session-changed', { sessionId: 'workspace-app', lastSeq: 3 })
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.emit('knowbook:test-append-hidden-assistant-message')
       return { sent: true }
     })
     await expect(page.locator('.assistant-message')).toHaveCount(2)
@@ -268,9 +273,8 @@ test('restored approvals are visible on the first task switch without resetting 
     await page.keyboard.press('Control+End')
     await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
     await documentTab.click()
-    await app.evaluate(({ BrowserWindow }) => {
-      process.env.KNOWBOOK_AI_WORKSPACE_HIDDEN_MESSAGES = '2'
-      BrowserWindow.getAllWindows()[0].webContents.send('knowbook:assistant-session-changed', { sessionId: 'workspace-app', lastSeq: 4 })
+    await app.evaluate(({ ipcMain }) => {
+      ipcMain.emit('knowbook:test-append-hidden-assistant-message')
       return { sent: true }
     })
     await expect(page.locator('.assistant-message')).toHaveCount(3)
