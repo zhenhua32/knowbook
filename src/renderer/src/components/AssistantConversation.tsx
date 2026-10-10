@@ -57,6 +57,7 @@ export function AssistantConversation({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [eventLoadError, setEventLoadError] = useState('')
+  const [transcriptNavigation, setTranscriptNavigation] = useState({ pinned: true, hasNewContent: false })
   const mountedRef = useRef(false)
   const sessionsRef = useRef<AssistantSessionSummary[]>([])
   const eventSnapshotRef = useRef<AssistantEventSnapshot | null>(null)
@@ -65,6 +66,7 @@ export function AssistantConversation({
   const keepTranscriptPinnedRef = useRef(true)
   const transcriptScrollTopRef = useRef(0)
   const transcriptWasVisibleRef = useRef(isVisible)
+  const transcriptContentRef = useRef({ selectionVersion: 0, lastRenderedSeq: 0, lastReadSeq: 0 })
   const draftRef = useRef(initialDraft)
   const onDraftChangeRef = useRef(onDraftChange)
   const selectedIdRef = useRef(selectedId)
@@ -96,6 +98,15 @@ export function AssistantConversation({
     draftRef.current = next
     setDraft(next)
     onDraftChangeRef.current?.(next)
+  }, [])
+
+  const updateTranscriptNavigation = useCallback((pinned: boolean, readLatest = false) => {
+    keepTranscriptPinnedRef.current = pinned
+    const content = transcriptContentRef.current
+    if (readLatest) content.lastReadSeq = content.lastRenderedSeq
+    const hasNewContent = !pinned && content.lastRenderedSeq > content.lastReadSeq
+    setTranscriptNavigation(current => current.pinned === pinned && current.hasNewContent === hasNewContent
+      ? current : { pinned, hasNewContent })
   }, [])
 
   const refreshSessions = useCallback(async () => {
@@ -182,7 +193,7 @@ export function AssistantConversation({
   }, [refreshSessions])
 
   useEffect(() => {
-    keepTranscriptPinnedRef.current = true
+    updateTranscriptNavigation(true)
     const saved = eventSnapshotRef.current
     setEvents(saved?.sessionId === selectedId && saved.selectionVersion === selectionVersion.current ? saved.events : [])
     setError('')
@@ -191,7 +202,7 @@ export function AssistantConversation({
       return
     }
     void refreshEvents(selectedId)
-  }, [refreshEvents, selectedId])
+  }, [refreshEvents, selectedId, updateTranscriptNavigation])
 
   useEffect(() => window.knowbook.onAssistantSessionChanged((change) => {
     void refreshSessions().catch((reason) => setError(errorMessage(reason)))
@@ -201,6 +212,7 @@ export function AssistantConversation({
   }), [refreshEvents, refreshSessions])
 
   const projection = useMemo(() => projectEvents(events), [events])
+  const latestContentSeq = useMemo(() => lastTranscriptContentSeq(events), [events])
   const selected = sessions.find((session) => session.id === selectedId) ?? null
   const canUseAi = aiEnabled && hasApiKey
 
@@ -212,19 +224,47 @@ export function AssistantConversation({
     const transcript = transcriptRef.current
     const becameVisible = isVisible && !transcriptWasVisibleRef.current
     transcriptWasVisibleRef.current = isVisible
+    const content = transcriptContentRef.current
+    if (content.selectionVersion !== selectionVersion.current) {
+      content.selectionVersion = selectionVersion.current
+      content.lastRenderedSeq = 0
+      content.lastReadSeq = 0
+      keepTranscriptPinnedRef.current = true
+    }
+    const snapshot = eventSnapshotRef.current
+    if (snapshot?.sessionId === selectedId && snapshot.selectionVersion === content.selectionVersion
+      && (events.length === 0 || events[0].sessionId === selectedId)) {
+      // The cache can already contain the next batch. Only this committed
+      // render may become the read baseline, including streaming updates.
+      content.lastRenderedSeq = latestContentSeq
+    }
     // Hidden task panels have no scroll geometry. Apply the existing pin or
     // reading position after the panel is laid out, without resetting intent.
-    if (!isVisible || !transcript) return
+    if (!isVisible || !transcript || transcript.clientHeight === 0) {
+      updateTranscriptNavigation(keepTranscriptPinnedRef.current)
+      return
+    }
     if (keepTranscriptPinnedRef.current) {
       transcript.scrollTop = transcript.scrollHeight
     } else if (becameVisible) {
       transcript.scrollTop = transcriptScrollTopRef.current
     }
     transcriptScrollTopRef.current = transcript.scrollTop
-  }, [projection, selected?.activeTurnId, error, eventLoadError, isVisible])
+    updateTranscriptNavigation(keepTranscriptPinnedRef.current, keepTranscriptPinnedRef.current)
+  }, [projection, latestContentSeq, selectedId, selected?.activeTurnId, error, eventLoadError,
+    isVisible, transcriptNavigation.pinned, updateTranscriptNavigation])
+
+  const jumpToLatest = useCallback(() => {
+    const transcript = transcriptRef.current
+    if (!isVisible || !transcript || transcript.clientHeight === 0) return
+    updateTranscriptNavigation(true, true)
+    transcript.scrollTop = transcript.scrollHeight
+    transcriptScrollTopRef.current = transcript.scrollTop
+    transcript.focus({ preventScroll: true })
+  }, [isVisible, updateTranscriptNavigation])
 
   const createSession = useCallback(async (): Promise<AssistantSessionSummary> => {
-    keepTranscriptPinnedRef.current = true
+    updateTranscriptNavigation(true)
     // An initial list request must not replace a newly created session.
     sessionsRequestId.current += 1
     const created = await window.knowbook.createAssistantSession({
@@ -240,12 +280,12 @@ export function AssistantConversation({
     setLoading(false)
     setEvents([])
     return created
-  }, [activeDocumentId, newSessionTitle])
+  }, [activeDocumentId, newSessionTitle, updateTranscriptNavigation])
 
   const send = useCallback(async () => {
     const text = draft.trim()
     if (!text || busy || !canUseAi) return
-    keepTranscriptPinnedRef.current = true
+    updateTranscriptNavigation(true)
     setBusy(true)
     setError('')
     commitDraft('')
@@ -271,7 +311,7 @@ export function AssistantConversation({
       setError(errorMessage(reason))
       setBusy(false)
     }
-  }, [busy, canUseAi, commitDraft, createSession, draft, refreshEvents, refreshSessions, selected])
+  }, [busy, canUseAi, commitDraft, createSession, draft, refreshEvents, refreshSessions, selected, updateTranscriptNavigation])
 
   const resolveApproval = useCallback(async (
     approvalId: AssistantApprovalId,
@@ -320,7 +360,7 @@ export function AssistantConversation({
           className="editor-select assistant-session-select"
           disabled={busy || loading}
           onChange={(event) => {
-            keepTranscriptPinnedRef.current = true
+            updateTranscriptNavigation(true)
             const next = (event.target.value || null) as AssistantSessionId | null
             if (selectedIdRef.current !== next) selectionVersion.current += 1
             selectedIdRef.current = next
@@ -352,78 +392,91 @@ export function AssistantConversation({
         ) : null}
       </div>
 
-      <div
-        aria-live="polite"
-        aria-label={isZh ? '扩展助手对话' : 'Extension assistant conversation'}
-        className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`}
-        onScroll={(event) => {
-          if (!isVisible || event.currentTarget.clientHeight === 0) return
-          transcriptScrollTopRef.current = event.currentTarget.scrollTop
-          keepTranscriptPinnedRef.current = isTranscriptNearBottom(event.currentTarget)
-        }}
-        ref={transcriptRef}
-        tabIndex={0}
-      >
-        {transcriptBefore}
-        {projection.items.length === 0 ? (
-          <p className="mini-hint">
-            {isZh
-              ? '描述你想添加的功能，例如整理文档、生成首页卡片或自动处理笔记。助手会准备扩展，并在启用前让你确认。'
-              : 'Describe a feature you need, such as organizing notes or adding a dashboard card. The assistant will prepare an extension for you to review before enabling it.'}
-          </p>
-        ) : projection.items.map((item) => (
-          item.kind === 'message' ? (
-            <div className={`assistant-message assistant-message-${item.role}`} key={item.key}>
-              <span>{item.role === 'user' ? (isZh ? '你' : 'You') : 'KnowBook AI'}</span>
-              {item.role === 'assistant' ? <AiAnswerContent content={item.text} /> : <p>{item.text}</p>}
+      <div className="assistant-transcript-region">
+        {!transcriptNavigation.pinned ? (
+          <button className="assistant-latest-button" onClick={jumpToLatest} type="button">
+            <span aria-hidden="true">↓</span>
+            {transcriptNavigation.hasNewContent ? (isZh ? '有新内容 · ' : 'New content · ') : ''}
+            {isZh ? '回到最新' : 'Jump to latest'}
+          </button>
+        ) : null}
+        <span className="assistant-latest-status" role="status">
+          {transcriptNavigation.hasNewContent ? (isZh ? '有新内容' : 'New content') : ''}
+        </span>
+        <div
+          aria-live="polite"
+          aria-label={isZh ? '扩展助手对话' : 'Extension assistant conversation'}
+          className={`assistant-transcript${projection.items.length === 0 ? ' is-empty' : ''}`}
+          onScroll={(event) => {
+            if (!isVisible || event.currentTarget.clientHeight === 0) return
+            transcriptScrollTopRef.current = event.currentTarget.scrollTop
+            const pinned = isTranscriptNearBottom(event.currentTarget)
+            updateTranscriptNavigation(pinned, pinned)
+          }}
+          ref={transcriptRef}
+          tabIndex={0}
+        >
+          {transcriptBefore}
+          {projection.items.length === 0 ? (
+            <p className="mini-hint">
+              {isZh
+                ? '描述你想添加的功能，例如整理文档、生成首页卡片或自动处理笔记。助手会准备扩展，并在启用前让你确认。'
+                : 'Describe a feature you need, such as organizing notes or adding a dashboard card. The assistant will prepare an extension for you to review before enabling it.'}
+            </p>
+          ) : projection.items.map((item) => (
+            item.kind === 'message' ? (
+              <div className={`assistant-message assistant-message-${item.role}`} key={item.key}>
+                <span>{item.role === 'user' ? (isZh ? '你' : 'You') : 'KnowBook AI'}</span>
+                {item.role === 'assistant' ? <AiAnswerContent content={item.text} /> : <p>{item.text}</p>}
+              </div>
+            ) : item.kind === 'tool' ? (
+              <div className="assistant-tool-event" key={item.key}>
+                <code>{item.tool}</code>
+                {item.detail ? <small>{item.detail}</small> : null}
+                <span>{toolStatusText(item.status, isZh)}</span>
+              </div>
+            ) : (
+              <div className={`assistant-lifecycle-event assistant-lifecycle-${item.status}`} key={item.key}>
+                <strong>{assistantEventTitle(item.eventType, isZh)}</strong>
+                {item.detail ? <code>{item.detail}</code> : null}
+                <span>{toolStatusText(item.status, isZh)}</span>
+              </div>
+            )
+          ))}
+          {selected?.activeTurnId ? <p className="mini-hint">{isZh ? '助手任务进行中；继续发送会转向当前任务，审批等待时会排入下一轮。' : 'The turn is active. New messages steer it, or queue behind an approval.'}</p> : null}
+        {projection.approvals.map((approval) => (
+          <div className={`assistant-approval assistant-approval-${approval.payload.risk}`} key={approval.payload.approvalId}>
+            <div>
+              <strong>{isZh ? '插件激活审批' : 'Plugin activation approval'}</strong>
+              <p>{approval.payload.summary}</p>
+              <code>{approval.payload.pluginId} · {shortRevision(approval.payload.revisionId)}</code>
+              <code>{isZh ? '权限' : 'Permissions'}: {JSON.stringify(approval.payload.permissions)}</code>
+              {approval.payload.revisionPreview !== undefined ? (
+                <details className="assistant-revision-preview">
+                  <summary>{isZh ? '查看代码、权限与贡献差异' : 'Review code, permission, and contribution diff'}</summary>
+                  <pre>{JSON.stringify(approval.payload.revisionPreview, null, 2)}</pre>
+                </details>
+              ) : null}
             </div>
-          ) : item.kind === 'tool' ? (
-            <div className="assistant-tool-event" key={item.key}>
-              <code>{item.tool}</code>
-              {item.detail ? <small>{item.detail}</small> : null}
-              <span>{toolStatusText(item.status, isZh)}</span>
+            <div className="toolbar-inline">
+              <button className="primary-button" disabled={busy} onClick={() => void resolveApproval(approval.payload.approvalId, 'allowed-once')} type="button">
+                {isZh ? '仅本次允许' : 'Allow once'}
+              </button>
+              <button className="secondary-button" disabled={busy} onClick={() => void resolveApproval(approval.payload.approvalId, 'rejected')} type="button">
+                {isZh ? '拒绝' : 'Reject'}
+              </button>
             </div>
-          ) : (
-            <div className={`assistant-lifecycle-event assistant-lifecycle-${item.status}`} key={item.key}>
-              <strong>{assistantEventTitle(item.eventType, isZh)}</strong>
-              {item.detail ? <code>{item.detail}</code> : null}
-              <span>{toolStatusText(item.status, isZh)}</span>
-            </div>
-          )
+          </div>
         ))}
-        {selected?.activeTurnId ? <p className="mini-hint">{isZh ? '助手任务进行中；继续发送会转向当前任务，审批等待时会排入下一轮。' : 'The turn is active. New messages steer it, or queue behind an approval.'}</p> : null}
-      {projection.approvals.map((approval) => (
-        <div className={`assistant-approval assistant-approval-${approval.payload.risk}`} key={approval.payload.approvalId}>
-          <div>
-            <strong>{isZh ? '插件激活审批' : 'Plugin activation approval'}</strong>
-            <p>{approval.payload.summary}</p>
-            <code>{approval.payload.pluginId} · {shortRevision(approval.payload.revisionId)}</code>
-            <code>{isZh ? '权限' : 'Permissions'}: {JSON.stringify(approval.payload.permissions)}</code>
-            {approval.payload.revisionPreview !== undefined ? (
-              <details className="assistant-revision-preview">
-                <summary>{isZh ? '查看代码、权限与贡献差异' : 'Review code, permission, and contribution diff'}</summary>
-                <pre>{JSON.stringify(approval.payload.revisionPreview, null, 2)}</pre>
-              </details>
-            ) : null}
-          </div>
-          <div className="toolbar-inline">
-            <button className="primary-button" disabled={busy} onClick={() => void resolveApproval(approval.payload.approvalId, 'allowed-once')} type="button">
-              {isZh ? '仅本次允许' : 'Allow once'}
-            </button>
-            <button className="secondary-button" disabled={busy} onClick={() => void resolveApproval(approval.payload.approvalId, 'rejected')} type="button">
-              {isZh ? '拒绝' : 'Reject'}
-            </button>
-          </div>
-        </div>
-      ))}
 
-      {!canUseAi && showConfigurationHint ? (
-        <p className="mini-hint ai-context-error" role="status">
-          {isZh ? '请先在设置中启用 AI 并保存 API Key。' : 'Enable AI and save an API key in Settings first.'}
-        </p>
-      ) : null}
-      {error || eventLoadError ? <p className="mini-hint ai-context-error" role="alert">{error || eventLoadError}</p> : null}
-      {transcriptAfter}
+        {!canUseAi && showConfigurationHint ? (
+          <p className="mini-hint ai-context-error" role="status">
+            {isZh ? '请先在设置中启用 AI 并保存 API Key。' : 'Enable AI and save an API key in Settings first.'}
+          </p>
+        ) : null}
+        {error || eventLoadError ? <p className="mini-hint ai-context-error" role="alert">{error || eventLoadError}</p> : null}
+        {transcriptAfter}
+        </div>
       </div>
       <div className="assistant-composer">
         <textarea
@@ -458,6 +511,16 @@ export function isTranscriptNearBottom(
   threshold = 48
 ): boolean {
   return transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop <= threshold
+}
+
+function lastTranscriptContentSeq(events: readonly AssistantEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event.type === 'user.message' || event.type === 'assistant.chunk' || event.type === 'assistant.message'
+      || event.type === 'tool.call' || event.type === 'tool.result' || event.type === 'approval.requested'
+      || event.type === 'approval.resolved' || lifecycleProjection(event)) return event.seq
+  }
+  return 0
 }
 
 export function assistantSessionLabel(session: Pick<AssistantSessionSummary, 'createdAt' | 'title'>): string {
