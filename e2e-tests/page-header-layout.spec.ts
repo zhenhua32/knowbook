@@ -65,7 +65,7 @@ async function verifyHeader(page: Page, item: ManagementPage, testInfo: TestInfo
   const header = page.locator(`.content.page-${item.id}`).locator(item.header)
   const layout = await header.evaluate(element => {
     const title = element.querySelector<HTMLElement>('h2,h3')!
-    const description = element.querySelector<HTMLElement>('.hero-copy,.management-page-description,.plugin-page-heading p')!
+    const description = element.querySelector<HTMLElement>('.hero-copy,.management-page-description,.plugin-page-heading p')
     const content = element.closest<HTMLElement>('.content')!
     const rectangle = (node: Element) => {
       const rect = node.getBoundingClientRect()
@@ -108,9 +108,10 @@ async function verifyHeader(page: Page, item: ManagementPage, testInfo: TestInfo
     const titleStyle = getComputedStyle(title)
     return {
       header: rectangle(element), content: rectangle(content), inner: [innerWidth, innerHeight],
-      title: { text: title.textContent, ...rectangle(title), fontSize: titleStyle.fontSize, lineHeight: titleStyle.lineHeight,
+      title: { text: title.textContent, tagName: title.tagName, ...rectangle(title), fontSize: titleStyle.fontSize, lineHeight: titleStyle.lineHeight,
         rectangles: textRectangles(title), contrast: (Math.max(foreground, backgroundLuminance) + 0.05) / (Math.min(foreground, backgroundLuminance) + 0.05) },
-      description: { text: description.textContent, ...rectangle(description), rectangles: textRectangles(description) },
+      description: description ? { text: description.textContent, ...rectangle(description), rectangles: textRectangles(description) } : null,
+      headingCount: element.querySelectorAll('h2,h3').length,
       backgroundColor: style.backgroundColor, backgroundImage: style.backgroundImage, shadow: style.boxShadow,
       borderWidths: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth],
       headerOverflow: element.scrollWidth - element.clientWidth,
@@ -132,13 +133,26 @@ async function verifyHeader(page: Page, item: ManagementPage, testInfo: TestInfo
   expectInside(layout.header, layout.content, `${item.id} header`)
   expect(layout.header.bottom).toBeLessThanOrEqual(layout.inner[1])
   expect(layout.title.rectangles.length).toBeGreaterThan(0)
-  expect(layout.description.rectangles.length).toBeGreaterThan(0)
-  for (const rect of [...layout.title.rectangles, ...layout.description.rectangles]) expectInside(rect, layout.header, `${item.id} text`)
+  let textRectangles = layout.title.rectangles
+  if (item.id === 'ai') {
+    expect(layout.description, 'AI heading has no repeated introduction').toBeNull()
+    expect(layout.headingCount, 'AI heading has one title').toBe(1)
+    expect(layout.title.tagName).toBe('H2')
+    expect(layout.title.text?.trim()).toMatch(uiText('AI assistant', 'AI 助手'))
+    expect(layout.header.height, 'AI heading remains compact').toBeGreaterThanOrEqual(31)
+    expect(layout.header.height, 'AI heading remains compact').toBeLessThanOrEqual(33)
+    expect(layout.controls).toHaveLength(0)
+  } else {
+    expect(layout.description, `${item.id} has a description`).not.toBeNull()
+    expect(layout.description!.rectangles.length).toBeGreaterThan(0)
+    textRectangles = [...textRectangles, ...layout.description!.rectangles]
+  }
+  for (const rect of textRectangles) expectInside(rect, layout.header, `${item.id} text`)
   for (const control of layout.controls) {
     expectInside(control, layout.header, `${item.id} ${control.text}`)
     expect(control.enabled, `${item.id} ${control.text} enabled`).toBe(true)
     expect(control.receivesPointer, `${item.id} ${control.text} pointer target`).toBe(true)
-    for (const rect of [...layout.title.rectangles, ...layout.description.rectangles]) {
+    for (const rect of textRectangles) {
       expect(intersects(control, rect), `${item.id} action overlaps heading text`).toBe(false)
     }
   }
