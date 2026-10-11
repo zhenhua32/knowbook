@@ -60,7 +60,7 @@ test('i18n exposes the low-severity strings in both languages', () => {
 
 test('hardcoded english strings are replaced with localized lookups', () => {
   assert.doesNotMatch(
-    readSource('src/renderer/src/utils/draftTreePlacement.ts'),
+    readSource('src/renderer/src/utils/draftTreeDropPreview.ts'),
     /'(Drop after|Drop before)'/
   )
   assert.doesNotMatch(
@@ -76,9 +76,9 @@ test('hardcoded english strings are replaced with localized lookups', () => {
     /`Entity \$\{/
   )
 
-  const placement = readSource('src/renderer/src/utils/draftTreePlacement.ts')
-  assert.match(placement, /getActiveUiText\(\)\.dropAfterLabel/)
-  assert.match(placement, /getActiveUiText\(\)\.dropBeforeLabel/)
+  const dropPreview = readSource('src/renderer/src/utils/draftTreeDropPreview.ts')
+  assert.match(dropPreview, /getActiveUiText\(\)\.dropAfterLabel/)
+  assert.match(dropPreview, /getActiveUiText\(\)\.dropBeforeLabel/)
 })
 
 test('render-phase side effects move into effects', () => {

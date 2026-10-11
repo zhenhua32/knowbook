@@ -3,7 +3,6 @@ import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
 
 type BlockSelectionRange = {
   start: number
@@ -17,9 +16,8 @@ type UseBlockDragDropActionsParams = {
   draggingBlockIndex: number | null
   endBlockDrag: () => void
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
-  getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
   moveDraftSubtree: (sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) => void
-  pushToHistory: (blocks: DocumentBlockDraft[]) => void
+  moveSelectedBlocksTo: (targetIndex: number, targetDepth: number | null) => void
   selectedBlockRange: BlockSelectionRange | null
   notify: AppMessageHandler
   setDragOverBlockDepth: Dispatch<SetStateAction<number | null>>
@@ -34,9 +32,8 @@ export function useBlockDragDropActions({
   draggingBlockIndex,
   endBlockDrag,
   getMultiBlockInteractionGuard,
-  getMultiBlockOperationRange,
   moveDraftSubtree,
-  pushToHistory,
+  moveSelectedBlocksTo,
   selectedBlockRange,
   notify,
   setDragOverBlockDepth,
@@ -86,8 +83,6 @@ export function useBlockDragDropActions({
       endBlockDrag()
       return
     }
-    pushToHistory(draftBlocks)
-
     const sourceBlock = draftBlocks[draggingBlockIndex]
     if (!sourceBlock) {
       endBlockDrag()
@@ -96,78 +91,8 @@ export function useBlockDragDropActions({
 
     const isMultiBlockDrag = selectedBlockRange && draggingBlockIndex >= selectedBlockRange.start && draggingBlockIndex <= selectedBlockRange.end && selectedBlockRange.start !== selectedBlockRange.end
 
-    let dragSourceRange: BlockSelectionRange
-    let dragSubtreeSize: number
-
-    if (isMultiBlockDrag && selectedBlockRange) {
-      const interactionIssue = getMultiBlockInteractionGuard(selectedBlockRange)
-      if (interactionIssue) {
-        notify(interactionIssue, 'warning')
-        endBlockDrag()
-        return
-      }
-
-      dragSourceRange = getMultiBlockOperationRange(selectedBlockRange)
-      dragSubtreeSize = dragSourceRange.end - dragSourceRange.start + 1
-    } else {
-      const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, draggingBlockIndex)
-      dragSourceRange = { start: draggingBlockIndex, end: subtreeEndIndex }
-      dragSubtreeSize = dragSourceRange.end - dragSourceRange.start + 1
-    }
-
-    if (targetIndex >= dragSourceRange.start && targetIndex <= dragSourceRange.end) {
-      console.warn('Cannot drag a block range into its own subtree.')
-      endBlockDrag()
-      return
-    }
-
-    if (targetIndex === dragSourceRange.start - 1 && targetDepth === sourceBlock.depth) {
-      console.warn('Block is already at this position.')
-      endBlockDrag()
-      return
-    }
-
-    if (targetIndex === dragSourceRange.end + 1 && targetDepth === sourceBlock.depth) {
-      console.warn('Block is already at this position.')
-      endBlockDrag()
-      return
-    }
-
-    if (targetDepth !== null && isMultiBlockDrag) {
-      const nextRootDepth = normalizeBlockDepth(sourceBlock.type, targetDepth)
-      const appliedDelta = nextRootDepth - sourceBlock.depth
-
-      for (let index = dragSourceRange.start; index <= dragSourceRange.end; index += 1) {
-        const block = draftBlocks[index]
-        if (!block || !isNestableBlock(block.type)) {
-          continue
-        }
-
-        const nextBlockDepth = normalizeBlockDepth(block.type, block.depth + appliedDelta)
-
-        if (index !== dragSourceRange.start && targetIndex > dragSourceRange.end) {
-          const precedingIndex = targetIndex - dragSubtreeSize + (index - dragSourceRange.start)
-          if (precedingIndex >= 0) {
-            const precedingBlock = draftBlocks[precedingIndex]
-            if (precedingBlock && precedingBlock.depth < nextBlockDepth - 1) {
-              console.warn(`Cannot drop multi-block range: block at index ${index} would lack sufficient preceding block depth at target location.`)
-              endBlockDrag()
-              return
-            }
-          }
-        }
-      }
-    }
-
-    if (targetDepth !== null) {
-      const nextRootDepth = normalizeBlockDepth(sourceBlock.type, targetDepth)
-      if (nextRootDepth !== targetDepth) {
-        console.warn(`Invalid depth ${targetDepth} for block type ${sourceBlock.type}. Clamped to ${nextRootDepth}.`)
-      }
-    }
-
     if (isMultiBlockDrag) {
-      moveDraftSubtree(dragSourceRange.start, targetIndex, targetDepth)
+      moveSelectedBlocksTo(targetIndex, targetDepth)
     } else {
       moveDraftSubtree(draggingBlockIndex, targetIndex, targetDepth)
     }
@@ -178,15 +103,9 @@ export function useBlockDragDropActions({
     draggingBlockIndex,
     draftBlocks,
     endBlockDrag,
-    getBlockSubtreeEndIndex,
-    getMultiBlockInteractionGuard,
-    getMultiBlockOperationRange,
-    isNestableBlock,
     moveDraftSubtree,
-    normalizeBlockDepth,
-    pushToHistory,
-    selectedBlockRange,
-    notify
+    moveSelectedBlocksTo,
+    selectedBlockRange
   ])
 
   return {

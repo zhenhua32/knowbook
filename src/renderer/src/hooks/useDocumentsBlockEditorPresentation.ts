@@ -8,7 +8,7 @@ import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { isNestableBlock } from '../utils/draftBlockShape'
-import { getBlockDropPreview } from '../utils/draftTreePlacement'
+import { getBlockDropPreview } from '../utils/draftTreeDropPreview'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
 import { DocumentOutlinePanel } from '../components/DocumentOutlinePanel'
@@ -210,11 +210,14 @@ export function useDocumentsBlockEditorPresentation({
     }
 
     const numbers = getMarkdownListNumbers(draftBlocks)
+    const draggingSelection = draggingBlockIndex !== null && selectedBlockRange
+      && selectedBlockRange.start !== selectedBlockRange.end && draggingBlockIndex >= selectedBlockRange.start && draggingBlockIndex <= selectedBlockRange.end
+    const sourceRange = draggingSelection && selectedBlockRange ? getMultiBlockOperationRange(selectedBlockRange) : undefined
 
     return getVisibleBlockEntries(draftBlocks).map(({ block, index }) => {
       const dropPreview =
-        draggingBlockIndex !== null && dragOverBlockIndex === index
-          ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth)
+        draggingBlockIndex !== null && dragOverBlockIndex === index && !(draggingSelection && selectedBlockInteractionIssue)
+          ? getBlockDropPreview(draftBlocks, draggingBlockIndex, index, dragOverBlockDepth, sourceRange)
           : null
       const isSelected = isBlockSelected(index)
       const isHighlighted = Boolean(block.id) && block.id === highlightedBlockId
@@ -245,12 +248,15 @@ export function useDocumentsBlockEditorPresentation({
     draggingBlockIndex,
     draftBlocks,
     getBlockDropPreview,
+    getMultiBlockOperationRange,
     getVisibleBlockEntries,
     blockSearchQuery,
     isBlockSelected,
     highlightedBlockId,
     isNestableBlock,
-    selectedDocument
+    selectedDocument,
+    selectedBlockRange,
+    selectedBlockInteractionIssue
   ])
 
   const outlineItems = useMemo<OutlinePanelProps['items']>(() => {

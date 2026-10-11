@@ -1,7 +1,7 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { normalizeBlockDepth } from './draftBlockShape'
-import { getBlockSubtreeEndIndex, getNormalizedBlockId } from './draftTreeMove'
+import { getNormalizedBlockId } from './draftTreeMove'
 
 export function resolveDraftBlockRelationship(
   type: string,
@@ -35,7 +35,7 @@ export function resolveDraftBlockRelationship(
   }
 }
 
-function getBlockTreeText(type: string, content: string): string {
+export function getBlockTreeText(type: string, content: string): string {
   if (type === 'divider') {
     return getActiveUiText().horizontalDivider
   }
@@ -137,39 +137,4 @@ export function reparentOrphanedBlocksAfterRangeDeletion(
   }
 
   return modifiedBlocks
-}
-
-export function getBlockDropPreview(
-  blocks: DocumentBlockDraft[],
-  sourceIndex: number,
-  targetIndex: number,
-  targetDepth: number | null
-): { positionLabel: string; effectiveDepth: number; parentText: string | null } | null {
-  const subtreeEndIndex = getBlockSubtreeEndIndex(blocks, sourceIndex)
-  if (targetIndex >= sourceIndex && targetIndex <= subtreeEndIndex) {
-    return null
-  }
-
-  const movedBlocks = blocks.slice(sourceIndex, subtreeEndIndex + 1)
-  const rootBlock = movedBlocks[0]
-  if (!rootBlock) {
-    return null
-  }
-
-  const remainingBlocks = [...blocks]
-  remainingBlocks.splice(sourceIndex, movedBlocks.length)
-
-  const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
-  const placement = resolveDraftInsertionPlacement(
-    remainingBlocks,
-    insertionIndex,
-    rootBlock.type,
-    targetDepth === null ? rootBlock.depth : targetDepth
-  )
-
-  return {
-    positionLabel: sourceIndex < targetIndex ? getActiveUiText().dropAfterLabel : getActiveUiText().dropBeforeLabel,
-    effectiveDepth: placement.depth,
-    parentText: placement.parentText
-  }
 }

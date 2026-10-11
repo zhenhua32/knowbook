@@ -6,8 +6,8 @@ import { isNestableBlock, normalizeBlockDepth, toDraftBlock } from '../src/rende
 import { serializeDraftBlockRange } from '../src/renderer/src/utils/draftClipboard.ts'
 import { materializeDraftFragment, shiftDraftFragmentDepth } from '../src/renderer/src/utils/draftTreeFragment.ts'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization.ts'
+import { getBlockDropPreview } from '../src/renderer/src/utils/draftTreeDropPreview.ts'
 import {
-  getBlockDropPreview,
   reparentOrphanedBlocksAfterRangeDeletion,
   resolveDraftBlockRelationship,
   resolveDraftInsertionPlacement

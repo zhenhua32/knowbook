@@ -40,6 +40,7 @@ export function planDraftSubtreePlacement(blocks: DocumentBlockDraft[], range: D
   if (insertionIndex < 0 || insertionIndex > remaining.length) return null
   const placement = resolveDraftInsertionPlacement(remaining, insertionIndex, first.type, requestedDepth)
   const appliedDelta = placement.depth - first.depth
+  if (appliedDelta !== 0 && roots.some(block => !isNestableBlock(block.type))) return null
   if ((insertionIndex === range.start && appliedDelta === 0)
     || fragment.some(block => block.depth + appliedDelta < 0 || block.depth + appliedDelta > 6)) return null
   if (placement.parentBlockId) {

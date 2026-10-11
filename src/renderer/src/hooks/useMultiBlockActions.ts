@@ -5,7 +5,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { planDraftBlockDepthChange } from '../utils/draftTreeDepthChange'
+import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/draftTreeDepthChange'
 import { materializeDraftFragment } from '../utils/draftTreeFragment'
 import { reparentOrphanedBlocksAfterRangeDeletion } from '../utils/draftTreePlacement'
 import {
@@ -64,11 +64,12 @@ type UseMultiBlockActionsParams = {
   getVisibleSiblingSelectionSlice: (range: BlockSelectionRange) => VisibleSelectionSlice | null
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   selectedBlockRange: BlockSelectionRange | null
+  selectionAnchorBlockId?: string | null
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   notify: AppMessageHandler
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
-  setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
+  setPendingFocusBlockIndex: (index: number | null, cursorPosition?: number) => void
   setSelectedBlockRange: Dispatch<SetStateAction<BlockSelectionRange | null>>
   setSelectionAnchorBlockId: Dispatch<SetStateAction<string | null>>
   ui: MultiBlockUiText
@@ -86,6 +87,7 @@ export function useMultiBlockActions({
   getVisibleSiblingSelectionSlice,
   pushToHistory,
   selectedBlockRange,
+  selectionAnchorBlockId,
   setActiveBlockIndex,
   setActiveCursorPosition,
   notify,
@@ -105,6 +107,30 @@ export function useMultiBlockActions({
       .map((block) => renderDraftBlockAsPlainText(block))
       .join('\n\n')
   }, [])
+
+  const moveSelectedBlocksTo = useCallback((targetIndex: number, targetDepth: number | null) => {
+    if (!selectedBlockRange) return
+    const issue = getMultiBlockInteractionGuard(selectedBlockRange)
+    if (issue) { notify(issue, 'warning'); return }
+    const range = getMultiBlockOperationRange(selectedBlockRange)
+    if (targetIndex < 0 || targetIndex >= draftBlocks.length || (targetIndex >= range.start && targetIndex <= range.end)) return
+    const insertionIndex = range.start < targetIndex ? targetIndex - (range.end - range.start + 1) + 1 : targetIndex
+    const depth = targetDepth ?? draftBlocks[range.start].depth
+    const plan = planDraftSubtreePlacement(draftBlocks, range, insertionIndex, depth)
+    if (!plan) return
+    pushToHistory(draftBlocks)
+    setDraftBlocks(previous => planDraftSubtreePlacement(previous, range, insertionIndex, depth)?.blocks ?? previous)
+    const remap = (index: number) => remapIndexAfterSubtreeMove(index, range.start, range.end, insertionIndex) ?? index
+    setSelectedBlockRange({ start: remap(selectedBlockRange.start), end: remap(selectedBlockRange.end) })
+    setSelectionAnchorBlockId(selectionAnchorBlockId ?? getNormalizedBlockId(draftBlocks[selectedBlockRange.start]))
+    const focusIndex = remap(activeBlockIndex ?? selectedBlockRange.end)
+    setActiveBlockIndex(focusIndex)
+    setActiveCursorPosition(activeCursorPosition)
+    setPendingFocusBlockIndex(focusIndex, activeCursorPosition)
+    endBlockDrag()
+  }, [activeBlockIndex, activeCursorPosition, draftBlocks, endBlockDrag, getMultiBlockInteractionGuard,
+    getMultiBlockOperationRange, notify, pushToHistory, selectedBlockRange, selectionAnchorBlockId,
+    setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, setPendingFocusBlockIndex, setSelectedBlockRange, setSelectionAnchorBlockId])
 
   const moveSelectedBlocks = useCallback((delta: -1 | 1) => {
     if (!selectedBlockRange) {
@@ -420,6 +446,7 @@ export function useMultiBlockActions({
     deleteSelectedBlocks,
     duplicateSelectedBlocks,
     moveSelectedBlocks,
+    moveSelectedBlocksTo,
     removeSelectedBlockRange
   }
 }
