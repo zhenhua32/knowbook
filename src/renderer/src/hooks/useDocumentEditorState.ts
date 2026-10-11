@@ -140,21 +140,6 @@ export function useDocumentEditorState({
     pendingHistorySnapshotRef.current = null
   }, [])
 
-  useEffect(() => {
-    const capture = (event: Event) => {
-      const bookmark = captureEditorHistoryBookmark(draftBlocksRef.current, event.type === 'selectionchange' ? document.activeElement : event.target)
-      if (bookmark) lastEditorBookmarkRef.current = bookmark
-    }
-    document.addEventListener('focusin', capture)
-    document.addEventListener('focusout', capture)
-    document.addEventListener('selectionchange', capture)
-    return () => {
-      document.removeEventListener('focusin', capture)
-      document.removeEventListener('focusout', capture)
-      document.removeEventListener('selectionchange', capture)
-    }
-  }, [])
-
   useLayoutEffect(() => {
     const bookmark = pendingHistoryFocusRef.current
     if (!bookmark) return
@@ -172,31 +157,6 @@ export function useDocumentEditorState({
     })
     return () => cancelAnimationFrame(frame)
   }, [draftBlocksState, isReadingMode, onRevealHistoryBlock])
-
-  useEffect(() => {
-    let composingTarget: EventTarget | null = null
-    const start = (event: CompositionEvent) => {
-      if (!(event.target instanceof HTMLElement) || !event.target.closest('.block-editor-list, .document-summary-card')) return
-      composingTarget = event.target
-      composingDraftRef.current = true
-      clearAutoSaveTimer()
-      setIsComposingDraft(true)
-    }
-    const end = (event: Event) => {
-      if (event.target !== composingTarget) return
-      composingTarget = null
-      composingDraftRef.current = false
-      setIsComposingDraft(false)
-    }
-    document.addEventListener('compositionstart', start, true)
-    document.addEventListener('compositionend', end, true)
-    document.addEventListener('blur', end, true)
-    return () => {
-      document.removeEventListener('compositionstart', start, true)
-      document.removeEventListener('compositionend', end, true)
-      document.removeEventListener('blur', end, true)
-    }
-  }, [clearAutoSaveTimer])
 
   const triggerTransientFlash = useCallback((setter: (value: boolean) => void) => {
     setter(true)
@@ -347,6 +307,74 @@ export function useDocumentEditorState({
   }, [commitHistorySnapshot])
 
   const checkpointDraft = useCallback(() => pushToHistory(draftBlocksRef.current), [pushToHistory])
+
+  useEffect(() => {
+    let composingTarget: EventTarget | null = null
+    const start = (event: CompositionEvent) => {
+      if (!(event.target instanceof HTMLElement) || !event.target.closest('.block-editor-list, .document-summary-card')) return
+      const bookmark = captureEditorHistoryBookmark(draftBlocksRef.current, event.target)
+      if (bookmark) {
+        lastEditorBookmarkRef.current = bookmark
+        // IME beforeinput events arrive after composition has started. Capture
+        // the selection here, before it is replaced by candidate text, while
+        // retaining any still-pending typing in the same transaction.
+        if (!pendingHistorySnapshotRef.current || areDraftBlockSnapshotsEqual(
+          editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksRef.current
+        )) checkpointDraft()
+      }
+      composingTarget = event.target
+      composingDraftRef.current = true
+      clearAutoSaveTimer()
+      setIsComposingDraft(true)
+    }
+    const end = (event: Event) => {
+      if (event.target !== composingTarget) return
+      composingTarget = null
+      composingDraftRef.current = false
+      setIsComposingDraft(false)
+    }
+    const eventTypes = ['compositionstart', 'compositionend', 'blur'] as const
+    const listener = (event: Event) => event.type === 'compositionstart' ? start(event as CompositionEvent) : end(event)
+    for (const type of eventTypes) document.addEventListener(type, listener, true)
+    return () => {
+      for (const type of eventTypes) document.removeEventListener(type, listener, true)
+    }
+  }, [checkpointDraft, clearAutoSaveTimer])
+
+  useEffect(() => {
+    const capture = (event: Event) => {
+      const bookmark = captureEditorHistoryBookmark(draftBlocksRef.current, event.type === 'selectionchange' ? document.activeElement : event.target)
+      if (!bookmark) return
+      const previous = lastEditorBookmarkRef.current
+      lastEditorBookmarkRef.current = bookmark
+      if (event.type === 'selectionchange' || composingDraftRef.current || isRestoringHistoryRef.current) return
+      if (event.type === 'beforeinput') {
+        // Focus precedes placing a caret with the mouse. Capture the actual
+        // selection before the first keystroke, without splitting later typing.
+        if (!pendingHistorySnapshotRef.current) checkpointDraft()
+        return
+      }
+      if (event.type === 'focusin') {
+        const sameBlock = bookmark.blockId ? bookmark.blockId === previous?.blockId : bookmark.index === previous?.index
+        const sameCell = bookmark.cell?.row === previous?.cell?.row && bookmark.cell?.column === previous?.cell?.column
+        // Moving to another editor ends the previous typing transaction even
+        // when the 600 ms idle timer has not fired. It also records the new
+        // editor's selection in the checkpoint that its next edit will undo to.
+        if (!sameBlock || !sameCell) checkpointDraft()
+      } else {
+        const next = (event as FocusEvent).relatedTarget
+        const row = (event.target as HTMLElement).closest('.block-editor-row')
+        // Toolbar focus belongs to the same edit; leaving the block (including
+        // entering title/summary inputs with native undo) ends its transaction.
+        if (!(next instanceof HTMLElement) || !row?.contains(next)) checkpointDraft()
+      }
+    }
+    const eventTypes = ['focusin', 'focusout', 'selectionchange', 'beforeinput'] as const
+    for (const type of eventTypes) document.addEventListener(type, capture, type === 'beforeinput')
+    return () => {
+      for (const type of eventTypes) document.removeEventListener(type, capture, type === 'beforeinput')
+    }
+  }, [checkpointDraft])
 
   useEffect(() => {
     if (editHistoryPointerRef.current >= 0) checkpointDraft()

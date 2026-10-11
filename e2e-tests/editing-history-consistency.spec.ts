@@ -55,6 +55,53 @@ test('undo and redo preserve block focus and selections, and new typing retires 
   })
 })
 
+test('rapid typing in different blocks has separate undo transactions and restores the last edit selection @electron', async () => {
+  await withElectronApp(async ({ page }) => {
+    const title = '跨块连续输入撤销'
+    const id = await page.evaluate(async title => {
+      const { id } = await window.knowbook.createDocument(null)
+      await window.knowbook.updateDocument(id, { title, summary: '', blocks: [
+        { id: `${id}-first`, type: 'paragraph', content: 'abcdef', checked: false, depth: 0 },
+        { id: `${id}-second`, type: 'paragraph', content: 'ghijkl', checked: false, depth: 0 }
+      ] })
+      return id
+    }, title)
+    await page.reload()
+    await openSample(page, title)
+    await page.clock.install()
+    await page.clock.pauseAt(new Date())
+    const first = page.locator(`[data-block-id="${id}-first"] textarea`)
+    const second = page.locator(`[data-block-id="${id}-second"] textarea`)
+    await first.focus()
+    await first.press('End')
+    await page.keyboard.type(' A')
+    await second.focus()
+    await second.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(2, 5, 'backward'))
+    await page.keyboard.type('X')
+    await expect(first).toHaveValue('abcdef A')
+    await expect(second).toHaveValue('ghXl')
+    // The idle debounce cannot fire while time is paused; focus changes must
+    // supply the transaction boundary rather than relying on a typing delay.
+    await second.press('Control+z')
+    await expect(first).toHaveValue('abcdef A')
+    await expect(second).toHaveValue('ghijkl')
+    await expect(second).toBeFocused()
+    expect(await second.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd, input.selectionDirection])).toEqual([2, 5, 'backward'])
+    await page.clock.runFor(1)
+    await second.press('Control+z')
+    await expect(first).toHaveValue('abcdef')
+    await expect(first).toBeFocused()
+    await page.clock.runFor(1)
+    await first.press('Control+y')
+    await expect(first).toHaveValue('abcdef A')
+    await expect(second).toHaveValue('ghijkl')
+    await page.clock.runFor(1)
+    await page.keyboard.press('Control+y')
+    await expect(second).toHaveValue('ghXl')
+    await expect(second).toBeFocused()
+  })
+})
+
 test('table format undo restores the cell selection and keeps subsequent typing in that cell @electron', async () => {
   await withElectronApp(async ({ page }) => {
     const id = await createSample(page, '表格编辑历史一致性')
