@@ -1,10 +1,8 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock } from '../utils/draftBlockShape'
 import { getMarkdownShortcut, parsePastedMarkdown } from '../utils/markdownInput'
-import { materializeDraftFragment } from '../utils/draftTreeFragment'
-import { getNormalizedParentBlockId } from '../utils/draftTreeMove'
+import { materializePastedDraftFragment, planDraftBlockPaste } from '../utils/draftTreePaste'
 
 type BlockSelectionRange = {
   start: number
@@ -30,7 +28,7 @@ type UseBlockInputActionsParams = {
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
-  setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
+  setPendingFocusBlockIndex: (index: number | null, cursorPosition?: number) => void
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
 }
 
@@ -59,7 +57,7 @@ export function useBlockInputActions({
       })
       setActiveBlockIndex(index)
       setActiveCursorPosition(shortcut.content.length)
-      setPendingFocusBlockIndex(index)
+      setPendingFocusBlockIndex(index, shortcut.content.length)
       return
     }
 
@@ -99,34 +97,31 @@ export function useBlockInputActions({
     if (!activeRange && parsed.length === 1 && parsed[0].type === 'paragraph') {
       parsed = [{ ...current, content: before + text + after }]
     }
-    const baseDepth = Math.min(...parsed.map((block) => block.depth))
-    const nextBlocks = materializeDraftFragment(parsed.map((block) => ({
+    let nextBlocks = materializePastedDraftFragment(parsed.map((block) => ({
       ...block,
-      depth: isNestableBlock(block.type) ? block.depth - baseDepth + template.depth : 0,
       language: block.type === 'code' ? normalizeCodeLanguage(block.language) ?? detectCodeLanguage(block.content) ?? undefined : undefined
-    })), getNormalizedParentBlockId(template))
-    // Editing a single block should preserve its ID and all incoming references.
-    if (!activeRange && nextBlocks.length && current.id) {
-      const generatedId = nextBlocks[0].id
-      nextBlocks[0].id = current.id
-      nextBlocks[0].tags = current.tags
-      nextBlocks[0].highlight = current.highlight
-      for (const block of nextBlocks) if (block.parentBlockId === generatedId) block.parentBlockId = current.id
+    })), template)
+    if (!nextBlocks) {
+      // The editor represents six nested levels. Preserve deeper Markdown
+      // verbatim inside one block, so paste never discards its hierarchy.
+      nextBlocks = materializePastedDraftFragment([activeRange
+        ? buildBlockTypePatch('paragraph', text) : { ...current, content: before + text + after }], template)
     }
+    if (!nextBlocks) return false
+    const range = activeRange ?? { start, end: start }
+    const plan = planDraftBlockPaste(draftBlocks, range, nextBlocks, !activeRange)
+    if (!plan) return false
     pushToHistory(draftBlocks)
     clearBlockSelection()
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      next.splice(start, activeRange ? activeRange.end - start + 1 : 1, ...nextBlocks)
-      return next
-    })
-    const focusIndex = start + nextBlocks.length - 1
-    setActiveBlockIndex(focusIndex)
-    setActiveCursorPosition(Math.max(0, nextBlocks.at(-1)!.content.length - after.length))
-    setPendingFocusBlockIndex(focusIndex)
+    const fragment = nextBlocks
+    setDraftBlocks(previous => planDraftBlockPaste(previous, range, fragment, !activeRange)?.blocks ?? previous)
+    const cursor = Math.max(0, nextBlocks.at(-1)!.content.length - after.length)
+    setActiveBlockIndex(plan.focusIndex)
+    setActiveCursorPosition(cursor)
+    setPendingFocusBlockIndex(plan.focusIndex, cursor)
     endBlockDrag()
     return true
-  }, [draftBlocks, selectedBlockRange, getMultiBlockOperationRange, normalizeCodeLanguage, detectCodeLanguage,
+  }, [buildBlockTypePatch, draftBlocks, selectedBlockRange, getMultiBlockOperationRange, normalizeCodeLanguage, detectCodeLanguage,
     pushToHistory, clearBlockSelection, setDraftBlocks, setActiveBlockIndex, setActiveCursorPosition,
     setPendingFocusBlockIndex, endBlockDrag])
 
