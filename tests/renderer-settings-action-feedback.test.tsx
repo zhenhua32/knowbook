@@ -138,6 +138,35 @@ function assertTokenOnlyInInputValue(bridge: HTMLElement, token: string) {
   assert.equal(bridge.textContent!.includes(token), false, 'Token visibility belongs to its input rather than surrounding text')
 }
 
+test('a clean AI Save stays focusable in either language and never invokes its handler or clears existing feedback', async () => {
+  for (const isZh of [true, false]) await withSettings(isZh, async context => {
+    let saves = 0
+    const { ai, document, ui, patchNow } = context
+    const error = isZh ? '上次保存失败，保留此提示。' : 'The previous save failed. Keep this feedback.'
+    await context.patch({ aiSettingsDirty: false, aiSaveError: error, onSaveAiConfig: () => {
+      saves++
+      patchNow({ aiSaveError: '' })
+    } })
+    await context.select('AI')
+    const save = button(ai, ui.saveAiSettings)
+    assert.equal(save.disabled, false, 'No-op Save keeps its existing keyboard focus stop')
+    assert.equal(save.getAttribute('aria-disabled'), 'true')
+    assert.equal(save.getAttribute('aria-busy'), 'false')
+    await context.activate(save)
+    await context.activate(save)
+    assert.equal(saves, 0)
+    assertFocused(document, save)
+    assert.equal(ai.querySelector('[role="alert"]')!.textContent, error)
+    assert.equal(ai.querySelector('[role="status"]')!.textContent, isZh ? '没有未保存的修改。' : 'No unsaved changes.')
+    await context.patch({ aiSettingsDirty: true })
+    assert.equal(save.disabled, false)
+    assert.equal(save.getAttribute('aria-disabled'), 'false')
+    await context.activate(save)
+    assert.equal(saves, 1, 'A changed draft still invokes its Save handler')
+    assert.equal(ai.querySelector('[role="alert"]'), null)
+  })
+})
+
 test('localized AI and bridge action failures stay by their actions outside busy ancestors and service errors remain separate', async () => {
   for (const isZh of [true, false]) {
     await withSettings(isZh, async context => {
@@ -185,6 +214,7 @@ test('AI save failure keeps all displayed drafts and restores its initiating but
     assertFocused(document, document.body)
     await act(async () => requests[0].reject(new Error('Handled failure')))
     assertFocused(document, save)
+    assert.equal(save.getAttribute('aria-disabled'), 'false', 'A failed dirty save remains available for retry')
     assert.equal(ai.querySelector<HTMLInputElement>('#ai-api-key')!.value, 'unsaved-key')
     assert.equal(ai.querySelectorAll<HTMLInputElement>('input[type="text"]')[1].value, 'unsaved-model')
     assert.match(ai.querySelector('[role="alert"]')!.textContent!, /No connection/)
@@ -192,9 +222,15 @@ test('AI save failure keeps all displayed drafts and restores its initiating but
     assert.equal(ai.querySelector('.settings-ai-save-error'), null)
     await act(async () => requests[1].resolve())
     assertFocused(document, save)
+    assert.equal(save.disabled, false, 'Successful Save keeps its initiating keyboard focus stop')
+    assert.equal(save.getAttribute('aria-disabled'), 'true')
     assert.equal(ai.querySelector<HTMLInputElement>('#ai-api-key')!.value, '')
     assert.equal(ai.querySelector('.settings-ai-save-error'), null)
     assert.equal(ai.querySelector('[role="status"]')?.textContent, 'No unsaved changes.', 'Persistent clean-draft status is distinct from the transient save notification')
+    await context.activate(save)
+    assert.equal(requests.length, 2, 'Repeated Save after its successful acknowledgement is a no-op')
+    assertFocused(document, save)
+    assert.equal(ai.querySelector('[role="status"]')?.textContent, 'No unsaved changes.')
   })
 })
 
@@ -253,9 +289,11 @@ test('AI discard clears dirty feedback locally, preserves its focus stop and upd
 
 test('AI save and key-clear busy states show only progress and block the discard action', async () => {
   for (const isZh of [true, false]) for (const clearing of [false, true]) await withSettings(isZh, async context => {
-    let resets = 0
+    let resets = 0, saves = 0
     await context.select('AI')
-    await context.patch({ aiSettingsDirty: true, aiSaving: true, aiClearingApiKey: clearing, onResetAiSettingsDraft: () => { resets++ } })
+    const save = button(context.ai, context.ui.saveAiSettings)
+    await context.patch({ aiSettingsDirty: true, aiSaving: true, aiClearingApiKey: clearing,
+      onResetAiSettingsDraft: () => { resets++ }, onSaveAiConfig: () => { saves++ } })
     const discard = button(context.ai, isZh ? '撤销未保存修改' : 'Discard unsaved changes')
     const statuses = context.ai.querySelectorAll('[role="status"]')
     assert.equal(statuses.length, 1)
@@ -266,11 +304,17 @@ test('AI save and key-clear busy states show only progress and block the discard
     assert.equal(context.ai.querySelector('fieldset')!.disabled, true)
     assert.equal(discard.disabled, true)
     assert.equal(discard.getAttribute('aria-disabled'), 'true')
+    assert.equal(save.disabled, true)
+    assert.equal(save.getAttribute('aria-disabled'), 'true')
     await act(async () => discard.click())
+    await act(async () => save.click())
     assert.equal(resets, 0)
+    assert.equal(saves, 0)
     await context.patch({ aiSaving: false, aiClearingApiKey: false })
     assert.equal(discard.disabled, false)
     assert.equal(discard.getAttribute('aria-disabled'), 'false')
+    assert.equal(save.disabled, false)
+    assert.equal(save.getAttribute('aria-disabled'), 'false')
     assert.equal(context.ai.querySelector('[role="status"]')?.textContent,
       isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.')
   })
@@ -362,7 +406,7 @@ test('bridge save action has its own failure kind and leaves inputs editable aft
 test('a pending AI save cannot pull focus back from another category when it fails', async () => {
   await withSettings(false, async context => {
     const pending = deferred(), { ui, patchNow } = context
-    await context.patch({ onSaveAiConfig: () => {
+    await context.patch({ aiSettingsDirty: true, onSaveAiConfig: () => {
       patchNow({ aiSaving: true })
       return pending.promise.finally(() => patchNow({ aiSaving: false, aiSaveError: 'Failed to save AI settings.' }))
     } })

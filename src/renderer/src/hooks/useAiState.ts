@@ -29,6 +29,10 @@ function createAiSettingsDraft(config: AiConfig): AiSettingsDraft {
   }
 }
 
+function aiDraftsDiffer(draft: AiSettingsDraft, saved: AiSettingsDraft): boolean {
+  return (Object.keys(draft) as Array<keyof AiSettingsDraft>).some(key => draft[key] !== saved[key])
+}
+
 export function useAiState({
   aiConfig,
   selectedDocumentId,
@@ -53,8 +57,7 @@ export function useAiState({
     autoSummaryOnSave: aiAutoSummaryOnSaveDraft, relatedNotesEnabled: aiRelatedNotesEnabledDraft,
     apiKey: aiApiKeyDraft
   } = settingsDraft
-  const aiSettingsDirty = (Object.keys(settingsDraft) as Array<keyof AiSettingsDraft>)
-    .some(key => settingsDraft[key] !== savedSettings[key])
+  const aiSettingsDirty = aiDraftsDiffer(settingsDraft, savedSettings)
   const [aiSaving, setAiSaving] = useState(false)
   const [aiClearingApiKey, setAiClearingApiKey] = useState(false)
   const [aiSaveError, setAiSaveError] = useState('')
@@ -96,10 +99,9 @@ export function useAiState({
     savedConfigRef.current = config
     setSavedSettings(previousSettings => {
       const nextSettings = createAiSettingsDraft(config)
-      return (Object.keys(nextSettings) as Array<keyof AiSettingsDraft>).some(key => nextSettings[key] !== previousSettings[key])
-        ? nextSettings : previousSettings
+      return aiDraftsDiffer(nextSettings, previousSettings) ? nextSettings : previousSettings
     })
-    if ((Object.keys(next) as Array<keyof AiSettingsDraft>).some((key) => next[key] !== draft[key])) {
+    if (aiDraftsDiffer(next, draft)) {
       settingsDraftRef.current = next
       setSettingsDraft(next)
     }
@@ -160,6 +162,7 @@ export function useAiState({
 
   const saveAiConfig = useCallback(async () => {
     if (!settingsMountedRef.current || settingsLockedRef.current) return
+    if (!aiDraftsDiffer(settingsDraftRef.current, createAiSettingsDraft(savedConfigRef.current))) return
     settingsLockedRef.current = true
     const requestId = ++settingsRequestIdRef.current
     const isCurrentRequest = () => settingsMountedRef.current && settingsRequestIdRef.current === requestId

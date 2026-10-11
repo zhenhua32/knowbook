@@ -98,6 +98,7 @@ async function expectMutationLocked(panel: Locator, fields: AiFields, clearing: 
     await expect(input).toBeDisabled()
   }
   await expect(fields.save).toBeDisabled()
+  expect(await fields.save.evaluate(button => (button as HTMLButtonElement).disabled)).toBe(true)
   await expect(fields.clear).toBeDisabled()
   await expect(fields.reset).toBeDisabled()
   expect(await fields.reset.evaluate(button => (button as HTMLButtonElement).disabled)).toBe(true)
@@ -108,6 +109,15 @@ async function expectMutationLocked(panel: Locator, fields: AiFields, clearing: 
     ? uiText('Clearing the saved API key…', '正在清除已保存的 API Key…')
     : uiText('Saving AI settings…', '正在保存 AI 设置…'))
   await expectNoBusyAncestor(status)
+}
+
+async function expectCleanSave(save: Locator) {
+  await expect(save).toBeDisabled()
+  await expect(save).toHaveAttribute('aria-disabled', 'true')
+  await expect(save).toHaveAttribute('aria-busy', 'false')
+  // The unavailable action remains in native Tab order so a successful save
+  // can return focus to its trigger without allowing another write.
+  expect(await save.evaluate(button => (button as HTMLButtonElement).disabled)).toBe(false)
 }
 
 async function expectNoBusyAncestor(feedback: Locator) {
@@ -302,6 +312,44 @@ async function readStoredAiConfig(app: ElectronApplication) {
   })
 }
 
+async function expectCleanSaveNoOp(page: Page, app: ElectronApplication, panel: Locator, fields: AiFields, info: TestInfo, phase: string) {
+  await expectCleanSave(fields.save)
+  await expect(panel.getByRole('status')).toHaveText(pristineStatus)
+  const readState = async () => {
+    const home = await page.evaluate(() => window.knowbook.getHomeData())
+    return { probe: await readProbe(app), stored: await readStoredAiConfig(app),
+      publicConfig: home.aiConfig, recentEventIds: home.recentEvents.map(event => event.id) }
+  }
+  const before = await readState()
+  expect(before.probe.pendingUpdates).toBe(0)
+  await nativeTabTo(page, fields.save)
+  for (const key of ['Enter', 'Space']) {
+    await page.keyboard.press(key)
+    await expect(fields.save).toBeFocused()
+    await expectCleanSave(fields.save)
+  }
+  // locator.click() treats aria-disabled as unavailable. Use the exact
+  // hit-tested pointer coordinates to exercise the still-native-enabled button.
+  const geometry = await fields.save.evaluate(element => {
+    const rect = element.getBoundingClientRect(), x = rect.x + rect.width / 2, y = rect.y + rect.height / 2
+    const hit = document.elementFromPoint(x, y)
+    return { x, y, focused: element === document.activeElement, disabled: (element as HTMLButtonElement).disabled,
+      ariaDisabled: element.getAttribute('aria-disabled'),
+      visible: rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight && rect.left >= 0 && rect.right <= innerWidth,
+      centerHit: Boolean(hit && element.contains(hit)) }
+  })
+  expect(geometry).toMatchObject({ focused: true, disabled: false, ariaDisabled: 'true', visible: true, centerHit: true })
+  await page.mouse.click(geometry.x, geometry.y)
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+  await expect(fields.save).toBeFocused()
+  await expectCleanSave(fields.save)
+  const after = await readState()
+  expect(after).toEqual(before)
+  await expectNativeBackground(app)
+  await info.attach(`${phase}-clean-save-no-op`, { body: JSON.stringify({ before, after, geometry }, null, 2), contentType: 'application/json' })
+  await page.screenshot({ path: info.outputPath(`${phase}-clean-save-no-op.png`) })
+}
+
 test('AI settings lock every draft during saving and retain the new key after failure before a real retry @electron', async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
   await withElectronApp(async ({ app, page }) => {
@@ -338,7 +386,7 @@ test('AI settings lock every draft during saving and retain the new key after fa
     await fields.save.click()
     await expect.poll(async () => (await readProbe(app)).writes.length).toBe(2)
     await finishUpdate(app)
-    await expect(fields.save).toBeEnabled()
+    await expectCleanSave(fields.save)
     await expectDraft(fields, { ...dirtyDraft, apiKey: '' })
     await expect(panel.getByRole('status')).toHaveText(pristineStatus)
     await expect(fields.reset).toHaveAttribute('aria-disabled', 'true')
@@ -371,7 +419,7 @@ test('a key-only save clears its draft from the real IPC result without waiting 
     expect((await readProbe(app)).writes).toEqual([{ ...savedConfig, apiKey: 'e2e-key-only-replacement' }])
     await finishUpdate(app)
     // Home-data responses remain held here: a public AiConfig response must finish the operation itself.
-    await expect(fields.save).toBeEnabled()
+    await expectCleanSave(fields.save)
     await expect(fields.apiKey).toHaveValue('')
     await expectDraft(fields, { ...savedConfig, apiKey: '' })
     await expect(panel.getByRole('status')).toHaveText(pristineStatus)
@@ -395,7 +443,7 @@ for (const scenario of [
   { language: 'en-US', theme: 'light', viewport: { width: 1360, height: 850 } },
   { language: 'zh-CN', theme: 'dark', viewport: { width: 760, height: 760 } }
 ] as const) {
-  test(`AI settings expose unsaved changes and discard drafts through native keyboard without changing stored configuration (${scenario.language}) @electron`, async ({}, testInfo) => {
+  test(`AI settings discard drafts and ignore clean saves before edits, after restore, discard and success (${scenario.language}) @electron`, async ({}, testInfo) => {
     test.setTimeout(120_000)
     await withElectronApp(async ({ app, page }) => {
       const errors: string[] = []
@@ -416,6 +464,16 @@ for (const scenario of [
       await expect(fields.reset).toHaveAttribute('aria-disabled', 'true')
       await expect(fields.reset).toBeDisabled()
       expect(await fields.reset.evaluate(button => (button as HTMLButtonElement).disabled)).toBe(false)
+      await expectCleanSaveNoOp(page, app, panel, fields, testInfo, `${scenario.language}-initial`)
+      await nativeTabTo(page, fields.model)
+      await page.keyboard.press('ControlOrMeta+A')
+      await page.keyboard.type('temporary-model-before-manual-restore')
+      await expect(fields.save).toBeEnabled()
+      await expect(panel.getByRole('status')).toHaveText(dirtyStatus)
+      await page.keyboard.press('ControlOrMeta+A')
+      await page.keyboard.type(savedConfig.model)
+      await expectDraft(fields, { ...savedConfig, apiKey: '' })
+      await expectCleanSaveNoOp(page, app, panel, fields, testInfo, `${scenario.language}-manually-restored`)
       await nativeDraft(page, fields, dirtyDraft)
       await expectDraft(fields, dirtyDraft)
       expect(await panel.locator('.settings-form-actions').evaluate(element => getComputedStyle(element).position)).toBe('static')
@@ -467,6 +525,7 @@ for (const scenario of [
       expect((await readProbe(app)).writes).toHaveLength(0)
       expect(await readStoredAiConfig(app)).toEqual(before)
       expect((await page.evaluate(() => window.knowbook.getHomeData())).aiConfig).toEqual(publicBefore)
+      await expectCleanSaveNoOp(page, app, panel, fields, testInfo, `${scenario.language}-discarded`)
 
       await nativeDraft(page, fields, dirtyDraft)
       expect(await panel.locator('.settings-form-actions').evaluate(element => getComputedStyle(element).position)).toBe('static')
@@ -491,6 +550,23 @@ for (const scenario of [
       expect(await readStoredAiConfig(app)).toEqual(before)
       expect((await page.evaluate(() => window.knowbook.getHomeData())).aiConfig).toEqual(publicBefore)
       await recordResetAction(page, app, fields, testInfo, `${scenario.language}-discard-clears-failure-without-ipc`)
+      await expectCleanSaveNoOp(page, app, panel, fields, testInfo, `${scenario.language}-discarded-after-failure`)
+      await setDraft(fields, dirtyDraft)
+      await nativeTabTo(page, fields.save)
+      await page.keyboard.press('Enter')
+      await expect.poll(async () => (await readProbe(app)).pendingUpdates).toBe(1)
+      await expectMutationLocked(panel, fields, false)
+      await finishUpdate(app)
+      await expectCleanSave(fields.save)
+      await expect(fields.save).toBeFocused()
+      await expectDraft(fields, { ...dirtyDraft, apiKey: '' })
+      const afterSuccess = await readStoredAiConfig(app)
+      const { apiKey: _apiKey, ...savedDraft } = dirtyDraft
+      expect(afterSuccess).toMatchObject({ ...savedDraft, hasApiKey: true, keyProtected: true })
+      expect(afterSuccess.keyDigest).not.toBe(before.keyDigest)
+      expect((await readProbe(app)).writes).toEqual([dirtyDraft, dirtyDraft])
+      await dismissNotifications(page)
+      await expectCleanSaveNoOp(page, app, panel, fields, testInfo, `${scenario.language}-successful-save`)
       await restoreHandlers(app)
       expect(errors).toEqual([])
     }, { PLAYWRIGHT_ELECTRON_LOCALE: scenario.language })
@@ -530,7 +606,7 @@ test('clearing an AI key cancels safely, retries the saved configuration and pre
     await fields.save.click()
     await expect.poll(async () => (await readProbe(app)).pendingUpdates).toBe(1)
     await finishUpdate(app)
-    await expect(fields.save).toBeEnabled()
+    await expectCleanSave(fields.save)
     await expectDraft(fields, { ...latestSavedConfig, apiKey: '' })
     const beforeClear = await readStoredAiConfig(app)
     expect(beforeClear).toMatchObject({ ...latestSavedConfig, hasApiKey: true, keyProtected: true })

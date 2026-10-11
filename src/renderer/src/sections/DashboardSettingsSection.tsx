@@ -194,7 +194,7 @@ export function DashboardSettingsSection({
   const bridgePanelRef = useRef<HTMLElement>(null)
   const updatesPanelRef = useRef<HTMLElement>(null)
   const bridgePortRef = useRef<HTMLInputElement>(null)
-  const runAiAction = useAsyncActionFocus(aiPanelRef)
+  const runAiAction = useAsyncActionFocus(aiPanelRef, { restoreToAriaDisabledTrigger: true })
   const runBridgeAction = useAsyncActionFocus(bridgePanelRef)
   const runUpdateAction = useAsyncActionFocus(updatesPanelRef)
   const updateCheckBusy = appUpdateRefreshing || (appUpdateState?.status === 'checking' && !appUpdateCanCheck)
@@ -418,7 +418,9 @@ export function DashboardSettingsSection({
                   {aiSaving && <p className="mini-hint" role="status">{aiClearingApiKey ? (isZh ? '正在清除已保存的 API Key…' : 'Clearing the saved API key…') : (isZh ? '正在保存 AI 设置…' : 'Saving AI settings…')}</p>}
                 </div>
                 <div className="settings-actions">
-                  <button aria-busy={aiSaving && !aiClearingApiKey} className="primary-button" disabled={aiSaving} onClick={event => runAiAction(event.currentTarget, onSaveAiConfig)} type="button">
+                  <button aria-busy={aiSaving && !aiClearingApiKey} aria-disabled={!aiSettingsDirty || aiSaving}
+                    className="primary-button settings-save-button" disabled={aiSaving}
+                    onClick={event => { if (aiSettingsDirty && !aiSaving) runAiAction(event.currentTarget, onSaveAiConfig) }} type="button">
                     {aiSaving && !aiClearingApiKey ? ui.common.saving : ui.saveAiSettings}
                   </button>
                   <button className="secondary-button settings-discard-button" disabled={aiSaving} aria-disabled={!aiSettingsDirty || aiSaving}

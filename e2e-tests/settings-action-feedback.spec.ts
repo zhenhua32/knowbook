@@ -235,7 +235,9 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await expect.poll(async () => (await counts(app)).pending).toBe(1)
       expect((await counts(app)).calls).toBe(2)
       await finish(app)
-      await expect(save).toBeEnabled()
+      await expect(save).toBeDisabled()
+      await expect(save).toHaveAttribute('aria-disabled', 'true')
+      expect(await save.evaluate(button => (button as HTMLButtonElement).disabled)).toBe(false)
       await expect(error).toHaveCount(0)
       await expect(apiKey).toHaveValue('')
       const { apiKey: _key, ...expectedConfig } = aiDraft

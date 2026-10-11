@@ -68,7 +68,7 @@ test('settings opens general preferences first, with accessible category panels 
   }
 })
 
-test('AI settings SSR exposes localized clean or unsaved status and keeps discard in the keyboard route', () => {
+test('AI settings SSR exposes localized clean or unsaved status and keeps no-op Save and discard in the keyboard route', () => {
   for (const isZh of [true, false]) for (const dirty of [false, true]) {
     const dom = new JSDOM(renderToStaticMarkup(<DashboardSettingsSection {...settingsProps(isZh)} aiSettingsDirty={dirty} />))
     try {
@@ -79,6 +79,12 @@ test('AI settings SSR exposes localized clean or unsaved status and keeps discar
         ? (isZh ? '有未保存的修改，保存后生效。' : 'Unsaved changes. Save to apply.')
         : (isZh ? '没有未保存的修改。' : 'No unsaved changes.'))
       assert.equal(status.closest('[aria-busy="true"]'), null)
+      const save = [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === settingsProps(isZh).ui.saveAiSettings)
+      assert.ok(save)
+      assert.equal(save.disabled, false, 'Save remains a focus stop after a successful acknowledgement makes the draft clean')
+      assert.equal(save.getAttribute('aria-disabled'), String(!dirty))
+      assert.equal(save.getAttribute('aria-busy'), 'false')
+      assert.equal(save.type, 'button')
       const discard = [...panel.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent ===
         (isZh ? '撤销未保存修改' : 'Discard unsaved changes'))
       assert.ok(discard)

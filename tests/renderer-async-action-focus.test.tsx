@@ -25,10 +25,12 @@ type Context = {
   focus: (element: HTMLElement) => Promise<void>;
   invoke: (trigger: HTMLElement, action: () => void | Promise<unknown>, fallback?: () => HTMLElement | null) => Promise<void>;
   held: (id: ButtonId, disabled: boolean) => Promise<void>;
+  ariaDisabled: (id: ButtonId, disabled: boolean) => Promise<void>;
   holdNow: (id: ButtonId, disabled: boolean) => void;
   scope: (mode: ScopeMode) => Promise<void>;
   modal: (visible: boolean) => Promise<void>;
   fallbackDisabled: (disabled: boolean) => Promise<void>;
+  fallbackAriaDisabled: (disabled: boolean) => Promise<void>;
   removeAfterSuccess: (id: ButtonId) => void;
   fallback: (target: 'url' | 'outside' | 'none') => void;
   mode: (mode: 'deferred' | 'resolved' | 'throw') => void;
@@ -38,7 +40,7 @@ type Context = {
   executed: () => number;
 }
 
-async function withFocus(run: (context: Context) => Promise<void>) {
+async function withFocus(run: (context: Context) => Promise<void>, restoreToAriaDisabledTrigger = false) {
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost', pretendToBeVisual: true })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   let documentFocused = true
@@ -73,23 +75,29 @@ async function withFocus(run: (context: Context) => Promise<void>) {
   let mounted = true
   let runWithFocus!: ReturnType<typeof useAsyncActionFocus>
   let setHeld!: React.Dispatch<React.SetStateAction<Record<ButtonId, boolean>>>
+  let setAriaDisabled!: React.Dispatch<React.SetStateAction<Record<ButtonId, boolean>>>
   let setScope!: React.Dispatch<React.SetStateAction<ScopeMode>>
   let setModal!: React.Dispatch<React.SetStateAction<boolean>>
   let setFallbackDisabled!: React.Dispatch<React.SetStateAction<boolean>>
+  let setFallbackAriaDisabled!: React.Dispatch<React.SetStateAction<boolean>>
   function Harness() {
     const scopeRef = useRef<HTMLElement | null>(null)
-    runWithFocus = useAsyncActionFocus(scopeRef)
+    runWithFocus = useAsyncActionFocus(scopeRef, restoreToAriaDisabledTrigger ? { restoreToAriaDisabledTrigger: true } : undefined)
     const [busy, setBusy] = useState({ first: false, second: false })
     const [held, updateHeld] = useState({ first: false, second: false })
+    const [ariaDisabled, updateAriaDisabled] = useState({ first: false, second: false })
     const [present, setPresent] = useState({ first: true, second: true })
     const [scopeMode, updateScope] = useState<ScopeMode>('visible')
     const [modalVisible, updateModal] = useState(false)
     const [fallbackDisabled, updateFallbackDisabled] = useState(false)
+    const [fallbackAriaDisabled, updateFallbackAriaDisabled] = useState(false)
     const [error, setError] = useState('')
     setHeld = updateHeld
+    setAriaDisabled = updateAriaDisabled
     setScope = updateScope
     setModal = updateModal
     setFallbackDisabled = updateFallbackDisabled
+    setFallbackAriaDisabled = updateFallbackAriaDisabled
     useLayoutEffect(() => {
       // Chrome blurs a focused control on disable; JSDOM needs this native-behaviour shim.
       const active = dom.window.document.activeElement
@@ -124,11 +132,11 @@ async function withFocus(run: (context: Context) => Promise<void>) {
       {scopeMode !== 'removed' && <section id="scope" ref={scopeRef} hidden={scopeMode === 'hidden'} inert={scopeMode === 'inert'}
         aria-hidden={scopeMode === 'aria-hidden' ? true : undefined}
         style={{ display: scopeMode === 'display-none' ? 'none' : undefined, visibility: scopeMode === 'visibility-hidden' ? 'hidden' : undefined }}>
-        {present.first && <button id="first" type="button" disabled={busy.first || held.first}
+        {present.first && <button id="first" type="button" disabled={busy.first || held.first} aria-disabled={ariaDisabled.first}
           onClick={event => runWithFocus(event.currentTarget, () => action('first'), fallback)}>Save</button>}
-        {present.second && <button id="second" type="button" disabled={busy.second || held.second}
+        {present.second && <button id="second" type="button" disabled={busy.second || held.second} aria-disabled={ariaDisabled.second}
           onClick={event => runWithFocus(event.currentTarget, () => action('second'), fallback)}>Reload</button>}
-        <input id="url" aria-label="URL" disabled={fallbackDisabled} />
+        <input id="url" aria-label="URL" disabled={fallbackDisabled} aria-disabled={fallbackAriaDisabled} />
       </section>}
       <input id="outside" aria-label="Editor outside this section" />
       {modalVisible && <div role="dialog" aria-modal="true"><input id="modal-input" aria-label="Modal field" /></div>}
@@ -146,10 +154,12 @@ async function withFocus(run: (context: Context) => Promise<void>) {
       settle: async action => { await act(async () => action()) },
       invoke: async (trigger, action, fallback) => { await act(async () => runWithFocus(trigger, action, fallback)) },
       held: async (id, disabled) => { await act(async () => setHeld(current => ({ ...current, [id]: disabled }))) },
+      ariaDisabled: async (id, disabled) => { await act(async () => setAriaDisabled(current => ({ ...current, [id]: disabled }))) },
       holdNow: (id, disabled) => { setHeld(current => ({ ...current, [id]: disabled })) },
       scope: async mode => { await act(async () => setScope(mode)) },
       modal: async visible => { await act(async () => setModal(visible)) },
       fallbackDisabled: async disabled => { await act(async () => setFallbackDisabled(disabled)) },
+      fallbackAriaDisabled: async disabled => { await act(async () => setFallbackAriaDisabled(disabled)) },
       removeAfterSuccess: id => { remove.add(id) }, fallback: target => { fallbackTarget = target },
       mode: mode => { actionMode = mode }, documentFocus: focused => { documentFocused = focused },
       commits: async () => { await act(async () => root.render(<Harness />)) }
@@ -179,6 +189,50 @@ test('a focused manual action restores its enabled trigger after native disable 
   }
 })
 
+test('the default policy waits for an aria-disabled original instead of using its enabled fallback', async () => {
+  await withFocus(async context => {
+    await context.activate()
+    await context.ariaDisabled('first', true)
+    await context.settle(() => context.requests[0].resolve())
+    assert.equal(context.trigger().disabled, false)
+    assert.equal(context.trigger().getAttribute('aria-disabled'), 'true')
+    assertFocused(context.document, context.document.body)
+    await context.commits()
+    assertFocused(context.document, context.document.body, 'An aria-disabled original is not an eligible default restoration target')
+    await context.ariaDisabled('first', false)
+    assertFocused(context.document, context.trigger())
+  })
+})
+
+test('opting in restores only the original aria-disabled focus stop after its native busy state clears', async () => {
+  await withFocus(async context => {
+    await context.activate()
+    await context.ariaDisabled('first', true)
+    await context.held('first', true)
+    await context.settle(() => context.requests[0].resolve())
+    assert.equal(context.trigger().disabled, true)
+    assertFocused(context.document, context.document.body, 'Native disabled still waits under the opt-in policy')
+    await context.held('first', false)
+    assert.equal(context.trigger().getAttribute('aria-disabled'), 'true')
+    assertFocused(context.document, context.trigger(), 'A completed no-op action remains in the keyboard route')
+  }, true)
+})
+
+test('opting in never restores an aria-disabled fallback when the original trigger was removed', async () => {
+  await withFocus(async context => {
+    context.removeAfterSuccess('first')
+    await context.activate()
+    await context.fallbackAriaDisabled(true)
+    await context.settle(() => context.requests[0].resolve())
+    assert.equal(context.document.getElementById('first'), null)
+    assertFocused(context.document, context.document.body)
+    await context.commits()
+    assertFocused(context.document, context.document.body, 'The original-trigger exception does not apply to a fallback')
+    await context.fallbackAriaDisabled(false)
+    assertFocused(context.document, context.document.getElementById('url'))
+  }, true)
+})
+
 test('an unfocused trigger executes its action without replacing input or another section focus', async () => {
   for (const target of ['url', 'outside'] as const) {
     await withFocus(async context => {
@@ -193,15 +247,16 @@ test('an unfocused trigger executes its action without replacing input or anothe
 })
 
 test('focus moved to an input or modal while an action runs is retained after completion', async () => {
-  for (const target of ['url', 'outside', 'modal-input'] as const) {
+  for (const optIn of [false, true]) for (const target of ['url', 'outside', 'modal-input'] as const) {
     await withFocus(async context => {
       await context.activate()
+      if (optIn) await context.ariaDisabled('first', true)
       if (target === 'modal-input') await context.modal(true)
       const input = context.document.getElementById(target)!
       await context.focus(input)
       await context.settle(() => context.requests[0].resolve())
       assertFocused(context.document, input)
-    })
+    }, optIn)
   }
 })
 
@@ -221,9 +276,10 @@ test('a new pointer or keyboard operation abandons restoration even when it does
 })
 
 test('window blur or an unfocused document prevents a late action from restoring focus', async () => {
-  for (const background of ['window-blur', 'document-unfocused'] as const) {
+  for (const optIn of [false, true]) for (const background of ['window-blur', 'document-unfocused'] as const) {
     await withFocus(async context => {
       await context.activate()
+      if (optIn) await context.ariaDisabled('first', true)
       if (background === 'window-blur') await context.settle(() => context.window.dispatchEvent(new context.window.Event('blur')))
       else context.documentFocus(false)
       await context.settle(() => context.requests[0].resolve())
@@ -231,32 +287,34 @@ test('window blur or an unfocused document prevents a late action from restoring
       context.documentFocus(true)
       await context.commits()
       assertFocused(context.document, context.document.body, 'an abandoned background result cannot restore on a later commit')
-    })
+    }, optIn)
   }
 })
 
 test('an unavailable scope abandons the pending focus request and cannot resume it when shown again', async () => {
-  for (const mode of ['hidden', 'inert', 'aria-hidden', 'display-none', 'visibility-hidden', 'removed'] as const) {
+  for (const optIn of [false, true]) for (const mode of ['hidden', 'inert', 'aria-hidden', 'display-none', 'visibility-hidden', 'removed'] as const) {
     await withFocus(async context => {
       await context.activate()
+      if (optIn) await context.ariaDisabled('first', true)
       await context.scope(mode)
       await context.settle(() => context.requests[0].resolve())
       assertFocused(context.document, context.document.body)
       await context.scope('visible')
       assertFocused(context.document, context.document.body)
-    })
+    }, optIn)
   }
 })
 
 test('a visible modal cancels a pending restoration even before its field receives focus', async () => {
-  await withFocus(async context => {
+  for (const optIn of [false, true]) await withFocus(async context => {
     await context.activate()
+    if (optIn) await context.ariaDisabled('first', true)
     await context.modal(true)
     await context.settle(() => context.requests[0].resolve())
     assertFocused(context.document, context.document.body)
     await context.modal(false)
     assertFocused(context.document, context.document.body)
-  })
+  }, optIn)
 })
 
 test('an original trigger removed on successful retry restores the current fallback inside its scope', async () => {
@@ -367,15 +425,16 @@ test('a void-returning action can restore after a later parent commit enables th
 })
 
 test('unmounting the scope prevents late success or failure from focusing another editor', async () => {
-  for (const outcome of ['success', 'failure'] as const) {
+  for (const optIn of [false, true]) for (const outcome of ['success', 'failure'] as const) {
     await withFocus(async context => {
       await context.activate()
+      if (optIn) await context.ariaDisabled('first', true)
       await context.unmount()
       const editor = context.document.createElement('input')
       context.document.body.append(editor)
       editor.focus()
       await context.settle(() => outcome === 'success' ? context.requests[0].resolve() : context.requests[0].reject(new Error('Late action failure')))
       assertFocused(context.document, editor)
-    })
+    }, optIn)
   }
 })

@@ -502,7 +502,7 @@
   align-items: center;
 }
 
-.settings-ai-panel .settings-discard-button[aria-disabled='true'] {
+.settings-ai-panel :is(.settings-save-button, .settings-discard-button)[aria-disabled='true'] {
   opacity: .55;
   cursor: not-allowed;
   transform: none;

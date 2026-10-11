@@ -18,7 +18,8 @@ function hasModal(document: Document): boolean {
 }
 
 /** Return focus after a manual action disables its control, unless the user moves on. */
-export function useAsyncActionFocus(scopeRef: RefObject<HTMLElement | null>) {
+export function useAsyncActionFocus(scopeRef: RefObject<HTMLElement | null>,
+  { restoreToAriaDisabledTrigger = false }: { restoreToAriaDisabledTrigger?: boolean } = {}) {
   const pendingRef = useRef<PendingFocus | null>(null)
   const mountedRef = useRef(false)
   const [, render] = useState(0)
@@ -46,7 +47,8 @@ export function useAsyncActionFocus(scopeRef: RefObject<HTMLElement | null>) {
     const target = pending.trigger.isConnected ? pending.trigger : pending.fallback?.()
     if (!target || !scope.contains(target) || !isVisible(target)) { cancel(); return }
     // Busy state can clear in a later parent commit than the action promise.
-    if (target.matches(':disabled') || target.getAttribute('aria-disabled') === 'true') return
+    if (target.matches(':disabled') || (target.getAttribute('aria-disabled') === 'true'
+      && !(restoreToAriaDisabledTrigger && target === pending.trigger))) return
     cancel()
     target.focus({ preventScroll: true })
   })

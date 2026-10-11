@@ -171,8 +171,37 @@ const editedDrafts: Drafts = { enabled: false, baseUrl: ' https://draft.example/
 const acknowledgedConfig: AiConfig = { enabled: false, baseUrl: 'https://draft.example/v1', model: 'draft-model',
   autoSummaryOnSave: true, relatedNotesEnabled: false, hasApiKey: true }
 
+async function expectNoSettingsSave(context: Context, action = () => context.state().saveAiConfig()) {
+  const requests = context.requests.length
+  const changes = [...context.changes]
+  const messages = [...context.messages]
+  const homeReads = context.homeReads()
+  const homeChanges = context.homeChanges()
+  const saving = await context.start(action)
+  assert.equal(context.requests.length, requests, 'Saving a clean draft must not invoke the settings IPC')
+  assert.deepEqual(context.changes, changes, 'A no-op cannot publish another saved configuration')
+  assert.deepEqual(context.messages, messages, 'A no-op cannot report another save success or failure')
+  assert.equal(context.homeReads(), homeReads)
+  assert.equal(context.homeChanges(), homeChanges)
+  await context.settle(() => {}, saving.completion)
+}
+
+test('pristine AI settings saves leave all drafts and feedback untouched without sending a mutation', async () => {
+  for (const language of ['zh-CN', 'en-US'] as const) await withSettings(async context => {
+    const capturedSave = context.state().saveAiConfig
+    const before = context.view()
+    await expectNoSettingsSave(context)
+    await expectNoSettingsSave(context, capturedSave)
+    assert.deepEqual(context.view(), before)
+    assert.equal(context.requests.length, 0)
+    assert.deepEqual(context.changes, [])
+    assert.deepEqual(context.messages, [])
+  }, language)
+})
+
 test('AI settings dirty state tracks each public field exactly and clears when changes are restored', async () => {
   await withSettings(async context => {
+    const capturedSave = context.state().saveAiConfig
     assert.equal(context.view().dirty, false)
     const edits: Partial<Drafts>[] = [
       { enabled: false }, { baseUrl: initialConfig.baseUrl + ' ' }, { model: 'another-model' },
@@ -183,11 +212,13 @@ test('AI settings dirty state tracks each public field exactly and clears when c
       assert.equal(context.view().dirty, true, `A changed ${Object.keys(edit)[0]} is an unsaved draft`)
       await context.edit(draftsFrom(initialConfig))
       assert.equal(context.view().dirty, false, 'Restoring saved values clears dirty state without an IPC write')
+      await expectNoSettingsSave(context, capturedSave)
     }
     await context.edit({ apiKey: 'replacement-key' })
     assert.equal(context.view().dirty, true, 'An unknown replacement key is unsaved even when a key is already stored')
     await context.edit({ apiKey: '' })
     assert.equal(context.view().dirty, false)
+    await expectNoSettingsSave(context, capturedSave)
     assert.equal(context.requests.length, 0)
     assert.equal(context.homeReads(), 0)
     assert.deepEqual(context.changes, [])
@@ -195,9 +226,54 @@ test('AI settings dirty state tracks each public field exactly and clears when c
   })
 })
 
+test('a captured clean AI save reads draft setters from the same event for public and key-only changes', async () => {
+  for (const edit of [{ model: 'same-event-model' }, { apiKey: 'same-event-key' }]) {
+    await withSettings(async context => {
+      const capturedSave = context.state().saveAiConfig
+      const expectedDraft = { ...draftsFrom(initialConfig), ...edit }
+      const saving = await context.start(() => {
+        const pristine = capturedSave()
+        setDrafts(context.state(), edit)
+        return Promise.all([pristine, capturedSave()]).then(() => {})
+      })
+      assert.equal(context.requests.length, 1, 'The dirty guard must see ref updates before React publishes dirty state')
+      assert.deepEqual(context.requests[0].input, settingsInput(expectedDraft))
+      assert.equal(context.view().dirty, true)
+      assert.equal(context.view().saving, true)
+      const acknowledged = { ...initialConfig, model: expectedDraft.model }
+      await context.settle(() => context.requests[0].resolve(acknowledged), saving.completion)
+      assert.deepEqual(context.view().drafts, draftsFrom(acknowledged))
+      assert.equal(context.view().dirty, false)
+      assert.equal(context.view().saving, false)
+      assert.deepEqual(context.changes, [acknowledged])
+      assert.deepEqual(context.messages, [[getUiText('en-US').aiSettingsSaved, undefined]])
+    })
+  }
+})
+
+test('a captured dirty AI save sees restored values or discarded drafts from the same event', async () => {
+  for (const restore of ['setters', 'discard'] as const) await withSettings(async context => {
+    await context.edit(editedDrafts)
+    const capturedSave = context.state().saveAiConfig
+    const capturedReset = context.state().resetAiSettingsDraft
+    await expectNoSettingsSave(context, () => {
+      if (restore === 'discard') capturedReset()
+      else setDrafts(context.state(), draftsFrom(initialConfig))
+      return capturedSave()
+    })
+    assert.deepEqual(context.view().drafts, draftsFrom(initialConfig))
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.view().saving, false)
+    assert.equal(context.view().saveError, '')
+    assert.equal(context.requests.length, 0)
+    assert.deepEqual(context.messages, [])
+  })
+})
+
 test('external saved settings can converge with dirty values while preserving a replacement key draft', async () => {
   await withSettings(async context => {
     await context.edit({ model: 'externally-saved-model' })
+    const capturedSave = context.state().saveAiConfig
     assert.equal(context.view().dirty, true)
     const retainedDrafts = context.view().drafts
     const converged = { ...initialConfig, model: 'externally-saved-model' }
@@ -205,17 +281,20 @@ test('external saved settings can converge with dirty values while preserving a 
     assert.deepEqual(context.view().drafts, retainedDrafts, 'Only the saved model baseline changes; all six draft values remain untouched')
     assert.deepEqual(context.view().drafts, draftsFrom(converged))
     assert.equal(context.view().dirty, false, 'Baseline-only convergence must clear dirty state even without a draft update')
+    await expectNoSettingsSave(context, capturedSave)
     const latest = { ...initialConfig, enabled: false, baseUrl: 'https://external.example/v1', model: 'externally-saved-model',
       autoSummaryOnSave: true, relatedNotesEnabled: false }
     await context.external(latest)
     assert.deepEqual(context.view().drafts, draftsFrom(latest))
     assert.equal(context.view().dirty, false, 'The authoritative saved baseline now matches the retained local model')
+    await expectNoSettingsSave(context, capturedSave)
     await context.edit({ apiKey: 'replacement-key' })
     await context.external({ ...latest, hasApiKey: false })
     assert.equal(context.view().drafts.apiKey, 'replacement-key')
     assert.equal(context.view().dirty, true, 'The saved hasApiKey flag cannot acknowledge an unsaved replacement credential')
     await context.edit({ apiKey: '' })
     assert.equal(context.view().dirty, false)
+    await expectNoSettingsSave(context, capturedSave)
     assert.equal(context.requests.length, 0)
     assert.deepEqual(context.changes, [])
     assert.deepEqual(context.messages, [])
@@ -225,6 +304,7 @@ test('external saved settings can converge with dirty values while preserving a 
 test('a save acknowledgement establishes the clean baseline before the parent configuration or home data refreshes', async () => {
   await withSettings(async context => {
     const capturedReset = context.state().resetAiSettingsDraft
+    const capturedSave = context.state().saveAiConfig
     await context.edit(editedDrafts)
     const saving = await context.start(() => context.state().saveAiConfig())
     assert.equal(context.view().dirty, true)
@@ -232,11 +312,13 @@ test('a save acknowledgement establishes the clean baseline before the parent co
     assert.deepEqual(context.view().config, initialConfig, 'This harness intentionally does not publish the acknowledged parent configuration')
     assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig))
     assert.equal(context.view().dirty, false)
+    await expectNoSettingsSave(context, capturedSave)
     await context.edit({ model: 'another-unsaved-model', apiKey: 'another-unsaved-key' })
     assert.equal(context.view().dirty, true)
     await context.settle(capturedReset)
     assert.deepEqual(context.view().drafts, draftsFrom(acknowledgedConfig), 'Even a previously captured reset uses the most recently acknowledged baseline')
     assert.equal(context.view().dirty, false)
+    await expectNoSettingsSave(context, capturedSave)
     assert.equal(context.requests.length, 1, 'Discarding a draft does not send another settings mutation')
     assert.equal(context.homeReads(), 0)
     assert.equal(context.homeChanges(), 0)
@@ -254,6 +336,7 @@ test('discard restores the latest external baseline and clears a failed save wit
     await context.settle(() => context.requests[0].reject(new Error(reason)), failed.completion)
     assert.equal(context.view().dirty, true)
     assert.equal(context.view().saveError, reason)
+    const capturedSave = context.state().saveAiConfig
     const latest = { ...initialConfig, enabled: false, baseUrl: 'https://latest.example/v1', model: 'latest-saved-model',
       autoSummaryOnSave: true, relatedNotesEnabled: false, hasApiKey: false }
     await context.external(latest)
@@ -266,12 +349,33 @@ test('discard restores the latest external baseline and clears a failed save wit
     assert.equal(context.view().drafts.apiKey, '')
     assert.equal(context.view().dirty, false)
     assert.equal(context.view().saveError, '')
+    await expectNoSettingsSave(context, capturedSave)
     assert.equal(context.requests.length, 1)
     assert.equal(context.homeReads(), 0)
     assert.equal(context.homeChanges(), 0)
     assert.deepEqual(context.changes, [])
     assert.deepEqual(context.messages, notices, 'Discard is a local operation, not a new save success or failure notification')
   }, language)
+})
+
+test('a no-op AI save retains a failed write error after restored drafts or external baseline convergence', async () => {
+  for (const convergence of ['restore', 'external'] as const) await withSettings(async context => {
+    await context.edit({ model: 'failed-draft-model' })
+    const capturedSave = context.state().saveAiConfig
+    const failed = await context.start(capturedSave)
+    const reason = 'This draft could not be stored'
+    await context.settle(() => context.requests[0].reject(new Error(reason)), failed.completion)
+    if (convergence === 'external') await context.external({ ...initialConfig, model: 'failed-draft-model' })
+    else await context.edit({ model: initialConfig.model })
+    assert.equal(context.view().dirty, false)
+    assert.equal(context.view().saveError, reason)
+    const before = context.view()
+    await expectNoSettingsSave(context, capturedSave)
+    assert.deepEqual(context.view(), before, 'A no-op cannot silently acknowledge an earlier failed write')
+    assert.equal(context.requests.length, 1)
+    assert.deepEqual(context.changes, [])
+    assert.deepEqual(context.messages, [[reason, 'error']])
+  })
 })
 
 test('AI settings acquire a synchronous save lock, block every draft setter and clear action, and synchronize the public acknowledgement', async () => {
@@ -338,6 +442,7 @@ test('a failed AI settings save retains all six drafts, reports the clean error 
 test('a key-only successful save clears the secret draft even when the public configuration is completely unchanged', async () => {
   await withSettings(async context => {
     await context.edit({ apiKey: 'replacement-key' })
+    const capturedSave = context.state().saveAiConfig
     assert.equal(context.view().dirty, true)
     const saving = await context.start(() => context.state().saveAiConfig())
     assert.deepEqual(context.requests[0].input, settingsInput(draftsFrom(initialConfig, 'replacement-key')))
@@ -346,6 +451,8 @@ test('a key-only successful save clears the secret draft even when the public co
     assert.equal(context.view().dirty, false)
     assert.deepEqual(context.view().config, initialConfig)
     assert.equal(context.view().saving, false)
+    await expectNoSettingsSave(context, capturedSave)
+    assert.equal(context.requests.length, 1)
     assert.equal(context.changes.length, 1)
     assert.deepEqual(context.messages, [[getUiText('en-US').aiSettingsSaved, undefined]])
     assert.equal(context.homeReads(), 0, 'a committed settings result cannot be turned into failure by an unrelated home refresh')
@@ -622,6 +729,7 @@ test('empty and non-Error AI save failures use the localized settings fallback w
 test('an old unmounted AI save cannot overwrite or clear a newer session save failure', async () => {
   for (const outcome of ['success', 'failure'] as const) {
     await withSettings(async context => {
+      await context.edit({ model: 'old-session-draft' })
       const old = await context.start(() => context.state().saveAiConfig())
       const oldRequest = context.requests[0]
       await context.unmount()
