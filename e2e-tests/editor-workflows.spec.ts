@@ -146,22 +146,49 @@ test.describe('Editor Common Workflows @electron', () => {
 
     await withElectronApp(async ({ page }) => {
       const documentId = await createSavedRootDocument(page, title, 'Alpha')
+      const alpha = { type: 'paragraph', content: 'Alpha', checked: false, depth: 0, parentIndex: null }
+      const empty = { ...alpha, content: '' }
+      const beta = { ...alpha, content: 'Beta' }
+      const expectCaret = async (bodyIndex: number, position: number) => {
+        const editor = getBodyEditor(page, bodyIndex)
+        await expect(editor).toBeFocused()
+        expect(await editor.evaluate((element) => {
+          const textarea = element as HTMLTextAreaElement
+          return [textarea.selectionStart, textarea.selectionEnd]
+        })).toEqual([position, position])
+      }
+      await getBodyEditor(page, 0).press('End')
       await getBodyEditor(page, 0).press('Control+Enter')
+      await expectCaret(1, 0)
       await getBodyEditor(page, 1).fill('Beta')
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha, beta])
+
+      // Typing and creating a block are separate reversible transactions.
+      await getBodyEditor(page, 1).press('Control+z')
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', ''])
+      await expectCaret(1, 0)
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha, empty])
 
       await getBodyEditor(page, 1).press('Control+z')
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha'])
-      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([
-        { type: 'paragraph', content: 'Alpha', checked: false, depth: 0, parentIndex: null }
-      ])
+      await expectCaret(0, 5)
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha])
 
       await getBodyEditor(page, 0).press('Control+Shift+z')
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', ''])
+      await expectCaret(1, 0)
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha, empty])
+
+      await getBodyEditor(page, 1).press('Control+Shift+z')
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
-      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([
-        { type: 'paragraph', content: 'Alpha', checked: false, depth: 0, parentIndex: null },
-        { type: 'paragraph', content: 'Beta', checked: false, depth: 0, parentIndex: null }
-      ])
+      await expectCaret(1, 4)
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha, beta])
+
+      await page.reload()
+      await getTreeButton(page, title).click()
+      await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
+      await expect.poll(() => getPersistedBodyBlocks(page, documentId)).toEqual([alpha, beta])
     })
   })
 
