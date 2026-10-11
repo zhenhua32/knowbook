@@ -72,9 +72,10 @@ test('undo history is only pushed when an operation will actually mutate', () =>
   const adjust = extractUseCallback(multiActions, 'adjustSelectedBlocksDepth')
   const firstMutation = adjust.indexOf('setDraftBlocks(')
   const pushIndex = adjust.indexOf('pushToHistory(draftBlocks)')
+  const planGuard = adjust.indexOf('if (!plan) return')
   assert.ok(pushIndex > -1, 'adjustSelectedBlocksDepth must push history')
   assert.ok(
-    pushIndex > firstMutation - adjust.length && pushIndex > adjust.indexOf('appliedDelta === 0'),
+    planGuard !== -1 && pushIndex > planGuard && pushIndex < firstMutation,
     'history must be pushed after the no-op guards, right before the mutation'
   )
 

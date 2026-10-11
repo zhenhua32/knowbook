@@ -2,15 +2,14 @@ import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { isNestableBlock } from '../utils/draftBlockShape'
+import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/draftTreeDepthChange'
 import { shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
 import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
-import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
   getFragmentLocalRootIds,
   getNextSiblingSubtreeStartIndex,
-  getNormalizedBlockId,
   getPreviousSiblingSubtreeStartIndex,
   remapIndexAfterSubtreeMove
 } from '../utils/draftTreeMove'
@@ -56,49 +55,25 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    const nextRootDepth = normalizeBlockDepth(currentBlock.type, currentBlock.depth + delta)
-    const appliedDelta = nextRootDepth - currentBlock.depth
-    if (appliedDelta === 0) {
-      return
-    }
-
-    if (appliedDelta > 0) {
-      const precedingBlock = index > 0 ? draftBlocks[index - 1] : null
-      if (!precedingBlock) {
-        console.warn('Cannot indent: no preceding block found as parent.')
-        return
-      }
-
-      if (precedingBlock.depth + 1 < nextRootDepth) {
-        console.warn(`Cannot indent to depth ${nextRootDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
-        return
-      }
-    }
-
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+    const range = { start: index, end: subtreeEndIndex }
+    const plan = planDraftBlockDepthChange(draftBlocks, range, delta)
+    if (!plan) return
 
     pushToHistory(draftBlocks)
-    setDraftBlocks((previous) => {
-      const subtreeBlocks = previous.slice(index, subtreeEndIndex + 1)
-      const rootId = getNormalizedBlockId(previous[index])
-      const rootIds = new Set<string>(rootId ? [rootId] : [])
-      const placement = resolveDraftInsertionPlacement(previous, index, currentBlock.type, nextRootDepth)
-      const next = [...previous]
-
-      next.splice(index, subtreeBlocks.length, ...shiftDraftFragmentDepth(subtreeBlocks, placement.depth - currentBlock.depth, placement.parentBlockId, rootIds))
-      return next
-    })
-    setActiveBlockIndex(index)
+    clearBlockSelection()
+    setDraftBlocks((previous) => planDraftBlockDepthChange(previous, range, delta)?.blocks ?? previous)
+    const focusIndex = remapIndexAfterSubtreeMove(index, index, subtreeEndIndex, plan.insertionIndex)
+    setActiveBlockIndex(focusIndex)
     setActiveCursorPosition(cursorPosition)
-    setPendingFocusBlockIndex(index)
+    setPendingFocusBlockIndex(focusIndex)
+    endBlockDrag()
   }, [
     activeCursorPosition,
     draftBlocks,
-    getBlockSubtreeEndIndex,
-    isNestableBlock,
-    normalizeBlockDepth,
+    clearBlockSelection,
+    endBlockDrag,
     pushToHistory,
-    resolveDraftInsertionPlacement,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
@@ -219,40 +194,19 @@ export function useSingleBlockTreeActions({
   }, [clearBlockSelection, draftBlocks, endBlockDrag, getBlockSubtreeEndIndex, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, setPendingFocusBlockIndex])
 
   const moveDraftSubtree = useCallback((sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) => {
-    pushToHistory(draftBlocks)
-    clearBlockSelection()
-    setDraftBlocks((previous) => {
-      const subtreeEndIndex = getBlockSubtreeEndIndex(previous, sourceIndex)
-      const movedBlocks = previous.slice(sourceIndex, subtreeEndIndex + 1)
-      const next = [...previous]
-      next.splice(sourceIndex, movedBlocks.length)
-
-      const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - movedBlocks.length + 1) : targetIndex
-      const rootBlock = movedBlocks[0]
-      if (!rootBlock) {
-        return previous
-      }
-
-      const placement = resolveDraftInsertionPlacement(
-        next,
-        insertionIndex,
-        rootBlock.type,
-        targetDepth === null ? rootBlock.depth : targetDepth
-      )
-      const normalizedMovedBlocks = shiftDraftFragmentDepth(
-        movedBlocks,
-        placement.depth - rootBlock.depth,
-        placement.parentBlockId,
-        getFragmentLocalRootIds(movedBlocks)
-      )
-
-      next.splice(insertionIndex, 0, ...normalizedMovedBlocks)
-      return next
-    })
-
+    const rootBlock = draftBlocks[sourceIndex]
+    if (!rootBlock) return
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, sourceIndex)
+    if (targetIndex >= sourceIndex && targetIndex <= subtreeEndIndex) return
+    const range = { start: sourceIndex, end: subtreeEndIndex }
     const subtreeSize = subtreeEndIndex - sourceIndex + 1
     const insertionIndex = sourceIndex < targetIndex ? Math.max(0, targetIndex - subtreeSize + 1) : targetIndex
+    const requestedDepth = targetDepth ?? rootBlock.depth
+    const plan = planDraftSubtreePlacement(draftBlocks, range, insertionIndex, requestedDepth)
+    if (!plan) return
+    pushToHistory(draftBlocks)
+    clearBlockSelection()
+    setDraftBlocks((previous) => planDraftSubtreePlacement(previous, range, insertionIndex, requestedDepth)?.blocks ?? previous)
 
     setActiveBlockIndex((previous) =>
       remapIndexAfterSubtreeMove(
@@ -270,7 +224,7 @@ export function useSingleBlockTreeActions({
         insertionIndex
       )
     )
-  }, [clearBlockSelection, draftBlocks, getBlockSubtreeEndIndex, pushToHistory, resolveDraftInsertionPlacement, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex])
+  }, [clearBlockSelection, draftBlocks, pushToHistory, setActiveBlockIndex, setDraftBlocks, setPendingFocusBlockIndex])
 
   const moveDraftBlockBySibling = useCallback((index: number, direction: -1 | 1, cursorPosition = activeCursorPosition, contentOverride?: string) => {
     const siblingIndex =

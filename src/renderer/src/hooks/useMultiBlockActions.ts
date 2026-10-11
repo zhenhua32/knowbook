@@ -5,12 +5,11 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
-import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
-import { materializeDraftFragment, shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
-import { reparentOrphanedBlocksAfterRangeDeletion, resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
+import { planDraftBlockDepthChange } from '../utils/draftTreeDepthChange'
+import { materializeDraftFragment } from '../utils/draftTreeFragment'
+import { reparentOrphanedBlocksAfterRangeDeletion } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
-  getFragmentLocalRootIds,
   getNextSiblingSubtreeStartIndex,
   getNormalizedBlockId,
   getNormalizedParentBlockId,
@@ -198,96 +197,18 @@ export function useMultiBlockActions({
     }
 
     const operationRange = getMultiBlockOperationRange(selectedBlockRange)
-
-    const selectedNestableBlocks = draftBlocks
-      .slice(operationRange.start, operationRange.end + 1)
-      .filter((block) => isNestableBlock(block.type))
-
-    if (selectedNestableBlocks.length === 0) {
-      return
-    }
-
-    const minDepth = Math.min(...selectedNestableBlocks.map((block) => block.depth))
-    const appliedDelta =
-      delta === 1
-        ? Math.min(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth + 1) - block.depth))
-        : Math.max(...selectedNestableBlocks.map((block) => normalizeBlockDepth(block.type, block.depth - 1) - block.depth))
-
-    if (appliedDelta === 0) {
-      return
-    }
-
-    if (appliedDelta > 0) {
-      const precedingBlock = operationRange.start > 0 ? draftBlocks[operationRange.start - 1] : null
-      if (!precedingBlock) {
-        console.warn('Cannot indent: no preceding block found as parent.')
-        return
-      }
-
-      const nextMinDepth = minDepth + appliedDelta
-      if (precedingBlock.depth + 1 < nextMinDepth) {
-        console.warn(`Cannot indent to depth ${nextMinDepth}: preceding block depth is ${precedingBlock.depth}. Max indent is ${precedingBlock.depth + 1}.`)
-        return
-      }
-
-      for (let index = operationRange.start; index <= operationRange.end; index += 1) {
-        const block = draftBlocks[index]
-        if (!block || !isNestableBlock(block.type)) {
-          continue
-        }
-
-        const nextBlockDepth = normalizeBlockDepth(block.type, block.depth + appliedDelta)
-
-        if (index === selectedBlockRange.start) {
-          continue
-        }
-
-        const previousBlock = draftBlocks[index - 1]
-        if (previousBlock.depth < nextBlockDepth - 1) {
-          console.warn(`Cannot indent multi-block range: block at index ${index} would have insufficient preceding block depth for its new depth ${nextBlockDepth}.`)
-          return
-        }
-      }
-    }
+    const plan = planDraftBlockDepthChange(draftBlocks, operationRange, delta)
+    if (!plan) return
 
     pushToHistory(draftBlocks)
-
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      const operationBlocks = next.slice(operationRange.start, operationRange.end + 1)
-      const rootIds = getFragmentLocalRootIds(operationBlocks)
-      const firstAdjustableRootOffset = operationBlocks.findIndex((block) => {
-        const blockId = getNormalizedBlockId(block)
-        return Boolean(blockId && rootIds.has(blockId) && isNestableBlock(block.type))
-      })
-
-      if (firstAdjustableRootOffset === -1) {
-        return previous
-      }
-
-      const firstAdjustableRootIndex = operationRange.start + firstAdjustableRootOffset
-      const firstAdjustableRoot = next[firstAdjustableRootIndex]
-      if (!firstAdjustableRoot) {
-        return previous
-      }
-
-      const placement = resolveDraftInsertionPlacement(
-        next,
-        firstAdjustableRootIndex,
-        firstAdjustableRoot.type,
-        firstAdjustableRoot.depth + appliedDelta
-      )
-
-      next.splice(
-        operationRange.start,
-        operationBlocks.length,
-        ...shiftDraftFragmentDepth(operationBlocks, placement.depth - firstAdjustableRoot.depth, placement.parentBlockId, rootIds)
-      )
-      return next
-    })
-    setActiveBlockIndex(focusIndex)
+    setDraftBlocks((previous) => planDraftBlockDepthChange(previous, operationRange, delta)?.blocks ?? previous)
+    const remap = (index: number) => remapIndexAfterSubtreeMove(index, operationRange.start, operationRange.end, plan.insertionIndex) ?? index
+    const start = remap(selectedBlockRange.start), end = remap(selectedBlockRange.end)
+    setSelectedBlockRange({ start, end })
+    setSelectionAnchorBlockId(getNormalizedBlockId(plan.blocks[start]))
+    setActiveBlockIndex(remap(focusIndex))
     setActiveCursorPosition(cursorPosition)
-    setPendingFocusBlockIndex(focusIndex)
+    setPendingFocusBlockIndex(remap(focusIndex))
     endBlockDrag()
   }, [
     activeCursorPosition,
@@ -295,17 +216,15 @@ export function useMultiBlockActions({
     endBlockDrag,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
-    isNestableBlock,
-    normalizeBlockDepth,
     pushToHistory,
-    resolveDraftInsertionPlacement,
     selectedBlockRange,
     setActiveBlockIndex,
     setActiveCursorPosition,
     notify,
     setDraftBlocks,
     setPendingFocusBlockIndex,
-    shiftDraftFragmentDepth
+    setSelectedBlockRange,
+    setSelectionAnchorBlockId
   ])
 
   const convertSelectedBlocks = useCallback((nextType: DocumentBlock['type']) => {
@@ -373,9 +292,7 @@ export function useMultiBlockActions({
     clearBlockSelection,
     draftBlocks,
     endBlockDrag,
-    normalizeBlockDepth,
     pushToHistory,
-    resolveDraftInsertionPlacement,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
