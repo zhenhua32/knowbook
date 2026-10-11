@@ -221,6 +221,10 @@
   line-height: 18px;
 }
 
+.content.page-settings {
+  scrollbar-gutter: stable;
+}
+
 :root .management-page .settings-page-header {
   flex-shrink: 0;
   min-height: 0;
