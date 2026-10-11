@@ -256,11 +256,11 @@ export function useDocumentEditorState({
     resetEditorFromDocument(null, false)
   }, [resetEditorFromDocument])
 
-  const commitHistorySnapshot = useCallback((blocks: DocumentBlockDraft[]) => {
+  const commitHistorySnapshot = useCallback((blocks: DocumentBlockDraft[], bookmarkOverride?: EditorHistoryBookmark | null) => {
     const snapshot = cloneDraftBlocks(blocks)
     const history = editHistoryRef.current
     const pointer = editHistoryPointerRef.current
-    const bookmark = captureEditorHistoryBookmark(blocks) ?? lastEditorBookmarkRef.current
+    const bookmark = bookmarkOverride ?? captureEditorHistoryBookmark(blocks) ?? lastEditorBookmarkRef.current
     if (areDraftBlockSnapshotsEqual(history[pointer]?.blocks, snapshot)) {
       if (bookmark) history[pointer].bookmark = bookmark
       return
@@ -278,7 +278,7 @@ export function useDocumentEditorState({
     setHistoryRevision((current) => current + 1)
   }, [])
 
-  const pushToHistory = useCallback((blocks: DocumentBlockDraft[]) => {
+  const pushToHistory = useCallback((blocks: DocumentBlockDraft[], bookmarkOverride?: EditorHistoryBookmark | null) => {
     if (isRestoringHistoryRef.current) {
       return
     }
@@ -288,7 +288,7 @@ export function useDocumentEditorState({
       historyDebounceTimerRef.current = null
     }
     pendingHistorySnapshotRef.current = null
-    commitHistorySnapshot(blocks)
+    commitHistorySnapshot(blocks, bookmarkOverride)
   }, [commitHistorySnapshot])
 
   const scheduleHistorySnapshot = useCallback((blocks: DocumentBlockDraft[]) => {
@@ -327,6 +327,10 @@ export function useDocumentEditorState({
         if (!pendingHistorySnapshotRef.current || areDraftBlockSnapshotsEqual(
           editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksRef.current
         )) checkpointDraft()
+      }
+      if (historyDebounceTimerRef.current) {
+        clearTimeout(historyDebounceTimerRef.current)
+        historyDebounceTimerRef.current = null
       }
       composingTarget = event.target
       composingDraftRef.current = true
@@ -616,7 +620,9 @@ export function useDocumentEditorState({
     return persistDraft(false, true)
   }, [clearAutoSaveTimer, hasPendingDraftChanges, persistDraft])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // A second beforeinput can arrive before passive effects run. Publish the
+    // pending typing snapshot as soon as its controlled value is committed.
     if (isEditing && !isComposingDraft && !isRestoringHistoryRef.current) {
       scheduleHistorySnapshot(draftBlocksState)
     }
