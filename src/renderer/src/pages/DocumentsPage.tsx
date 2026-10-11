@@ -155,6 +155,7 @@ export function DocumentsPage({
     endBlockRangeSelection: documents.endBlockRangeSelection,
     filteredSlashCommands: documents.filteredSlashCommands,
     getDraggedBlockDepthPreview: documents.getDraggedBlockDepthPreview,
+    getBlockSelectionFocusIndex: documents.getBlockSelectionFocusIndex,
     getMultiBlockOperationRange: documents.getMultiBlockOperationRange,
     getDraftBlocks: documents.getDraftBlocks,
     getVisibleBlockEntries: documents.getVisibleBlockEntries,

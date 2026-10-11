@@ -48,6 +48,7 @@ export function useBlockSelectionState({
   const [isBlockRangeSelecting, setIsBlockRangeSelecting] = useState(false)
   const [selectedBlockConversionType, setSelectedBlockConversionType] = useState<DocumentBlock['type']>('paragraph')
   const blockMouseDownOrigin = useRef<number | null>(null)
+  const selectionFocusBlockId = useRef<string | null>(null)
 
   const getVisibleBlockEntries = useCallback((blocks: DocumentBlockDraft[]): VisibleBlockEntry[] => {
     return getVisibleDocumentEntries(blocks, { collapsedIds: collapsedBlockIds, focusedHeadingId })
@@ -149,9 +150,18 @@ export function useBlockSelectionState({
 
   const clearBlockSelection = useCallback(() => {
     setIsBlockRangeSelecting(false)
+    selectionFocusBlockId.current = null
     setSelectionAnchorBlockId(null)
     setSelectedBlockRange(null)
   }, [])
+
+  const getBlockSelectionFocusIndex = useCallback(() => {
+    if (!selectedBlockRange) return null
+    const entries = getSelectedVisibleBlockEntries(selectedBlockRange)
+    return entries.find(({ block }) => getNormalizedBlockId(block) === selectionFocusBlockId.current)?.index
+      ?? entries.find(({ index }) => index === activeBlockIndex)?.index
+      ?? entries.at(-1)?.index ?? null
+  }, [activeBlockIndex, getSelectedVisibleBlockEntries, selectedBlockRange])
 
   const endBlockRangeSelection = useCallback(() => {
     blockMouseDownOrigin.current = null
@@ -166,6 +176,7 @@ export function useBlockSelectionState({
     const visibleEntries = getVisibleBlockEntries(draftBlocks)
     const targetVisibleIndex = visibleEntries.findIndex((entry) => entry.index === index)
     const targetBlockId = getNormalizedBlockId(draftBlocks[index])
+    selectionFocusBlockId.current = targetBlockId
     const resolvedAnchorId = selectionAnchorBlockId ??
       (activeBlockIndex !== null ? getNormalizedBlockId(draftBlocks[activeBlockIndex]) : null)
 
@@ -223,6 +234,7 @@ export function useBlockSelectionState({
 
         if (startEntry && endEntry) {
           setIsBlockRangeSelecting(true)
+          selectionFocusBlockId.current = getNormalizedBlockId(draftBlocks[index])
           setSelectionAnchorBlockId(originBlockId ?? null)
           setSelectedBlockRange({ start: startEntry.index, end: endEntry.index })
           onActiveBlockChange(index)
@@ -261,10 +273,11 @@ export function useBlockSelectionState({
     const start = section?.index ?? 0
     const end = (section?.end ?? draftBlocks.length) - 1
     const firstBlockId = getNormalizedBlockId(draftBlocks[start])
+    selectionFocusBlockId.current = getNormalizedBlockId(getVisibleBlockEntries(draftBlocks).filter(({ index }) => index >= start && index <= end).at(-1)?.block)
     setSelectionAnchorBlockId(firstBlockId)
     setSelectedBlockRange({ start, end })
     onActiveBlockChange(start)
-  }, [draftBlocks, focusedHeadingId, getNormalizedBlockId, onActiveBlockChange])
+  }, [draftBlocks, focusedHeadingId, getNormalizedBlockId, getVisibleBlockEntries, onActiveBlockChange])
 
   const getMultiBlockOperationRange = useCallback((range: BlockSelectionRange): BlockSelectionRange => {
     if (range.start === range.end) {
@@ -313,6 +326,7 @@ export function useBlockSelectionState({
     endBlockRangeSelection,
     getMultiBlockInteractionGuard,
     getMultiBlockOperationRange,
+    getBlockSelectionFocusIndex,
     getVisibleBlockCountInRange,
     getVisibleBlockEntries,
     getVisibleBlocks,

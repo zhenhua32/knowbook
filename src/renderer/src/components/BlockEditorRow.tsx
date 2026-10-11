@@ -106,6 +106,8 @@ export type BlockEditorRowProps = {
   duplicateSelectedBlocks: () => void
   duplicateDraftBlock: (index: number) => void
   selectBlockRange: (index: number, extendSelection?: boolean) => void
+  getBlockSelectionFocusIndex?: () => number | null
+  clearBlockSelection?: () => void
   selectAllBlocks: () => void
   notifyBlockMouseDown: (index: number) => void
   handleBlockMouseEnter: (index: number, buttonsHeld: boolean) => void
@@ -188,6 +190,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     duplicateSelectedBlocks,
     duplicateDraftBlock,
     selectBlockRange,
+    getBlockSelectionFocusIndex,
+    clearBlockSelection,
     selectAllBlocks,
     notifyBlockMouseDown,
     handleBlockMouseEnter,
@@ -251,8 +255,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     props.checkpointDraft?.()
     updateDraftBlock(index, { content: result.content })
   }
-  const getAdjacentVisibleIndex = (delta: -1 | 1) => {
-    for (let next = index + delta; next >= 0 && next < draftBlockCount; next += delta) {
+  const getAdjacentVisibleIndex = (delta: -1 | 1, fromIndex = index) => {
+    for (let next = fromIndex + delta; next >= 0 && next < draftBlockCount; next += delta) {
       if (blockTextareaRefs.current[next]) return next
     }
     return null
@@ -672,6 +676,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 if (event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
                   event.preventDefault()
                   selectBlockRange(index, true)
+                } else {
+                  clearBlockSelection?.()
                 }
               }}
               onClick={(event) => {
@@ -725,6 +731,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     return
                   }
                 }
+                const blockSelectionKey = event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
+                  (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+                const moveBlockKey = event.altKey && !event.shiftKey && !event.metaKey && !event.ctrlKey &&
+                  (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+                if (selectedBlockRange && !moveBlockKey && (!blockSelectionKey || event.currentTarget.selectionStart !== event.currentTarget.selectionEnd) &&
+                    ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+                  clearBlockSelection?.()
+                }
                 // Ctrl/Cmd+A: select all blocks when block is empty or all text already selected
                 if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a' && !event.shiftKey && !event.altKey) {
                   const el = event.currentTarget
@@ -737,6 +751,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     el.setSelectionRange(el.value.length, el.value.length)
                     return
                   }
+                  clearBlockSelection?.()
                 }
 
                 // Unmodified arrows cross blocks only at an absolute text boundary.
@@ -765,30 +780,33 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 }
 
                 // Shift+ArrowUp/Down: extend block selection
-                if (event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey &&
-                    (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+                if (blockSelectionKey) {
                   const el = event.currentTarget
                   const atTop = el.selectionStart === 0 && el.selectionEnd === 0
                   const atBottom = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
                   const wouldLeaveBounds = (event.key === 'ArrowUp' && atTop) || (event.key === 'ArrowDown' && atBottom)
-                  if (wouldLeaveBounds || (selectedBlockRange && selectedBlockRange.start !== selectedBlockRange.end)) {
-                    event.preventDefault()
-                    const targetIndex = getAdjacentVisibleIndex(event.key === 'ArrowUp' ? -1 : 1)
+                  const focusIndex = isSelected ? getBlockSelectionFocusIndex?.() ?? null : null
+                  if (el.selectionStart === el.selectionEnd && (wouldLeaveBounds || focusIndex !== null)) {
+                    const backwards = event.key === 'ArrowUp'
+                    const targetIndex = getAdjacentVisibleIndex(backwards ? -1 : 1, focusIndex ?? index)
                     if (targetIndex !== null) {
+                      event.preventDefault()
                       selectBlockRange(targetIndex, true)
+                      const target = blockTextareaRefs.current[targetIndex]!
+                      focusBlockTextarea(target)
+                      const position = backwards ? 0 : target.value.length
+                      target.setSelectionRange(position, position)
+                      captureBlockCursor(targetIndex, target)
+                    } else if (focusIndex !== null) {
+                      // Keep the range intact at the first/last visible block.
+                      event.preventDefault()
                     }
                     return
                   }
                 }
 
                 // Alt+Arrow: move block
-                if (
-                  event.altKey &&
-                  !event.shiftKey &&
-                  !event.metaKey &&
-                  !event.ctrlKey &&
-                  (event.key === 'ArrowUp' || event.key === 'ArrowDown')
-                ) {
+                if (moveBlockKey) {
                   event.preventDefault()
                   if (selectedBlockRange && isSelected && selectedBlockCount > 1) {
                     moveSelectedBlocks(event.key === 'ArrowUp' ? -1 : 1)
@@ -918,7 +936,9 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   insertDraftBlockAt(index + 1, index)
                 }
               }}
-              onKeyUp={(event) => captureBlockCursor(index, event.currentTarget)}
+              onKeyUp={(event) => {
+                if (event.currentTarget === document.activeElement) captureBlockCursor(index, event.currentTarget)
+              }}
               onSelect={(event) => captureBlockCursor(index, event.currentTarget)}
               rows={1}
               value={block.content}
