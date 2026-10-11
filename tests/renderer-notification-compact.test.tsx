@@ -194,6 +194,7 @@ async function withHost(run: (context: Context) => Promise<void>, options: {
   const unmount = async () => { if (mounted) { await act(async () => root.unmount()); mounted = false } }
   try {
     await act(async () => { render(); await Promise.resolve() })
+    await waitForRenderer(() => subscriptions.backup === 1, 'The notification host must connect its asynchronous backup subscription before scenario assertions')
     await run({ document, style, observers, mediaQueries, subscriptions,
       mediaListenerCount: () => mediaListeners.size, resizeListenerCount: () => resizeListeners.size,
       summary: () => {
