@@ -300,7 +300,11 @@ export function DocumentsSection({
         ref={viewport.scrollRef}
       >
         <div className="document-sticky-header" ref={viewport.headerRef}>
-          <DocumentPreviewHeader {...previewHeaderProps} />
+          <DocumentPreviewHeader {...previewHeaderProps}
+            onRename={previewHeaderProps.onRename ? opener => {
+              const restore = viewport.captureLayoutPosition()
+              previewHeaderProps.onRename?.(opener, restore)
+            } : undefined} />
           {documentReady ? <DocumentNavigationBar key={selectedDocument?.id}
             outline={outlinePanelProps} search={blockSearchPanelProps}
             activeIndex={viewport.activeHeadingIndex} progress={viewport.progress}

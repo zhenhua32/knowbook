@@ -17,6 +17,14 @@ import {
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 type EditSnapshot = { blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null }
 
+export type DocumentRenameTarget = Readonly<{ documentId: string; session: number; title: string }>
+export type RenameTitleResult =
+  | { status: 'saved'; title: string }
+  | { status: 'failed'; message: string }
+  | { status: 'stale' }
+  | { status: 'busy' }
+type TitleIntent = { target: DocumentRenameTarget; title: string; onFailure: (message: string) => void }
+
 function cloneDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   return blocks.map((block) => ({
     ...block,
@@ -78,6 +86,7 @@ export function useDocumentEditorState({
   const editorSessionRef = useRef(0)
   const composingDraftRef = useRef(false)
   const pendingSaveRef = useRef<{ documentId: string; session: number; promise: Promise<boolean> } | null>(null)
+  const pendingRenameRef = useRef<{ target: DocumentRenameTarget; title: string; promise: Promise<RenameTitleResult> } | null>(null)
   const mountedRef = useRef(true)
   const draftTitleRef = useRef(draftTitle)
   const draftSummaryRef = useRef(draftSummary)
@@ -404,12 +413,13 @@ export function useDocumentEditorState({
     }, 0)
   }, [commitHistorySnapshot, setDraftBlocks])
 
-  const persistDraft = useCallback(async (silentValidationFailure = false, flushLatest = false): Promise<boolean> => {
+  const persistDraft = useCallback(async (silentValidationFailure = false, flushLatest = false, intent?: TitleIntent): Promise<boolean> => {
     const documentId = selectedDocumentIdRef.current
     const session = editorSessionRef.current
     const isCurrentSession = () => mountedRef.current && selectedDocumentIdRef.current === documentId
       && editorSessionRef.current === session
-    if (!documentId || !isCurrentSession()) return false
+    if (!documentId || !isCurrentSession()
+      || (intent && (intent.target.documentId !== documentId || intent.target.session !== session))) return false
 
     do {
       // Autosave, Save, and navigation share one writer. A waiter checks the
@@ -418,23 +428,36 @@ export function useDocumentEditorState({
         const pending = pendingSaveRef.current
         const succeeded = await pending.promise
         if (!isCurrentSession()) return false
-        if (!succeeded && pending.documentId === documentId && pending.session === session) return false
+        if (!succeeded && pending.documentId === documentId && pending.session === session) {
+          intent?.onFailure(ui.documentSaveFailed)
+          return false
+        }
       }
       const detail = selectedDocumentRef.current
       if (!isCurrentSession() || !detail || detail.id !== documentId || composingDraftRef.current) return false
-      const title = draftTitleRef.current
+      const baseTitle = draftTitleRef.current
+      const title = intent?.title ?? baseTitle
       const summary = draftSummaryRef.current
       const blocks = draftBlocksRef.current
       const normalizedBlocks = normalizeDraftBlocks(blocks)
       const hasChanges = normalizeComparableDocumentTitle(title) !== normalizeComparableDocumentTitle(detail.title)
         || summary.trim() !== detail.summary.trim()
         || !areDocumentDraftBlocksEqual(normalizedBlocks, normalizeDraftBlocks(detail.blocks.map(toDraftBlock)))
-      if (!hasChanges) return true
+      if (!hasChanges) {
+        if (intent && draftTitleRef.current === baseTitle) {
+          draftTitleRef.current = detail.title
+          setDraftTitle(detail.title)
+        }
+        return true
+      }
 
-      const failedSnapshot = { documentId, title, summary, blocks }
+      // A rename candidate belongs to its dialog until acknowledged. Failed
+      // saves must still describe the actual shared draft and pause its timer.
+      const failedSnapshot = { documentId, title: baseTitle, summary, blocks }
       const validation = validateBlockTreeStructure(normalizedBlocks)
       if (!validation.valid) {
         setFailedSave(failedSnapshot)
+        intent?.onFailure(ui.cannotSaveInvalidBlockTree(validation.errors))
         if (!silentValidationFailure) {
           console.error('Tree structure validation failed:', validation.errors)
           onMessage(ui.cannotSaveInvalidBlockTree(validation.errors), 'error')
@@ -450,11 +473,14 @@ export function useDocumentEditorState({
             expectedUpdatedAt: detail.updatedAt, title, summary, blocks: normalizedBlocks
           })
           const refreshedDetail = updateResult.document
+          if (intent && (!refreshedDetail || refreshedDetail.id !== documentId)) {
+            throw new Error(ui.documentSaveFailed)
+          }
           if (isCurrentSession()) {
             selectedDocumentRef.current = refreshedDetail
             onSelectedDocumentChange(refreshedDetail)
             if (refreshedDetail) {
-              if (draftTitleRef.current === title) {
+              if (draftTitleRef.current === baseTitle) {
                 draftTitleRef.current = refreshedDetail.title
                 setDraftTitle(refreshedDetail.title)
               }
@@ -487,6 +513,7 @@ export function useDocumentEditorState({
         } catch (error) {
           if (isCurrentSession()) {
             setFailedSave(failedSnapshot)
+            intent?.onFailure(getErrorMessage(error, ui.documentSaveFailed))
             if (!(error instanceof Error && error.message === 'Document not found')) {
               onMessage(getErrorMessage(error, ui.documentSaveFailed), 'error')
             }
@@ -505,6 +532,43 @@ export function useDocumentEditorState({
     } while (flushLatest)
     return true
   }, [onHomeDataChange, onMessage, onSelectedDocumentChange, ui])
+
+  const getRenameTarget = useCallback((): DocumentRenameTarget | null => {
+    const documentId = selectedDocumentIdRef.current
+    if (!mountedRef.current || !documentId || selectedDocumentRef.current?.id !== documentId) return null
+    return { documentId, session: editorSessionRef.current, title: draftTitleRef.current }
+  }, [])
+
+  const renameTitle = useCallback((target: DocumentRenameTarget, name: string): Promise<RenameTitleResult> => {
+    const isCurrent = () => mountedRef.current && selectedDocumentIdRef.current === target.documentId
+      && selectedDocumentRef.current?.id === target.documentId && editorSessionRef.current === target.session
+    if (!isCurrent()) return Promise.resolve({ status: 'stale' })
+    const title = normalizeComparableDocumentTitle(name)
+    const pending = pendingRenameRef.current
+    if (pending && pending.target.documentId === target.documentId && pending.target.session === target.session) {
+      return pending.title === title ? pending.promise : Promise.resolve({ status: 'busy' })
+    }
+    if (composingDraftRef.current) return Promise.resolve({ status: 'busy' })
+    // Confirming the opening name must not flush unrelated edits or cancel
+    // their existing autosave debounce.
+    if (title === normalizeComparableDocumentTitle(target.title)
+      || title === normalizeComparableDocumentTitle(draftTitleRef.current)) {
+      return Promise.resolve({ status: 'saved', title: draftTitleRef.current })
+    }
+    clearAutoSaveTimer()
+    const operation = { target, title, promise: Promise.resolve({ status: 'stale' } as RenameTitleResult) }
+    operation.promise = Promise.resolve().then(async (): Promise<RenameTitleResult> => {
+      if (!isCurrent()) return { status: 'stale' }
+      let message = ui.documentSaveFailed
+      const saved = await persistDraft(false, false, { target, title, onFailure: failure => { message = failure } })
+      if (!isCurrent()) return { status: 'stale' }
+      return saved ? { status: 'saved', title: selectedDocumentRef.current!.title } : { status: 'failed', message }
+    }).finally(() => {
+      if (pendingRenameRef.current === operation) pendingRenameRef.current = null
+    })
+    pendingRenameRef.current = operation
+    return operation.promise
+  }, [clearAutoSaveTimer, persistDraft, ui.documentSaveFailed])
 
   const saveDocument = useCallback(async () => {
     clearAutoSaveTimer()
@@ -595,6 +659,7 @@ export function useDocumentEditorState({
     flushPendingChanges,
     getDraftBlocks,
     getDraftMarkdownExport,
+    getRenameTarget,
     hasPendingDraftChanges,
     isEditing,
     isSaving,
@@ -602,6 +667,7 @@ export function useDocumentEditorState({
     mdCopyFlash,
     pushToHistory,
     redoEdit,
+    renameTitle,
     saveDocument,
     saveDocumentAsMarkdown,
     saveStatus,

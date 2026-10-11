@@ -56,7 +56,7 @@ function transitioning(dialog: HTMLElement): boolean {
 export function useDialogCloseFocus() {
   const current = useRef<{ cancel: () => void; close: () => void } | null>(null)
   useLayoutEffect(() => () => { current.current?.close() }, [])
-  return useCallback((dialog: HTMLDialogElement, opener: HTMLElement | null) => {
+  return useCallback((dialog: HTMLDialogElement, opener: HTMLElement | null, canReturnFocus: () => boolean = () => true) => {
     current.current?.cancel()
     const owner = dialog.ownerDocument, view = owner.defaultView!
     const openerModal = opener?.closest<HTMLElement>(modalSelector) ?? null
@@ -111,7 +111,7 @@ export function useDialogCloseFocus() {
       closed = true
       stopOpen()
       const active = owner.activeElement
-      const canReturn = owned && current.current === session && owner.hasFocus() && !foreignModal()
+      const canReturn = owned && canReturnFocus() && current.current === session && owner.hasFocus() && !foreignModal()
         && (active === owner.body || belongsTo(active, dialog))
       // Native close also restores its saved opener, even after blur. Block
       // only that exact target while focus still belongs to the old scope.
@@ -133,7 +133,7 @@ export function useDialogCloseFocus() {
       const restore = () => {
         if (!pending || current.current !== session) return
         const active = owner.activeElement
-        const allowed = owner.hasFocus() && !foreignModal() && !!opener && visible(opener)
+        const allowed = canReturnFocus() && owner.hasFocus() && !foreignModal() && !!opener && visible(opener)
           && !opener.matches(':disabled, [aria-disabled="true"]')
           && (active === owner.body || active === opener || dialog.contains(active))
         cancel()

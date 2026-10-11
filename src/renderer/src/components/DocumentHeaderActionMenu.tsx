@@ -22,6 +22,7 @@ type DocumentHeaderActionMenuProps = {
   moveTargetId: string
   moveOptions: MoveOption[]
   onClose: () => void
+  onRename?: () => void
   onCopyMarkdown: () => void
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
@@ -98,6 +99,9 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
       >
         <div className="context-menu-section">
           <div className="context-menu-group">
+            {props.onRename && <button className="context-menu-item" onClick={() => runAndClose(props.onRename!)} type="button">
+              {isZh ? '重命名文档' : 'Rename document'}
+            </button>}
             <button className="context-menu-item" onClick={() => runAndClose(openSaveDocumentTemplate)} type="button">
               {isZh ? '保存为模板' : 'Save as template'}
             </button>

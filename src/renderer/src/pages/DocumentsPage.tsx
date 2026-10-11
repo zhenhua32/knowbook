@@ -17,10 +17,13 @@ import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPrese
 import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
 import { DocumentsSection } from '../sections/DocumentsSection'
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments'
+import { useDocumentRenameOpening } from './documentRenameOpening'
+import { ErrorBoundary } from '../components/ErrorBoundary'
 
 const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
 const DocumentMarkdownSourceDialog = lazy(() => import('../components/DocumentMarkdownSourceDialog'))
+const DocumentRenameDialog = lazy(() => import('../components/DocumentRenameDialog'))
 
 type DocumentsPageProps = {
   onOpenHistory?: () => void
@@ -59,6 +62,7 @@ export function DocumentsPage({
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
   const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
   const attachments = useDocumentAttachments(documents, isZh)
+  const rename = useDocumentRenameOpening(documents.getRenameTarget)
 
   const selectionAi = useDocumentSelectionAiState({
     aiEnabled: aiConfig.enabled,
@@ -373,7 +377,7 @@ export function DocumentsPage({
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
-        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
+        previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onRename: rename.open, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
           onEditMarkdownSource: () => {
             if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
           } }}
@@ -385,6 +389,11 @@ export function DocumentsPage({
         visibleEditorRows={visibleEditorRows}
       />}
       </MarkdownNavigationContext.Provider>
+
+      {rename.opening && <ErrorBoundary onNavigate={rename.opening.invalidate} navigateLabel={isZh ? '关闭' : 'Close'}>
+        <Suspense fallback={null}><DocumentRenameDialog key={rename.opening.key}
+          opening={rename.opening} isZh={isZh} onRename={name => documents.renameTitle(rename.opening!.target, name)} /></Suspense>
+      </ErrorBoundary>}
 
       {sourceEditor && sourceEditor.documentId === documents.selectedDocumentId && <Suspense fallback={null}>
         <DocumentMarkdownSourceDialog key={sourceEditor.documentId} blocks={sourceEditor.blocks} isZh={isZh}

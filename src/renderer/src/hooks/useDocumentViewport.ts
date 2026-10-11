@@ -21,6 +21,11 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
   const sessionRef = useRef<ViewportSession | null>(null)
   const modePositionRef = useRef<DocumentReadingPosition | null>(null)
   const consumedNavigationRef = useRef<typeof navigation>(null)
+  const mountedRef = useRef(true)
+  const layoutGenerationRef = useRef(0)
+  const layoutRestoreRef = useRef<{ session: ViewportSession; container: HTMLElement; generation: number; position: DocumentReadingPosition } | null>(null)
+  const scheduleRef = useRef<(() => void) | null>(null)
+  const [layoutRevision, setLayoutRevision] = useState(0)
   const revealBlockRef = useRef(onRevealBlock)
   revealBlockRef.current = onRevealBlock
   const [progress, setProgress] = useState(0)
@@ -56,6 +61,33 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
     if (sessionRef.current) sessionRef.current.position = modePositionRef.current
   }, [readPosition])
 
+  // A dialog opening only captures a local lease. It must not overwrite the
+  // mode-switch cache when the user cancels or continues reading elsewhere.
+  const captureLayoutPosition = useCallback(() => {
+    const session = sessionRef.current
+    const container = scrollRef.current
+    const position = readPosition()
+    const generation = ++layoutGenerationRef.current
+    let consumed = false
+    return () => {
+      if (consumed) return
+      consumed = true
+      if (!mountedRef.current || !session || !container?.isConnected || !position
+        || sessionRef.current !== session || scrollRef.current !== container || layoutGenerationRef.current !== generation) return
+      layoutRestoreRef.current = { session, container, generation, position }
+      setLayoutRevision(revision => revision + 1)
+    }
+  }, [readPosition])
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      layoutGenerationRef.current += 1
+      layoutRestoreRef.current = null
+    }
+  }, [])
+
   useLayoutEffect(() => () => {
     // Capture before page unmount removes the DOM, even if its last scroll RAF
     // has not run yet. Document switches keep using their cached session below.
@@ -71,6 +103,8 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
   }, [viewportTop])
 
   useLayoutEffect(() => {
+    layoutGenerationRef.current += 1
+    layoutRestoreRef.current = null
     const previous = sessionRef.current
     if (previous?.position) saveDocumentPosition(previous.documentId, previous.position)
     if (scrollRef.current) scrollRef.current.scrollTop = 0
@@ -86,6 +120,8 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
   }, [documentId])
 
   useLayoutEffect(() => {
+    layoutGenerationRef.current += 1
+    layoutRestoreRef.current = null
     const position = modePositionRef.current
     if (position && sessionRef.current) {
       sessionRef.current.restoring = { position, until: Date.now() + 1500 }
@@ -93,8 +129,20 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
     modePositionRef.current = null
   }, [reading])
 
+  useLayoutEffect(() => {
+    const restore = layoutRestoreRef.current
+    layoutRestoreRef.current = null
+    if (!restore || !mountedRef.current || restore.session !== sessionRef.current
+      || restore.container !== scrollRef.current || !restore.container.isConnected
+      || restore.generation !== layoutGenerationRef.current) return
+    restore.session.restoring = { position: restore.position, until: Date.now() + 1500 }
+    scheduleRef.current?.()
+  }, [layoutRevision])
+
   useEffect(() => {
     if (!navigation || navigation.documentId !== documentId || navigation === consumedNavigationRef.current) return
+    layoutGenerationRef.current += 1
+    layoutRestoreRef.current = null
     if (sessionRef.current) sessionRef.current.restoring = null
     const frame = requestAnimationFrame(() => {
       consumedNavigationRef.current = navigation
@@ -117,6 +165,8 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
 
   useEffect(() => {
     if (!highlightedBlockId) return
+    layoutGenerationRef.current += 1
+    layoutRestoreRef.current = null
     if (sessionRef.current) sessionRef.current.restoring = null
     const frame = requestAnimationFrame(() => {
       const row = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>('[data-block-id]') ?? [])
@@ -168,12 +218,17 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
       setActiveHeadingIndex(current)
     }
     const schedule = () => { if (frame === null) frame = requestAnimationFrame(update) }
+    scheduleRef.current = schedule
     const onScroll = () => {
       schedule()
       if (saveTimer !== null) clearTimeout(saveTimer)
       saveTimer = setTimeout(persist, 250)
     }
-    const cancelRestoration = () => { session.restoring = null }
+    const cancelRestoration = () => {
+      layoutGenerationRef.current += 1
+      layoutRestoreRef.current = null
+      session.restoring = null
+    }
     const onPageHide = () => {
       // Capture the final frame even when the page closes before its scroll RAF.
       if (!session.restoring) session.position = readPosition()
@@ -206,8 +261,9 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
       container.removeEventListener('keydown', cancelRestoration)
       window.removeEventListener('pagehide', onPageHide)
       if (frame !== null) cancelAnimationFrame(frame)
+      if (scheduleRef.current === schedule) scheduleRef.current = null
     }
   }, [documentId, reading, readPosition, scrollToElement, viewportTop])
 
-  return { scrollRef, headerRef, contentRef, progress, activeHeadingIndex, capturePosition }
+  return { scrollRef, headerRef, contentRef, progress, activeHeadingIndex, capturePosition, captureLayoutPosition }
 }

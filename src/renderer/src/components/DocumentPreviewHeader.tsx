@@ -12,6 +12,7 @@ type DocumentPreviewHeaderProps = {
   isZh: boolean
   selectedDocumentTitle: string | null
   selectedDocumentId: string | null
+  onRename?: (opener: HTMLElement, restorePosition?: () => void) => void
   isPinned: boolean
   onTogglePin: () => void
   mdCopyFlash: boolean
@@ -111,9 +112,14 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
               <StarIcon filled={isPinned} />
             </DocumentHeaderIconButton>
           ) : null}
-          <span className="document-header-title" title={selectedDocumentTitle ?? ui.selectDocument}>
+          {hasDocument && props.onRename ? <button className="document-header-title-button" type="button"
+            aria-label={isZh ? '重命名文档' : 'Rename document'} aria-haspopup="dialog" disabled={detailLoading}
+            onClick={event => props.onRename?.(event.currentTarget)}>
+            <span className="document-header-title" title={selectedDocumentTitle ?? ui.selectDocument}>{selectedDocumentTitle ?? ui.selectDocument}</span>
+            <svg className="document-header-rename-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z" /><path d="m13 6 5 5" /></svg>
+          </button> : <span className="document-header-title" title={selectedDocumentTitle ?? ui.selectDocument}>
             {selectedDocumentTitle ?? ui.selectDocument}
-          </span>
+          </span>}
         </div>
         {hasHeaderStatus || (hasDocument && saveStatus) ? (
           <div className="document-header-status">
@@ -178,6 +184,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           moveTargetId={moveTargetId}
           moveOptions={moveOptions}
           onClose={() => { setActionMenuOpen(false); actionMenuTrigger.current?.focus({ preventScroll: true }) }}
+          onRename={props.onRename && !detailLoading ? () => { if (actionMenuTrigger.current) props.onRename?.(actionMenuTrigger.current) } : undefined}
           onCopyMarkdown={onCopyMarkdown}
           onSaveMarkdown={onSaveMarkdown}
           onCheckLinks={onCheckLinks}
