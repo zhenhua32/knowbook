@@ -580,14 +580,17 @@ test('sandbox frame uses only allow-scripts, one-time MessageChannel, exact iden
 
 test('renderer mounts a hidden staging host for iframe ready handshakes', () => {
   const host = readFileSync(new URL('../src/renderer/src/components/PluginUiPreparationHost.tsx', import.meta.url), 'utf8')
+  const batch = readFileSync(new URL('../src/renderer/src/components/PluginUiPreparationBatch.tsx', import.meta.url), 'utf8')
   const app = readFileSync(new URL('../src/renderer/src/App.tsx', import.meta.url), 'utf8')
   assert.match(app, /<PluginUiPreparationHost \/>/)
   assert.match(host, /onPluginUiPreparation/)
   assert.match(host, /reportPluginUiPreparation/)
-  assert.match(host, /sandbox="allow-scripts"/)
-  assert.match(host, /src=\{frame\.src\}/)
-  assert.equal(host.includes('srcDoc='), false)
-  assert.match(host, /new MessageChannel\(\)/)
+  assert.match(batch, /sandbox="allow-scripts"/)
+  assert.match(batch, /src=\{frame\.src\}/)
+  assert.equal(batch.includes('srcDoc='), false)
+  assert.match(batch, /new MessageChannel\(\)/)
+  assert.match(host, /import\('\.\/PluginUiPreparationBatch'\)/)
+  assert.equal(host.includes("import { readPluginFrameReadiness }"), false)
   assert.match(host, /Plugin iframe ready handshake timed out/)
 })
 

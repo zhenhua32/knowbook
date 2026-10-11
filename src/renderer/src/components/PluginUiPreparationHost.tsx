@@ -1,28 +1,87 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react'
 import type {
-  PluginUiPreparationFrame,
   PluginUiPreparationRequest,
   PluginUiPreparationResult
 } from '@shared/plugin-ui'
-import { readPluginFrameReadiness } from '@shared/plugin-frame-protocol'
+import type { PluginUiPreparationBatchProps } from './PluginUiPreparationBatch'
 
 const FRAME_READY_TIMEOUT_MS = 8_000
+const HANDSHAKE_TIMEOUT_ERROR = 'Plugin iframe ready handshake timed out.'
+type BatchModule = { default: ComponentType<PluginUiPreparationBatchProps> }
+const loadPreparationBatch = () => import('./PluginUiPreparationBatch')
+type PendingRequest = { request: PluginUiPreparationRequest; deadline: number; timer: ReturnType<typeof setTimeout> | null }
 
-export function PluginUiPreparationHost() {
+export function PluginUiPreparationHost({ loadBatch = loadPreparationBatch }: { loadBatch?: () => Promise<BatchModule> }) {
   const [requests, setRequests] = useState<PluginUiPreparationRequest[]>([])
-
-  useEffect(() => window.knowbook.onPluginUiPreparation((request) => {
-    setRequests((current) => [
-      ...current.filter((candidate) => candidate.requestId !== request.requestId),
-      request
-    ])
-  }), [])
+  const [Batch, setBatch] = useState<BatchModule['default'] | null>(null)
+  const pending = useRef(new Map<string, PendingRequest>())
+  const completed = useRef(new Set<string>())
+  const loading = useRef<Promise<BatchModule> | null>(null)
+  const mounted = useRef(false)
 
   const finish = useCallback((result: PluginUiPreparationResult) => {
-    void window.knowbook.reportPluginUiPreparation(result).finally(() => {
-      setRequests((current) => current.filter((request) => request.requestId !== result.requestId))
-    })
+    const entry = pending.current.get(result.requestId)
+    if (!mounted.current || !entry) return
+    pending.current.delete(result.requestId)
+    if (entry.timer !== null) clearTimeout(entry.timer)
+    completed.current.add(result.requestId)
+    // Keep replay protection bounded over long-running workspaces.
+    if (completed.current.size > 128) completed.current.delete(completed.current.values().next().value!)
+    setRequests((current) => current.filter((request) => request.requestId !== result.requestId))
+    // The main-process deadline can already have expired, or the window can be closing.
+    const report = result.status === 'ready' && Date.now() >= entry.deadline
+      ? { ...result, status: 'failed' as const, error: HANDSHAKE_TIMEOUT_ERROR }
+      : result
+    void window.knowbook.reportPluginUiPreparation(report).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    const armDeadline = (entry: PendingRequest) => {
+      entry.timer = setTimeout(() => finish({
+        requestId: entry.request.requestId, identity: entry.request.identity,
+        status: 'failed', error: HANDSHAKE_TIMEOUT_ERROR
+      }), Math.max(0, entry.deadline - Date.now()))
+    }
+    // StrictMode replays this subscription; preserve the original request deadline.
+    for (const entry of pending.current.values()) armDeadline(entry)
+    const unsubscribe = window.knowbook.onPluginUiPreparation((request) => {
+      if (pending.current.has(request.requestId) || completed.current.has(request.requestId)) return
+      const entry: PendingRequest = { request, deadline: Date.now() + FRAME_READY_TIMEOUT_MS, timer: null }
+      pending.current.set(request.requestId, entry)
+      if (request.frames.length === 0) {
+        finish({ requestId: request.requestId, identity: request.identity, status: 'ready' })
+      } else {
+        armDeadline(entry)
+        setRequests((current) => [...current, request])
+      }
+    })
+    return () => {
+      mounted.current = false
+      unsubscribe()
+      for (const entry of pending.current.values()) {
+        if (entry.timer !== null) clearTimeout(entry.timer)
+        entry.timer = null
+      }
+    }
+  }, [finish])
+
+  useEffect(() => {
+    if (requests.length === 0 || Batch) return
+    let active = true
+    const promise = loading.current ??= Promise.resolve().then(loadBatch)
+    void promise.then((module) => {
+      if (active) setBatch(() => module.default)
+    }).catch(() => {
+      if (loading.current === promise) loading.current = null
+      if (!active) return
+      for (const { request } of [...pending.current.values()]) finish({
+        requestId: request.requestId, identity: request.identity,
+        status: 'failed', error: 'Plugin iframe preparation component failed to load.'
+      })
+    })
+    return () => { active = false }
+  }, [Batch, finish, loadBatch, requests.length])
 
   return (
     <div
@@ -30,114 +89,9 @@ export function PluginUiPreparationHost() {
       data-plugin-ui-preparation-host="true"
       style={{ height: 1, left: -10_000, opacity: 0, overflow: 'hidden', pointerEvents: 'none', position: 'fixed', top: 0, width: 1 }}
     >
-      {requests.map((request) => (
-        <PluginUiPreparationBatch finish={finish} key={request.requestId} request={request} />
+      {Batch && requests.map((request) => (
+        <Batch finish={finish} key={request.requestId} request={request} />
       ))}
     </div>
-  )
-}
-
-function PluginUiPreparationBatch({
-  finish,
-  request
-}: {
-  finish: (result: PluginUiPreparationResult) => void
-  request: PluginUiPreparationRequest
-}) {
-  const ready = useRef(new Set<string>())
-  const completed = useRef(false)
-  const complete = useCallback((status: 'ready' | 'failed', error?: string) => {
-    if (completed.current) return
-    completed.current = true
-    finish({
-      requestId: request.requestId,
-      identity: request.identity,
-      status,
-      ...(error ? { error: error.slice(0, 2_000) } : {})
-    })
-  }, [finish, request.identity, request.requestId])
-
-  useEffect(() => {
-    if (request.frames.length === 0) {
-      complete('ready')
-      return
-    }
-    const timeout = setTimeout(() => complete('failed', 'Plugin iframe ready handshake timed out.'), FRAME_READY_TIMEOUT_MS)
-    return () => clearTimeout(timeout)
-  }, [complete, request.frames.length])
-
-  const markReady = (frame: PluginUiPreparationFrame) => {
-    ready.current.add(`${frame.slot}\0${frame.contributionId}`)
-    if (ready.current.size === request.frames.length) complete('ready')
-  }
-
-  return request.frames.map((frame) => (
-    <PluginUiPreparationFrameView
-      fail={(error) => complete('failed', error)}
-      frame={frame}
-      identity={request.identity}
-      key={`${frame.slot}:${frame.contributionId}`}
-      ready={() => markReady(frame)}
-    />
-  ))
-}
-
-function PluginUiPreparationFrameView({
-  fail,
-  frame,
-  identity,
-  ready
-}: {
-  fail: (error: string) => void
-  frame: PluginUiPreparationFrame
-  identity: PluginUiPreparationRequest['identity']
-  ready: () => void
-}) {
-  const frameRef = useRef<HTMLIFrameElement>(null)
-  const portRef = useRef<MessagePort | null>(null)
-  useEffect(() => () => {
-    portRef.current?.close()
-    portRef.current = null
-  }, [])
-
-  const connect = () => {
-    const frameWindow = frameRef.current?.contentWindow
-    if (!frameWindow) {
-      fail('Plugin iframe window is unavailable.')
-      return
-    }
-    portRef.current?.close()
-    const channel = new MessageChannel()
-    portRef.current = channel.port1
-    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
-      const status = readPluginFrameReadiness(event.data, {
-        owner: identity,
-        contributionId: frame.contributionId,
-        slot: frame.slot
-      })
-      if (!status) return
-      if (status.status === 'ready') ready()
-      else fail(status.error)
-    }
-    channel.port1.start()
-    frameWindow.postMessage({
-      type: 'knowbook:init',
-      owner: identity,
-      contributionId: frame.contributionId,
-      slot: frame.slot
-    }, '*', [channel.port2])
-  }
-
-  return (
-    <iframe
-      aria-label={`Preparing ${frame.title}`}
-      onError={() => fail('Plugin iframe failed to load.')}
-      onLoad={connect}
-      ref={frameRef}
-      referrerPolicy="no-referrer"
-      sandbox="allow-scripts"
-      src={frame.src}
-      title={`Preparing ${frame.title}`}
-    />
   )
 }
