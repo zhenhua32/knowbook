@@ -290,3 +290,242 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
     dom.window.close()
   }
 })
+
+test('switching categories reveals an obscured panel in its settings scroll port without resetting unrelated reading or focus', async () => {
+  const dom = new JSDOM(`<!doctype html><html><head><style>
+    .settings-layout { row-gap: 16px; }
+    .settings-category-nav { position: sticky; top: 0; }
+  </style></head><body><div id="outer" style="overflow-y:auto">
+    <button id="shell" type="button">Shell navigation</button>
+    <main id="settings-scroll" class="content page-settings" style="overflow-y:auto;padding-top:24px">
+      <div id="mount"></div>
+    </main>
+  </div></body></html>`, { url: 'http://localhost', pretendToBeVisual: true })
+  const document = dom.window.document
+  const content = document.getElementById('settings-scroll')!
+  const outer = document.getElementById('outer')!
+  const shell = document.getElementById('shell')!
+  const container = document.getElementById('mount')!
+  const originals = new Map<string, PropertyDescriptor | undefined>()
+  let compactNavigation = true
+  let navigationMediaChanged: () => void = () => undefined
+  let navigationWidth = 220
+  let contentScrollTop = 0
+  let isSettingsPage = true
+  let aiSaving = false
+  let requestedCategory: SettingsProps['requestedCategory'] = null
+  let categoryRequestsHandled = 0
+  const onCategoryRequestHandled = () => { categoryRequestsHandled++ }
+  const observers: NavigationResizeObserver[] = []
+  class NavigationResizeObserver {
+    disconnected = false
+    readonly observed = new Set<Element>()
+    constructor(private readonly callback: () => void) { observers.push(this) }
+    observe(element: Element) { this.observed.add(element) }
+    disconnect() { this.disconnected = true; this.observed.clear() }
+    notify() { if (!this.disconnected) this.callback() }
+  }
+  Object.defineProperty(dom.window, 'matchMedia', { value: () => ({
+    get matches() { return compactNavigation },
+    addEventListener: (_event: string, callback: () => void) => { navigationMediaChanged = callback },
+    removeEventListener: () => { navigationMediaChanged = () => undefined }
+  }) })
+  Object.defineProperty(dom.window, 'knowbook', { value: { onAssistantSessionChanged: () => () => undefined } })
+  for (const [key, value] of Object.entries({ window: dom.window, document, navigator: dom.window.navigator,
+    HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement,
+    ResizeObserver: NavigationResizeObserver, IS_REACT_ACT_ENVIRONMENT: true })) {
+    originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key))
+    Object.defineProperty(globalThis, key, { configurable: true, value })
+  }
+
+  // Model viewport geometry rather than prescribing how the component scrolls:
+  // the page header precedes the navigation, and panel positions move with the
+  // actual .content scrollTop. The horizontal navigation stays pinned.
+  Object.defineProperties(content, {
+    clientTop: { configurable: true, value: 2 },
+    clientHeight: { configurable: true, value: 396 },
+    scrollHeight: { configurable: true, value: 1800 },
+    scrollTop: { configurable: true, get: () => contentScrollTop,
+      set: (value: number) => { contentScrollTop = Math.max(0, Math.min(value, 1404)) } }
+  })
+  const prototype = dom.window.HTMLElement.prototype
+  const originalBounds = prototype.getBoundingClientRect
+  const originalRects = prototype.getClientRects
+  const originalClientWidth = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'clientWidth')!
+  const rect = (left: number, top: number, width: number, height: number) => new dom.window.DOMRect(left, top, width, height)
+  const hidden = (element: HTMLElement) => Boolean(element.closest('[hidden]'))
+  Object.defineProperty(prototype, 'clientWidth', { configurable: true, get() {
+    return this.getAttribute('role') === 'tablist' ? navigationWidth : originalClientWidth.get!.call(this)
+  } })
+  prototype.getBoundingClientRect = function () {
+    if (this === content) return rect(80, 40, 760, 400)
+    if (hidden(this)) return rect(0, 0, 0, 0)
+    const layoutTop = 148 - contentScrollTop
+    const navigationTop = Math.max(42, layoutTop)
+    if (this.classList.contains('settings-layout')) return rect(108, layoutTop, 704, 1462)
+    if (this.classList.contains('settings-category-nav')) return rect(108, navigationTop, compactNavigation ? 704 : 190, compactNavigation ? 46 : 280)
+    if (this.getAttribute('role') === 'tablist') return rect(108, navigationTop, navigationWidth, compactNavigation ? 40 : 280)
+    if (this.getAttribute('role') === 'tab') {
+      const list = this.parentElement!
+      const index = [...list.children].indexOf(this)
+      return compactNavigation ? rect(108 + index * 100 - list.scrollLeft, navigationTop, 100, 40)
+        : rect(108, navigationTop + index * 40, 190, 40)
+    }
+    const panel = this.closest<HTMLElement>('[role="tabpanel"]')
+    if (panel) {
+      const left = compactNavigation ? 108 : 322, top = (compactNavigation ? 210 : 148) - contentScrollTop
+      if (this === panel) return rect(left, top, compactNavigation ? 704 : 490, 1400)
+      return rect(left + 20, top + (this.matches('.settings-group-heading, .settings-group-heading h3, .settings-group-heading h4, .settings-card-title') ? 20 : 90), 240, 28)
+    }
+    return originalBounds.call(this)
+  }
+  prototype.getClientRects = function () {
+    if (hidden(this)) return [] as unknown as DOMRectList
+    const bounds = this.getBoundingClientRect()
+    return bounds.width > 0 && bounds.height > 0 ? [bounds] as unknown as DOMRectList : originalRects.call(this)
+  }
+
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(container)
+  function Harness() {
+    const [model, setModel] = useState('saved-model')
+    const [port, setPort] = useState('3030')
+    return <DashboardSettingsSection {...settingsProps(true)} isSettingsPage={isSettingsPage}
+      aiSaving={aiSaving} aiModelDraft={model} onAiModelChange={setModel}
+      webClipBridgePortDraft={port} onWebClipBridgePortChange={setPort}
+      requestedCategory={requestedCategory} onCategoryRequestHandled={onCategoryRequestHandled} />
+  }
+  const render = async () => { await act(async () => root.render(<Harness />)) }
+  const tab = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(element => element.textContent === label)!
+  const panel = (label: string) => document.getElementById(tab(label).getAttribute('aria-controls')!)!
+  const clickCategory = async (label: string) => { await act(async () => { tab(label).focus(); tab(label).click() }) }
+  const edit = async (input: HTMLInputElement, value: string) => { await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+    input.dispatchEvent(new dom.window.Event('input', { bubbles: true }))
+  }) }
+  const heading = (label: string) => {
+    const element = panel(label).querySelector<HTMLElement>('h3, h4')
+    assert.ok(element, `${label} must expose its actual category heading`)
+    return element
+  }
+  const expectStartVisible = (label: string) => {
+    const bounds = heading(label).getBoundingClientRect(), viewport = content.getBoundingClientRect()
+    const navigation = container.querySelector<HTMLElement>('.settings-category-nav')!.getBoundingClientRect()
+    assert.ok(bounds.top >= viewport.top + content.clientTop + 24, `${label} title must be inside the padded scroll viewport`)
+    assert.ok(bounds.bottom <= viewport.top + content.clientTop + content.clientHeight, `${label} title must be fully visible`)
+    if (compactNavigation) assert.ok(bounds.top >= navigation.bottom, `${label} title must not be covered by the pinned navigation`)
+  }
+  const readLater = (label: string) => {
+    content.scrollTop = 650
+    assert.ok(heading(label).getBoundingClientRect().bottom < content.getBoundingClientRect().top,
+      'The previous panel header really is outside the reading viewport')
+  }
+  const expectRetained = (focus: Element, position: number) => {
+    assert.equal(content.scrollTop, position, 'Unrelated updates must preserve the settings reading position')
+    assert.equal(document.activeElement, focus, 'Unrelated updates must preserve the current focus owner')
+    assert.equal(outer.scrollTop, 77, 'Only the settings scroll port may move')
+  }
+  try {
+    await render()
+    outer.scrollTop = 77
+    await clickCategory('网页剪藏')
+    expectStartVisible('网页剪藏')
+    assert.equal(content.scrollTop, 0, 'Switching while the new panel start is already visible must not scroll')
+    const port = panel('网页剪藏').querySelector<HTMLInputElement>('input[inputmode="numeric"]')!
+    await edit(port, '4040')
+    content.scrollTop = 150
+    const coveredTitle = heading('网页剪藏').getBoundingClientRect()
+    const pinnedNavigation = container.querySelector<HTMLElement>('.settings-category-nav')!.getBoundingClientRect()
+    assert.ok(coveredTitle.top > content.getBoundingClientRect().top + content.clientTop,
+      'The covered title is still inside the content viewport')
+    assert.ok(coveredTitle.top < pinnedNavigation.bottom && coveredTitle.bottom > pinnedNavigation.bottom,
+      'The pinned navigation really obscures the beginning of the title')
+    await clickCategory('AI')
+    expectStartVisible('AI')
+    assert.equal(document.activeElement, tab('AI'), 'A pointer category change must retain the clicked tab focus')
+    assert.equal(port.value, '4040')
+    assert.equal(outer.scrollTop, 77)
+    const model = panel('AI').querySelectorAll<HTMLInputElement>('input[type="text"]')[1]
+    await edit(model, 'unsaved-model')
+    const visiblePosition = content.scrollTop
+    await clickCategory('通用')
+    expectStartVisible('通用')
+    assert.equal(content.scrollTop, visiblePosition, 'An already visible destination does not need a second vertical reveal')
+    readLater('通用')
+    await act(async () => tab('通用').dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })))
+    expectStartVisible('AI')
+    assert.equal(document.activeElement, tab('AI'), 'Arrow navigation must leave focus on its newly selected tab')
+    assert.equal(panel('AI').querySelectorAll<HTMLInputElement>('input[type="text"]')[1], model)
+    assert.equal(model.value, 'unsaved-model')
+
+    readLater('AI')
+    shell.focus()
+    requestedCategory = 'appearance'
+    await render()
+    expectStartVisible('外观')
+    assert.equal(document.activeElement, shell, 'An external category change must reveal content without focusing it')
+    assert.equal(categoryRequestsHandled, 1)
+    assert.equal(outer.scrollTop, 77)
+    requestedCategory = null
+    await render()
+    const appearance = panel('外观').querySelector<HTMLInputElement>('input')!
+    appearance.focus()
+    appearance.value = 'unsaved-appearance'
+    readLater('外观')
+    const readingPosition = content.scrollTop
+    await render()
+    expectRetained(appearance, readingPosition)
+    aiSaving = true
+    await render()
+    expectRetained(appearance, readingPosition)
+    aiSaving = false
+    await render()
+    expectRetained(appearance, readingPosition)
+    navigationWidth = 180
+    await act(async () => {
+      const observer = observers.find(item => !item.disconnected)!
+      assert.ok(observer.observed.has(container.querySelector('[role="tablist"]')!))
+      observer.notify()
+    })
+    expectRetained(appearance, readingPosition)
+    compactNavigation = false
+    await act(async () => navigationMediaChanged())
+    expectRetained(appearance, readingPosition)
+    compactNavigation = true
+    await act(async () => navigationMediaChanged())
+    expectRetained(appearance, readingPosition)
+    await clickCategory('外观')
+    expectRetained(tab('外观'), readingPosition)
+    appearance.focus()
+    requestedCategory = 'appearance'
+    await render()
+    expectRetained(appearance, readingPosition)
+    assert.equal(categoryRequestsHandled, 2)
+    assert.equal(appearance.value, 'unsaved-appearance')
+    assert.equal(port.value, '4040')
+    assert.equal(model.value, 'unsaved-model')
+
+    requestedCategory = null
+    await render()
+    shell.focus()
+    isSettingsPage = false
+    content.className = 'content page-dashboard'
+    await render()
+    assert.equal(container.querySelector('.settings-category-nav'), null)
+    expectRetained(shell, readingPosition)
+    assert.ok(observers.every(item => item.disconnected))
+    isSettingsPage = true
+    content.className = 'content page-settings'
+    await render()
+    assert.equal(tab('外观').getAttribute('aria-selected'), 'true')
+    expectRetained(shell, readingPosition)
+  } finally {
+    await act(async () => root.unmount())
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor)
+      else Reflect.deleteProperty(globalThis, key)
+    }
+    dom.window.close()
+    assert.ok(observers.every(item => item.disconnected), 'Unmounting must release the compact navigation observer')
+  }
+})

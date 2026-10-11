@@ -19,6 +19,11 @@ function revealCategoryTab(tab: HTMLButtonElement | undefined): void {
   else if (tabBounds.right > right) list.scrollLeft += tabBounds.right - right
 }
 
+function settingsScrollPadding(viewport: HTMLElement, layout: HTMLElement, nav?: HTMLElement | null): number {
+  const padding = parseFloat(window.getComputedStyle(viewport).paddingTop) || 0
+  return nav ? padding + nav.getBoundingClientRect().height + (parseFloat(window.getComputedStyle(layout).rowGap) || 0) : padding
+}
+
 type DashboardSettingsSectionProps = {
   ui: UiText
   isZh: boolean
@@ -197,6 +202,8 @@ export function DashboardSettingsSection({
   const updateStatusText = updateCheckBusy ? ui.updateStatusChecking : staleCheckFeedback ? ui.appUpdateCheckFailed
     : !appUpdateState && appUpdateLoading ? ui.common.loading : getAppUpdateStatusText(appUpdateState, ui)
   const tabListRef = useRef<HTMLDivElement>(null)
+  const layoutRef = useRef<HTMLElement>(null)
+  const previousCategoryRef = useRef(activeCategory)
   const tabRefs = useRef<Partial<Record<SettingsCategory, HTMLButtonElement>>>({})
   const categories: { id: SettingsCategory; label: string }[] = [
     { id: 'general', label: isZh ? '通用' : 'General' },
@@ -221,13 +228,23 @@ export function DashboardSettingsSection({
   }, [])
   useLayoutEffect(() => {
     if (!isSettingsPage || !compactNavigation || !tabListRef.current) return undefined
+    const list = tabListRef.current
+    const viewport = list.closest<HTMLElement>('.content.page-settings')
+    const previousPadding = viewport?.style.scrollPaddingTop
     // A request can reveal the current category without changing activeCategory.
-    const revealActiveCategory = () => revealCategoryTab(tabRefs.current[activeCategory])
+    const revealActiveCategory = () => {
+      revealCategoryTab(tabRefs.current[activeCategory])
+      if (viewport && layoutRef.current) {
+        viewport.style.scrollPaddingTop = `${settingsScrollPadding(viewport, layoutRef.current, list.parentElement)}px`
+      }
+    }
     revealActiveCategory()
-    if (typeof ResizeObserver === 'undefined') return undefined
-    const observer = new ResizeObserver(revealActiveCategory)
-    observer.observe(tabListRef.current)
-    return () => observer.disconnect()
+    const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(revealActiveCategory)
+    observer?.observe(list)
+    return () => {
+      observer?.disconnect()
+      if (viewport && previousPadding !== undefined) viewport.style.scrollPaddingTop = previousPadding
+    }
   }, [activeCategory, compactNavigation, isSettingsPage, requestedCategory])
   useLayoutEffect(() => {
     setVisibleBridgeToken(null)
@@ -239,6 +256,23 @@ export function DashboardSettingsSection({
     setActiveCategory(requestedCategory)
     onCategoryRequestHandled?.()
   }, [isSettingsPage, requestedCategory, onCategoryRequestHandled])
+  useLayoutEffect(() => {
+    const previousCategory = previousCategoryRef.current
+    previousCategoryRef.current = activeCategory
+    // Resizing, saving, and revisiting the same category leave its reading position alone.
+    if (!isSettingsPage || previousCategory === activeCategory) return
+    const layout = layoutRef.current
+    const viewport = layout?.closest<HTMLElement>('.content.page-settings')
+    const panel = layout?.querySelector<HTMLElement>('[role="tabpanel"]:not([hidden])')
+    if (!layout || !viewport || !panel) return
+    const viewportBounds = viewport.getBoundingClientRect()
+    const top = viewportBounds.top + viewport.clientTop
+      + settingsScrollPadding(viewport, layout, compactNavigation ? tabListRef.current?.parentElement : null)
+    const panelTop = panel.getBoundingClientRect().top
+    if (panelTop < top - 1 || panelTop > viewportBounds.bottom - 1) {
+      viewport.scrollTop = Math.max(0, viewport.scrollTop + panelTop - top)
+    }
+  }, [activeCategory, compactNavigation, isSettingsPage])
   const navigateCategory = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex: number
     if (event.key === 'ArrowDown' || event.key === 'ArrowRight') nextIndex = (index + 1) % categories.length
@@ -249,7 +283,7 @@ export function DashboardSettingsSection({
     event.preventDefault()
     const category = categories[nextIndex].id
     selectCategory(category)
-    tabRefs.current[category]?.focus()
+    tabRefs.current[category]?.focus({ preventScroll: true })
   }
   const panelProps = (category: SettingsCategory) => ({
     id: `${tabsId}-panel-${category}`,
@@ -270,7 +304,7 @@ export function DashboardSettingsSection({
         </header>
       ) : null}
 
-      <section className={`detail-grid${isSettingsPage ? ' settings-layout' : ''}`}>
+      <section ref={layoutRef} className={`detail-grid${isSettingsPage ? ' settings-layout' : ''}`}>
         {isSettingsPage ? (
           <nav className="settings-category-nav" aria-label={isZh ? '设置分类' : 'Settings categories'}>
             <div ref={tabListRef} role="tablist" aria-label={isZh ? '设置分类' : 'Settings categories'} aria-orientation={compactNavigation ? 'horizontal' : 'vertical'}>

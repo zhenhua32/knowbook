@@ -526,7 +526,8 @@
   }
 
   .settings-category-nav {
-    position: static;
+    z-index: 2;
+    background: var(--kb-bg);
   }
 
   .settings-category-nav [role='tablist'] {
