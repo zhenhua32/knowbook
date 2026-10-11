@@ -32,13 +32,17 @@ type EditorModel = {
 }
 type AssistState = ReturnType<typeof useEditorAssistState>
 type SuggestionRequest = ReturnType<typeof deferred<DocumentSuggestion[]>> & { query: string; documentId: string | null }
+type AssistSnapshot = { key: string | null; items: string[]; blockItems: Array<string | undefined>; slashQuery: string | null }
+const sourceTypes = ['code', 'math', 'table', 'frontmatter', 'html', 'divider', 'custom-source']
+const proseTypes = ['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6',
+  'todo', 'numbered-todo', 'bulleted-list', 'numbered-list']
 
 async function withAssist(t: TestContext, run: (context: {
   state: () => AssistState
   model: () => EditorModel
   document: Document
   requests: SuggestionRequest[]
-  snapshots: Array<{ key: string | null; items: string[] }>
+  snapshots: AssistSnapshot[]
   update: (patch: Partial<EditorModel>) => Promise<void>
   query: (query: string) => Promise<void>
   tick: (duration?: number) => Promise<void>
@@ -47,7 +51,7 @@ async function withAssist(t: TestContext, run: (context: {
   const dom = new JSDOM('<div id="mount"></div>', { url: 'http://localhost', pretendToBeVisual: true })
   const originals = new Map<string, PropertyDescriptor | undefined>()
   const requests: SuggestionRequest[] = []
-  const snapshots: Array<{ key: string | null; items: string[] }> = []
+  const snapshots: AssistSnapshot[] = []
   const api: Partial<ElectronApi> = {
     getDocumentSuggestions: (query, documentId) => {
       const request = { ...deferred<DocumentSuggestion[]>(), query, documentId: documentId ?? null }
@@ -87,7 +91,8 @@ async function withAssist(t: TestContext, run: (context: {
       blockTextareaRefs: refs, draftBlocks: editor.blocks, isEditing: editor.editing,
       selectedDocumentId: editor.documentId, selectedDocumentPresent: editor.present,
       setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, uiLanguage: editor.language })
-    snapshots.push({ key: state.linkSuggestionContextKey, items: state.linkSuggestions.map(item => item.id) })
+    snapshots.push({ key: state.linkSuggestionContextKey, items: state.linkSuggestions.map(item => item.id),
+      blockItems: state.blockSuggestions.map(item => item.id), slashQuery: state.activeSlashContext?.query ?? null })
     return createElement('div', null,
       ...editor.blocks.map((item, index) => createElement('textarea', { key: item.id, value: item.content, readOnly: true,
         'aria-label': `Block ${index}`, ref: (element: HTMLTextAreaElement | null) => { refs.current[index] = element } })),
@@ -96,6 +101,8 @@ async function withAssist(t: TestContext, run: (context: {
       createElement('div', { 'data-block-suggestions': true }, ...state.blockSuggestions.map((item, index) =>
         createElement('button', { key: item.id ?? index, type: 'button', 'data-block-id': item.id,
           onClick: () => state.insertBlockSuggestion(item) }, item.content))),
+      createElement('div', { 'data-slash-suggestions': true }, ...(state.activeSlashContext ? state.filteredSlashCommands : []).map(command =>
+        createElement('span', { key: command.id }, command.label))),
       createElement('output', { 'aria-label': 'Suggestion status' }, state.linkSuggestionsLoading ? 'Loading' : state.linkSuggestionsError ?? ''),
       createElement('button', { type: 'button', 'data-retry': true, onClick: state.retryLinkSuggestions }, 'Retry document suggestions'))
   }
@@ -413,5 +420,153 @@ test('leaving edit mode, losing the selected detail and unmounting discard late 
     await act(async () => requests[2].resolve([suggestion('Late unmount response')]))
     assert.equal(state(), beforeUnmount, 'unmounted hook must not render after a late response')
     assert.equal(document.getElementById('mount')!.childElementCount, 0)
+  })
+})
+
+test('source and unknown blocks never open slash or wiki suggestions or request document candidates', async t => {
+  await withAssist(t, async ({ state, model, document, requests, update, tick }) => {
+    for (const type of sourceTypes) {
+      const wiki = { ...block('input', `${prefix}Alpha${suffix}`), type }
+      await update({ blocks: [wiki, block('local-alpha', 'Alpha local block')], cursor: prefix.length + 5 })
+      assert.equal(state().activeLinkContext, null, `${type} wiki text must remain literal`)
+      assert.equal(state().linkSuggestionContextKey, null)
+      assert.deepEqual(state().linkSuggestions, [])
+      assert.deepEqual(state().blockSuggestions, [])
+      assert.equal(state().linkSuggestionsLoading, false)
+      assert.equal(state().linkSuggestionsError, null)
+      assert.equal(document.querySelector('[data-document-suggestions]')!.childElementCount, 0)
+      assert.equal(document.querySelector('[data-block-suggestions]')!.childElementCount, 0)
+      await tick()
+      assert.equal(requests.length, 0, `${type} must not make wiki lookups`)
+      const slash = { ...wiki, content: '/todo' }
+      await update({ blocks: [slash], cursor: slash.content.length })
+      assert.equal(state().activeSlashContext, null, `${type} slash text must remain literal`)
+      assert.deepEqual(state().filteredSlashCommands, [])
+      assert.equal(state().activeSlashCommand, null)
+      assert.equal(state().slashPanelPos, null)
+      assert.equal(document.querySelector('[data-slash-suggestions]')!.childElementCount, 0)
+      await tick()
+      assert.deepEqual(model().blocks, [slash])
+      assert.equal(requests.length, 0)
+    }
+  })
+})
+
+test('paragraph, headings, lists and quotes retain slash commands and working wiki insertion', async t => {
+  await withAssist(t, async ({ state, model, document, requests, update, tick }) => {
+    for (const type of proseTypes) {
+      const slash = { ...block('input', '/todo'), type }
+      await update({ blocks: [slash], cursor: slash.content.length })
+      assert.equal(state().activeSlashContext?.query, 'todo', `${type} keeps slash commands`)
+      assert.equal(state().activeSlashCommand?.id, 'todo')
+      assert.ok(state().filteredSlashCommands.some(command => command.id === 'todo'))
+      assert.ok(document.querySelector('[data-slash-suggestions]')!.childElementCount > 0)
+      const wiki = { ...slash, content: `${prefix}Alpha${suffix}` }
+      await update({ blocks: [wiki, block('local-alpha', 'Alpha local block')], cursor: prefix.length + 5 })
+      assert.equal(state().activeLinkContext?.query, 'Alpha', `${type} keeps wiki suggestions`)
+      assert.equal(state().activeSlashContext, null)
+      assert.ok(state().blockSuggestions.some(item => item.id === 'local-alpha'))
+      const count = requests.length
+      await tick()
+      assert.equal(requests.length, count + 1)
+      await act(async () => requests[count].resolve([suggestion('Alpha')]))
+      await act(async () => document.querySelector<HTMLButtonElement>('[data-document-suggestions] button')!.click())
+      assert.equal(model().blocks[0].content, 'Before [[Home/Alpha]] after')
+      assert.equal(model().blocks[0].type, type)
+      const input = document.querySelector<HTMLTextAreaElement>('textarea')!
+      assert.equal(document.activeElement, input)
+      assert.equal(input.selectionStart, 'Before [[Home/Alpha]]'.length)
+    }
+  })
+})
+
+test('changing a prose block to a source type hides same-id candidates on the first render and rejects captured callbacks', async t => {
+  await withAssist(t, async ({ state, model, document, requests, snapshots, update, tick }) => {
+    for (const type of sourceTypes) {
+      const prose = block('input', `${prefix}Alpha${suffix}`)
+      await update({ blocks: [prose, block('local-alpha', 'Alpha local block')], cursor: prefix.length + 5 })
+      await tick()
+      const count = requests.length
+      await act(async () => requests[count - 1].resolve([suggestion('Alpha')]))
+      const oldState = state()
+      assert.equal(document.querySelector('[data-document-suggestions]')!.textContent, 'Alpha')
+      const firstSourceRender = snapshots.length
+      const source = { ...prose, type }
+      await update({ blocks: [source, model().blocks[1]] })
+      assert.deepEqual(snapshots[firstSourceRender], { key: null, items: [], blockItems: [], slashQuery: null },
+        `${type} must discard candidates before layout effects even when its id, content and caret are unchanged`)
+      const before = model()
+      await act(async () => {
+        oldState.insertLinkSuggestion(suggestion('Alpha'))
+        oldState.insertBlockSuggestion(block('local-alpha', 'Alpha local block'))
+        oldState.retryLinkSuggestions()
+        state().insertLinkSuggestion(suggestion('Alpha'))
+        state().insertBlockSuggestion(block('local-alpha', 'Alpha local block'))
+      })
+      assert.equal(model(), before, 'stale suggestions must neither update the source nor move the caret')
+      assert.equal(document.querySelector('[data-document-suggestions]')!.childElementCount, 0)
+      assert.equal(document.querySelector('[data-block-suggestions]')!.childElementCount, 0)
+      await tick()
+      assert.equal(requests.length, count, 'a captured retry cannot restart source suggestions')
+
+      await update({ blocks: [{ ...prose, content: '/todo' }], cursor: '/todo'.length })
+      assert.equal(state().activeSlashContext?.query, 'todo')
+      const firstSlashSourceRender = snapshots.length
+      await update({ blocks: [{ ...source, content: '/todo' }] })
+      assert.equal(snapshots[firstSlashSourceRender].slashQuery, null)
+      assert.deepEqual(state().filteredSlashCommands, [])
+      assert.equal(state().activeSlashCommand, null)
+    }
+  })
+})
+
+test('switching a pending wiki lookup to source ignores late responses and reopens a fresh prose session', async t => {
+  for (const response of ['success', 'error'] as const) {
+    await withAssist(t, async ({ state, model, requests, update, tick }) => {
+      await tick()
+      const oldState = state()
+      const source = { ...model().blocks[0], type: response === 'success' ? 'code' : 'html' }
+      await update({ blocks: [source, ...model().blocks.slice(1)] })
+      await act(async () => {
+        oldState.insertBlockSuggestion(block('local-alpha', 'Alpha local block'))
+        oldState.retryLinkSuggestions()
+        if (response === 'success') requests[0].resolve([suggestion('Stale Alpha')])
+        else requests[0].reject(new Error('Late source lookup'))
+      })
+      assert.deepEqual(model().blocks[0], source)
+      assert.equal(state().activeLinkContext, null)
+      assert.deepEqual(state().linkSuggestions, [])
+      assert.deepEqual(state().blockSuggestions, [])
+      assert.equal(state().linkSuggestionsError, null)
+      assert.equal(state().linkSuggestionsLoading, false)
+      await tick()
+      assert.equal(requests.length, 1)
+      await update({ blocks: [{ ...source, type: 'paragraph' }, ...model().blocks.slice(1)] })
+      assert.equal(state().activeLinkContext?.query, 'Alpha')
+      assert.equal(state().linkSuggestionsLoading, true)
+      await tick()
+      assert.equal(requests.length, 2)
+      await act(async () => requests[1].resolve([suggestion('Fresh Alpha')]))
+      assert.deepEqual(state().linkSuggestions, [suggestion('Fresh Alpha')])
+    })
+  }
+})
+
+test('both slash and wiki contexts require an editable document detail and an active prose block', async t => {
+  await withAssist(t, async ({ state, requests, update, tick }) => {
+    for (const unavailable of [{ editing: false }, { present: false }, { documentId: null }, { index: null }, { index: 4 }] satisfies Partial<EditorModel>[]) {
+      for (const content of ['/todo', `${prefix}Alpha${suffix}`]) {
+        await update({ editing: true, present: true, documentId: 'document-a', index: 0,
+          blocks: [block('input', content)], cursor: content === '/todo' ? content.length : prefix.length + 5, ...unavailable })
+        assert.equal(state().activeLinkContext, null)
+        assert.equal(state().activeSlashContext, null)
+        assert.equal(state().linkSuggestionContextKey, null)
+        assert.deepEqual(state().blockSuggestions, [])
+        assert.deepEqual(state().filteredSlashCommands, [])
+        assert.equal(state().activeSlashCommand, null)
+        await tick()
+        assert.equal(requests.length, 0)
+      }
+    }
   })
 })

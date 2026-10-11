@@ -45,6 +45,9 @@ type LinkSuggestionState = {
   items: DocumentSuggestion[]
 }
 
+const editorAssistBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
+  'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
+
 export function useEditorAssistState({
   activeBlockIndex,
   activeCursorPosition,
@@ -86,16 +89,16 @@ export function useEditorAssistState({
     captureBlockCursor(pending.index, textarea)
   })
 
+  const activeBlock = activeBlockIndex !== null ? draftBlocks[activeBlockIndex] : undefined
+  const activeAssistBlock = isEditing && selectedDocumentPresent && selectedDocumentId && activeBlock
+    && editorAssistBlockTypes.has(activeBlock.type) ? activeBlock : null
   const activeLinkContext = useMemo(() => {
-    return activeBlockIndex !== null
-      ? getOpenLinkContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
-      : null
-  }, [activeBlockIndex, activeCursorPosition, draftBlocks, getOpenLinkContext])
+    return activeAssistBlock ? getOpenLinkContext(activeAssistBlock.content, activeCursorPosition) : null
+  }, [activeAssistBlock, activeCursorPosition])
 
   const linkSuggestionQuery = activeLinkContext?.query ?? ''
-  const activeLinkBlock = activeBlockIndex !== null ? draftBlocks[activeBlockIndex] : undefined
-  const linkSuggestionContextKey = isEditing && selectedDocumentPresent && selectedDocumentId && activeLinkContext && activeLinkBlock
-    ? JSON.stringify([selectedDocumentId, activeLinkBlock.id ?? null, activeBlockIndex, activeLinkContext.start, linkSuggestionQuery])
+  const linkSuggestionContextKey = activeLinkContext && activeAssistBlock
+    ? JSON.stringify([selectedDocumentId, activeAssistBlock.id ?? null, activeBlockIndex, activeLinkContext.start, linkSuggestionQuery])
     : null
   const hasCurrentLinkSuggestionState = linkSuggestionState.contextKey === linkSuggestionContextKey
     && linkSuggestionState.requestId === linkSuggestionRequestId.current
@@ -220,19 +223,19 @@ export function useEditorAssistState({
   }, [insertAssistReplacement])
 
   const activeSlashContext = useMemo(() => {
-    if (activeLinkContext || activeBlockIndex === null) {
+    if (activeLinkContext || !activeAssistBlock) {
       return null
     }
 
-    return getSlashCommandContext(draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition)
-  }, [activeBlockIndex, activeCursorPosition, activeLinkContext, draftBlocks, getSlashCommandContext])
+    return getSlashCommandContext(activeAssistBlock.content, activeCursorPosition)
+  }, [activeAssistBlock, activeCursorPosition, activeLinkContext])
 
   const filteredSlashCommands = useMemo(() => {
-    const block = activeBlockIndex !== null ? draftBlocks[activeBlockIndex] : undefined
+    if (!activeSlashContext || !activeAssistBlock) return []
     const availableCommands = blockSlashCommands.filter(command =>
       command.kind !== 'action' || command.action !== 'insert-child'
-      || Boolean(block && isNestableBlock(block.type) && block.depth < 6))
-    const query = activeSlashContext?.query.trim().toLowerCase() ?? ''
+      || (isNestableBlock(activeAssistBlock.type) && activeAssistBlock.depth < 6))
+    const query = activeSlashContext.query.trim().toLowerCase()
     if (!query) {
       return availableCommands
     }
@@ -243,7 +246,7 @@ export function useEditorAssistState({
         .toLowerCase()
         .includes(query)
     }).sort((first, second) => Number(second.id === query) - Number(first.id === query))
-  }, [activeBlockIndex, activeSlashContext, blockSlashCommands, draftBlocks])
+  }, [activeAssistBlock, activeSlashContext, blockSlashCommands])
 
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
 
