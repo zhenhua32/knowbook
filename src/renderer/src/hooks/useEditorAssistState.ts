@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 import { getUiText, type UiLanguage } from '../i18n'
 import { getOpenLinkContext, getSlashCommandContext } from '../utils/editorAssist'
+import { isNestableBlock } from '../utils/draftBlockShape'
 import { computeSlashPanelPosition } from '../utils/menuPosition'
 
 type BlockSlashCommand = {
@@ -227,18 +228,22 @@ export function useEditorAssistState({
   }, [activeBlockIndex, activeCursorPosition, activeLinkContext, draftBlocks, getSlashCommandContext])
 
   const filteredSlashCommands = useMemo(() => {
+    const block = activeBlockIndex !== null ? draftBlocks[activeBlockIndex] : undefined
+    const availableCommands = blockSlashCommands.filter(command =>
+      command.kind !== 'action' || command.action !== 'insert-child'
+      || Boolean(block && isNestableBlock(block.type) && block.depth < 6))
     const query = activeSlashContext?.query.trim().toLowerCase() ?? ''
     if (!query) {
-      return blockSlashCommands
+      return availableCommands
     }
 
-    return blockSlashCommands.filter((command) => {
+    return availableCommands.filter((command) => {
       return [command.id, command.label, ...command.keywords]
         .join(' ')
         .toLowerCase()
         .includes(query)
     }).sort((first, second) => Number(second.id === query) - Number(first.id === query))
-  }, [activeSlashContext, blockSlashCommands])
+  }, [activeBlockIndex, activeSlashContext, blockSlashCommands, draftBlocks])
 
   const activeSlashCommand = filteredSlashCommands[selectedSlashCommandIndex] ?? filteredSlashCommands[0] ?? null
 

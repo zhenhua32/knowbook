@@ -4,6 +4,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
 import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
+import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
 import { removeSlashCommand } from '../utils/editorAssist'
 
 type SlashCommandLike = {
@@ -142,11 +143,17 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     if (command.kind === 'type') {
       pushToHistory(draftBlocks)
       if (command.templateContent !== undefined) {
-        const targetIndex = activeBlockIndex + (nextContent.trim() ? 1 : 0)
+        // A standalone template belongs after the enclosing list, so it cannot
+        // separate a list parent from its remaining nested siblings.
+        let targetIndex = nextContent.trim() ? getBlockSubtreeEndIndex(draftBlocks, activeBlockIndex) + 1 : activeBlockIndex
+        if (targetIndex !== activeBlockIndex) {
+          while (targetIndex < draftBlocks.length && draftBlocks[targetIndex].depth > 0) targetIndex += 1
+        }
         const inserted = { ...buildBlockTypePatch(command.type, command.templateContent),
           ...(command.templateLanguage ? { language: command.templateLanguage, markdownFormat: { codeInfo: command.templateLanguage } } : {}) }
         setDraftBlocks((previous) => {
-          const next = [...previous]
+          const next = targetIndex === activeBlockIndex && !isNestableBlock(command.type)
+            ? promoteDraftBlockChildren(previous, activeBlockIndex) : [...previous]
           next[activeBlockIndex] = { ...next[activeBlockIndex], content: nextContent }
           if (targetIndex === activeBlockIndex) next[activeBlockIndex] = { ...next[activeBlockIndex], ...inserted, id: next[activeBlockIndex].id }
           else next.splice(targetIndex, 0, inserted)
@@ -158,7 +165,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
         return
       }
       setDraftBlocks((previous) =>
-        previous.map((block, index) =>
+        (isNestableBlock(command.type) ? previous : promoteDraftBlockChildren(previous, activeBlockIndex)).map((block, index) =>
           index === activeBlockIndex
             ? {
                 ...block,

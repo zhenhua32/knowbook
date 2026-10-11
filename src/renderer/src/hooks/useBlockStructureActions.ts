@@ -74,7 +74,7 @@ export function useBlockStructureActions({
 
   const insertChildDraftBlock = useCallback((index: number, contentOverride?: string) => {
     const currentBlock = draftBlocks[index]
-    if (!currentBlock) {
+    if (!currentBlock || !isNestableBlock(currentBlock.type)) {
       return
     }
 

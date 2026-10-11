@@ -3,9 +3,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
-import { toDraftBlock } from '../utils/draftBlockShape'
+import { isNestableBlock, toDraftBlock } from '../utils/draftBlockShape'
 import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
+import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
 import { captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
@@ -205,7 +206,12 @@ export function useDocumentEditorState({
       }
 
       const nextBlock = { ...currentBlock, ...patch }
-      const nextBlocks = previous.map((block, currentIndex) => currentIndex === index ? nextBlock : block)
+      // Toolbar and context-menu type changes share the same parent-removal
+      // semantics as keyboard edits. A paragraph/heading cannot own list items.
+      const sourceBlocks = 'type' in patch && isNestableBlock(currentBlock.type)
+        && !isNestableBlock(nextBlock.type.trim() || 'paragraph')
+        ? promoteDraftBlockChildren(previous, index) : previous
+      const nextBlocks = sourceBlocks.map((block, currentIndex) => currentIndex === index ? nextBlock : block)
       const changesTreeShape = (
         ('id' in patch && patch.id !== currentBlock.id)
         || ('type' in patch && patch.type !== currentBlock.type)

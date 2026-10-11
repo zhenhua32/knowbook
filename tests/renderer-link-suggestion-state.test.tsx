@@ -124,6 +124,24 @@ async function withAssist(t: TestContext, run: (context: {
   }
 }
 
+test('child slash commands are available only for list parents below the depth limit', async t => {
+  await withAssist(t, async ({ state, update }) => {
+    const parent = block('parent', '/child')
+    await update({ blocks: [parent], index: 0, cursor: parent.content.length })
+    assert.equal(state().activeSlashContext?.query, 'child')
+    assert.equal(state().filteredSlashCommands.some(command => command.id === 'child'), false)
+
+    await update({ blocks: [{ ...parent, type: 'bulleted-list' }] })
+    assert.equal(state().filteredSlashCommands.some(command => command.id === 'child'), true)
+
+    await update({ blocks: [{ ...parent, type: 'todo', depth: 6 }] })
+    assert.equal(state().filteredSlashCommands.some(command => command.id === 'child'), false)
+
+    await update({ blocks: [{ ...parent, type: 'todo', depth: 5 }] })
+    assert.equal(state().filteredSlashCommands.some(command => command.id === 'child'), true)
+  })
+})
+
 test('a new link query hides old document suggestions on its first render and rejects their insertion', async t => {
   await withAssist(t, async ({ state, model, document, requests, snapshots, query, tick }) => {
     assert.ok(state().blockSuggestions.some(item => item.id === 'local-alpha'), 'local suggestions are immediate before debounce')

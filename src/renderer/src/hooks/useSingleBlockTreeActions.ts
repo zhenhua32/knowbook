@@ -4,6 +4,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
 import { shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
+import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
 import { resolveDraftInsertionPlacement } from '../utils/draftTreePlacement'
 import {
   getBlockSubtreeEndIndex,
@@ -118,7 +119,11 @@ export function useSingleBlockTreeActions({
       }
 
       pushToHistory(draftBlocks)
-      updateDraftBlock(index, buildBlockTypePatch('paragraph', '', false, currentBlock.depth, currentBlock.parentBlockId ?? null))
+      setDraftBlocks((previous) => {
+        const next = promoteDraftBlockChildren(previous, index)
+        next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', '', false) }
+        return next
+      })
       setActiveBlockIndex(index)
       setActiveCursorPosition(0)
       setPendingFocusBlockIndex(index)
@@ -129,7 +134,7 @@ export function useSingleBlockTreeActions({
       const nextType = getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type
       splitDraftBlock(index, selectionStart, selectionEnd, nextType)
     }
-  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, splitDraftBlock, updateDraftBlock])
+  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, setPendingFocusBlockIndex, splitDraftBlock])
 
   const downgradeBlockAt = useCallback((index: number) => {
     const currentBlock = draftBlocks[index]
@@ -147,11 +152,15 @@ export function useSingleBlockTreeActions({
     }
 
     pushToHistory(draftBlocks)
-    updateDraftBlock(index, buildBlockTypePatch('paragraph', currentBlock.content, false, currentBlock.depth, currentBlock.parentBlockId ?? null))
+    setDraftBlocks((previous) => {
+      const next = promoteDraftBlockChildren(previous, index)
+      next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', currentBlock.content, false) }
+      return next
+    })
     setActiveBlockIndex(index)
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(index)
-  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex, updateDraftBlock])
+  }, [adjustBlockDepth, buildBlockTypePatch, draftBlocks, isNestableBlock, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, setPendingFocusBlockIndex])
 
   const mergeWithPreviousBlock = useCallback((index: number) => {
     if (index === 0) {
@@ -171,7 +180,6 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    const currentSubtreeStart = index
     const currentSubtreeEnd = getBlockSubtreeEndIndex(draftBlocks, index)
 
     const isMergeable =
@@ -191,12 +199,16 @@ export function useSingleBlockTreeActions({
     clearBlockSelection()
 
     setDraftBlocks((previous) => {
-      const next = [...previous]
+      const next = isNestableBlock(previousBlock.type) ? [...previous] : promoteDraftBlockChildren(previous, index)
       next[index - 1] = {
         ...previousBlock,
         content: mergedContent
       }
-      next.splice(currentSubtreeStart, currentSubtreeEnd - currentSubtreeStart + 1)
+      if (isNestableBlock(previousBlock.type) && currentSubtreeEnd > index) {
+        const children = previous.slice(index + 1, currentSubtreeEnd + 1)
+        next.splice(index + 1, children.length, ...shiftDraftFragmentDepth(children, 0, previousBlock.id ?? null, getFragmentLocalRootIds(children)))
+      }
+      next.splice(index, 1)
       return next
     })
 
