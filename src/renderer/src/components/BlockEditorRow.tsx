@@ -739,35 +739,28 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   }
                 }
 
-                // Arrow moves to next/prev block natively if caret is at the bounds
+                // Unmodified arrows cross blocks only at an absolute text boundary.
                 if (
-                  (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+                  ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key) &&
                   !event.shiftKey &&
                   !event.altKey &&
                   !event.metaKey &&
                   !event.ctrlKey
                 ) {
                   const el = event.currentTarget
-                  const atTop = el.selectionStart === 0 && el.selectionEnd === 0
-                  const atBottom = el.selectionStart === el.value.length && el.selectionEnd === el.value.length
-                  if (event.key === 'ArrowUp' && atTop && index > 0) {
-                    event.preventDefault()
-                    const previousIndex = getAdjacentVisibleIndex(-1)
-                    const prev = previousIndex === null ? null : blockTextareaRefs.current[previousIndex]
-                    if (prev) {
-                      focusBlockTextarea(prev)
-                      prev.setSelectionRange(prev.value.length, prev.value.length)
+                  const backwards = event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+                  const boundary = backwards ? 0 : el.value.length
+                  if (el.selectionStart === boundary && el.selectionEnd === boundary) {
+                    const targetIndex = getAdjacentVisibleIndex(backwards ? -1 : 1)
+                    const target = targetIndex === null ? null : blockTextareaRefs.current[targetIndex]
+                    if (target && targetIndex !== null) {
+                      event.preventDefault()
+                      focusBlockTextarea(target)
+                      const position = backwards ? target.value.length : 0
+                      target.setSelectionRange(position, position)
+                      captureBlockCursor(targetIndex, target)
+                      return
                     }
-                    return
-                  } else if (event.key === 'ArrowDown' && atBottom && index < draftBlockCount - 1) {
-                    event.preventDefault()
-                    const nextIndex = getAdjacentVisibleIndex(1)
-                    const next = nextIndex === null ? null : blockTextareaRefs.current[nextIndex]
-                    if (next) {
-                      focusBlockTextarea(next)
-                      next.setSelectionRange(0, 0)
-                    }
-                    return
                   }
                 }
 
@@ -866,10 +859,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   !event.altKey &&
                   !event.metaKey &&
                   !event.ctrlKey &&
-                  ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(block.type)
+                  ['paragraph', 'heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(block.type)
                 ) {
                   event.preventDefault()
-                  continueBlockAt(
+                  const continueText = block.type === 'paragraph' ? splitDraftBlock : continueBlockAt
+                  continueText(
                     index,
                     event.currentTarget.selectionStart ?? event.currentTarget.value.length,
                     event.currentTarget.selectionEnd ?? event.currentTarget.value.length

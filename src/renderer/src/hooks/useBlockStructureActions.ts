@@ -22,7 +22,7 @@ type UseBlockStructureActionsParams = {
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
-  setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
+  setPendingFocusBlockIndex: (index: number | null, cursorPosition?: number) => void
 }
 
 export function useBlockStructureActions({
@@ -58,7 +58,7 @@ export function useBlockStructureActions({
 
     setActiveBlockIndex(nextIndex)
     setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(nextIndex)
+    setPendingFocusBlockIndex(nextIndex, 0)
     endBlockDrag()
   }, [
     buildSiblingDraftBlock,
@@ -104,7 +104,7 @@ export function useBlockStructureActions({
 
     setActiveBlockIndex(subtreeEndIndex + 1)
     setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(subtreeEndIndex + 1)
+    setPendingFocusBlockIndex(subtreeEndIndex + 1, 0)
     endBlockDrag()
   }, [
     buildBlockTypePatch,
@@ -154,7 +154,7 @@ export function useBlockStructureActions({
     })
     setActiveBlockIndex(duplicatedRootIndex)
     setActiveCursorPosition(duplicatedBlocks[0]?.content.length ?? 0)
-    setPendingFocusBlockIndex(duplicatedRootIndex)
+    setPendingFocusBlockIndex(duplicatedRootIndex, duplicatedBlocks[0]?.content.length ?? 0)
     endBlockDrag()
   }, [
     clearBlockSelection,
@@ -181,10 +181,7 @@ export function useBlockStructureActions({
     }
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-    if (subtreeEndIndex > index) {
-      console.warn('Cannot split a block with child blocks. Please delete or move child blocks first.')
-      return
-    }
+    const nextIndex = subtreeEndIndex + 1
 
     pushToHistory(draftBlocks)
     clearBlockSelection()
@@ -202,7 +199,7 @@ export function useBlockStructureActions({
         content: leftContent
       }
       next.splice(
-        index + 1,
+        nextIndex,
         0,
         {
           ...buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null),
@@ -211,9 +208,9 @@ export function useBlockStructureActions({
       )
       return next
     })
-    setActiveBlockIndex(index + 1)
+    setActiveBlockIndex(nextIndex)
     setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(index + 1)
+    setPendingFocusBlockIndex(nextIndex, 0)
     endBlockDrag()
   }, [
     buildBlockTypePatch,
