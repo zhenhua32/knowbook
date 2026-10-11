@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage } from 'node:http'
 import { createHash } from 'node:crypto'
+import { listenOnFetchSafePort } from './http-server'
 
 interface WebDavServerOptions {
   etagStyle: 'quoted' | 'bare' | 'weak'
@@ -66,9 +67,8 @@ export async function createWebDavServer() {
       res.end(method === 'HEAD' ? undefined : existing)
     } catch { res.writeHead(500).end() }
   })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const address = server.address() as { port: number }
-  return { url: `http://127.0.0.1:${address.port}/`, files, requests,
+  const port = await listenOnFetchSafePort(server)
+  return { url: `http://127.0.0.1:${port}/`, files, requests,
     setHook: (next: typeof hook) => { hook = next },
     ignoreConditions: () => { ignoreConditions = true },
     weakEtags: () => { options.etagStyle = 'weak' },
