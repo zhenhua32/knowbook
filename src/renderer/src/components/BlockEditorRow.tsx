@@ -18,7 +18,7 @@ import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 
 const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
-const MarkdownFormatToolbar = lazy(() => import('./MarkdownFormatToolbar').then((module) => ({ default: module.MarkdownFormatToolbar })))
+const MarkdownFormatToolbar = lazy(() => import('./BlockFormatToolbar').then((module) => ({ default: module.BlockFormatToolbar })))
 
 const CodeBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
@@ -534,7 +534,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
             >
               {block.type === 'table' ? <summary>{isZh ? '编辑表格源码' : 'Edit table source'}</summary> : null}
               {block.type === 'frontmatter' ? <span>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</span> : null}
-              {canFormat && activeBlockIndex === index ? <Suspense fallback={null}><MarkdownFormatToolbar isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()} /></Suspense> : null}
+              {canFormat && activeBlockIndex === index ? <Suspense fallback={null}><MarkdownFormatToolbar textareaRef={textareaRef} isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()} /></Suspense> : null}
               {hasRichMedia ? (
                 <button
                   aria-expanded={isMediaSourceExpanded}

@@ -1,0 +1,15 @@
+/* Only the row's direct toolbar floats; table and Markdown source tools keep their layout. */
+.block-editor-input-column:has(> .markdown-format-toolbar) { position: relative; }
+.block-editor-input-column > .markdown-format-toolbar {
+  position: absolute;
+  z-index: 40;
+  box-sizing: border-box;
+  width: max-content;
+  padding: 4px;
+  border: 1px solid var(--kb-line);
+  border-radius: 7px;
+  background: var(--kb-bg);
+  box-shadow: 0 3px 12px #0002;
+  overflow: auto;
+  visibility: hidden;
+}
