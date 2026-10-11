@@ -1,4 +1,4 @@
-import { Component, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
+import { Component, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type SyntheticEvent } from 'react'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { AiAnswerContent } from './AiAnswerContent'
 import type {
@@ -49,6 +49,7 @@ export function AssistantConversation({
   transcriptBefore,
   transcriptAfter
 }: AssistantConversationProps) {
+  const promptHintId = useId()
   const [sessions, setSessions] = useState<AssistantSessionSummary[]>([])
   const [selectedId, setSelectedId] = useState<AssistantSessionId | null>(null)
   const [events, setEvents] = useState<AssistantEvent[]>([])
@@ -548,6 +549,7 @@ export function AssistantConversation({
       <div className="assistant-composer">
         <textarea
           aria-label={isZh ? '扩展需求' : 'Extension request'}
+          aria-describedby={promptHintId}
           className="editor-textarea"
           disabled={!canUseAi}
           onChange={(event) => commitDraft(event.target.value)}
@@ -555,7 +557,7 @@ export function AssistantConversation({
           onCompositionEnd={() => { composingRef.current = false }}
           onBlur={() => { composingRef.current = false }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
               event.preventDefault()
               void send()
             }
@@ -564,11 +566,11 @@ export function AssistantConversation({
           rows={3}
           value={draft}
         />
-        <button className="primary-button" disabled={busy || !canUseAi || !draft.trim()} onClick={() => void send()} type="button">
+        <button className="primary-button" disabled={busy || !canUseAi || !draft.trim()} onClick={() => void send()} type="button" aria-keyshortcuts="Control+Enter Meta+Enter">
           {busy ? (isZh ? '执行中' : 'Working') : (isZh ? '发送' : 'Send')}
         </button>
       </div>
-      <p className="assistant-composer-hint">{isZh ? 'Enter 发送 · Shift + Enter 换行' : 'Enter to send · Shift + Enter for a new line'}</p>
+      <p className="assistant-composer-hint" id={promptHintId}>{isZh ? 'Enter 换行 · Ctrl / ⌘ + Enter 发送' : 'Enter for a new line · Ctrl / ⌘ + Enter to send'}</p>
     </div>
   )
 }

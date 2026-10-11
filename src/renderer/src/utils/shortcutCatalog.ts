@@ -8,7 +8,7 @@ export const shortcutGroups = [
   { id: 'format', title: ['文字格式', 'Text formatting'], scope: ['可格式化正文、表格单元格或 Markdown 源码中', 'In formattable text, table cells, or Markdown source'] },
   { id: 'source', title: ['Markdown 源码', 'Markdown source'], scope: ['Markdown 源码弹窗内', 'In the Markdown source dialog'] },
   { id: 'database', title: ['数据库', 'Database'], scope: ['数据库工作台内', 'In the database workspace'] },
-  { id: 'assistant', title: ['AI 问答与对话', 'AI questions and conversations'], scope: ['文档问题和应用扩展对话使用不同的发送按键，见各项说明', 'Document questions and extension conversations use different send keys, as described below'] }
+  { id: 'assistant', title: ['AI 问答与对话', 'AI questions and conversations'], scope: ['文档问答和扩展对话：Enter 换行，Ctrl / ⌘ + Enter 发送', 'Document questions and extension conversations: Enter for a new line, Ctrl / ⌘ + Enter to send'] }
 ] as const
 export type ShortcutGroup = typeof shortcutGroups[number]['id']
 export type Shortcut = { id: string; group: ShortcutGroup; title: ShortcutText; keys: string[][]; note?: ShortcutText }
@@ -71,8 +71,8 @@ export const shortcuts: Shortcut[] = [
   { id: 'database-view', group: 'database', title: ['聚焦新建视图', 'Focus new view'], keys: [['Mod', 'Shift', 'V']] },
   { id: 'database-delete', group: 'database', title: ['删除选中记录', 'Delete selected records'], keys: [['Delete']], note: ['自定义数据库中，未在输入框内输入时；会先要求确认。', 'In a custom database, outside text fields; asks for confirmation first.'] },
   { id: 'assistant-document-send', group: 'assistant', title: ['发送文档问题', 'Send a document question'], keys: [['Mod', 'Enter']], note: ['文档智能助手和文档辅助区；Enter 换行，输入法组合输入时暂停发送。', 'Document AI assistant and document auxiliary panel; Enter inserts a line break, and sending pauses during IME composition.'] },
-  { id: 'assistant-send', group: 'assistant', title: ['发送扩展对话消息', 'Send an extension message'], keys: [['Enter']], note: ['应用扩展助手和插件定制对话；输入法组合输入时暂停。', 'App extension assistant and plugin customization conversations; paused during IME composition.'] },
-  { id: 'assistant-newline', group: 'assistant', title: ['扩展对话消息内换行', 'Insert an extension message line break'], keys: [['Shift', 'Enter']], note: ['应用扩展助手和插件定制对话。', 'App extension assistant and plugin customization conversations.'] }
+  { id: 'assistant-send', group: 'assistant', title: ['发送扩展对话消息', 'Send an extension message'], keys: [['Mod', 'Enter']], note: ['应用扩展助手和插件定制对话；Enter 换行，输入法组合输入时暂停发送。', 'App extension assistant and plugin customization conversations; Enter inserts a line break, and sending pauses during IME composition.'] },
+  { id: 'assistant-newline', group: 'assistant', title: ['AI 消息内换行', 'Insert an AI message line break'], keys: [['Enter'], ['Shift', 'Enter']], note: ['文档智能助手、文档辅助区、应用扩展助手和插件定制对话。', 'Document AI assistant, document auxiliary panel, app extension assistant, and plugin customization conversations.'] }
 ]
 
 export function shortcutKeyLabel(key: string, mac: boolean): string {

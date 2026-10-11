@@ -25,14 +25,16 @@ test('shortcut help searches actions and key combinations, filters contexts and 
     await search.fill('加粗')
     await expect(help.locator('[data-shortcut-id="format-bold"]')).toBeVisible()
     await search.fill('Ctrl+Enter')
-    await expect(help.locator('[data-shortcut-id]')).toHaveCount(4)
-    for (const id of ['quick-capture-save', 'search-document', 'block-insert', 'assistant-document-send']) {
+    await expect(help.locator('[data-shortcut-id]')).toHaveCount(5)
+    for (const id of ['quick-capture-save', 'search-document', 'block-insert', 'assistant-document-send', 'assistant-send']) {
       await expect(help.locator(`[data-shortcut-id="${id}"]`)).toBeVisible()
     }
     const category = help.getByRole('combobox', { name: uiText('Shortcut category', '快捷键分类') })
     await category.selectOption('assistant')
-    await expect(help.locator('[data-shortcut-id]')).toHaveCount(1)
+    await expect(help.locator('[data-shortcut-id]')).toHaveCount(2)
     await expect(help.locator('[data-shortcut-id="assistant-document-send"]')).toContainText(/Document AI assistant and document auxiliary panel|文档智能助手和文档辅助区/)
+    await expect(help.locator('[data-shortcut-id="assistant-send"]')).toContainText(/App extension assistant and plugin customization conversations|应用扩展助手和插件定制对话/)
+    await expect(help.locator('.shortcut-help-scope')).toContainText(/Document questions and extension conversations: Enter for a new line|文档问答和扩展对话：Enter 换行/)
     await search.fill('')
     await category.selectOption('tree')
     await expect(help.locator('[data-shortcut-id]')).toHaveCount(6)

@@ -98,31 +98,119 @@ test('task switching keeps document and extension drafts, conversation and appro
     })
 })
 
-test('extension submission preserves IME composition and Shift+Enter before sending on Enter', async () => {
-  const sent: unknown[] = []
-  await withWorkspace({ listAssistantSessions: async () => [session('app', 0)], getAssistantSessionEvents: async () => [],
-    sendAssistantMessage: async (input: unknown) => { sent.push(input) } }, async ({ document, window, render }) => {
-    await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true,
-      isZh: true, initialDraft: '中文扩展需求' }))
-    const prompt = document.querySelector<HTMLTextAreaElement>('.assistant-composer textarea')!
-    assert.equal(prompt.getAttribute('aria-label'), '扩展需求')
-    await act(async () => {
-      prompt.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true }))
-      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+const sendModifiers = [
+  { name: 'Control', init: { ctrlKey: true } },
+  { name: 'Meta', init: { metaKey: true } }
+] as const
+
+for (const { name, init } of sendModifiers) {
+  for (const isZh of [true, false]) {
+    test(`extension ${name}+Enter sends once while preserving ordinary Enter and IME (${isZh ? 'zh' : 'en'})`, async () => {
+      const sent: unknown[] = []
+      const draft = '中文扩展需求\nKeep the entire draft'
+      await withWorkspace({ listAssistantSessions: async () => [session('app', 0)], getAssistantSessionEvents: async () => [],
+        sendAssistantMessage: async (input: unknown) => { sent.push(input) } }, async ({ document, window, render }) => {
+        await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true,
+          isZh, initialDraft: draft }))
+        const prompt = document.querySelector<HTMLTextAreaElement>('.assistant-composer textarea')!
+        const sendButton = document.querySelector<HTMLButtonElement>('.assistant-composer button')!
+        const key = async (options: KeyboardEventInit) => {
+          const event = new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options })
+          await act(async () => prompt.dispatchEvent(event))
+          return event
+        }
+        assert.equal(prompt.getAttribute('aria-label'), isZh ? '扩展需求' : 'Extension request')
+        assert.equal(sendButton.getAttribute('aria-keyshortcuts'), 'Control+Enter Meta+Enter')
+        assert.equal(document.querySelector('.assistant-composer-hint')?.textContent,
+          isZh ? 'Enter 换行 · Ctrl / ⌘ + Enter 发送' : 'Enter for a new line · Ctrl / ⌘ + Enter to send')
+
+        // JSDOM does not apply native textarea editing; assert that React leaves
+        // newline keys untouched. The Electron test verifies actual insertion.
+        assert.equal((await key({})).defaultPrevented, false)
+        assert.equal((await key({ shiftKey: true })).defaultPrevented, false)
+        assert.equal(sent.length, 0)
+        assert.equal(prompt.value, draft)
+
+        await act(async () => prompt.dispatchEvent(new window.CompositionEvent('compositionstart', { bubbles: true })))
+        assert.equal((await key(init)).defaultPrevented, false)
+        await act(async () => prompt.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true })))
+        assert.equal((await key({ ...init, isComposing: true })).defaultPrevented, false)
+        assert.equal((await key({ ...init, keyCode: 229 })).defaultPrevented, false)
+        assert.equal(sent.length, 0)
+        assert.equal(prompt.value, draft)
+
+        assert.equal((await key(init)).defaultPrevented, true)
+        assert.deepEqual(sent, [{ sessionId: 'app', text: draft, mode: 'auto' }])
+        assert.equal(prompt.value, '')
+        assert.equal(sendButton.disabled, true)
+      })
     })
-    assert.equal(sent.length, 0)
-    assert.equal(prompt.value, '中文扩展需求')
-    await act(async () => {
-      prompt.dispatchEvent(new window.CompositionEvent('compositionend', { bubbles: true }))
-      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true }))
-      prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }))
+  }
+
+  for (const input of [
+    { name: 'whitespace', draft: ' \n\t ', aiEnabled: true, hasApiKey: true },
+    { name: 'AI disabled', draft: 'Preserve this unsent request', aiEnabled: false, hasApiKey: true },
+    { name: 'missing API key', draft: 'Preserve this unsent request', aiEnabled: true, hasApiKey: false }
+  ]) {
+    test(`extension ${name}+Enter cannot send ${input.name} or clear its draft`, async () => {
+      const sent: unknown[] = []
+      await withWorkspace({ listAssistantSessions: async () => [session('app', 0)], getAssistantSessionEvents: async () => [],
+        sendAssistantMessage: async (request: unknown) => { sent.push(request) } }, async ({ document, window, render }) => {
+        await render(createElement(AssistantConversation, { activeDocumentId: null, isZh: true,
+          aiEnabled: input.aiEnabled, hasApiKey: input.hasApiKey, initialDraft: input.draft }))
+        const prompt = document.querySelector<HTMLTextAreaElement>('.assistant-composer textarea')!
+        assert.equal(document.querySelector<HTMLButtonElement>('.assistant-composer button')!.disabled, true)
+        await act(async () => prompt.dispatchEvent(new window.KeyboardEvent('keydown', {
+          key: 'Enter', bubbles: true, cancelable: true, ...init
+        })))
+        assert.equal(sent.length, 0)
+        assert.equal(prompt.value, input.draft)
+      })
     })
-    assert.equal(sent.length, 0)
-    await act(async () => prompt.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })))
-    assert.deepEqual(sent, [{ sessionId: 'app', text: '中文扩展需求', mode: 'auto' }])
-    assert.equal(prompt.value, '')
+  }
+
+  test(`extension ${name}+Enter cannot start another send while creating its session`, async () => {
+    const sent: unknown[] = []
+    let createCalls = 0
+    let created = false
+    let resolveCreation!: (value: ReturnType<typeof session>) => void
+    const firstDraft = 'First request before a session exists'
+    const secondDraft = 'Keep this second request while the session is being created'
+    await withWorkspace({ listAssistantSessions: async () => created ? [session('new', 0)] : [],
+      getAssistantSessionEvents: async () => [],
+      createAssistantSession: () => {
+        createCalls++
+        return new Promise<ReturnType<typeof session>>(resolve => { resolveCreation = resolve })
+      },
+      sendAssistantMessage: async (request: unknown) => { sent.push(request) }
+    }, async ({ document, window, render }) => {
+      await render(createElement(AssistantConversation, { activeDocumentId: null, aiEnabled: true, hasApiKey: true,
+        isZh: false, initialDraft: firstDraft }))
+      const prompt = document.querySelector<HTMLTextAreaElement>('.assistant-composer textarea')!
+      const sendButton = document.querySelector<HTMLButtonElement>('.assistant-composer button')!
+      const key = async () => act(async () => prompt.dispatchEvent(new window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true, ...init
+      })))
+      await key()
+      assert.equal(createCalls, 1)
+      assert.equal(sent.length, 0)
+      assert.equal(sendButton.disabled, true)
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(prompt, secondDraft)
+        prompt.dispatchEvent(new window.Event('input', { bubbles: true }))
+      })
+      await key()
+      assert.equal(createCalls, 1)
+      assert.equal(sent.length, 0)
+      assert.equal(prompt.value, secondDraft)
+      await act(async () => { created = true; resolveCreation(session('new', 0)) })
+      assert.deepEqual(sent, [{ sessionId: 'new', text: firstDraft, mode: 'auto' }])
+      assert.equal(createCalls, 1)
+      assert.equal(prompt.value, secondDraft)
+      assert.equal(sendButton.disabled, false)
+    })
   })
-})
+}
 
 test('opening a restored hidden conversation reveals its approval and preserves an unpinned reading position', async () => {
   const approval = { id: 'approval-event', sessionId: 'app', workspaceId: 'workspace', seq: 21,

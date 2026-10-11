@@ -168,6 +168,129 @@ test('selecting document context saves the previous source and waits for coheren
   })
 })
 
+for (const scenario of [{ language: 'en-US', theme: 'light', width: 1000 }, { language: 'zh-CN', theme: 'dark', width: 760 }] as const) {
+  test(`AI inputs share multiline and modified-Enter submission across task switches (${scenario.language}) @electron`, async ({}, testInfo) => {
+    await withElectronApp(async ({ page, app }) => {
+      await app.evaluate(({ BrowserWindow }, width) => {
+        const window = BrowserWindow.getAllWindows()[0]
+        window.setMinimumSize(680, 520)
+        window.setContentSize(width, 620)
+      }, scenario.width)
+      await expect.poll(() => page.evaluate(() => [innerWidth, innerHeight])).toEqual([scenario.width, 620])
+      await page.evaluate(async ({ language, theme }) => {
+        await window.knowbook.saveSetting('ui.language', language)
+        await window.knowbook.saveSetting('appearance.theme', theme)
+      }, scenario)
+      const ids = await seedDocuments(page, true)
+      await installAnswers(app)
+      await app.evaluate(({ ipcMain }) => {
+        process.env.KNOWBOOK_AI_SHORTCUT_EXTENSION_REQUESTS = '[]'
+        ipcMain.removeHandler('knowbook:send-assistant-message')
+        ipcMain.handle('knowbook:send-assistant-message', (_event, input: unknown) => {
+          const requests = JSON.parse(process.env.KNOWBOOK_AI_SHORTCUT_EXTENSION_REQUESTS!) as unknown[]
+          requests.push(input)
+          process.env.KNOWBOOK_AI_SHORTCUT_EXTENSION_REQUESTS = JSON.stringify(requests)
+          return { sessionId: 'workspace-app', turnId: 'shortcut-turn', status: 'completed' }
+        })
+      })
+      const readRequests = () => app.evaluate(() => ({
+        document: JSON.parse(process.env.KNOWBOOK_AI_WORKSPACE_REQUESTS!),
+        extension: JSON.parse(process.env.KNOWBOOK_AI_SHORTCUT_EXTENSION_REQUESTS!)
+      }))
+      const hint = scenario.language === 'zh-CN' ? 'Enter 换行 · Ctrl / ⌘ + Enter 发送' : 'Enter for a new line · Ctrl / ⌘ + Enter to send'
+      await openAi(page)
+      const documentTab = page.getByRole('tab', { name: uiText('Document AI assistant', '文档智能助手') })
+      const extensionTab = page.getByRole('tab', { name: uiText('App extension assistant', '应用扩展助手') })
+      const documentPrompt = page.locator('.ai-document-prompt')
+      await expect(page.locator('.ai-send-shortcut')).toHaveText(hint)
+      await expect(page.locator('.ai-send-shortcut')).toBeInViewport({ ratio: 1 })
+      await documentPrompt.fill('Document first line')
+      await documentPrompt.press('End')
+      await documentPrompt.press('Enter')
+      await documentPrompt.press('Shift+Enter')
+      await page.keyboard.insertText('Document second line')
+      const documentDraft = 'Document first line\n\nDocument second line'
+      await expect(documentPrompt).toHaveValue(documentDraft)
+      expect(await readRequests()).toEqual({ document: [], extension: [] })
+      await documentPrompt.press('Control+Enter')
+      await expect.poll(readRequests).toEqual({ document: [{ documentId: ids.a, prompt: documentDraft }], extension: [] })
+
+      await extensionTab.click()
+      const extensionPrompt = page.locator('.ai-extension-workspace .assistant-composer textarea')
+      const extensionSend = page.locator('.ai-extension-workspace .assistant-composer button')
+      await expect(page.locator('.assistant-session-select')).toHaveValue('workspace-app')
+      await expect(page.locator('.assistant-composer-hint')).toHaveText(hint)
+      await expect(page.locator('.assistant-composer-hint')).toBeInViewport({ ratio: 1 })
+      await expect(extensionSend).toHaveAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter')
+      await extensionPrompt.fill('Extension first line')
+      await extensionPrompt.press('End')
+      await extensionPrompt.press('Enter')
+      await extensionPrompt.press('Shift+Enter')
+      await page.keyboard.insertText('Extension second line')
+      const extensionDraft = 'Extension first line\n\nExtension second line'
+      await expect(extensionPrompt).toHaveValue(extensionDraft)
+      expect((await readRequests()).extension).toEqual([])
+      await documentTab.click()
+      await expect(documentPrompt).toHaveValue(documentDraft)
+      await extensionTab.click()
+      await expect(extensionPrompt).toHaveValue(extensionDraft)
+      await expect(page.locator('.assistant-approval')).toBeVisible()
+      await extensionPrompt.dispatchEvent('compositionstart')
+      await extensionPrompt.press('Control+Enter')
+      await extensionPrompt.press('Meta+Enter')
+      expect((await readRequests()).extension).toEqual([])
+      await extensionPrompt.dispatchEvent('compositionend')
+      // Reset any native default action during the simulated composition, then
+      // use real key events to verify both platform modifiers submit once.
+      await extensionPrompt.fill(extensionDraft)
+      await extensionPrompt.press('Control+Enter')
+      const extensionRequests = [{ sessionId: 'workspace-app', text: extensionDraft, mode: 'auto' }]
+      await expect.poll(async () => (await readRequests()).extension).toEqual(extensionRequests)
+      await expect(extensionPrompt).toHaveValue('')
+      await extensionPrompt.fill('Second extension request')
+      await extensionPrompt.press('Meta+Enter')
+      extensionRequests.push({ sessionId: 'workspace-app', text: 'Second extension request', mode: 'auto' })
+      await expect.poll(async () => (await readRequests()).extension).toEqual(extensionRequests)
+      await expect(extensionPrompt).toHaveValue('')
+      await extensionPrompt.fill('  ')
+      await expect(extensionSend).toBeDisabled()
+      await extensionPrompt.press('Control+Enter')
+      await extensionPrompt.press('Meta+Enter')
+      expect((await readRequests()).extension).toEqual(extensionRequests)
+      await extensionPrompt.fill('Button still sends')
+      await extensionSend.click()
+      extensionRequests.push({ sessionId: 'workspace-app', text: 'Button still sends', mode: 'auto' })
+      await expect.poll(async () => (await readRequests()).extension).toEqual(extensionRequests)
+      expect(await app.evaluate(() => process.env.KNOWBOOK_AI_WORKSPACE_APPROVAL)).toBe('')
+      await page.screenshot({ path: testInfo.outputPath('extension-shortcuts.png') })
+
+      await page.getByTitle(uiText('Documents', '文档'), { exact: true }).first().click()
+      const auxiliaryPrompt = page.locator('.document-aux-ai-prompt')
+      if (!await auxiliaryPrompt.isVisible()) await page.locator('.document-header-aux-button').click()
+      await expect(page.locator('.document-aux-ai-shortcut')).toHaveText(hint)
+      await auxiliaryPrompt.fill('Auxiliary first line')
+      await auxiliaryPrompt.press('End')
+      await auxiliaryPrompt.press('Enter')
+      await page.keyboard.insertText('Auxiliary second line')
+      const auxiliaryDraft = 'Auxiliary first line\nAuxiliary second line'
+      await expect(auxiliaryPrompt).toHaveValue(auxiliaryDraft)
+      expect((await readRequests()).document).toEqual([{ documentId: ids.a, prompt: documentDraft }])
+      await auxiliaryPrompt.press('Meta+Enter')
+      await expect.poll(async () => (await readRequests()).document).toEqual([
+        { documentId: ids.a, prompt: documentDraft }, { documentId: ids.a, prompt: auxiliaryDraft }
+      ])
+      const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
+        visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable()
+      })))
+      expect(windows).toEqual([{ visible: false, focused: false, focusable: false }])
+      await testInfo.attach('shortcut-requests-and-background-state', {
+        body: Buffer.from(JSON.stringify({ requests: await readRequests(), windows }, null, 2)), contentType: 'application/json'
+      })
+      await page.screenshot({ path: testInfo.outputPath('auxiliary-shortcuts.png') })
+    })
+  })
+}
+
 test('AI task switches preserve drafts and approvals and render safe Markdown with IME-aware submission @electron', async ({}, testInfo) => {
   await withElectronApp(async ({ page, app }) => {
     const ids = await seedDocuments(page, true)

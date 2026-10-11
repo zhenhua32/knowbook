@@ -49,6 +49,7 @@ export function AISection(props: AISectionProps) {
     aiEnabled, hasApiKey, onRunEnabledAutomations, aiContextSearching, aiContextHasSearched, onFindRelatedNotes,
     aiAsking, onAskAi, aiContextError, aiContextResults, onOpenDocument, aiAnswer, aiAnsweredPrompt, aiAnswerError, aiFailedPrompt, onRetryAi, extensionTools, extensionMessageCards } = props
   const promptId = useId()
+  const promptHintId = useId()
   const contextId = useId()
   const composing = useRef(false)
   const canUseAi = aiEnabled && hasApiKey
@@ -129,7 +130,7 @@ export function AISection(props: AISectionProps) {
         </div>
         <div className="ai-panel ai-document-composer">
           <label className="ai-prompt-label" htmlFor={promptId}>{isZh ? '你想了解什么？' : 'What would you like to know?'}</label>
-          <textarea id={promptId} className="editor-textarea ai-document-prompt" rows={3}
+          <textarea id={promptId} aria-describedby={promptHintId} className="editor-textarea ai-document-prompt" rows={3}
             value={aiPromptDraft} onChange={event => onAiPromptChange(event.target.value)}
             disabled={!documentReady} placeholder={ui.askAiPlaceholder}
             onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false }}
@@ -142,7 +143,7 @@ export function AISection(props: AISectionProps) {
             <button className="primary-button" disabled={!canAsk} onClick={onAskAi} type="button" aria-keyshortcuts="Control+Enter Meta+Enter">
               {aiAsking ? ui.thinking : ui.askAiLabel}
             </button>
-            <span className="ai-send-shortcut">{isZh ? 'Ctrl / ⌘ + Enter 发送' : 'Ctrl / ⌘ + Enter to send'}</span>
+            <span className="ai-send-shortcut" id={promptHintId}>{isZh ? 'Enter 换行 · Ctrl / ⌘ + Enter 发送' : 'Enter for a new line · Ctrl / ⌘ + Enter to send'}</span>
           </div>
         </div>
       </article>

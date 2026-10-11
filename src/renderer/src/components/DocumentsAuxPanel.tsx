@@ -215,7 +215,7 @@ export function DocumentsAuxPanel(props: DocumentsAuxPanelProps) {
                 {aiAutomationsRunning ? ui.generatingSummary : ui.runEnabledAutomations}
               </button>
             </div>
-            <p className="mini-hint document-aux-ai-shortcut" id={promptHintId}>{isZh ? 'Ctrl / ⌘ + Enter 发送' : 'Ctrl / ⌘ + Enter to send'}</p>
+            <p className="mini-hint document-aux-ai-shortcut" id={promptHintId}>{isZh ? 'Enter 换行 · Ctrl / ⌘ + Enter 发送' : 'Enter for a new line · Ctrl / ⌘ + Enter to send'}</p>
             {aiAsking ? <div className="document-aux-ai-pending" role="status">{isZh ? '正在结合文档思考…' : 'Thinking with your document…'}</div> : null}
             {aiAnswerError ? <AiRequestError isZh={isZh} error={aiAnswerError} failedPrompt={aiFailedPrompt}
               busy={aiAsking} canRetry={canUseAi} onRetry={onRetryAi} /> : null}
