@@ -495,7 +495,7 @@ function createUiText(language: UiLanguage) {
     initializing: zh ? '初始化中...' : 'Initializing...',
     notYetExported: zh ? '尚未导出' : 'Not yet exported',
     recentDocumentsLabel: zh ? '最近文档' : 'Recent documents',
-    recentDocumentsTitle: zh ? '来自初始化存储' : 'Seeded from the bootstrap store',
+    recentDocumentsTitle: zh ? '最近更新' : 'Recently updated',
     globalSearchPlaceholder: zh ? '搜索所有文档...（Ctrl+K 关闭）' : 'Search all documents... (Ctrl+K to close)',
     tableHeaderBlocks: zh ? '块数' : 'Blocks',
     tableHeaderLinks: zh ? '链接数' : 'Links',
