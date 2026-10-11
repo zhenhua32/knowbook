@@ -75,7 +75,11 @@ test('link suggestions follow the current query and document with retry, keyboar
       })
     })
     const requests = () => app.evaluate(() => JSON.parse(process.env.KNOWBOOK_ASSIST_REQUESTS!))
-    const settle = (index: number, fail = false) => app.evaluate(({ ipcMain }, result) => { ipcMain.emit('knowbook:test-assist-settle', null, result) }, { index, fail })
+    // Finish the inspector evaluation before settling an IPC response, so an
+    // injected rejection cannot interrupt the evaluation that scheduled it.
+    const settle = (index: number, fail = false) => app.evaluate(({ ipcMain }, result) => {
+      setImmediate(() => ipcMain.emit('knowbook:test-assist-settle', null, result))
+    }, { index, fail })
     const editor = page.locator('.block-inline-textarea').first()
     const panel = page.locator('.link-helper-panel')
     const expectNeutralPanel = async () => {
