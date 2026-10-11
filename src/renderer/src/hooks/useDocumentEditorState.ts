@@ -80,6 +80,7 @@ export function useDocumentEditorState({
   const isRestoringHistoryRef = useRef<boolean>(false)
   const historyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingHistorySnapshotRef = useRef<DocumentBlockDraft[] | null>(null)
+  const checkpointedDraftBlocksRef = useRef<DocumentBlockDraft[] | null>(null)
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectedDocumentIdRef = useRef(selectedDocumentId)
   const selectedDocumentRef = useRef(selectedDocument)
@@ -119,6 +120,7 @@ export function useDocumentEditorState({
       historyDebounceTimerRef.current = null
     }
     pendingHistorySnapshotRef.current = null
+    checkpointedDraftBlocksRef.current = null
     lastEditorBookmarkRef.current = null
     pendingHistoryFocusRef.current = null
 
@@ -139,6 +141,7 @@ export function useDocumentEditorState({
     readingHistoryScopeRef.current = isReadingModeRef.current ? { floor: 0, ceiling: 0 } : null
     isRestoringHistoryRef.current = false
     pendingHistorySnapshotRef.current = null
+    checkpointedDraftBlocksRef.current = null
   }, [])
 
   useLayoutEffect(() => {
@@ -289,10 +292,13 @@ export function useDocumentEditorState({
     }
     pendingHistorySnapshotRef.current = null
     commitHistorySnapshot(blocks, bookmarkOverride)
+    checkpointedDraftBlocksRef.current = blocks
   }, [commitHistorySnapshot])
 
   const scheduleHistorySnapshot = useCallback((blocks: DocumentBlockDraft[]) => {
-    if (isRestoringHistoryRef.current) {
+    // A child layout may have already closed a programmatic edit after
+    // restoring its selection. Do not reopen that same draft as pending typing.
+    if (isRestoringHistoryRef.current || blocks === checkpointedDraftBlocksRef.current) {
       return
     }
 

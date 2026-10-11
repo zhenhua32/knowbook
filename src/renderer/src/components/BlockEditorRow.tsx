@@ -16,6 +16,7 @@ import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { scheduleTextareaResize as resizeBlockTextarea, focusBlockTextarea } from '../utils/textareaLayout'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
+import { editCodeIndentation } from '../utils/codeIndentation'
 
 const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
 const MarkdownFormatToolbar = lazy(() => import('./BlockFormatToolbar').then((module) => ({ default: module.BlockFormatToolbar })))
@@ -236,14 +237,17 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
-  const formatSelection = useRef<{ content: string; start: number; end: number } | null>(null)
+  const pendingTextSelection = useRef<{ content: string; start: number; end: number;
+    direction?: 'forward' | 'backward' | 'none'; checkpoint?: boolean } | null>(null)
   useLayoutEffect(() => {
-    const selection = formatSelection.current, textarea = textareaRef.current
+    const selection = pendingTextSelection.current, textarea = textareaRef.current
     if (!selection || !textarea || textarea.value !== selection.content) return
-    formatSelection.current = null
+    pendingTextSelection.current = null
     textarea.focus()
-    textarea.setSelectionRange(selection.start, selection.end)
+    textarea.setSelectionRange(selection.start, selection.end, selection.direction)
     captureBlockCursor(index, textarea)
+    // Keep each indentation separate from typing that follows immediately.
+    if (selection.checkpoint) props.checkpointDraft?.()
   })
   const applyFormat = (format: MarkdownFormat) => {
     const textarea = textareaRef.current
@@ -253,7 +257,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
       textarea.focus(); textarea.setSelectionRange(result.start, result.end); captureBlockCursor(index, textarea)
       return
     }
-    formatSelection.current = result
+    pendingTextSelection.current = result
     props.checkpointDraft?.()
     updateDraftBlock(index, { content: result.content })
   }
@@ -822,7 +826,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   return
                 }
 
-                // Lists retain Tab nesting. Shift+Tab in other text blocks returns to the format toolbar.
+                // Lists retain Tab nesting; source indents text; prose can return to its format toolbar.
                 if (event.key === 'Tab' && !event.altKey && !event.metaKey && !event.ctrlKey) {
                   event.preventDefault()
                   const el = event.currentTarget
@@ -836,6 +840,16 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
                   if (isNestableBlockType(block.type)) {
                     adjustBlockDepth(index, event.shiftKey ? -1 : 1, start)
+                    return
+                  }
+
+                  if (!canFormat) {
+                    const result = editCodeIndentation(el.value, start, end, event.shiftKey, el.selectionDirection)
+                    if (result.content !== el.value) {
+                      pendingTextSelection.current = { ...result, checkpoint: true }
+                      props.checkpointDraft?.()
+                      updateDraftBlock(index, { content: result.content })
+                    }
                     return
                   }
 
