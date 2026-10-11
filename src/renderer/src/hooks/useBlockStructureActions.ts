@@ -38,19 +38,29 @@ export function useBlockStructureActions({
 }: UseBlockStructureActionsParams) {
   const buildSiblingDraftBlock = useCallback((anchorBlock?: DocumentBlockDraft): DocumentBlockDraft => {
     if (anchorBlock && isNestableBlock(anchorBlock.type)) {
-      return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
+      return {
+        ...buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null),
+        ...(anchorBlock.markdownFormat ? { markdownFormat: { ...anchorBlock.markdownFormat } } : {})
+      }
     }
 
     return buildBlockTypePatch('paragraph', '')
   }, [buildBlockTypePatch, isNestableBlock])
 
-  const insertDraftBlockAt = useCallback((index: number, anchorIndex: number | null = null) => {
+  const insertDraftBlockAt = useCallback((index: number, anchorIndex: number | null = null, contentOverride?: string) => {
+    if (anchorIndex !== null && !draftBlocks[anchorIndex]) return
+
+    const nextIndex = anchorIndex !== null && index > anchorIndex
+      ? getBlockSubtreeEndIndex(draftBlocks, anchorIndex) + 1
+      : Math.max(0, Math.min(index, draftBlocks.length))
     pushToHistory(draftBlocks)
-    const nextIndex = Math.max(0, Math.min(index, draftBlocks.length))
     clearBlockSelection()
 
     setDraftBlocks((previous) => {
       const next = [...previous]
+      if (anchorIndex !== null && contentOverride !== undefined) {
+        next[anchorIndex] = { ...next[anchorIndex], content: contentOverride }
+      }
       const anchorBlock = anchorIndex !== null ? next[anchorIndex] : undefined
       next.splice(nextIndex, 0, buildSiblingDraftBlock(anchorBlock))
       return next

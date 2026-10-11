@@ -13,6 +13,7 @@ import { isNestableBlock, normalizeBlockDepth } from '../src/renderer/src/utils/
 import { validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization'
 import { getBlockSubtreeEndIndex } from '../src/renderer/src/utils/draftTreeMove'
 import { getSlashCommandContext } from '../src/renderer/src/utils/editorAssist'
+import { isDraftTreeContiguous } from '../src/renderer/src/utils/draftTreeDepthChange'
 
 type Editor = ReturnType<typeof useDocumentEditorState>
 type Actions = ReturnType<typeof useSingleBlockTreeActions>
@@ -303,4 +304,119 @@ test('child insertion requires a list parent and preserves valid nested insertio
     assert.equal(result[5].depth, 1)
     assert.equal(result[5].parentBlockId, 'parent')
   })
+})
+
+test('inserting below a root list places the new sibling after every child and inherits only list formatting', async () => {
+  const blocks = tree()
+  blocks[1] = { ...blocks[1], type: 'numbered-todo', checked: true, listStart: 7,
+    tags: ['parent-only'], highlight: 'yellow', markdownFormat: { listMarker: ')', listLoose: true } }
+  await withTreeEditor(blocks, async (current, document) => {
+    const original = current().editor.draftBlocks
+    await act(async () => current().structure.insertDraftBlockAt(2, 1))
+    const result = current().editor.draftBlocks
+    assert.equal(isDraftTreeContiguous(result), true)
+    assert.deepEqual(result.slice(0, 5), original.slice(0, 5))
+    assert.deepEqual(result[6], original[5])
+    assert.equal(result[5].type, 'numbered-todo')
+    assert.equal(result[5].content, '')
+    assert.equal(result[5].checked, false)
+    assert.equal(result[5].depth, 0)
+    assert.equal(result[5].parentBlockId, null)
+    assert.deepEqual(result[5].markdownFormat, blocks[1].markdownFormat)
+    assert.notEqual(result[5].markdownFormat, result[1].markdownFormat)
+    assert.equal(result[5].listStart, undefined)
+    assert.equal(result[5].tags, undefined)
+    assert.equal(result[5].highlight, undefined)
+    assert.equal(new Set(result.map(block => block.id)).size, result.length)
+    assert.equal(document.activeElement, document.querySelectorAll('textarea')[5])
+    assert.equal(current().activeBlockIndex, 5)
+    assert.equal(current().activeCursorPosition, 0)
+  })
+})
+
+for (const below of [false, true]) {
+  test(`inserting ${below ? 'below' : 'above'} a nested parent preserves complete trees and undo/redo selection`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      await withTreeEditor(nestedTree('Beta'), async (current, document) => {
+        const original = current().editor.draftBlocks
+        const parent = document.querySelectorAll('textarea')[1]
+        parent.focus(); parent.setSelectionRange(1, 3, 'backward')
+        await act(async () => current().structure.insertDraftBlockAt(below ? 2 : 1, 1))
+        const result = current().editor.draftBlocks
+        const insertionIndex = below ? 4 : 1
+        assert.equal(isDraftTreeContiguous(result), true)
+        assert.deepEqual(result.filter((_, index) => index !== insertionIndex), original)
+        assert.equal(result[insertionIndex].depth, 1)
+        assert.equal(result[insertionIndex].parentBlockId, 'outer')
+        assert.equal(result[insertionIndex].type, 'bulleted-list')
+        const inserted = document.querySelectorAll('textarea')[insertionIndex]
+        assert.equal(document.activeElement, inserted)
+        assert.equal(inserted.selectionStart, 0)
+        await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+        assert.deepEqual(current().editor.draftBlocks, original)
+        assert.equal(document.activeElement, parent)
+        assert.deepEqual([parent.selectionStart, parent.selectionEnd, parent.selectionDirection], [1, 3, 'backward'])
+        await act(async () => current().editor.redoEdit())
+        assert.deepEqual(JSON.parse(JSON.stringify(current().editor.draftBlocks)), JSON.parse(JSON.stringify(result)))
+        assert.equal(document.activeElement, document.querySelectorAll('textarea')[insertionIndex])
+        assert.equal((document.activeElement as HTMLTextAreaElement).selectionStart, 0)
+      })
+    } finally { t.mock.timers.reset() }
+  })
+}
+
+for (const action of ['insert-above', 'insert-below'] as const) {
+  test(`slash ${action} removes only the command and inserts a sibling as one undoable operation`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      await withTreeEditor(nestedTree('/below Beta'), async (current, document) => {
+        const original = current().editor.draftBlocks
+        const parent = document.querySelectorAll('textarea')[1]
+        parent.focus(); parent.setSelectionRange(6, 6)
+        await act(async () => current().setCursor(1, 6))
+        await act(async () => current().slash.applySlashCommand({ id: action, label: action, description: '',
+          keywords: [], kind: 'action', action }))
+        const result = current().editor.draftBlocks
+        const insertionIndex = action === 'insert-above' ? 1 : 4
+        assert.equal(isDraftTreeContiguous(result), true)
+        assert.deepEqual(result.filter((_, index) => index !== insertionIndex),
+          original.map(block => block.id === 'parent' ? { ...block, content: ' Beta' } : block))
+        assert.equal(result[insertionIndex].parentBlockId, 'outer')
+        assert.equal(result[insertionIndex].depth, 1)
+        assert.equal(document.activeElement, document.querySelectorAll('textarea')[insertionIndex])
+        await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+        assert.deepEqual(current().editor.draftBlocks, original)
+        assert.equal(current().editor.canUndo, false)
+        assert.equal(document.activeElement, parent)
+        assert.equal(parent.selectionStart, 6)
+        await act(async () => current().editor.redoEdit())
+        assert.deepEqual(JSON.parse(JSON.stringify(current().editor.draftBlocks)), JSON.parse(JSON.stringify(result)))
+      })
+    } finally { t.mock.timers.reset() }
+  })
+}
+
+test('invalid insertion anchors leave redo available and unanchored insertion still appends a paragraph', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    await withTreeEditor(tree(), async current => {
+      const original = current().editor.draftBlocks
+      await act(async () => current().structure.insertDraftBlockAt(2, 1))
+      await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+      assert.equal(current().editor.canRedo, true)
+      for (const anchor of [-1, 99]) {
+        await act(async () => current().structure.insertDraftBlockAt(2, anchor, 'Do not change anything'))
+        assert.deepEqual(current().editor.draftBlocks, original)
+        assert.equal(current().editor.canRedo, true)
+        assert.equal(current().editor.canUndo, false)
+      }
+      await act(async () => current().slash.addDraftBlock())
+      const result = current().editor.draftBlocks
+      assert.deepEqual(result.slice(0, original.length), original)
+      assert.equal(result.at(-1)?.type, 'paragraph')
+      assert.equal(result.at(-1)?.depth, 0)
+      assert.equal(isDraftTreeContiguous(result), true)
+    })
+  } finally { t.mock.timers.reset() }
 })

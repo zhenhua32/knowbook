@@ -46,7 +46,7 @@ type UseSlashCommandActionsParams<TSlashCommand extends SlashCommandLike> = {
   duplicateDraftBlock: (index: number, contentOverride?: string) => void
   endBlockDrag: () => void
   insertChildDraftBlock: (index: number, contentOverride?: string) => void
-  insertDraftBlockAt: (index: number, anchorIndex?: number | null) => void
+  insertDraftBlockAt: (index: number, anchorIndex?: number | null, contentOverride?: string) => void
   moveDraftBlockBySibling: (index: number, direction: -1 | 1, cursorPosition?: number, contentOverride?: string) => boolean
   pushToHistory: (blocks: DocumentBlockDraft[]) => void
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
@@ -76,14 +76,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   setPendingFocusBlockIndex,
   updateDraftBlock
 }: UseSlashCommandActionsParams<TSlashCommand>) {
-  const buildSiblingDraftBlock = useCallback((anchorBlock?: DocumentBlockDraft): DocumentBlockDraft => {
-    if (anchorBlock && isNestableBlock(anchorBlock.type)) {
-      return buildBlockTypePatch(anchorBlock.type, '', false, anchorBlock.depth, anchorBlock.parentBlockId ?? null)
-    }
-
-    return buildBlockTypePatch('paragraph', '')
-  }, [buildBlockTypePatch, isNestableBlock])
-
   const removeDraftBlock = useCallback((index: number) => {
     pushToHistory(draftBlocks)
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -179,37 +171,12 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
       return
     }
 
-    if (command.action === 'insert-above') {
-      clearBlockSelection()
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        next[activeBlockIndex] = {
-          ...next[activeBlockIndex],
-          content: nextContent
-        }
-        next.splice(activeBlockIndex, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
-        return next
-      })
-      setActiveBlockIndex(activeBlockIndex)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(activeBlockIndex)
-      return
-    }
-
-    if (command.action === 'insert-below') {
-      clearBlockSelection()
-      setDraftBlocks((previous) => {
-        const next = [...previous]
-        next[activeBlockIndex] = {
-          ...next[activeBlockIndex],
-          content: nextContent
-        }
-        next.splice(activeBlockIndex + 1, 0, buildSiblingDraftBlock(next[activeBlockIndex]))
-        return next
-      })
-      setActiveBlockIndex(activeBlockIndex + 1)
-      setActiveCursorPosition(0)
-      setPendingFocusBlockIndex(activeBlockIndex + 1)
+    if (command.action === 'insert-above' || command.action === 'insert-below') {
+      insertDraftBlockAt(
+        activeBlockIndex + (command.action === 'insert-below' ? 1 : 0),
+        activeBlockIndex,
+        nextContent
+      )
       return
     }
 
@@ -263,6 +230,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     draftBlocks,
     duplicateDraftBlock,
     insertChildDraftBlock,
+    insertDraftBlockAt,
     isNestableBlock,
     moveDraftBlockBySibling,
     pushToHistory,
