@@ -433,6 +433,7 @@ export function useDocumentsDomainState({
     continueBlockAt,
     downgradeBlockAt,
     mergeWithPreviousBlock,
+    mergeWithNextBlock,
     moveDraftBlockBySibling,
     moveDraftSubtree
   } = useSingleBlockTreeActions({
@@ -676,6 +677,7 @@ export function useDocumentsDomainState({
     retryLinkSuggestions,
     mdCopyFlash,
     mergeWithPreviousBlock,
+    mergeWithNextBlock,
     moveDraftBlockBySibling,
     moveSelectedBlocks,
     moveTargetId,

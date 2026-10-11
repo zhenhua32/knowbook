@@ -177,6 +177,7 @@ export function DocumentsPage({
     linkSuggestionsError: documents.linkSuggestionsError,
     retryLinkSuggestions: documents.retryLinkSuggestions,
     mergeWithPreviousBlock: documents.mergeWithPreviousBlock,
+    mergeWithNextBlock: documents.mergeWithNextBlock,
     moveDraftBlockBySibling: documents.moveDraftBlockBySibling,
     moveSelectedBlocks: documents.moveSelectedBlocks,
     navigateInlineReferenceAtCursor: documents.navigateInlineReferenceAtCursor,

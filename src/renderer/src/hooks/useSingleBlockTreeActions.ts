@@ -1,11 +1,13 @@
 import { getHeadingLevel } from '@shared/markdownEngine'
-import { useCallback } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
 import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/draftTreeDepthChange'
 import { shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
 import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { planDraftTextMerge } from '../utils/draftTreeTextMerge'
+import { captureEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import {
   getBlockSubtreeEndIndex,
   getFragmentLocalRootIds,
@@ -26,11 +28,11 @@ type UseSingleBlockTreeActionsParams = {
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
   endBlockDrag: () => void
-  pushToHistory: (blocks: DocumentBlockDraft[]) => void
+  pushToHistory: (blocks: DocumentBlockDraft[], bookmarkOverride?: EditorHistoryBookmark | null) => void
   setActiveBlockIndex: Dispatch<SetStateAction<number | null>>
   setActiveCursorPosition: Dispatch<SetStateAction<number>>
   setDraftBlocks: Dispatch<SetStateAction<DocumentBlockDraft[]>>
-  setPendingFocusBlockIndex: Dispatch<SetStateAction<number | null>>
+  setPendingFocusBlockIndex: (next: SetStateAction<number | null>, cursorPosition?: number) => void
   splitDraftBlock: (index: number, selectionStart: number, selectionEnd?: number, nextTypeOverride?: DocumentBlock['type']) => void
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
 }
@@ -49,6 +51,32 @@ export function useSingleBlockTreeActions({
   splitDraftBlock,
   updateDraftBlock
 }: UseSingleBlockTreeActionsParams) {
+  const pendingTextMerge = useRef<{
+    leftId: string
+    rightId: string
+    beforeBlocks: DocumentBlockDraft[] | null
+    bookmark: EditorHistoryBookmark | null
+    plan: ReturnType<typeof planDraftTextMerge>
+  } | null>(null)
+
+  useLayoutEffect(() => {
+    const request = pendingTextMerge.current
+    if (!request) return
+    // Updaters may replay. Only the committed merge consumes its history/focus request.
+    pendingTextMerge.current = null
+    const plan = request.plan
+    if (!plan || !request.beforeBlocks || draftBlocks[plan.focusIndex]?.id !== request.leftId ||
+        draftBlocks.some(block => block.id === request.rightId) ||
+        draftBlocks[plan.focusIndex].content !== plan.blocks[plan.focusIndex].content) return
+
+    pushToHistory(request.beforeBlocks, request.bookmark)
+    clearBlockSelection()
+    setActiveBlockIndex(plan.focusIndex)
+    setActiveCursorPosition(plan.cursorPosition)
+    setPendingFocusBlockIndex(plan.focusIndex, plan.cursorPosition)
+    endBlockDrag()
+  }, [clearBlockSelection, draftBlocks, endBlockDrag, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex])
+
   const adjustBlockDepth = useCallback((index: number, delta: number, cursorPosition = activeCursorPosition) => {
     const currentBlock = draftBlocks[index]
     if (!currentBlock || !isNestableBlock(currentBlock.type)) {
@@ -160,7 +188,7 @@ export function useSingleBlockTreeActions({
     const isMergeable =
       previousBlock.type === currentBlock.type &&
       previousBlock.depth === currentBlock.depth &&
-      !['code', 'math', 'divider', 'frontmatter', 'html'].includes(currentBlock.type)
+      !['code', 'math', 'table', 'divider', 'frontmatter', 'html'].includes(currentBlock.type)
 
     if (!isMergeable) {
       return
@@ -192,6 +220,27 @@ export function useSingleBlockTreeActions({
     setPendingFocusBlockIndex(index - 1)
     endBlockDrag()
   }, [clearBlockSelection, draftBlocks, endBlockDrag, getBlockSubtreeEndIndex, pushToHistory, setActiveBlockIndex, setActiveCursorPosition, setDraftBlocks, setPendingFocusBlockIndex])
+
+  const mergeWithNextBlock = useCallback((index: number, nextVisibleIndex: number) => {
+    const plan = planDraftTextMerge(draftBlocks, index, nextVisibleIndex)
+    if (!plan) return false
+
+    const request = { leftId: draftBlocks[index].id!, rightId: draftBlocks[nextVisibleIndex].id!,
+      beforeBlocks: null as DocumentBlockDraft[] | null, bookmark: captureEditorHistoryBookmark(draftBlocks),
+      plan: null as ReturnType<typeof planDraftTextMerge> }
+    pendingTextMerge.current = request
+    setDraftBlocks((previous) => {
+      const leftIndex = previous.findIndex(block => block.id === request.leftId)
+      const rightIndex = previous.findIndex(block => block.id === request.rightId)
+      const latestPlan = planDraftTextMerge(previous, leftIndex, rightIndex)
+      if (pendingTextMerge.current === request) {
+        request.beforeBlocks = previous
+        request.plan = latestPlan
+      }
+      return latestPlan?.blocks ?? previous
+    })
+    return true
+  }, [draftBlocks, setDraftBlocks])
 
   const moveDraftSubtree = useCallback((sourceIndex: number, targetIndex: number, targetDepth: number | null, focusIndexOverride?: number | null) => {
     const rootBlock = draftBlocks[sourceIndex]
@@ -252,6 +301,7 @@ export function useSingleBlockTreeActions({
     continueBlockAt,
     downgradeBlockAt,
     mergeWithPreviousBlock,
+    mergeWithNextBlock,
     moveDraftBlockBySibling,
     moveDraftSubtree
   }

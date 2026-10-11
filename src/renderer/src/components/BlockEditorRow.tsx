@@ -118,6 +118,7 @@ export type BlockEditorRowProps = {
   continueBlockAt: (index: number, start: number, end: number) => void
   downgradeBlockAt: (index: number) => void
   mergeWithPreviousBlock: (index: number) => void
+  mergeWithNextBlock?: (index: number, nextVisibleIndex: number) => boolean
   splitDraftBlock: (index: number, start: number, end: number) => void
 
   // Callbacks: helpers
@@ -200,6 +201,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     continueBlockAt,
     downgradeBlockAt,
     mergeWithPreviousBlock,
+    mergeWithNextBlock,
     splitDraftBlock,
     toggleBlockCollapse,
     isSelectionCoherent,
@@ -867,6 +869,21 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 ) {
                   event.preventDefault()
                   deleteSelectedBlocks()
+                  return
+                }
+
+                // Delete at the end joins only the next visible text block.
+                if (
+                  event.key === 'Delete' &&
+                  !event.shiftKey &&
+                  !event.altKey &&
+                  !event.metaKey &&
+                  !event.ctrlKey &&
+                  event.currentTarget.selectionStart === event.currentTarget.value.length &&
+                  event.currentTarget.selectionEnd === event.currentTarget.value.length
+                ) {
+                  const nextIndex = getAdjacentVisibleIndex(1)
+                  if (nextIndex !== null && mergeWithNextBlock?.(index, nextIndex)) event.preventDefault()
                   return
                 }
 
