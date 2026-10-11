@@ -60,9 +60,7 @@ export function AISection(props: AISectionProps) {
   return <>
     <header className="management-page-header">
       <div className="management-page-heading">
-        <p className="management-page-kicker">{isZh ? '智能工作台' : 'Intelligence workspace'}</p>
         <h2>{isZh ? 'AI 助手' : 'AI assistant'}</h2>
-        <p className="management-page-description">{isZh ? '理解与整理文档，或创建适合你的应用扩展。' : 'Understand your documents or create an extension for your workflow.'}</p>
       </div>
     </header>
     {!canUseAi ? <div className="ai-readiness" role="status">
@@ -150,8 +148,6 @@ export function AISection(props: AISectionProps) {
       </article>
     } extensionContent={isVisible => (
       <article className="panel ai-extension-workspace">
-        <div className="ai-extension-heading"><h3>{isZh ? '为你的工作方式添加能力' : 'Add a capability to your workflow'}</h3>
-          <p>{isZh ? '描述想要的扩展或自动化。助手会准备实现，并在启用前让你确认。' : 'Describe an extension or automation. The assistant prepares it for your review before activation.'}</p></div>
         <AssistantConversation activeDocumentId={documentReady ? selectedDocument!.id : null} aiEnabled={aiEnabled} hasApiKey={hasApiKey} isZh={isZh} showConfigurationHint={false}
           isVisible={isVisible} transcriptBefore={extensionTools} transcriptAfter={extensionMessageCards} />
       </article>

@@ -193,10 +193,16 @@ async function revealAnchor(page: Page, transcript: Locator, anchor: Locator): P
   await page.mouse.move(bounds.x + 12, bounds.y + bounds.height / 2)
   for (let index = 0; index < 16; index++) {
     const target = (await anchor.boundingBox())!
-    if (target.y >= bounds.y + 8 && target.y + Math.min(target.height, 40) <= bounds.y + bounds.height - 8) {
+    const center = bounds.y + bounds.height / 2
+    const targetCenter = target.y + target.height / 2
+    // Establish which paragraph the user is reading. Merely revealing its
+    // first line can leave another reply closer to the enlarged viewport's
+    // center, where preserving that reply is the correct behavior.
+    if (target.y >= bounds.y + 8 && target.y + target.height <= bounds.y + bounds.height - 8
+      && Math.abs(targetCenter - center) <= 16) {
       await frame(page); return (await anchor.boundingBox())!.y
     }
-    await page.mouse.wheel(0, Math.max(-360, Math.min(360, target.y - bounds.y - bounds.height / 2)))
+    await page.mouse.wheel(0, Math.max(-360, Math.min(360, targetCenter - center)))
     await frame(page)
   }
   throw new Error('The historical reading anchor must be reachable with the native scroll wheel')
@@ -324,6 +330,10 @@ for (const scenario of [{ language: 'en-US', theme: 'light', width: 1280 }, { la
       await observeNativeScroll(page)
       const readingY = await revealAnchor(page, transcript, anchor)
       await expect(anchor).toBeInViewport(); await expect(summaryC).toBeFocused()
+      const readingBounds = (await anchor.boundingBox())!, viewportBounds = (await transcript.boundingBox())!
+      expect(readingBounds.y).toBeGreaterThanOrEqual(viewportBounds.y + 8)
+      expect(readingBounds.y + readingBounds.height).toBeLessThanOrEqual(viewportBounds.y + viewportBounds.height - 8)
+      expect(Math.abs(readingBounds.y + readingBounds.height / 2 - viewportBounds.y - viewportBounds.height / 2)).toBeLessThanOrEqual(16)
       await recordReadingGeometry(page, info, 'message-before-completion', readingY)
       const completedSeq = await append(app, sessions.primary.id, [row('tool.result', { turnId: `${sessions.primary.id}-turn`,
         stepId: 'transition-b-step', toolCallId: 'transition-b', status: 'succeeded', result: { document: null } })])
