@@ -213,7 +213,14 @@ export function useBlockStructureActions({
         0,
         {
           ...buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null),
-          ...(nextType === currentBlock.type && currentBlock.markdownFormat ? { markdownFormat: { ...currentBlock.markdownFormat } } : {})
+          // Both fragments retain the source's content attributes, while the
+          // new block keeps its own identity, task state and list numbering.
+          ...(nextType === currentBlock.type ? {
+            ...(currentBlock.tags ? { tags: [...currentBlock.tags] } : {}),
+            ...(currentBlock.highlight ? { highlight: currentBlock.highlight } : {}),
+            ...(currentBlock.markdownFormat ? { markdownFormat: { ...currentBlock.markdownFormat } } : {}),
+            ...(nextType === 'code' && currentBlock.language ? { language: currentBlock.language } : {})
+          } : {})
         }
       )
       return next
