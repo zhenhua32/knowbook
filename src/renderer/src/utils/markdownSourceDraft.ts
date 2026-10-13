@@ -1,5 +1,6 @@
 import { parseMarkdownBlocks, serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange } from '@shared/markdown'
 import type { DocumentBlockDraft } from '@shared/contracts'
+import { normalizeCodeLanguage } from '@shared/code'
 
 export type MarkdownSourceChange = { from: number; to: number; insert: string }
 type SourceAnchor = { block: DocumentBlockDraft; from: number; to: number; original: string }
@@ -149,8 +150,16 @@ export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): Documen
       const candidate = draft.anchors[cursor]
       if (!used.has(candidate) && candidate.to > range.from) { anchor = candidate; used.add(candidate); break }
     }
+    const info = block.markdownFormat?.codeInfo ?? block.language ?? ''
+    const oldInfo = anchor?.block.markdownFormat?.codeInfo ?? anchor?.block.language ?? ''
+    // Fence options belong to codeInfo, not the language selector. Editing the
+    // code body must retain the original language when its fence is unchanged.
+    const language = block.type === 'code'
+      ? anchor?.block.type === 'code' && info === oldInfo ? anchor.block.language
+        : normalizeCodeLanguage(info.split(/\s+/, 1)[0]) ?? undefined
+      : block.language ?? undefined
     blocks.push({ type: block.type, content: block.content, checked: block.checked ?? false, depth: block.depth ?? 0,
-      language: block.language ?? undefined, listStart: block.listStart, markdownFormat: block.markdownFormat,
+      language, listStart: block.listStart, markdownFormat: block.markdownFormat,
       id: anchor?.block.id, tags: anchor?.block.tags, highlight: anchor?.block.highlight, parentBlockId: null })
     outputRanges.push(range)
   }

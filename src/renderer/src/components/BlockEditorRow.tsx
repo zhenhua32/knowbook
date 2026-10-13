@@ -1,5 +1,6 @@
 import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
+import { htmlClipboardToMarkdown } from '@shared/htmlClipboard'
 import { hasAdvancedMarkdown, type MarkdownDocumentModel } from '@shared/markdownDocument'
 import { lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MarkdownBlockContent, MarkdownMermaidPreview } from './MarkdownContent'
@@ -643,15 +644,38 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               }}
               onBlur={() => { composingRef.current = false }}
               onPaste={(event) => {
+                const textarea = event.currentTarget
+                const start = textarea.selectionStart ?? textarea.value.length
+                const end = textarea.selectionEnd ?? textarea.value.length
+                const markdown = !['code', 'math', 'table', 'frontmatter', 'html'].includes(block.type) &&
+                  event.clipboardData.files.length === 0
+                  ? event.clipboardData.getData('application/x-knowbook-markdown') ||
+                    (event.clipboardData.getData('text/html').includes('data-knowbook-markdown-source="true"')
+                      ? event.clipboardData.getData('text/plain') : htmlClipboardToMarkdown(event.clipboardData.getData('text/html'))) : ''
                 if (
                   handleBlockPaste(
                     index,
-                    event.clipboardData.getData('text/plain'),
-                    event.currentTarget.selectionStart ?? event.currentTarget.value.length,
-                    event.currentTarget.selectionEnd ?? event.currentTarget.value.length
+                    markdown || event.clipboardData.getData('text/plain'),
+                    start,
+                    end
                   )
                 ) {
                   event.preventDefault()
+                } else if (markdown) {
+                  // A single formatted line stays in this block. Native textarea
+                  // paste would otherwise discard its HTML formatting.
+                  event.preventDefault()
+                  const content = textarea.value.slice(0, start) + markdown + textarea.value.slice(end)
+                  const cursor = start + markdown.length
+                  if (content === textarea.value) {
+                    textarea.setSelectionRange(cursor, cursor)
+                    captureBlockCursor(index, textarea)
+                    return
+                  }
+                  captureBlockCursor(index, textarea)
+                  props.checkpointDraft?.()
+                  pendingTextSelection.current = { content, start: cursor, end: cursor, checkpoint: true }
+                  updateDraftBlock(index, { content })
                 }
               }}
               onCopy={(event) => {

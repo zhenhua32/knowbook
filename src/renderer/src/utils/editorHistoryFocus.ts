@@ -1,5 +1,6 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { focusBlockTextarea } from './textareaLayout'
+import { getRichTextHistoryBridge } from '../rich-text/history'
 
 export type EditorHistoryBookmark = {
   blockId?: string
@@ -8,6 +9,10 @@ export type EditorHistoryBookmark = {
   end: number
   direction: 'forward' | 'backward' | 'none'
   cell?: { row: number; column: number; editing: boolean }
+  richText?: {
+    anchor: { blockId?: string; index: number; offset: number }
+    head: { blockId?: string; index: number; offset: number }
+  }
 }
 
 export const restoreTableHistoryFocusEvent = 'knowbook:restore-table-history-focus'
@@ -16,6 +21,8 @@ export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], targe
   if (typeof document === 'undefined') return null
   const active = target === undefined ? document.activeElement : target
   if (!(active instanceof HTMLElement)) return null
+  const richText = getRichTextHistoryBridge(active)
+  if (richText) return richText.capture()
   const row = active.closest<HTMLElement>('.block-editor-row[data-block-index]')
   if (!row) return null
   const index = Number(row.dataset.blockIndex)
@@ -32,6 +39,11 @@ export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], targe
 }
 
 export function restoreEditorHistoryBookmark(bookmark: EditorHistoryBookmark, blocks: DocumentBlockDraft[]): boolean {
+  if (bookmark.richText) {
+    const host = document.querySelector<HTMLElement>('.knowbook-rich-text-editor')
+    const bridge = host && getRichTextHistoryBridge(host)
+    if (bridge) { bridge.restore(bookmark); return true }
+  }
   const matchingIndex = bookmark.blockId ? blocks.findIndex(block => block.id === bookmark.blockId) : -1
   const index = matchingIndex >= 0 ? matchingIndex : Math.min(bookmark.index, blocks.length - 1)
   const row = document.querySelector<HTMLElement>(`.block-editor-row[data-block-index="${index}"]`)

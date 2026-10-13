@@ -339,3 +339,6 @@
   background: transparent;
   color: inherit;
 }
+.document-editor-mode { display: flex; gap: 4px; padding: 4px 8px; }
+.document-editor-mode button { border: 0; border-radius: 5px; padding: 4px 10px; background: transparent; color: var(--kb-text-soft); cursor: pointer; }
+.document-editor-mode button[aria-pressed="true"] { background: var(--kb-accent-soft); color: var(--kb-text); }

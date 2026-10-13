@@ -8,6 +8,20 @@ import { normalizeDraftBlocks, validateBlockTreeStructure } from '../src/rendere
 
 const paragraph = (id: string, content: string): DocumentBlockDraft => ({ id, type: 'paragraph', content, checked: false, depth: 0, tags: [id], highlight: 'yellow' })
 
+test('editing fenced code retains its language and raw fence options independently', () => {
+  const block = { ...paragraph('code-options', 'const x = 1'), type: 'code', language: 'typescript', markdownFormat: { codeInfo: 'ts title=sample' } }
+  const draft = createMarkdownSourceDraft([block])
+  const start = draft.source.indexOf('const x = 1')
+  const changed = markdownSourceDraftToBlocks(replaceMarkdownSource(draft, { from: start, to: start + 11, insert: 'const x = 2' }))[0]
+  assert.deepEqual(changed, { ...block, content: 'const x = 2', parentBlockId: null, listStart: undefined })
+  const infoStart = draft.source.indexOf('ts title=sample')
+  const languageChanged = markdownSourceDraftToBlocks(replaceMarkdownSource(draft, { from: infoStart, to: infoStart + 15, insert: 'py title=next' }))[0]
+  assert.equal(languageChanged.language, 'python')
+  assert.deepEqual(languageChanged.markdownFormat, { codeInfo: 'py title=next' })
+  assert.equal(languageChanged.id, block.id)
+  assert.deepEqual(languageChanged.tags, block.tags)
+})
+
 test('source parsing reports separate ranges for list parents, children and reference definitions', () => {
   const source = '# Title\n\n- Parent\n  - Child\n\n[ref]: https://example.com\n\nTail'
   const ranges: MarkdownBlockSourceRange[] = []

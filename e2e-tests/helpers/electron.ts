@@ -13,6 +13,8 @@ export type ElectronAppContext = {
 }
 
 export type ElectronLaunchOptions = {
+  /** Existing editing suites exercise Markdown mode; new suites explicitly exercise the rich text default. */
+  editorMode?: 'markdown' | 'rich'
   /** Reuse a prior isolated user-data root to exercise restart-only behavior. */
   userDataRoot?: string
   /** Replay a registered startup command, without inheriting its original profile env. */
@@ -176,6 +178,13 @@ export async function launchElectronApp(
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')
     await expect(page.locator('[data-testid="shell"]')).toBeVisible()
+    // Select a real user preference, keeping the application's default rich
+    // editor and the established Markdown regression coverage independently testable.
+    if (options.editorMode !== 'rich') await page.evaluate(() => {
+      const key = 'knowbook.document-editor-mode'
+      localStorage.setItem(key, 'markdown')
+      window.dispatchEvent(new StorageEvent('storage', { key }))
+    })
     // Emulate renderer focus through CDP while the native window stays hidden.
     const backgroundSession = await page.context().newCDPSession(page)
     await backgroundSession.send('Emulation.setFocusEmulationEnabled', { enabled: true })

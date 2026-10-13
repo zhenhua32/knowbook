@@ -53,6 +53,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         return
       }
       if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
+      if (key === 'mod+k' && event.target instanceof Element && event.target.closest('.knowbook-rich-text-editor')) return
       if (key !== 'mod+k' && key !== 'mod+shift+p') return
       event.preventDefault(); event.stopPropagation()
       if (key === 'mod+shift+p') documents.openGlobalSearch('commands')

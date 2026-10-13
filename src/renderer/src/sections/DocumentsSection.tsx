@@ -21,6 +21,11 @@ import { useDocumentViewport } from '../hooks/useDocumentViewport'
 import { matchingOpeningTitleIndex } from '../utils/documentReadingTitle'
 import { openShortcutHelp } from '../openShortcutHelp'
 const MarkdownReadingList = lazy(() => import('../components/MarkdownReadingList').then((module) => ({ default: module.MarkdownReadingList })))
+const DocumentRichTextEditor = lazy(() => import('../rich-text/DocumentRichTextEditor').then(module => ({ default: module.DocumentRichTextEditor })))
+const editorModeKey = 'knowbook.document-editor-mode'
+function readEditorMode(): 'rich' | 'markdown' {
+  try { return localStorage.getItem(editorModeKey) === 'markdown' ? 'markdown' : 'rich' } catch { return 'rich' }
+}
 
 type VisibleEditorRow = Pick<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel' | 'isSearchMatch'>
 type SharedBlockEditorRowProps = Omit<ComponentProps<typeof BlockEditorRow>, 'block' | 'dropPreview' | 'hasChildren' | 'indentPx' | 'index' | 'isHighlighted' | 'isSelected' | 'numberLabel'>
@@ -31,6 +36,7 @@ type RelationGroup = {
 }
 
 type DocumentsSectionProps = {
+  richEditorProps?: Omit<ComponentProps<typeof DocumentRichTextEditor>, 'visibleIndices' | 'documentId' | 'isZh' | 'onRevealBlock'>
   isReadingMode: boolean
   navigationRequest: { index: number; documentId: string; sequence: number; headingIndex?: number } | null
   highlightedBlockId: string | null
@@ -97,6 +103,7 @@ function RelationList({
 }
 
 export function DocumentsSection({
+  richEditorProps,
   isReadingMode,
   navigationRequest,
   highlightedBlockId,
@@ -126,6 +133,12 @@ export function DocumentsSection({
   documentStatsBarProps,
   emptyDocumentStateText
 }: DocumentsSectionProps) {
+  const [editorMode, setEditorMode] = useState(readEditorMode)
+  useEffect(() => {
+    const update = (event: StorageEvent) => { if (event.key === editorModeKey) setEditorMode(readEditorMode()) }
+    window.addEventListener('storage', update)
+    return () => window.removeEventListener('storage', update)
+  }, [])
   const workspaceGridRef = useRef<HTMLElement | null>(null)
   const stopAuxPanelResizeRef = useRef<(() => void) | null>(null)
   const [workspaceWidth, setWorkspaceWidth] = useState(0)
@@ -314,6 +327,14 @@ export function DocumentsSection({
               viewport.capturePosition()
               onToggleReadingMode()
             }} /> : null}
+          {documentReady && !isReadingMode && richEditorProps ? <div className="document-editor-mode" role="group" aria-label={previewHeaderProps.isZh ? '编辑模式' : 'Editing mode'}>
+            {(['rich', 'markdown'] as const).map(mode => <button key={mode} type="button" aria-pressed={editorMode === mode} onClick={() => {
+              richEditorProps.checkpoint()
+              blockEditorRowSharedProps?.clearBlockSelection?.()
+              setEditorMode(mode)
+              try { localStorage.setItem(editorModeKey, mode) } catch { /* The current session still changes mode. */ }
+            }}>{mode === 'rich' ? (previewHeaderProps.isZh ? '富文本' : 'Rich text') : 'Markdown'}</button>)}
+          </div> : null}
         </div>
 
         {selectedDocument && documentReady ? (
@@ -329,8 +350,11 @@ export function DocumentsSection({
                  model={blockEditorRowSharedProps?.markdownDocument} isZh={previewHeaderProps.isZh}
                  containerRef={viewport.contentRef} onRevealBlock={onRevealBlock} onToggleTask={onToggleMarkdownTask}>
                <div className="block-editor-list" onKeyDown={onEditorKeyDown}>
-                {!isReadingMode && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
-                {blockEditorRowSharedProps
+                {!isReadingMode && editorMode === 'markdown' && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
+                {!isReadingMode && editorMode === 'rich' && richEditorProps ? <Suspense fallback={<p role="status">{previewHeaderProps.isZh ? '正在加载编辑器…' : 'Loading editor…'}</p>}>
+                  <DocumentRichTextEditor key={selectedDocument.id} {...richEditorProps} documentId={selectedDocument.id}
+                    isZh={previewHeaderProps.isZh} onRevealBlock={onRevealBlock} visibleIndices={visibleEditorRows.map(row => row.index)} />
+                </Suspense> : blockEditorRowSharedProps
                   ? visibleEditorRows.map((row) => {
                      if (isReadingMode) {
                        const group = readingGroups.get(row.index)
@@ -370,7 +394,7 @@ export function DocumentsSection({
                   : null}
                 {blockEditorRowSharedProps?.markdownDocument?.footnotes.length ? <MarkdownNodes nodes={blockEditorRowSharedProps.markdownDocument.footnotes}
                   onReference={(label) => { void blockEditorRowSharedProps.navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} /> : null}
-                {!isReadingMode ? <button className="secondary-button add-block-button" onClick={onAddBlock} type="button">
+                {!isReadingMode && editorMode === 'markdown' ? <button className="secondary-button add-block-button" onClick={onAddBlock} type="button">
                   <span aria-hidden="true">＋</span>
                   {addBlockLabel}
                 </button> : null}
@@ -378,7 +402,9 @@ export function DocumentsSection({
                   <LinkSuggestionPanel {...linkSuggestionPanelProps} />
                 ) : (
                   <div className="document-editor-help">
-                    <span>{previewHeaderProps.isZh ? '输入 / 插入内容 · [[ 链接文档' : 'Type / to insert · [[ to link a document'}</span>
+                    <span>{editorMode === 'rich' && richEditorProps
+                      ? (previewHeaderProps.isZh ? '输入 / 插入内容 · Ctrl/Cmd+K 添加链接' : 'Type / to insert · Ctrl/Cmd+K to add a link')
+                      : (previewHeaderProps.isZh ? '输入 / 插入内容 · [[ 链接文档' : 'Type / to insert · [[ to link a document')}</span>
                     <button type="button" className="document-editor-help-button" aria-keyshortcuts="F1"
                       onClick={() => { void openShortcutHelp() }}>
                       {previewHeaderProps.isZh ? '快捷键帮助' : 'Keyboard shortcuts'} <kbd>F1</kbd>

@@ -85,6 +85,7 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
     onDropCapture: (event: DragEvent<HTMLDivElement>) => {
       setDragging(false)
       if (!fileDrag(event)) return
+      if ((event.target as Element).closest('.knowbook-rich-text-editor')) return
       event.preventDefault(); event.stopPropagation()
       void insert(Array.from(event.dataTransfer.files), insertionAt(event.target as Element))
     }
