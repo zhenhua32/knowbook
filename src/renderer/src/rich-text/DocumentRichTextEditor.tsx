@@ -2,17 +2,19 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { Fragment, Slice, type Node as RichNode } from 'prosemirror-model'
 import { EditorState, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
+import { createRoot, type Root } from 'react-dom/client'
 import { baseKeymap, chainCommands, createParagraphNear, splitBlockAs, toggleMark } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
 import { InputRule, inputRules } from 'prosemirror-inputrules'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { markdownEngine } from '@shared/markdownEngine'
+import { markdownEngine, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { htmlClipboardToMarkdown } from '@shared/htmlClipboard'
 import { draftBlocksToRichDoc, reconcileRichTextBlockIds, richDocToDraftBlocks } from './model'
 import { richTextSchema } from './schema'
 import { registerRichTextHistoryBridge } from './history'
 import { planRichTextTreePaste } from './paste'
+import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import type { EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
@@ -30,6 +32,7 @@ type Props = {
   visibleIndices: number[]
   documentId: string
   isZh: boolean
+  references?: MarkdownEnvironment['references']
   onChange: (blocks: DocumentBlockDraft[]) => void
   checkpoint: () => void
   onUndo: () => void
@@ -78,6 +81,7 @@ export function DocumentRichTextEditor(props: Props) {
   const [slashDismissed, setSlashDismissed] = useState<string | null>(null)
   const boundary = useRef(false), importing = useRef(false)
   const pendingSelection = useRef<EditorHistoryBookmark | null>(null)
+  const sourceRefresh = useRef(new Set<() => void>())
   const view = viewRef.current
   const selection = view?.state.selection
   const currentType = selection?.$from.parent.attrs.block?.type ?? 'paragraph'
@@ -370,14 +374,59 @@ export function DocumentRichTextEditor(props: Props) {
           dom.contentEditable = 'false'
           const preview = document.createElement('div')
           preview.className = 'rich-text-source-preview'
-          preview.innerHTML = markdownEngine.render(serializeBlocksToMarkdown([node.attrs.block]))
-          for (const image of preview.querySelectorAll('img[src]')) image.setAttribute('src', toBlockRichMediaPreviewUrl(image.getAttribute('src')!))
+          const mediaHost = document.createElement('div')
+          mediaHost.className = 'rich-text-source-media'
+          let current = node, disposed = false, mediaLoading = false, mediaRoot: Root | null = null
+          let mediaModule: typeof import('../components/BlockImagePresentations') | null = null
+          const renderPreview = () => {
+            preview.innerHTML = markdownEngine.render(serializeBlocksToMarkdown([current.attrs.block]), { references: { ...latest.current.references } })
+            const displays = planMarkdownImageDisplays(current.attrs.block.content, latest.current.references, preview.innerHTML)
+            const occurrences = displays.flatMap(display => display.occurrence ? [display.occurrence] : [])
+            const managed = new Set(displays.filter(display => display.occurrence).map(display => display.renderedIndex))
+            for (const [index, image] of Array.from(preview.querySelectorAll('img[src]')).entries()) {
+              const url = toBlockRichMediaPreviewUrl(image.getAttribute('src')!)
+              image.setAttribute('src', url)
+              if (mediaModule && managed.has(index)) {
+                ;((image.closest('figure,[data-knowbook-align]') ?? image) as HTMLElement).style.display = 'none'
+              }
+            }
+            if (!mediaModule) {
+              if (occurrences.length && !mediaLoading) {
+                mediaLoading = true
+                void import('../components/BlockImagePresentations').then(module => {
+                  if (disposed) return
+                  mediaModule = module; renderPreview()
+                })
+              }
+              return
+            }
+            mediaRoot ??= createRoot(mediaHost)
+            mediaRoot.render(<mediaModule.BlockImagePresentations content={current.attrs.block.content} references={latest.current.references} occurrences={occurrences} isZh={latest.current.isZh}
+              onBegin={() => latest.current.checkpoint()} onCommit={(occurrence, next) => {
+                const editor = viewRef.current
+                if (!editor || editor.composing) return
+                editor.state.doc.forEach((candidate, position) => {
+                  if (candidate.attrs.block?.id !== current.attrs.block.id) return
+                  const content = replaceMarkdownImageOccurrence(candidate.attrs.block.content, occurrence, next, latest.current.references)
+                  if (content === null) { setMessage(latest.current.isZh ? '正文已变化，请重新选择图片。' : 'The text changed. Select the image again.'); return }
+                  latest.current.checkpoint(); boundary.current = true
+                  editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...candidate.attrs,
+                    block: { ...candidate.attrs.block, content } }))
+                })
+              }} />)
+          }
+          sourceRefresh.current.add(renderPreview)
+          renderPreview()
           const button = document.createElement('button')
           button.type = 'button'; button.className = 'secondary-button'
           button.textContent = latest.current.isZh ? '编辑源码' : 'Edit source'
           button.addEventListener('click', () => latest.current.onEditSource())
-          dom.append(preview, button)
-          return { dom, stopEvent: event => event.target === button }
+          dom.append(preview, mediaHost, button)
+          return { dom, stopEvent: event => event.target === button || event.target instanceof HTMLElement && mediaHost.contains(event.target),
+            update(next) {
+              if (next.type !== current.type || next.attrs.block?.id !== current.attrs.block.id) return false
+              current = next; renderPreview(); return true
+            }, destroy() { disposed = true; sourceRefresh.current.delete(renderPreview); const root = mediaRoot; if (root) queueMicrotask(() => root.unmount()) } }
         }
       }
     })
@@ -410,6 +459,9 @@ export function DocumentRichTextEditor(props: Props) {
     setRevision(value => value + 1)
     return () => { unregister(); viewRef.current = null; editor.destroy() }
   }, [props.documentId])
+
+  const referenceSignature = JSON.stringify(props.references ?? {})
+  useLayoutEffect(() => { for (const refresh of sourceRefresh.current) refresh() }, [referenceSignature, props.isZh])
 
   useLayoutEffect(() => {
     const editor = viewRef.current

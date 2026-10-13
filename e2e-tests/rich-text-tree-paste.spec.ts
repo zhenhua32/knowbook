@@ -207,7 +207,7 @@ test('native screenshot paste into a nested todo owner keeps descendants, attach
     }, [...image])
     await page.keyboard.press('Control+v')
     await expect(rows(page)).toHaveCount(initial.length + 2)
-    const preview = editor(page).locator('.rich-text-source-preview img')
+    const preview = editor(page).locator('[data-image-presentation] img.image-presentation-image')
     await expect(preview).toBeVisible()
     await expect.poll(() => preview.evaluate((image: HTMLImageElement) => [image.naturalWidth, image.naturalHeight]))
       .toEqual([128, 96])

@@ -8,6 +8,7 @@ import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { parseWikiReference, wikiDisplayText } from '@shared/markdownWiki'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from './MarkdownDocumentContext'
+import type { ImagePresentation } from '@shared/markdownMedia'
 
 export const MarkdownReferencesContext = createContext<MarkdownEnvironment['references']>(undefined)
 const MathPreview = lazy(async () => {
@@ -23,6 +24,7 @@ const MermaidPreview = lazy(async () => {
   const [module] = await Promise.all([import('./MermaidPreview'), import('../styles/markdown-advanced.css')])
   return { default: module.MermaidPreview }
 })
+const ImagePresentationEditor = lazy(() => import('./ImagePresentationEditor').then(module => ({ default: module.ImagePresentationEditor })))
 
 export type MarkdownRenderOptions = {
   onReference?: (label: string) => void
@@ -122,6 +124,15 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
           width={token.meta?.html ? token.attrGet('width') ?? undefined : undefined} height={token.meta?.html ? token.attrGet('height') ?? undefined : undefined}
           data-markdown-anchor={anchor || undefined}
           className="markdown-inline-image" src={toBlockRichMediaPreviewUrl(src)} />
+      }
+      case 'html_figure_open': {
+        if (options.hideImages) return null
+        const image = token.meta?.imagePresentation as ImagePresentation | undefined
+        if (!image) return nested()
+        return <Suspense key={index} fallback={<span><img alt={image.alt} src={toBlockRichMediaPreviewUrl(image.src)}
+          width={image.width} height={image.height} style={{ maxWidth: '100%' }} /><span>{image.caption}</span></span>}>
+          <ImagePresentationEditor value={image} editable={false} isZh={false} />
+        </Suspense>
       }
       default: {
         // Only parser-generated, allowlisted elements and attributes reach React.

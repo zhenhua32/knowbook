@@ -76,7 +76,7 @@ function Get-State([string] $Text) {
         '^(skipped)$' {
             return @{ status = 'skipped'; conclusion = 'skipped' }
         }
-        '^(in progress|in_progress|running)$' {
+        '^(in progress|in_progress|running|started|currently running)$' {
             return @{ status = 'running'; conclusion = $null }
         }
         '^(queued|waiting|pending|requested)$' {

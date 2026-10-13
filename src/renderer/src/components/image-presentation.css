@@ -1,0 +1,35 @@
+.image-presentation { display: block; width: 100%; max-width: 100%; position: relative; margin-block: 8px; color: var(--kb-text); }
+.image-presentation-frame { display: block; position: relative; overflow: visible; border-radius: 5px; box-sizing: border-box; }
+.image-presentation.image-presentation > .image-presentation-frame.block-rich-media-image-card,
+.image-presentation.image-presentation > .image-presentation-frame.block-rich-media-image-card:hover {
+  display: block; gap: 0; padding: 0; border: 0; border-radius: 5px; background: transparent;
+  box-shadow: none; transform: none; transition: none; overflow: visible; text-align: inherit;
+}
+.image-presentation-viewport { display: block; overflow: hidden; border-radius: 5px; }
+.image-presentation-frame[role="button"] { cursor: pointer; }
+.image-presentation-frame:focus-visible { outline: 2px solid var(--kb-accent-strong); outline-offset: 3px; }
+.image-presentation.is-selected > .image-presentation-frame { outline: 2px solid var(--kb-accent-strong); outline-offset: 2px; }
+.image-presentation-image { display: block; max-width: 100%; height: auto; border-radius: 5px; }
+.image-presentation .image-presentation-image.block-rich-media-image {
+  width: 100%; max-width: 100%; height: auto; max-height: none; margin: 0;
+  border: 0; box-shadow: none; transform: none; object-fit: fill;
+}
+.image-presentation-resize { position: absolute; z-index: 3; right: -6px; bottom: -6px; width: 13px; height: 13px; padding: 0; border: 2px solid var(--kb-canvas); background: var(--kb-accent-strong); border-radius: 3px; cursor: nwse-resize; touch-action: none; }
+.image-presentation-caption { display: block; margin-top: 7px; color: var(--kb-text-muted); font-size: .88em; white-space: pre-wrap; overflow-wrap: anywhere; text-align: center; }
+.image-presentation-unavailable { display: block; min-height: 72px; padding: 16px; background: var(--kb-surface); color: var(--kb-text-muted); border: 1px dashed var(--kb-line-strong); }
+.image-presentation-controls { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border: 1px solid var(--kb-line-strong); border-radius: 8px; background: var(--kb-canvas); }
+.image-presentation-toolbar { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.image-presentation-toolbar button { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--kb-line); border-radius: 5px; background: var(--kb-surface); color: var(--kb-text-soft); cursor: pointer; }
+.image-presentation-toolbar button[aria-pressed="true"] { background: var(--kb-accent-soft); color: var(--kb-accent-strong); }
+.image-presentation :is(button,input,textarea):focus-visible { outline: 2px solid var(--kb-accent-strong); outline-offset: 2px; }
+.image-presentation button:disabled { opacity: .45; cursor: default; }
+.image-presentation-field { display: grid; gap: 5px; font-size: 12px; color: var(--kb-text-soft); }
+.image-presentation-field input, .image-presentation-field textarea { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; font-size: 13px; line-height: 1.6; padding: 7px 9px; border: 1px solid var(--kb-line); border-radius: 5px; background: var(--kb-surface); color: var(--kb-text); }
+.image-presentation-field textarea { resize: vertical; }
+.image-presentation-help { font-size: 11px; color: var(--kb-text-muted); line-height: 1.6; }
+.image-presentation-crop-stage { display: block; position: relative; max-width: 100%; overflow: hidden; margin-inline: auto; border: 1px solid var(--kb-line-strong); background: var(--kb-surface); touch-action: none; }
+.image-presentation-crop-stage > img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; max-width: none; max-height: none; user-select: none; pointer-events: none; }
+.image-presentation-crop-area { position: absolute; box-sizing: border-box; padding: 0; border: 2px solid var(--kb-accent-strong); background: transparent; box-shadow: 0 0 0 2000px #0006; cursor: move; touch-action: none; }
+.image-presentation-crop-handle { position: absolute; width: 13px; height: 13px; padding: 0; transform: translate(-50%, -50%); border: 2px solid var(--kb-canvas); border-radius: 3px; background: var(--kb-accent-strong); touch-action: none; }
+.image-presentation-crop-handle[data-image-crop-handle="nw"], .image-presentation-crop-handle[data-image-crop-handle="se"] { cursor: nwse-resize; }
+.image-presentation-crop-handle[data-image-crop-handle="ne"], .image-presentation-crop-handle[data-image-crop-handle="sw"] { cursor: nesw-resize; }

@@ -16,12 +16,39 @@ import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from 
 import { createWebDavServer } from './helpers/webdav-server'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
 
+let previousFixturePort: string | undefined
+function fetchFailureCodes(error: unknown): Array<{ name?: string; code?: string }> {
+  const chain: Array<{ name?: string; code?: string }> = [], seen = new Set<object>()
+  while (error && typeof error === 'object' && !seen.has(error) && chain.length < 4) {
+    seen.add(error)
+    const value = error as { name?: unknown; code?: unknown; cause?: unknown }
+    chain.push({ ...(typeof value.name === 'string' ? { name: value.name } : {}),
+      ...(typeof value.code === 'string' ? { code: value.code } : {}) })
+    error = value.cause
+  }
+  return chain
+}
+
 async function fixture(run: (a: ReturnType<typeof device>, b: ReturnType<typeof device>, server: Awaited<ReturnType<typeof createWebDavServer>>) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-webdav-'))
   const server = await createWebDavServer()
   const a = device(root, 'a', server.url), b = device(root, 'b', server.url)
+  const originalFetch = globalThis.fetch, port = new URL(server.url).port
+  globalThis.fetch = async (input, init) => {
+    try { return await originalFetch(input, init) }
+    catch (error) {
+      // Keep transport failures observable before the user-facing service
+      // translates them. Never print credentials, URLs, headers or bodies.
+      process.stderr.write(`[WebDAV fixture transport] ${JSON.stringify({ port, previousPort: previousFixturePort,
+        method: init?.method ?? 'GET', causes: fetchFailureCodes(error) })}\n`)
+      throw error
+    }
+  }
   try { await run(a, b, server) }
-  finally { await a.sync.stop(); await b.sync.stop(); a.store.destroy(); b.store.destroy(); await server.close(); rmSync(root, { recursive: true, force: true }) }
+  finally {
+    globalThis.fetch = originalFetch; previousFixturePort = port
+    await a.sync.stop(); await b.sync.stop(); a.store.destroy(); b.store.destroy(); await server.close(); rmSync(root, { recursive: true, force: true })
+  }
 }
 function device(root: string, name: string, url: string) {
   const store = new KnowbookStore(join(root, name, 'knowbook.db'))

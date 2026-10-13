@@ -3,10 +3,16 @@ import { MarkdownReferencesContext } from './MarkdownContent'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+import type { MarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
+import type { ImagePresentation } from '@shared/markdownMedia'
 const AttachmentCard = lazy(() => import('./AttachmentCard').then(module => ({ default: module.AttachmentCard })))
+const BlockImagePresentations = lazy(() => import('./BlockImagePresentations').then(module => ({ default: module.BlockImagePresentations })))
 
 type BlockRichMediaPreviewProps = {
   content: string
+  isZh?: boolean
+  onImageBegin?: () => void
+  onImageCommit?: (occurrence: MarkdownImageOccurrence, next: ImagePresentation, content: string) => void
   ui: {
     blockPreviewImagesLabel: string
     blockPreviewImageUnavailable: string
@@ -16,7 +22,7 @@ type BlockRichMediaPreviewProps = {
   }
 }
 
-export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui }: BlockRichMediaPreviewProps) {
+export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui, isZh = false, onImageBegin, onImageCommit }: BlockRichMediaPreviewProps) {
   const references = useContext(MarkdownReferencesContext)
   const navigateLink = useContext(MarkdownNavigationContext)
   const richMedia = extractBlockRichMedia(content, references, Boolean(navigateLink))
@@ -37,7 +43,9 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
       {richMedia.images.length > 0 ? (
         <div className="block-rich-media-group">
           <p className="block-rich-media-label">{ui.blockPreviewImagesLabel}</p>
-          <div className="block-rich-media-images">
+          {onImageCommit ? <Suspense fallback={<span role="status">{isZh ? '正在加载图片…' : 'Loading images…'}</span>}>
+            <BlockImagePresentations content={content} references={references} isZh={isZh} onBegin={onImageBegin} onCommit={onImageCommit} />
+          </Suspense> : <div className="block-rich-media-images">
             {richMedia.images.map((image) => (
               <RichMediaImageCard
                 alt={image.alt}
@@ -47,7 +55,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
                 ui={ui}
               />
             ))}
-          </div>
+          </div>}
         </div>
       ) : null}
 

@@ -222,9 +222,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const nodes = useContext(MarkdownBlockNodesContext)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   const showAdvancedPreview = !['code', 'math', 'divider', 'table', 'frontmatter'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
-  const shouldShowRichMediaPreview = !['code', 'math', 'divider', 'table', 'frontmatter'].includes(block.type) && !showAdvancedPreview
-  const richMedia = shouldShowRichMediaPreview ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
-  const hasRichMedia = richMedia.images.length > 0 || richMedia.links.length > 0
+  const mediaEligible = !['code', 'math', 'divider', 'table', 'frontmatter'].includes(block.type)
+  const richMedia = mediaEligible ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
+  const shouldShowRichMediaPreview = mediaEligible && (!showAdvancedPreview || richMedia.images.length > 0)
+  const hasRichMedia = shouldShowRichMediaPreview && (richMedia.images.length > 0 || richMedia.links.length > 0)
 
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
@@ -1010,9 +1011,15 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
           </div>
         ) : null}
 
-        {shouldShowRichMediaPreview ? <BlockRichMediaPreview content={block.content} ui={ui} /> : null}
+        {shouldShowRichMediaPreview ? <BlockRichMediaPreview content={block.content} ui={ui} isZh={isZh}
+          onImageBegin={() => props.checkpointDraft?.()} onImageCommit={(occurrence, _next, content) => {
+            const current = getDraftBlocks()[index]
+            if (!current || current.id !== block.id || current.content !== occurrence.originalContent) return
+            props.checkpointDraft?.()
+            updateDraftBlock(index, { content })
+          }} /> : null}
         {showAdvancedPreview ? <div className="markdown-advanced-preview" aria-label={isZh ? 'Markdown 预览' : 'Markdown preview'}>
-          <MarkdownBlockContent onReference={(label) => { void navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} />
+          <MarkdownBlockContent hideImages={richMedia.images.length > 0} onReference={(label) => { void navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} />
         </div> : null}
         {block.type === 'table' ? (
           <Suspense fallback={<MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />}>

@@ -1,5 +1,6 @@
-import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
+import { parseFragment, serializeOuter, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import { normalizeMarkdownExternalUrl } from './markdownEngine'
+import { parseImageFigure, serializeImageFigure } from './markdownMedia'
 
 type Node = Html.ChildNode
 const discarded = new Set(['script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed', 'svg', 'math', 'head', 'title', 'meta', 'link'])
@@ -147,7 +148,9 @@ function flow(nodes: Node[]): string {
     const heading = /^h([1-6])$/.exec(tag)
     if (!blocks.has(tag) && !heading && !['ul', 'ol', 'li', 'blockquote', 'pre', 'table', 'hr'].includes(tag)) { run.push(node); continue }
     flush()
-    if (heading) result += boundary('#'.repeat(Number(heading[1])) + ' ' + inline(node.childNodes).trim())
+    const media = tag === 'figure' ? parseImageFigure(serializeOuter(node)) : null
+    if (media) result += boundary(serializeImageFigure(media))
+    else if (heading) result += boundary('#'.repeat(Number(heading[1])) + ' ' + inline(node.childNodes).trim())
     else if (tag === 'ul' || tag === 'ol') result += boundary(list(node))
     else if (tag === 'blockquote') result += boundary(clean(flow(node.childNodes)).split('\n').map(line => '> ' + line).join('\n'))
     else if (tag === 'pre') {

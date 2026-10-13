@@ -1,11 +1,26 @@
 import type MarkdownIt from 'markdown-it'
-import type { Token } from 'markdown-it'
+import type { StateBlock, Token } from 'markdown-it'
 import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import { capturedMarkdownSourceLinks, capturedMarkdownCompatibility, recordMarkdownCompatibility, shiftMarkdownSourceCapture, type MarkdownDestination, type MarkdownCompatibilityFinding } from './markdownSourceLinks'
+import { IMAGE_ALIGN_ATTRIBUTE, IMAGE_CROP_ATTRIBUTE, parseImageCropAttribute, parseImageFigure, type ImagePresentation } from './markdownMedia'
 
-const tags = new Set(['br', 'kbd', 'sub', 'sup', 'img', 'a', 'details', 'summary'])
+const tags = new Set(['br', 'kbd', 'sub', 'sup', 'img', 'a', 'details', 'summary', 'figure'])
 const voidTags = new Set(['br', 'img'])
 type TokenFactory = (type: string, tag: string, nesting: -1 | 0 | 1) => Token
+type FigureRange = { start: number; end: number }
+type FigureTokenMeta = {
+  html: true
+  imagePresentation: ImagePresentation
+  inlineFigure: boolean
+  htmlSourceLinks: MarkdownDestination[]
+  htmlFigureRange?: FigureRange
+}
+
+function isFigureRange(value: unknown): value is FigureRange {
+  return typeof value === 'object' && value !== null && 'start' in value && 'end' in value
+    && typeof value.start === 'number' && Number.isInteger(value.start) && value.start >= 0
+    && typeof value.end === 'number' && Number.isInteger(value.end) && value.end >= value.start
+}
 
 /** Locate one complete element; this scan only bounds the input to the HTML5
  * parser. It never makes a tag or attribute safe to render. */
@@ -52,6 +67,13 @@ function safeUrl(value: string, image: boolean): boolean {
 }
 
 function attributes(element: Html.Element): Array<[string, string]> {
+  if (element.tagName === 'figure') {
+    const align = element.attrs.find(attr => attr.name === IMAGE_ALIGN_ATTRIBUTE)?.value
+    const crop = parseImageCropAttribute(element.attrs.find(attr => attr.name === IMAGE_CROP_ATTRIBUTE)?.value ?? '')
+    return [...(align && ['left', 'center', 'right'].includes(align) ? [[IMAGE_ALIGN_ATTRIBUTE, align] as [string, string]] : []),
+      ...(crop ? [[IMAGE_CROP_ATTRIBUTE, [crop.x, crop.y, crop.width, crop.height].join(',')] as [string, string]] : [])]
+  }
+  if (element.tagName === 'figcaption') return []
   const result: Array<[string, string]> = []
   for (const { name, value } of element.attrs) {
     if (name === 'title' || name === 'id' || (element.tagName === 'a' && name === 'name')) result.push([name, value])
@@ -60,6 +82,45 @@ function attributes(element: Html.Element): Array<[string, string]> {
     else if ((element.tagName === 'a' && name === 'href' || element.tagName === 'img' && name === 'src') && safeUrl(value.trim(), name === 'src')) result.push([name, value.trim()])
   }
   return result
+}
+
+function figureTokens(source: string, presentation: ImagePresentation, make: TokenFactory, inline = false): { tokens: Token[]; meta: FigureTokenMeta } {
+  const root = parseFragment(source, { sourceCodeLocationInfo: true }).childNodes.find((node): node is Html.Element => 'tagName' in node && node.tagName === 'figure')!
+  const originalImage = root.childNodes.find((node): node is Html.Element => 'tagName' in node && node.tagName === 'img')!
+  const open = make('html_figure_open', 'figure', 1)
+  open.attrs = [[IMAGE_ALIGN_ATTRIBUTE, presentation.align], ...(presentation.crop
+    ? [[IMAGE_CROP_ATTRIBUTE, [presentation.crop.x, presentation.crop.y, presentation.crop.width, presentation.crop.height].join(',')] as [string, string]] : [])]
+  const image = make('image', 'img', 0)
+  const imageAttrs: Array<[string, string]> = [['src', presentation.src], ['alt', presentation.alt], ...(['width', 'height'] as const).flatMap(name =>
+    presentation[name] === undefined ? [] : [[name, String(presentation[name])] as [string, string]]),
+  ...(presentation.title === undefined ? [] : [['title', presentation.title] as [string, string]])]
+  image.attrs = imageAttrs
+  image.content = presentation.alt
+  image.meta = { html: true, htmlSource: source.slice(originalImage.sourceCodeLocation!.startOffset, originalImage.sourceCodeLocation!.endOffset) }
+  const alt = make('text', '', 0); alt.content = presentation.alt; image.children = [alt]
+  const meta: FigureTokenMeta = { html: true, imagePresentation: presentation, inlineFigure: inline, htmlSourceLinks: destination(originalImage, source, imageAttrs) }
+  open.meta = meta
+  const caption = make('html_element_open', inline ? 'span' : 'figcaption', 1)
+  caption.meta = { html: true }; caption.attrs = inline ? [['class', 'markdown-image-caption']] : []
+  const captionText = make('text', '', 0); captionText.content = presentation.caption
+  const captionClose = make('html_element_close', caption.tag, -1); captionClose.meta = { html: true }
+  const close = make('html_figure_close', 'figure', -1); close.meta = { html: true, inlineFigure: inline }
+  return { tokens: [open, image, caption, captionText, captionClose, close], meta }
+}
+
+function htmlSourcePositions(state: StateBlock, start: number, source: string): number[] | null {
+  const positions: number[] = [], lines = source.split('\n')
+  for (let index = 0; index < lines.length; index++) {
+    const rawStart = state.bMarks[start + index], rawEnd = state.eMarks[start + index], raw = state.src.slice(rawStart, rawEnd)
+    const line = lines[index]
+    let at = raw.indexOf(line)
+    if (at < 0) at = raw.indexOf(line.trimStart()) - (line.length - line.trimStart().length)
+    if (at < 0) return null
+    for (let column = 0; column < line.length; column++) positions.push(rawStart + at + column)
+    if (index < lines.length - 1) positions.push(rawEnd)
+  }
+  positions.push((positions.at(-1) ?? state.bMarks[start]) + 1)
+  return positions
 }
 
 function destination(element: Html.Element, source: string, attrs: Array<[string, string]>): MarkdownDestination[] {
@@ -81,6 +142,14 @@ function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory,
     if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || !tags.has(node.tagName) || depth > 100) {
       const location = node.sourceCodeLocation
       return location ? text(source.slice(location.startOffset, location.endOffset)) : []
+    }
+    if (node.tagName === 'figure') {
+      const location = node.sourceCodeLocation!
+      const raw = source.slice(location.startOffset, location.endOffset), presentation = parseImageFigure(raw)
+      if (!presentation) return text(raw)
+      const { tokens, meta } = figureTokens(raw, presentation, make, true)
+      links.push(...meta.htmlSourceLinks.map(link => ({ ...link, start: location.startOffset + link.start, end: location.startOffset + link.end })))
+      return tokens
     }
     const attrs = attributes(node), tag = node.tagName
     links.push(...destination(node, source, attrs))
@@ -109,11 +178,13 @@ function parsedElement(source: string): Html.Element | null {
 
 function compatibilityFindings(source: string): MarkdownCompatibilityFinding[] {
   const issues: MarkdownCompatibilityFinding[] = []
+  const figure = parseImageFigure(source)
   const visit = (nodes: Html.ChildNode[]) => {
     for (const node of nodes) {
       const location = node.sourceCodeLocation
       if (!location || 'value' in node) continue
-      if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || !tags.has(node.tagName)) {
+      if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || (!tags.has(node.tagName) && !(figure && node.tagName === 'figcaption'))
+        || node.tagName === 'figure' && !figure) {
         issues.push({ start: location.startOffset, end: location.endOffset, reason: 'unsupported-html' })
         continue
       }
@@ -138,6 +209,10 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     ? renderer.renderToken(tokens, index, options) : renderBreak(tokens, index, options, env, renderer)
   md.renderer.rules.image = (tokens, index, options, env, renderer) => tokens[index].meta?.html && !tokens[index].attrGet('src')
     ? md.utils.escapeHtml(String(tokens[index].meta?.htmlSource ?? '')) : renderImage(tokens, index, options, env, renderer)
+  md.renderer.rules.html_figure_open = (tokens, index, options, _env, renderer) => tokens[index].meta?.inlineFigure
+    ? '<span' + renderer.renderAttrs(tokens[index]) + '>' : renderer.renderToken(tokens, index, options)
+  md.renderer.rules.html_figure_close = (tokens, index, options, _env, renderer) => tokens[index].meta?.inlineFigure
+    ? '</span>' : renderer.renderToken(tokens, index, options)
   md.inline.ruler.before('html_inline', 'safe_html', (state, silent) => {
     if (state.src[state.pos] !== '<') return false
     const source = elementSource(state.src, state.pos)
@@ -156,6 +231,36 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     state.pos += source.length
     return true
   })
+
+  md.block.ruler.before('html_block', 'html_figure', (state, start, end, silent) => {
+    if (state.sCount[start] - state.blkIndent >= 4) return false
+    const from = state.bMarks[start] + state.tShift[start]
+    if (!/^<figure(?=[\s>])/i.test(state.src.slice(from))) return false
+    const candidate = state.getLines(start, end, state.blkIndent, false)
+    const source = elementSource(candidate, candidate.length - candidate.trimStart().length)
+    const presentation = source && parseImageFigure(source)
+    if (!source || !presentation) return false
+    const positions = htmlSourcePositions(state, start, source)
+    if (!positions) return false
+    const nextLine = start + source.split('\n').length, endOffset = positions.at(-1)!
+    if (state.src.slice(endOffset, state.eMarks[nextLine - 1]).trim()) return false
+    if (silent) return true
+    const { tokens, meta } = figureTokens(source, presentation, (type, tag, nesting) => new state.Token(type, tag, nesting))
+    tokens[0].map = [start, nextLine]
+    meta.htmlFigureRange = { start: positions[0], end: endOffset }
+    if (state.env.captureSourceLinks) for (const link of meta.htmlSourceLinks) {
+      capturedMarkdownSourceLinks(state.env).push({ ...link, start: positions[link.start], end: positions[link.end - 1] + 1 })
+    }
+    for (const finding of state.env.captureCompatibility ? compatibilityFindings(source) : []) {
+      recordMarkdownCompatibility(state.env, { ...finding, start: positions[finding.start], end: positions[finding.end - 1] + 1 }, true)
+    }
+    for (const token of tokens) {
+      const pushed = state.push(token.type, token.tag, token.nesting)
+      Object.assign(pushed, token, { level: pushed.level, block: token === tokens[0] || token.type === 'html_figure_close' })
+    }
+    state.line = nextLine
+    return true
+  }, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
 
   // Observation only: do not consume input or change how Markdown renders.
   // Escapes, code, math, YAML and image alt text retain the parser's exclusions.
@@ -235,7 +340,13 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth }
     const lineOffset = start + (source.slice(0, bodyStart).match(/\n/g)?.length ?? 0)
     shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, (offset) => positions[bodyStart + offset], lineOffset, diagnosticStart)
-    for (const token of bodyTokens) token.level += state.level
+    for (const token of bodyTokens) {
+      token.level += state.level
+      const range = token.meta?.htmlFigureRange
+      if (token.meta && isFigureRange(range)) token.meta.htmlFigureRange = {
+        start: positions[bodyStart + range.start], end: positions[bodyStart + range.end]
+      }
+    }
     state.tokens.push(...bodyTokens)
     state.push('html_details_close', 'details', -1)
     state.line = nextLine

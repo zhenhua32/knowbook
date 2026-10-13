@@ -353,7 +353,8 @@ export function DocumentsSection({
                 {!isReadingMode && editorMode === 'markdown' && selectionToolbarProps ? <BlockSelectionToolbar {...selectionToolbarProps} /> : null}
                 {!isReadingMode && editorMode === 'rich' && richEditorProps ? <Suspense fallback={<p role="status">{previewHeaderProps.isZh ? '正在加载编辑器…' : 'Loading editor…'}</p>}>
                   <DocumentRichTextEditor key={selectedDocument.id} {...richEditorProps} documentId={selectedDocument.id}
-                    isZh={previewHeaderProps.isZh} onRevealBlock={onRevealBlock} visibleIndices={visibleEditorRows.map(row => row.index)} />
+                    references={blockEditorRowSharedProps?.markdownReferences} isZh={previewHeaderProps.isZh}
+                    onRevealBlock={onRevealBlock} visibleIndices={visibleEditorRows.map(row => row.index)} />
                 </Suspense> : blockEditorRowSharedProps
                   ? visibleEditorRows.map((row) => {
                      if (isReadingMode) {

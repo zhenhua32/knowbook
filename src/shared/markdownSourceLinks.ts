@@ -5,7 +5,8 @@ import { parseWikiReference } from './markdownWiki'
 export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' | 'bare' | 'wiki' }
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 export type MarkdownCompatibilityFinding = { start: number; end: number; reason: 'unsupported-html' | 'html-attributes' | 'wiki-syntax' }
-type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; context?: { positions: number[]; offset: number }; inAlt?: boolean }
+export type MarkdownSourceImage = { start: number; end: number; token: Token }
+type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; context?: { positions: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
 
@@ -67,6 +68,13 @@ function record(data: Capture, link: MarkdownSourceLink): void {
   data.links.push({ ...link, start: map[link.start + offset], end: map[link.end - 1 + offset] + 1 })
 }
 
+function recordImage(data: Capture, start: number, end: number, token: Token): void {
+  if (!data.images || data.inAlt || !data.context) return
+  const { positions, offset } = data.context
+  const from = positions[start + offset], to = positions[end - 1 + offset]
+  if (from !== undefined && to !== undefined) data.images.push({ start: from, end: to + 1, token })
+}
+
 /** Diagnostics use the same positions and exclusions as rendered links. */
 export function recordMarkdownCompatibility(env: Env, finding: MarkdownCompatibilityFinding, block = false): void {
   const data = capture(env)
@@ -89,7 +97,8 @@ export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFi
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
     if (state.env.captureSourceLinks) state.env.markdownSourceLinks = {
-      links: [], diagnostics: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined
+      links: [], diagnostics: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined,
+      images: state.env.captureImageOccurrences ? [] : undefined
     } satisfies Capture
   })
   for (const name of ['paragraph', 'heading', 'lheading', 'table', 'reference']) {
@@ -174,6 +183,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
         const token = state.tokens.slice(first).find((item) => item.meta?.wiki)!
         if (token.type !== 'image') recordMarkdownCompatibility(state.env, { start, end: state.pos, reason: 'wiki-syntax' })
         else {
+          recordImage(data, start, state.pos, token)
           const raw = state.src.slice(start + 3, state.pos - 2), reference = parseWikiReference(raw)
           const from = start + 3 + raw.length - raw.trimStart().length
           record(data, { start: from, end: from + reference.target.length, url: String(token.attrGet('src')), kind: 'image', syntax: 'wiki' })
@@ -191,6 +201,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       }
       const token = state.tokens.slice(first).find((item) => item.type === (name === 'image' ? 'image' : 'link_open'))
       if (!token) return true
+      if (name === 'image') recordImage(data, start, state.pos, token)
       const url = String(token.attrGet(name === 'image' ? 'src' : 'href') ?? '')
       if (name === 'linkify') {
         if (/^file:/i.test(url)) record(data, { start: start - schemeLength, end: state.pos, url, kind: 'autolink', syntax: 'bare' })
@@ -212,6 +223,11 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
 
 export function capturedMarkdownSourceLinks(env: Env): MarkdownSourceLink[] {
   return capture(env)?.links ?? []
+}
+
+/** Successful image rules include images nested in normal link labels. */
+export function capturedMarkdownSourceImages(env: Env): MarkdownSourceImage[] {
+  return capture(env)?.images ?? []
 }
 
 /** A details body is block-parsed in its own source slice, then put back into

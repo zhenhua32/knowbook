@@ -421,7 +421,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
         markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
     } else if (token.type === 'frontmatter') {
       push(make('frontmatter', token.content), ...token.map!)
-    } else if (token.type === 'html_details_open') {
+    } else if (token.type === 'html_details_open' || token.type === 'html_figure_open') {
       push(make('html', raw(node)), ...token.map!)
     } else if (token.type === 'math_block') {
       push(make('math', token.content), ...token.map!)
