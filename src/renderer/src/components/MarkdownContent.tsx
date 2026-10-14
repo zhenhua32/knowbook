@@ -25,6 +25,7 @@ const MermaidPreview = lazy(async () => {
   return { default: module.MermaidPreview }
 })
 const ImagePresentationEditor = lazy(() => import('./ImagePresentationEditor').then(module => ({ default: module.ImagePresentationEditor })))
+const InlineTextPresentation = lazy(() => import('./InlineTextPresentation'))
 
 export type MarkdownRenderOptions = {
   onReference?: (label: string) => void
@@ -137,9 +138,15 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
       default: {
         // Only parser-generated, allowlisted elements and attributes reach React.
         if (!['p', 'strong', 'em', 's', 'del', 'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'thead', 'tbody', 'tr', 'th', 'td'].includes(token.tag)
-          && !(token.meta?.html && ['details', 'summary', 'kbd', 'sub', 'sup', 'a'].includes(token.tag))) return token.content
+          && !(token.meta?.html && ['details', 'summary', 'kbd', 'sub', 'sup', 'a', 'u', 'span', 'mark', 'code'].includes(token.tag))) return token.content
         if (token.hidden) return <Fragment key={index}>{nested()}</Fragment>
         const alignment = String(token.attrGet('style') ?? '').match(/^text-align:(left|center|right)$/)?.[1] as 'left' | 'center' | 'right' | undefined
+        if (token.meta?.html && (token.tag === 'u' || token.tag === 'span')) {
+          const attributes = { 'data-knowbook-text-color': token.attrGet('data-knowbook-text-color') === null ? undefined : String(token.attrGet('data-knowbook-text-color')),
+            'data-knowbook-background-color': token.attrGet('data-knowbook-background-color') === null ? undefined : String(token.attrGet('data-knowbook-background-color')) }
+          const content = nested(), tag = token.tag
+          return <Suspense key={index} fallback={createElement(tag, attributes, content)}><InlineTextPresentation tag={tag} attributes={attributes}>{content}</InlineTextPresentation></Suspense>
+        }
         return createElement(token.tag === 's' ? 'del' : token.tag === 'a' ? 'span' : token.tag, {
           key: index,
           ...(token.meta?.html ? { title: token.attrGet('title') ?? undefined, 'data-markdown-anchor': anchor || undefined } : {}),

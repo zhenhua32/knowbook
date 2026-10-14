@@ -3,8 +3,11 @@ import type { StateBlock, Token } from 'markdown-it'
 import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import { capturedMarkdownSourceLinks, capturedMarkdownCompatibility, recordMarkdownCompatibility, shiftMarkdownSourceCapture, type MarkdownDestination, type MarkdownCompatibilityFinding } from './markdownSourceLinks'
 import { IMAGE_ALIGN_ATTRIBUTE, IMAGE_CROP_ATTRIBUTE, parseImageCropAttribute, parseImageFigure, type ImagePresentation } from './markdownMedia'
+import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE, parseInlineTextPresentationAttributes } from './inlineTextPresentation'
 
-const tags = new Set(['br', 'kbd', 'sub', 'sup', 'img', 'a', 'details', 'summary', 'figure'])
+const presentationTags = new Set(['u', 'span'])
+const semanticInlineTags = new Set(['strong', 'em', 's', 'del', 'mark', 'code'])
+const tags = new Set(['br', 'kbd', 'sub', 'sup', 'img', 'a', 'details', 'summary', 'figure', ...presentationTags])
 const voidTags = new Set(['br', 'img'])
 type TokenFactory = (type: string, tag: string, nesting: -1 | 0 | 1) => Token
 type FigureRange = { start: number; end: number }
@@ -67,6 +70,13 @@ function safeUrl(value: string, image: boolean): boolean {
 }
 
 function attributes(element: Html.Element): Array<[string, string]> {
+  if (presentationTags.has(element.tagName)) {
+    const presentation = parseInlineTextPresentationAttributes(element.tagName, element.attrs)
+    return presentation ? [...(element.tagName === 'span' && element.attrs.some(attr => attr.name === INLINE_TEXT_SHELL_ATTRIBUTE && attr.value === 'true') ? [[INLINE_TEXT_SHELL_ATTRIBUTE, 'true'] as [string, string]] : []),
+      ...(presentation.textColor ? [[INLINE_TEXT_COLOR_ATTRIBUTE, presentation.textColor] as [string, string]] : []),
+      ...(presentation.backgroundColor ? [[INLINE_BACKGROUND_COLOR_ATTRIBUTE, presentation.backgroundColor] as [string, string]] : [])] : []
+  }
+  if (semanticInlineTags.has(element.tagName)) return []
   if (element.tagName === 'figure') {
     const align = element.attrs.find(attr => attr.name === IMAGE_ALIGN_ATTRIBUTE)?.value
     const crop = parseImageCropAttribute(element.attrs.find(attr => attr.name === IMAGE_CROP_ATTRIBUTE)?.value ?? '')
@@ -135,13 +145,19 @@ function destination(element: Html.Element, source: string, attrs: Array<[string
     start: location.startOffset + prefix.length + (quoted ? 1 : 0), end: location.endOffset - (quoted ? 1 : 0) }]
 }
 
-function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory, links: MarkdownDestination[], depth = 0): Token[] {
+function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory, links: MarkdownDestination[], depth = 0, presentationContext = false): Token[] {
   return nodes.flatMap((node): Token[] => {
-    const text = (value: string) => { const token = make('text', '', 0); token.content = value; return [token] }
+    const text = (value: string, unsupported = false) => { const token = make('text', '', 0); token.content = value; token.meta = { html: true, ...(unsupported ? { unsupportedHtml: true } : {}) }; return [token] }
     if ('value' in node) return text(node.value)
-    if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || !tags.has(node.tagName) || depth > 100) {
+    if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml'
+      || !tags.has(node.tagName) && !(presentationContext && semanticInlineTags.has(node.tagName)) || depth > 100) {
       const location = node.sourceCodeLocation
-      return location ? text(source.slice(location.startOffset, location.endOffset)) : []
+      return location ? text(source.slice(location.startOffset, location.endOffset), true) : []
+    }
+    if ((presentationTags.has(node.tagName) && !parseInlineTextPresentationAttributes(node.tagName, node.attrs))
+      || semanticInlineTags.has(node.tagName) && node.attrs.length || !voidTags.has(node.tagName) && !node.sourceCodeLocation?.endTag) {
+      const location = node.sourceCodeLocation
+      return location ? text(source.slice(location.startOffset, location.endOffset), true) : []
     }
     if (node.tagName === 'figure') {
       const location = node.sourceCodeLocation!
@@ -163,14 +179,15 @@ function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory,
       const alt = make('text', '', 0); alt.content = token.content; token.children = [alt]
     }
     if (voidTags.has(tag)) return [token]
-    return [token, ...htmlTokens(node.childNodes, source, make, links, depth + 1), make(type === 'link_open' ? 'link_close' : 'html_element_close', tag, -1)]
+    return [token, ...htmlTokens(node.childNodes, source, make, links, depth + 1, presentationContext || presentationTags.has(tag)), make(type === 'link_open' ? 'link_close' : 'html_element_close', tag, -1)]
   })
 }
 
 function parsedElement(source: string): Html.Element | null {
-  const nodes = parseFragment(source, { sourceCodeLocationInfo: true }).childNodes
+  let duplicateAttribute = false
+  const nodes = parseFragment(source, { sourceCodeLocationInfo: true, onParseError: error => { if (error.code === 'duplicate-attribute') duplicateAttribute = true } }).childNodes
   const root = nodes[0]
-  if (nodes.length !== 1 || !root || !('tagName' in root) || !tags.has(root.tagName)) return null
+  if (duplicateAttribute || nodes.length !== 1 || !root || !('tagName' in root) || !tags.has(root.tagName)) return null
   const location = root.sourceCodeLocation
   return location?.startOffset === 0 && location.endOffset === source.length
     && (voidTags.has(root.tagName) || location.endTag) ? root : null
@@ -179,20 +196,25 @@ function parsedElement(source: string): Html.Element | null {
 function compatibilityFindings(source: string): MarkdownCompatibilityFinding[] {
   const issues: MarkdownCompatibilityFinding[] = []
   const figure = parseImageFigure(source)
-  const visit = (nodes: Html.ChildNode[]) => {
+  const visit = (nodes: Html.ChildNode[], presentationContext = false) => {
     for (const node of nodes) {
       const location = node.sourceCodeLocation
       if (!location || 'value' in node) continue
-      if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml' || (!tags.has(node.tagName) && !(figure && node.tagName === 'figcaption'))
+      if ('tagName' in node && node.tagName === 'span' && !node.attrs.length) {
+        issues.push({ start: location.startOffset, end: 'startTag' in location ? location.startTag?.endOffset ?? location.endOffset : location.endOffset, reason: 'unsupported-html' })
+        continue
+      }
+      if (!('tagName' in node) || node.namespaceURI !== 'http://www.w3.org/1999/xhtml'
+        || (!tags.has(node.tagName) && !(presentationContext && semanticInlineTags.has(node.tagName)) && !(figure && node.tagName === 'figcaption'))
         || node.tagName === 'figure' && !figure) {
         issues.push({ start: location.startOffset, end: location.endOffset, reason: 'unsupported-html' })
         continue
       }
       const kept = new Set(attributes(node).map(([name]) => name))
-      if (node.attrs.some((attr) => !kept.has(attr.name))) {
+      if (node.attrs.some((attr) => !kept.has(attr.name)) || presentationTags.has(node.tagName) && !parseInlineTextPresentationAttributes(node.tagName, node.attrs)) {
         issues.push({ start: location.startOffset, end: node.sourceCodeLocation?.startTag?.endOffset ?? location.endOffset, reason: 'html-attributes' })
       }
-      visit(node.childNodes)
+      visit(node.childNodes, presentationContext || presentationTags.has(node.tagName))
     }
   }
   visit(parseFragment(source, { sourceCodeLocationInfo: true }).childNodes)
@@ -218,7 +240,7 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     const source = elementSource(state.src, state.pos)
     if (!source) return false
     const root = parsedElement(source)
-    if (!root || root.tagName === 'details' || root.tagName === 'a' && state.linkLevel > 0) return false
+    if (!root || root.tagName === 'details' || root.tagName === 'span' && !root.attrs.length || root.tagName === 'a' && state.linkLevel > 0) return false
     if (!silent) {
       const links: MarkdownDestination[] = []
       const tokens = htmlTokens([root], source, (type, tag, nesting) => new state.Token(type, tag, nesting), links)

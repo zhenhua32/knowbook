@@ -8,6 +8,7 @@ import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { isNestableBlock } from '../utils/draftBlockShape'
+import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 import { getBlockDropPreview } from '../utils/draftTreeDropPreview'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
@@ -26,6 +27,10 @@ type LinkSuggestionPanelProps = ComponentProps<typeof LinkSuggestionPanel>
 type FloatingSlashCommandPanelProps = ComponentProps<typeof FloatingSlashCommandPanel>
 
 type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps & {
+  isBlockMoveBusy?: boolean
+  selectedMoveDisabledReason?: string | null
+  onCopySelectedBlockLinks?: () => void
+  onOpenSelectedBlocksMove?: () => void
   activeLinkContext: { query: string; start: number } | null
   blockSearchQuery: string
   blockSuggestions: DocumentBlockDraft[]
@@ -71,6 +76,12 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
 }
 
 export function useDocumentsBlockEditorPresentation({
+  isBlockMoveBusy = false,
+  selectedMoveDisabledReason,
+  onCopySelectedBlockLinks,
+  onOpenSelectedBlocksMove,
+  onOpenBlockActions,
+  getSelectedBlockActionIds,
   blockHasChildren,
   focusedHeadingId,
   collapseAllSections,
@@ -299,15 +310,13 @@ export function useDocumentsBlockEditorPresentation({
         canMoveDown: canMoveSelectionDown,
         canMoveUp: canMoveSelectionUp,
         clearLabel: ui.clear,
-         conversionOptions: {
-           paragraph: getBlockConversionLabel('paragraph'),
-           todo: getBlockConversionLabel('todo'),
-           'numbered-todo': getBlockConversionLabel('numbered-todo'),
-           quote: getBlockConversionLabel('quote'),
-           'bulleted-list': getBlockConversionLabel('bulleted-list'),
-           'numbered-list': getBlockConversionLabel('numbered-list'),
-           table: getBlockConversionLabel('table')
-         },
+        disabled: isBlockMoveBusy,
+        conversionOptions: Object.fromEntries(BLOCK_CONVERSION_TYPES.map(type => [type, getBlockConversionLabel(type)])),
+        onCopyBlockLinks: onCopySelectedBlockLinks,
+        onMoveToDocument: onOpenSelectedBlocksMove,
+        moveDisabledReason: selectedMoveDisabledReason,
+        copyBlockLinksLabel: isZh ? '复制块链接' : 'Copy block links',
+        moveToDocumentLabel: isZh ? '移动到文档…' : 'Move to document…',
         convertLabel: ui.convert,
         copyBlocksLabel: ui.copyBlocks,
         copyTextLabel: ui.copyText,
@@ -436,6 +445,7 @@ export function useDocumentsBlockEditorPresentation({
     navigateInlineReferenceAtCursor,
     notifyBlockMouseDown,
     onOpenSelectionAiEditor,
+    onOpenBlockActions: onOpenBlockActions ?? (() => {}),
     removeSelectedBlockRange,
     selectAllBlocks,
     selectBlockRange,
@@ -453,6 +463,8 @@ export function useDocumentsBlockEditorPresentation({
   const blockEditorRowSharedProps: SharedBlockEditorRowProps | null = selectedDocument
     ? {
         ...rowActions,
+        onOpenBlockActions: onOpenBlockActions ? rowActions.onOpenBlockActions : undefined,
+        getSelectedBlockActionIds,
         markdownReferences,
         markdownDocument,
         activeBlockIndex,
@@ -496,5 +508,6 @@ function useStableCallbackProps<T extends Record<string, (...args: any[]) => any
 }
 
 function getBlockConversionLabel(type: DocumentBlock['type']): string {
-  return getActiveUiText().conversionOptions[type] ?? type
+  const text = getActiveUiText()
+  return text.conversionOptions[type] ?? text.blockTypeOptions[type] ?? type
 }

@@ -1,4 +1,4 @@
-import { useLayoutEffect, type RefObject } from 'react'
+import { useLayoutEffect, type ReactNode, type RefObject } from 'react'
 import { MarkdownFormatToolbar } from './MarkdownFormatToolbar'
 import type { MarkdownFormat } from '../utils/markdownFormatting'
 import '../styles/block-format-toolbar.css'
@@ -45,11 +45,12 @@ function caretBox(textarea: HTMLTextAreaElement): VerticalBox {
   } finally { mirror.remove() }
 }
 
-export function BlockFormatToolbar({ textareaRef, onFormat, onReturnToEditor, isZh }: {
+export function BlockFormatToolbar({ textareaRef, onFormat, onReturnToEditor, isZh, children }: {
   textareaRef: RefObject<HTMLTextAreaElement | null>
   onFormat: (format: MarkdownFormat) => void
   onReturnToEditor: () => void
   isZh: boolean
+  children?: ReactNode
 }) {
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -97,5 +98,5 @@ export function BlockFormatToolbar({ textareaRef, onFormat, onReturnToEditor, is
       observer?.disconnect()
     }
   }, [textareaRef])
-  return <MarkdownFormatToolbar isZh={isZh} onFormat={onFormat} onReturnToEditor={onReturnToEditor} />
+  return <MarkdownFormatToolbar isZh={isZh} onFormat={onFormat} onReturnToEditor={onReturnToEditor}>{children}</MarkdownFormatToolbar>
 }

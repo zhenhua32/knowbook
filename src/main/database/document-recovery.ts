@@ -39,13 +39,13 @@ export class DocumentRecoveryRepository {
     return { ...document, blocks }
   }
 
-  checkpoint(documentId: string, reason: DocumentRecoveryEntry['reason'] = 'edit'): void {
+  checkpoint(documentId: string, reason: DocumentRecoveryEntry['reason'] = 'edit', force = false): void {
     const latest = this.db.prepare('SELECT id, created_at FROM document_history WHERE document_id = ? ORDER BY rowid DESC LIMIT 1')
       .get(documentId) as { id: string; created_at: string } | undefined
-    if (reason === 'edit' && latest && Date.now() - Date.parse(latest.created_at) < DOCUMENT_HISTORY_INTERVAL_MS) return
+    if (!force && reason === 'edit' && latest && Date.now() - Date.parse(latest.created_at) < DOCUMENT_HISTORY_INTERVAL_MS) return
     const content = this.readContent(documentId)
     const json = JSON.stringify(content)
-    if (reason === 'edit' && latest && (this.db.prepare('SELECT content_json FROM document_history WHERE id = ?')
+    if (!force && reason === 'edit' && latest && (this.db.prepare('SELECT content_json FROM document_history WHERE id = ?')
       .get(latest.id) as { content_json: string }).content_json === json) return
     const { path } = this.db.prepare('SELECT path FROM documents WHERE id = ?').get(documentId) as { path: string }
     this.db.prepare('INSERT INTO document_history VALUES (?, ?, ?, ?, ?, ?, ?)')

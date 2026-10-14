@@ -986,6 +986,10 @@ export interface ElectronApi {
   listBackupVersions: () => Promise<import('./document-recovery').BackupVersion[]>
   restoreBackupVersion: (versionId: string) => Promise<BackupRestoreResult | null>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
+  getDocumentBlockMoveHistory: (documentId: string) => Promise<import('./document-block-moves').DocumentBlockMoveHistoryEntry | null>
+  moveDocumentBlocks: (input: import('./document-block-moves').MoveDocumentBlocksInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
+  undoDocumentBlockMove: (input: import('./document-block-moves').RestoreDocumentBlockMoveInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
+  redoDocumentBlockMove: (input: import('./document-block-moves').RestoreDocumentBlockMoveInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<AiConfig>
   listAssistantSessions: () => Promise<AssistantSessionSummary[]>
   createAssistantSession: (input?: CreateAssistantSessionRequest) => Promise<AssistantSessionSummary>

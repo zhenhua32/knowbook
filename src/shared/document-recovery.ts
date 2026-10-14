@@ -6,7 +6,7 @@ export interface DocumentRecoveryEntry {
   title: string
   path: string
   createdAt: string
-  reason: 'edit' | 'restore' | 'delete'
+  reason: 'edit' | 'restore' | 'delete' | 'move'
 }
 
 export interface DocumentRecoveryPreview extends DocumentRecoveryEntry {

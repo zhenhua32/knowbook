@@ -4,13 +4,18 @@ import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 const FOCUSABLE = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
 
 /** Keep action popovers usable from the keyboard, including mixed form controls. */
-export function usePopupKeyboard(containerRef: RefObject<HTMLElement | null>, onClose: () => void) {
+export function usePopupKeyboard(containerRef: RefObject<HTMLElement | null>, onClose: () => void, canOpen?: () => boolean, canReturnFocus?: () => boolean) {
   const closeRef = useRef(onClose)
   closeRef.current = onClose
+  const canOpenRef = useRef(canOpen)
+  canOpenRef.current = canOpen
+  const canReturnFocusRef = useRef(canReturnFocus)
+  canReturnFocusRef.current = canReturnFocus
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    if (canOpenRef.current && !canOpenRef.current()) { closeRef.current(); return }
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const controls = () => Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
       .filter((element) => element.getClientRects().length > 0 && !element.closest('[hidden], [inert]'))
@@ -55,7 +60,7 @@ export function usePopupKeyboard(containerRef: RefObject<HTMLElement | null>, on
     return () => {
       container.removeEventListener('keydown', handleKeyDown)
       // Do not steal focus from a dialog opened by one of the actions.
-      if (previousFocus?.isConnected && (container.contains(document.activeElement) || document.activeElement === document.body)) {
+      if ((canReturnFocusRef.current?.() ?? true) && previousFocus?.isConnected && (container.contains(document.activeElement) || document.activeElement === document.body)) {
         previousFocus.focus({ preventScroll: true })
       }
     }

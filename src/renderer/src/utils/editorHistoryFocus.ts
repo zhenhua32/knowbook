@@ -59,3 +59,32 @@ export function restoreEditorHistoryBookmark(bookmark: EditorHistoryBookmark, bl
   input.setSelectionRange(Math.min(bookmark.start, input.value.length), Math.min(bookmark.end, input.value.length), bookmark.direction)
   return true
 }
+
+/** A paired undo waits for IPC; later user activity must not reclaim its cursor. */
+export function captureAsyncHistoryFocusPermission(): { canRestore: () => boolean; dispose: () => void } {
+  const owner = document, view = owner.defaultView!
+  const opener = owner.activeElement instanceof HTMLElement && owner.activeElement !== owner.body
+    && owner.activeElement !== owner.documentElement ? owner.activeElement : null
+  const trigger = opener?.closest('.document-header-action-menu')
+    ? owner.querySelector<HTMLElement>('.document-header-more-button') : null
+  let owned = true
+  const abandon = () => { owned = false }
+  const focus = (event: FocusEvent) => {
+    if (event.target !== owner.body && event.target !== opener && event.target !== trigger
+      && !(event.target instanceof HTMLElement && opener?.contains(event.target))) abandon()
+  }
+  const events = ['pointerdown', 'keydown', 'compositionstart'] as const
+  for (const type of events) owner.addEventListener(type, abandon, true)
+  owner.addEventListener('focusin', focus, true)
+  view.addEventListener('blur', abandon)
+  return {
+    canRestore: () => owned && owner.hasFocus()
+      && ![...owner.querySelectorAll<HTMLElement>('dialog[open], [aria-modal="true"][role="dialog"], [aria-modal="true"][role="alertdialog"]')]
+        .some(element => element.isConnected && element.getClientRects().length > 0),
+    dispose: () => {
+      for (const type of events) owner.removeEventListener(type, abandon, true)
+      owner.removeEventListener('focusin', focus, true)
+      view.removeEventListener('blur', abandon)
+    }
+  }
+}

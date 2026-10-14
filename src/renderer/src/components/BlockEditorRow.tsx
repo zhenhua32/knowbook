@@ -8,7 +8,7 @@ import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft, DocumentBlock } from '@shared/contracts'
 import { BlockEditToolbar } from './BlockEditToolbar'
-import { BlockContextMenu } from './BlockContextMenu'
+import { blockConversionLabels } from '../utils/blockConversionTypes'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { CodeBlockLanguageSelector } from './CodeBlockLanguageSelector'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
@@ -18,8 +18,11 @@ import { scheduleTextareaResize as resizeBlockTextarea, focusBlockTextarea } fro
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 import { editCodeIndentation } from '../utils/codeIndentation'
+import type { SourceInlinePresentationAction } from './SourceInlinePresentationToolbar'
 
+const BlockContextMenu = lazy(() => import('./BlockContextMenu').then(module => ({ default: module.BlockContextMenu })))
 const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
+const SourceInlinePresentationToolbar = lazy(() => import('./SourceInlinePresentationToolbar').then(module => ({ default: module.SourceInlinePresentationToolbar })))
 const MarkdownFormatToolbar = lazy(() => import('./BlockFormatToolbar').then((module) => ({ default: module.BlockFormatToolbar })))
 
 const CodeBlockPreview = lazy(async () => {
@@ -74,6 +77,9 @@ export type BlockEditorRowProps = {
 
   // References
   blockTextareaRefs: React.MutableRefObject<Array<HTMLTextAreaElement | null>>
+
+  getSelectedBlockActionIds?: () => string[]
+  onOpenBlockActions?: (input: { blockIds: string[]; x: number; y: number }) => void
 
   // Callbacks: block operations
   updateDraftBlock: (index: number, patch: Partial<DocumentBlockDraft>) => void
@@ -230,6 +236,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   // 状态管理
   const [showContextMenu, setShowContextMenu] = useState(false)
   const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 })
+  const [inlinePresentationHint, setInlinePresentationHint] = useState('')
   const [editingLanguage, setEditingLanguage] = useState(false)
   const [showBlockToolbar, setShowBlockToolbar] = useState(false)
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
@@ -262,6 +269,51 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     pendingTextSelection.current = result
     props.checkpointDraft?.()
     updateDraftBlock(index, { content: result.content })
+  }
+  const applySourceInlinePresentation = async (action: SourceInlinePresentationAction) => {
+    const textarea = textareaRef.current
+    if (!textarea || !canFormat || composingRef.current) return
+    const source = textarea.value, start = textarea.selectionStart, end = textarea.selectionEnd
+    const direction = textarea.selectionDirection, blocks = getDraftBlocks(), owner = textarea.ownerDocument
+    const belongsToEditor = (target: EventTarget | null) => target instanceof HTMLElement
+      && (target === textarea || Boolean(target.closest('.source-inline-presentation-toolbar')) && target.closest('.block-editor-row') === textarea.closest('.block-editor-row'))
+    if (!belongsToEditor(owner.activeElement)) return
+    let abandoned = false
+    const abandon = () => { abandoned = true }
+    const focusChanged = (event: FocusEvent) => { if (!belongsToEditor(event.target)) abandon() }
+    owner.addEventListener('pointerdown', abandon, true)
+    owner.addEventListener('keydown', abandon, true)
+    owner.addEventListener('compositionstart', abandon, true)
+    owner.addEventListener('focusin', focusChanged, true)
+    owner.defaultView?.addEventListener('blur', abandon)
+    try {
+      // The toolbar and the safe formatter share a lazy chunk; source mode
+      // does not pull the ProseMirror model into the initial renderer bundle.
+      const { formatSourceInlinePresentation } = await import('./SourceInlinePresentationToolbar')
+      if (abandoned || composingRef.current || textareaRef.current !== textarea || !textarea.isConnected
+        || textarea.closest('[inert]') || getDraftBlocks() !== blocks || textarea.value !== source
+        || textarea.selectionStart !== start || textarea.selectionEnd !== end || textarea.selectionDirection !== direction) return
+      const latestIndex = block.id ? blocks.findIndex(candidate => candidate.id === block.id) : index
+      if (latestIndex < 0 || blocks[latestIndex]?.content !== source) return
+      const result = formatSourceInlinePresentation(source, start, end, action, direction, props.markdownReferences)
+      if (!result) {
+        setInlinePresentationHint(isZh ? '请选择完整的可格式化文字。' : 'Select complete text that can be formatted.')
+        return
+      }
+      setInlinePresentationHint('')
+      if (result.content === source) return
+      pendingTextSelection.current = result
+      props.checkpointDraft?.()
+      updateDraftBlock(latestIndex, { content: result.content })
+    } catch {
+      if (!abandoned && textareaRef.current === textarea) setInlinePresentationHint(isZh ? '格式工具加载失败，请重试。' : 'Could not load the formatting tools. Please retry.')
+    } finally {
+      owner.removeEventListener('pointerdown', abandon, true)
+      owner.removeEventListener('keydown', abandon, true)
+      owner.removeEventListener('compositionstart', abandon, true)
+      owner.removeEventListener('focusin', focusChanged, true)
+      owner.defaultView?.removeEventListener('blur', abandon)
+    }
   }
   const getAdjacentVisibleIndex = (delta: -1 | 1, fromIndex = index) => {
     for (let next = fromIndex + delta; next >= 0 && next < draftBlockCount; next += delta) {
@@ -314,10 +366,26 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     }
   }
 
-  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    setContextMenuPos({ x: e.clientX, y: e.clientY })
+  const openBlockActions = (x: number, y: number) => {
+    if (composingRef.current) return
+    if (props.onOpenBlockActions) {
+      const blocks = getDraftBlocks()
+      const currentIndex = blocks.findIndex(candidate => candidate.id === block.id)
+      if (!block.id || currentIndex < 0) return
+      const insideSelection = selectedBlockRange && isSelected && currentIndex >= selectedBlockRange.start && currentIndex <= selectedBlockRange.end
+      const selectedIds = insideSelection ? props.getSelectedBlockActionIds?.()
+        ?? blocks.slice(selectedBlockRange.start, selectedBlockRange.end + 1).map(candidate => candidate.id) : [block.id]
+      const blockIds = selectedIds.filter((id): id is string => Boolean(id))
+      if (blockIds.length) props.onOpenBlockActions({ blockIds, x, y })
+      return
+    }
+    setContextMenuPos({ x, y })
     setShowContextMenu(true)
+  }
+  const handleContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    openBlockActions(event.clientX, event.clientY)
   }
 
   const handleDeleteBlock = () => {
@@ -341,6 +409,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         paddingLeft: `${indentPx}px`
       }}
       onContextMenu={handleContextMenu}
+      onKeyDown={(event) => {
+        if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) return
+        if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+          event.preventDefault(); event.stopPropagation()
+          const bounds = event.currentTarget.getBoundingClientRect()
+          openBlockActions(bounds.left, bounds.bottom)
+        }
+      }}
       onMouseDown={(event) => {
         if (event.button !== 0) {
           return
@@ -401,7 +477,12 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
             event.dataTransfer.effectAllowed = 'move'
             beginBlockDrag(index)
           }}
-          onClick={() => setShowBlockToolbar(prev => !prev)}
+          onClick={(event) => {
+            if (props.onOpenBlockActions) {
+              const bounds = event.currentTarget.getBoundingClientRect()
+              openBlockActions(bounds.left, bounds.bottom)
+            } else setShowBlockToolbar(prev => !prev)
+          }}
           type="button"
         >
           ⋮⋮
@@ -434,28 +515,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
              selectBlockRange(index)
              onOpenSelectionAiEditor()
            }}
-            typeOptions={{
-              paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
-              'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
-              'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
-              ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
-              todo: ui.blockTypeOptions?.todo || 'Todo',
-              'numbered-todo': ui.blockTypeOptions?.['numbered-todo'] || 'Numbered todo',
-              code: ui.blockTypeOptions?.code || 'Code',
-              math: ui.blockTypeOptions?.math || 'Math',
-              quote: ui.blockTypeOptions?.quote || 'Quote',
-              'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
-              'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
-              table: ui.blockTypeOptions?.table || 'Table',
-              divider: ui.blockTypeOptions?.divider || 'Divider'
-            }}
+            typeOptions={blockConversionLabels(ui.blockTypeOptions ?? {})}
             ui={ui}
             isZh={isZh}
           />
         </div>
 
        {/* ── Context Menu ── */}
-      {showContextMenu && (
+      {showContextMenu && !props.onOpenBlockActions && <Suspense fallback={null}>
         <BlockContextMenu
           x={contextMenuPos.x}
           y={contextMenuPos.y}
@@ -464,25 +531,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
           onDuplicate={() => duplicateDraftBlock(index)}
           onDelete={handleDeleteBlock}
           onClose={() => setShowContextMenu(false)}
-           typeOptions={{
-             paragraph: ui.blockTypeOptions?.paragraph || 'Paragraph',
-             'heading-1': ui.blockTypeOptions?.['heading-1'] || 'Heading 1',
-             'heading-2': ui.blockTypeOptions?.['heading-2'] || 'Heading 2',
-              ...Object.fromEntries([3, 4, 5, 6].map((level) => ['heading-' + level, ui.blockTypeOptions?.['heading-' + level] || 'Heading ' + level])),
-             todo: ui.blockTypeOptions?.todo || 'Todo',
-             'numbered-todo': ui.blockTypeOptions?.['numbered-todo'] || 'Numbered todo',
-             code: ui.blockTypeOptions?.code || 'Code',
-             math: ui.blockTypeOptions?.math || 'Math',
-             quote: ui.blockTypeOptions?.quote || 'Quote',
-             'bulleted-list': ui.blockTypeOptions?.['bulleted-list'] || 'Bulleted list',
-             'numbered-list': ui.blockTypeOptions?.['numbered-list'] || 'Numbered list',
-             table: ui.blockTypeOptions?.table || 'Table',
-             divider: ui.blockTypeOptions?.divider || 'Divider'
-           }}
+           typeOptions={blockConversionLabels(ui.blockTypeOptions ?? {})}
            ui={ui}
            isZh={isZh}
          />
-      )}
+      </Suspense>}
 
       {/* ── Content area ── */}
       <div className="block-content-area">
@@ -546,7 +599,13 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
             >
               {block.type === 'table' ? <summary>{isZh ? '编辑表格源码' : 'Edit table source'}</summary> : null}
               {block.type === 'frontmatter' ? <span>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</span> : null}
-              {canFormat && activeBlockIndex === index ? <Suspense fallback={null}><MarkdownFormatToolbar textareaRef={textareaRef} isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()} /></Suspense> : null}
+              {canFormat && activeBlockIndex === index ? <Suspense fallback={null}>
+                <MarkdownFormatToolbar textareaRef={textareaRef} isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()}>
+                  <SourceInlinePresentationToolbar isZh={isZh} onApply={action => { void applySourceInlinePresentation(action) }}
+                    onReturnToEditor={() => textareaRef.current?.focus()} />
+                  {inlinePresentationHint ? <p className="mini-hint" role="status">{inlinePresentationHint}</p> : null}
+                </MarkdownFormatToolbar>
+              </Suspense> : null}
               {hasRichMedia ? (
                 <button
                   aria-expanded={isMediaSourceExpanded}
@@ -628,6 +687,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                                   : 'Type text or / for commands'
               }
               onChange={(event) => {
+                setInlinePresentationHint('')
                 resizeBlockTextarea(event.currentTarget)
                 if (composingRef.current || (event.nativeEvent as InputEvent).isComposing) {
                   updateDraftBlock(index, { content: event.target.value })
@@ -731,6 +791,11 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                 if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) {
                   // Leave candidate selection to the IME, including the final Enter.
                   event.stopPropagation()
+                  return
+                }
+                if (canFormat && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'u') {
+                  event.preventDefault(); event.stopPropagation()
+                  void applySourceInlinePresentation({ kind: 'underline' })
                   return
                 }
                 const format = canFormat ? markdownFormatShortcut(event) : null
@@ -879,7 +944,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   }
 
                   if (canFormat && event.shiftKey) {
-                    el.closest('.block-editor-input-column')?.querySelector<HTMLButtonElement>('.markdown-format-toolbar button:last-child')?.focus()
+                    [...el.closest('.block-editor-input-column')!.querySelectorAll<HTMLButtonElement>('.markdown-format-toolbar button')].at(-1)?.focus()
                     return
                   }
 

@@ -4,14 +4,40 @@ import { decodeMarkdownFormat } from '@shared/markdownFormat'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingRewrites, getMarkdownHeadingTargets, rewriteDocumentMarkdownLinks, rewriteLocalMarkdownLink, type MarkdownPathChange } from '@shared/markdownLinkMaintenance'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 import { findWikiHeading, parseWikiReference, resolveWikiDocument, rewriteWikiReference, wikiDocumentPaths } from '@shared/markdownWiki'
+import { blockTransferFragmentId, blockTransferLinkBindingKey, rewriteDocumentBlockTransferLinks, type BlockTransferWikiBinding } from '@shared/documentBlockTransferLinks'
 
 export type MarkdownIndexedDocument = { id: string; path: string; title: string; blocks: DocumentBlockDraft[] }
 export type MarkdownIndexedPathChange = MarkdownPathChange & { id: string }
+export type MarkdownBlockTransferReferenceInput = {
+  source: MarkdownIndexedDocument
+  target: MarkdownIndexedDocument
+  sourceBlocks: DocumentBlockDraft[]
+  targetBlocks: DocumentBlockDraft[]
+  movedIds: readonly string[]
+}
+export type MarkdownBlockTransferReferenceUpdate = { documentId: string; blocks: DocumentBlockDraft[] }
 
 /** Derived source index. Keep it in the same SQLite transaction as document
  * edits so a crash cannot leave link maintenance using stale destinations. */
 export class MarkdownLinkIndex {
+  private routesAvailable = false
   constructor(private readonly db: Database.Database, private readonly beforeUpdate?: (documentId: string) => void) {}
+
+  /** Only a recorded path-and-ID route can resolve a former block owner. */
+  private blockRoute(path: string, blockId: string): { id: string; path: string } | null {
+    if (!blockId) return null
+    if (!this.routesAvailable) this.routesAvailable = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_block_routes'").get())
+    if (!this.routesAvailable) return null
+    return (this.db.prepare(`SELECT document.id, document.path FROM document_block_routes AS route
+      JOIN blocks AS block ON block.id = route.block_id JOIN documents AS document ON document.id = block.document_id
+      WHERE route.document_path = ? AND route.block_id = ?`).get(path, blockTransferFragmentId(blockId)) as { id: string; path: string } | undefined) ?? null
+  }
+
+  private resolveLocal(sourcePath: string, url: string): { path: string; fragment: string } | null {
+    const target = resolveMarkdownDocumentPath(sourcePath, url)
+    const routed = target?.fragment ? this.blockRoute(target.path, target.fragment) : null
+    return routed && target ? { path: routed.path, fragment: target.fragment } : target
+  }
 
   resolveWiki(token: string, sourcePath: string, headings = new Map<string, ReturnType<typeof getMarkdownHeadingTargets>>()) {
     type Target = { id: string; path: string }
@@ -20,12 +46,33 @@ export class MarkdownLinkIndex {
         ?? this.db.prepare('SELECT id, path FROM documents WHERE path = ? COLLATE NOCASE LIMIT 1').get(name)) as Target | undefined,
       byTitle: (name) => this.db.prepare('SELECT id, path FROM documents WHERE title = ? COLLATE NOCASE LIMIT 2').all(name) as Target[]
     })
-    if (!resolved) return null
+    if (!resolved) {
+      let reference = parseWikiReference(token)
+      if (!reference.hasFragment) {
+        const local = this.db.prepare(`SELECT document.id, document.path FROM blocks AS block JOIN documents AS document ON document.id = block.document_id
+          WHERE document.path = ? AND block.id = ?`).get(sourcePath, reference.target) as { id: string; path: string } | undefined
+        const routed = local ?? this.blockRoute(sourcePath, reference.target)
+        if (routed) return { ...routed, reference: { ...reference, path: '', fragment: reference.target, hasFragment: true },
+          fragment: reference.target, kind: 'block' as const, exists: true }
+      }
+      const lastHash = reference.target.lastIndexOf('#')
+      if (lastHash >= 0 && /[#|]/.test(reference.target.slice(0, lastHash))) {
+        reference = { ...reference, path: reference.target.slice(0, lastHash), fragment: reference.target.slice(lastHash + 1), hasFragment: true }
+      }
+      if (reference.fragment) for (const path of wikiDocumentPaths(reference.path, sourcePath)) {
+        const routed = this.blockRoute(path, reference.fragment)
+        if (routed) return { ...routed, reference, fragment: reference.fragment, kind: 'block' as const, exists: true }
+      }
+      return null
+    }
     const { document, reference } = resolved
     if (!reference.fragment) return { ...document, reference, fragment: '', kind: 'document' as const, exists: true }
-    if (this.db.prepare('SELECT 1 FROM blocks WHERE document_id = ? AND id = ?').get(document.id, reference.fragment)) {
-      return { ...document, reference, fragment: reference.fragment, kind: 'block' as const, exists: true }
+    if (this.db.prepare('SELECT 1 FROM blocks WHERE document_id = ? AND id = ?').get(document.id, blockTransferFragmentId(reference.fragment))) {
+      return { ...document, reference, fragment: blockTransferFragmentId(reference.fragment), kind: 'block' as const, exists: true }
     }
+    const routed = this.blockRoute(document.path, reference.fragment)
+    if (routed) return { ...routed, reference, fragment: blockTransferFragmentId(reference.fragment), kind: 'block' as const, exists: true }
+    if (reference.fragment.startsWith('^')) return { ...document, reference, fragment: reference.fragment, kind: 'block' as const, exists: false }
     let targets = headings.get(document.id)
     if (!targets) {
       const detail = this.readDocument(document.id)!
@@ -61,7 +108,7 @@ export class MarkdownLinkIndex {
     for (const link of collectDocumentMarkdownLinks(document.blocks)) {
       if (link.kind !== 'wiki' && !parseLocalMarkdownUrl(link.url) && !link.url.startsWith('file:')) continue
       const wiki = link.kind === 'wiki' ? this.resolveWiki(link.url, document.path, headings) : null
-      const target = link.kind === 'wiki' ? wiki : link.kind === 'image' ? null : resolveMarkdownDocumentPath(document.path, link.url)
+      const target = link.kind === 'wiki' ? wiki : link.kind === 'image' ? null : this.resolveLocal(document.path, link.url)
       insert.run(id, link.blockId, link.start, link.url, wiki?.kind === 'heading' ? 'wiki-heading' : link.kind, target?.path ?? null, target?.fragment ?? null)
     }
   }
@@ -69,6 +116,46 @@ export class MarkdownLinkIndex {
   rebuild(): void {
     this.db.prepare('DELETE FROM markdown_link_sources').run()
     for (const { id } of this.db.prepare('SELECT id FROM documents').all() as Array<{ id: string }>) this.syncDocument(id)
+  }
+
+  /** Plan content against the old index and old document contexts. Read only
+   * sources bound to the moved fragment IDs, never every document's Markdown.
+   * Store applies these snapshots with both tree updates in its transaction.
+   */
+  planBlockTransferReferences(input: MarkdownBlockTransferReferenceInput,
+    readSnapshot: (documentId: string) => MarkdownIndexedDocument | null): MarkdownBlockTransferReferenceUpdate[] {
+    const movedIds = new Set(input.movedIds), candidates = new Set([input.source.id, input.target.id])
+    const incoming = this.db.prepare(`SELECT DISTINCT source_document_id AS id FROM markdown_link_sources
+      WHERE target_path = ? AND fragment IN (SELECT value FROM json_each(?)) AND kind != 'image'`)
+    for (const row of incoming.all(input.source.path, JSON.stringify(input.movedIds.flatMap(id => [id, '^' + id]))) as Array<{ id: string }>) candidates.add(row.id)
+    const bindingsByDocument = new Map<string, Map<string, BlockTransferWikiBinding>>()
+    const rows = this.db.prepare(`SELECT source_document_id, source_block_id, url, target_path, fragment, kind
+      FROM markdown_link_sources WHERE source_document_id IN (SELECT value FROM json_each(?)) AND target_path IS NOT NULL`)
+      .all(JSON.stringify([...candidates])) as Array<{ source_document_id: string; source_block_id: string; url: string; target_path: string; fragment: string | null; kind: string }>
+    for (const row of rows) {
+      let bindings = bindingsByDocument.get(row.source_document_id)
+      if (!bindings) { bindings = new Map(); bindingsByDocument.set(row.source_document_id, bindings) }
+      const fragment = blockTransferFragmentId(row.fragment ?? '')
+      bindings.set(blockTransferLinkBindingKey(row.source_block_id, row.url), { path: row.target_path, fragment,
+        kind: row.kind === 'wiki-heading' ? 'heading' : fragment && movedIds.has(fragment) && row.target_path === input.source.path ? 'block' : 'document' })
+    }
+    const updates: MarkdownBlockTransferReferenceUpdate[] = [], rewrittenById = new Map<string, string>()
+    const otherUpdates: MarkdownBlockTransferReferenceUpdate[] = []
+    for (const id of candidates) {
+      const document = id === input.source.id ? input.source : id === input.target.id ? input.target : readSnapshot(id)
+      if (!document) continue
+      const blocks = rewriteDocumentBlockTransferLinks(document.blocks, { sourcePath: document.path, fromPath: input.source.path,
+        toPath: input.target.path, movedIds, bindings: bindingsByDocument.get(id) ?? new Map(),
+        targetContent: input.target.blocks.map(block => block.content).join('\n') })
+      for (const block of blocks) if (block.id) rewrittenById.set(block.id, block.content)
+      if (id !== input.source.id && id !== input.target.id && blocks.some((block, index) => block.content !== document.blocks[index].content)) {
+        otherUpdates.push({ documentId: id, blocks })
+      }
+    }
+    const overlay = (blocks: DocumentBlockDraft[]) => blocks.map(block => rewrittenById.has(block.id ?? '')
+      ? { ...block, content: rewrittenById.get(block.id!)! } : block)
+    updates.push({ documentId: input.source.id, blocks: overlay(input.sourceBlocks) }, { documentId: input.target.id, blocks: overlay(input.targetBlocks) }, ...otherUpdates)
+    return updates
   }
 
   check(documentId: string, attachmentCheck: (url: string) => DocumentLinkIssueReason | null): DocumentLinkCheck {
@@ -97,13 +184,19 @@ export class MarkdownLinkIndex {
         report.ignoredExternalCount++; continue
       } else {
         const local = parseLocalMarkdownUrl(link.url)
-        const target = link.kind === 'image' ? null : resolveMarkdownDocumentPath(document.path, link.url)
+        const target = link.kind === 'image' ? null : this.resolveLocal(document.path, link.url)
         if (!local || (!target && /\.md$/i.test(local.path) && link.kind !== 'image')) reason = 'invalid-path'
         else if (!target) reason = 'unmanaged-attachment'
         else {
           const row = byPath.get(target.path) as { id: string } | undefined
           if (!row) reason = 'missing-document'
           else if (target.fragment) {
+            if (blockExists.get(row.id, blockTransferFragmentId(target.fragment))) { report.checkedCount++; continue }
+            if (target.fragment.startsWith('^')) {
+              report.checkedCount++
+              report.issues.push({ blockId: link.blockId!, offset: link.start, url: link.url, reason: 'missing-block' })
+              continue
+            }
             let slugs = headings.get(row.id)
             if (!slugs) {
               const detail = this.readDocument(row.id)!

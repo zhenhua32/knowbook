@@ -2,6 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
+import type { DocumentBlockMoveResult } from '@shared/document-block-moves'
 import type { UiText } from '../i18n'
 import { isNestableBlock, toDraftBlock } from '../utils/draftBlockShape'
 import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
@@ -9,14 +10,19 @@ import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draft
 import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
-import { captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
+import { captureAsyncHistoryFocusPermission, captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import {
   areDocumentDraftBlocksEqual,
   normalizeComparableDocumentTitle
 } from '../utils/documentDraftComparison'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
-type EditSnapshot = { blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null }
+type MoveTransition = { operationId: string; versions: Record<string, string> }
+type EditSnapshot = { blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null; move?: MoveTransition }
+export type DocumentBlockActionTarget = Readonly<{
+  documentId: string; session: number; blockIds: readonly string[]
+  blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null
+}>
 
 export type DocumentRenameTarget = Readonly<{ documentId: string; session: number; title: string }>
 export type RenameTitleResult =
@@ -29,7 +35,8 @@ type TitleIntent = { target: DocumentRenameTarget; title: string; onFailure: (me
 function cloneDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   return blocks.map((block) => ({
     ...block,
-    tags: block.tags ? [...block.tags] : undefined
+    tags: block.tags ? [...block.tags] : undefined,
+    markdownFormat: block.markdownFormat ? { ...block.markdownFormat } : undefined
   }))
 }
 
@@ -62,6 +69,10 @@ export function useDocumentEditorState({
 }: UseDocumentEditorStateParams) {
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [isBlockMoveBusy, setIsBlockMoveBusy] = useState(false)
+  const blockMoveBusyRef = useRef(false)
+  const pairedHistoryFocusRef = useRef(false)
+  const restoreMoveRef = useRef<(move: MoveTransition, state: 'applied' | 'undone') => Promise<boolean>>(async () => false)
   const [isComposingDraft, setIsComposingDraft] = useState(false)
   const [failedSave, setFailedSave] = useState<{
     documentId: string; title: string; summary: string; blocks: DocumentBlockDraft[]
@@ -195,14 +206,18 @@ export function useDocumentEditorState({
     ? 'saving' : hasPendingDraftChanges ? (hasSaveError ? 'error' : 'pending') : 'saved'
 
   const setDraftBlocks = useCallback((next: DraftBlockUpdater) => {
+    if (blockMoveBusyRef.current) return
     setDraftBlocksState((previous) => {
+      if (blockMoveBusyRef.current) return previous
       const resolved = typeof next === 'function' ? next(previous) : next
       return normalizeDraftBlocks(resolved)
     })
   }, [])
 
   const updateDraftBlock = useCallback((index: number, patch: Partial<DocumentBlockDraft>) => {
+    if (blockMoveBusyRef.current) return
     setDraftBlocksState((previous) => {
+      if (blockMoveBusyRef.current) return previous
       const currentBlock = previous[index]
       if (!currentBlock) {
         return previous
@@ -399,7 +414,8 @@ export function useDocumentEditorState({
     setHistoryRevision((current) => current + 1)
   }, [checkpointDraft, isReadingMode])
 
-  const undoEdit = useCallback(() => {
+  const undoEdit = useCallback(async () => {
+    if (blockMoveBusyRef.current) return
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
       historyDebounceTimerRef.current = null
@@ -413,11 +429,13 @@ export function useDocumentEditorState({
       return
     }
 
+    const move = editHistoryRef.current[pointer].move
+    if (move && !await restoreMoveRef.current(move, 'undone')) return
     isRestoringHistoryRef.current = true
     const nextPointer = pointer - 1
     editHistoryPointerRef.current = nextPointer
     const snapshot = editHistoryRef.current[nextPointer]
-    pendingHistoryFocusRef.current = snapshot.bookmark ?? lastEditorBookmarkRef.current
+    pendingHistoryFocusRef.current = move && !pairedHistoryFocusRef.current ? null : snapshot.bookmark ?? lastEditorBookmarkRef.current
     setDraftBlocks(cloneDraftBlocks(snapshot.blocks))
     setHistoryRevision((current) => current + 1)
     setTimeout(() => {
@@ -425,7 +443,8 @@ export function useDocumentEditorState({
     }, 0)
   }, [commitHistorySnapshot, setDraftBlocks])
 
-  const redoEdit = useCallback(() => {
+  const redoEdit = useCallback(async () => {
+    if (blockMoveBusyRef.current) return
     // A new edit must retire the old redo branch even before the debounce ends.
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
@@ -445,11 +464,13 @@ export function useDocumentEditorState({
       historyDebounceTimerRef.current = null
     }
 
+    const move = history[pointer + 1].move
+    if (move && !await restoreMoveRef.current(move, 'applied')) return
     isRestoringHistoryRef.current = true
     const nextPointer = pointer + 1
     editHistoryPointerRef.current = nextPointer
     const snapshot = history[nextPointer]
-    pendingHistoryFocusRef.current = snapshot.bookmark ?? lastEditorBookmarkRef.current
+    pendingHistoryFocusRef.current = move && !pairedHistoryFocusRef.current ? null : snapshot.bookmark ?? lastEditorBookmarkRef.current
     setDraftBlocks(cloneDraftBlocks(snapshot.blocks))
     setHistoryRevision((current) => current + 1)
     setTimeout(() => {
@@ -522,6 +543,9 @@ export function useDocumentEditorState({
           }
           if (isCurrentSession()) {
             selectedDocumentRef.current = refreshedDetail
+            if (refreshedDetail) for (const snapshot of editHistoryRef.current) {
+              if (snapshot.move && Object.hasOwn(snapshot.move.versions, documentId)) snapshot.move.versions[documentId] = refreshedDetail.updatedAt
+            }
             onSelectedDocumentChange(refreshedDetail)
             if (refreshedDetail) {
               if (draftTitleRef.current === baseTitle) {
@@ -592,7 +616,7 @@ export function useDocumentEditorState({
     if (pending && pending.target.documentId === target.documentId && pending.target.session === target.session) {
       return pending.title === title ? pending.promise : Promise.resolve({ status: 'busy' })
     }
-    if (composingDraftRef.current) return Promise.resolve({ status: 'busy' })
+    if (composingDraftRef.current || blockMoveBusyRef.current) return Promise.resolve({ status: 'busy' })
     // Confirming the opening name must not flush unrelated edits or cancel
     // their existing autosave debounce.
     if (title === normalizeComparableDocumentTitle(target.title)
@@ -615,16 +639,148 @@ export function useDocumentEditorState({
   }, [clearAutoSaveTimer, persistDraft, ui.documentSaveFailed])
 
   const saveDocument = useCallback(async () => {
+    if (blockMoveBusyRef.current) return
     clearAutoSaveTimer()
 
     await persistDraft(false, true)
   }, [clearAutoSaveTimer, persistDraft])
 
   const flushPendingChanges = useCallback(async (): Promise<boolean> => {
+    if (blockMoveBusyRef.current) return false
     clearAutoSaveTimer()
     if (!hasPendingDraftChanges && !pendingSaveRef.current) return true
     return persistDraft(false, true)
   }, [clearAutoSaveTimer, hasPendingDraftChanges, persistDraft])
+
+  const getBlockActionTarget = useCallback((blockIds: readonly string[]): DocumentBlockActionTarget | null => {
+    const documentId = selectedDocumentIdRef.current, blocks = draftBlocksRef.current
+    if (!documentId || selectedDocumentRef.current?.id !== documentId || blockMoveBusyRef.current
+      || composingDraftRef.current || !blockIds.length) return null
+    const existingIds = new Set(blocks.map(block => block.id))
+    if (blockIds.some(id => !existingIds.has(id))) return null
+    return { documentId, session: editorSessionRef.current, blockIds: [...new Set(blockIds)], blocks: cloneDraftBlocks(blocks),
+      bookmark: captureEditorHistoryBookmark(blocks) ?? lastEditorBookmarkRef.current }
+  }, [])
+
+  const isBlockActionTargetCurrent = useCallback((target: DocumentBlockActionTarget) => (
+    mountedRef.current && target.documentId === selectedDocumentIdRef.current
+      && target.documentId === selectedDocumentRef.current?.id && target.session === editorSessionRef.current
+      && areDocumentDraftBlocksEqual(target.blocks, draftBlocksRef.current)
+  ), [])
+
+  const acceptBlockMoveResult = useCallback((result: DocumentBlockMoveResult) => {
+    const documentId = selectedDocumentIdRef.current
+    const detail = result.source.id === documentId ? result.source : result.target
+    selectedDocumentRef.current = detail
+    const blocks = normalizeDraftBlocks(detail.blocks.map(toDraftBlock))
+    draftBlocksRef.current = blocks
+    draftTitleRef.current = detail.title
+    draftSummaryRef.current = detail.summary
+    setDraftBlocksState(blocks)
+    setDraftTitle(detail.title)
+    setDraftSummary(detail.summary)
+    setFailedSave(null)
+    onSelectedDocumentChange(detail)
+    for (const snapshot of editHistoryRef.current) if (snapshot.move) {
+      for (const [id, version] of Object.entries(result.expectedUpdatedAtByDocument)) {
+        if (Object.hasOwn(snapshot.move.versions, id)) snapshot.move.versions[id] = version
+      }
+    }
+    checkpointedDraftBlocksRef.current = blocks
+    return blocks
+  }, [onSelectedDocumentChange])
+
+  const refreshAfterBlockMove = useCallback(async () => {
+    try {
+      const home = await window.knowbook.getHomeData()
+      if (mountedRef.current) onHomeDataChange(home)
+    } catch (error) { console.warn('Failed to refresh workspace after committing a block move.', error) }
+  }, [onHomeDataChange])
+
+  const moveDraftBlocksToDocument = useCallback(async (target: DocumentBlockActionTarget, toDocumentId: string): Promise<boolean> => {
+    if (blockMoveBusyRef.current || composingDraftRef.current || !isBlockActionTargetCurrent(target)
+      || target.documentId === toDocumentId) return false
+    blockMoveBusyRef.current = true
+    setIsBlockMoveBusy(true)
+    clearAutoSaveTimer()
+    checkpointDraft()
+    const isCurrent = () => mountedRef.current && selectedDocumentIdRef.current === target.documentId
+      && editorSessionRef.current === target.session
+    try {
+      if (!await persistDraft(false, true) || !isCurrent()) return false
+      const source = selectedDocumentRef.current!
+      const destination = await window.knowbook.getDocumentDetail(toDocumentId)
+      if (!isCurrent() || !destination) return false
+      const result = await window.knowbook.moveDocumentBlocks({ fromDocumentId: source.id, toDocumentId,
+        blockIds: [...target.blockIds], expectedFromUpdatedAt: source.updatedAt, expectedToUpdatedAt: destination.updatedAt })
+      if (isCurrent()) {
+        const blocks = acceptBlockMoveResult(result)
+        const history = editHistoryRef.current.slice(0, editHistoryPointerRef.current + 1)
+        history.push({ blocks: cloneDraftBlocks(blocks), bookmark: target.bookmark,
+          move: { operationId: result.operationId, versions: { ...result.expectedUpdatedAtByDocument } } })
+        editHistoryRef.current = history.slice(-80)
+        editHistoryPointerRef.current = editHistoryRef.current.length - 1
+        setHistoryRevision(value => value + 1)
+      }
+      await refreshAfterBlockMove()
+      return isCurrent()
+    } catch (error) {
+      if (isCurrent()) onMessage(getErrorMessage(error, '移动失败，请重新打开文档后重试。'), 'error')
+      return false
+    } finally { blockMoveBusyRef.current = false; if (mountedRef.current) setIsBlockMoveBusy(false) }
+  }, [acceptBlockMoveResult, checkpointDraft, clearAutoSaveTimer, isBlockActionTargetCurrent, onMessage, persistDraft, refreshAfterBlockMove])
+
+  restoreMoveRef.current = async (move, state) => {
+    if (blockMoveBusyRef.current || composingDraftRef.current) return false
+    const documentId = selectedDocumentIdRef.current, session = editorSessionRef.current
+    const focusPermission = captureAsyncHistoryFocusPermission()
+    const isCurrent = () => mountedRef.current && selectedDocumentIdRef.current === documentId && editorSessionRef.current === session
+    blockMoveBusyRef.current = true
+    setIsBlockMoveBusy(true)
+    clearAutoSaveTimer()
+    try {
+      if (!await persistDraft(false, true) || !isCurrent()) return false
+      const input = { operationId: move.operationId, expectedUpdatedAtByDocument: { ...move.versions } }
+      const result = state === 'undone' ? await window.knowbook.undoDocumentBlockMove(input)
+        : await window.knowbook.redoDocumentBlockMove(input)
+      if (isCurrent()) acceptBlockMoveResult(result)
+      await refreshAfterBlockMove()
+      return isCurrent()
+    } catch (error) {
+      if (isCurrent()) onMessage(getErrorMessage(error, '撤销移动失败；不会覆盖后续编辑。'), 'error')
+      return false
+    } finally {
+      pairedHistoryFocusRef.current = focusPermission.canRestore()
+      focusPermission.dispose()
+      blockMoveBusyRef.current = false
+      if (mountedRef.current) setIsBlockMoveBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isEditing || isReadingModeRef.current || !selectedDocumentId || selectedDocument?.id !== selectedDocumentId
+      || typeof window.knowbook.getDocumentBlockMoveHistory !== 'function') return
+    const documentId = selectedDocumentId, session = editorSessionRef.current
+    let cancelled = false
+    void window.knowbook.getDocumentBlockMoveHistory(documentId).then(entry => {
+      if (!entry || cancelled || !mountedRef.current || selectedDocumentIdRef.current !== documentId
+        || editorSessionRef.current !== session || blockMoveBusyRef.current
+        || editHistoryRef.current.length !== 1 || editHistoryPointerRef.current !== 0) return
+      const expected = normalizeDraftBlocks(entry.state === 'applied' ? entry.afterBlocks : entry.beforeBlocks)
+      const detail = selectedDocumentRef.current
+      if (!detail || !areDocumentDraftBlocksEqual(expected, draftBlocksRef.current)
+        || draftTitleRef.current !== detail.title || draftSummaryRef.current !== detail.summary) return
+      editHistoryRef.current = [
+        { blocks: cloneDraftBlocks(normalizeDraftBlocks(entry.beforeBlocks)), bookmark: null },
+        { blocks: cloneDraftBlocks(normalizeDraftBlocks(entry.afterBlocks)), bookmark: null,
+          move: { operationId: entry.operationId, versions: { ...entry.expectedUpdatedAtByDocument } } }
+      ]
+      editHistoryPointerRef.current = entry.state === 'applied' ? 1 : 0
+      checkpointedDraftBlocksRef.current = draftBlocksRef.current
+      setHistoryRevision(value => value + 1)
+    }).catch(error => console.warn('Failed to read paired block move history.', error))
+    return () => { cancelled = true }
+  }, [isEditing, selectedDocument?.id, selectedDocument?.updatedAt, selectedDocumentId])
 
   useLayoutEffect(() => {
     // A second beforeinput can arrive before passive effects run. Publish the
@@ -635,7 +791,7 @@ export function useDocumentEditorState({
   }, [draftBlocksState, isComposingDraft, isEditing, scheduleHistorySnapshot])
 
   useEffect(() => {
-    if (!isEditing || isComposingDraft || isSaving || hasSaveError || !hasPendingDraftChanges || !selectedDocumentId || !selectedDocument) {
+    if (!isEditing || isComposingDraft || isSaving || isBlockMoveBusy || hasSaveError || !hasPendingDraftChanges || !selectedDocumentId || !selectedDocument) {
       return
     }
 
@@ -650,7 +806,7 @@ export function useDocumentEditorState({
     return () => {
       clearAutoSaveTimer()
     }
-  }, [clearAutoSaveTimer, draftBlocksState, draftSummary, draftTitle, hasPendingDraftChanges, hasSaveError, isComposingDraft, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
+  }, [clearAutoSaveTimer, draftBlocksState, draftSummary, draftTitle, hasPendingDraftChanges, hasSaveError, isBlockMoveBusy, isComposingDraft, isEditing, isSaving, persistDraft, selectedDocument, selectedDocumentId])
 
   useEffect(() => {
     mountedRef.current = true
@@ -662,6 +818,13 @@ export function useDocumentEditorState({
       clearAutoSaveTimer()
     }
   }, [clearAutoSaveTimer])
+
+  const guardedSetDraftTitle: Dispatch<SetStateAction<string>> = useCallback(value => {
+    if (!blockMoveBusyRef.current) setDraftTitle(value)
+  }, [])
+  const guardedSetDraftSummary: Dispatch<SetStateAction<string>> = useCallback(value => {
+    if (!blockMoveBusyRef.current) setDraftSummary(value)
+  }, [])
 
   const getDraftMarkdownExport = useCallback((documentId: string) => {
     if (selectedDocument?.id !== documentId || selectedDocumentIdRef.current !== documentId) return null
@@ -691,9 +854,9 @@ export function useDocumentEditorState({
   }, [getDraftMarkdownExport, onMessage, selectedDocumentId, ui])
 
   return {
-    canRedo: areDraftBlockSnapshotsEqual(editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksState)
+    canRedo: !isBlockMoveBusy && areDraftBlockSnapshotsEqual(editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksState)
       && editHistoryPointerRef.current < Math.min(editHistoryRef.current.length - 1, readingHistoryScopeRef.current?.ceiling ?? Infinity),
-    canUndo: editHistoryPointerRef.current >= 0 && (!areDraftBlockSnapshotsEqual(editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksState)
+    canUndo: !isBlockMoveBusy && editHistoryPointerRef.current >= 0 && (!areDraftBlockSnapshotsEqual(editHistoryRef.current[editHistoryPointerRef.current]?.blocks, draftBlocksState)
       || editHistoryPointerRef.current > Math.max(0, readingHistoryScopeRef.current?.floor ?? 0)),
     checkpointDraft,
     cancelPendingAutoSave: clearAutoSaveTimer,
@@ -708,21 +871,25 @@ export function useDocumentEditorState({
     getRenameTarget,
     hasPendingDraftChanges,
     isEditing,
-    isSaving,
+    isSaving: isSaving || isBlockMoveBusy,
+    isBlockMoveBusy,
+    getBlockActionTarget,
+    isBlockActionTargetCurrent,
+    moveDraftBlocksToDocument,
     loadDocumentIntoEditor: resetEditorFromDocument,
     mdCopyFlash,
     pushToHistory,
-    redoEdit,
+    redoEdit: () => { void redoEdit() },
     renameTitle,
     saveDocument,
     saveDocumentAsMarkdown,
     saveStatus,
     setDraftBlocks,
-    setDraftSummary,
-    setDraftTitle,
+    setDraftSummary: guardedSetDraftSummary,
+    setDraftTitle: guardedSetDraftTitle,
     setIsSaving,
     updateBlockHighlight,
     updateDraftBlock,
-    undoEdit
+    undoEdit: () => { void undoEdit() }
   }
 }

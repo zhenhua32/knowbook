@@ -7,7 +7,7 @@ import { getInlineReferenceTokenAtCursor, resolveInlineReferenceTarget } from '.
 import { collectMarkdownDestinations, collectMarkdownSourceLinks, rewriteMarkdownDestinations } from '../src/shared/markdownLinks'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets, rewriteDocumentMarkdownLinks } from '../src/shared/markdownLinkMaintenance'
 import { parseMarkdownBlocks } from '../src/shared/markdown'
-import { resolveWikiDocument } from '../src/shared/markdownWiki'
+import { findWikiHeading, parseWikiReference, resolveWikiDocument } from '../src/shared/markdownWiki'
 
 const drafts = (source: string) => parseMarkdownBlocks(source).map((block, index) => ({ ...block, id: `block-${index}` }))
 
@@ -48,6 +48,28 @@ test('Wiki document resolution shares root paths, md suffixes, aliases, current 
   assert.deepEqual(resolveInlineReferenceTarget('#Local heading|Here', references, blocks, 'source'), { type: 'cross-block', documentPath: 'Notes/Source', blockId: 'Local heading' })
   assert.deepEqual(resolveInlineReferenceTarget('legacy-id|Old block', references, blocks, 'source'), { type: 'block', documentId: 'source', blockId: 'legacy-id' })
   assert.deepEqual(resolveInlineReferenceTarget('Known|Title', references, blocks, 'source'), { type: 'document', documentId: 'legacy' })
-  assert.equal(resolveInlineReferenceTarget('Docs/Guide#^foreign', references, blocks, 'source'), null)
+  assert.deepEqual(resolveInlineReferenceTarget('Docs/Guide#^foreign', references, blocks, 'source'), { type: 'cross-block', documentPath: 'Docs/Guide', blockId: '^foreign' })
   assert.equal(resolveWikiDocument('../../escape', 'Source', { byPath: () => undefined, byTitle: () => [] }), null)
+})
+
+test('explicit caret fragments preserve their identity through aliases and cannot resolve as similarly named headings or local alias text', () => {
+  const references = [{ id: 'source', path: 'Notes/Source', title: 'Source' }, { id: 'guide', path: 'Docs/Guide', title: 'Guide' }]
+  const blocks = new Map([['foreign', { id: 'foreign', content: 'Install alias text' }], ['Install', { id: 'Install', content: 'Local block matching the alias' }]])
+  const raw = 'Docs/Guide#^foreign|Install'
+  const source = 'See [[' + raw + ']] here'
+  assert.equal(getInlineReferenceTokenAtCursor(source, source.indexOf('foreign') + 2), raw)
+  assert.deepEqual(parseWikiReference(raw), { target: 'Docs/Guide#^foreign', path: 'Docs/Guide', fragment: '^foreign', hasFragment: true, alias: 'Install' })
+  assert.deepEqual(resolveInlineReferenceTarget(raw, references, blocks, 'source'),
+    { type: 'cross-block', documentPath: 'Docs/Guide', blockId: '^foreign' })
+  assert.deepEqual(resolveInlineReferenceTarget('Deleted/Old#^foreign|Install', references, blocks, 'source'),
+    { type: 'cross-block', documentPath: 'Deleted/Old', blockId: '^foreign' })
+  assert.deepEqual(resolveInlineReferenceTarget('#^foreign|Install', references, blocks, 'source'),
+    { type: 'cross-block', documentPath: 'Notes/Source', blockId: '^foreign' })
+  const headings = getMarkdownHeadingTargets(drafts('## foreign\n\n## ^foreign\n\n## Install'), 'Guide')
+  assert.equal(findWikiHeading('^foreign', headings), undefined)
+  assert.equal(findWikiHeading('^foreign', [{ text: '^foreign', slug: '^foreign' }]), undefined,
+    'even an exact heading text or slug cannot claim the explicit block namespace')
+  assert.equal(findWikiHeading('Install', headings)?.slug, 'install')
+  assert.deepEqual(resolveInlineReferenceTarget('Docs/Guide#Install|^foreign', references, blocks, 'source'),
+    { type: 'cross-block', documentPath: 'Docs/Guide', blockId: 'Install' }, 'display aliases must never replace the target fragment')
 })

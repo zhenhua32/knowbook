@@ -1,0 +1,11 @@
+.document-block-move-dialog[open] { display: flex; flex-direction: column; max-height: calc(100dvh - 32px); overflow: hidden; }
+.document-block-move-dialog > :not(.document-capture-body) { flex-shrink: 0; }
+.document-block-move-dialog .document-capture-body { min-height: 0; overflow: auto; }
+.document-block-move-label { margin: 0 0 10px; color: var(--kb-text-soft); font-size: var(--kb-type-caption); }
+.document-block-move-option { display: flex; align-items: flex-start; gap: 12px; padding: 10px; border: 1px solid transparent; border-radius: var(--kb-radius-sm); cursor: pointer; }
+.document-block-move-option-selected { border-color: var(--kb-accent); background: var(--kb-bg); }
+.document-block-move-option:has(:disabled) { opacity: .6; cursor: default; }
+.document-block-move-option input { flex-shrink: 0; margin-top: 5px; accent-color: var(--kb-accent); }
+.document-block-move-option span { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.document-block-move-option strong { font-size: var(--kb-type-label); font-weight: 600; }
+.document-block-move-option small { color: var(--kb-text-soft); font-size: var(--kb-type-caption); }

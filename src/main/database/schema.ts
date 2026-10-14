@@ -108,6 +108,26 @@ CREATE TABLE IF NOT EXISTS blocks (
 CREATE INDEX IF NOT EXISTS idx_blocks_document_id ON blocks(document_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_parent_block_id ON blocks(parent_block_id);
 
+CREATE TABLE IF NOT EXISTS document_block_routes (
+  document_path TEXT NOT NULL,
+  block_id TEXT NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+  PRIMARY KEY (document_path, block_id)
+);
+CREATE TABLE IF NOT EXISTS document_block_moves (
+  id TEXT PRIMARY KEY,
+  source_document_id TEXT NOT NULL,
+  target_document_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('applied', 'undone')),
+  moved_ids_json TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  after_json TEXT NOT NULL,
+  expected_versions_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_document_block_moves_source ON document_block_moves(source_document_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_document_block_moves_target ON document_block_moves(target_document_id, created_at DESC);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
   document_id UNINDEXED,
   title,

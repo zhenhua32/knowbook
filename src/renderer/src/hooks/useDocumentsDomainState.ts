@@ -152,6 +152,10 @@ export function useDocumentsDomainState({
     hasPendingDraftChanges,
     getDraftMarkdownExport,
     getRenameTarget,
+    getBlockActionTarget,
+    isBlockActionTargetCurrent,
+    moveDraftBlocksToDocument,
+    isBlockMoveBusy,
     isEditing,
     isSaving,
     loadDocumentIntoEditor,
@@ -183,7 +187,7 @@ export function useDocumentsDomainState({
   flushPendingDocumentChangesRef.current = flushPendingChanges
 
   useEffect(() => {
-    if (!selectedDocumentId || !selectedDocument || isSaving || hasPendingDraftChanges) {
+    if (!selectedDocumentId || !selectedDocument || isSaving || isBlockMoveBusy || hasPendingDraftChanges) {
       return
     }
 
@@ -210,6 +214,7 @@ export function useDocumentsDomainState({
     documentCatalog,
     hasPendingDraftChanges,
     isSaving,
+    isBlockMoveBusy,
     loadDocumentIntoEditor,
     selectedDocument,
     selectedDocumentId,
@@ -551,7 +556,7 @@ export function useDocumentsDomainState({
   const navigateMarkdownLink = useMarkdownNavigation({
     documentTree, selectedDocument, onOpenDocument: openDocumentInDocumentsPage,
     onWikiReference: (token) => { void navigateInlineReferenceAtCursor(`[[${token}]]`, 2) },
-    onOpenAnchor: openDocumentAnchorInDocumentsPage, onMessage: onNotification, isZh: uiLanguage === 'zh-CN'
+    onOpenAnchor: openDocumentAnchorInDocumentsPage, onOpenDocumentBlock: openDocumentBlockInDocumentsPage, onMessage: onNotification, isZh: uiLanguage === 'zh-CN'
   })
 
   useEffect(() => {
@@ -632,6 +637,11 @@ export function useDocumentsDomainState({
     draggingBlockIndex,
     getDraftMarkdownExport,
     getRenameTarget,
+    getBlockActionTarget,
+    isBlockActionTargetCurrent,
+    moveDraftBlocksToDocument,
+    isBlockMoveBusy,
+    notifyBlockAction: onNotification,
     revealBlockAncestors,
     dropBlockAt,
     duplicateDraftBlock,
@@ -695,6 +705,7 @@ export function useDocumentsDomainState({
     openGlobalSearch,
     pinnedDocumentIds,
     redoEdit,
+    pushToHistory,
     renameTitle,
     removeSelectedBlockRange,
     saveDocument,

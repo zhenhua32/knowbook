@@ -17,6 +17,7 @@ import { planRichTextTreePaste } from './paste'
 import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import type { EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
+import { createColdBlockPopup } from '../utils/coldBlockPopup'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
 import { normalizeDraftBlocks } from '../utils/draftTreeNormalization'
 import { getMarkdownShortcut, parsePastedMarkdown } from '../utils/markdownInput'
@@ -25,7 +26,10 @@ import { attachmentMarkdown } from '@shared/attachments'
 import { importAttachmentFiles } from '../utils/attachments'
 import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+import { INLINE_TEXT_COLORS, type InlineTextColor } from '@shared/inlineTextPresentation'
+import { selectedRichTextColor, setRichTextColor } from './presentation'
 import './rich-text.css'
+import '../styles/inline-text-presentation.css'
 
 type Props = {
   blocks: DocumentBlockDraft[]
@@ -39,6 +43,19 @@ type Props = {
   onRedo: () => void
   onEditSource: () => void
   onRevealBlock: (id: string) => void
+  onOpenBlockActions?: (request: { blockIds: string[]; x: number; y: number }) => void
+}
+
+export function richTextSelectionBlockIds(state: EditorState): string[] {
+  const { selection } = state, ids: string[] = []
+  state.doc.forEach((node, position) => {
+    const id = node.attrs.block?.id
+    if (!id) return
+    if (selection.empty ? selection.from >= position && selection.from <= position + node.nodeSize
+      : selection.from < position + node.nodeSize && selection.to > position
+        && !(node.type === richTextSchema.nodes.text_block && selection.to === position + 1)) ids.push(id)
+  })
+  return ids
 }
 
 type Endpoint = NonNullable<EditorHistoryBookmark['richText']>['anchor']
@@ -76,12 +93,16 @@ export function DocumentRichTextEditor(props: Props) {
   const [revision, setRevision] = useState(0)
   const [message, setMessage] = useState('')
   const [linkUrl, setLinkUrl] = useState<string | null>(null)
+  const [palette, setPalette] = useState<'textColor' | 'backgroundColor' | null>(null)
+  const paletteRef = useRef(palette)
+  paletteRef.current = palette
   const linkSelection = useRef<{ from: number; to: number; doc: RichNode } | null>(null)
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState<string | null>(null)
   const boundary = useRef(false), importing = useRef(false)
   const pendingSelection = useRef<EditorHistoryBookmark | null>(null)
   const sourceRefresh = useRef(new Set<() => void>())
+  const pendingContextMenu = useRef<(() => void) | null>(null)
   const view = viewRef.current
   const selection = view?.state.selection
   const currentType = selection?.$from.parent.attrs.block?.type ?? 'paragraph'
@@ -94,6 +115,73 @@ export function DocumentRichTextEditor(props: Props) {
   const slashRef = useRef({ commands: slashCommands, index: slashIndex })
   slashRef.current = { commands: slashCommands, index: Math.min(slashIndex, Math.max(0, slashCommands.length - 1)) }
   void revision
+
+  const openBlockActions = (id: string, x: number, y: number) => {
+    const editor = viewRef.current
+    if (!editor || editor.composing || !latest.current.onOpenBlockActions) return
+    const visible = new Set(latest.current.visibleIndices), visibleIds = new Set<string>()
+    editor.state.doc.forEach((node, _position, index) => { if (visible.has(index) && node.attrs.block?.id) visibleIds.add(node.attrs.block.id) })
+    if (!visibleIds.has(id)) return
+    const selected = richTextSelectionBlockIds(editor.state).filter(blockId => visibleIds.has(blockId))
+    latest.current.onOpenBlockActions({ blockIds: selected.includes(id) ? selected : [id], x, y })
+  }
+
+  // Chromium may target the first widget for clipboard events on an editor-wide range.
+  // Keep body clipboard handlers reachable while retaining a focused control's own boundary.
+  const blockActionStopsEvent = (event: Event) => !['copy', 'cut', 'paste'].includes(event.type) || !viewRef.current?.hasFocus()
+
+  const openContextBlockActions = (id: string, x: number, y: number) => {
+    const editor = viewRef.current
+    if (!editor || editor.composing || !latest.current.onOpenBlockActions) return
+    pendingContextMenu.current?.()
+    const doc = editor.state.doc, original = editor.state.selection
+    const selected = richTextSelectionBlockIds(editor.state)
+    const preserveSelection = selected.includes(id) && (selected.length > 1 || !(original instanceof TextSelection))
+    const attention = createColdBlockPopup(editor.dom)
+    const owner = editor.dom.ownerDocument.defaultView!
+    const cancel = () => {
+      owner.cancelAnimationFrame(frame)
+      attention.dispose()
+      if (pendingContextMenu.current === cancel) pendingContextMenu.current = null
+    }
+    // Chromium can finish placing its native right-click caret after contextmenu.
+    // Freeze the bookmark only after that gesture, while recording any later activity.
+    const frame = owner.requestAnimationFrame(() => {
+      if (viewRef.current !== editor || editor.composing || !editor.state.doc.eq(doc) || attention.vetoed()) { cancel(); return }
+      try {
+        if (preserveSelection) {
+          editor.dispatch(editor.state.tr.setSelection(Selection.fromJSON(editor.state.doc, original.toJSON())))
+          editor.focus()
+        } else {
+          const native = editor.dom.ownerDocument.getSelection()
+          if (native?.anchorNode && native.focusNode && editor.dom.contains(native.anchorNode) && editor.dom.contains(native.focusNode)) {
+            const anchor = editor.posAtDOM(native.anchorNode, native.anchorOffset)
+            const head = editor.posAtDOM(native.focusNode, native.focusOffset)
+            const next = TextSelection.between(editor.state.doc.resolve(anchor), editor.state.doc.resolve(head))
+            if (!next.eq(editor.state.selection)) editor.dispatch(editor.state.tr.setSelection(next))
+          }
+        }
+      } finally { cancel() }
+      openBlockActions(id, x, y)
+    })
+    pendingContextMenu.current = cancel
+  }
+
+  const blockActionButton = (id: string): HTMLButtonElement => {
+    const button = document.createElement('button')
+    button.type = 'button'; button.className = 'rich-text-block-actions'; button.contentEditable = 'false'
+    button.setAttribute('aria-label', latest.current.isZh ? '块操作' : 'Block actions')
+    button.addEventListener('mousedown', event => event.preventDefault())
+    button.addEventListener('contextmenu', event => {
+      event.preventDefault(); event.stopPropagation()
+      openContextBlockActions(id, event.clientX, event.clientY)
+    })
+    button.addEventListener('click', () => {
+      const rect = button.getBoundingClientRect()
+      openBlockActions(id, rect.left, rect.bottom)
+    })
+    return button
+  }
 
   const convert = (type: string, removeSlash = false): void => {
     const editor = viewRef.current
@@ -142,10 +230,16 @@ export function DocumentRichTextEditor(props: Props) {
         decorations(state) {
           const decorations: Decoration[] = [], visible = new Set(latest.current.visibleIndices)
           state.doc.forEach((node, pos, index) => {
+            const highlight = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].includes(node.attrs.block?.highlight) ? node.attrs.block.highlight : null
             decorations.push(Decoration.node(pos, pos + node.nodeSize, {
               'data-block-index': String(index), 'data-block-id': node.attrs.block?.id ?? '',
-              ...(visible.has(index) ? {} : { style: 'display:none', 'aria-hidden': 'true' })
+              ...(highlight || !visible.has(index) ? { style: `${highlight ? `background:var(--highlight-${highlight});` : ''}${visible.has(index) ? '' : 'display:none'}` } : {}),
+              ...(visible.has(index) ? {} : { 'aria-hidden': 'true' })
             }))
+            if (node.type === richTextSchema.nodes.text_block && visible.has(index) && latest.current.onOpenBlockActions) {
+              decorations.push(Decoration.widget(pos + 1, () => blockActionButton(node.attrs.block.id),
+                { side: -1, key: `actions:${node.attrs.block.id}:${latest.current.isZh}`, stopEvent: blockActionStopsEvent }))
+            }
             if (['todo', 'numbered-todo'].includes(node.attrs.block?.type) && visible.has(index)) {
               decorations.push(Decoration.widget(pos + 1, () => {
                 const checkbox = document.createElement('input')
@@ -226,6 +320,7 @@ export function DocumentRichTextEditor(props: Props) {
       Delete: run(baseKeymap.Delete),
       'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.replaceSelectionWith(richTextSchema.nodes.hard_break.create()).scrollIntoView()); return true },
       'Mod-b': run(toggleMark(richTextSchema.marks.strong)), 'Mod-i': run(toggleMark(richTextSchema.marks.em)),
+      'Mod-u': run(toggleMark(richTextSchema.marks.underline)),
       'Mod-e': run(toggleMark(richTextSchema.marks.code)), 'Mod-Shift-x': run(toggleMark(richTextSchema.marks.strike)),
       'Mod-Shift-h': run(toggleMark(richTextSchema.marks.highlight)),
       'Mod-z': () => { latest.current.onUndo(); return true },
@@ -281,6 +376,14 @@ export function DocumentRichTextEditor(props: Props) {
       },
       handleKeyDown(_editor, event) {
         if (isImeKeyboardEvent(event) || editor.composing) return false
+        if (event.key === 'Escape' && paletteRef.current) { setPalette(null); return true }
+        if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
+          const id = richTextSelectionBlockIds(editor.state)[0]
+          if (id && latest.current.onOpenBlockActions) {
+            const coordinates = editor.coordsAtPos(editor.state.selection.from)
+            openBlockActions(id, coordinates.left, coordinates.bottom); return true
+          }
+        }
         const slash = slashRef.current
         if (slash.commands.length && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -298,6 +401,13 @@ export function DocumentRichTextEditor(props: Props) {
         return false
       },
       handleDOMEvents: {
+        contextmenu(_editor, event) {
+          const target = event.target instanceof Element ? event.target : null
+          if (!target || target.closest('input,textarea,select') || !latest.current.onOpenBlockActions || editor.composing) return false
+          const id = target.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
+          if (!id) return false
+          event.preventDefault(); openContextBlockActions(id, event.clientX, event.clientY); return true
+        },
         copy(_editor, event) {
           if (!event.clipboardData || editor.state.selection.empty) return false
           const slice = editor.state.selection.content(), markdown = sliceMarkdown(slice)
@@ -422,7 +532,13 @@ export function DocumentRichTextEditor(props: Props) {
           button.textContent = latest.current.isZh ? '编辑源码' : 'Edit source'
           button.addEventListener('click', () => latest.current.onEditSource())
           dom.append(preview, mediaHost, button)
-          return { dom, stopEvent: event => event.target === button || event.target instanceof HTMLElement && mediaHost.contains(event.target),
+          if (latest.current.onOpenBlockActions) dom.prepend(blockActionButton(current.attrs.block.id))
+          dom.addEventListener('contextmenu', event => {
+            if (event.target instanceof Element && event.target.closest('input,textarea,select') || !latest.current.onOpenBlockActions || viewRef.current?.composing) return
+            event.preventDefault(); event.stopPropagation()
+            openContextBlockActions(current.attrs.block.id, event.clientX, event.clientY)
+          })
+          return { dom, stopEvent: event => event.target === button || event.target instanceof HTMLElement && (mediaHost.contains(event.target) || Boolean(event.target.closest('.rich-text-block-actions')) && blockActionStopsEvent(event)),
             update(next) {
               if (next.type !== current.type || next.attrs.block?.id !== current.attrs.block.id) return false
               current = next; renderPreview(); return true
@@ -457,7 +573,7 @@ export function DocumentRichTextEditor(props: Props) {
       }
     })
     setRevision(value => value + 1)
-    return () => { unregister(); viewRef.current = null; editor.destroy() }
+    return () => { pendingContextMenu.current?.(); unregister(); viewRef.current = null; editor.destroy() }
   }, [props.documentId])
 
   const referenceSignature = JSON.stringify(props.references ?? {})
@@ -491,9 +607,16 @@ export function DocumentRichTextEditor(props: Props) {
   const format = (name: string) => {
     const editor = viewRef.current
     if (!editor || editor.composing) return
-    props.checkpoint()
+    editor.focus(); props.checkpoint()
     boundary.current = true; toggleMark(richTextSchema.marks[name])(editor.state, editor.dispatch, editor)
     editor.focus()
+  }
+  const applyColor = (name: 'textColor' | 'backgroundColor', color?: InlineTextColor) => {
+    const editor = viewRef.current
+    if (!editor || editor.composing) return
+    editor.focus(); props.checkpoint(); boundary.current = true
+    setRichTextColor(name, color)(editor.state, editor.dispatch, editor)
+    setPalette(null); editor.focus()
   }
   const saveLink = () => {
     const editor = viewRef.current, selected = linkSelection.current
@@ -508,21 +631,39 @@ export function DocumentRichTextEditor(props: Props) {
     else tr.addMark(selected.from, selected.to, richTextSchema.marks.link.create({ href: url.toString() }))
     editor.dispatch(tr); setLinkUrl(null); setMessage(''); editor.focus()
   }
-  return <div className="rich-text-document">
+  return <div className="rich-text-document" onKeyDown={event => {
+    if (palette && event.key === 'Escape' && !isImeKeyboardEvent(event) && !viewRef.current?.composing) {
+      event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus()
+    }
+  }}>
     <div className="rich-text-toolbar" role="toolbar" aria-label={props.isZh ? '正文格式' : 'Body formatting'}>
       <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} value={types.includes(currentType) ? currentType : 'paragraph'}
         onChange={event => convert(event.target.value)}>{types.map((type, index) => <option key={type} value={type}>{(props.isZh ? labelsZh : labelsEn)[index]}</option>)}</select></label>
       {([['strong', 'B', '加粗', 'Bold'], ['em', 'I', '斜体', 'Italic'], ['strike', 'S', '删除线', 'Strikethrough'],
-        ['highlight', '▧', '高亮', 'Highlight'], ['code', '</>', '行内代码', 'Inline code']] as const).map(([name, symbol, zh, en]) =>
+        ['underline', 'U', '下划线', 'Underline'], ['highlight', '▧', '高亮', 'Highlight'], ['code', '</>', '行内代码', 'Inline code']] as const).map(([name, symbol, zh, en]) =>
         <button key={name} type="button" aria-label={props.isZh ? zh : en} title={props.isZh ? zh : en}
           aria-pressed={Boolean(view && selection && (selection.empty ? (view.state.storedMarks ?? selection.$from.marks()).some(mark => mark.type === richTextSchema.marks[name]) : view.state.doc.rangeHasMark(selection.from, selection.to, richTextSchema.marks[name])))}
           onMouseDown={event => event.preventDefault()} onClick={() => format(name)}>{symbol}</button>)}
+      {(['textColor', 'backgroundColor'] as const).map(name => <button key={name} type="button" aria-haspopup="dialog" aria-expanded={palette === name}
+        aria-label={props.isZh ? name === 'textColor' ? '文字颜色' : '背景颜色' : name === 'textColor' ? 'Text color' : 'Background color'}
+        onMouseDown={event => event.preventDefault()} onClick={() => { if (!viewRef.current?.composing) setPalette(value => value === name ? null : name) }}>
+        {props.isZh ? name === 'textColor' ? '文字颜色' : '背景颜色' : name === 'textColor' ? 'Text color' : 'Background color'}
+      </button>)}
       <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => {
         const editor = viewRef.current
         if (!editor || editor.composing) return
         linkSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to, doc: editor.state.doc }; setLinkUrl('https://')
       }}>{props.isZh ? '链接' : 'Link'}</button>
     </div>
+    {palette && <div className="rich-text-color-palette" role="dialog" aria-label={props.isZh ? palette === 'textColor' ? '选择文字颜色' : '选择背景颜色' : palette === 'textColor' ? 'Choose text color' : 'Choose background color'}
+      onKeyDown={event => { if (event.key === 'Escape' && !isImeKeyboardEvent(event)) { event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus() } }}>
+      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyColor(palette)}>{props.isZh ? '恢复默认' : 'Default'}</button>
+      {INLINE_TEXT_COLORS.map((color, index) => <button key={color} type="button" data-palette-color={color}
+        aria-label={(props.isZh ? ['灰色', '棕色', '橙色', '黄色', '绿色', '蓝色', '紫色', '粉色', '红色'] : ['Gray', 'Brown', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink', 'Red'])[index]}
+        aria-pressed={Boolean(view && selectedRichTextColor(view.state, palette) === color)} onMouseDown={event => event.preventDefault()} onClick={() => applyColor(palette, color)}>
+        <span aria-hidden="true" data-palette-swatch={palette}>A</span>{(props.isZh ? ['灰', '棕', '橙', '黄', '绿', '蓝', '紫', '粉', '红'] : ['Gray', 'Brown', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Pink', 'Red'])[index]}
+      </button>)}
+    </div>}
     {linkUrl !== null && <form className="rich-text-link-form" onSubmit={event => { event.preventDefault(); saveLink() }}>
       <input autoFocus aria-label={props.isZh ? '链接地址' : 'Link URL'} value={linkUrl} onChange={event => setLinkUrl(event.target.value)} />
       <button type="submit">{props.isZh ? '应用' : 'Apply'}</button><button type="button" onClick={() => { setLinkUrl(null); viewRef.current?.focus() }}>{props.isZh ? '取消' : 'Cancel'}</button>

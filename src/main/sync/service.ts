@@ -6,6 +6,7 @@ import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWe
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
 import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
 import { mergeSyncDocument } from './merge'
+import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
 
 const CONFIG_KEY = 'sync.webdav.config'
@@ -64,6 +65,26 @@ export class WebDavSyncService {
     return value ? JSON.parse(value) as SyncState : emptySyncState()
   }
   private saveState(state: SyncState): void { this.store.saveSetting(targetKey(this.config), JSON.stringify(state)) }
+
+  private preserveOwnershipConflict(error: unknown, conflicts: Record<string, StoredConflict>, expected: Map<string, SyncRecord>): void {
+    if (!(error instanceof SyncBlockOwnershipError)) return
+    const latest = this.store.getSyncRecords()
+    if (canonicalJson([...latest]) !== canonicalJson([...expected])) return
+    // Save only verified reports for the actual ownership pair; no knowledge,
+    // accepted baseline, timestamp or unrelated resolution is advanced.
+    const preserved = this.state()
+    let changed = false
+    for (const id of new Set([error.dependencyDocumentId, ...error.relatedDocumentIds])) {
+      const key = 'doc:' + id, conflict = conflicts[key]
+      const current = latest.get(key) ?? { kind: 'deleted', id } as SyncRecord
+      if (!conflict || recordHash(this.assets.portableKnown(current)) !== conflict.localHash) continue
+      preserved.conflicts[key] = conflict
+      const resolution = preserved.resolutions[key]
+      if (resolution && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete preserved.resolutions[key]
+      changed = true
+    }
+    if (changed) this.saveState(preserved)
+  }
 
   getStatus(): WebDavSyncStatus {
     const state = this.state()
@@ -217,6 +238,7 @@ export class WebDavSyncService {
     const writes = new Map<string, SyncRecord>()
     const accepted = new Map<string, { localHash: string | null; remoteHash: string }>()
     const conflicts: SyncState['conflicts'] = {}
+    const ownershipConflicts: SyncState['conflicts'] = {}
     const mergingKeys = new Set<string>()
     let mergedCount = 0
     const conflictCopy = (record: SyncDocument, salt: string): SyncDocument => {
@@ -265,6 +287,10 @@ export class WebDavSyncService {
       const remoteChanged = baseline ? remoteHash !== baseline.remoteHash : Boolean(remoteHash)
       if (localChanged && remoteChanged) {
         const remote = await remoteRecord(key, remoteHash)
+        const oldConflict = state.conflicts[key]
+        ownershipConflicts[key] = { ...(oldConflict?.localHash === proposedHash && oldConflict.remoteHash === remoteHash ? oldConflict : {}),
+          local: proposed, remote, localHash: proposedHash, remoteHash, localRawHash: recordHash(raw.get(key) ?? deletion) }
+
         const resolution = state.resolutions[key]
         if (resolution?.localHash === proposedHash && resolution.remoteHash === remoteHash) {
           if (resolution.choice === 'local') writes.set(key, proposed)
@@ -322,6 +348,7 @@ export class WebDavSyncService {
       else if (remoteChanged && remoteHash) incoming.set(key, await remoteRecord(key, remoteHash))
       else if (remoteHash) accepted.set(key, { localHash, remoteHash })
     }
+    const ownershipReports = { ...ownershipConflicts, ...conflicts }
     this.stage('uploading', writes.size, new Set([...writes.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.hash))).size)
     const uploadProgress = this.assetProgress()
     for (const [key, record] of writes) {
@@ -362,7 +389,45 @@ export class WebDavSyncService {
       }
       mergedCount = 0
     }
+    // Reject incomplete ownership dependencies before publishing any manifest.
+    // The apply transaction repeats this check after all asynchronous waits.
+    try {
+      if (canonicalJson([...this.store.getSyncRecords()]) === canonicalJson([...raw])) {
+        preflightSyncBlockTransfers(this.store.getUnsafeDatabaseHandle(), [...localized.values()],
+          Object.entries(ownershipReports).flatMap(([key, conflict]) => !incoming.has(key) && conflict.remote.kind === 'document' ? [conflict.remote] : []))
+      }
+    } catch (error) {
+      this.preserveOwnershipConflict(error, ownershipReports, raw)
+      throw error
+    }
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
+    const writtenDocumentIds = new Set([...writes.values()].flatMap(record => record.kind === 'databases' ? [] : [record.id]))
+    if (changed && writtenDocumentIds.size) {
+      try {
+        const remoteDocuments: SyncRecord[] = [], publishedDocuments: SyncRecord[] = []
+        for (const [key, hash] of Object.entries(next.entries)) {
+          if (!key.startsWith('doc:')) continue
+          const remoteHash = manifest.entries[key]
+          let remote: SyncRecord | undefined
+          if (remoteHash) {
+            const candidates = [local.get(key) ?? { kind: 'deleted', id: key.slice(4) } as const,
+              incoming.get(key), ownershipReports[key]?.remote]
+            remote = candidates.find(record => record && recordHash(record) === remoteHash)
+              ?? await remoteRecord(key, remoteHash)
+            remoteDocuments.push(remote)
+          }
+          const written = writes.get(key)
+          if (written) publishedDocuments.push(written)
+          else if (remote && hash === remoteHash) publishedDocuments.push(remote)
+          else throw new Error('同步发布版本未完整核验，未发布清单。')
+        }
+        preflightSyncPublishedBlockOwnership(local.values(), remoteDocuments, publishedDocuments, writtenDocumentIds)
+      } catch (error) {
+        this.preserveOwnershipConflict(error, ownershipReports, raw)
+        throw error
+      }
+    }
+    if (this.abort?.signal.aborted) throw new Error('同步已停止。')
     if (changed) {
       this.stage('publishing')
       const manifestBytes = Buffer.from(canonicalJson(next))
@@ -374,32 +439,38 @@ export class WebDavSyncService {
     const latest = this.store.getSyncRecords()
     const localUnchanged = canonicalJson([...latest]) === canonicalJson([...raw])
     this.stage('applying')
-    this.store.runInTransaction(() => {
-      if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()])
-      const after = this.store.getSyncRecords()
-      for (const [key, baseline] of accepted) {
-        if (localUnchanged || !incoming.has(key)) state.baseline[key] = baseline
-      }
-      if (localUnchanged) {
-        for (const key of localized.keys()) {
-          const record = after.get(key)
-          state.baseline[key] = { localHash: record ? recordHash(this.assets.portableKnown(record)) : null, remoteHash: next.entries[key] }
+    try {
+      this.store.runInTransaction(() => {
+        if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()])
+        const after = this.store.getSyncRecords()
+        for (const [key, baseline] of accepted) {
+          if (localUnchanged || !incoming.has(key)) state.baseline[key] = baseline
         }
-      }
-      state.workspaceId = manifest.workspaceId
-      state.conflicts = conflicts
-      // Keep resolutions until incoming changes were actually applied.
-      if (localUnchanged) state.resolutions = {}
-      else {
-        // A deferred apply must never resurrect a decision for a newer pair.
-        for (const [key, resolution] of Object.entries(state.resolutions)) {
-          const conflict = conflicts[key]
-          if (conflict && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete state.resolutions[key]
+        if (localUnchanged) {
+          for (const key of localized.keys()) {
+            const record = after.get(key)
+            state.baseline[key] = { localHash: record ? recordHash(this.assets.portableKnown(record)) : null, remoteHash: next.entries[key] }
+          }
         }
-      }
-      state.lastSyncAt = new Date().toISOString()
-      this.saveState(state)
-    })
+        state.workspaceId = manifest.workspaceId
+        state.conflicts = conflicts
+        // Keep resolutions until incoming changes were actually applied.
+        if (localUnchanged) state.resolutions = {}
+        else {
+          // A deferred apply must never resurrect a decision for a newer pair.
+          for (const [key, resolution] of Object.entries(state.resolutions)) {
+            const conflict = conflicts[key]
+            if (conflict && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete state.resolutions[key]
+          }
+        }
+        state.lastSyncAt = new Date().toISOString()
+        this.saveState(state)
+      })
+    } catch (error) {
+      if (localUnchanged) this.preserveOwnershipConflict(error, ownershipReports, raw)
+      throw error
+    }
+
     this.uploaded = writes.size
     this.downloaded = localUnchanged ? localized.size : 0
     this.merged = localUnchanged ? mergedCount : 0

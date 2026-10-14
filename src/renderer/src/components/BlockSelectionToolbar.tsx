@@ -1,6 +1,13 @@
 import type { DocumentBlock } from '@shared/contracts'
+import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 
 type BlockSelectionToolbarProps = {
+  disabled?: boolean
+  onCopyBlockLinks?: () => void
+  onMoveToDocument?: () => void
+  copyBlockLinksLabel?: string
+  moveToDocumentLabel?: string
+  moveDisabledReason?: string | null
   selectedBlockCount: number
   selectedVisibleBlockCount: number
   selectedBlockActionCount: number
@@ -41,6 +48,12 @@ type BlockSelectionToolbarProps = {
 
 export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
   const {
+    disabled = false,
+    onCopyBlockLinks,
+    onMoveToDocument,
+    copyBlockLinksLabel,
+    moveToDocumentLabel,
+    moveDisabledReason,
     selectedBlockCount,
     selectedVisibleBlockCount,
     selectedBlockActionCount,
@@ -80,53 +93,54 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
   } = props
 
   return (
-    <div className="block-selection-toolbar">
+    <div className="block-selection-toolbar" aria-busy={disabled}>
       <div>
         <strong>{summaryLabel}</strong>
         <p className="mini-hint">{hintLabel}</p>
+        {moveDisabledReason ? <p className="mini-hint" role="status">{moveDisabledReason}</p> : null}
       </div>
       <div className="block-selection-actions">
         <select
-          className="editor-select compact-select"
+          className="editor-select compact-select" disabled={disabled} aria-label={convertLabel}
           onChange={(event) => onConversionTypeChange(event.target.value as DocumentBlock['type'])}
           value={selectedBlockConversionType}
         >
-          <option value="paragraph">{conversionOptions.paragraph}</option>
-          <option value="todo">{conversionOptions.todo}</option>
-          <option value="numbered-todo">{conversionOptions['numbered-todo']}</option>
-          <option value="quote">{conversionOptions.quote}</option>
-           <option value="bulleted-list">{conversionOptions['bulleted-list']}</option>
-           <option value="numbered-list">{conversionOptions['numbered-list']}</option>
-           <option value="table">{conversionOptions.table}</option>
+          {BLOCK_CONVERSION_TYPES.map(type => <option key={type} value={type}>{conversionOptions[type] ?? type}</option>)}
         </select>
-        <button className="secondary-button" onClick={onConvert} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onConvert} type="button">
           {convertLabel}
         </button>
-        <button className="secondary-button" onClick={onCopyBlocks} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onCopyBlocks} type="button">
           {copyBlocksLabel}
         </button>
-        <button className="secondary-button" onClick={onCopyText} type="button">
+        {onCopyBlockLinks ? <button className="secondary-button" disabled={disabled} onClick={onCopyBlockLinks} type="button">
+          {copyBlockLinksLabel}
+        </button> : null}
+        {onMoveToDocument ? <button className="secondary-button" disabled={disabled || Boolean(moveDisabledReason)} title={moveDisabledReason ?? undefined} onClick={onMoveToDocument} type="button">
+          {moveToDocumentLabel}
+        </button> : null}
+        <button className="secondary-button" disabled={disabled} onClick={onCopyText} type="button">
           {copyTextLabel}
         </button>
-        <button className="secondary-button" onClick={onCut} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onCut} type="button">
           {cutLabel}
         </button>
-        <button className="secondary-button" onClick={onDuplicate} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onDuplicate} type="button">
           {duplicateLabel}
         </button>
-        <button className="secondary-button" onClick={onOpenAiEdit} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onOpenAiEdit} type="button">
           {aiEditLabel}
         </button>
-        <button className="danger-button" onClick={onDelete} type="button">
+        <button className="danger-button" disabled={disabled} onClick={onDelete} type="button">
           {deleteLabel}
         </button>
-        <button className="secondary-button" disabled={!canMoveUp} onClick={onMoveUp} type="button">
+        <button className="secondary-button" disabled={disabled || !canMoveUp} onClick={onMoveUp} type="button">
           {moveUpLabel}
         </button>
-        <button className="secondary-button" disabled={!canMoveDown} onClick={onMoveDown} type="button">
+        <button className="secondary-button" disabled={disabled || !canMoveDown} onClick={onMoveDown} type="button">
           {moveDownLabel}
         </button>
-        <button className="secondary-button" onClick={onClear} type="button">
+        <button className="secondary-button" disabled={disabled} onClick={onClear} type="button">
           {clearLabel}
         </button>
       </div>

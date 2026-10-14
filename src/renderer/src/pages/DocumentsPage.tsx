@@ -17,6 +17,8 @@ import { useDocumentsDetailPresentation } from '../hooks/useDocumentsDetailPrese
 import type { AiDomainState, DocumentsDomainState, PluginsDomainState } from '../types/appDomains'
 import { DocumentsSection } from '../sections/DocumentsSection'
 import { useDocumentAttachments } from '../hooks/useDocumentAttachments'
+import { useDocumentBlockActions } from '../hooks/useDocumentBlockActions'
+import type { BlockContextMenuProps } from '../components/BlockContextMenu'
 import { useDocumentRenameOpening } from './documentRenameOpening'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 
@@ -24,6 +26,8 @@ const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
 const DocumentMarkdownSourceDialog = lazy(() => import('../components/DocumentMarkdownSourceDialog'))
 const DocumentRenameDialog = lazy(() => import('../components/DocumentRenameDialog'))
+const BlockContextMenu = lazy<BlockContextMenuProps>(() => import('../components/BlockContextMenu').then(module => ({ default: module.BlockContextMenu })))
+const DocumentBlockMoveDialog = lazy(() => import('../components/DocumentBlockMoveDialog'))
 
 type DocumentsPageProps = {
   onOpenHistory?: () => void
@@ -64,6 +68,7 @@ export function DocumentsPage({
   const attachments = useDocumentAttachments(documents, isZh)
   const rename = useDocumentRenameOpening(documents.getRenameTarget)
 
+
   const selectionAi = useDocumentSelectionAiState({
     aiEnabled: aiConfig.enabled,
     documentsAuxPanelOpen: documents.documentsAuxPanelOpen,
@@ -78,6 +83,8 @@ export function DocumentsPage({
     selectedDocument: documents.selectedDocument,
     ui
   })
+
+  const blockActions = useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit: selectionAi.openSelectionAiEditor })
 
   const handleClipWebPage = async () => {
     if (!documents.selectedDocument || documents.detailLoading
@@ -110,6 +117,12 @@ export function DocumentsPage({
     selectionToolbarProps,
     visibleEditorRows
   } = useDocumentsBlockEditorPresentation({
+    isBlockMoveBusy: documents.isBlockMoveBusy,
+    selectedMoveDisabledReason: blockActions.selectedMoveDisabledReason,
+    onOpenBlockActions: blockActions.openBlockActions,
+    getSelectedBlockActionIds: blockActions.selectedBlockActionIds,
+    onCopySelectedBlockLinks: blockActions.copySelectedBlockLinks,
+    onOpenSelectedBlocksMove: blockActions.openSelectedBlocksMove,
     blockHasChildren: documents.blockHasChildren,
     focusedHeadingId: documents.focusedHeadingId,
     collapseAllSections: documents.collapseAllSections,
@@ -136,7 +149,7 @@ export function DocumentsPage({
     collapsedBlockIds: documents.collapsedBlockIds,
     clearBlockSelection: documents.clearBlockSelection,
     continueBlockAt: documents.continueBlockAt,
-    convertSelectedBlocks: documents.convertSelectedBlocks,
+    convertSelectedBlocks: blockActions.convertSelectedBlocks,
     copySelectedBlocks: documents.copySelectedBlocks,
     copySelectedBlocksAsPlainText: documents.copySelectedBlocksAsPlainText,
     cutSelectedBlocks: documents.cutSelectedBlocks,
@@ -339,6 +352,7 @@ export function DocumentsPage({
         title={documents.documentLoadError.missing ? (isZh ? '文档不存在' : 'Document not found') : (isZh ? '无法加载文档' : 'Unable to load document')}
         description={isZh ? '可以重试，或从左侧选择其他文档。' : 'Retry or select another document from the sidebar.'}
         error={documents.documentLoadError.message} onRetry={documents.retryDocumentLoad} busy={documents.detailLoading} /> : <DocumentsSection
+        isBlockMoveBusy={documents.isBlockMoveBusy}
         isReadingMode={documents.isReadingMode}
         navigationRequest={documents.blockNavigationRequest}
         onRevealBlock={documents.revealBlockAncestors}
@@ -380,7 +394,7 @@ export function DocumentsPage({
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
         richEditorProps={{ blocks: documents.draftBlocks, onChange: documents.setDraftBlocks, checkpoint: documents.checkpointDraft,
-          onUndo: documents.undoEdit, onRedo: documents.redoEdit,
+          onUndo: documents.undoEdit, onRedo: documents.redoEdit, onOpenBlockActions: blockActions.openBlockActions,
           onEditSource: () => { if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() }) } }}
         previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onRename: rename.open, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
           onEditMarkdownSource: () => {
@@ -420,6 +434,12 @@ export function DocumentsPage({
           }} />
       </Suspense>}
 
+      {blockActions.contextMenuProps && <Suspense fallback={null}>
+        <BlockContextMenu {...blockActions.contextMenuProps} />
+      </Suspense>}
+      {blockActions.moveDialogProps && <ErrorBoundary onNavigate={blockActions.moveDialogProps.onClose} navigateLabel={isZh ? '关闭' : 'Close'}>
+        <Suspense fallback={null}><DocumentBlockMoveDialog {...blockActions.moveDialogProps} /></Suspense>
+      </ErrorBoundary>}
       {attachments.dialog}
     </div>
   )

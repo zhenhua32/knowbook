@@ -1809,6 +1809,27 @@ function registerIpcHandlers(): void {
     notifyWorkspaceMutation()
   })
 
+  const finishBlockMove = async (result: import('@shared/document-block-moves').DocumentBlockMoveResult) => {
+    for (const id of result.affectedDocumentIds) cancelDocumentSummaryGeneration(id)
+    for (const id of result.affectedDocumentIds) {
+      const document = store.getDocumentSnapshot(id)
+      if (!document) continue
+      await workspaceEventBus.emit({
+        type: 'document.updated', createdAt: new Date().toISOString(), documentId: id,
+        documentTitle: document.title, path: document.path,
+        affectedDocumentIds: result.affectedDocumentIds, pathChanged: false, correlationId: result.operationId
+      })
+    }
+    notifyWorkspaceMutation()
+    return result
+  }
+  ipcMain.handle('knowbook:document-block-move-history', async (_event, documentId: string) => store.getDocumentBlockMoveHistory(documentId))
+  ipcMain.handle('knowbook:move-document-blocks', async (_event, input: import('@shared/document-block-moves').MoveDocumentBlocksInput) =>
+    finishBlockMove(store.moveDocumentBlocks(input)))
+  ipcMain.handle('knowbook:undo-document-block-move', async (_event, input: import('@shared/document-block-moves').RestoreDocumentBlockMoveInput) =>
+    finishBlockMove(store.undoDocumentBlockMove(input)))
+  ipcMain.handle('knowbook:redo-document-block-move', async (_event, input: import('@shared/document-block-moves').RestoreDocumentBlockMoveInput) =>
+    finishBlockMove(store.redoDocumentBlockMove(input)))
   ipcMain.handle('knowbook:move-document', async (_event, documentId: string, newParentId: string | null) => {
     const beforeDocument = store.getDocumentSnapshot(documentId)
     const affectedDocumentIds = store.moveDocument(documentId, newParentId)

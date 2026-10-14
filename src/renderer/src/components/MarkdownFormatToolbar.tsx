@@ -1,10 +1,12 @@
+import type { ReactNode } from 'react'
 import type { MarkdownFormat } from '../utils/markdownFormatting'
 import '../styles/markdown-editing.css'
 
-export function MarkdownFormatToolbar({ onFormat, onReturnToEditor, isZh }: {
+export function MarkdownFormatToolbar({ onFormat, onReturnToEditor, isZh, children }: {
   onFormat: (format: MarkdownFormat) => void
   onReturnToEditor: () => void
   isZh: boolean
+  children?: ReactNode
 }) {
   const formats: Array<[MarkdownFormat, string, string, string, string]> = [
     ['bold', 'B', '粗体', 'Bold', 'B'], ['italic', 'I', '斜体', 'Italic', 'I'],
@@ -13,6 +15,7 @@ export function MarkdownFormatToolbar({ onFormat, onReturnToEditor, isZh }: {
   ]
   return <div className="markdown-format-toolbar" role="toolbar" aria-label={isZh ? '文本格式' : 'Text formatting'} aria-keyshortcuts="Alt+F10"
     onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onReturnToEditor(); return }
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
       const buttons = [...event.currentTarget.querySelectorAll('button')]
@@ -25,5 +28,6 @@ export function MarkdownFormatToolbar({ onFormat, onReturnToEditor, isZh }: {
       aria-label={isZh ? zh : en} title={`${isZh ? zh : en} · Ctrl/⌘+${shortcut}`}
       aria-keyshortcuts={`Control+${shortcut} Meta+${shortcut}`} onMouseDown={(event) => event.preventDefault()}
       onClick={() => onFormat(format)}>{icon}</button>)}
+    {children}
   </div>
 }

@@ -13,3 +13,8 @@
   overflow: auto;
   visibility: hidden;
 }
+/* Source colors share the measured floating surface, including an open palette. */
+.block-editor-input-column > .markdown-format-toolbar > .source-inline-presentation-toolbar { display: contents; }
+.block-editor-input-column > .markdown-format-toolbar .source-inline-presentation-toolbar > [role="toolbar"] { min-width: 0; max-width: 100%; padding: 0; }
+.block-editor-input-column > .markdown-format-toolbar .source-inline-presentation-toolbar > .rich-text-color-palette { box-sizing: border-box; width: 100%; max-width: 100%; }
+.block-editor-input-column > .markdown-format-toolbar > .mini-hint { max-width: 100%; margin: 0; }

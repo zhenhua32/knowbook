@@ -36,6 +36,7 @@ type RelationGroup = {
 }
 
 type DocumentsSectionProps = {
+  isBlockMoveBusy?: boolean
   richEditorProps?: Omit<ComponentProps<typeof DocumentRichTextEditor>, 'visibleIndices' | 'documentId' | 'isZh' | 'onRevealBlock'>
   isReadingMode: boolean
   navigationRequest: { index: number; documentId: string; sequence: number; headingIndex?: number } | null
@@ -103,6 +104,7 @@ function RelationList({
 }
 
 export function DocumentsSection({
+  isBlockMoveBusy = false,
   richEditorProps,
   isReadingMode,
   navigationRequest,
@@ -310,6 +312,7 @@ export function DocumentsSection({
       <article
         className={`panel preview-panel${isWideMode ? ' preview-panel-wide' : ''}${isReadingMode ? ' preview-panel-reading' : ''}`}
         data-testid="document-scroll-region"
+        inert={isBlockMoveBusy} aria-busy={isBlockMoveBusy}
         ref={viewport.scrollRef}
       >
         <div className="document-sticky-header" ref={viewport.headerRef}>

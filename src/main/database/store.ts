@@ -76,6 +76,8 @@ import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
+import { DocumentBlockTransfers } from './document-block-transfers'
+import type { MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput, DocumentBlockMoveResult, DocumentBlockMoveHistoryEntry } from '../../shared/document-block-moves'
 import { WorkspaceSearchRepository } from './workspace-search'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
@@ -496,6 +498,8 @@ export class KnowbookStore {
         }
         this.db.pragma('user_version = 21')
       }
+      // The additive transfer journal/routes are created by appSchema first.
+      if (schemaVersion < 22) this.db.pragma('user_version = 22')
     })
   }
 
@@ -1099,7 +1103,12 @@ export class KnowbookStore {
     }
   }
 
+  private preserveBlockRoutes(documents: ReadonlyArray<{ id: string; path: string }>): void {
+    const remember = this.db.prepare('INSERT OR IGNORE INTO document_block_routes (document_path, block_id) SELECT ?, id FROM blocks WHERE document_id = ?')
+    for (const document of documents) remember.run(document.path, document.id)
+  }
   getBlockReference(documentPath: string, blockId: string): BlockReferenceResult | null {
+    const actualBlockId = blockId.startsWith('^') ? blockId.slice(1) : blockId
     const row = this.db.prepare(`
       SELECT
         b.id, b.type, b.content, b.checked, b.depth, b.tags_json,
@@ -1107,8 +1116,10 @@ export class KnowbookStore {
         d.id AS doc_id, d.title AS doc_title, d.path AS doc_path
       FROM blocks b
       INNER JOIN documents d ON d.id = b.document_id
-      WHERE d.path = ? AND b.id = ?
-    `).get(documentPath, blockId) as {
+      WHERE b.id = ? AND (d.path = ? OR EXISTS (
+        SELECT 1 FROM document_block_routes AS route WHERE route.document_path = ? AND route.block_id = b.id
+      ))
+    `).get(actualBlockId, documentPath, documentPath) as {
       id: string
       type: string
       content: string
@@ -1371,12 +1382,13 @@ export class KnowbookStore {
     })()
   }
 
-  updateDocument(documentId: string, input: UpdateDocumentInput): string[] {
-    if (input.expectedUpdatedAt !== undefined) {
-      const current = this.db.prepare('SELECT updated_at FROM documents WHERE id = ?').get(documentId) as { updated_at: string } | undefined
-      if (current && current.updated_at !== input.expectedUpdatedAt) throw new Error('文档已被其他操作或同步更新，草稿仍保留。请复制草稿后重新打开文档，避免覆盖新版本。')
+  updateDocument(documentId: string, input: UpdateDocumentInput, internal: { skipCheckpoint?: boolean; skipLinkMaintenance?: boolean } = {}): string[] {
+    const current = this.db.prepare('SELECT updated_at FROM documents WHERE id = ?').get(documentId) as { updated_at: string } | undefined
+    if (input.expectedUpdatedAt !== undefined && current && current.updated_at !== input.expectedUpdatedAt) {
+      throw new Error('文档已被其他操作或同步更新，草稿仍保留。请复制草稿后重新打开文档，避免覆盖新版本。')
     }
-    const now = new Date().toISOString()
+    const previousTime = current ? Date.parse(current.updated_at) : NaN
+    const now = new Date(Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0)).toISOString()
     const document = this.db.prepare(`
       SELECT id, title, path, parent_id, summary
       FROM documents
@@ -1454,10 +1466,10 @@ export class KnowbookStore {
       return [documentId]
     }
 
-    const markdownChanges: MarkdownIndexedPathChange[] = this.deferredLinkResyncDepth === 0
+    const markdownChanges: MarkdownIndexedPathChange[] = !internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0
       ? pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path, after: entry.path === oldPath ? newPath : newPath + entry.path.slice(oldPath.length) }))
       : []
-    if (this.deferredLinkResyncDepth === 0 && (blocksChanged || normalizedTitle !== document.title)) {
+    if (!internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0 && (blocksChanged || normalizedTitle !== document.title)) {
       const oldBlocks = this.markdownLinks.readDocument(documentId)!.blocks
       const headings = getMarkdownHeadingRewrites(getMarkdownHeadingTargets(oldBlocks, document.title), getMarkdownHeadingTargets(persistedBlocks, normalizedTitle))
       if (headings.size) {
@@ -1496,7 +1508,8 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      if (!this.restoringTrashedDocument) this.documentRecovery.checkpoint(documentId)
+      if (newPath !== oldPath) this.preserveBlockRoutes(pathChangedDocuments)
+      if (!internal.skipCheckpoint && !this.restoringTrashedDocument) this.documentRecovery.checkpoint(documentId)
       if (metadataChanged) {
         updateDocumentMetadataStatement.run(normalizedTitle, newPath, normalizedSummary, now, documentId)
       } else {
@@ -1557,13 +1570,15 @@ export class KnowbookStore {
       }
 
       const syncedMarkdownSources = new Set<string>()
-      if (this.deferredLinkResyncDepth === 0) {
-        rewrittenDocumentIds = this.markdownLinks.maintain(markdownChanges, [documentId], now, undefined, syncedMarkdownSources)
+      if (!internal.skipLinkMaintenance) {
+        if (this.deferredLinkResyncDepth === 0) {
+          rewrittenDocumentIds = this.markdownLinks.maintain(markdownChanges, [documentId], now, undefined, syncedMarkdownSources)
+        }
+        this.resyncLinksForReferenceChanges(
+          changedReferenceTokens,
+          [...(blocksChanged ? [documentId] : []), ...rewrittenDocumentIds], syncedMarkdownSources
+        )
       }
-      this.resyncLinksForReferenceChanges(
-        changedReferenceTokens,
-        [...(blocksChanged ? [documentId] : []), ...rewrittenDocumentIds], syncedMarkdownSources
-      )
     })
 
     transaction()
@@ -1640,6 +1655,7 @@ export class KnowbookStore {
 
     const transaction = this.db.transaction(() => {
       this.documentRecovery.archive(documentId)
+      this.preserveBlockRoutes(affectedDescendants)
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       deleteDocumentStatement.run(document.id)
@@ -1655,11 +1671,61 @@ export class KnowbookStore {
     return [...new Set([...affectedDescendants.map((row) => row.id), ...rewrittenDocumentIds])]
   }
 
+  moveDocumentBlocks(input: MoveDocumentBlocksInput): DocumentBlockMoveResult {
+    return new DocumentBlockTransfers(this, this.markdownLinks).move(input)
+  }
+
+  getDocumentBlockMoveHistory(documentId: string): DocumentBlockMoveHistoryEntry | null {
+    return new DocumentBlockTransfers(this, this.markdownLinks).history(documentId)
+  }
+
+  undoDocumentBlockMove(input: RestoreDocumentBlockMoveInput): DocumentBlockMoveResult {
+    return new DocumentBlockTransfers(this, this.markdownLinks).restore(input, 'undone')
+  }
+
+  redoDocumentBlockMove(input: RestoreDocumentBlockMoveInput): DocumentBlockMoveResult {
+    return new DocumentBlockTransfers(this, this.markdownLinks).restore(input, 'applied')
+  }
+
+  /** Transfer content rewrites are already planned; refresh projections only. */
+  refreshDocumentBlockMoveLinks(documentIds: string[], changedOwnerIds: string[], previousOwnerPaths: string[]): void {
+    const selected = new Set(documentIds)
+    // Later references to a recorded old route have no content change to journal,
+    // but their derived relation must follow the block's actual owner as well.
+    if (changedOwnerIds.length && previousOwnerPaths.length) {
+      const fragments = [...new Set(changedOwnerIds.flatMap(id => [id, '^' + id]))]
+      const bound = this.db.prepare(
+        'SELECT DISTINCT source_document_id AS id FROM markdown_link_sources ' +
+        'WHERE target_path IN (SELECT value FROM json_each(?)) AND fragment IN (SELECT value FROM json_each(?)) ' +
+        "AND kind NOT IN ('image', 'wiki-heading')"
+      ).all(JSON.stringify([...new Set(previousOwnerPaths)]), JSON.stringify(fragments)) as Array<{ id: string }>
+      for (const row of bound) selected.add(row.id)
+    }
+    const projectionIds = [...selected]
+    // Remove both owners' old projections before inserting any new ownership.
+    this.db.prepare('DELETE FROM markdown_link_sources WHERE source_document_id IN (SELECT value FROM json_each(?))')
+      .run(JSON.stringify(projectionIds))
+    for (const id of projectionIds) this.markdownLinks.syncDocument(id)
+    this.resyncLinks(projectionIds)
+  }
+
   restoreDocumentHistory(documentId: string, versionId: string, expectedUpdatedAt: string): string[] {
     return this.db.transaction(() => {
       const document = this.getDocumentDetail(documentId)
       if (!document || document.updatedAt !== expectedUpdatedAt) throw new Error('Document changed. Reload before restoring history.')
       const version = this.documentRecovery.getHistory(documentId, versionId)
+      const ids = version.content.blocks.flatMap(block => block.id ? [block.id] : [])
+      const foreign = this.db.prepare('SELECT id FROM blocks WHERE document_id <> ? AND id IN (SELECT value FROM json_each(?)) LIMIT 1')
+        .get(documentId, JSON.stringify(ids))
+      if (foreign) throw new Error('历史版本中的块已移到其他文档。请先撤销成对移动，或将此版本复制为新文档；不会覆盖其他文档。')
+      const movedRemoval = this.db.prepare(
+        'SELECT 1 FROM blocks AS block JOIN document_block_moves AS operation ' +
+        "ON (operation.state = 'applied' AND operation.target_document_id = block.document_id) " +
+        "OR (operation.state = 'undone' AND operation.source_document_id = block.document_id) " +
+        'WHERE block.document_id = ? AND block.id NOT IN (SELECT value FROM json_each(?)) ' +
+        'AND block.id IN (SELECT value FROM json_each(operation.moved_ids_json)) LIMIT 1'
+      ).get(documentId, JSON.stringify(ids))
+      if (movedRemoval) throw new Error('此历史版本会移除仍属于成对移动的块。请先撤销成对移动后恢复历史；不会删除移入块。')
       this.documentRecovery.checkpoint(documentId, 'restore')
       return this.updateDocument(documentId, version.content)
     })()
@@ -1669,6 +1735,9 @@ export class KnowbookStore {
     return this.db.transaction(() => {
       const snapshot = this.documentRecovery.getTrash(documentId)
       const old = snapshot.document
+      const ids = snapshot.content.blocks.flatMap(block => block.id ? [block.id] : [])
+      if (this.db.prepare('SELECT 1 FROM blocks WHERE document_id <> ? AND id IN (SELECT value FROM json_each(?)) LIMIT 1')
+        .get(documentId, JSON.stringify(ids))) throw new Error('回收站中的块已移到其他文档。请将此版本复制为新文档；不会覆盖其他文档，回收站副本已保留。')
       if (this.getDocumentSnapshot(documentId)) throw new Error('A document with this ID already exists. The trash copy has been kept.')
       const parent = old.parent_id ? this.getDocumentSnapshot(old.parent_id) : null
       const title = this.generateSiblingTitle(parent?.id ?? null, old.title)
@@ -1679,6 +1748,7 @@ export class KnowbookStore {
       this.restoringTrashedDocument = true
       try { this.updateDocument(old.id, { ...snapshot.content, title }) }
       finally { this.restoringTrashedDocument = false }
+      if (old.path !== path) this.preserveBlockRoutes([{ id: old.id, path: old.path }])
       const restoreValue = (columnId: string, valueText: string | null, databaseId?: string): string | null => {
         const row = this.db.prepare('SELECT * FROM document_database_columns WHERE id = ?').get(columnId) as DocumentDatabaseColumnRow | undefined
         if (!row || (databaseId && row.database_id !== databaseId)) return null
@@ -1771,6 +1841,7 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
+      this.preserveBlockRoutes(pathChangedDocuments)
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
       updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
       const syncedMarkdownSources = new Set<string>()

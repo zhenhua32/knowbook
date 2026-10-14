@@ -4,6 +4,19 @@ import { getHeadingLevel, markdownEngine } from '@shared/markdownEngine'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
 import type { MarkdownNode } from '@shared/markdownEngine'
+import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, parseInlineTextPresentationAttributes } from '@shared/inlineTextPresentation'
+import type { MarkSpec } from 'prosemirror-model'
+
+function presentationMark(name: 'textColor' | 'backgroundColor', attribute: string): MarkSpec {
+  return {
+    attrs: { color: {} },
+    parseDOM: ['span', 'u'].map(tag => ({ tag: `${tag}[${attribute}]`, consuming: false, getAttrs: (element: HTMLElement) => {
+      const presentation = parseInlineTextPresentationAttributes(element.tagName.toLowerCase(), Array.from(element.attributes))
+      return presentation?.[name] ? { color: presentation[name] } : false
+    } })),
+    toDOM: mark => ['span', { [attribute]: mark.attrs.color }, 0]
+  }
+}
 
 function blockAttributes(node: Node): Record<string, string> {
   const block = node.attrs.block as DocumentBlockDraft | null
@@ -141,6 +154,12 @@ export const richTextSchema = new Schema({
       parseDOM: [{ tag: 'mark' }],
       toDOM: () => ['mark', 0]
     },
+    underline: {
+      parseDOM: [{ tag: 'u', consuming: false, getAttrs: element => parseInlineTextPresentationAttributes('u', Array.from(element.attributes)) ? null : false }],
+      toDOM: () => ['u', 0]
+    },
+    textColor: presentationMark('textColor', INLINE_TEXT_COLOR_ATTRIBUTE),
+    backgroundColor: presentationMark('backgroundColor', INLINE_BACKGROUND_COLOR_ATTRIBUTE),
     // Code is ordered last so the Markdown serializer can emit it as the
     // innermost non-escaping mark, while retaining surrounding bold/link marks.
     code: {

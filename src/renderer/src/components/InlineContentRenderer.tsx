@@ -2,15 +2,13 @@ import { parseMarkdownInline, type MarkdownNode } from '@shared/markdownEngine'
 import { renderMarkdownNodes } from './MarkdownContent'
 import type { DocumentBlock } from '@shared/contracts'
 import { CrossDocumentBlockReference } from './BlockReference'
-import { collectMarkdownSourceLinks } from '@shared/markdownLinks'
-import { parseWikiReference, resolveWikiDocument } from '@shared/markdownWiki'
+import { resolveWikiDocument } from '@shared/markdownWiki'
 
 type BlockReferenceCandidate = Pick<DocumentBlock, 'id' | 'content'>
 
-export type InlineReferenceTarget =
-  | { type: 'document'; documentId: string }
-  | { type: 'block'; documentId: string; blockId: string }
-  | { type: 'cross-block'; documentPath: string; blockId: string }
+export type { InlineReferenceTarget } from '../utils/inlineReferenceTargets'
+export { getInlineReferenceTokenAtCursor, resolveInlineReferenceTarget } from '../utils/inlineReferenceTargets'
+import { resolveInlineReferenceTarget } from '../utils/inlineReferenceTargets'
 
 export type StyledSegment = MarkdownNode
 
@@ -39,39 +37,6 @@ export function renderInlineContent(
       return <span key={index} className="inline-link-block" title="Block reference">{'[[' + token + ']]'}</span>
     }
   })
-}
-
-export function getInlineReferenceTokenAtCursor(content: string, cursorPosition: number): string | null {
-  return collectMarkdownSourceLinks(content).find((link) => link.kind === 'wiki'
-    && cursorPosition >= link.start - 2 && cursorPosition <= link.end + 1)?.url ?? null
-}
-
-export function resolveInlineReferenceTarget(
-  token: string,
-  references: Array<{ id: string; title: string; path: string }>,
-  blockReferences?: Map<string, BlockReferenceCandidate>,
-  currentDocumentId?: string | null
-): InlineReferenceTarget | null {
-  const resolved = resolveWikiDocument(token, references.find((entry) => entry.id === currentDocumentId)?.path ?? '', {
-    byPath: (path) => references.find((entry) => entry.path === path) ?? references.find((entry) => entry.path.toLowerCase() === path.toLowerCase()),
-    byTitle: (title) => references.filter((entry) => entry.title.toLowerCase() === title.toLowerCase())
-  })
-  if (resolved) {
-    if (resolved.reference.fragment.startsWith('^')) return null
-    return resolved.reference.fragment ? { type: 'cross-block', documentPath: resolved.document.path, blockId: resolved.reference.fragment }
-      : { type: 'document', documentId: resolved.document.id }
-  }
-  const reference = parseWikiReference(token)
-  const blockTarget = !reference.hasFragment && blockReferences ? blockReferences.get(reference.target) : null
-  if (blockTarget && currentDocumentId) {
-    return {
-      type: 'block',
-      documentId: currentDocumentId,
-      blockId: blockTarget.id
-    }
-  }
-
-  return null
 }
 
 export function resolveInlineReference(token: string, references: Array<{ id: string; title: string; path: string }>) {

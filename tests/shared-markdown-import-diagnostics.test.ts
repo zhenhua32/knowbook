@@ -4,6 +4,7 @@ import { collectDocumentMarkdownCompatibility } from '../src/shared/markdownComp
 import { parseMarkdownBlocks } from '../src/shared/markdown'
 import { markdownEngine } from '../src/shared/markdownEngine'
 import { collectMarkdownDestinations, rewriteMarkdownDestinations } from '../src/shared/markdownLinks'
+import { draftBlocksToRichDoc, richDocToDraftBlocks, richTextInlineFingerprint } from '../src/renderer/src/rich-text/model'
 
 const diagnose = (source: string) => {
   const blocks = parseMarkdownBlocks(source).map((block, index) => ({ ...block, id: `block-${index}` }))
@@ -54,6 +55,30 @@ test('unsupported note embeds and external block syntax are diagnosed; aliases a
   assert.deepEqual(issues.map((issue) => issue.reason), ['wiki-syntax'])
   assert.equal(diagnose('![[Note]]')[0].reason, 'wiki-syntax')
   assert.deepEqual(diagnose('\\![[Ordinary]] and `![[Ordinary]]`'), [])
+})
+
+test('native underline, finite colors and the exact neutral shell render without weakening bare HTML diagnostics', () => {
+  const source = 'Before <u><strong>中文 😀</strong></u> <span data-knowbook-text-color="blue" data-knowbook-background-color="yellow">color</span> '
+    + '<span data-knowbook-inline="true"><em>neutral</em> literal **text**</span> after'
+  assert.deepEqual(diagnose(source), [])
+  const document = draftBlocksToRichDoc([{ id: 'native', type: 'paragraph', content: source, checked: false, depth: 0, parentBlockId: null }])
+  assert.equal(document.firstChild!.type.name, 'text_block')
+  const underlined = document.firstChild!.content.content.find(node => node.text === '中文 😀')!
+  assert.deepEqual(underlined.marks.map(mark => mark.type.name), ['strong', 'underline'])
+  const colored = document.firstChild!.content.content.find(node => node.text === 'color')!
+  assert.deepEqual(colored.marks.map(mark => [mark.type.name, mark.attrs.color]), [['textColor', 'blue'], ['backgroundColor', 'yellow']])
+  assert.match(markdownEngine.renderInline(source), /<u><strong>中文 😀<\/strong><\/u>/)
+  assert.match(markdownEngine.renderInline(source), /<em>neutral<\/em> literal \*\*text\*\*/)
+  const saved = richDocToDraftBlocks(document)
+  assert.equal(richTextInlineFingerprint(draftBlocksToRichDoc(saved).firstChild!), richTextInlineFingerprint(document.firstChild!))
+  assert.deepEqual(diagnose('<span>old bare span</span>').map(issue => [issue.reason, issue.offset, issue.source]), [['unsupported-html', 0, '<span>']])
+  for (const invalid of ['<span data-knowbook-inline="false">text</span>', '<span data-knowbook-inline="TRUE">text</span>',
+    '<span data-knowbook-inline="true" style="color:red">text</span>', '<u data-knowbook-inline="true">text</u>',
+    '<span data-knowbook-inline="true" onclick="evil()">text</span>']) {
+    assert.ok(diagnose(invalid).length > 0, invalid)
+    assert.equal(draftBlocksToRichDoc([{ id: 'invalid', type: 'paragraph', content: invalid, checked: false, depth: 0 }]).firstChild!.type.name, 'source_block', invalid)
+    assert.doesNotMatch(markdownEngine.render(invalid), /<(?:span|u)[^>]+(?:style|onclick)=/)
+  }
 })
 
 test('bare managed file autolinks are collected and exported without touching literal examples', () => {

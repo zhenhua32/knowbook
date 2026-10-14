@@ -1,6 +1,98 @@
 import type Database from 'better-sqlite3'
 import type { KnowbookStore } from '../database/store'
-import { canonicalJson, SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncRecord, type SyncRow, type SyncDatabases, type SyncDocument } from './model'
+import { canonicalJson, recordKey, validateRecord, SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncRecord, type SyncRow, type SyncDatabases, type SyncDocument } from './model'
+
+/** A complete remote move cannot be applied until its old owner has an
+ * explicit releasing version. This carries identity, never user text matching. */
+export class SyncBlockOwnershipError extends Error {
+  constructor(readonly dependencyDocumentId: string, readonly dependency: 'release' | 'receive' | 'publish-duplicate' | 'publish-loss' = 'release',
+    readonly relatedDocumentIds: readonly string[] = [dependencyDocumentId]) {
+    super(dependency === 'release' ? '同步批次缺少原文档释放块 ID 的版本，请先处理相关文档冲突后重试。'
+      : dependency === 'receive' ? '同步批次缺少目标文档接收块 ID 的版本，请先处理相关文档冲突后重试。'
+        : dependency === 'publish-duplicate' ? '同步发布会让两个文档持有同一块 ID，请一起处理移动双方的冲突后重试。'
+          : '同步发布会丢失归属冲突中的块 ID，请一起处理移动双方的冲突后重试。')
+    this.name = 'SyncBlockOwnershipError'
+  }
+}
+
+type SyncBlockTransferPlan = { id: string; fromId: string; fromPath: string; toId: string }
+
+/** Read-only preflight is also used before remote manifest publication. */
+export function preflightSyncBlockTransfers(db: Database.Database, records: SyncRecord[], deferredDocuments: SyncDocument[] = []): SyncBlockTransferPlan[] {
+  const documentIds = new Set(records.filter(record => record.kind === 'document').map(record => record.id))
+  const deletedIds = new Set(records.filter(record => record.kind === 'deleted').map(record => record.id))
+  const keys = new Set<string>(), incomingOwners = new Map<string, string>()
+  for (const record of records) {
+    validateRecord(record, recordKey(record))
+    const key = recordKey(record)
+    if (keys.has(key)) throw new Error('同步批次包含重复文档，未修改本地数据。')
+    keys.add(key)
+    if (record.kind !== 'document') continue
+    for (const block of record.content.blocks) {
+      if (incomingOwners.has(block.id!)) throw new Error('同步批次包含重复块 ID，未修改本地数据。')
+      incomingOwners.set(block.id!, record.id)
+    }
+  }
+  const transfers: SyncBlockTransferPlan[] = []
+  const existingOwner = db.prepare('SELECT block.document_id AS id, document.path FROM blocks AS block JOIN documents AS document ON document.id = block.document_id WHERE block.id = ?')
+  for (const [id, toId] of incomingOwners) {
+    const old = existingOwner.get(id) as { id: string; path: string } | undefined
+    if (!old || old.id === toId) continue
+    if (!deletedIds.has(old.id) && !documentIds.has(old.id)) throw new SyncBlockOwnershipError(old.id)
+    transfers.push({ id, fromId: old.id, fromPath: old.path, toId })
+  }
+  // A receiving target can be held back by its own conflict. Do not delete the
+  // source projection before the complete paired target version is accepted.
+  const pendingOwners = new Map<string, string>()
+  for (const document of deferredDocuments) {
+    validateRecord(document, recordKey(document))
+    for (const block of document.content.blocks) pendingOwners.set(block.id!, document.id)
+  }
+  const participating = [...new Set([...documentIds, ...deletedIds])]
+  if (pendingOwners.size && participating.length) {
+    const oldBlocks = db.prepare('SELECT id, document_id FROM blocks WHERE document_id IN (SELECT value FROM json_each(?))')
+      .all(JSON.stringify(participating)) as Array<{ id: string; document_id: string }>
+    for (const block of oldBlocks) {
+      const pending = pendingOwners.get(block.id)
+      if (pending && pending !== block.document_id && !incomingOwners.has(block.id) && !documentIds.has(pending)) {
+        throw new SyncBlockOwnershipError(pending, 'receive')
+      }
+    }
+  }
+  return transfers
+}
+
+/** Validate the final remote projection, including versions withheld by conflicts.
+ * Applying only incoming versions cannot detect a partially published local move. */
+export function preflightSyncPublishedBlockOwnership(local: Iterable<SyncRecord>, remote: Iterable<SyncRecord>, published: Iterable<SyncRecord>, writtenIds: ReadonlySet<string>): void {
+  const owners = (records: Iterable<SyncRecord>, final: boolean): Map<string, string> => {
+    const result = new Map<string, string>()
+    for (const record of records) {
+      validateRecord(record, recordKey(record))
+      if (record.kind !== 'document') continue
+      for (const block of record.content.blocks) {
+        const owner = result.get(block.id!)
+        if (owner && owner !== record.id) {
+          if (!final) throw new Error('同步文档版本包含重复块 ID，未发布清单。')
+          const dependency = !writtenIds.has(owner) ? owner : record.id
+          throw new SyncBlockOwnershipError(dependency, 'publish-duplicate', [owner, record.id])
+        }
+        result.set(block.id!, record.id)
+      }
+    }
+    return result
+  }
+  const localOwners = owners(local, false), remoteOwners = owners(remote, false), finalOwners = owners(published, true)
+  for (const [id, localOwner] of localOwners) {
+    const remoteOwner = remoteOwners.get(id)
+    if (remoteOwner && remoteOwner !== localOwner && !finalOwners.has(id)) {
+      // Ordinary intentional block deletion remains valid. Owner disagreement
+      // means this ID is in a move whose opposite conflict is still retained.
+      const dependency = !writtenIds.has(localOwner) ? localOwner : remoteOwner
+      throw new SyncBlockOwnershipError(dependency, 'publish-loss', [localOwner, remoteOwner])
+    }
+  }
+}
 
 /** Only knowledge data is exported. Credentials, plugins and machine settings never enter the protocol. */
 export class SyncRepository {
@@ -37,16 +129,31 @@ export class SyncRepository {
     const now = new Date().toISOString()
     const documents = records.filter((record): record is SyncDocument => record.kind === 'document')
     const documentIds = new Set(documents.map(record => record.id))
+    const deletedIds = new Set(records.filter(record => record.kind === 'deleted').map(record => record.id))
+    const transfers = preflightSyncBlockTransfers(this.db, records)
     const deleted = records.filter(record => record.kind === 'deleted' && this.store.getDocumentSnapshot(record.id))
-    // Archive every row before cascading deletes can change another row's parent or properties.
+    // Archive every row before a transfer or cascade changes its original data.
     for (const record of deleted) this.store.documentRecovery.archive(record.id)
-    for (const record of deleted) this.db.prepare('DELETE FROM documents WHERE id = ?').run(record.id)
     // Stage all IDs before parent links so directory order and simultaneous moves are safe.
     for (const record of documents) {
       if (this.store.getDocumentSnapshot(record.id)) this.store.documentRecovery.checkpoint(record.id, 'restore')
       else this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
         VALUES (?, ?, ?, NULL, ?, '', ?, ?, ?)`).run(record.id, record.content.title, `doc-${record.id}`, record.content.title, record.sortOrder, record.createdAt, now)
     }
+    // Clear both old-owner projections before any target can index a moved ID.
+    // The bulk mutation rebuilds all projections only after every owner is final.
+    const clearSources = this.db.prepare('DELETE FROM markdown_link_sources WHERE source_document_id = ?')
+    for (const id of new Set([...documentIds, ...deletedIds])) clearSources.run(id)
+    const route = this.db.prepare('INSERT OR IGNORE INTO document_block_routes (document_path, block_id) VALUES (?, ?)')
+    const transfer = this.db.prepare('UPDATE blocks SET document_id = ? WHERE id = ? AND document_id = ?')
+    for (const move of transfers) {
+      // Protocol v1 does not export historical routes. Preserve the old path
+      // observed on this device; never invent routes for an unseen history.
+      route.run(move.fromPath, move.id)
+      if (transfer.run(move.toId, move.id, move.fromId).changes !== 1) throw new Error('同步块归属已变化，未修改本地数据。')
+    }
+    // A deleted source can now cascade only its remaining blocks.
+    for (const record of deleted) this.db.prepare('DELETE FROM documents WHERE id = ?').run(record.id)
     const metadata = this.db.prepare('SELECT id, title, parent_id, path, updated_at FROM documents ORDER BY id').all() as Array<{
       id: string; title: string; parent_id: string | null; path: string; updated_at: string
     }>
@@ -94,7 +201,7 @@ export class SyncRepository {
     }
     for (const record of documents) {
       const current = this.db.prepare('SELECT updated_at FROM documents WHERE id = ?').get(record.id) as { updated_at: string }
-      this.store.updateDocument(record.id, { ...record.content, title: byId.get(record.id)!.title })
+      this.store.updateDocument(record.id, { ...record.content, title: byId.get(record.id)!.title }, { skipCheckpoint: true, skipLinkMaintenance: true })
       // A remote write must invalidate an editor's optimistic timestamp even within the same millisecond.
       const updatedAt = new Date(Math.max(Date.now(), Date.parse(current.updated_at) + 1)).toISOString()
       this.db.prepare('UPDATE documents SET sort_order = ?, updated_at = ? WHERE id = ?').run(record.sortOrder, updatedAt, record.id)

@@ -470,3 +470,233 @@ test('cancelling an in-flight upload preserves the cursor and permits a clean re
   await a.sync.sync(); await b.sync.sync()
   assert.equal(content(b.store, id), 'after cancel')
 }))
+
+function moveFixtureDocument(store: KnowbookStore, title: string, blocks: Array<{ id: string; content: string }>) {
+  const id = store.createDocument(null)
+  store.updateDocument(id, { title, summary: title + ' summary',
+    blocks: blocks.map(block => ({ ...block, type: 'paragraph', checked: false, depth: 0, parentBlockId: null })) })
+  return id
+}
+function moveFixture(store: KnowbookStore, source: string, target: string, blockId: string) {
+  return store.moveDocumentBlocks({ fromDocumentId: source, toDocumentId: target, blockIds: [blockId],
+    expectedFromUpdatedAt: store.getDocumentDetail(source)!.updatedAt,
+    expectedToUpdatedAt: store.getDocumentDetail(target)!.updatedAt })
+}
+function receivedMoveState(store: KnowbookStore) {
+  const db = store.getUnsafeDatabaseHandle()
+  return Object.fromEntries(['documents', 'blocks', 'markdown_link_sources', 'links', 'document_history', 'document_trash',
+    'document_block_routes', 'document_block_moves', 'app_settings'].map(table => [table,
+      (db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all() as Array<Record<string, unknown>>).map(row => {
+        if (table !== 'app_settings' || typeof row.key !== 'string' || !row.key.startsWith('sync.webdav.state.')) return row
+        const value = JSON.parse(String(row.value)) as { baseline: unknown; lastSyncAt: unknown; workspaceId?: unknown }
+        return { key: row.key, baseline: value.baseline, lastSyncAt: value.lastSyncAt, workspaceId: value.workspaceId }
+      })]))
+}
+
+test('two real WebDAV devices sync block ownership moves and reverse moves with stable IDs, timestamps and old routes', () => fixture(async (a, b) => {
+  const source = moveFixtureDocument(a.store, 'Move Source', [{ id: 'sync-move', content: '[self](#^sync-move) [keep](#^sync-keep)' }, { id: 'sync-keep', content: 'Source keeper' }])
+  const target = moveFixtureDocument(a.store, 'Move Target', [{ id: 'sync-target', content: 'Target body' }])
+  const incoming = moveFixtureDocument(a.store, 'Move Reader', [{ id: 'sync-reader', content: '[read](Move%20Source.md#%5Esync-move) [[Move Source#^sync-move]]' }])
+  await a.sync.sync(); await b.sync.sync()
+  const late = moveFixtureDocument(b.store, 'Late reader', [{ id: 'sync-late', content: '[old](Move%20Source.md#^sync-move) [[Move Source#^sync-move]]' }])
+  const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('sync-move') as { created_at: string }).created_at
+  moveFixture(a.store, source, target, 'sync-move')
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(b.store.getBlockReference('Move Source', '^sync-move')!.documentId, target)
+  assert.deepEqual(b.store.getDocumentDetail(target)!.blocks.map(block => block.id), a.store.getDocumentDetail(target)!.blocks.map(block => block.id))
+  assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('sync-move') as { created_at: string }).created_at, createdAt)
+  for (const id of [late, incoming, target]) assert.deepEqual(b.store.checkDocumentLinks(id, () => null).issues, [])
+  assert.ok(b.store.getDocumentDetail(late)!.outgoingLinks.some(link => link.id === target))
+  moveFixture(b.store, target, source, 'sync-move')
+  await b.sync.sync(); await a.sync.sync()
+  assert.equal(a.store.getBlockReference('Move Target', '^sync-move')!.documentId, source)
+  assert.equal(a.store.getBlockReference('Move Source', '^sync-move')!.documentId, source)
+  assert.equal(a.store.getBlockReference('WrongPath', '^sync-move'), null)
+  assert.deepEqual(a.store.checkDocumentLinks(late, () => null).issues, [])
+  assert.ok(a.store.getDocumentDetail(late)!.outgoingLinks.some(link => link.id === source))
+  assert.equal(a.sync.getStatus().conflicts.length, 0)
+  assert.equal(b.sync.getStatus().conflicts.length, 0)
+}))
+
+test('two real WebDAV devices reject a conflicted partial transfer batch without advancing cursors, retain the UI report across restart and receive source deletion after resolution', () => fixture(async (a, b, server) => {
+  const source = moveFixtureDocument(a.store, 'Delete Source', [{ id: 'delete-move', content: 'Original moved body' }, { id: 'delete-keep', content: 'Keep original' }])
+  const target = moveFixtureDocument(a.store, 'Delete Target', [{ id: 'delete-target', content: 'Target body' }])
+  await a.sync.sync(); await b.sync.sync()
+  const original = b.store.documentRecovery.readContent(source)
+  const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('delete-move') as { created_at: string }).created_at
+  const late = moveFixtureDocument(b.store, 'Delete late reader', [{ id: 'delete-late', content: '[old](Delete%20Source.md#^delete-move) [[Delete Source#^delete-move]]' }])
+  await b.sync.sync(); await a.sync.sync()
+  moveFixture(a.store, source, target, 'delete-move'); a.store.deleteDocument(source); await a.sync.sync()
+  b.store.updateDocument(source, { ...original, blocks: original.blocks.map((block, index) => index === 0 ? { ...block, content: 'Unsaved conflict version' } : block) })
+  const localOriginal = b.store.documentRecovery.readContent(source)
+  const before = receivedMoveState(b.store), manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+  await assert.rejects(b.sync.sync(), /同步批次缺少原文档释放块 ID/)
+  assert.deepEqual(receivedMoveState(b.store), before)
+  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+  assert.equal(b.sync.getStatus().phase, 'error')
+  assert.equal(b.sync.getStatus().conflicts.length, 1)
+  assert.equal(b.sync.getStatus().conflicts[0].key, 'doc:' + source)
+  assert.equal(b.store.getBlockReference('Delete Source', '^delete-move')!.documentId, source)
+  const restarted = new WebDavSyncService(b.store, b.assets, b.credentials)
+  try {
+    assert.deepEqual(restarted.getStatus().conflicts, b.sync.getStatus().conflicts)
+    resolveConflict(restarted, { key: 'doc:' + source, choice: 'local' })
+    const resolvedLocal = receivedMoveState(b.store)
+    await assert.rejects(restarted.sync(), /同步批次缺少原文档释放块 ID/)
+    assert.deepEqual(receivedMoveState(b.store), resolvedLocal)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+    resolveConflict(restarted, { key: 'doc:' + source, choice: 'remote' })
+    await restarted.sync()
+    assert.equal(b.store.getDocumentSnapshot(source), null)
+    assert.equal(b.store.getBlockReference('Delete Source', '^delete-move')!.documentId, target)
+    assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('delete-move') as { created_at: string }).created_at, createdAt)
+    assert.deepEqual(b.store.checkDocumentLinks(late, () => null).issues, [])
+    assert.deepEqual(b.store.documentRecovery.getTrash(source).content, localOriginal)
+    assert.equal(restarted.getStatus().conflicts.length, 0)
+    const transferred = receivedMoveState(b.store)
+    assert.throws(() => b.store.restoreTrashedDocument(source), /块已移到其他文档/)
+    assert.deepEqual(receivedMoveState(b.store), transferred)
+  } finally { await restarted.stop() }
+}))
+
+test('two real WebDAV devices hold a source release when the target conflicts, reject local loss and resolve remote or fresh-ID copies', async context => {
+  for (const choice of ['remote', 'both'] as const) await context.test(choice, () => fixture(async (a, b, server) => {
+    const source = moveFixtureDocument(a.store, 'Conflict Source', [{ id: 'target-conflict-move', content: 'Moved body' }, { id: 'target-conflict-keep', content: 'Keep' }])
+    const target = moveFixtureDocument(a.store, 'Conflict Target', [{ id: 'target-conflict-root', content: 'base' }])
+    await a.sync.sync(); await b.sync.sync()
+    moveFixture(a.store, source, target, 'target-conflict-move')
+    const remote = a.store.documentRecovery.readContent(target)
+    a.store.updateDocument(target, { ...remote, blocks: remote.blocks.map((block, index) => index === 0 ? { ...block, content: 'AAA' } : block) })
+    const local = b.store.documentRecovery.readContent(target)
+    b.store.updateDocument(target, { ...local, blocks: local.blocks.map(block => ({ ...block, content: 'BBB' })) })
+    await a.sync.sync()
+    const before = receivedMoveState(b.store), manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+    await assert.rejects(b.sync.sync(), /同步批次缺少目标文档接收块 ID/)
+    assert.deepEqual(receivedMoveState(b.store), before)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+    assert.equal(b.sync.getStatus().conflicts[0].key, 'doc:' + target)
+    assert.equal(b.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, source)
+    resolveConflict(b.sync, { key: 'doc:' + target, choice: 'local' })
+    await assert.rejects(b.sync.sync(), /同步批次缺少目标文档接收块 ID/)
+    assert.deepEqual(receivedMoveState(b.store), before)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+    resolveConflict(b.sync, { key: 'doc:' + target, choice })
+    await b.sync.sync(); await a.sync.sync()
+    assert.equal(b.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, target)
+    assert.equal(a.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, target)
+    assert.equal(content(b.store, target), 'AAA')
+    assert.ok(!b.store.getDocumentDetail(source)!.blocks.some(block => block.id === 'target-conflict-move'))
+    if (choice === 'both') {
+      const copy = b.store.getExportDocuments().find(document => /同步冲突副本/.test(document.title))!
+      assert.ok(copy); assert.equal(copy.blocks[0].content, 'BBB')
+      assert.notEqual(copy.blocks[0].id, 'target-conflict-root')
+      assert.notEqual(copy.blocks[0].id, 'target-conflict-move')
+      assert.equal(content(a.store, copy.id), 'BBB')
+    }
+    assert.equal(a.sync.getStatus().conflicts.length, 0)
+    assert.equal(b.sync.getStatus().conflicts.length, 0)
+  }))
+})
+
+for (const selected of ['source', 'target'] as const) test(
+  'two real WebDAV devices reject a partial local ownership resolution with both owners conflicted: ' + selected,
+  () => fixture(async (a, b, server) => {
+    const movedId = 'partial-local-move'
+    const source = moveFixtureDocument(a.store, 'Partial Source', [
+      { id: movedId, content: 'Original moved body' }, { id: 'partial-local-keep', content: 'Original source keeper' }
+    ])
+    const target = moveFixtureDocument(a.store, 'Partial Target', [{ id: 'partial-local-target', content: 'Original target body' }])
+    await a.sync.sync(); await b.sync.sync()
+    const createdAtByStore = new Map([a.store, b.store].map(store => [store,
+      (store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get(movedId) as { created_at: string }).created_at
+    ] as const))
+    const originalSource = b.store.documentRecovery.readContent(source)
+    const originalTarget = b.store.documentRecovery.readContent(target)
+    moveFixture(a.store, source, target, movedId)
+    const remoteSource = a.store.documentRecovery.readContent(source)
+    a.store.updateDocument(source, { ...remoteSource,
+      blocks: remoteSource.blocks.map(block => ({ ...block, content: 'Remote source keeper' })) })
+    const remoteTarget = a.store.documentRecovery.readContent(target)
+    a.store.updateDocument(target, { ...remoteTarget, blocks: remoteTarget.blocks.map(block =>
+      block.id === 'partial-local-target' ? { ...block, content: 'Remote target body' } : block) })
+    b.store.updateDocument(source, { ...originalSource, blocks: originalSource.blocks.map(block => ({ ...block,
+      content: block.id === movedId ? 'Local moved body' : 'Local source keeper' })) })
+    b.store.updateDocument(target, { ...originalTarget,
+      blocks: originalTarget.blocks.map(block => ({ ...block, content: 'Local target body' })) })
+    await a.sync.sync(); await b.sync.sync()
+    assert.deepEqual(new Set(b.sync.getStatus().conflicts.map(conflict => conflict.key)), new Set(['doc:' + source, 'doc:' + target]))
+    assert.equal(b.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, source)
+    assert.equal(b.store.getBlockReference('Partial Target', '^' + movedId), null)
+    assert.equal(a.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, target)
+    const before = receivedMoveState(b.store), lastSyncAt = b.sync.getStatus().lastSyncAt
+    const manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+    resolveConflict(b.sync, { key: 'doc:' + (selected === 'source' ? source : target), choice: 'local' })
+    assert.deepEqual(receivedMoveState(b.store), before)
+    const requestStart = server.requests.length
+    await assert.rejects(b.sync.sync(), /同步.*块 ID/,
+      selected === 'source' ? 'publishing only the local source would duplicate the moved ID in the retained remote target'
+        : 'publishing only the local target would lose the moved ID after the remote source already released it')
+    assert.deepEqual(receivedMoveState(b.store), before, 'failed ownership preflight must not change knowledge, routes, histories or sync cursors')
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+    assert.equal(server.requests.slice(requestStart).filter(request => request.method === 'PUT' && request.path.endsWith('/manifest.json')).length, 0)
+    assert.equal(b.sync.getStatus().phase, 'error')
+    assert.equal(b.sync.getStatus().lastSyncAt, lastSyncAt)
+    const failedConflicts = b.sync.getStatus().conflicts
+    assert.deepEqual(new Set(failedConflicts.map(conflict => conflict.key)), new Set(['doc:' + source, 'doc:' + target]))
+    assert.equal(failedConflicts.find(conflict => conflict.key === 'doc:' + (selected === 'source' ? source : target))!.resolution, 'local')
+    await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
+    assert.deepEqual(b.sync.getStatus().conflicts, failedConflicts, 'both verified versions and the partial choice remain available after service restart')
+    assert.equal(b.sync.getStatus().lastSyncAt, lastSyncAt)
+    assert.deepEqual(receivedMoveState(b.store), before)
+    resolveConflict(b.sync, { key: 'doc:' + source, choice: 'remote' })
+    resolveConflict(b.sync, { key: 'doc:' + target, choice: 'remote' })
+    await b.sync.sync(); await a.sync.sync()
+    for (const current of [a, b]) {
+      const owner = current.store.getUnsafeDatabaseHandle().prepare('SELECT document_id, created_at FROM blocks WHERE id = ?')
+        .get(movedId) as { document_id: string; created_at: string }
+      assert.equal(owner.document_id, target)
+      assert.equal(owner.created_at, createdAtByStore.get(current.store))
+      assert.equal(current.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, target)
+      assert.equal(current.store.getBlockReference('Partial Target', '^' + movedId)!.documentId, target)
+      assert.equal(current.store.getBlockReference('Unrelated path', '^' + movedId), null)
+      assert.ok(!current.store.getDocumentDetail(source)!.blocks.some(block => block.id === movedId))
+      assert.equal(current.store.getDocumentDetail(target)!.blocks.filter(block => block.id === movedId).length, 1)
+      assert.equal(current.store.getDocumentDetail(target)!.blocks.find(block => block.id === movedId)!.content, 'Original moved body')
+      assert.equal(content(current.store, source), 'Remote source keeper')
+      assert.equal(content(current.store, target), 'Remote target body')
+      assert.equal(current.sync.getStatus().conflicts.length, 0)
+    }
+    const published = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+    const publishedOwners = new Map<string, string>()
+    for (const [key, hash] of Object.entries(published.entries)) {
+      const record = validateRecord(JSON.parse(server.files.get('/KnowBook/objects/' + hash + '.json')!.toString('utf8')), key)
+      if (record.kind !== 'document') continue
+      for (const block of record.content.blocks) {
+        assert.ok(!publishedOwners.has(block.id!), 'the accepted manifest must have globally unique block IDs')
+        publishedOwners.set(block.id!, record.id)
+      }
+    }
+    assert.equal(publishedOwners.get(movedId), target)
+    if (selected === 'target') {
+      const acceptedTarget = b.store.documentRecovery.readContent(target)
+      b.store.updateDocument(target, { ...acceptedTarget,
+        blocks: acceptedTarget.blocks.filter(block => block.id !== movedId) })
+      await b.sync.sync(); await a.sync.sync()
+      for (const current of [a, b]) {
+        assert.equal(current.store.getUnsafeDatabaseHandle().prepare('SELECT id FROM blocks WHERE id = ?').get(movedId), undefined,
+          'a later deliberate deletion is valid after both devices accepted complete ownership')
+        assert.equal(current.store.getBlockReference('Partial Source', '^' + movedId), null)
+        assert.equal(current.store.getBlockReference('Partial Target', '^' + movedId), null)
+        assert.deepEqual(current.store.getDocumentDetail(target)!.blocks.map(block => block.id), ['partial-local-target'])
+        assert.equal(current.sync.getStatus().phase, 'idle')
+        assert.equal(current.sync.getStatus().conflicts.length, 0)
+      }
+      const deletedManifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+      for (const [key, hash] of Object.entries(deletedManifest.entries)) {
+        const record = validateRecord(JSON.parse(server.files.get('/KnowBook/objects/' + hash + '.json')!.toString('utf8')), key)
+        if (record.kind === 'document') assert.ok(record.content.blocks.every(block => block.id !== movedId),
+          'the final manifest may remove an identity only through a legitimate accepted owner edit')
+      }
+    }
+  })
+)

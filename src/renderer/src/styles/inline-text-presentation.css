@@ -1,0 +1,68 @@
+/* Persisted documents store only the finite color names, never CSS. */
+[data-knowbook-text-color="gray"] { color: #5c6370; }
+[data-knowbook-background-color="gray"] { background-color: #ebeef2; }
+:root[data-theme="dark"] [data-knowbook-text-color="gray"] { color: #b9bec9; }
+:root[data-theme="dark"] [data-knowbook-background-color="gray"] { background-color: #363b45; }
+[data-palette-color="gray"] { --palette-text: #5c6370; --palette-background: #ebeef2; }
+:root[data-theme="dark"] [data-palette-color="gray"] { --palette-text: #b9bec9; --palette-background: #363b45; }
+[data-knowbook-text-color="brown"] { color: #795548; }
+[data-knowbook-background-color="brown"] { background-color: #f0e4df; }
+:root[data-theme="dark"] [data-knowbook-text-color="brown"] { color: #d7aa92; }
+:root[data-theme="dark"] [data-knowbook-background-color="brown"] { background-color: #49372f; }
+[data-palette-color="brown"] { --palette-text: #795548; --palette-background: #f0e4df; }
+:root[data-theme="dark"] [data-palette-color="brown"] { --palette-text: #d7aa92; --palette-background: #49372f; }
+[data-knowbook-text-color="orange"] { color: #a84a05; }
+[data-knowbook-background-color="orange"] { background-color: #fff0df; }
+:root[data-theme="dark"] [data-knowbook-text-color="orange"] { color: #ffb56e; }
+:root[data-theme="dark"] [data-knowbook-background-color="orange"] { background-color: #523a25; }
+[data-palette-color="orange"] { --palette-text: #a84a05; --palette-background: #fff0df; }
+:root[data-theme="dark"] [data-palette-color="orange"] { --palette-text: #ffb56e; --palette-background: #523a25; }
+[data-knowbook-text-color="yellow"] { color: #856500; }
+[data-knowbook-background-color="yellow"] { background-color: #fff5c4; }
+:root[data-theme="dark"] [data-knowbook-text-color="yellow"] { color: #e4c868; }
+:root[data-theme="dark"] [data-knowbook-background-color="yellow"] { background-color: #4b4425; }
+[data-palette-color="yellow"] { --palette-text: #856500; --palette-background: #fff5c4; }
+:root[data-theme="dark"] [data-palette-color="yellow"] { --palette-text: #e4c868; --palette-background: #4b4425; }
+[data-knowbook-text-color="green"] { color: #207347; }
+[data-knowbook-background-color="green"] { background-color: #e2f1e8; }
+:root[data-theme="dark"] [data-knowbook-text-color="green"] { color: #85cda2; }
+:root[data-theme="dark"] [data-knowbook-background-color="green"] { background-color: #264334; }
+[data-palette-color="green"] { --palette-text: #207347; --palette-background: #e2f1e8; }
+:root[data-theme="dark"] [data-palette-color="green"] { --palette-text: #85cda2; --palette-background: #264334; }
+[data-knowbook-text-color="blue"] { color: #215da8; }
+[data-knowbook-background-color="blue"] { background-color: #e3edfb; }
+:root[data-theme="dark"] [data-knowbook-text-color="blue"] { color: #8ebcff; }
+:root[data-theme="dark"] [data-knowbook-background-color="blue"] { background-color: #253c59; }
+[data-palette-color="blue"] { --palette-text: #215da8; --palette-background: #e3edfb; }
+:root[data-theme="dark"] [data-palette-color="blue"] { --palette-text: #8ebcff; --palette-background: #253c59; }
+[data-knowbook-text-color="purple"] { color: #7041a1; }
+[data-knowbook-background-color="purple"] { background-color: #eee5f8; }
+:root[data-theme="dark"] [data-knowbook-text-color="purple"] { color: #c4a0ec; }
+:root[data-theme="dark"] [data-knowbook-background-color="purple"] { background-color: #40314f; }
+[data-palette-color="purple"] { --palette-text: #7041a1; --palette-background: #eee5f8; }
+:root[data-theme="dark"] [data-palette-color="purple"] { --palette-text: #c4a0ec; --palette-background: #40314f; }
+[data-knowbook-text-color="pink"] { color: #a33575; }
+[data-knowbook-background-color="pink"] { background-color: #fae5f0; }
+:root[data-theme="dark"] [data-knowbook-text-color="pink"] { color: #f4a5d1; }
+:root[data-theme="dark"] [data-knowbook-background-color="pink"] { background-color: #4f2d43; }
+[data-palette-color="pink"] { --palette-text: #a33575; --palette-background: #fae5f0; }
+:root[data-theme="dark"] [data-palette-color="pink"] { --palette-text: #f4a5d1; --palette-background: #4f2d43; }
+[data-knowbook-text-color="red"] { color: #b43132; }
+[data-knowbook-background-color="red"] { background-color: #fbe5e5; }
+:root[data-theme="dark"] [data-knowbook-text-color="red"] { color: #ff9b9b; }
+:root[data-theme="dark"] [data-knowbook-background-color="red"] { background-color: #512e32; }
+[data-palette-color="red"] { --palette-text: #b43132; --palette-background: #fbe5e5; }
+:root[data-theme="dark"] [data-palette-color="red"] { --palette-text: #ff9b9b; --palette-background: #512e32; }
+.rich-text-color-palette { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px; border: 1px solid var(--kb-line); border-radius: 6px; background: var(--kb-canvas); }
+.rich-text-color-palette button { display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; border: 1px solid var(--kb-line); border-radius: 5px; color: var(--kb-text); background: var(--kb-canvas); cursor: pointer; }
+.rich-text-color-palette button[aria-pressed="true"] { outline: 2px solid var(--kb-accent); }
+[data-palette-swatch] { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--kb-line); border-radius: 3px; }
+[data-palette-swatch="textColor"] { color: var(--palette-text); }
+[data-palette-swatch="backgroundColor"] { background-color: var(--palette-background); }
+.knowbook-rich-text-editor .rich-text-block-actions { position: absolute; left: -48px; top: 4px; width: 22px; height: 26px; padding: 0; margin: 0; border: 0; border-radius: 4px; opacity: 0; color: var(--kb-text-soft); background: var(--kb-canvas); cursor: pointer; }
+.knowbook-rich-text-editor .rich-text-block-actions::before { content: '⋮'; }
+.knowbook-rich-text-editor :is(.rich-text-block:hover, .rich-text-source-block:hover, .rich-text-block:focus-within, .rich-text-source-block:focus-within) .rich-text-block-actions, .knowbook-rich-text-editor .rich-text-block-actions:focus-visible { opacity: 1; }
+.knowbook-rich-text-editor .rich-text-block-actions:focus-visible { outline: 2px solid var(--kb-accent); }
+.knowbook-rich-text-editor { margin-left: 48px; }
+.source-inline-presentation-toolbar > [role="toolbar"] { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
+.source-inline-presentation-toolbar > [role="toolbar"] button { min-height: 28px; padding: 3px 8px; border: 1px solid var(--kb-line); border-radius: 5px; color: var(--kb-text); background: var(--kb-canvas); cursor: pointer; }

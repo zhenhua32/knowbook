@@ -1,6 +1,7 @@
 import { parseFragment, serializeOuter, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import { normalizeMarkdownExternalUrl } from './markdownEngine'
 import { parseImageFigure, serializeImageFigure } from './markdownMedia'
+import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE, normalizeInlineTextColor, inlineTextPresentationTags, type InlineTextPresentation } from './inlineTextPresentation'
 
 type Node = Html.ChildNode
 const discarded = new Set(['script', 'style', 'noscript', 'template', 'iframe', 'object', 'embed', 'svg', 'math', 'head', 'title', 'meta', 'link'])
@@ -49,7 +50,57 @@ function image(node: Html.Element): string {
   if (dimensions.length) return `<img src="${htmlAttribute(url)}" alt="${htmlAttribute(attr(node, 'alt'))}" ${dimensions.join(' ')}${title ? ` title="${htmlAttribute(title)}"` : ''}>`
   return `![${label}](${destination(url)}${title ? ' "' + title.replace(/[\r\n]/g, ' ').replace(/[\\"]/g, '\\$&') + '"' : ''})`
 }
+function presentation(node: Html.Element): InlineTextPresentation {
+  const styles = attr(node, 'style').toLowerCase()
+  const textColor = normalizeInlineTextColor(attr(node, INLINE_TEXT_COLOR_ATTRIBUTE))
+  const backgroundColor = normalizeInlineTextColor(attr(node, INLINE_BACKGROUND_COLOR_ATTRIBUTE))
+  return { ...(node.tagName === 'u' || node.tagName === 'span' && /(?:^|;)\s*text-decoration(?:-line)?\s*:[^;]*\bunderline\b/.test(styles) ? { underline: true } : {}),
+    ...(textColor ? { textColor } : {}), ...(backgroundColor ? { backgroundColor } : {}) }
+}
+function hasPresentation(nodes: Node[]): boolean {
+  return nodes.some(node => element(node) && allowed(node) && !['code', 'kbd'].includes(node.tagName)
+    && (['u', 'span'].includes(node.tagName) && Object.keys(presentation(node)).length > 0
+      || node.tagName === 'span' && attr(node, INLINE_TEXT_SHELL_ATTRIBUTE) === 'true' || hasPresentation(node.childNodes)))
+}
+/** Once a color/underline needs an HTML shell, every nested mark uses HTML too.
+ * Literal punctuation, soft breaks and foreign private IDs cannot acquire
+ * Markdown meaning inside the generated shell. */
+function inlineHtml(nodes: Node[]): string {
+  const text = (value: string) => htmlAttribute(value).replace(/\r/g, '&#13;').replace(/\n/g, '&#10;')
+  return nodes.map(node => {
+    if ('value' in node) return text(node.value)
+    if (!element(node) || !allowed(node)) return ''
+    const tag = node.tagName
+    if (tag === 'input') return ''
+    if (tag === 'br') return '<br>'
+    if (tag === 'code' || tag === 'kbd') return `<code>${text(literalText(node.childNodes))}</code>`
+    if (tag === 'img') {
+      const url = safeUrl(attr(node, 'src'), true)
+      if (!url) return text(attr(node, 'alt'))
+      return `<img src="${htmlAttribute(url)}" alt="${htmlAttribute(attr(node, 'alt'))}"${['width', 'height'].flatMap(name => /^(?:[1-9]\d{0,3}|10000)$/.test(attr(node, name)) ? [` ${name}="${attr(node, name)}"`] : []).join('')}${attr(node, 'title') ? ` title="${htmlAttribute(attr(node, 'title'))}"` : ''}>`
+    }
+    let content = inlineHtml(node.childNodes)
+    if (tag === 'a') {
+      const url = safeUrl(attr(node, 'href'))
+      return url ? `<a href="${htmlAttribute(url)}"${attr(node, 'title') ? ` title="${htmlAttribute(attr(node, 'title'))}"` : ''}>${content || text(url)}</a>` : content
+    }
+    const semantic = ['strong', 'b'].includes(tag) ? 'strong' : ['em', 'i'].includes(tag) ? 'em' : ['s', 'strike', 'del'].includes(tag) ? 'del' : tag === 'mark' ? 'mark' : ''
+    if (semantic) content = `<${semantic}>${content}</${semantic}>`
+    if (tag === 'span') {
+      const styles = attr(node, 'style').toLowerCase()
+      if (/(?:^|;)\s*font-weight\s*:\s*(?:bold|[7-9]00)\s*(?:;|$)/.test(styles)) content = `<strong>${content}</strong>`
+      if (/(?:^|;)\s*font-style\s*:\s*italic\s*(?:;|$)/.test(styles)) content = `<em>${content}</em>`
+      if (/(?:^|;)\s*text-decoration(?:-line)?\s*:[^;]*\bline-through\b/.test(styles)) content = `<del>${content}</del>`
+    }
+    if (tag === 'span' || tag === 'u') {
+      const { open, close } = inlineTextPresentationTags(presentation(node))
+      content = open + content + close
+    }
+    return content
+  }).join('')
+}
 function inline(nodes: Node[]): string {
+  if (hasPresentation(nodes)) return `<span ${INLINE_TEXT_SHELL_ATTRIBUTE}="true">${inlineHtml(nodes)}</span>`
   return nodes.map(node => {
     if ('value' in node) return escapeText(node.value)
     if (!element(node) || !allowed(node)) return ''

@@ -75,7 +75,7 @@ test('failed delete and failed restore leave their original recoverable data int
   store.deleteDocument(id)
   // A later import may reuse a block ID; never silently overwrite its owner.
   store.updateDocument(conflict, { ...store.getDocumentDetail(conflict)!, blocks: [{ id: blockId, type: 'paragraph', content: 'Owned elsewhere', checked: false, depth: 0 }] })
-  assert.throws(() => store.restoreTrashedDocument(id), /UNIQUE/)
+  assert.throws(() => store.restoreTrashedDocument(id), /回收站中的块已移到其他文档/)
   assert.equal(store.getDocumentDetail(id), null)
   assert.equal(store.documentRecovery.listTrash()[0].id, id)
   assert.equal(store.getDocumentDetail(conflict)!.blocks[0].content, 'Owned elsewhere')
