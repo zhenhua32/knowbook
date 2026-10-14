@@ -2,6 +2,7 @@ import type { DocumentBlock, DocumentBlockDraft, DocumentTreeNode } from '@share
 import { collectMarkdownSourceLinks } from '@shared/markdownLinks'
 import { findWikiHeading, parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '@shared/markdownWiki'
 import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
+import type { AppMessageHandler } from '../notify'
 type BlockReferenceCandidate = Pick<DocumentBlock, 'id' | 'content'>
 
 export function buildInlineBlockReferences(blocks: DocumentBlockDraft[]) {
@@ -77,4 +78,75 @@ export function buildDocumentReferences(nodes: DocumentTreeNode[]): DocumentRefe
   }
 
   return references
+}
+
+export type InlineReferenceNavigationContext = {
+  documentTree: DocumentTreeNode[]
+  draftBlocks: DocumentBlockDraft[]
+  onOpenDocument: (documentId: string) => void
+  onOpenDocumentBlock: (documentId: string, blockId: string) => void
+  onOpenAnchor: (documentId: string, anchor: string) => void
+  draftTitle: string
+  selectedDocumentId: string | null
+  notify: AppMessageHandler
+  uiBlockReferenceNotFound: string
+  isCurrent: () => boolean
+}
+
+/** Runs after the hook's existing cold import, with the same IPC continuation guards. */
+export async function navigateInlineReference(content: string, cursorPosition: number, {
+  documentTree, draftBlocks, onOpenDocument, onOpenDocumentBlock, onOpenAnchor, draftTitle,
+  selectedDocumentId, notify, uiBlockReferenceNotFound, isCurrent
+}: InlineReferenceNavigationContext): Promise<void> {
+  try {
+    const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
+    if (!token) {
+      return
+    }
+
+    const documentReferences = buildDocumentReferences(documentTree)
+    const blockReferences = buildInlineBlockReferences(draftBlocks)
+
+    const target = resolveInlineReferenceTarget(token, documentReferences, blockReferences, selectedDocumentId)
+    if (!target) {
+      notify(uiBlockReferenceNotFound, 'warning')
+      return
+    }
+
+    if (target.type === 'document') {
+      onOpenDocument(target.documentId)
+      return
+    }
+
+    if (target.type === 'block') {
+      onOpenDocumentBlock(target.documentId, target.blockId)
+      return
+    }
+
+    try {
+      const block = await window.knowbook.getBlockReference(target.documentPath, target.blockId)
+      if (!isCurrent()) return
+      if (block) { onOpenDocumentBlock(block.documentId, block.block.id); return }
+    } catch (error) {
+      if (isCurrent()) notify(error instanceof Error ? error.message : uiBlockReferenceNotFound, 'error')
+      return
+    }
+    if (target.blockId.startsWith('^')) { notify(uiBlockReferenceNotFound, 'warning'); return }
+    const document = documentReferences.find((entry) => entry.path === target.documentPath)
+    const detail = document && (document.id === selectedDocumentId ? { id: document.id, title: draftTitle, blocks: draftBlocks }
+      : await window.knowbook.getDocumentDetail(document.id))
+    if (!isCurrent()) return
+    if (!detail) {
+      notify(uiBlockReferenceNotFound, 'warning')
+      return
+    }
+    if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
+    else {
+      const heading = findInlineReferenceHeading(target.blockId, detail.blocks, detail.title)
+      if (heading) onOpenAnchor(detail.id, heading.slug)
+      else notify(uiBlockReferenceNotFound, 'warning')
+    }
+  } catch (error) {
+    if (isCurrent()) notify(error instanceof Error ? error.message : uiBlockReferenceNotFound, "error")
+  }
 }

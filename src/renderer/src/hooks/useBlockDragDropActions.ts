@@ -2,7 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { canBlockHaveParent } from '@shared/blockTypes'
+import { canBlockHaveParent, isListBlockType, isContainerBlockType } from '@shared/blockTypes'
 import { normalizeBlockDepth } from '../utils/draftBlockShape'
 
 type BlockSelectionRange = {
@@ -71,6 +71,8 @@ export function useBlockDragDropActions({
     }
 
     const targetBlock = draftBlocks[targetIndex]
+    // Mixed children can nest in native containers; ordinary non-list roots still reorder at depth zero.
+    if (!isListBlockType(draggingBlock.type) && !isContainerBlockType(targetBlock?.type ?? '') && !targetBlock?.parentBlockId) return 0
     const anchorDepth = targetBlock && canBlockHaveParent(targetBlock.type) ? targetBlock.depth : 0
     const contentColumnStart = element.getBoundingClientRect().left + 48 + 160 + 20
     const horizontalDelta = clientX - contentColumnStart

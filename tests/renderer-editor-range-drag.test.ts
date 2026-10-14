@@ -239,3 +239,91 @@ test('mixed non-nestable range depth changes cannot partly indent only the list 
     assert.equal(current().historyCalls(), 0)
   })
 })
+
+
+function centerPointerDepth(current: () => State, document: Document, targetIndex: number) {
+  const target = document.querySelector<HTMLDivElement>(`[data-block-index="${targetIndex}"]`)!
+  assert.ok(target)
+  // Match a real dragTo center well to the right of the source metadata column.
+  target.getBoundingClientRect = () => ({ left: 100, right: 900, top: 0, bottom: 40, x: 100, y: 0, width: 800, height: 40,
+    toJSON: () => ({}) }) as DOMRect
+  return current().drag.getDraggedBlockDepthPreview(targetIndex, 500, target)
+}
+const prose = (id: string, depth = 0, parentBlockId: string | null = null): DocumentBlockDraft =>
+  ({ ...block(id, depth, parentBlockId), type: 'paragraph', checked: false })
+
+test('ordinary root paragraph center drops reorder as roots and retain metadata, caret and one undo/redo', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  await withEditor(['header', 'one', 'two', 'three'].map(id => prose(id)), async (current, document) => {
+    const original = current().editor.draftBlocks
+    const input = document.querySelector<HTMLTextAreaElement>('[data-block-id="one"] textarea')!
+    await act(async () => { input.focus(); input.setSelectionRange(1, 1); current().setCursor(1, 1) })
+    await act(async () => current().drag.beginBlockDrag(1))
+    const depth = centerPointerDepth(current, document, 3)
+    assert.equal(depth, 0)
+    assert.equal(getBlockDropPreview(original, 1, 3, depth)?.effectiveDepth, 0)
+    await act(async () => current().drag.dropBlockAt(3, depth))
+    const result = current().editor.draftBlocks
+    assertValid(result)
+    assert.deepEqual(result, [original[0], original[2], original[3], original[1]])
+    assert.equal(current().historyCalls(), 1)
+    assert.equal(document.activeElement, input); assert.equal(input.selectionStart, 1)
+    await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+    assert.deepEqual(current().editor.draftBlocks, original)
+    await act(async () => { current().editor.redoEdit(); t.mock.timers.tick(0) })
+    assert.deepEqual(current().editor.draftBlocks, result)
+  })
+})
+
+test('a native owner center drop onto root prose reorders its complete mixed forest without changing identity or format', async () => {
+  const forest: DocumentBlockDraft[] = [
+    { ...prose('owner'), type: 'callout', markdownFormat: { calloutKind: 'tip', calloutIcon: 'pin', calloutTone: 'green' } },
+    prose('body', 1, 'owner'), { ...prose('code', 1, 'owner'), type: 'code', content: 'const x = 1', language: 'javascript' },
+    prose('after')
+  ]
+  await withEditor(forest, async (current, document) => {
+    const original = current().editor.draftBlocks
+    await act(async () => current().drag.beginBlockDrag(0))
+    const depth = centerPointerDepth(current, document, 3)
+    assert.equal(depth, 0)
+    await act(async () => current().drag.dropBlockAt(3, depth))
+    assertValid(current().editor.draftBlocks)
+    assert.deepEqual(current().editor.draftBlocks, [original[3], ...original.slice(0, 3)])
+    assert.equal(current().historyCalls(), 1)
+  })
+})
+
+test('non-list pointer drops can still enter an active compatible native owner and preserve its existing mixed children', async () => {
+  const blocks: DocumentBlockDraft[] = [prose('incoming'), { ...prose('owner'), type: 'toggle', markdownFormat: { toggleDefaultOpen: true } },
+    { ...prose('body', 1, 'owner'), type: 'quote' }, prose('after')]
+  await withEditor(blocks, async (current, document) => {
+    const original = current().editor.draftBlocks
+    await act(async () => current().drag.beginBlockDrag(0))
+    const depth = centerPointerDepth(current, document, 2)
+    assert.equal(depth, 2)
+    assert.equal(getBlockDropPreview(original, 0, 2, depth)?.effectiveDepth, 1)
+    await act(async () => current().drag.dropBlockAt(2, depth))
+    assertValid(current().editor.draftBlocks)
+    assert.deepEqual(current().editor.draftBlocks, [original[1], original[2], { ...original[0], depth: 1, parentBlockId: 'owner' }, original[3]])
+    assert.equal(current().historyCalls(), 1)
+  })
+})
+
+test('list center drops with an incompatible positive-depth target remain rejected and preserve redo', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  await withEditor([block('owner'), block('child', 1, 'owner'), prose('after')], async (current, document) => {
+    const original = current().editor.draftBlocks
+    await act(async () => current().drag.beginBlockDrag(0))
+    await act(async () => current().drag.dropBlockAt(2, 0))
+    await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+    assert.equal(current().editor.canRedo, true)
+    await act(async () => current().drag.beginBlockDrag(0))
+    const depth = centerPointerDepth(current, document, 2)
+    assert.equal(depth, 1)
+    assert.equal(getBlockDropPreview(original, 0, 2, depth), null)
+    await act(async () => current().drag.dropBlockAt(2, depth))
+    assert.deepEqual(current().editor.draftBlocks, original)
+    assert.equal(current().historyCalls(), 1)
+    assert.equal(current().editor.canRedo, true)
+  })
+})
