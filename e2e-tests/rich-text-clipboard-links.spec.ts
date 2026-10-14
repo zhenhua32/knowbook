@@ -1,3 +1,4 @@
+import { setRichTextDomSelection } from './helpers/rich-text-selection'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { closeElectronApp, launchElectronApp, uiText } from './helpers/electron'
@@ -41,33 +42,7 @@ async function save(page: Page) {
 
 // Use Chromium's DOM selection and trusted keys, never a ProseMirror test API.
 async function selectRich(page: Page, from: Point, to = from, backward = false) {
-  await editor(page).focus()
-  await editor(page).evaluate((root, { from, to, backward }) => {
-    const resolve = (point: Point) => {
-      const block = Array.from(root.querySelectorAll<HTMLElement>('[data-block-id]'))
-        .find(element => element.dataset.blockId === point.blockId)
-      if (!block) throw new Error(`Missing selection block: ${point.blockId}`)
-      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
-        acceptNode: node => node.parentElement?.closest('[contenteditable="false"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
-      })
-      let remaining = point.offset, last: Node | null = null
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        last = node
-        const length = node.textContent?.length ?? 0
-        if (remaining <= length) return { node, offset: remaining }
-        remaining -= length
-      }
-      if (remaining) throw new Error(`Selection outside block: ${point.blockId}:${point.offset}`)
-      return last ? { node: last, offset: last.textContent?.length ?? 0 } : { node: block, offset: 0 }
-    }
-    const start = resolve(from), end = resolve(to), range = document.createRange()
-    range.setStart(start.node, start.offset)
-    range.setEnd(end.node, end.offset)
-    const selection = window.getSelection()!
-    selection.removeAllRanges()
-    selection.addRange(range)
-    if (backward) selection.setBaseAndExtent(end.node, end.offset, start.node, start.offset)
-  }, { from, to, backward })
+  await editor(page).evaluate(setRichTextDomSelection, { from, to, backward })
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 

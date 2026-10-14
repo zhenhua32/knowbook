@@ -62,7 +62,7 @@ async function expectFloatingControls(input: Locator, avoidWholeTextarea = true)
     expect(geometry.toolbar.bottom <= geometry.input.top - 2 || geometry.toolbar.top >= geometry.input.bottom + 2,
       'the toolbar leaves the active text clear').toBe(true)
   }
-  expect(geometry.controls).toHaveLength(6)
+  expect(geometry.controls).toHaveLength(9)
   for (const control of geometry.controls) {
     expect(control.hit, 'every format button remains a clickable native hit target').toBe(true)
     expect(control.box.left).toBeGreaterThanOrEqual(geometry.toolbar.left - 1)
@@ -96,7 +96,7 @@ for (const width of [1040, 760]) {
         await page.keyboard.press('Escape')
         await expect(input).toBeFocused()
         await input.press('Shift+Tab')
-        await expect(toolbar(input).getByRole('button', { name: uiText('Insert link', '插入链接'), exact: true })).toBeFocused()
+        await expect(toolbar(input).getByRole('button', { name: uiText('Background color', '背景颜色'), exact: true })).toBeFocused()
         await page.keyboard.press('Escape')
         await expect(input).toBeFocused()
         expect(await rectangles(page)).toEqual(baseline)

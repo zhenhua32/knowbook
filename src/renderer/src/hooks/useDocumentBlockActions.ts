@@ -84,14 +84,26 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     const guarded = { ...opening, cold: createColdBlockPopup(opening.opener) }
     currentMenu.current = guarded; setMenu(guarded)
   }
-  const apply = (opening: Opening, action: 'convert' | 'duplicate' | 'delete', type?: string) => {
+  const apply = (opening: Opening, action: 'convert' | 'duplicate' | 'delete', type?: string, preserveSelection = false) => {
     const current = live.current
     if (!current.isBlockActionTargetCurrent(opening.target) || current.isBlockMoveBusy) return
     const next = planBlockAction(opening.target.blocks, opening.target.blockIds, action, type)
     if (!next) return
+    const selected = preserveSelection ? current.selectedBlockRange : null
+    const selectedIds = selected ? selectedBlockActionIds() : []
+    const keepRange = selected && selectedIds.length === opening.target.blockIds.length
+      && opening.target.blockIds.every(id => selectedIds.includes(id))
+    const endpoints = keepRange ? [opening.target.blocks[selected.start]?.id, opening.target.blocks[selected.end]?.id] : null
     current.pushToHistory(opening.target.blocks, opening.target.bookmark)
-    current.clearBlockSelection()
+    if (!keepRange) current.clearBlockSelection()
     current.setDraftBlocks(next)
+    if (endpoints) {
+      const first = next.findIndex(block => block.id === endpoints[0]), last = next.findIndex(block => block.id === endpoints[1])
+      if (first >= 0 && last >= 0) current.setSelectedBlockRange({ start: Math.min(first, last), end: Math.max(first, last) })
+      else current.clearBlockSelection()
+      // Keep the existing stable anchor/focus IDs so reverse range extension
+      // continues from the same endpoint after the converted rows rerender.
+    }
     current.pushToHistory(next, opening.target.bookmark)
     restore(opening)
   }
@@ -121,7 +133,7 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     const guarded = { ...opening, cold: createColdBlockPopup(opening.opener, document.querySelector<HTMLElement>('.block-context-menu')) }
     currentMove.current = guarded; setMove(guarded); setMoveError(null); closeMenu()
   }
-  const convertSelectedBlocks = (type: string) => { const opening = openingFor(selectedBlockActionIds()); if (opening) apply(opening, 'convert', type) }
+  const convertSelectedBlocks = (type: string) => { const opening = openingFor(selectedBlockActionIds()); if (opening) apply(opening, 'convert', type, true) }
   const copySelectedBlockLinks = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) void copy(opening) }
   const openSelectedBlocksMove = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) openMove(opening) }
   useEffect(() => {
@@ -150,7 +162,7 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
   const contextMenuProps: BlockContextMenuProps | null = menu ? {
     x: menu.x, y: menu.y, blockType: menu.target.blockIds.length === 1
       ? menu.target.blocks.find(block => block.id === menu.target.blockIds[0])?.type ?? '' : '',
-    selectedBlockCount: menu.target.blockIds.length, onTypeChange: type => apply(menu, 'convert', type),
+    selectedBlockCount: menu.target.blockIds.length, onTypeChange: type => apply(menu, 'convert', type, true),
     onDuplicate: () => apply(menu, 'duplicate'), onDelete: () => apply(menu, 'delete'), onClose: closeMenu,
     onCopyBlockLinks: () => { void copy(menu) }, onMoveToDocument: () => openMove(menu),
     disabled: copying || documents.isBlockMoveBusy, moveDisabledReason: moveReason(menu),

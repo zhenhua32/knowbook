@@ -343,6 +343,7 @@ export function useDocumentsDomainState({
   })
 
   const { documentLoadError, retryDocumentLoad } = useDocumentsLoadingOrchestration({
+    detailLoading,
     clearEditorAssistSuggestions,
     clearEditorSession,
     clearMoveTarget,

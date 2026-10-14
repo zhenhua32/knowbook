@@ -88,7 +88,7 @@ function menuProps(overrides: Partial<MenuProps> = {}): MenuProps {
     typeOptions: labels, isZh: false, ui: getUiText('en-US'), ...overrides }
 }
 function button(context: Context, label: string): HTMLButtonElement {
-  return [...context.document.querySelectorAll<HTMLButtonElement>('button')].find(element => element.textContent === label)!
+  return [...context.document.querySelectorAll<HTMLButtonElement>('button')].find(element => element.textContent === label || element.getAttribute('aria-label') === label)!
 }
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -321,10 +321,10 @@ test('source palette applies a finite color and rejects partial delimiters or co
   await context.key(context.document.activeElement!, 'Escape')
   assert.equal(context.document.activeElement, textarea)
   await context.key(textarea, 'Tab', { shiftKey: true })
-  assert.equal(context.document.activeElement?.textContent, 'Background color')
+  assert.equal(context.document.activeElement?.getAttribute('aria-label'), 'Background color')
   const composingEscape = await context.key(context.document.activeElement!, 'Escape', { isComposing: true })
   assert.equal(composingEscape.defaultPrevented, false)
-  assert.equal(context.document.activeElement?.textContent, 'Background color')
+  assert.equal(context.document.activeElement?.getAttribute('aria-label'), 'Background color')
   await context.key(context.document.activeElement!, 'Escape')
   assert.equal(context.document.activeElement, textarea)
   assert.equal(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd), 'alpha')

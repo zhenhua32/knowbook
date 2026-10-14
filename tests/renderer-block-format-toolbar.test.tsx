@@ -10,7 +10,7 @@ register(`data:text/javascript,${encodeURIComponent(`
     return nextLoad(url, context)
   }
 `)}`, import.meta.url)
-const { BlockFormatToolbar, blockFormatToolbarTop } = await import('../src/renderer/src/components/BlockFormatToolbar')
+const { BlockFormatToolbar, blockFormatToolbarTop, blockFormatToolbarSafeTop } = await import('../src/renderer/src/components/BlockFormatToolbar')
 const { MarkdownFormatToolbar } = await import('../src/renderer/src/components/MarkdownFormatToolbar')
 
 test('block toolbar uses the outside edge of its textarea and keeps a wrapped toolbar inside the viewport', () => {
@@ -19,6 +19,18 @@ test('block toolbar uses the outside edge of its textarea and keeps a wrapped to
   assert.equal(blockFormatToolbarTop({ top: 462, bottom: 492 }, 64, { top: 20, bottom: 500 }), 392)
   assert.equal(blockFormatToolbarTop({ top: -20, bottom: 600 }, 64, { top: 20, bottom: 500 }, { top: 40, bottom: 64 }), 430)
   assert.equal(blockFormatToolbarTop({ top: -20, bottom: 600 }, 64, { top: 20, bottom: 500 }, { top: 450, bottom: 474 }), 26)
+})
+
+test('floating controls choose a nearby clear edge around neighboring inputs and media controls', () => {
+  const anchor = { top: 200, bottom: 230 }, viewport = { top: 20, bottom: 500 }
+  assert.equal(blockFormatToolbarSafeTop(anchor, 32, viewport, []), 162)
+  assert.equal(blockFormatToolbarSafeTop(anchor, 32, viewport, [{ top: 156, bottom: 196 }]), 118)
+  assert.equal(blockFormatToolbarSafeTop(anchor, 32, viewport, [{ top: 112, bottom: 152 }, { top: 156, bottom: 196 }]), 236)
+  const probed: number[] = []
+  const top = blockFormatToolbarSafeTop(anchor, 32, viewport, [{ top: 156, bottom: 196 }], undefined,
+    candidate => { probed.push(candidate); return candidate === 462 })
+  assert.equal(top, 462)
+  assert.ok(probed.length <= 11, 'candidate hit tests remain bounded independently of document length')
 })
 
 type Box = { top: number; left: number; width: number; height: number }

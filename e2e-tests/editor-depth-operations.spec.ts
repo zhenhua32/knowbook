@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
-import { withElectronApp } from './helpers/electron'
+import { uiText, withElectronApp } from './helpers/electron'
 
 function nestedTree(): DocumentBlockDraft[] {
   return [
@@ -100,9 +100,12 @@ test('Shift+Tab moves a nested task subtree beyond its old parent and preserves 
     const outerText = outer.locator('textarea')
     await outerText.focus()
     await outerText.click({ modifiers: ['Shift'] })
-    await outer.locator('.block-drag-handle').click({ force: true })
-    await expect(outer.locator('.block-edit-toolbar')).toBeVisible()
-    await outer.locator('.block-toolbar-delete').click()
+    await outer.hover()
+    await outer.locator('.block-drag-handle').click()
+    const menu = page.locator('.block-context-menu')
+    await expect(menu).toBeVisible()
+    await menu.getByRole('button', { name: uiText('Delete', '删除'), exact: true }).click()
+    await expect(menu).toHaveCount(0)
     const remaining = outdented.slice(3)
     await expect.poll(() => visibleIds(page)).toEqual(['b', 'c', 'after'])
     await expect(page.locator('[data-block-id="b"] .block-todo-checkbox')).toBeChecked()

@@ -13,6 +13,7 @@ type UseDocumentsLoadingOrchestrationParams = {
   clearEditorAssistSuggestions: () => void
   clearEditorSession: () => void
   clearMoveTarget: () => void
+  detailLoading: boolean
   draftBlocks: DocumentBlockDraft[]
   draftTitle: string
   onNavigateMarkdownHeading: (index: number, headingIndex: number) => void
@@ -41,6 +42,7 @@ export function useDocumentsLoadingOrchestration({
   clearEditorAssistSuggestions,
   clearEditorSession,
   clearMoveTarget,
+  detailLoading,
   draftBlocks,
   draftTitle,
   onNavigateMarkdownHeading,
@@ -140,6 +142,7 @@ export function useDocumentsLoadingOrchestration({
 
   return useDocumentLoadingAndBlockNavigation({
     clearPendingTarget,
+    detailLoading,
     draftBlocks,
     draftTitle,
     onDocumentLoaded: handleDocumentLoaded,

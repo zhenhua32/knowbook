@@ -5,6 +5,7 @@ import { act, createElement, useState } from 'react'
 import { JSDOM } from 'jsdom'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { getRichTextHistoryBridge } from '../src/renderer/src/rich-text/history'
+import { setRichTextDomSelection } from '../e2e-tests/helpers/rich-text-selection'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -298,4 +299,42 @@ test('editor-wide clipboard events targeting an action widget reach the body whi
       })
     }
   }
+})
+
+test('atomic public DOM focus and selection retain a nonfirst caret through the pending native focus repair', async () => {
+  await withPendingContext(async api => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'setTimeout')!, schedule = globalThis.setTimeout
+    const repairs: Array<() => void> = []
+    Object.defineProperty(globalThis, 'setTimeout', { configurable: true, value: (...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args
+      if (delay === 20) { repairs.push(() => callback(...values)); return 0 as unknown as ReturnType<typeof setTimeout> }
+      return schedule(callback, delay, ...values)
+    } })
+    const nativeBlock = () => {
+      const anchor = api.window.getSelection()?.anchorNode
+      return (anchor?.nodeType === api.window.Node.ELEMENT_NODE ? anchor as Element : anchor?.parentElement)?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId
+    }
+    try {
+      await act(async () => {
+        api.outside.focus(); api.editor.focus()
+        const target = api.editor.querySelector('[data-block-id="second"]')!.lastChild!
+        const range = api.document.createRange(); range.setStart(target, 3); range.collapse(true)
+        const native = api.window.getSelection()!; native.removeAllRanges(); native.addRange(range)
+        assert.equal(nativeBlock(), 'second')
+        assert.ok(repairs.length, 'The actual editor must have a pending native focus correction')
+        repairs.splice(0).forEach(repair => repair())
+        assert.equal(nativeBlock(), 'first', 'The split-task window reproduces the focus repair overwriting an unobserved caret')
+        api.outside.focus()
+        setRichTextDomSelection(api.editor, { from: { blockId: 'second', offset: 3 } })
+        // The selectionchange queued by this single DOM task precedes its later
+        // focus-repair timer. Deliver both events with a controlled scheduler.
+        api.document.dispatchEvent(new api.window.Event('selectionchange'))
+        repairs.splice(0).forEach(repair => repair())
+      })
+      assert.equal(nativeBlock(), 'second')
+      assert.deepEqual(api.bridge.capture().richText, {
+        anchor: { blockId: 'second', index: 1, offset: 3 }, head: { blockId: 'second', index: 1, offset: 3 }
+      })
+    } finally { Object.defineProperty(globalThis, 'setTimeout', original) }
+  })
 })

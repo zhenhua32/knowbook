@@ -100,11 +100,14 @@ async function selectLastTwoBodyBlocks(page: Page): Promise<void> {
   await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
 }
 
-async function openBodyBlockToolbar(page: Page, bodyIndex: number): Promise<void> {
+async function openBodyBlockMenu(page: Page, bodyIndex: number): Promise<Locator> {
   const row = page.locator('.block-editor-row').nth(bodyIndex + 1)
   await expect(row).toBeVisible()
-  await row.locator('.block-drag-handle').click({ force: true })
-  await expect(row.locator('.block-edit-toolbar')).toBeVisible()
+  await row.hover()
+  await row.locator('.block-drag-handle').click()
+  const menu = page.locator('.block-context-menu')
+  await expect(menu).toBeVisible()
+  return menu
 }
 
 test.describe('Editor Multi-Block Operations @electron', () => {
@@ -236,8 +239,9 @@ test.describe('Editor Multi-Block Operations @electron', () => {
       await createParagraphBlocks(page, ['Alpha', 'Beta'])
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha', 'Beta'])
 
-      await openBodyBlockToolbar(page, 1)
-      await page.locator('.block-editor-row').nth(2).locator('.block-toolbar-delete').click()
+      const menu = await openBodyBlockMenu(page, 1)
+      await menu.getByRole('button', { name: uiText('Delete', '删除'), exact: true }).click()
+      await expect(menu).toHaveCount(0)
 
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['Alpha'])
     })

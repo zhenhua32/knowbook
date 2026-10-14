@@ -84,23 +84,50 @@ test('bulk list conversions preserve numbered metadata and folded child identiti
     await row(page, ids[0]).locator('.block-collapse-toggle').click({ force: true })
     await expect(row(page, ids[1])).toHaveCount(0)
     await convert(page, ids[0], ids[3], 'numbered-todo')
-    const numbered = before.map(block => ({ ...block, type: 'numbered-todo' }))
+    // Only the two visible selected roots change type; their folded descendants
+    // retain their independent type, checked state and ordered-list metadata.
+    const numbered = [
+      { ...before[0], type: 'numbered-todo' }, before[1], before[2],
+      { ...before[3], type: 'numbered-todo' }
+    ]
+    const expectRetainedDescendantMetadata = async () => {
+      const saved = await read(page, id)
+      expect(saved.slice(1, 3).map(({ id, type, checked, listStart, markdownFormat }) => ({ id, type, checked, listStart, markdownFormat }))).toEqual([
+        { id: ids[1], type: 'numbered-todo', checked: true, listStart: 7, markdownFormat: { listMarker: ')', listLoose: true } },
+        { id: ids[2], type: 'numbered-list', checked: false, listStart: 9, markdownFormat: { listMarker: ')', listLoose: true } }
+      ])
+      expect(await references(page, id, ids)).toEqual(ids)
+    }
     await expect.poll(() => read(page, id)).toEqual(numbered)
     await expect(row(page, ids[1])).toHaveCount(0)
-    expect(await references(page, id, ids)).toEqual(ids)
+    await expect(row(page, ids[2])).toHaveCount(0)
+    await expectRetainedDescendantMetadata()
+    await page.keyboard.press('Control+z')
+    await expect.poll(() => read(page, id)).toEqual(before)
+    await expectRetainedDescendantMetadata()
+    await page.keyboard.press('Control+Shift+z')
+    await expect.poll(() => read(page, id)).toEqual(numbered)
+    await expect(row(page, ids[1])).toHaveCount(0)
+    await expectRetainedDescendantMetadata()
     await convert(page, ids[0], ids[3], 'paragraph')
-    const paragraphs = before.map(block => ({ ...block, type: 'paragraph', checked: false, depth: 0,
-      parentBlockId: null, listStart: null, markdownFormat: null }))
+    const paragraphs = [
+      { ...before[0], type: 'paragraph', checked: false, depth: 0, parentBlockId: null, listStart: null, markdownFormat: null },
+      { ...before[1], depth: 0, parentBlockId: null },
+      { ...before[2], depth: 1, parentBlockId: ids[1] },
+      { ...before[3], type: 'paragraph', checked: false, depth: 0, parentBlockId: null, listStart: null, markdownFormat: null }
+    ]
     await expect.poll(() => read(page, id)).toEqual(paragraphs)
     for (const blockId of ids) await expect(input(page, blockId)).toBeVisible()
-    expect(await references(page, id, ids)).toEqual(ids)
+    await expectRetainedDescendantMetadata()
     await page.keyboard.press('Control+z')
     await expect.poll(() => read(page, id)).toEqual(numbered)
+    await expectRetainedDescendantMetadata()
     await page.keyboard.press('Control+Shift+z')
     await expect.poll(() => read(page, id)).toEqual(paragraphs)
+    await expectRetainedDescendantMetadata()
     await page.reload()
     await page.locator('.tree-button', { hasText: title }).first().click()
     await expect.poll(() => read(page, id)).toEqual(paragraphs)
-    expect(await references(page, id, ids)).toEqual(ids)
+    await expectRetainedDescendantMetadata()
   })
 })

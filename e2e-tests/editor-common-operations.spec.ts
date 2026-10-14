@@ -55,12 +55,14 @@ async function createBodyBlocks(page: Page, values: string[]): Promise<void> {
   }
 }
 
-async function openBodyBlockToolbar(page: Page, bodyIndex: number): Promise<Locator> {
+async function openBodyBlockMenu(page: Page, bodyIndex: number): Promise<Locator> {
   const row = page.locator('.block-editor-row').nth(bodyIndex + 1)
-  await row.locator('.block-drag-handle').click({ force: true })
-  const toolbar = row.locator('.block-edit-toolbar')
-  await expect(toolbar).toBeVisible()
-  return toolbar
+  await expect(row).toBeVisible()
+  await row.hover()
+  await row.locator('.block-drag-handle').click()
+  const menu = page.locator('.block-context-menu')
+  await expect(menu).toBeVisible()
+  return menu
 }
 
 async function createSavedRootDocument(page: Page, title: string, body: string): Promise<string> {
@@ -377,16 +379,20 @@ test.describe('Editor Common Operations Durability @electron', () => {
 
     await withElectronApp(async ({ page }) => {
       const documentId = await createSavedRootDocument(page, title, 'console.log("hello")')
-      const toolbar = await openBodyBlockToolbar(page, 0)
+      const menu = await openBodyBlockMenu(page, 0)
 
-      await toolbar.locator('.block-type-selector').selectOption('code')
-      await toolbar.getByRole('button', { name: uiText('Blue', '蓝色') }).click()
+      await menu.getByRole('button', { name: uiText('Code', '代码块'), exact: true }).click()
+      await expect(menu).toHaveCount(0)
+      const highlightMenu = await openBodyBlockMenu(page, 0)
+      await highlightMenu.getByRole('button', { name: uiText('Blue', '蓝色'), exact: true }).click()
+      await expect(highlightMenu).toHaveCount(0)
       const languageBadge = page.locator('.block-code-language-badge').nth(0)
       await languageBadge.click()
       await page.locator('.code-block-language-selector').selectOption('typescript')
 
-      const codeToolbar = await openBodyBlockToolbar(page, 0)
-      await codeToolbar.locator('.block-toolbar-duplicate').click()
+      const codeMenu = await openBodyBlockMenu(page, 0)
+      await codeMenu.getByRole('button', { name: uiText('Duplicate', '复制'), exact: true }).click()
+      await expect(codeMenu).toHaveCount(0)
       await expect.poll(() => getBodyBlockValues(page)).toEqual(['console.log("hello")', 'console.log("hello")'])
 
       await page.locator('.block-editor-row').nth(1).locator('.block-hover-add').click({ force: true })

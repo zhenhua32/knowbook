@@ -128,7 +128,7 @@ test('document retry retains its target and late failures cannot replace a newly
     const setSelected = (detail: DocumentDetail | null) => { selected = detail }
     const noop = () => undefined
     function Harness({ id }: { id: string }) {
-      state = useDocumentLoadingAndBlockNavigation({ selectedDocumentId: id, selectedDocument: null, setSelectedDocument: setSelected,
+      state = useDocumentLoadingAndBlockNavigation({ selectedDocumentId: id, selectedDocument: null, detailLoading: true, setSelectedDocument: setSelected,
         setDetailLoading: noop, clearPendingTarget: noop, pendingBlockNavigationTarget: null, draftBlocks: [], onNoDocumentSelected: noop,
         onDocumentLoaded: noop, onPendingTargetResolved: noop, onPendingTargetMissing: noop })
       return null

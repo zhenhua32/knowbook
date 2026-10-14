@@ -17,7 +17,9 @@ export function SourceInlinePresentationToolbar({ isZh, disabled = false, onAppl
     <div role="toolbar" aria-label={isZh ? '文字颜色与下划线' : 'Text colors and underline'}>
       <button type="button" disabled={disabled} aria-label={isZh ? '下划线' : 'Underline'} onClick={() => onApply({ kind: 'underline' })}>U</button>
       {(['textColor', 'backgroundColor'] as const).map(kind => <button key={kind} type="button" disabled={disabled} aria-haspopup="dialog" aria-expanded={palette === kind}
-        onClick={() => setPalette(value => value === kind ? null : kind)}>{isZh ? kind === 'textColor' ? '文字颜色' : '背景颜色' : kind === 'textColor' ? 'Text color' : 'Background color'}</button>)}
+        aria-label={isZh ? kind === 'textColor' ? '文字颜色' : '背景颜色' : kind === 'textColor' ? 'Text color' : 'Background color'}
+        title={isZh ? kind === 'textColor' ? '文字颜色' : '背景颜色' : kind === 'textColor' ? 'Text color' : 'Background color'}
+        onClick={() => setPalette(value => value === kind ? null : kind)}><span aria-hidden="true" data-source-color-control={kind}>A</span></button>)}
     </div>
     {palette && <div className="rich-text-color-palette" role="dialog" aria-label={isZh ? palette === 'textColor' ? '选择文字颜色' : '选择背景颜色' : palette === 'textColor' ? 'Choose text color' : 'Choose background color'}>
       <button type="button" disabled={disabled} onClick={() => { onApply({ kind: palette }); setPalette(null) }}>{isZh ? '恢复默认' : 'Default'}</button>

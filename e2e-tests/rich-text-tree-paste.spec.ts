@@ -5,6 +5,7 @@ import { basename, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { closeElectronApp, launchElectronApp } from './helpers/electron'
+import { setRichTextDomSelection } from './helpers/rich-text-selection'
 
 const editor = (page: Page) => page.locator('.knowbook-rich-text-editor')
 const rows = (page: Page) => editor(page).locator('.block-editor-row')
@@ -58,24 +59,7 @@ async function openFixture(page: Page, title: string, blocks: DocumentBlockDraft
 // Place a native DOM caret in the original list owner. ProseMirror state is
 // deliberately not exposed to the test; paste and history use trusted keys.
 async function placeCaret(page: Page, blockId: string, offset: number) {
-  await editor(page).focus()
-  await row(page, blockId).evaluate((block, offset) => {
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, {
-      acceptNode: node => node.parentElement?.closest('[contenteditable="false"]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT
-    })
-    let remaining = offset
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      const length = node.textContent?.length ?? 0
-      if (remaining > length) { remaining -= length; continue }
-      const range = document.createRange(), selection = window.getSelection()!
-      range.setStart(node, remaining)
-      range.collapse(true)
-      selection.removeAllRanges()
-      selection.addRange(range)
-      return
-    }
-    throw new Error(`Caret outside block: ${block.getAttribute('data-block-id')}:${offset}`)
-  }, offset)
+  await editor(page).evaluate(setRichTextDomSelection, { from: { blockId, offset } })
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 

@@ -161,7 +161,10 @@ test.describe('Editor Markdown Shortcuts @electron', () => {
       await editor.fill('| Name | Value |\n| --- | ---: |\n| Alpha | 1 |')
       const row = editor.locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " block-editor-row ")][1]')
       await row.locator('.block-drag-handle').click()
-      await row.locator('.block-type-selector').selectOption('table')
+      const menu = page.locator('.block-context-menu')
+      await expect(menu).toBeVisible()
+      await menu.getByRole('button', { name: uiText('Table', '表格'), exact: true }).click()
+      await expect(menu).toHaveCount(0)
 
       await expect(editor).toHaveClass(/type-table/)
       const preview = page.getByRole('region', { name: uiText('Table preview', '表格预览') })

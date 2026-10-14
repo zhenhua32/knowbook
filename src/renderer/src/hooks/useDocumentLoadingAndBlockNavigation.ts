@@ -7,6 +7,7 @@ import { getErrorMessage } from '../utils/errorMessage'
 type UseDocumentLoadingAndBlockNavigationParams = {
   selectedDocumentId: string | null
   selectedDocument: DocumentDetail | null
+  detailLoading: boolean
   setSelectedDocument: (detail: DocumentDetail | null) => void
   setDetailLoading: (loading: boolean) => void
   clearPendingTarget: () => void
@@ -22,6 +23,7 @@ type UseDocumentLoadingAndBlockNavigationParams = {
 export function useDocumentLoadingAndBlockNavigation({
   selectedDocumentId,
   selectedDocument,
+  detailLoading,
   setSelectedDocument,
   setDetailLoading,
   clearPendingTarget,
@@ -96,8 +98,8 @@ export function useDocumentLoadingAndBlockNavigation({
     }
 
     // A document switch first renders the new ID with the previous document's draft.
-    // Keep the target queued until its own document has loaded.
-    if (!selectedDocument || selectedDocument.id !== selectedDocumentId) {
+    // Keep the target queued until its own document and fold preferences are ready.
+    if (detailLoading || !selectedDocument || selectedDocument.id !== selectedDocumentId) {
       return
     }
 
@@ -120,6 +122,7 @@ export function useDocumentLoadingAndBlockNavigation({
     clearPendingTarget()
   }, [
     clearPendingTarget,
+    detailLoading,
     draftBlocks,
     draftTitle,
     pendingBlockNavigationTarget,
