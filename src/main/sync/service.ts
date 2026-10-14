@@ -4,7 +4,7 @@ import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice } from '../../shared/webdav-sync'
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
-import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
+import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
 import { mergeSyncDocument } from './merge'
 import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
@@ -256,10 +256,10 @@ export class WebDavSyncService {
       throw new Error('无法分配冲突副本，请重新同步后重试。')
     }
     const remoteRecord = async (key: string, hash: string): Promise<SyncRecord> => {
-      if (this.remoteObjects.has(hash)) return validateRecord(this.remoteObjects.get(hash)!, key)
+      if (this.remoteObjects.has(hash)) return validateRecord(this.remoteObjects.get(hash)!, key, manifest.version)
       const object = await client.get(`objects/${hash}.json`, MAX_RECORD_BYTES)
       if (!object || hashBytes(object.bytes) !== hash) throw new Error('远端文档版本缺失或校验失败，未更新本地数据。')
-      const record = validateRecord(JSON.parse(Buffer.from(object.bytes).toString('utf8')), key)
+      const record = validateRecord(JSON.parse(Buffer.from(object.bytes).toString('utf8')), key, manifest.version)
       this.remoteObjects.set(hash, record)
       this.remoteObjectBytes += Buffer.byteLength(canonicalJson(record))
       while (this.remoteObjects.size > 256 || this.remoteObjectBytes > 32 * 1024 * 1024) {
@@ -282,7 +282,10 @@ export class WebDavSyncService {
       const remoteHash = manifest.entries[key]
       const baseline = state.baseline[key]
       if (!remoteHash && baseline) throw new Error('远端清单缺少已同步的版本，请恢复远端清单后重试。')
-      if (remoteHash === proposedHash) { accepted.set(key, { localHash, remoteHash }); continue }
+      if (remoteHash === proposedHash) {
+        validateRecord(proposed, key, manifest.version)
+        accepted.set(key, { localHash, remoteHash }); continue
+      }
       const localChanged = baseline ? localHash !== baseline.localHash : current !== undefined && !(key === 'databases' && emptyDatabases(current) && remoteHash)
       const remoteChanged = baseline ? remoteHash !== baseline.remoteHash : Boolean(remoteHash)
       if (localChanged && remoteChanged) {
@@ -346,12 +349,18 @@ export class WebDavSyncService {
         }
       } else if (localChanged || !remoteHash && current) writes.set(key, proposed)
       else if (remoteChanged && remoteHash) incoming.set(key, await remoteRecord(key, remoteHash))
-      else if (remoteHash) accepted.set(key, { localHash, remoteHash })
+      else if (remoteHash) {
+        // Normalization can make localHash differ from the accepted wire hash.
+        // Even unchanged versions must pass the current manifest's gate.
+        await remoteRecord(key, remoteHash)
+        accepted.set(key, { localHash, remoteHash })
+      }
     }
     const ownershipReports = { ...ownershipConflicts, ...conflicts }
     this.stage('uploading', writes.size, new Set([...writes.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.hash))).size)
     const uploadProgress = this.assetProgress()
     for (const [key, record] of writes) {
+      validateRecord(record, key)
       this.progress!.currentItem = this.itemName(record)
       const bytes = Buffer.from(canonicalJson(record))
       if (bytes.length > MAX_RECORD_BYTES) throw new Error('单篇文档或数据库同步数据超过 16 MB。')
@@ -400,6 +409,9 @@ export class WebDavSyncService {
       this.preserveOwnershipConflict(error, ownershipReports, raw)
       throw error
     }
+    // Publish the compatibility gate in the same conditional manifest write as
+    // its first native tree. An old writer racing that write must reread v2.
+    if ([...writes.values()].some(requiresStructureEditingProtocol)) next.version = 2
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
     const writtenDocumentIds = new Set([...writes.values()].flatMap(record => record.kind === 'databases' ? [] : [record.id]))
     if (changed && writtenDocumentIds.size) {

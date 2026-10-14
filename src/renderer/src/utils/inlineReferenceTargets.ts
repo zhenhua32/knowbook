@@ -1,7 +1,14 @@
-import type { DocumentBlock } from '@shared/contracts'
+import type { DocumentBlock, DocumentBlockDraft, DocumentTreeNode } from '@shared/contracts'
 import { collectMarkdownSourceLinks } from '@shared/markdownLinks'
-import { parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '@shared/markdownWiki'
+import { findWikiHeading, parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '@shared/markdownWiki'
+import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
 type BlockReferenceCandidate = Pick<DocumentBlock, 'id' | 'content'>
+
+export function buildInlineBlockReferences(blocks: DocumentBlockDraft[]) {
+  return new Map(blocks
+    .filter((block): block is DocumentBlockDraft & { id: string } => Boolean(block.id?.trim()))
+    .map((block) => [block.id, { id: block.id, content: block.content }] as const))
+}
 
 export type InlineReferenceTarget =
   | { type: 'document'; documentId: string }
@@ -43,4 +50,31 @@ export function resolveInlineReferenceTarget(
     if (path) return { type: 'cross-block', documentPath: path, blockId: reference.fragment }
   }
   return null
+}
+
+/** Heading fallback shares the inline-navigation chunk and its existing await. */
+export function findInlineReferenceHeading(fragment: string, blocks: DocumentBlockDraft[], title: string) {
+  return findWikiHeading(fragment, getMarkdownHeadingTargets(blocks, title))
+}
+
+type DocumentReferenceEntry = {
+  id: string
+  title: string
+  path: string
+}
+
+
+export function buildDocumentReferences(nodes: DocumentTreeNode[]): DocumentReferenceEntry[] {
+  const references: DocumentReferenceEntry[] = []
+
+  for (const node of nodes) {
+    references.push({
+      id: node.id,
+      title: node.title,
+      path: node.path
+    })
+    references.push(...buildDocumentReferences(node.children))
+  }
+
+  return references
 }

@@ -16,25 +16,37 @@ export type EditorHistoryBookmark = {
 }
 
 export const restoreTableHistoryFocusEvent = 'knowbook:restore-table-history-focus'
+type TableHistorySelection = Pick<EditorHistoryBookmark, 'start' | 'end' | 'direction'> & { cell: NonNullable<EditorHistoryBookmark['cell']> }
+const tableHistorySelections = new WeakMap<HTMLElement, { source: string; nextSource: string; before: TableHistorySelection; after: TableHistorySelection }>()
+
+/** A drag checkpoint addresses the original logical cell while its DOM previews a new position. */
+export function withTableHistorySelection(element: HTMLElement, selection: { source: string; nextSource: string; before: TableHistorySelection; after: TableHistorySelection }, action: () => void): void {
+  tableHistorySelections.set(element, selection)
+  try { action() } finally { tableHistorySelections.delete(element) }
+}
 
 export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], target?: EventTarget | null): EditorHistoryBookmark | null {
   if (typeof document === 'undefined') return null
   const active = target === undefined ? document.activeElement : target
   if (!(active instanceof HTMLElement)) return null
-  const richText = getRichTextHistoryBridge(active)
+  const cell = active.closest<HTMLElement>('[data-row][data-column]')
+  const table = active.closest<HTMLElement>('.markdown-table-editor')
+  const tableScope = table && tableHistorySelections.get(table)
+  const richText = !cell && !tableScope && getRichTextHistoryBridge(active)
   if (richText) return richText.capture()
   const row = active.closest<HTMLElement>('.block-editor-row[data-block-index]')
   if (!row) return null
   const index = Number(row.dataset.blockIndex)
   if (!blocks[index]) return null
-  const cell = active.closest<HTMLElement>('[data-row][data-column]')
+  const tableSelection = tableScope && (blocks[index].content === tableScope.source ? tableScope.before
+    : blocks[index].content === tableScope.nextSource ? tableScope.after : null)
   const input = active.matches('textarea') ? active as HTMLTextAreaElement : null
-  if (!cell && !input?.matches('.block-inline-textarea')) return null
+  if (!cell && !tableSelection && !input?.matches('.block-inline-textarea')) return null
   return {
     blockId: blocks[index].id, index,
-    start: input?.selectionStart ?? 0, end: input?.selectionEnd ?? 0,
-    direction: input?.selectionDirection ?? 'none',
-    cell: cell ? { row: Number(cell.dataset.row), column: Number(cell.dataset.column), editing: Boolean(input) } : undefined
+    start: tableSelection?.start ?? input?.selectionStart ?? 0, end: tableSelection?.end ?? input?.selectionEnd ?? 0,
+    direction: tableSelection?.direction ?? input?.selectionDirection ?? 'none',
+    cell: tableSelection?.cell ?? (cell ? { row: Number(cell.dataset.row), column: Number(cell.dataset.column), editing: Boolean(input) } : undefined)
   }
 }
 

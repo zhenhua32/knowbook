@@ -5,11 +5,13 @@ import { JSDOM } from 'jsdom'
 import type { DocumentBlockDraft, DocumentDetail } from '../src/shared/contracts'
 import type { UiText } from '../src/renderer/src/i18n'
 import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEditorState'
+import { useBlockStructureActions } from '../src/renderer/src/hooks/useBlockStructureActions'
 import { useSingleBlockTreeActions } from '../src/renderer/src/hooks/useSingleBlockTreeActions'
 import { useMultiBlockActions } from '../src/renderer/src/hooks/useMultiBlockActions'
 import { useBlockSelectionState } from '../src/renderer/src/hooks/useBlockSelectionState'
 import { useBlockFocusState } from '../src/renderer/src/hooks/useBlockFocusState'
 import { useSlashCommandActions } from '../src/renderer/src/hooks/useSlashCommandActions'
+import { canBlockHaveParent } from '../src/shared/blockTypes'
 import { isNestableBlock, normalizeBlockDepth } from '../src/renderer/src/utils/draftBlockShape'
 import { isDraftTreeContiguous, planDraftBlockDepthChange } from '../src/renderer/src/utils/draftTreeDepthChange'
 import { validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization'
@@ -19,6 +21,7 @@ import { getSlashCommandContext } from '../src/renderer/src/utils/editorAssist'
 
 type State = {
   editor: ReturnType<typeof useDocumentEditorState>
+  structure: ReturnType<typeof useBlockStructureActions>
   single: ReturnType<typeof useSingleBlockTreeActions>
   multi: ReturnType<typeof useMultiBlockActions>
   selection: ReturnType<typeof useBlockSelectionState>
@@ -66,11 +69,12 @@ async function withEditor(blocks: DocumentBlockDraft[], run: (current: () => Sta
     const focus = useBlockFocusState({ activeCursorPosition, blockTextareaRefs, draftBlocks: editor.draftBlocks,
       captureBlockCursor: (index, element) => { setActiveBlockIndex(index); setActiveCursorPosition(element.selectionStart) } })
     const buildBlockTypePatch = (type: string, content: string, checked = false, depth = 0, parentBlockId: string | null = null): DocumentBlockDraft =>
-      ({ type, content, checked: isNestableBlock(type) ? checked : false, depth: normalizeBlockDepth(type, depth), parentBlockId: isNestableBlock(type) ? parentBlockId : null })
+      ({ type, content, checked: isNestableBlock(type) ? checked : false, depth: normalizeBlockDepth(type, depth), parentBlockId: canBlockHaveParent(type) ? parentBlockId : null })
     const shared = { activeCursorPosition, draftBlocks: editor.draftBlocks, buildBlockTypePatch,
       clearBlockSelection: selection.clearBlockSelection, endBlockDrag: noop, pushToHistory: editor.pushToHistory,
       setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex: focus.setPendingFocusBlockIndex, setDraftBlocks: editor.setDraftBlocks }
-    const single = useSingleBlockTreeActions({ ...shared, updateDraftBlock: editor.updateDraftBlock, splitDraftBlock: noop })
+    const structure = useBlockStructureActions(shared)
+    const single = useSingleBlockTreeActions({ ...shared, updateDraftBlock: editor.updateDraftBlock, splitDraftBlock: structure.splitDraftBlock })
     const multi = useMultiBlockActions({ ...shared, activeBlockIndex, selectedBlockRange: selection.selectedBlockRange,
       getMultiBlockInteractionGuard: selection.getMultiBlockInteractionGuard, getMultiBlockOperationRange: selection.getMultiBlockOperationRange,
       getVisibleSiblingSelectionSlice: selection.getVisibleSiblingSelectionSlice, setSelectedBlockRange: selection.setSelectedBlockRange,
@@ -81,7 +85,7 @@ async function withEditor(blocks: DocumentBlockDraft[], run: (current: () => Sta
       activeSlashContext: activeBlockIndex === null ? null : getSlashCommandContext(editor.draftBlocks[activeBlockIndex]?.content ?? '', activeCursorPosition),
       adjustBlockDepth: single.adjustBlockDepth, duplicateDraftBlock: noop, insertChildDraftBlock: noop, insertDraftBlockAt: noop,
       moveDraftBlockBySibling: single.moveDraftBlockBySibling, updateDraftBlock: editor.updateDraftBlock })
-    state = { editor, single, multi, selection, slash, activeBlockIndex, activeCursorPosition,
+    state = { editor, structure, single, multi, selection, slash, activeBlockIndex, activeCursorPosition,
       setCursor: (index, position) => { setActiveBlockIndex(index); setActiveCursorPosition(position) },
       collapse: ids => setCollapsedBlockIds(new Set(ids)) }
     return createElement('div', { className: 'block-editor-list' }, selection.getVisibleBlockEntries(editor.draftBlocks).map(({ block, index }) =>
@@ -381,5 +385,85 @@ test('invalid drag placements and mixed paragraph/list indentation never add a h
     await act(async () => current().multi.adjustSelectedBlocksDepth(1, 2))
     assert.deepEqual(current().editor.draftBlocks, original)
     assert.equal(current().editor.canUndo, false)
+  })
+})
+
+for (const type of ['callout', 'toggle']) {
+  test(`source ${type} Enter splits the title into a paragraph first child and retains the original forest and history`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      const source: DocumentBlockDraft[] = [
+        { id: 'owner', type, content: '前缀😀尾段', checked: false, depth: 0, tags: ['owner'], highlight: 'blue',
+          markdownFormat: type === 'callout' ? { calloutKind: 'tip', calloutTone: 'green' } : { toggleDefaultOpen: false } },
+        { id: 'body', type: 'paragraph', content: 'Old body', checked: false, depth: 1, parentBlockId: 'owner' },
+        { id: 'list', type: 'todo', content: 'Old task', checked: true, depth: 1, parentBlockId: 'owner' }]
+      await withEditor(source, async (current, document) => {
+        const before = current().editor.draftBlocks
+        const input = document.querySelector<HTMLTextAreaElement>('[data-block-id="owner"] textarea')!
+        input.focus(); input.setSelectionRange(2, 4, 'backward')
+        await act(async () => current().single.continueBlockAt(0, 2, 4))
+        const after = current().editor.draftBlocks
+        assertValid(after)
+        assert.deepEqual(after[0], { ...before[0], content: '前缀' })
+        assert.equal(after[1].type, 'paragraph')
+        assert.equal(after[1].content, '尾段')
+        assert.equal(after[1].parentBlockId, 'owner')
+        assert.equal(after[1].depth, 1)
+        assert.equal(after[1].markdownFormat, undefined)
+        assert.deepEqual(after.slice(2), before.slice(1))
+        await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+        assert.deepEqual(current().editor.draftBlocks, before)
+        assert.equal(current().editor.canUndo, false)
+        assert.deepEqual([input.selectionStart, input.selectionEnd, input.selectionDirection], [2, 4, 'backward'])
+        await act(async () => current().editor.redoEdit())
+        assert.deepEqual(JSON.parse(JSON.stringify(current().editor.draftBlocks)), JSON.parse(JSON.stringify(after)))
+      })
+    } finally { t.mock.timers.reset() }
+  })
+}
+
+test('empty list Enter and Backspace inside a container become paragraphs in that container, preserving promoted children', async () => {
+  for (const action of ['enter', 'backspace'] as const) {
+    const source: DocumentBlockDraft[] = [
+      { id: 'owner', type: 'callout', content: 'Title', checked: false, depth: 0, markdownFormat: { calloutKind: 'warning' } },
+      { id: 'task', type: 'todo', content: '', checked: true, depth: 1, parentBlockId: 'owner', tags: ['keep'] },
+      { id: 'child', type: 'todo', content: 'Child', checked: true, depth: 2, parentBlockId: 'task' }]
+    await withEditor(source, async current => {
+      const before = current().editor.draftBlocks
+      await act(async () => action === 'enter' ? current().single.continueBlockAt(1, 0) : current().single.downgradeBlockAt(1))
+      const after = current().editor.draftBlocks
+      assertValid(after)
+      assert.equal(after[1].type, 'paragraph')
+      assert.equal(after[1].checked, false)
+      assert.equal(after[1].parentBlockId, 'owner')
+      assert.deepEqual(after[2], { ...before[2], depth: 1, parentBlockId: 'owner' })
+      assert.deepEqual(after[0], before[0])
+    })
+  }
+})
+
+test('container child insertion accepts mixed types and maximum-depth title split creates an outer sibling without clamping', async () => {
+  await withEditor([{ id: 'owner', type: 'toggle', content: 'Title', checked: false, depth: 0 }], async current => {
+    await act(async () => current().structure.insertChildDraftBlock(0, undefined, 'code'))
+    assertValid(current().editor.draftBlocks)
+    assert.equal(current().editor.draftBlocks[1].type, 'code')
+    assert.equal(current().editor.draftBlocks[1].parentBlockId, 'owner')
+    await act(async () => current().structure.insertChildDraftBlock(0))
+    assert.equal(current().editor.draftBlocks[2].type, 'paragraph')
+    const before = current().editor.draftBlocks
+    await act(async () => current().structure.insertChildDraftBlock(0, undefined, 'frontmatter'))
+    assert.deepEqual(current().editor.draftBlocks, before)
+  })
+  const deep: DocumentBlockDraft[] = Array.from({ length: 7 }, (_, depth) => ({ id: `d${depth}`, type: 'toggle', content: 'PrefixTail',
+    checked: false, depth, parentBlockId: depth ? `d${depth - 1}` : null }))
+  await withEditor(deep, async current => {
+    await act(async () => current().structure.splitDraftBlock(6, 6))
+    const after = current().editor.draftBlocks
+    assertValid(after)
+    assert.equal(after[6].content, 'Prefix')
+    assert.equal(after[7].type, 'paragraph')
+    assert.equal(after[7].content, 'Tail')
+    assert.equal(after[7].depth, 6)
+    assert.equal(after[7].parentBlockId, 'd5')
   })
 })

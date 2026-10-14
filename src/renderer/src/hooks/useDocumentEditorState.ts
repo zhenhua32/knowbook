@@ -4,10 +4,10 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
 import type { DocumentBlockMoveResult } from '@shared/document-block-moves'
 import type { UiText } from '../i18n'
-import { isNestableBlock, toDraftBlock } from '../utils/draftBlockShape'
+import { toDraftBlock } from '../utils/draftBlockShape'
 import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
-import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
 import { captureAsyncHistoryFocusPermission, captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
@@ -226,10 +226,10 @@ export function useDocumentEditorState({
       const nextBlock = { ...currentBlock, ...patch }
       // Toolbar and context-menu type changes share the same parent-removal
       // semantics as keyboard edits. A paragraph/heading cannot own list items.
-      const sourceBlocks = 'type' in patch && isNestableBlock(currentBlock.type)
-        && !isNestableBlock(nextBlock.type.trim() || 'paragraph')
-        ? promoteDraftBlockChildren(previous, index) : previous
-      const nextBlocks = sourceBlocks.map((block, currentIndex) => currentIndex === index ? nextBlock : block)
+      const sourceBlocks = 'type' in patch
+        ? prepareDraftBlockTypeChange(previous, index, nextBlock.type.trim() || 'paragraph') : previous
+      const nextBlocks = sourceBlocks.map((block, currentIndex) => currentIndex === index ? { ...block, ...patch,
+        ...('type' in patch ? { depth: block.depth, parentBlockId: block.parentBlockId } : {}) } : block)
       const changesTreeShape = (
         ('id' in patch && patch.id !== currentBlock.id)
         || ('type' in patch && patch.type !== currentBlock.type)

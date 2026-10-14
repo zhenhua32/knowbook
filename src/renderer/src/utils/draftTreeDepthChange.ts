@@ -1,5 +1,6 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock, normalizeBlockDepth } from './draftBlockShape'
+import { canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
+import { normalizeBlockDepth } from './draftBlockShape'
 import { shiftDraftFragmentDepth } from './draftTreeFragment'
 import { resolveDraftInsertionPlacement } from './draftTreePlacement'
 import { getBlockSubtreeEndIndex, getFragmentLocalRootIds, getNormalizedParentBlockId } from './draftTreeMove'
@@ -17,7 +18,7 @@ export function isDraftTreeContiguous(blocks: DocumentBlockDraft[]): boolean {
     const parent = ancestors[block.depth - 1]
     const parentId = getNormalizedParentBlockId(block)
     if (block.depth === 0 ? parentId !== null
-      : !isNestableBlock(block.type) || !parent || !isNestableBlock(parent.type) || parent.id !== parentId) return false
+      : !parent || !canBlockNestUnder(parent.type, block.type) || parent.id !== parentId) return false
     ancestors.length = block.depth + 1
     ancestors[block.depth] = block
   }
@@ -40,12 +41,13 @@ export function planDraftSubtreePlacement(blocks: DocumentBlockDraft[], range: D
   if (insertionIndex < 0 || insertionIndex > remaining.length) return null
   const placement = resolveDraftInsertionPlacement(remaining, insertionIndex, first.type, requestedDepth)
   const appliedDelta = placement.depth - first.depth
-  if (appliedDelta !== 0 && roots.some(block => !isNestableBlock(block.type))) return null
+  if (appliedDelta !== 0 && roots.some(block => !canBlockHaveParent(block.type))) return null
   if ((insertionIndex === range.start && appliedDelta === 0)
     || fragment.some(block => block.depth + appliedDelta < 0 || block.depth + appliedDelta > 6)) return null
-  if (placement.parentBlockId) {
+  // Positive depth requires an active owner; a missing owner cannot become a root reorder.
+  if (requestedDepth > 0) {
     const parent = remaining.find(block => block.id === placement.parentBlockId)
-    if (!parent || !isNestableBlock(parent.type)) return null
+    if (!parent || roots.some(block => !canBlockNestUnder(parent.type, block.type))) return null
   }
   remaining.splice(insertionIndex, 0, ...shiftDraftFragmentDepth(fragment, appliedDelta, placement.parentBlockId, rootIds))
   return isDraftTreeContiguous(remaining) ? { blocks: remaining, insertionIndex } : null
@@ -55,8 +57,8 @@ export function planDraftSubtreePlacement(blocks: DocumentBlockDraft[], range: D
 export function planDraftBlockDepthChange(blocks: DocumentBlockDraft[], range: DraftRange, delta: number): DraftMovePlan | null {
   if (range.start < 0 || range.end < range.start || range.end >= blocks.length || !isDraftTreeContiguous(blocks)) return null
   const first = blocks[range.start]
-  if (!isNestableBlock(first.type) || blocks.slice(range.start, range.end + 1)
-    .some(block => block.depth === first.depth && !isNestableBlock(block.type))) return null
+  if (!canBlockHaveParent(first.type) || blocks.slice(range.start, range.end + 1)
+    .some(block => block.depth === first.depth && !canBlockHaveParent(block.type))) return null
   const targetDepth = normalizeBlockDepth(first.type, first.depth + delta)
   if (targetDepth === first.depth) return null
   let insertionIndex = range.start

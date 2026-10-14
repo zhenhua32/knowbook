@@ -1,6 +1,7 @@
 import { parseMarkdownBlocks, serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange } from '@shared/markdown'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { normalizeCodeLanguage } from '@shared/code'
+import { isContainerBlockType, canBlockNestUnder } from '@shared/blockTypes'
 
 export type MarkdownSourceChange = { from: number; to: number; insert: string }
 type SourceAnchor = { block: DocumentBlockDraft; from: number; to: number; original: string }
@@ -158,8 +159,11 @@ export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): Documen
       ? anchor?.block.type === 'code' && info === oldInfo ? anchor.block.language
         : normalizeCodeLanguage(info.split(/\s+/, 1)[0]) ?? undefined
       : block.language ?? undefined
+    const format = block.type === 'toggle' && anchor?.block.type === 'toggle'
+      && (block.markdownFormat?.toggleDefaultOpen ?? true) === (anchor.block.markdownFormat?.toggleDefaultOpen ?? true)
+      ? anchor.block.markdownFormat : block.markdownFormat
     blocks.push({ type: block.type, content: block.content, checked: block.checked ?? false, depth: block.depth ?? 0,
-      language, listStart: block.listStart, markdownFormat: block.markdownFormat,
+      language, listStart: block.listStart, markdownFormat: format,
       id: anchor?.block.id, tags: anchor?.block.tags, highlight: anchor?.block.highlight, parentBlockId: null })
     outputRanges.push(range)
   }
@@ -173,6 +177,18 @@ export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): Documen
       blocks.splice(position, 0, { ...anchor.block, parentBlockId: null })
       outputRanges.splice(position, 0, { from: anchor.from, to: anchor.to })
       position++
+    }
+  }
+  // Foreign metadata IDs never become authoritative. Restore parents only from
+  // surviving local anchors and the parser's structural depth after identity mapping.
+  if (blocks.some(block => isContainerBlockType(block.type))) {
+    const stack: DocumentBlockDraft[] = []
+    for (const block of blocks) {
+      let depth = Math.min(block.depth ?? 0, stack.length)
+      while (depth > 0 && !canBlockNestUnder(stack[depth - 1].type, block.type)) depth--
+      block.depth = depth
+      block.parentBlockId = depth > 0 ? stack[depth - 1].id ?? null : null
+      stack.length = depth; stack[depth] = block
     }
   }
   return blocks

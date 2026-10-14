@@ -1,4 +1,4 @@
-import { isTaskBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, canBlockHaveParent } from '@shared/blockTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { detectCodeLanguage, normalizeCodeLanguage } from '@shared/code'
@@ -24,7 +24,7 @@ import { useSlashCommandActions } from './useSlashCommandActions'
 import { useBlockStructureActions } from './useBlockStructureActions'
 import { useSingleBlockTreeActions } from './useSingleBlockTreeActions'
 import { useDocumentNavigationState } from './useDocumentNavigationState'
-import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { normalizeBlockDepth } from '../utils/draftBlockShape'
 
 const BLOCK_DRAG_DEPTH_THRESHOLD = 72
 
@@ -58,7 +58,7 @@ export function useDocumentsDomainState({
     content: type === 'divider' ? '' : content,
     checked: isTaskBlockType(type) ? checked : false,
     depth: normalizeBlockDepth(type, depth),
-    parentBlockId: isNestableBlock(type) ? (parentBlockId?.trim() ? parentBlockId : null) : null
+    parentBlockId: canBlockHaveParent(type) ? (parentBlockId?.trim() ? parentBlockId : null) : null
   }), [])
 
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
@@ -325,6 +325,7 @@ export function useDocumentsDomainState({
   } = useBlockSelectionState({
     activeBlockIndex,
     collapsedBlockIds,
+    toggleOpenOverrides: foldView.toggleOpenOverrides,
     focusedHeadingId,
     draftBlocks,
     onActiveBlockChange: setActiveBlockIndex,
@@ -669,6 +670,7 @@ export function useDocumentsDomainState({
     highlightedBlockId,
     insertBlockSuggestion,
     insertDraftBlockAt,
+    insertChildDraftBlock,
     insertLinkSuggestion,
     isBlockRangeSelecting,
     isBlockSearchOpen,

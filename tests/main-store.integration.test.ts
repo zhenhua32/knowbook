@@ -227,7 +227,7 @@ test('updateDocument rewrites descendant paths and normalizes parentBlockId rela
       title: 'Specs',
       summary: 'Implementation details',
       blocks: [
-        { id: 'root-block', type: 'heading-1', content: 'Specs', checked: false, depth: 0 },
+        { id: 'root-block', type: 'bulleted-list', content: 'Specs', checked: false, depth: 0 },
         {
           id: 'child-block',
           type: 'bulleted-list',

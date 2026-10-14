@@ -1,4 +1,4 @@
-import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, canBlockOwnChildren } from '@shared/blockTypes'
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { htmlClipboardToMarkdown } from '@shared/htmlClipboard'
 import { hasAdvancedMarkdown, type MarkdownDocumentModel } from '@shared/markdownDocument'
@@ -19,11 +19,13 @@ import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 import { editCodeIndentation } from '../utils/codeIndentation'
 import type { SourceInlinePresentationAction } from './SourceInlinePresentationToolbar'
+import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
 
 const BlockContextMenu = lazy(() => import('./BlockContextMenu').then(module => ({ default: module.BlockContextMenu })))
 const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
 const SourceInlinePresentationToolbar = lazy(() => import('./SourceInlinePresentationToolbar').then(module => ({ default: module.SourceInlinePresentationToolbar })))
 const MarkdownFormatToolbar = lazy(() => import('./BlockFormatToolbar').then((module) => ({ default: module.BlockFormatToolbar })))
+const NativeContainerControls = lazy(() => import('./NativeContainerControls').then(module => ({ default: module.NativeContainerControls })))
 
 const CodeBlockPreview = lazy(async () => {
   const [module] = await Promise.all([
@@ -86,6 +88,7 @@ export type BlockEditorRowProps = {
   checkpointDraft?: () => void
   updateBlockHighlight: (index: number, highlight: string | undefined) => void
   insertDraftBlockAt: (index: number, anchorIndex: number) => void
+  insertChildDraftBlock?: (index: number, contentOverride?: string, childTypeOverride?: DocumentBlock['type']) => void
 
   // Callbacks: block interactions
   handleBlockContentChange: (index: number, content: string) => void
@@ -148,9 +151,7 @@ export type BlockEditorRowProps = {
   isZh: boolean
 }
 
-function isNestableBlockType(type: DocumentBlock['type']): boolean {
-  return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
-}
+const isNestableBlockType = canBlockOwnChildren
 
 export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRowProps) {
   const {
@@ -223,7 +224,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
      isZh
    } = props
 
-  const isNestableBlock = (type: string) => ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
+  const nativeContainer = isContainerBlockType(block.type) ? nativeContainerPresentation(block.type, block.markdownFormat) : null
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const nodes = useContext(MarkdownBlockNodesContext)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
@@ -402,6 +403,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
       data-block-index={index}
       data-block-id={block.id}
       data-heading-level={getHeadingLevel(block.type) ?? undefined}
+      data-native-container={nativeContainer ? block.type : undefined}
+      data-native-container-tone={block.type === 'callout' ? nativeContainer?.tone : undefined}
       className={`block-editor-row${dropPreview ? ' block-editor-row-drag-over' : ''}${isSelected && selectedBlockCount > 1 ? ' block-editor-row-selected' : ''}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
       key={block.id ?? `${selectedDocument.id}-draft-${index}`}
       style={{
@@ -424,7 +427,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
         const target = event.target as HTMLElement
         // Keep button interactions native (add block / drag handle / collapse toggle).
-        if (target.closest('button')) {
+        if (target.closest('button,input,select,summary,.native-container-controls')) {
           return
         }
 
@@ -487,7 +490,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         >
           ⋮⋮
         </button>
-        {block.id && hasChildren && !getHeadingLevel(block.type) ? (
+        {block.id && hasChildren && !getHeadingLevel(block.type) && block.type !== 'toggle' ? (
           <button
             aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
             className={`block-collapse-toggle${collapsedBlockIds.has(block.id) ? ' block-collapse-toggle-collapsed' : ''}`}
@@ -555,6 +558,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               />
             )}
             {block.type === 'bulleted-list' && <span className="block-bullet-dot" />}
+            {block.type === 'callout' && <span className="native-container-icon" data-native-container-icon={nativeContainer?.icon} aria-hidden="true" />}
+            {block.type === 'toggle' && block.id && <button type="button" className="native-toggle-control"
+              aria-expanded={!collapsedBlockIds.has(block.id)} aria-label={collapsedBlockIds.has(block.id) ? ui.expandBlock : ui.collapseBlock}
+              onMouseDown={event => event.preventDefault()} onClick={() => { if (!composingRef.current) toggleBlockCollapse(block.id!) }} />}
             {block.type === 'code' && (
               editingLanguage ? (
                 <CodeBlockLanguageSelector
@@ -599,6 +606,14 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
             >
               {block.type === 'table' ? <summary>{isZh ? '编辑表格源码' : 'Edit table source'}</summary> : null}
               {block.type === 'frontmatter' ? <span>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</span> : null}
+              {nativeContainer && <Suspense fallback={null}><NativeContainerControls type={block.type as 'callout' | 'toggle'}
+                format={block.markdownFormat} isZh={isZh} typeOptions={ui.blockTypeOptions ?? {}}
+                onChange={markdownFormat => {
+                  if (composingRef.current) return
+                  props.checkpointDraft?.(); updateDraftBlock(index, { markdownFormat }); props.checkpointDraft?.()
+                }} onAddChild={props.insertChildDraftBlock ? type => {
+                  if (!composingRef.current) props.insertChildDraftBlock?.(index, undefined, type)
+                } : undefined} onReturnToTitle={() => textareaRef.current?.focus()} /></Suspense>}
               {canFormat && activeBlockIndex === index ? <Suspense fallback={null}>
                 <MarkdownFormatToolbar textareaRef={textareaRef} isZh={isZh} onFormat={applyFormat} onReturnToEditor={() => textareaRef.current?.focus()}>
                   <SourceInlinePresentationToolbar isZh={isZh} onApply={action => { void applySourceInlinePresentation(action) }}
@@ -650,6 +665,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
               <textarea
               className={`block-inline-textarea type-${block.type}${hasRichMedia ? ' block-rich-media-source-input' : ''}${isMediaSourceExpanded ? ' expanded' : ''}`}
               spellCheck={false}
+              aria-label={nativeContainer ? (isZh ? block.type === 'callout' ? '提示块标题' : '折叠块标题' : block.type === 'callout' ? 'Callout title' : 'Toggle title') : undefined}
               ref={registerTextarea}
               placeholder={
                 getHeadingLevel(block.type)
@@ -933,6 +949,22 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     return
                   }
 
+                  if (canFormat) {
+                    const blocks = getDraftBlocks()
+                    const currentIndex = block.id ? blocks.findIndex(candidate => candidate.id === block.id) : index
+                    const current = blocks[currentIndex]
+                    const nativeParent = current?.parentBlockId && blocks.some(candidate => candidate.id === current.parentBlockId && isContainerBlockType(candidate.type))
+                    let previous = currentIndex - 1
+                    while (current && previous >= 0 && blocks[previous].depth > current.depth) previous--
+                    const sibling = blocks[previous]
+                    const previousNative = current && sibling && sibling.depth === current.depth
+                      && (sibling.parentBlockId ?? null) === (current.parentBlockId ?? null) && isContainerBlockType(sibling.type)
+                    if (current && (nativeParent || !event.shiftKey && previousNative)) {
+                      adjustBlockDepth(currentIndex, event.shiftKey ? -1 : 1, start)
+                      return
+                    }
+                  }
+
                   if (!canFormat) {
                     const result = editCodeIndentation(el.value, start, end, event.shiftKey, el.selectionDirection)
                     if (result.content !== el.value) {
@@ -998,7 +1030,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   !event.altKey &&
                   !event.metaKey &&
                   !event.ctrlKey &&
-                  ['paragraph', 'heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(block.type)
+                  ['paragraph', 'heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list', 'callout', 'toggle'].includes(block.type)
                 ) {
                   event.preventDefault()
                   const continueText = block.type === 'paragraph' ? splitDraftBlock : continueBlockAt
@@ -1021,7 +1053,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                   (event.currentTarget.selectionEnd ?? 0) === 0
                 ) {
                   event.preventDefault()
-                  if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list'].includes(block.type)) {
+                  if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list', 'callout', 'toggle'].includes(block.type)) {
                     downgradeBlockAt(index)
                   } else if (index > 0 && blockTextareaRefs.current[index - 1]) {
                     mergeWithPreviousBlock(index)
@@ -1088,7 +1120,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         </div> : null}
         {block.type === 'table' ? (
           <Suspense fallback={<MarkdownTablePreview content={block.content} label={isZh ? '表格预览' : 'Table preview'} />}>
-            <MarkdownTableEditor content={block.content} isZh={isZh} onBeginEdit={props.checkpointDraft}
+            <MarkdownTableEditor content={block.content} sessionKey={`${selectedDocument.id}:${block.id}`} isZh={isZh} onBeginEdit={props.checkpointDraft}
               onChange={(content, transaction) => { if (transaction) props.checkpointDraft?.(); updateDraftBlock(index, { content }) }} />
           </Suspense>
         ) : null}

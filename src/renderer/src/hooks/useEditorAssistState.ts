@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentSuggestion } from '@shared/contracts'
 import { getUiText, type UiLanguage } from '../i18n'
 import { getOpenLinkContext, getSlashCommandContext } from '../utils/editorAssist'
-import { isNestableBlock } from '../utils/draftBlockShape'
+import { canBlockOwnChildren } from '@shared/blockTypes'
 import { computeSlashPanelPosition } from '../utils/menuPosition'
 
 type BlockSlashCommand = {
@@ -46,7 +46,7 @@ type LinkSuggestionState = {
 }
 
 const editorAssistBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
-  'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
+  'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list', 'callout', 'toggle'])
 
 export function useEditorAssistState({
   activeBlockIndex,
@@ -234,7 +234,7 @@ export function useEditorAssistState({
     if (!activeSlashContext || !activeAssistBlock) return []
     const availableCommands = blockSlashCommands.filter(command =>
       command.kind !== 'action' || command.action !== 'insert-child'
-      || (isNestableBlock(activeAssistBlock.type) && activeAssistBlock.depth < 6))
+      || (canBlockOwnChildren(activeAssistBlock.type) && activeAssistBlock.depth < 6))
     const query = activeSlashContext.query.trim().toLowerCase()
     if (!query) {
       return availableCommands
@@ -364,8 +364,8 @@ function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
     {
       id: 'quote',
       label: ui.blockTypeOptions.quote,
-      description: language === 'zh-CN' ? '把当前块转换为引用块。' : 'Convert this block into a quoted callout.',
-      keywords: ['blockquote', 'callout', 'cite', 'quote', '引用'],
+      description: language === 'zh-CN' ? '把当前块转换为引用块。' : 'Convert this block into a quote.',
+      keywords: ['blockquote', 'cite', 'quote', '引用'],
       kind: 'type',
       type: 'quote'
     },
@@ -407,9 +407,13 @@ function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand[] {
     },
     {
       id: 'callout', label: language === 'zh-CN' ? '提示块' : 'Callout',
-      description: language === 'zh-CN' ? '插入带标题的提示块。' : 'Insert a titled callout.',
-      keywords: ['note', 'tip', 'warning', '提示', '警告'], kind: 'type', type: 'quote',
-      templateContent: language === 'zh-CN' ? '[!note] 提示\n在此输入内容' : '[!note] Note\nWrite here'
+      description: language === 'zh-CN' ? '创建可添加独立子块的提示块。' : 'Create a callout with independently editable children.',
+      keywords: ['note', 'tip', 'warning', 'callout', '提示', '警告'], kind: 'type', type: 'callout'
+    },
+    {
+      id: 'toggle', label: language === 'zh-CN' ? '折叠块' : 'Toggle',
+      description: language === 'zh-CN' ? '创建可展开与折叠子块的标题。' : 'Create a title with expandable child blocks.',
+      keywords: ['toggle', 'details', 'collapse', '折叠', '展开'], kind: 'type', type: 'toggle'
     },
     {
       id: 'toc', label: language === 'zh-CN' ? '文内目录' : 'Table of contents',

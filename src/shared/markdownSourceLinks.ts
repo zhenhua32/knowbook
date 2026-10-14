@@ -6,14 +6,14 @@ export type MarkdownDestination = { start: number; end: number; url: string; kin
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 export type MarkdownCompatibilityFinding = { start: number; end: number; reason: 'unsupported-html' | 'html-attributes' | 'wiki-syntax' }
 export type MarkdownSourceImage = { start: number; end: number; token: Token }
-type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; context?: { positions: number[]; offset: number }; inAlt?: boolean }
+type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; endMaps?: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; context?: { positions: number[]; ends?: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
 
 /** Keep the source map alongside transformations made before inline parsing. */
 export function sliceMarkdownSourceMap(token: Token, start: number, end?: number, target = token): void {
   const map = sourceMap(token)
-  if (map) target.meta = { ...target.meta, sourceMap: map.slice(start, end) }
+  if (map) target.meta = { ...target.meta, sourceMap: map.slice(start, end), ...(Array.isArray(token.meta?.sourceEndMap) ? { sourceEndMap: token.meta.sourceEndMap.slice(start, end) } : {}) }
 }
 
 function mapLines(state: StateBlock, token: Token): number[] {
@@ -63,16 +63,16 @@ function mapCells(state: StateBlock, line: number): Array<{ content: string; map
 
 function record(data: Capture, link: MarkdownSourceLink): void {
   if (data.inAlt || !data.context) return
-  const { positions: map, offset } = data.context
+  const { positions: map, ends, offset } = data.context
   if (map[link.start + offset] === undefined || map[link.end - 1 + offset] === undefined) return
-  data.links.push({ ...link, start: map[link.start + offset], end: map[link.end - 1 + offset] + 1 })
+  data.links.push({ ...link, start: map[link.start + offset], end: ends?.[link.end - 1 + offset] ?? map[link.end - 1 + offset] + 1 })
 }
 
 function recordImage(data: Capture, start: number, end: number, token: Token): void {
   if (!data.images || data.inAlt || !data.context) return
-  const { positions, offset } = data.context
-  const from = positions[start + offset], to = positions[end - 1 + offset]
-  if (from !== undefined && to !== undefined) data.images.push({ start: from, end: to + 1, token })
+  const { positions, ends, offset } = data.context
+  const from = positions[start + offset], to = ends?.[end - 1 + offset] ?? positions[end - 1 + offset] + 1
+  if (from !== undefined && to !== undefined) data.images.push({ start: from, end: to, token })
 }
 
 /** Diagnostics use the same positions and exclusions as rendered links. */
@@ -81,9 +81,9 @@ export function recordMarkdownCompatibility(env: Env, finding: MarkdownCompatibi
   if (!env.captureCompatibility || !data || data.inAlt) return
   if (block) { data.diagnostics.push(finding); return }
   if (!data.context) return
-  const { positions, offset } = data.context
-  const start = positions[finding.start + offset], end = positions[finding.end - 1 + offset]
-  if (start !== undefined && end !== undefined) data.diagnostics.push({ ...finding, start, end: end + 1 })
+  const { positions, ends, offset } = data.context
+  const start = positions[finding.start + offset], end = ends?.[finding.end - 1 + offset] ?? positions[finding.end - 1 + offset] + 1
+  if (start !== undefined && end !== undefined) data.diagnostics.push({ ...finding, start, end })
 }
 
 export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFinding[] {
@@ -97,7 +97,7 @@ export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFi
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
     if (state.env.captureSourceLinks) state.env.markdownSourceLinks = {
-      links: [], diagnostics: [], maps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined,
+      links: [], diagnostics: [], maps: new WeakMap(), endMaps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined,
       images: state.env.captureImageOccurrences ? [] : undefined
     } satisfies Capture
   })
@@ -140,7 +140,8 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       const map = sourceMap(token)
       if (token.type === 'inline' && token.children && map) {
         data.maps.set(token.children, map)
-        if (map.length) data.ranges?.push({ start: map[0], end: map.at(-1)! + 1 })
+        if (Array.isArray(token.meta?.sourceEndMap)) data.endMaps?.set(token.children, token.meta.sourceEndMap)
+        if (map.length) data.ranges?.push({ start: map[0], end: data.endMaps?.get(token.children)?.at(-1) ?? map.at(-1)! + 1 })
       }
     }
   })
@@ -149,7 +150,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     const data = capture(env), previous = data?.context
     if (data) {
       const positions = data.maps.get(tokens)
-      data.context = positions ? { positions, offset: 0 } : previous
+      data.context = positions ? { positions, ends: data.endMaps?.get(tokens), offset: 0 } : previous
     }
     try { parseInline(source, engine, env, tokens) }
     finally { if (data) data.context = previous }
@@ -166,7 +167,7 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       // An image's alt text is plain text. Inline footnotes have a separate
       // inline parser whose offsets start after the ^[ opening marker.
       if (name === 'image' || name === 'footnote_inline') {
-        data.context = previous && { positions: previous.positions, offset: previous.offset + start + 2 }
+        data.context = previous && { positions: previous.positions, ends: previous.ends, offset: previous.offset + start + 2 }
         data.inAlt = name === 'image'
       }
       let accepted: boolean
@@ -244,7 +245,7 @@ export function shiftMarkdownSourceCapture(env: Env, tokens: Token[], linkStart:
   for (const token of tokens) {
     if (token.map) token.map = [token.map[0] + lines, token.map[1] + lines]
     const map = sourceMap(token)
-    if (map) token.meta = { ...token.meta, sourceMap: map.map(offset) }
+    if (map) token.meta = { ...token.meta, sourceMap: map.map(offset), ...(Array.isArray(token.meta?.sourceEndMap) ? { sourceEndMap: token.meta.sourceEndMap.map(offset) } : {}) }
   }
 }
 

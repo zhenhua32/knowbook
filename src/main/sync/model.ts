@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { UpdateDocumentInput } from '../../shared/contracts'
+import { canBlockHaveParent, canBlockNestUnder, isContainerBlockType } from '../../shared/blockTypes'
+import { normalizeMarkdownFormat } from '../../shared/markdownFormat'
+import { markdownEngine } from '../../shared/markdownEngine'
+import { serializeBlocksToMarkdown } from '../../shared/markdown'
 import type { WebDavSyncMergeChoice, WebDavSyncMergePart, WebDavSyncResolutionChoice } from '../../shared/webdav-sync'
 
 export interface SyncDocument {
@@ -32,7 +36,7 @@ export interface SyncDatabases {
 }
 export interface SyncDeletion { kind: 'deleted'; id: string }
 export type SyncRecord = SyncDocument | SyncDatabases | SyncDeletion
-export interface SyncManifest { version: 1; workspaceId: string; entries: Record<string, string> }
+export interface SyncManifest { version: 1 | 2; workspaceId: string; entries: Record<string, string> }
 export interface SyncBaseline { localHash: string | null; remoteHash: string }
 export interface StoredConflict {
   local: SyncRecord
@@ -63,7 +67,7 @@ export const recordHash = (record: SyncRecord): string => hashBytes(canonicalJso
 
 export function parseManifest(bytes: Uint8Array): SyncManifest {
   const value = JSON.parse(Buffer.from(bytes).toString('utf8')) as SyncManifest
-  if (!value || value.version !== 1 || !validId(value.workspaceId) || !value.entries || Array.isArray(value.entries)
+  if (!value || ![1, 2].includes(value.version) || !validId(value.workspaceId) || !value.entries || Array.isArray(value.entries)
     || typeof value.entries !== 'object' || Object.keys(value.entries).length > 100_000
     || Object.entries(value.entries).some(([key, hash]) => !(key === 'databases' || key.startsWith('doc:') && validId(key.slice(4))) || !validHash(hash))) {
     throw new Error('远端同步清单无效或版本不受支持，未修改本地数据。')
@@ -71,7 +75,37 @@ export function parseManifest(bytes: Uint8Array): SyncManifest {
   return value
 }
 
-export function validateRecord(value: SyncRecord, key: string): SyncRecord {
+/** V2 permanently gates v1 readers before they fetch mixed trees or layout tables. */
+export function requiresStructureEditingProtocol(value: SyncRecord): boolean {
+  return value.kind === 'document' && value.content.blocks.some(block => isContainerBlockType(block.type)
+    || (block.content.includes('<!-- knowbook:table-widths:v1 ') || block.content.includes('data-knowbook-container'))
+      && markdownEngine.parse(serializeBlocksToMarkdown([block]), {}).some(token => token.type === 'native_container_open'
+        || token.type === 'knowbook_table_layout' && token.meta?.boundTableLayout))
+}
+
+/** Parent IDs must name the current ancestor, not an earlier closed subtree. */
+export function validSyncBlockTree(blocks: UpdateDocumentInput['blocks']): boolean {
+  const ancestors: UpdateDocumentInput['blocks'] = []
+  for (const block of blocks) {
+    if (!block || typeof block.type !== 'string' || !Number.isSafeInteger(block.depth) || block.depth < 0 || block.depth > 6
+      || !block.type || block.type !== block.type.trim()) return false
+    const parentId = block.parentBlockId ?? null
+    if (block.depth === 0) {
+      if (parentId !== null) return false
+    } else {
+      const parent = ancestors[block.depth - 1]
+      if (!canBlockHaveParent(block.type) || !parent || parent.id !== parentId
+        || !canBlockNestUnder(parent.type, block.type)) return false
+    }
+    if (isContainerBlockType(block.type) && (block.checked || block.language !== undefined || block.listStart !== undefined
+      || canonicalJson(block.markdownFormat) !== canonicalJson(normalizeMarkdownFormat(block.type, block.markdownFormat)))) return false
+    ancestors.length = block.depth + 1
+    ancestors[block.depth] = block
+  }
+  return true
+}
+
+export function validateRecord(value: SyncRecord, key: string, protocolVersion?: SyncManifest['version']): SyncRecord {
   const fail = () => { throw new Error('远端文档或数据库格式无效，未修改本地数据。') }
   if (!value || !validId(value.id) || recordKey(value) !== key) return fail()
   if (value.kind === 'deleted') {
@@ -90,6 +124,10 @@ export function validateRecord(value: SyncRecord, key: string): SyncRecord {
         || block.parentBlockId != null && !validId(block.parentBlockId)
         || block.tags !== undefined && (!Array.isArray(block.tags) || block.tags.some(tag => typeof tag !== 'string'))) return fail()
       ids.add(block.id)
+    }
+    if (!validSyncBlockTree(content.blocks)) return fail()
+    if (protocolVersion === 1 && requiresStructureEditingProtocol(value)) {
+      throw new Error('远端清单版本未声明结构编辑支持，未修改本地数据。')
     }
   } else if (value.kind === 'databases') {
     if (value.id !== 'databases' || !value.tables) return fail()

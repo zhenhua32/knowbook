@@ -9,6 +9,7 @@ import { parseWikiReference, wikiDisplayText } from '@shared/markdownWiki'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from './MarkdownDocumentContext'
 import type { ImagePresentation } from '@shared/markdownMedia'
+import { tableColumnWidths, DEFAULT_TABLE_COLUMN_WIDTH } from '@shared/markdownTableLayout'
 
 export const MarkdownReferencesContext = createContext<MarkdownEnvironment['references']>(undefined)
 const MathPreview = lazy(async () => {
@@ -26,6 +27,8 @@ const MermaidPreview = lazy(async () => {
 })
 const ImagePresentationEditor = lazy(() => import('./ImagePresentationEditor').then(module => ({ default: module.ImagePresentationEditor })))
 const InlineTextPresentation = lazy(() => import('./InlineTextPresentation'))
+const NativeMarkdownNode = lazy(() => import('./NativeMarkdownNode'))
+const MarkdownTableLayout = lazy(() => import('./MarkdownTableLayout').then(module => ({ default: module.MarkdownTableLayout })))
 
 export type MarkdownRenderOptions = {
   onReference?: (label: string) => void
@@ -73,6 +76,9 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
     const { token, children } = node
     const anchor = token.meta?.html ? String(token.attrGet('id') || token.attrGet('name') || '') : ''
     const nested = () => renderMarkdownNodes(children, options)
+    if (token.type === 'native_container_open' && token.meta?.nativeContainer) return <Suspense key={index} fallback={<div>{nested()}</div>}>
+      <NativeMarkdownNode node={node} options={options} />
+    </Suspense>
     if (token.meta?.callout || ['mark_open', 'footnote_ref', 'footnote_missing', 'footnote_block_open', 'footnote_open', 'footnote_anchor', 'table_of_contents'].includes(token.type)) {
       return <Suspense key={index} fallback={<span>{token.content || (token.type === 'footnote_ref' ? `[${Number(token.meta?.id) + 1}]` : nested())}</span>}>
         <AdvancedNode node={node} options={options} />
@@ -81,6 +87,17 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
     switch (token.type) {
       case 'text': return token.content
       case 'inline': return <Fragment key={index}>{nested()}</Fragment>
+      case 'native_container_title': return <Fragment key={index}>{nested()}</Fragment>
+      case 'knowbook_table_layout': return token.meta?.boundTableLayout ? null : token.content
+      case 'table_open': {
+        const columns = children.find(child => child.token.type === 'thead_open')?.children[0]?.children.length ?? 0
+        const widths = tableColumnWidths(token, columns), content = nested()
+        if (!widths) return <table key={index} className="block-markdown-table">{content}</table>
+        const fallback = <table className="block-markdown-table" data-knowbook-table-layout="true" style={{ tableLayout: 'fixed', width: widths.reduce<number>((total, width) => total + (width ?? DEFAULT_TABLE_COLUMN_WIDTH), 0) }}>
+          <colgroup>{widths.map((width, index) => <col key={index} style={{ width: width ?? DEFAULT_TABLE_COLUMN_WIDTH }} />)}</colgroup>{content}
+        </table>
+        return <Suspense key={index} fallback={fallback}><MarkdownTableLayout widths={widths}>{content}</MarkdownTableLayout></Suspense>
+      }
       case 'softbreak': return '\n'
       case 'hardbreak': return <br key={index} data-markdown-anchor={anchor || undefined} />
       case 'code_inline': return <code className="inline-code" key={index}>{token.content}</code>

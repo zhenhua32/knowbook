@@ -1,11 +1,12 @@
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
+import { canBlockHaveParent } from '@shared/blockTypes'
 
 export function isNestableBlock(type: string) {
   return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type)
 }
 
 export function normalizeBlockDepth(type: string, depth: number) {
-  return isNestableBlock(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
+  return canBlockHaveParent(type) && Number.isFinite(depth) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
 }
 
 export function toDraftBlock(

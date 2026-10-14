@@ -10,9 +10,9 @@
 .knowbook-rich-text-editor .block-editor-row { display: block; position: relative; margin: 0; padding: 5px 4px; border: 0; background: transparent; min-height: 1.75em; border-radius: 3px; }
 .knowbook-rich-text-editor .block-editor-row:focus-within { background: transparent; }
 .knowbook-rich-text-editor .type-bulleted-list::before { content: '•'; position: absolute; left: -16px; }
-.knowbook-rich-text-editor .type-numbered-list::before { content: attr(data-list-number) '.'; position: absolute; left: -24px; }
+.knowbook-rich-text-editor :is(.type-numbered-list, .type-numbered-todo)::before { content: attr(data-list-number) '.'; position: absolute; left: -24px; }
 .knowbook-rich-text-editor .type-quote { border-left: 3px solid var(--kb-line); padding-left: 14px; }
-.knowbook-rich-text-editor .type-todo input, .knowbook-rich-text-editor .type-numbered-todo input { margin-right: 8px; vertical-align: middle; }
+.knowbook-rich-text-editor :is(.type-todo, .type-numbered-todo) input { margin-right: 8px; vertical-align: middle; }
 .knowbook-rich-text-editor a { color: var(--kb-accent); text-decoration: underline; }
 .knowbook-rich-text-editor code { border-radius: 3px; background: var(--kb-accent-soft); padding: 1px 4px; }
 .knowbook-rich-text-editor mark { background: #fde68a; color: #292524; }

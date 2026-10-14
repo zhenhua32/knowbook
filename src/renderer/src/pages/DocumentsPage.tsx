@@ -178,6 +178,12 @@ export function DocumentsPage({
     handleBlockMouseEnter: documents.handleBlockMouseEnter,
     handleBlockPaste: documents.handleBlockPaste,
     insertDraftBlockAt: documents.insertDraftBlockAt,
+    insertChildDraftBlock: (index, content, type) => {
+      const id = documents.getDraftBlocks()[index]?.id
+      if (id) documents.revealBlockAncestors(id)
+      if (id && documents.collapsedBlockIds.has(id)) documents.toggleBlockCollapse(id)
+      documents.insertChildDraftBlock(index, content, type)
+    },
     insertBlockSuggestion: documents.insertBlockSuggestion,
     insertLinkSuggestion: documents.insertLinkSuggestion,
     isBlockRangeSelecting: documents.isBlockRangeSelecting,
@@ -394,6 +400,14 @@ export function DocumentsPage({
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
         richEditorProps={{ blocks: documents.draftBlocks, onChange: documents.setDraftBlocks, checkpoint: documents.checkpointDraft,
+          collapsedBlockIds: documents.collapsedBlockIds, onToggleCollapse: documents.toggleBlockCollapse,
+          onAddContainerChild: (id, type) => {
+            const index = documents.getDraftBlocks().findIndex(block => block.id === id)
+            if (index < 0) return
+            documents.revealBlockAncestors(id)
+            if (documents.collapsedBlockIds.has(id)) documents.toggleBlockCollapse(id)
+            return documents.insertChildDraftBlock(index, undefined, type)
+          },
           onUndo: documents.undoEdit, onRedo: documents.redoEdit, onOpenBlockActions: blockActions.openBlockActions,
           onEditSource: () => { if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() }) } }}
         previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onRename: rename.open, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),

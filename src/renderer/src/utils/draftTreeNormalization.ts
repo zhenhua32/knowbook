@@ -1,9 +1,8 @@
-import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
 import { normalizeMarkdownFormat } from '@shared/markdownFormat'
 import { detectCodeLanguage } from '@shared/code'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock } from './draftBlockShape'
 import { createDraftBlockId } from './draftTreeFragment'
 import { resolveDraftBlockRelationship } from './draftTreePlacement'
 import { getNormalizedBlockId, getNormalizedParentBlockId } from './draftTreeMove'
@@ -11,6 +10,7 @@ import { getNormalizedBlockId, getNormalizedParentBlockId } from './draftTreeMov
 export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   const seenIds = new Set<string>()
   const resolvedDepthById = new Map<string, number>()
+  const resolvedTypeById = new Map<string, string>()
   const depthStack: Array<string | null> = []
 
   return blocks.map((block) => {
@@ -27,12 +27,14 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
       block.parentBlockId,
       id,
       resolvedDepthById,
-      depthStack
+      depthStack,
+      resolvedTypeById
     )
 
     depthStack.length = depth + 1
     depthStack[depth] = id
     resolvedDepthById.set(id, depth)
+    resolvedTypeById.set(id, type)
 
     return {
       ...block,
@@ -80,12 +82,12 @@ export function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { vali
       errors.push(`Block ${index}: depth ${block.depth} exceeds maximum 6`)
     }
 
-    if (!isNestableBlock(block.type) && block.depth > 0) {
+    if (!canBlockHaveParent(block.type) && block.depth > 0) {
       errors.push(`Block ${index}: non-nestable type "${block.type}" has depth ${block.depth} > 0`)
     }
 
     const parentBlockId = getNormalizedParentBlockId(block)
-    if (!isNestableBlock(block.type) && parentBlockId) {
+    if (!canBlockHaveParent(block.type) && parentBlockId) {
       errors.push(`Block ${index}: non-nestable type "${block.type}" cannot have parentBlockId "${parentBlockId}"`)
     }
 
@@ -109,7 +111,7 @@ export function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { vali
             errors.push(`Block ${index}: depth ${block.depth} does not match parent depth ${parentDepth} + 1`)
           }
 
-          if (parentType && !isNestableBlock(parentType)) {
+          if (parentType && !canBlockNestUnder(parentType, block.type)) {
             errors.push(`Block ${index}: parentBlockId "${parentBlockId}" points to non-nestable type "${parentType}"`)
           }
         }

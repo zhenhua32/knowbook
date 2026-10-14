@@ -91,7 +91,8 @@ test('retired v1 plugin runtime and management APIs are absent', () => {
   const main = readFileSync(join(projectRoot, 'src/main/index.ts'), 'utf8')
   const preload = readFileSync(join(projectRoot, 'src/preload/index.ts'), 'utf8')
   const contracts = readFileSync(join(projectRoot, 'src/shared/contracts.ts'), 'utf8')
-  const management = readFileSync(join(projectRoot, 'src/renderer/src/hooks/usePluginManagement.ts'), 'utf8')
+  const management = readFileSync(join(projectRoot, 'src/renderer/src/hooks/usePluginManagement.ts'), 'utf8') +
+    readFileSync(join(projectRoot, 'src/renderer/src/hooks/pluginManagementActions.ts'), 'utf8')
   for (const method of [
     'setPluginEnabled', 'reloadPlugins', 'reloadPlugin', 'installPluginFromFolder',
     'removePlugin', 'updatePluginSetting'

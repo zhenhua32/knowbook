@@ -1,3 +1,11 @@
+import { INLINE_TEXT_COLORS, normalizeInlineTextColor, type InlineTextColor } from './inlineTextPresentation'
+
+export const NATIVE_CALLOUT_KINDS = ['note', 'info', 'tip', 'warning', 'danger'] as const
+export type NativeCalloutKind = typeof NATIVE_CALLOUT_KINDS[number]
+export const NATIVE_CALLOUT_ICONS = ['note', 'info', 'tip', 'warning', 'danger', 'book', 'pin', 'check', 'question'] as const
+export type NativeCalloutIcon = typeof NATIVE_CALLOUT_ICONS[number]
+export const NATIVE_CONTAINER_TONES = INLINE_TEXT_COLORS
+
 /** Syntax details that affect Markdown meaning but are not visible block text. */
 export interface MarkdownBlockFormat {
   listMarker?: '-' | '+' | '*' | '.' | ')'
@@ -6,6 +14,11 @@ export interface MarkdownBlockFormat {
   codeInfo?: string
   /** An empty fence contains zero lines, unlike a fence with one blank line. */
   emptyCode?: boolean
+  calloutKind?: NativeCalloutKind
+  calloutIcon?: NativeCalloutIcon
+  calloutTone?: InlineTextColor
+  /** Authored initial state; personal folding preferences are stored separately. */
+  toggleDefaultOpen?: boolean
 }
 
 export function normalizeMarkdownFormat(type: string, value: unknown): MarkdownBlockFormat | undefined {
@@ -23,6 +36,13 @@ export function normalizeMarkdownFormat(type: string, value: unknown): MarkdownB
     if (typeof input.codeInfo === 'string' && !/[\r\n]/.test(input.codeInfo)) result.codeInfo = input.codeInfo
     if (input.emptyCode === true) result.emptyCode = true
   }
+  if (type === 'callout') {
+    if (typeof input.calloutKind === 'string' && (NATIVE_CALLOUT_KINDS as readonly string[]).includes(input.calloutKind)) result.calloutKind = input.calloutKind as NativeCalloutKind
+    if (typeof input.calloutIcon === 'string' && (NATIVE_CALLOUT_ICONS as readonly string[]).includes(input.calloutIcon)) result.calloutIcon = input.calloutIcon as NativeCalloutIcon
+    const tone = normalizeInlineTextColor(input.calloutTone)
+    if (tone) result.calloutTone = tone
+  }
+  if (type === 'toggle' && typeof input.toggleDefaultOpen === 'boolean') result.toggleDefaultOpen = input.toggleDefaultOpen
   return Object.keys(result).length ? result : undefined
 }
 

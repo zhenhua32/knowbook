@@ -85,8 +85,12 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
   }
   const apply = () => {
     if (composing.current || importLock.current) return
-    if (onApply(markdownSourceDraftToBlocks(current.current.draft))) onClose()
-    else setError(isZh ? '正文已在其他位置更新。请先复制当前源码，再重新打开以合并更改。' : 'The document changed elsewhere. Copy this source, then reopen to merge your changes.')
+    try {
+      if (onApply(markdownSourceDraftToBlocks(current.current.draft))) onClose()
+      else setError(isZh ? '正文已在其他位置更新。请先复制当前源码，再重新打开以合并更改。' : 'The document changed elsewhere. Copy this source, then reopen to merge your changes.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
   }
   const insertFiles = async (files: File[], position?: number) => {
     const view = editor.current

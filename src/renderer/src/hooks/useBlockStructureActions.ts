@@ -1,10 +1,10 @@
-import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, canBlockOwnChildren, canBlockNestUnder, isContainerBlockType } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
-import { materializeDraftFragment } from '../utils/draftTreeFragment'
+import { createDraftBlockId, materializeDraftFragment } from '../utils/draftTreeFragment'
 import { getBlockSubtreeEndIndex, getNormalizedParentBlockId } from '../utils/draftTreeMove'
 
 type UseBlockStructureActionsParams = {
@@ -44,7 +44,7 @@ export function useBlockStructureActions({
       }
     }
 
-    return buildBlockTypePatch('paragraph', '')
+    return buildBlockTypePatch('paragraph', '', false, anchorBlock?.depth ?? 0, anchorBlock?.parentBlockId ?? null)
   }, [buildBlockTypePatch, isNestableBlock])
 
   const insertDraftBlockAt = useCallback((index: number, anchorIndex: number | null = null, contentOverride?: string) => {
@@ -82,19 +82,21 @@ export function useBlockStructureActions({
     setPendingFocusBlockIndex
   ])
 
-  const insertChildDraftBlock = useCallback((index: number, contentOverride?: string) => {
+  const insertChildDraftBlock = useCallback((index: number, contentOverride?: string, childTypeOverride?: DocumentBlock['type']) => {
     const currentBlock = draftBlocks[index]
-    if (!currentBlock || !isNestableBlock(currentBlock.type)) {
+    if (!currentBlock || !canBlockOwnChildren(currentBlock.type)) {
       return
     }
 
-    const childType = getDefaultChildBlockType(currentBlock.type)
+    const childType = childTypeOverride ?? getDefaultChildBlockType(currentBlock.type)
     const childDepth = currentBlock.depth + 1
-    if (!isNestableBlock(childType) || childDepth > 6) {
+    if (!canBlockNestUnder(currentBlock.type, childType) || childDepth > 6) {
       return
     }
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
+    // Allocate outside the state updater so callers can address this exact child.
+    const child = { ...buildBlockTypePatch(childType, '', false, childDepth, currentBlock.id), id: createDraftBlockId() }
 
     pushToHistory(draftBlocks)
     clearBlockSelection()
@@ -108,7 +110,7 @@ export function useBlockStructureActions({
         }
       }
 
-      next.splice(subtreeEndIndex + 1, 0, buildBlockTypePatch(childType, '', false, childDepth, currentBlock.id))
+      next.splice(subtreeEndIndex + 1, 0, child)
       return next
     })
 
@@ -116,6 +118,7 @@ export function useBlockStructureActions({
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(subtreeEndIndex + 1, 0)
     endBlockDrag()
+    return child.id
   }, [
     buildBlockTypePatch,
     clearBlockSelection,
@@ -191,7 +194,9 @@ export function useBlockStructureActions({
     }
 
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
-    const nextIndex = subtreeEndIndex + 1
+    const isContainer = isContainerBlockType(currentBlock.type)
+    const insertsChild = isContainer && currentBlock.depth < 6
+    const nextIndex = insertsChild ? index + 1 : subtreeEndIndex + 1
 
     pushToHistory(draftBlocks)
     clearBlockSelection()
@@ -200,7 +205,7 @@ export function useBlockStructureActions({
     const safeEnd = Math.max(safeStart, Math.min(selectionEnd, currentBlock.content.length))
     const leftContent = currentBlock.content.slice(0, safeStart)
     const rightContent = currentBlock.content.slice(safeEnd)
-    const nextType = nextTypeOverride ?? (getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type)
+    const nextType = isContainer ? 'paragraph' : nextTypeOverride ?? (getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type)
 
     setDraftBlocks((previous) => {
       const next = [...previous]
@@ -212,7 +217,7 @@ export function useBlockStructureActions({
         nextIndex,
         0,
         {
-          ...buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, currentBlock.depth, currentBlock.parentBlockId ?? null),
+          ...buildBlockTypePatch(nextType, rightContent, isTaskBlockType(nextType) ? false : currentBlock.checked, insertsChild ? currentBlock.depth + 1 : currentBlock.depth, insertsChild ? currentBlock.id : currentBlock.parentBlockId ?? null),
           // Both fragments retain the source's content attributes, while the
           // new block keeps its own identity, task state and list numbering.
           ...(nextType === currentBlock.type ? {
@@ -251,6 +256,7 @@ export function useBlockStructureActions({
 }
 
 function getDefaultChildBlockType(type: DocumentBlock['type']): DocumentBlock['type'] {
+  if (isContainerBlockType(type)) return 'paragraph'
   if (isTaskBlockType(type)) {
     return type
   }

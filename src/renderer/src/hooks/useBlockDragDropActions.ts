@@ -2,7 +2,8 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock, normalizeBlockDepth } from '../utils/draftBlockShape'
+import { canBlockHaveParent } from '@shared/blockTypes'
+import { normalizeBlockDepth } from '../utils/draftBlockShape'
 
 type BlockSelectionRange = {
   start: number
@@ -65,18 +66,18 @@ export function useBlockDragDropActions({
     }
 
     const draggingBlock = draftBlocks[draggingBlockIndex]
-    if (!draggingBlock || !isNestableBlock(draggingBlock.type)) {
+    if (!draggingBlock || !canBlockHaveParent(draggingBlock.type)) {
       return null
     }
 
     const targetBlock = draftBlocks[targetIndex]
-    const anchorDepth = targetBlock && isNestableBlock(targetBlock.type) ? targetBlock.depth : 0
+    const anchorDepth = targetBlock && canBlockHaveParent(targetBlock.type) ? targetBlock.depth : 0
     const contentColumnStart = element.getBoundingClientRect().left + 48 + 160 + 20
     const horizontalDelta = clientX - contentColumnStart
     const depthDelta = horizontalDelta > blockDragDepthThreshold ? 1 : horizontalDelta < -blockDragDepthThreshold ? -1 : 0
 
     return normalizeBlockDepth(draggingBlock.type, anchorDepth + depthDelta)
-  }, [blockDragDepthThreshold, draftBlocks, draggingBlockIndex, isNestableBlock, normalizeBlockDepth])
+  }, [blockDragDepthThreshold, draftBlocks, draggingBlockIndex, normalizeBlockDepth])
 
   const dropBlockAt = useCallback((targetIndex: number, targetDepth = dragOverBlockDepth) => {
     if (draggingBlockIndex === null) {

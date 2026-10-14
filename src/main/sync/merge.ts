@@ -1,9 +1,12 @@
 import type { DocumentBlockDraft } from '../../shared/contracts'
-import { isListBlockType, isOrderedListBlockType, isTaskBlockType } from '../../shared/blockTypes'
+import { isOrderedListBlockType, isTaskBlockType } from '../../shared/blockTypes'
 import { normalizeMarkdownFormat } from '../../shared/markdownFormat'
 import { collectMarkdownSourceLinks } from '../../shared/markdownLinks'
+import { markdownTableWidthValueRanges } from '../../shared/markdownTableLayoutRanges'
+import { parseMarkdownTableNode } from '../../shared/markdownTable'
+import { serializeTableColumnWidthsDirective, tableColumnWidths } from '../../shared/markdownTableLayout'
 import type { WebDavSyncMergeChoice, WebDavSyncMergePart } from '../../shared/webdav-sync'
-import { canonicalJson, validId, type SyncDocument } from './model'
+import { canonicalJson, validId, validSyncBlockTree, type SyncDocument } from './model'
 
 const MAX_TEXT_LENGTH = 32_000
 const MAX_DIFF_CELLS = 1_000_000
@@ -18,6 +21,7 @@ type DiffBudget = { cells: number }
 /** Preserve destination identity: two edits to one URL must never create a third URL. */
 function textTokens(text: string): string[] {
   const ranges = collectMarkdownSourceLinks(text).map(link => ({ from: link.start, to: link.end }))
+  ranges.push(...markdownTableWidthValueRanges(text))
   for (const match of text.matchAll(/(?:knowbook-asset:\/\/|file:\/\/\/)[^\s<>()[\]"']+/g)) {
     ranges.push({ from: match.index!, to: match.index! + match[0].length })
   }
@@ -97,11 +101,48 @@ function editOverlap(left: TextEdit, right: TextEdit): boolean {
   return left.from < right.to && right.from < left.to
 }
 
+function layoutText(source: string) {
+  if (!source.includes('<!-- knowbook:table-widths:v1 ')) return null
+  const node = parseMarkdownTableNode(source)
+  if (!node) return null
+  const headers = node.children.find(child => child.token.type === 'thead_open')?.children[0]?.children
+    .map(cell => cell.children[0]?.token.content ?? '') ?? []
+  const widths = tableColumnWidths(node.token, headers.length), map = node.token.meta?.tableLayoutMap as [number, number] | undefined
+  if (!widths || !map || map[1] !== map[0] + 1) return null
+  const lines = source.split('\n'), line = lines.splice(map[0], 1)[0]
+  return { headers, widths, line, body: lines.join('\n') }
+}
+
+function mergeLayoutText(base: string, local: string, remote: string, budget: DiffBudget): { handled: boolean; result?: string | null } {
+  const before = layoutText(base), left = layoutText(local), right = layoutText(remote)
+  if (!before || !left || !right) return { handled: false }
+  // Column insertion/reordering cannot be matched by array index. Competing
+  // structural edits stay explicit rather than attaching a width to a new column.
+  if (!same(before.headers, left.headers) || !same(before.headers, right.headers)) return { handled: true, result: null }
+  const widths = before.widths.map((width, column) => {
+    const a = left.widths[column], b = right.widths[column]
+    return same(a, b) ? a : same(width, a) ? b : same(width, b) ? a : undefined
+  })
+  if (widths.some(width => width === undefined)) return { handled: true, result: null }
+  const body = mergeText(before.body, left.body, right.body, budget)
+  if (body === null) return { handled: true, result: null }
+  const mergedTable = parseMarkdownTableNode(body)
+  if (!mergedTable?.token.map) return { handled: true, result: null }
+  const line = same(widths, left.widths) ? left.line : same(widths, right.widths) ? right.line
+    : (before.line.match(/^[ \t]*/)?.[0] ?? '') + serializeTableColumnWidthsDirective(widths as typeof before.widths)
+      + (before.line.endsWith('\r') ? '\r' : '')
+  const lines = body.split('\n')
+  lines.splice(mergedTable.token.map[0], 0, line)
+  return { handled: true, result: lines.join('\n') }
+}
+
 function mergeText(base: string, local: string, remote: string, budget: DiffBudget): string | null {
   if (same(local, remote)) return local
   if (same(base, local)) return remote
   if (same(base, remote)) return local
   if (Math.max(base.length, local.length, remote.length) > MAX_TEXT_LENGTH) return null
+  const layout = mergeLayoutText(base, local, remote, budget)
+  if (layout.handled) return layout.result ?? null
   const original = textTokens(base)
   const left = editsBetween(original, textTokens(local), budget)
   const right = editsBetween(original, textTokens(remote), budget)
@@ -122,6 +163,7 @@ function mergeText(base: string, local: string, remote: string, budget: DiffBudg
 /** Reject trees that the store would silently repair or discard metadata from. */
 function validBlocks(blocks: DocumentBlockDraft[]): boolean {
   if (!Array.isArray(blocks) || !blocks.length || blocks.length > 100_000) return false
+  if (!validSyncBlockTree(blocks)) return false
   const previous = new Map<string, DocumentBlockDraft>()
   for (const block of blocks) {
     if (!block || !validId(block.id) || previous.has(block.id) || Object.keys(block).some(key => !blockKeys.has(key))
@@ -131,11 +173,6 @@ function validBlocks(blocks: DocumentBlockDraft[]): boolean {
     if (!isTaskBlockType(block.type) && block.checked) return false
     const parentId = block.parentBlockId ?? null
     if (parentId !== null && !validId(parentId)) return false
-    if (!isListBlockType(block.type) && (block.depth !== 0 || parentId !== null)) return false
-    if (parentId) {
-      const parent = previous.get(parentId)
-      if (!parent || !isListBlockType(parent.type) || block.depth !== parent.depth + 1) return false
-    } else if (block.depth !== 0) return false
     if (block.tags !== undefined && (!Array.isArray(block.tags) || block.tags.some(tag => typeof tag !== 'string' || !tag || tag !== tag.trim())
       || new Set(block.tags).size !== block.tags.length)) return false
     if (block.language !== undefined && (block.type !== 'code' || typeof block.language !== 'string' || !block.language || block.language !== block.language.trim())) return false

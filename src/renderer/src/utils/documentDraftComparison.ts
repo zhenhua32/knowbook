@@ -45,6 +45,10 @@ export function areDocumentDraftBlocksEqual(
       || leftBlock.markdownFormat?.listLoose !== rightBlock.markdownFormat?.listLoose
       || leftBlock.markdownFormat?.codeInfo !== rightBlock.markdownFormat?.codeInfo
       || Boolean(leftBlock.markdownFormat?.emptyCode) !== Boolean(rightBlock.markdownFormat?.emptyCode)
+      || leftBlock.markdownFormat?.calloutKind !== rightBlock.markdownFormat?.calloutKind
+      || leftBlock.markdownFormat?.calloutIcon !== rightBlock.markdownFormat?.calloutIcon
+      || leftBlock.markdownFormat?.calloutTone !== rightBlock.markdownFormat?.calloutTone
+      || leftBlock.markdownFormat?.toggleDefaultOpen !== rightBlock.markdownFormat?.toggleDefaultOpen
       || (leftBlock.language ?? null) !== (rightBlock.language ?? null)
       || (leftBlock.highlight ?? null) !== (rightBlock.highlight ?? null)
       || !areTagsEqual(leftBlock.tags, rightBlock.tags)

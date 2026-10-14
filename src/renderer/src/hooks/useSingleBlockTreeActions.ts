@@ -1,3 +1,4 @@
+import { canBlockHaveParent, canBlockOwnChildren, isContainerBlockType } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback, useLayoutEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
@@ -5,7 +6,7 @@ import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { isNestableBlock } from '../utils/draftBlockShape'
 import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/draftTreeDepthChange'
 import { shiftDraftFragmentDepth } from '../utils/draftTreeFragment'
-import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { planDraftTextMerge } from '../utils/draftTreeTextMerge'
 import { captureEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import {
@@ -79,7 +80,7 @@ export function useSingleBlockTreeActions({
 
   const adjustBlockDepth = useCallback((index: number, delta: number, cursorPosition = activeCursorPosition) => {
     const currentBlock = draftBlocks[index]
-    if (!currentBlock || !isNestableBlock(currentBlock.type)) {
+    if (!currentBlock || !canBlockHaveParent(currentBlock.type)) {
       return
     }
 
@@ -116,15 +117,15 @@ export function useSingleBlockTreeActions({
 
     const exitsToParagraph = ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list']
     if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
-      if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
+      if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !isContainerBlockType(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '')) {
         adjustBlockDepth(index, -1, 0)
         return
       }
 
       pushToHistory(draftBlocks)
       setDraftBlocks((previous) => {
-        const next = promoteDraftBlockChildren(previous, index)
-        next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', '', false) }
+        const next = prepareDraftBlockTypeChange(previous, index, 'paragraph')
+        next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', '', false, next[index].depth, next[index].parentBlockId) }
         return next
       })
       setActiveBlockIndex(index)
@@ -133,7 +134,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+    if (isContainerBlockType(currentBlock.type) || ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
       const nextType = getHeadingLevel(currentBlock.type) ? 'paragraph' : currentBlock.type
       splitDraftBlock(index, selectionStart, selectionEnd, nextType)
     }
@@ -145,19 +146,19 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (!['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list'].includes(currentBlock.type)) {
+    if (!['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'quote', 'bulleted-list', 'numbered-list', 'callout', 'toggle'].includes(currentBlock.type)) {
       return
     }
 
-    if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0) {
+    if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !isContainerBlockType(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '')) {
       adjustBlockDepth(index, -1, 0)
       return
     }
 
     pushToHistory(draftBlocks)
     setDraftBlocks((previous) => {
-      const next = promoteDraftBlockChildren(previous, index)
-      next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', currentBlock.content, false) }
+      const next = prepareDraftBlockTypeChange(previous, index, 'paragraph')
+      next[index] = { ...next[index], ...buildBlockTypePatch('paragraph', currentBlock.content, false, next[index].depth, next[index].parentBlockId) }
       return next
     })
     setActiveBlockIndex(index)
@@ -188,7 +189,7 @@ export function useSingleBlockTreeActions({
     const isMergeable =
       previousBlock.type === currentBlock.type &&
       previousBlock.depth === currentBlock.depth &&
-      !['code', 'math', 'table', 'divider', 'frontmatter', 'html'].includes(currentBlock.type)
+      !['code', 'math', 'table', 'divider', 'frontmatter', 'html', 'callout', 'toggle'].includes(currentBlock.type)
 
     if (!isMergeable) {
       return
@@ -202,12 +203,12 @@ export function useSingleBlockTreeActions({
     clearBlockSelection()
 
     setDraftBlocks((previous) => {
-      const next = isNestableBlock(previousBlock.type) ? [...previous] : promoteDraftBlockChildren(previous, index)
+      const next = canBlockOwnChildren(previousBlock.type) ? [...previous] : prepareDraftBlockTypeChange(previous, index, 'paragraph')
       next[index - 1] = {
         ...previousBlock,
         content: mergedContent
       }
-      if (isNestableBlock(previousBlock.type) && currentSubtreeEnd > index) {
+      if (canBlockOwnChildren(previousBlock.type) && currentSubtreeEnd > index) {
         const children = previous.slice(index + 1, currentSubtreeEnd + 1)
         next.splice(index + 1, children.length, ...shiftDraftFragmentDepth(children, 0, previousBlock.id ?? null, getFragmentLocalRootIds(children)))
       }

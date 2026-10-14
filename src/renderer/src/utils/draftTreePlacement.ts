@@ -1,4 +1,5 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
+import { canBlockNestUnder } from '@shared/blockTypes'
 import { getActiveUiText } from '../i18n'
 import { normalizeBlockDepth } from './draftBlockShape'
 import { getNormalizedBlockId } from './draftTreeMove'
@@ -9,12 +10,14 @@ export function resolveDraftBlockRelationship(
   requestedParentBlockId: string | null | undefined,
   id: string,
   resolvedDepthById: Map<string, number>,
-  depthStack: Array<string | null>
+  depthStack: Array<string | null>,
+  resolvedTypeById: Map<string, string> = new Map()
 ) {
   const trimmedParentBlockId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
   const explicitParentDepth = trimmedParentBlockId && trimmedParentBlockId !== id ? resolvedDepthById.get(trimmedParentBlockId) : undefined
 
-  if (explicitParentDepth !== undefined) {
+  const compatibleParent = (parentId: string | null | undefined) => Boolean(parentId && canBlockNestUnder(resolvedTypeById.get(parentId) ?? 'bulleted-list', type))
+  if (explicitParentDepth !== undefined && depthStack[explicitParentDepth] === trimmedParentBlockId && compatibleParent(trimmedParentBlockId)) {
     const explicitDepth = normalizeBlockDepth(type, explicitParentDepth + 1)
     if (explicitDepth > explicitParentDepth) {
       return {
@@ -25,7 +28,7 @@ export function resolveDraftBlockRelationship(
   }
 
   let depth = normalizeBlockDepth(type, requestedDepth)
-  while (depth > 0 && !depthStack[depth - 1]) {
+  while (depth > 0 && !compatibleParent(depthStack[depth - 1])) {
     depth -= 1
   }
 
@@ -55,6 +58,7 @@ export function resolveDraftInsertionPlacement(
   requestedDepth: number
 ): { depth: number; parentBlockId: string | null; parentText: string | null } {
   const resolvedDepthById = new Map<string, number>()
+  const resolvedTypeById = new Map<string, string>()
   const depthStack: Array<string | null> = []
   const textById = new Map<string, string>()
   const boundedInsertionIndex = Math.max(0, Math.min(insertionIndex, blocks.length))
@@ -68,16 +72,18 @@ export function resolveDraftInsertionPlacement(
       block.parentBlockId,
       id,
       resolvedDepthById,
-      depthStack
+      depthStack,
+      resolvedTypeById
     )
 
     depthStack.length = depth + 1
     depthStack[depth] = id
     resolvedDepthById.set(id, depth)
+    resolvedTypeById.set(id, block.type)
     textById.set(id, getBlockTreeText(block.type, block.content))
   }
 
-  const placement = resolveDraftBlockRelationship(type, requestedDepth, null, '__insertion-candidate__', resolvedDepthById, depthStack)
+  const placement = resolveDraftBlockRelationship(type, requestedDepth, null, '__insertion-candidate__', resolvedDepthById, depthStack, resolvedTypeById)
 
   return {
     ...placement,

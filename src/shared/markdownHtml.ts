@@ -1,9 +1,12 @@
+import { decodeNativeLiteralText } from './markdownNativeText'
 import type MarkdownIt from 'markdown-it'
 import type { StateBlock, Token } from 'markdown-it'
 import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import { capturedMarkdownSourceLinks, capturedMarkdownCompatibility, recordMarkdownCompatibility, shiftMarkdownSourceCapture, type MarkdownDestination, type MarkdownCompatibilityFinding } from './markdownSourceLinks'
 import { IMAGE_ALIGN_ATTRIBUTE, IMAGE_CROP_ATTRIBUTE, parseImageCropAttribute, parseImageFigure, type ImagePresentation } from './markdownMedia'
 import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE, parseInlineTextPresentationAttributes } from './inlineTextPresentation'
+
+import { nativeContainerClosingLine, nativeContainerTitleLines, recordNativeContainerError, parseNativeContainerOpening, parseNativeContainerTitle, shiftNativeContainerRanges, type NativeMarkdownContainer } from './markdownContainers'
 
 const presentationTags = new Set(['u', 'span'])
 const semanticInlineTags = new Set(['strong', 'em', 's', 'del', 'mark', 'code'])
@@ -300,6 +303,141 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     return false
   })
 
+  // Only explicitly marked shells become editable native container forests.
+  // Legacy details and advanced quote callouts continue through their old rules.
+  const { fn: parseReference, alt: referenceAlt } = md.block.ruler.__rules__.find(rule => rule.name === 'reference')!
+  md.block.ruler.at('reference', (state, start, end, silent) => {
+    if (!state.env.nativeLiteralEscaped) return parseReference(state, start, end, silent)
+    // Let the existing rule parse one real definition into an isolated map.
+    // Re-key its original label before first-binding is decided: an encoded
+    // label must not collide with a different authored outer/sibling label.
+    const previous = state.env.references, first = state.tokens.length
+    state.env.references = {}
+    let accepted: boolean
+    let parsed: NonNullable<typeof state.env.references>
+    try { accepted = parseReference(state, start, end, silent); parsed = state.env.references }
+    finally { state.env.references = previous }
+    if (!accepted || silent) return accepted
+    const token = state.tokens.slice(first).find(token => token.type === 'reference_definition')
+    if (!token?.map || typeof token.meta?.label !== 'string') return accepted
+    let raw = ''
+    for (let line = token.map[0]; line < token.map[1]; line++)
+      raw += state.src.slice(state.bMarks[line] + state.tShift[line], state.eMarks[line]) + '\n'
+    const label = /^\[((?:\\[\s\S]|[^\]\\])*)\]:/.exec(raw)?.[1]
+    const value = parsed![token.meta.label]
+    const normalized = label === undefined ? token.meta.label : md.utils.normalizeReference(decodeNativeLiteralText(label).content)
+    const references = state.env.references ??= {}
+    if (value && references[normalized] === undefined) references[normalized] = {
+      href: decodeNativeLiteralText(value.href).content, title: decodeNativeLiteralText(value.title).content
+    }
+    token.meta = { ...token.meta, label: normalized, nativeReferenceEscaped: label !== undefined }
+    return accepted
+  }, { alt: referenceAlt })
+  md.block.ruler.before('html_block', 'native_container', (state, start, end, silent) => {
+    if (state.sCount[start] - state.blkIndent >= 4) return false
+    const firstLine = state.src.slice(state.bMarks[start] + state.tShift[start], state.eMarks[start])
+    if (!/^<[a-z][\w-]*(?=[\s>])/i.test(firstLine)
+      || !/\bdata-knowbook-container\b/i.test(firstLine)) return false
+    const candidate = state.getLines(start, end, state.blkIndent, false)
+    const openingSource = /^(?:[ \t]*)(<(?:[a-z][\w-]*)(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>)/i.exec(candidate)?.[1]
+    if (!openingSource) {
+      if (!silent && /^\s*<[a-z][\w-]*\s[^\n]*\bdata-knowbook-container\b/i.test(candidate.split('\n')[0]))
+        recordNativeContainerError(state.env, 'malformed marked opening shell')
+      return false
+    }
+    if (!/\bdata-knowbook-container\b/i.test(openingSource)) return false
+    try {
+      if (Number(state.env.htmlDetailsDepth ?? 0) >= md.options.maxNesting) throw new Error('container nesting limit exceeded')
+      if (/[\r\n]/.test(openingSource)) throw new Error('opening shell must occupy one line')
+      const opening = parseNativeContainerOpening(openingSource)
+      if (!opening) return false
+      const lines = candidate.split('\n')
+      if (lines[0].trim() !== openingSource) throw new Error('unexpected text after opening shell')
+      const titleHeader = nativeContainerTitleLines(lines, 1, opening)
+      const titleSource = titleHeader.source
+      const title = parseNativeContainerTitle(titleSource, opening)
+      const bodyLine = titleHeader.endLine
+      const closeLine = nativeContainerClosingLine(lines, bodyLine, lines.length, opening.tag)
+      const source = lines.slice(0, closeLine + 1).join('\n')
+      const positions = htmlSourcePositions(state, start, source)
+      if (!positions) throw new Error('container source cannot be mapped safely')
+      if (silent) return true
+      const meta: NativeMarkdownContainer = { type: opening.type, markdownFormat: opening.markdownFormat, literalEscaped: opening.literalEscaped,
+        headerRange: [start, start + bodyLine], bodyRange: [start + bodyLine, start + closeLine], closingRange: [start + closeLine, start + closeLine + 1] }
+      const open = state.push('native_container_open', opening.tag, 1)
+      open.meta = { nativeContainer: meta, nativeLiteralEscaped: Boolean(opening.literalEscaped) }; open.map = [start, start + closeLine + 1]
+      const inline = state.push('inline', '', 0)
+      inline.content = title.content; inline.children = []; inline.map = meta.headerRange
+      const titleOffset = lines[0].length + 1 + (lines[1].length - lines[1].trimStart().length) + title.offset
+      inline.meta = { nativeContainerTitle: opening.type, nativeLiteralEscaped: Boolean(opening.literalEscaped),
+        sourceMap: Array.from({ length: title.content.length }, (_, index) => positions[titleOffset + index]) }
+      const bodyStart = lines.slice(0, bodyLine).reduce((length, line) => length + line.length + 1, 0)
+      const body = lines.slice(bodyLine, closeLine).join('\n')
+      const bodyTokens: Token[] = [], linkStart = capturedMarkdownSourceLinks(state.env).length
+      const diagnosticStart = capturedMarkdownCompatibility(state.env).length
+      const previous = state.env.suppressFrontmatter, previousDepth = Number(state.env.htmlDetailsDepth ?? 0)
+      const priorEscape = state.env.nativeLiteralEscaped
+      state.env.suppressFrontmatter = true; state.env.htmlDetailsDepth = previousDepth + 1
+      state.env.nativeLiteralEscaped = Boolean(opening.literalEscaped)
+      try { md.block.parse(body, md, state.env, bodyTokens) }
+      finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = priorEscape }
+
+      shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, offset => positions[bodyStart + offset], start + bodyLine, diagnosticStart)
+      let legacyDepth = 0
+      for (const token of bodyTokens) {
+        if (['html_details_open', 'html_figure_open'].includes(token.type)) legacyDepth++
+        if (!Object.hasOwn(token.meta ?? {}, 'nativeLiteralEscaped')) token.meta = { ...token.meta,
+          nativeLiteralEscaped: Boolean(opening.literalEscaped) && legacyDepth === 0 && !['fence', 'code_block', 'math_block', 'frontmatter', 'knowbook_metadata'].includes(token.type) }
+        if (['html_details_close', 'html_figure_close'].includes(token.type)) legacyDepth--
+        token.level += state.level
+        shiftNativeContainerRanges(token, start + bodyLine)
+        const range = token.meta?.htmlFigureRange
+        if (token.meta && isFigureRange(range)) token.meta.htmlFigureRange = { start: positions[bodyStart + range.start], end: positions[bodyStart + range.end] }
+      }
+      state.tokens.push(...bodyTokens)
+      const close = state.push('native_container_close', opening.tag, -1)
+      close.meta = { nativeContainer: meta, nativeLiteralEscaped: Boolean(opening.literalEscaped) }; close.map = meta.closingRange
+      state.line = start + closeLine + 1
+      return true
+    } catch (error) {
+      if (!silent) recordNativeContainerError(state.env, error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }, { alt: ['paragraph', 'reference', 'blockquote', 'list'] })
+  // Restore scoped source after shell/block recognition, before the one shared
+  // inline pass. The source map follows the encoded bytes, including entities.
+  md.core.ruler.after('block', 'native_literal_decode', state => {
+    for (const token of state.tokens) {
+      if (!token.meta?.nativeLiteralEscaped) continue
+      const projection = decodeNativeLiteralText(token.content)
+      if (projection.content !== token.content) {
+        const map = token.meta.sourceMap as number[] | undefined
+        const ends = token.meta.sourceEndMap as number[] | undefined
+        if (map && projection.starts && projection.ends) token.meta = { ...token.meta,
+          sourceMap: projection.starts.map(position => map[position]),
+          sourceEndMap: projection.ends.map(position => ends?.[position - 1] ?? map[position - 1] + 1) }
+        token.content = projection.content
+      }
+      if (token.attrs) token.attrs = token.attrs.map(([name, value]) => [name, typeof value === 'string' ? decodeNativeLiteralText(value).content : value])
+    }
+  })
+  md.core.ruler.after('inline', 'native_container_titles', state => {
+    for (const token of state.tokens) if (token.meta?.nativeContainerTitle) token.type = 'native_container_title'
+  })
+  md.renderer.rules.native_container_open = (tokens, index, _options, _env) => {
+    const value = tokens[index].meta!.nativeContainer as NativeMarkdownContainer
+    if (value.type === 'toggle') return '<details class="markdown-native-toggle"' + (value.markdownFormat?.toggleDefaultOpen ? ' open=""' : '') + '>\n'
+    const format = value.markdownFormat
+    const attrs = [['data-callout-kind', format?.calloutKind ?? 'note'], ['data-callout-icon', format?.calloutIcon ?? format?.calloutKind ?? 'note'],
+      ['data-callout-tone', format?.calloutTone ?? 'gray']].map(([name, item]) => ' ' + name + '="' + md.utils.escapeHtml(item!) + '"').join('')
+    return '<aside class="markdown-native-callout"' + attrs + '>\n'
+  }
+  md.renderer.rules.native_container_title = (tokens, index, options, env, renderer) => {
+    const tag = tokens[index].meta?.nativeContainerTitle === 'toggle' ? 'summary' : 'div'
+    return '<' + tag + (tag === 'div' ? ' class="markdown-native-callout-title"' : '') + '>'
+      + renderer.renderInline(tokens[index].children ?? [], options, env) + '</' + tag + '>\n'
+  }
+  md.renderer.rules.native_container_close = (tokens, index) => '</' + tokens[index].tag + '>\n'
   md.block.ruler.before('html_block', 'html_details', (state, start, end, silent) => {
     if (state.sCount[start] - state.blkIndent >= 4 || Number(state.env.htmlDetailsDepth ?? 0) >= md.options.maxNesting) return false
     const from = state.bMarks[start] + state.tShift[start]
@@ -358,12 +496,15 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     const previousDepth = Number(state.env.htmlDetailsDepth ?? 0)
     state.env.suppressFrontmatter = true
     state.env.htmlDetailsDepth = previousDepth + 1
+    const previousEscape = state.env.nativeLiteralEscaped
+    state.env.nativeLiteralEscaped = false
     try { md.block.parse(body, md, state.env, bodyTokens) }
-    finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth }
+    finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = previousEscape }
     const lineOffset = start + (source.slice(0, bodyStart).match(/\n/g)?.length ?? 0)
     shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, (offset) => positions[bodyStart + offset], lineOffset, diagnosticStart)
     for (const token of bodyTokens) {
       token.level += state.level
+      shiftNativeContainerRanges(token, lineOffset)
       const range = token.meta?.htmlFigureRange
       if (token.meta && isFigureRange(range)) token.meta.htmlFigureRange = {
         start: positions[bodyStart + range.start], end: positions[bodyStart + range.end]

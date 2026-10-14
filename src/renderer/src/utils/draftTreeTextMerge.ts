@@ -1,5 +1,5 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock } from './draftBlockShape'
+import { canBlockOwnChildren, canBlockNestUnder } from '@shared/blockTypes'
 import { isDraftTreeContiguous } from './draftTreeDepthChange'
 import { shiftDraftFragmentDepth } from './draftTreeFragment'
 import { getBlockSubtreeEndIndex, getFragmentLocalRootIds } from './draftTreeMove'
@@ -23,8 +23,9 @@ export function planDraftTextMerge(
   if (rightIndex !== leftIndex + 1 && rightIndex !== leftEnd + 1) return null
   const rightEnd = getBlockSubtreeEndIndex(blocks, rightIndex)
   let next: DocumentBlockDraft[]
-  if (isNestableBlock(left.type)) {
+  if (canBlockOwnChildren(left.type)) {
     const children = blocks.slice(rightIndex + 1, rightEnd + 1)
+    if (children.some(block => block.depth === right.depth + 1 && !canBlockNestUnder(left.type, block.type))) return null
     const delta = left.depth - right.depth
     if (children.some(block => block.depth + delta > 6 || block.depth + delta < 0)) return null
     next = [...blocks]

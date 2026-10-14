@@ -1,0 +1,16 @@
+.block-markdown-table[data-knowbook-table-layout="true"] { min-width: 0; table-layout: fixed; }
+.block-markdown-table[data-knowbook-table-layout="true"] :is(th,td) { min-width: 0; max-width: none; overflow-wrap: anywhere; }
+.markdown-table-grid .block-markdown-table[data-knowbook-table-layout="true"] { min-width: 0; }
+.markdown-table-grid .block-markdown-table[data-knowbook-table-layout="true"] :is(th,td) { min-width: 0; max-width: none; }
+.markdown-table-editor .block-markdown-table :is(th,td) { position: relative; }
+.markdown-table-column-handle, .markdown-table-row-handle, .markdown-table-resize-handle { border: 0; padding: 0; background: transparent; color: var(--kb-text-soft); cursor: grab; touch-action: none; }
+.markdown-table-column-handle::before { content: '⋮⋮'; }
+.markdown-table-row-handle::before { content: '⋮'; }
+.markdown-table-column-handle { display: inline-block; width: 20px; margin-right: 5px; }
+.markdown-table-row-handle { display: inline-block; width: 16px; margin-right: 4px; }
+.markdown-table-resize-handle { position: absolute; right: -5px; top: 0; bottom: 0; width: 10px; cursor: col-resize; z-index: 1; }
+.markdown-table-resize-handle::after { content: ''; position: absolute; width: 2px; top: 4px; bottom: 4px; left: 4px; background: var(--kb-line-strong); }
+.markdown-table-resize-handle:focus-visible, .markdown-table-resize-handle:hover { background: var(--kb-accent-soft); outline: 2px solid var(--kb-accent-strong); }
+.markdown-table-width-control { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
+.markdown-table-width-control input { width: 76px; min-width: 0; color: var(--kb-text); background: var(--kb-canvas); border: 1px solid var(--kb-line); padding: 4px; }
+.markdown-table-editor[data-table-gesture] { user-select: none; }

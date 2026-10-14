@@ -1,5 +1,5 @@
-import type { AppMessageHandler } from '../notify'
 import { isTaskBlockType } from '@shared/blockTypes'
+import type { AppMessageHandler } from '../notify'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
@@ -7,9 +7,8 @@ import { getActiveUiText } from '../i18n'
 import { serializeDraftBlockRange } from '../utils/draftClipboard'
 import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/draftTreeDepthChange'
 import { materializeDraftFragment } from '../utils/draftTreeFragment'
-import { isNestableBlock } from '../utils/draftBlockShape'
 import { reparentOrphanedBlocksAfterRangeDeletion } from '../utils/draftTreePlacement'
-import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { planBlockAction } from '../utils/documentBlockActions'
 import {
   getBlockSubtreeEndIndex,
   getNextSiblingSubtreeStartIndex,
@@ -269,16 +268,8 @@ export function useMultiBlockActions({
         ? activeBlockIndex
         : operationRange.start
 
-    setDraftBlocks((previous) => {
-      const next = previous.map((block, currentIndex) => {
-        if (currentIndex < operationRange.start || currentIndex > operationRange.end) return block
-        return { ...block, ...buildBlockTypePatch(nextType, block.content,
-          isTaskBlockType(nextType) ? block.checked : false, block.depth, block.parentBlockId ?? null) }
-      })
-      // Every converted text block is a root. Only the unselected suffix
-      // needs promotion; doing it once also keeps large selections linear.
-      return isNestableBlock(nextType) ? next : promoteDraftBlockChildren(next, operationRange.end)
-    })
+    const ids = draftBlocks.slice(operationRange.start, operationRange.end + 1).map(block => block.id!)
+    setDraftBlocks(previous => planBlockAction(previous, ids, 'convert', nextType) ?? previous)
     setActiveBlockIndex(focusIndex)
     setPendingFocusBlockIndex(focusIndex)
     endBlockDrag()

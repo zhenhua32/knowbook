@@ -6,13 +6,13 @@ import { capturedMarkdownCompatibility } from '@shared/markdownSourceLinks'
 import { parseInlineTextPresentationAttributes, INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE } from '@shared/inlineTextPresentation'
 import { hasAdvancedMarkdown, parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
 import { getMarkdownListNumbers } from '@shared/markdown'
-import { isNestableBlock } from '../utils/draftBlockShape'
+import { canBlockOwnChildren, isContainerBlockType } from '@shared/blockTypes'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
 import { resolveDraftBlockRelationship } from '../utils/draftTreePlacement'
 import { richTextSchema } from './schema'
 
 const textBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
-  'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
+  'heading-4', 'heading-5', 'heading-6', 'callout', 'toggle', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
 const inlineMarks: Record<string, string> = { strong_open: 'strong', em_open: 'em', s_open: 'strike', mark_open: 'highlight' }
 const htmlMarks: Record<string, string> = { strong: 'strong', em: 'em', s: 'strike', del: 'strike', mark: 'highlight', code: 'code' }
 
@@ -97,7 +97,7 @@ function blockToNode(block: DocumentBlockDraft, environment: MarkdownEnvironment
   // The full block parser supplies diagnostic source maps; inline-only parsing
   // has no block offsets. Observation retains code and escape exclusions.
   if (block.content.includes('<')) markdownEngine.parse(block.content, inlineEnvironment)
-  const inline = textBlockTypes.has(block.type) && !hasDefinition && !hasUnsupportedBlockSyntax(blockNodes)
+  const inline = textBlockTypes.has(block.type) && !hasDefinition && (isContainerBlockType(block.type) || !hasUnsupportedBlockSyntax(blockNodes))
     ? parseMarkdownInline(block.content, environment) : null
   const content = inline && !capturedMarkdownCompatibility(inlineEnvironment).some(finding => ['unsupported-html', 'html-attributes'].includes(finding.reason))
     ? inlineContent(inline) : null
@@ -122,6 +122,7 @@ export function reconcileRichTextBlockIds(doc: Node): Node {
   const ids = new Set<string>()
   const depthStack: Array<string | null> = []
   const depths = new Map<string, number>()
+  const types = new Map<string, string>()
   const remappedIds = new Map<string, string>()
   let changed = false
   const children: Node[] = []
@@ -133,11 +134,12 @@ export function reconcileRichTextBlockIds(doc: Node): Node {
     ids.add(id)
     if (requested) remappedIds.set(requested, id)
     const requestedParent = block.parentBlockId ? remappedIds.get(block.parentBlockId) ?? block.parentBlockId : null
-    const { depth, parentBlockId } = resolveDraftBlockRelationship(block.type, block.depth, requestedParent, id, depths, depthStack)
+    const { depth, parentBlockId } = resolveDraftBlockRelationship(block.type, block.depth, requestedParent, id, depths, depthStack, types)
     depthStack.length = depth + 1
     // A prose/source block cannot become an implicit parent of a pasted list.
-    depthStack[depth] = isNestableBlock(block.type) ? id : null
-    if (isNestableBlock(block.type)) depths.set(id, depth)
+    depthStack[depth] = canBlockOwnChildren(block.type) ? id : null
+    depths.set(id, depth)
+    types.set(id, block.type)
     if (!original || id !== block.id || depth !== block.depth || (block.parentBlockId ?? null) !== parentBlockId) {
       changed = true
       children.push(node.type.create({ ...node.attrs, block: { ...cloneRichTextBlock(block), id, depth, parentBlockId } }, node.content, node.marks))

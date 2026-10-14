@@ -281,7 +281,8 @@ test('renderer bootstrap exposes the Full Trust registry as a fixed window API',
 
 test('System Plugin management keeps install and OS-startup approvals explicit and exact', () => {
   const section = readFileSync(new URL('../src/renderer/src/sections/PluginsSection.tsx', import.meta.url), 'utf8')
-  const management = readFileSync(new URL('../src/renderer/src/hooks/usePluginManagement.ts', import.meta.url), 'utf8')
+  const management = readFileSync(new URL('../src/renderer/src/hooks/usePluginManagement.ts', import.meta.url), 'utf8') +
+    readFileSync(new URL('../src/renderer/src/hooks/pluginManagementActions.ts', import.meta.url), 'utf8')
   const preload = readFileSync(new URL('../src/preload/index.ts', import.meta.url), 'utf8')
 
   assert.match(section, /systemPluginIdConfirmations\[request\.id\] !== request\.pluginId/)

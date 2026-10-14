@@ -6,6 +6,7 @@ import { installMarkdownSourceLinks } from './markdownSourceLinks'
 import { installMarkdownFrontmatter } from './markdownFrontmatter'
 import { installMarkdownHtml } from './markdownHtml'
 import { installMarkdownWiki } from './markdownWiki'
+import { installMarkdownTableLayout } from './markdownTableLayoutPlugin'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -63,6 +64,7 @@ markdownEngine.renderer.rules.knowbook_metadata = () => ''
 installMarkdownWiki(markdownEngine)
 installMarkdownHtml(markdownEngine)
 installMarkdownSourceLinks(markdownEngine)
+installMarkdownTableLayout(markdownEngine)
 
 export type MarkdownNode = { token: Token; children: MarkdownNode[] }
 

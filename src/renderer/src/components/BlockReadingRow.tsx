@@ -1,4 +1,4 @@
-import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType } from '@shared/blockTypes'
 import { createElement, lazy, memo, Suspense, useContext, type ReactNode } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { UiText } from '../i18n'
@@ -9,6 +9,9 @@ import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { BlockRichMediaPreview } from './BlockRichMediaPreview'
 import { MarkdownTablePreview } from './MarkdownTablePreview'
 import { parseMarkdownTable } from '../utils/markdownTable'
+import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
+
+const NativeContainerStyle = lazy(() => import('./NativeContainerStyle'))
 
 const CodePreview = lazy(async () => {
   const [module] = await Promise.all([import('./CodeBlockPreview'), import('highlight.js/styles/github-dark.css')])
@@ -38,6 +41,7 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   isZh: boolean
 }) {
   const nodes = useContext(MarkdownBlockNodesContext)
+  const nativeContainer = isContainerBlockType(block.type) ? nativeContainerPresentation(block.type, block.markdownFormat) : null
   const advanced = Boolean(nodes && hasAdvancedMarkdown(nodes))
   const structured = ['code', 'math', 'table', 'divider', 'frontmatter'].includes(block.type)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
@@ -57,7 +61,10 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   else {
     const heading = getHeadingLevel(block.type)
     const onReference = (label: string) => { void onNavigateReference('[[' + label + ']]', 2) }
-    content = nodes ? <div className="document-reading-text"><MarkdownBlockContent onReference={onReference} hideImages={!advanced} /></div>
+    content = nativeContainer ? <div className="native-container-title">
+      {block.type === 'callout' ? <span className="native-container-icon" data-native-container-icon={nativeContainer.icon} aria-hidden="true" /> : null}
+      <div>{nodes ? <MarkdownBlockContent onReference={onReference} /> : <MarkdownInline content={block.content} onReference={onReference} />}</div>
+    </div> : nodes ? <div className="document-reading-text"><MarkdownBlockContent onReference={onReference} hideImages={!advanced} /></div>
       : heading ? createElement('h' + heading, null, <MarkdownInline content={block.content} onReference={onReference} hideImages />)
       : block.type === 'quote' ? <blockquote><MarkdownContent content={block.content} onReference={onReference} hideImages /></blockquote>
       : <div className="document-reading-text"><MarkdownContent content={block.content} onReference={onReference} hideImages /></div>
@@ -66,8 +73,11 @@ export const BlockReadingRow = memo(function BlockReadingRow({
     className={`document-reading-row type-${block.type}${isHighlighted ? ' block-editor-row-highlighted' : ''}${isSearchMatch ? ' block-editor-row-search-match' : ''}`}
     data-block-index={index} data-block-id={block.id}
     data-heading-level={getHeadingLevel(block.type) ?? undefined}
+    data-native-container={nativeContainer ? block.type : undefined}
+    data-native-container-tone={block.type === 'callout' ? nativeContainer?.tone : undefined}
     style={{ marginInlineStart: indentPx, ...(block.highlight ? { background: `var(--highlight-${block.highlight})` } : {}) }}
   >
+    {nativeContainer ? <Suspense fallback={null}><NativeContainerStyle /></Suspense> : null}
     {hasChildren && block.id ? <button className="reading-collapse" type="button" aria-expanded={!collapsed}
       aria-label={getHeadingLevel(block.type)
         ? `${collapsed ? (isZh ? '展开章节' : 'Expand section') : (isZh ? '折叠章节' : 'Collapse section')}：${block.content}`

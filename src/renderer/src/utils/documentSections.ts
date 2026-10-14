@@ -2,16 +2,36 @@ import { getHeadingLevel, type HeadingLevel } from '@shared/markdownEngine'
 import type { DocumentBlockDraft } from '@shared/contracts'
 
 export type DocumentSection = { id: string; index: number; end: number; level: HeadingLevel; parentId: string | null }
-export type DocumentFoldView = { collapsedIds: Set<string>; focusedHeadingId: string | null }
+export type DocumentFoldView = { collapsedIds: Set<string>; focusedHeadingId: string | null; toggleOpenOverrides?: Map<string, boolean> }
+
+/** Authored defaults never become personal overrides merely by displaying a document. */
+export function applyDocumentToggleDefaults(blocks: DocumentBlockDraft[], view: DocumentFoldView): DocumentFoldView {
+  const collapsedIds = new Set(view.collapsedIds)
+  for (const block of blocks) if (block.type === 'toggle' && block.id) {
+    const open = view.toggleOpenOverrides?.get(block.id) ?? block.markdownFormat?.toggleDefaultOpen !== false
+    if (open) collapsedIds.delete(block.id)
+    else collapsedIds.add(block.id)
+  }
+  return { ...view, collapsedIds }
+}
 
 export function buildDocumentSections(blocks: DocumentBlockDraft[]): DocumentSection[] {
   const sections: DocumentSection[] = []
-  const stack: DocumentSection[] = []
+  const stacks = new Map<string, DocumentSection[]>()
+  const subtreeEnds = new Map<string, number>(), treeStack: Array<{ id: string; depth: number }> = []
+  blocks.forEach((block, index) => {
+    while (treeStack.length && treeStack.at(-1)!.depth >= block.depth) subtreeEnds.set(treeStack.pop()!.id, index)
+    if (block.id) treeStack.push({ id: block.id, depth: block.depth })
+  })
+  for (const entry of treeStack) subtreeEnds.set(entry.id, blocks.length)
   blocks.forEach((block, index) => {
     const level = getHeadingLevel(block.type)
     if (!level || !block.id) return
-    while (stack.length && stack.at(-1)!.level >= level) stack.pop()!.end = index
-    const section: DocumentSection = { id: block.id, index, end: blocks.length, level, parentId: stack.at(-1)?.id ?? null }
+    const scope = block.parentBlockId ?? '', stack = stacks.get(scope) ?? []
+    stacks.set(scope, stack)
+    while (stack.length && stack.at(-1)!.level >= level) { const previous = stack.pop()!; previous.end = Math.min(previous.end, index) }
+    const scopeEnd = block.parentBlockId ? subtreeEnds.get(block.parentBlockId) ?? blocks.length : blocks.length
+    const section: DocumentSection = { id: block.id, index, end: scopeEnd, level, parentId: stack.at(-1)?.id ?? null }
     sections.push(section)
     stack.push(section)
   })
@@ -27,10 +47,14 @@ export function findDocumentSection(sections: DocumentSection[], index: number):
     if (sections[middle].index <= index) { current = sections[middle]; low = middle + 1 }
     else high = middle - 1
   }
-  return current && index < current.end ? current : null
+  if (current && index < current.end) return current
+  // A heading inside a container cannot consume the following outer chapter.
+  for (let position = high; position >= 0; position--) if (index < sections[position].end) return sections[position]
+  return null
 }
 
 export function getVisibleDocumentEntries(blocks: DocumentBlockDraft[], view: DocumentFoldView, sections = buildDocumentSections(blocks)) {
+  view = applyDocumentToggleDefaults(blocks, view)
   const byId = new Map(sections.map((section) => [section.id, section]))
   const focus = view.focusedHeadingId ? byId.get(view.focusedHeadingId) : undefined
   const end = focus?.end ?? blocks.length
@@ -51,6 +75,7 @@ export function revealDocumentBlock(blocks: DocumentBlockDraft[], view: Document
   const targetIndex = indexById.get(targetId)
   if (targetIndex === undefined) return view
   const collapsedIds = new Set(view.collapsedIds)
+  const toggleOpenOverrides = new Map(view.toggleOpenOverrides)
   for (const section of sections) {
     if (targetIndex > section.index && targetIndex < section.end) collapsedIds.delete(section.id)
   }
@@ -60,18 +85,19 @@ export function revealDocumentBlock(blocks: DocumentBlockDraft[], view: Document
     visited.add(parentId)
     collapsedIds.delete(parentId)
     const parentIndex = indexById.get(parentId)
+    if (parentIndex !== undefined && blocks[parentIndex].type === 'toggle') toggleOpenOverrides.set(parentId, true)
     parentId = parentIndex === undefined ? null : blocks[parentIndex].parentBlockId
   }
   const focus = sections.find((section) => section.id === view.focusedHeadingId)
   const focusedHeadingId = focus && (targetIndex < focus.index || targetIndex >= focus.end)
     ? findDocumentSection(sections, targetIndex)?.id ?? null : focus?.id ?? null
   if (focusedHeadingId) collapsedIds.delete(focusedHeadingId)
-  return { collapsedIds, focusedHeadingId }
+  return { collapsedIds, focusedHeadingId, toggleOpenOverrides }
 }
 
 const FOLD_STORAGE_KEY = 'knowbook.documents.folding.v1'
 type FoldStorage = Pick<Storage, 'getItem' | 'setItem'>
-type StoredView = { collapsedIds: string[]; focusedHeadingId: string | null }
+type StoredView = { collapsedIds: string[]; focusedHeadingId: string | null; toggleOpenOverrides?: Array<[string, boolean]> }
 function readEntries(storage: FoldStorage): Array<[string, StoredView]> {
   const parsed: unknown = JSON.parse(storage.getItem(FOLD_STORAGE_KEY) ?? '[]')
   if (!Array.isArray(parsed)) return []
@@ -84,7 +110,9 @@ function readEntries(storage: FoldStorage): Array<[string, StoredView]> {
 export function readDocumentFoldView(documentId: string, storage?: FoldStorage): DocumentFoldView {
   try {
     const stored = readEntries(storage ?? window.localStorage).find(([id]) => id === documentId)?.[1]
-    if (stored) return { collapsedIds: new Set(stored.collapsedIds), focusedHeadingId: stored.focusedHeadingId }
+    if (stored) return { collapsedIds: new Set(stored.collapsedIds), focusedHeadingId: stored.focusedHeadingId,
+      toggleOpenOverrides: new Map(Array.isArray(stored.toggleOpenOverrides) ? stored.toggleOpenOverrides.slice(0, 20_000)
+        .filter((entry): entry is [string, boolean] => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string' && typeof entry[1] === 'boolean') : []) }
   } catch { /* Ignore damaged/unavailable preferences. */ }
   return { collapsedIds: new Set(), focusedHeadingId: null }
 }
@@ -95,7 +123,8 @@ export function saveDocumentFoldView(documentId: string, view: DocumentFoldView,
     let entries: Array<[string, StoredView]> = []
     try { entries = readEntries(target) } catch { /* Replace damaged preferences. */ }
     target.setItem(FOLD_STORAGE_KEY, JSON.stringify([
-      [documentId, { collapsedIds: [...view.collapsedIds].slice(0, 20_000), focusedHeadingId: view.focusedHeadingId }],
+      [documentId, { collapsedIds: [...view.collapsedIds].slice(0, 20_000), focusedHeadingId: view.focusedHeadingId,
+        ...(view.toggleOpenOverrides?.size ? { toggleOpenOverrides: [...view.toggleOpenOverrides].slice(0, 20_000) } : {}) }],
       ...entries.filter(([id]) => id !== documentId)
     ].slice(0, 100)))
   } catch { /* Folding still works without preference storage. */ }

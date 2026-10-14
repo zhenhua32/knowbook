@@ -1,8 +1,10 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useContext, useLayoutEffect, useRef, useState } from 'react'
 import { Fragment, Slice, type Node as RichNode } from 'prosemirror-model'
-import { EditorState, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
+import { EditorState, NodeSelection, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import { createRoot, type Root } from 'react-dom/client'
+import { createPortal } from 'react-dom'
+import { MarkdownBlockNodesContext, MarkdownDocumentContext } from '../components/MarkdownDocumentContext'
 import { baseKeymap, chainCommands, createParagraphNear, splitBlockAs, toggleMark } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
 import { InputRule, inputRules } from 'prosemirror-inputrules'
@@ -15,7 +17,7 @@ import { richTextSchema } from './schema'
 import { registerRichTextHistoryBridge } from './history'
 import { planRichTextTreePaste } from './paste'
 import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
-import type { EditorHistoryBookmark } from '../utils/editorHistoryFocus'
+import { captureAsyncHistoryFocusPermission, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import { createColdBlockPopup } from '../utils/coldBlockPopup'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
@@ -24,12 +26,20 @@ import { getMarkdownShortcut, parsePastedMarkdown } from '../utils/markdownInput
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { attachmentMarkdown } from '@shared/attachments'
 import { importAttachmentFiles } from '../utils/attachments'
-import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
+import { isContainerBlockType } from '@shared/blockTypes'
+import { normalizeMarkdownFormat } from '@shared/markdownFormat'
+import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
+import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { INLINE_TEXT_COLORS, type InlineTextColor } from '@shared/inlineTextPresentation'
 import { selectedRichTextColor, setRichTextColor } from './presentation'
 import './rich-text.css'
 import '../styles/inline-text-presentation.css'
+
+const NativeContainerControls = lazy(() => import('../components/NativeContainerControls').then(module => ({ default: module.NativeContainerControls })))
+const NativeContainerStyle = lazy(() => import('../components/NativeContainerStyle'))
+const MarkdownTableEditor = lazy(() => import('../components/MarkdownTableEditor').then(module => ({ default: module.MarkdownTableEditor })))
 
 type Props = {
   blocks: DocumentBlockDraft[]
@@ -44,6 +54,9 @@ type Props = {
   onEditSource: () => void
   onRevealBlock: (id: string) => void
   onOpenBlockActions?: (request: { blockIds: string[]; x: number; y: number }) => void
+  collapsedBlockIds?: Set<string>
+  onToggleCollapse?: (id: string) => void
+  onAddContainerChild?: (id: string, type: typeof BLOCK_CONVERSION_TYPES[number]) => string | void
 }
 
 export function richTextSelectionBlockIds(state: EditorState): string[] {
@@ -82,9 +95,20 @@ function sliceMarkdown(slice: Slice): string {
   return serializeBlocksToMarkdown(richDocToDraftBlocks(richTextSchema.nodes.doc.create(null, slice.content)))
 }
 
-const types = ['paragraph', 'heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'bulleted-list', 'numbered-list', 'todo', 'quote']
-const labelsZh = ['正文', '标题 1', '标题 2', '标题 3', '标题 4', '标题 5', '标题 6', '无序列表', '有序列表', '待办', '引用']
-const labelsEn = ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4', 'Heading 5', 'Heading 6', 'Bullet list', 'Numbered list', 'To-do', 'Quote']
+function clipboardHtml(markdown: string): string {
+  const environment: MarkdownEnvironment = {}
+  const tokens = markdownEngine.parse(markdown, environment)
+  const html = markdownEngine.renderer.render(tokens, markdownEngine.options, environment)
+  // Only strict parsed container/layout tokens claim the existing source-copy
+  // fallback. Literal fenced examples and external HTML keep their old path.
+  const nativeSource = tokens.some(token => token.type === 'native_container_open' && Boolean(token.meta?.nativeContainer)
+    || token.type === 'knowbook_table_layout' && token.meta?.boundTableLayout === true)
+  return nativeSource ? `<div data-knowbook-markdown-source="true">${html}</div>` : html
+}
+
+const types: readonly string[] = BLOCK_CONVERSION_TYPES
+const labelsZh = ['正文', '标题 1', '标题 2', '标题 3', '标题 4', '标题 5', '标题 6', '待办', '有序待办', '代码', '公式', '引用', '无序列表', '有序列表', '表格', '分割线', '提示块', '折叠块']
+const labelsEn = ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4', 'Heading 5', 'Heading 6', 'To-do', 'Numbered to-do', 'Code', 'Math', 'Quote', 'Bullet list', 'Numbered list', 'Table', 'Divider', 'Callout', 'Toggle']
 
 export function DocumentRichTextEditor(props: Props) {
   const mount = useRef<HTMLDivElement>(null), viewRef = useRef<EditorView | null>(null)
@@ -94,6 +118,8 @@ export function DocumentRichTextEditor(props: Props) {
   const [message, setMessage] = useState('')
   const [linkUrl, setLinkUrl] = useState<string | null>(null)
   const [palette, setPalette] = useState<'textColor' | 'backgroundColor' | null>(null)
+  const [tableHosts, setTableHosts] = useState<Array<{ id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined }>>([])
+  const markdownDocument = useContext(MarkdownDocumentContext)
   const paletteRef = useRef(palette)
   paletteRef.current = palette
   const linkSelection = useRef<{ from: number; to: number; doc: RichNode } | null>(null)
@@ -101,11 +127,15 @@ export function DocumentRichTextEditor(props: Props) {
   const [slashDismissed, setSlashDismissed] = useState<string | null>(null)
   const boundary = useRef(false), importing = useRef(false)
   const pendingSelection = useRef<EditorHistoryBookmark | null>(null)
+  const pendingChildFocus = useRef<{ editor: EditorView; documentId: string; id?: string; parentId: string; type: string;
+    before: DocumentBlockDraft[]; permission: ReturnType<typeof captureAsyncHistoryFocusPermission> } | null>(null)
+  const parkedFoldSelection = useRef<{ doc: RichNode; anchor: Endpoint; head: Endpoint; fallback: { anchor: Endpoint; head: Endpoint } } | null>(null)
   const sourceRefresh = useRef(new Set<() => void>())
   const pendingContextMenu = useRef<(() => void) | null>(null)
   const view = viewRef.current
   const selection = view?.state.selection
-  const currentType = selection?.$from.parent.attrs.block?.type ?? 'paragraph'
+  const currentBlock = selection && view ? view.state.doc.child(Math.min(selection.$from.index(0), view.state.doc.childCount - 1)).attrs.block as DocumentBlockDraft | undefined : undefined
+  const currentType = currentBlock?.type ?? 'paragraph'
   const currentText = selection?.$from.parent.textContent ?? ''
   const slashMatch = selection?.empty ? /^\/([^\s]*)$/.exec(currentText) : null
   const slashQuery = slashMatch?.[1].toLowerCase()
@@ -115,6 +145,53 @@ export function DocumentRichTextEditor(props: Props) {
   const slashRef = useRef({ commands: slashCommands, index: slashIndex })
   slashRef.current = { commands: slashCommands, index: Math.min(slashIndex, Math.max(0, slashCommands.length - 1)) }
   void revision
+
+  const cancelChildFocus = () => {
+    pendingChildFocus.current?.permission.dispose()
+    pendingChildFocus.current = null
+  }
+  const focusAddedChild = (readyId?: string, readyCell?: HTMLElement | null) => {
+    const request = pendingChildFocus.current, editor = viewRef.current, current = latest.current
+    if (!request || !request.id || readyId && readyId !== request.id) return
+    if (editor !== request.editor || current.documentId !== request.documentId || editor.composing || !request.permission.canRestore()) { cancelChildFocus(); return }
+    const index = current.blocks.findIndex(block => block.id === request.id)
+    if (index < 0) {
+      if (!areDocumentDraftBlocksEqual(current.blocks, request.before)) cancelChildFocus()
+      return
+    }
+    const child = current.blocks[index]
+    if (child.type !== request.type || child.parentBlockId !== request.parentId || !current.visibleIndices.includes(index)
+      || !areDocumentDraftBlocksEqual(current.blocks.filter(block => block.id !== request.id), request.before)) { cancelChildFocus(); return }
+    let position = -1
+    editor.state.doc.forEach((node, offset) => { if (node.attrs.block?.id === request.id) position = offset })
+    const node = position >= 0 ? editor.state.doc.nodeAt(position) : null
+    if (!node || node.attrs.block?.type !== request.type) return
+    const row = editor.nodeDOM(position) as HTMLElement | null
+    const cell = readyCell ?? row?.querySelector<HTMLElement>('.markdown-table-editor [data-row="0"][data-column="0"]')
+    // A cold, valid table waits for its actual portal mount, never a timed frame.
+    if (child.type === 'table' && child.content.trim() && !cell && readyCell === undefined) return
+    const source = row?.querySelector<HTMLElement>('[data-rich-source-entry]')
+    cancelChildFocus()
+    const selection = node.type.name === 'text_block' ? TextSelection.create(editor.state.doc, position + 1) : NodeSelection.create(editor.state.doc, position)
+    editor.updateState(editor.state.apply(editor.state.tr.setSelection(selection)))
+    if (cell) cell.focus()
+    else if (node.type.name === 'source_block' && child.type !== 'divider' && source) source.focus()
+    else editor.focus()
+    setRevision(value => value + 1)
+    current.checkpoint()
+  }
+  const addContainerChild = (parentId: string, type: typeof BLOCK_CONVERSION_TYPES[number]) => {
+    const editor = viewRef.current, current = latest.current
+    if (!editor || editor.composing || !current.onAddContainerChild) return
+    cancelChildFocus()
+    const request = { editor, documentId: current.documentId, parentId, type, before: current.blocks,
+      id: undefined as string | undefined, permission: captureAsyncHistoryFocusPermission() }
+    pendingChildFocus.current = request
+    try {
+      request.id = current.onAddContainerChild(parentId, type) || undefined
+      if (!request.id) cancelChildFocus()
+    } catch (error) { cancelChildFocus(); throw error }
+  }
 
   const openBlockActions = (id: string, x: number, y: number) => {
     const editor = viewRef.current
@@ -189,14 +266,18 @@ export function DocumentRichTextEditor(props: Props) {
     latest.current.checkpoint()
     let tr = editor.state.tr
     if (removeSlash) tr = tr.delete(editor.state.selection.$from.start(), editor.state.selection.$from.end())
-    tr.doc.nodesBetween(tr.selection.from, tr.selection.to, (node, pos) => {
-      if (node.type.name !== 'text_block') return false
-      const block: DocumentBlockDraft = { ...node.attrs.block, type, checked: false,
-        depth: ['bulleted-list', 'numbered-list', 'todo'].includes(type) ? node.attrs.block?.depth ?? 0 : 0,
-        parentBlockId: ['bulleted-list', 'numbered-list', 'todo'].includes(type) ? node.attrs.block?.parentBlockId : null }
-      tr.setNodeMarkup(pos, undefined, { ...node.attrs, block })
-      return false
-    })
+    const anchor = endpoint(tr.doc, tr.selection.anchor), head = endpoint(tr.doc, tr.selection.head)
+    let blocks = richDocToDraftBlocks(tr.doc)
+    const selected = richTextSelectionBlockIds(EditorState.create({ doc: tr.doc, selection: tr.selection }))
+      .filter(id => latest.current.visibleIndices.some(index => blocks[index]?.id === id))
+    for (const id of selected) {
+      const index = blocks.findIndex(block => block.id === id)
+      blocks = prepareDraftBlockTypeChange(blocks, index, type)
+      blocks[index] = { ...blocks[index], checked: false, content: type === 'divider' ? '' : blocks[index].content,
+        markdownFormat: normalizeMarkdownFormat(type, blocks[index].markdownFormat) }
+    }
+    tr = tr.replaceWith(0, tr.doc.content.size, draftBlocksToRichDoc(blocks).content)
+    tr.setSelection(TextSelection.between(tr.doc.resolve(positionOf(tr.doc, anchor)), tr.doc.resolve(positionOf(tr.doc, head))))
     boundary.current = true; editor.dispatch(tr.scrollIntoView())
     setSlashDismissed(null); setSlashIndex(0); editor.focus()
   }
@@ -240,6 +321,25 @@ export function DocumentRichTextEditor(props: Props) {
               decorations.push(Decoration.widget(pos + 1, () => blockActionButton(node.attrs.block.id),
                 { side: -1, key: `actions:${node.attrs.block.id}:${latest.current.isZh}`, stopEvent: blockActionStopsEvent }))
             }
+            if (node.type === richTextSchema.nodes.text_block && visible.has(index) && isContainerBlockType(node.attrs.block?.type)) {
+              const block = node.attrs.block as DocumentBlockDraft, presentation = nativeContainerPresentation(block.type, block.markdownFormat)
+              const collapsed = Boolean(latest.current.collapsedBlockIds?.has(block.id!))
+              decorations.push(Decoration.widget(pos + 1, () => {
+                const control = document.createElement(block.type === 'toggle' ? 'button' : 'span')
+                control.contentEditable = 'false'
+                if (block.type === 'toggle') {
+                  ;(control as HTMLButtonElement).type = 'button'; control.className = 'native-toggle-control'
+                  control.setAttribute('aria-expanded', String(!collapsed))
+                  control.setAttribute('aria-label', latest.current.isZh ? collapsed ? '展开块' : '折叠块' : collapsed ? 'Expand block' : 'Collapse block')
+                  control.addEventListener('mousedown', event => event.preventDefault())
+                  control.addEventListener('click', () => { if (!viewRef.current?.composing) latest.current.onToggleCollapse?.(block.id!) })
+                } else {
+                  control.className = 'native-container-icon'; control.dataset.nativeContainerIcon = presentation.icon
+                  control.setAttribute('aria-hidden', 'true')
+                }
+                return control
+              }, { side: -1, key: `container:${block.id}:${presentation.icon}:${collapsed}:${latest.current.isZh}`, stopEvent: blockActionStopsEvent }))
+            }
             if (['todo', 'numbered-todo'].includes(node.attrs.block?.type) && visible.has(index)) {
               decorations.push(Decoration.widget(pos + 1, () => {
                 const checkbox = document.createElement('input')
@@ -267,13 +367,30 @@ export function DocumentRichTextEditor(props: Props) {
     const split: Command = (state, dispatch, editor) => {
       const node = state.selection.$from.parent
       const block: DocumentBlockDraft | undefined = node.attrs.block
-      if (node.type.name === 'text_block' && !node.content.size && block?.type !== 'paragraph') {
+      if (node.type.name === 'text_block' && !node.content.size && block?.type !== 'paragraph' && !isContainerBlockType(block?.type ?? '')) {
         const blocks = richDocToDraftBlocks(state.doc), index = state.selection.$from.index(0)
-        const promoted = promoteDraftBlockChildren(blocks, index)
-        promoted[index] = { ...promoted[index], type: 'paragraph', depth: 0, checked: false, parentBlockId: null }
+        const promoted = prepareDraftBlockTypeChange(blocks, index, 'paragraph')
+        promoted[index] = { ...promoted[index], checked: false, markdownFormat: undefined }
         const tr = state.tr.replaceWith(0, state.doc.content.size, draftBlocksToRichDoc(promoted).content)
         let pos = 1; for (let i = 0; i < index; i++) pos += tr.doc.child(i).nodeSize
         dispatch?.(tr.setSelection(TextSelection.create(tr.doc, pos)))
+        return true
+      }
+      if (node.type.name === 'text_block' && block && isContainerBlockType(block.type)) {
+        const tr = state.tr.deleteSelection(), index = tr.selection.$from.index(0), from = tr.selection.$from.parentOffset
+        const current = tr.selection.$from.parent, children: RichNode[] = []
+        tr.doc.forEach(child => children.push(child))
+        children[index] = current.copy(current.content.cut(0, from))
+        const right = richTextSchema.nodes.text_block.create({ block: { id: createDraftBlockId(), type: 'paragraph', content: '', checked: false,
+          depth: block.depth < 6 ? block.depth + 1 : block.depth, parentBlockId: block.depth < 6 ? block.id : block.parentBlockId }, originalInline: null }, current.content.cut(from))
+        let insertion = index + 1
+        if (block.depth >= 6) while (insertion < children.length && children[insertion].attrs.block?.depth > block.depth) insertion++
+        children.splice(insertion, 0, right)
+        tr.replaceWith(0, tr.doc.content.size, Fragment.fromArray(children))
+        const pos = 1 + children.slice(0, insertion).reduce((sum, child) => sum + child.nodeSize, 0)
+        latest.current.onRevealBlock(block.id!)
+        if (latest.current.collapsedBlockIds?.has(block.id!)) latest.current.onToggleCollapse?.(block.id!)
+        dispatch?.(tr.setSelection(TextSelection.create(tr.doc, pos)).scrollIntoView())
         return true
       }
       if (node.type.name === 'text_block' && ['bulleted-list', 'numbered-list', 'todo', 'numbered-todo'].includes(block?.type ?? '')) {
@@ -307,8 +424,8 @@ export function DocumentRichTextEditor(props: Props) {
       const { $from, empty } = state.selection, block = $from.parent.attrs.block as DocumentBlockDraft | null
       if (!empty || $from.parentOffset || $from.parent.type.name !== 'text_block' || !block || block.type === 'paragraph') return false
       latest.current.checkpoint(); boundary.current = true
-      const blocks = promoteDraftBlockChildren(richDocToDraftBlocks(state.doc), $from.index(0))
-      blocks[$from.index(0)] = { ...blocks[$from.index(0)], type: 'paragraph', depth: 0, checked: false, parentBlockId: null }
+      const blocks = prepareDraftBlockTypeChange(richDocToDraftBlocks(state.doc), $from.index(0), 'paragraph')
+      blocks[$from.index(0)] = { ...blocks[$from.index(0)], checked: false, markdownFormat: undefined }
       const tr = state.tr.replaceWith(0, state.doc.content.size, draftBlocksToRichDoc(blocks).content)
       dispatch?.(tr.setSelection(TextSelection.create(tr.doc, $from.start())).scrollIntoView())
       return true
@@ -412,14 +529,14 @@ export function DocumentRichTextEditor(props: Props) {
           if (!event.clipboardData || editor.state.selection.empty) return false
           const slice = editor.state.selection.content(), markdown = sliceMarkdown(slice)
           event.clipboardData.setData('text/plain', markdown)
-          event.clipboardData.setData('text/html', markdownEngine.render(markdown))
+          event.clipboardData.setData('text/html', clipboardHtml(markdown))
           event.clipboardData.setData('application/x-knowbook-markdown', markdown)
           event.preventDefault(); return true
         },
         cut(_editor, event) {
           if (!event.clipboardData || editor.state.selection.empty || editor.composing) return false
           const slice = editor.state.selection.content(), markdown = sliceMarkdown(slice)
-          event.clipboardData.setData('text/plain', markdown); event.clipboardData.setData('text/html', markdownEngine.render(markdown))
+          event.clipboardData.setData('text/plain', markdown); event.clipboardData.setData('text/html', clipboardHtml(markdown))
           event.clipboardData.setData('application/x-knowbook-markdown', markdown)
           latest.current.checkpoint(); boundary.current = true
           editor.dispatch(editor.state.tr.deleteSelection().scrollIntoView())
@@ -467,6 +584,7 @@ export function DocumentRichTextEditor(props: Props) {
         if (editor.composing) return false
         const { $from } = editor.state.selection
         if ($from.parent.type.name !== 'text_block' || !$from.parent.attrs.block || from !== to) return false
+        if (isContainerBlockType($from.parent.attrs.block.type)) return false
         const content = $from.parent.textContent.slice(0, $from.parentOffset) + text + $from.parent.textContent.slice($from.parentOffset)
         const patch = getMarkdownShortcut($from.parent.attrs.block, content)
         if (!patch || patch.type === 'paragraph') return false
@@ -478,10 +596,36 @@ export function DocumentRichTextEditor(props: Props) {
         return true
       },
       nodeViews: {
-        source_block(node) {
+        source_block(node, _view, getPos) {
           const dom = document.createElement('div')
           dom.className = 'rich-text-source-block block-editor-row'
           dom.contentEditable = 'false'
+          if (node.attrs.block?.type === 'table') {
+            let current = node
+            const host = document.createElement('div'), id = node.attrs.block.id as string
+            host.className = 'rich-text-table-host'
+            const editSource = document.createElement('button')
+            editSource.type = 'button'; editSource.className = 'secondary-button'
+            editSource.dataset.richSourceEntry = 'true'
+            editSource.textContent = latest.current.isZh ? '编辑源码' : 'Edit source'
+            editSource.addEventListener('click', () => latest.current.onEditSource())
+            dom.append(host, editSource)
+            if (latest.current.onOpenBlockActions) dom.prepend(blockActionButton(id))
+            setTableHosts(previous => [...previous.filter(item => item.id !== id), { id, dom: host, node: () => current, position: getPos }])
+            dom.addEventListener('contextmenu', event => {
+              if (host.contains(event.target as Node) || !latest.current.onOpenBlockActions || viewRef.current?.composing) return
+              event.preventDefault(); event.stopPropagation(); openContextBlockActions(id, event.clientX, event.clientY)
+            })
+            return { dom,
+              stopEvent: event => event.target === editSource || event.target instanceof HTMLElement
+                && (host.contains(event.target) || Boolean(event.target.closest('.rich-text-block-actions'))) && blockActionStopsEvent(event),
+              ignoreMutation: record => record.type !== 'selection',
+              update(next) {
+                if (next.type !== current.type || next.attrs.block?.id !== id || next.attrs.block?.type !== 'table') return false
+                current = next; return true
+              }, destroy() { if (viewRef.current) setTableHosts(previous => previous.filter(item => item.dom !== host)) }
+            }
+          }
           const preview = document.createElement('div')
           preview.className = 'rich-text-source-preview'
           const mediaHost = document.createElement('div')
@@ -529,6 +673,7 @@ export function DocumentRichTextEditor(props: Props) {
           renderPreview()
           const button = document.createElement('button')
           button.type = 'button'; button.className = 'secondary-button'
+          button.dataset.richSourceEntry = 'true'
           button.textContent = latest.current.isZh ? '编辑源码' : 'Edit source'
           button.addEventListener('click', () => latest.current.onEditSource())
           dom.append(preview, mediaHost, button)
@@ -573,7 +718,7 @@ export function DocumentRichTextEditor(props: Props) {
       }
     })
     setRevision(value => value + 1)
-    return () => { pendingContextMenu.current?.(); unregister(); viewRef.current = null; editor.destroy() }
+    return () => { cancelChildFocus(); pendingContextMenu.current?.(); unregister(); parkedFoldSelection.current = null; viewRef.current = null; editor.destroy() }
   }, [props.documentId])
 
   const referenceSignature = JSON.stringify(props.references ?? {})
@@ -595,6 +740,28 @@ export function DocumentRichTextEditor(props: Props) {
       // Visibility and task widgets are derived from the current folding state.
       editor.updateState(editor.state)
     }
+    const visible = new Set(props.visibleIndices), doc = editor.state.doc
+    const anchor = endpoint(doc, editor.state.selection.anchor), head = endpoint(doc, editor.state.selection.head)
+    const parked = parkedFoldSelection.current
+    if (parked && (!doc.eq(parked.doc) || JSON.stringify({ anchor, head }) !== JSON.stringify(parked.fallback))) parkedFoldSelection.current = null
+    if (!visible.has(anchor.index) || !visible.has(head.index)) {
+      const focusOwned = editor.hasFocus()
+      const index = [...visible].filter(index => index <= Math.min(anchor.index, head.index)).at(-1) ?? props.visibleIndices[0]
+      if (index !== undefined) {
+        const node = doc.child(index), fallback = { index, blockId: node.attrs.block?.id, offset: node.content.size }
+        const next = Selection.near(doc.resolve(positionOf(doc, fallback)), -1)
+        editor.updateState(editor.state.apply(editor.state.tr.setSelection(next)))
+        parkedFoldSelection.current = { doc, anchor, head, fallback: { anchor: endpoint(doc, next.anchor), head: endpoint(doc, next.head) } }
+        if (focusOwned) editor.focus()
+        setRevision(value => value + 1)
+      }
+    } else if (parkedFoldSelection.current && visible.has(parkedFoldSelection.current.anchor.index) && visible.has(parkedFoldSelection.current.head.index)) {
+      const restore = parkedFoldSelection.current, focusOwned = editor.hasFocus()
+      parkedFoldSelection.current = null
+      editor.updateState(editor.state.apply(editor.state.tr.setSelection(TextSelection.between(doc.resolve(positionOf(doc, restore.anchor)), doc.resolve(positionOf(doc, restore.head))))))
+      if (focusOwned) editor.focus()
+      setRevision(value => value + 1)
+    }
     if (boundary.current) { boundary.current = false; props.checkpoint() }
     if (pendingSelection.current?.richText) {
       const { anchor, head } = pendingSelection.current.richText
@@ -602,7 +769,8 @@ export function DocumentRichTextEditor(props: Props) {
       editor.dispatch(editor.state.tr.setSelection(TextSelection.between(editor.state.doc.resolve(positionOf(editor.state.doc, anchor)), editor.state.doc.resolve(positionOf(editor.state.doc, head)))))
       editor.focus()
     }
-  }, [props.blocks, props.visibleIndices])
+    focusAddedChild()
+  }, [props.blocks, props.visibleIndices, props.collapsedBlockIds])
 
   const format = (name: string) => {
     const editor = viewRef.current
@@ -636,6 +804,7 @@ export function DocumentRichTextEditor(props: Props) {
       event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus()
     }
   }}>
+    {props.blocks.some(block => isContainerBlockType(block.type)) ? <Suspense fallback={null}><NativeContainerStyle /></Suspense> : null}
     <div className="rich-text-toolbar" role="toolbar" aria-label={props.isZh ? '正文格式' : 'Body formatting'}>
       <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} value={types.includes(currentType) ? currentType : 'paragraph'}
         onChange={event => convert(event.target.value)}>{types.map((type, index) => <option key={type} value={type}>{(props.isZh ? labelsZh : labelsEn)[index]}</option>)}</select></label>
@@ -655,6 +824,20 @@ export function DocumentRichTextEditor(props: Props) {
         linkSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to, doc: editor.state.doc }; setLinkUrl('https://')
       }}>{props.isZh ? '链接' : 'Link'}</button>
     </div>
+    {currentBlock?.id && isContainerBlockType(currentType) && <Suspense fallback={null}>
+      <NativeContainerControls key={currentBlock.id} type={currentType as 'callout' | 'toggle'} format={currentBlock.markdownFormat}
+        isZh={props.isZh} typeOptions={Object.fromEntries(types.map((type, index) => [type, (props.isZh ? labelsZh : labelsEn)[index]]))}
+        onChange={format => {
+          const editor = viewRef.current
+          if (!editor || editor.composing) return
+          editor.state.doc.forEach((node, position, index) => {
+            if (node.attrs.block?.id !== currentBlock.id || !latest.current.visibleIndices.includes(index)) return
+            latest.current.checkpoint(); boundary.current = true
+            editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...node.attrs,
+              block: { ...node.attrs.block, markdownFormat: normalizeMarkdownFormat(currentType, format) } }))
+          })
+        }} onAddChild={props.onAddContainerChild ? type => addContainerChild(currentBlock.id!, type) : undefined} onReturnToTitle={() => viewRef.current?.focus()} />
+    </Suspense>}
     {palette && <div className="rich-text-color-palette" role="dialog" aria-label={props.isZh ? palette === 'textColor' ? '选择文字颜色' : '选择背景颜色' : palette === 'textColor' ? 'Choose text color' : 'Choose background color'}
       onKeyDown={event => { if (event.key === 'Escape' && !isImeKeyboardEvent(event)) { event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus() } }}>
       <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => applyColor(palette)}>{props.isZh ? '恢复默认' : 'Default'}</button>
@@ -669,6 +852,25 @@ export function DocumentRichTextEditor(props: Props) {
       <button type="submit">{props.isZh ? '应用' : 'Apply'}</button><button type="button" onClick={() => { setLinkUrl(null); viewRef.current?.focus() }}>{props.isZh ? '取消' : 'Cancel'}</button>
     </form>}
     <div ref={mount} />
+    {tableHosts.map(host => {
+      const index = props.blocks.findIndex(block => block.id === host.id)
+      if (index < 0 || props.blocks[index].type !== 'table') return null
+      const content = props.blocks[index].content
+      return createPortal(<MarkdownBlockNodesContext.Provider value={markdownDocument.model?.blockNodes[index]}>
+        <Suspense fallback={<p role="status">{props.isZh ? '正在加载表格…' : 'Loading table…'}</p>}>
+          <MarkdownTableEditor key={`${props.documentId}:${host.id}`} content={content} sessionKey={`${props.documentId}:${host.id}`} isZh={props.isZh}
+            onReady={cell => focusAddedChild(host.id, cell)}
+            onBeginEdit={() => latest.current.checkpoint()} onChange={(next, transaction) => {
+              const editor = viewRef.current, position = host.position()
+              if (!editor || editor.composing || !host.dom.isConnected || position === undefined) return
+              const current = editor.state.doc.nodeAt(position)
+              if (current?.attrs.block?.id !== host.id || current.attrs.block.type !== 'table' || current.attrs.block.content !== content || next === content) return
+              if (transaction) { latest.current.checkpoint(); boundary.current = true }
+              editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...current.attrs, block: { ...current.attrs.block, content: next } }))
+            }} />
+        </Suspense>
+      </MarkdownBlockNodesContext.Provider>, host.dom, `${props.documentId}:${host.id}`)
+    })}
     {slashCommands.length > 0 && <div className="rich-text-slash-menu" role="listbox" aria-label={props.isZh ? '插入块' : 'Insert block'}>
       {slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashRef.current.index} key={command.type}
         onMouseDown={event => event.preventDefault()} onClick={() => convert(command.type, true)}>{command.label}</button>)}

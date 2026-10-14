@@ -1,7 +1,8 @@
-import { isTaskBlockType, isListBlockType } from './blockTypes'
+import { isTaskBlockType, isListBlockType, isContainerBlockType } from './blockTypes'
 import { serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange, type MarkdownRenderableBlock } from './markdown'
 import { markdownEngine, markdownTokenTree, type MarkdownEnvironment, type MarkdownNode } from './markdownEngine'
 import type { MarkdownHeading } from './markdownAdvanced'
+import { nativeMarkdownContainer, assertNativeContainerParse } from './markdownContainers'
 import { collectMarkdownTaskTargets, type MarkdownTaskTarget } from './markdownTasks'
 
 export type MarkdownDocumentModel = {
@@ -40,6 +41,9 @@ function sliceNodes(nodes: MarkdownNode[], range: MarkdownBlockSourceRange, mapp
     const node = nodes[index]
     const map = node.token.map
     if (mapped && map![0] >= range.endLine) break
+    if (nativeMarkdownContainer(node.token)) {
+      result.push(...sliceNodes(node.children, range, mappedArrays)); continue
+    }
     if (!map || (map[0] >= range.startLine && map[1] <= range.endLine)) { result.push(node); continue }
     if (map[1] <= range.startLine || map[0] >= range.endLine) continue
     const children = sliceNodes(node.children, range, mappedArrays)
@@ -71,6 +75,7 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
   const { markdown: source, ranges } = serializeMarkdownWithBlockRanges(blocks)
   const environment: MarkdownEnvironment = { documentTitle: title }
   const nodes = markdownTokenTree(markdownEngine.parse(source, environment))
+  assertNativeContainerParse(environment)
   const footnotes = nodes.filter((node) => node.token.type === 'footnote_block_open')
   const body = nodes.filter((node) => node.token.type !== 'footnote_block_open' && node.token.type !== 'knowbook_metadata')
   const mappedArrays = new WeakMap<MarkdownNode[], boolean>()
@@ -85,13 +90,19 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
     }
     for (const child of node.children) collectListOwners(child, indices)
   }
-  for (const node of body) if (['bullet_list_open', 'ordered_list_open'].includes(node.token.type)) {
-    const indices: number[] = []
-    collectListOwners(node, indices)
-    if (indices.length) readingLists.push({ node, indices })
+  const collectReadingLists = (items: MarkdownNode[]): void => {
+    for (const node of items) {
+      if (['bullet_list_open', 'ordered_list_open'].includes(node.token.type)) {
+        const indices: number[] = []
+        collectListOwners(node, indices)
+        if (indices.length) readingLists.push({ node, indices })
+      } else if (nativeMarkdownContainer(node.token)) collectReadingLists(node.children)
+    }
   }
+  collectReadingLists(body)
   const blockNodes = ranges.map((range, index) => {
     const owned = sliceNodes(body, range, mappedArrays)
+    if (isContainerBlockType(blocks[index].type)) return owned.find(node => node.token.type === 'native_container_title')?.children ?? []
     if (!isListBlockType(blocks[index].type)) return owned
     const content = findListItem(owned, range.startLine)?.children ?? owned
     return isTaskBlockType(blocks[index].type) ? withoutLeadingCheckbox(content) : content

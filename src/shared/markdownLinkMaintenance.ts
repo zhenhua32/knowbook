@@ -1,3 +1,4 @@
+import { projectedMarkdownContentPosition } from './markdownNativeText'
 import { serializeMarkdownWithBlockRanges, type MarkdownRenderableBlock } from './markdown'
 import { collectMarkdownSourceLinks, escapeMarkdownDestination, parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPath, type MarkdownSourceLink } from './markdownLinks'
 import { collectMarkdownAnchors } from './markdownAnchors'
@@ -12,11 +13,10 @@ export type MarkdownHeadingTarget = { key: string; blockId: string | null; text:
  * serialized document and losing block identities or editor metadata. */
 export function collectDocumentMarkdownLinks(blocks: MarkdownRenderableBlock[]): MarkdownDocumentLink[] {
   if (!blocks.some((block) => /[\[<]|file:/i.test(block.content))) return []
-  const { markdown, ranges } = serializeMarkdownWithBlockRanges(blocks)
+  const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
   const lines = markdown.split('\n')
   const lineOffsets = [0]
   for (let index = 0; index < lines.length; index++) lineOffsets.push(lineOffsets[index] + lines[index].length + 1)
-  const localLines = new Map<number, { lines: string[]; offsets: number[] }>()
   const result: MarkdownDocumentLink[] = []
   let line = 0, rangeIndex = 0
   for (const link of collectMarkdownSourceLinks(markdown)) {
@@ -24,18 +24,10 @@ export function collectDocumentMarkdownLinks(blocks: MarkdownRenderableBlock[]):
     while (rangeIndex < ranges.length && ranges[rangeIndex].endLine <= line) rangeIndex++
     const range = ranges[rangeIndex], block = blocks[rangeIndex]
     if (!range || !block || line < range.startLine || ['code', 'math', 'frontmatter'].includes(block.type)) continue
-    let local = localLines.get(rangeIndex)
-    if (!local) {
-      const blockLines = block.content.split('\n'), offsets = [0]
-      for (let index = 0; index < blockLines.length; index++) offsets.push(offsets[index] + blockLines[index].length + 1)
-      local = { lines: blockLines, offsets }; localLines.set(rangeIndex, local)
-    }
-    const localLine = line - range.startLine, contentLine = local.lines[localLine]
-    if (contentLine === undefined || !lines[line].endsWith(contentLine) || link.end > lineOffsets[line] + lines[line].length) continue
-    const prefix = lines[line].length - contentLine.length
-    const start = local.offsets[localLine] + link.start - lineOffsets[line] - prefix
-    if (start < local.offsets[localLine]) continue
-    result.push({ ...link, blockIndex: rangeIndex, blockId: block.id, start, end: start + link.end - link.start })
+    const start = projectedMarkdownContentPosition(block, range, markdown, lines, lineOffsets, link.start, contentProjections?.[rangeIndex])
+    const end = projectedMarkdownContentPosition(block, range, markdown, lines, lineOffsets, link.end, contentProjections?.[rangeIndex], true)
+    if (start === null || end === null || end < start) continue
+    result.push({ ...link, blockIndex: rangeIndex, blockId: block.id, start, end })
   }
   return result
 }

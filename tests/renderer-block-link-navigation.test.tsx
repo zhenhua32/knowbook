@@ -25,7 +25,9 @@ function document(id: string, path: string, blocks: DocumentBlock[] = [block(id 
 const documents = new Map([
   ['a', document('a', 'Docs/A')], ['b', document('b', 'Docs/B')],
   ['owner', document('owner', 'Archive/Actual', [block('actual-block', 'Actual owner body')])],
-  ['heading', document('heading', 'Docs/Heading', [block('heading-block', 'Section title', 'heading-2'), block('caret-title', '^missing', 'heading-2')])]
+  ['heading', document('heading', 'Docs/Heading', [block('heading-block', 'Section title', 'heading-2'), block('caret-title', '^missing', 'heading-2')])],
+  ['container', document('container', 'Docs/Container', [block('native-owner', 'Notice', 'callout'),
+    { ...block('native-heading', 'Nested **heading**', 'heading-3'), depth: 1, parentBlockId: 'native-owner' }])]
 ])
 const tree: DocumentTreeNode[] = [...documents.values()].map(detail =>
   ({ id: detail.id, title: detail.title, path: detail.path, updatedAt: detail.updatedAt, children: [] }))
@@ -217,3 +219,24 @@ test('an inline heading detail reply also respects document generation and a new
     assert.deepEqual(context.messages, [])
   })
 })
+
+
+test('inline Wiki heading text fallback reuses the current draft without a detail lookup', async () => withNavigation(async context => {
+  await context.select('heading')
+  const request = await context.begin('inline', link('inline', 'Docs/Heading', 'SECTION TITLE'))
+  await context.resolveBlock(0, null)
+  await request.completion
+  assert.deepEqual(context.details, [])
+  assert.deepEqual(context.events, [{ kind: 'anchor', documentId: 'heading', anchor: 'section-title' }])
+  assert.deepEqual(context.messages, [])
+}))
+
+test('inline Wiki heading fallback parses headings inside a native mixed container after the existing detail guard', async () => withNavigation(async context => {
+  const request = await context.begin('inline', link('inline', 'Docs/Container', 'NESTED HEADING'))
+  await context.resolveBlock(0, null)
+  assert.equal(context.details[0].documentId, 'container')
+  await context.resolveDetail(0, documents.get('container')!)
+  await request.completion
+  assert.deepEqual(context.events, [{ kind: 'anchor', documentId: 'container', anchor: 'nested-heading' }])
+  assert.deepEqual(context.messages, [])
+}))

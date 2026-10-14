@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import Database from 'better-sqlite3'
 import { KnowbookStore } from '../src/main/database/store'
+import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
 import type { DocumentBlock, DocumentBlockDraft } from '../src/shared/contracts'
 import type { MoveDocumentBlocksInput } from '../src/shared/document-block-moves'
 
@@ -329,7 +330,7 @@ test('runtime IPC placement fields reject null before, empty strings, arrays, ob
   }
 }))
 
-test('v21 to v22 migration copies the complete old database once and preserves every document/block field', () => withStore(harness => {
+test('v21 migration copies the complete old database once and preserves every document/block field', () => withStore(harness => {
   let store = harness.store
   const ids = seed(store), content = store.documentRecovery.readContent(ids.source)
   store.updateDocument(ids.source, { ...content, blocks: [...content.blocks,
@@ -345,14 +346,14 @@ test('v21 to v22 migration copies the complete old database once and preserves e
   const previousCopies = readdirSync(harness.root).filter(name => name.includes('.pre-migration-'))
   store = harness.restart()
   const migrated = store.getUnsafeDatabaseHandle()
-  assert.equal(migrated.pragma('user_version', { simple: true }), 22)
+  assert.equal(migrated.pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
   assert.deepEqual(rows(migrated), before)
   assert.equal((migrated.prepare('SELECT COUNT(*) AS count FROM document_block_moves').get() as { count: number }).count, 0)
   assert.equal((migrated.prepare('SELECT COUNT(*) AS count FROM document_block_routes').get() as { count: number }).count, 0)
   const copies = readdirSync(harness.root).filter(name => name.includes('.pre-migration-'))
   const newCopies = copies.filter(name => !previousCopies.includes(name))
   assert.equal(newCopies.length, 1)
-  assert.ok(newCopies[0].startsWith('knowbook.db.pre-migration-v21-to-v22-'))
+  assert.ok(newCopies[0].startsWith(`knowbook.db.pre-migration-v21-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`))
   const safety = new Database(join(harness.root, newCopies[0]), { readonly: true })
   try {
     assert.equal(safety.pragma('user_version', { simple: true }), 21)
@@ -360,7 +361,7 @@ test('v21 to v22 migration copies the complete old database once and preserves e
     assert.equal(safety.prepare("SELECT name FROM sqlite_master WHERE name IN ('document_block_moves','document_block_routes')").all().length, 0)
   } finally { safety.close() }
   store = harness.restart()
-  assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), 22)
+  assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
   assert.deepEqual(rows(store.getUnsafeDatabaseHandle()), before)
   assert.deepEqual(readdirSync(harness.root).filter(name => name.includes('.pre-migration-')).sort(), copies.sort())
 }))

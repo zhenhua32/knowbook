@@ -1,4 +1,4 @@
-import { isListBlockType } from './blockTypes'
+import { canBlockOwnChildren, canBlockNestUnder } from './blockTypes'
 import type { DocumentBlockDraft } from './contracts'
 
 export interface DocumentBlockTransferInput {
@@ -41,7 +41,7 @@ function indexTree(blocks: readonly DocumentBlockDraft[]): TreeIndex | null {
       || block.depth < 0 || block.depth > MAX_DEPTH) return null
     const ownerId = parentId(block), owner = ancestors[block.depth - 1]
     if (block.depth === 0 ? ownerId !== null
-      : !isListBlockType(block.type) || !owner || !isListBlockType(owner.type) || owner.id !== ownerId) return null
+      : !owner || !canBlockNestUnder(owner.type, block.type) || owner.id !== ownerId) return null
     while (openSubtrees.length && blocks[openSubtrees.at(-1)!].depth >= block.depth) {
       subtreeEnds[openSubtrees.pop()!] = index
     }
@@ -92,7 +92,7 @@ export function planDocumentBlockTransfer(input: DocumentBlockTransferInput): Do
   if ((nextParentId !== null && !validId(nextParentId)) || (beforeBlockId !== undefined && !validId(beforeBlockId))) return null
   const ownerIndex = nextParentId === null ? undefined : target.byId.get(nextParentId)
   const owner = ownerIndex === undefined ? undefined : to[ownerIndex]
-  if (nextParentId !== null && (!owner || !isListBlockType(owner.type))) return null
+  if (nextParentId !== null && (!owner || !canBlockOwnChildren(owner.type))) return null
   let insertionIndex = ownerIndex === undefined ? to.length : target.subtreeEnds[ownerIndex]
   if (beforeBlockId !== undefined) {
     const beforeIndex = target.byId.get(beforeBlockId)
@@ -100,8 +100,7 @@ export function planDocumentBlockTransfer(input: DocumentBlockTransferInput): Do
     insertionIndex = beforeIndex
   }
   const rootDepth = owner ? owner.depth + 1 : 0, depthDelta = rootDepth - originalDepth
-  if (fragment.some(block => block.depth + depthDelta < 0 || block.depth + depthDelta > MAX_DEPTH
-    || (block.depth + depthDelta > 0 && !isListBlockType(block.type)))) return null
+  if (fragment.some(block => block.depth + depthDelta < 0 || block.depth + depthDelta > MAX_DEPTH)) return null
   const rootIds = new Set(roots.map(block => block.id!))
   const moved = fragment.map(block => ({
     ...cloneBlock(block),

@@ -1,6 +1,6 @@
-import { isTaskBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, canBlockHaveParent } from '@shared/blockTypes'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock, normalizeBlockDepth } from './draftBlockShape'
+import { normalizeBlockDepth } from './draftBlockShape'
 import { getNormalizedBlockId } from './draftTreeMove'
 
 export function createDraftBlockId() {
@@ -22,7 +22,7 @@ export function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParen
   return blocks.map((block) => {
     const id = createDraftBlockId()
     const depth = normalizeBlockDepth(block.type, block.depth)
-    const parentBlockId = isNestableBlock(block.type)
+    const parentBlockId = canBlockHaveParent(block.type)
       ? depth === minDepth
         ? rootParentBlockId
         : depthStack[depth - 1] ?? rootParentBlockId
@@ -33,6 +33,8 @@ export function materializeDraftFragment(blocks: DocumentBlockDraft[], rootParen
 
     return {
       ...block,
+      ...(block.tags ? { tags: [...block.tags] } : {}),
+      ...(block.markdownFormat ? { markdownFormat: { ...block.markdownFormat } } : {}),
       id,
       checked: isTaskBlockType(block.type) ? Boolean(block.checked) : false,
       depth,
@@ -51,7 +53,7 @@ export function shiftDraftFragmentDepth(
     const blockId = getNormalizedBlockId(block)
     const isRoot = blockId ? rootIds.has(blockId) : false
 
-    if (!isNestableBlock(block.type)) {
+    if (!canBlockHaveParent(block.type)) {
       return isRoot
         ? {
             ...block,

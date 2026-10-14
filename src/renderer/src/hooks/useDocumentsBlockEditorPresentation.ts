@@ -1,4 +1,4 @@
-import { isOrderedListBlockType } from '@shared/blockTypes'
+import { isOrderedListBlockType, canBlockHaveParent } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { getMarkdownListNumbers } from '@shared/markdown'
 import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
@@ -7,7 +7,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
-import { isNestableBlock } from '../utils/draftBlockShape'
 import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 import { getBlockDropPreview } from '../utils/draftTreeDropPreview'
 import { BlockEditorRow } from '../components/BlockEditorRow'
@@ -136,6 +135,7 @@ export function useDocumentsBlockEditorPresentation({
   handleBlockMouseEnter,
   handleBlockPaste,
   insertDraftBlockAt,
+  insertChildDraftBlock,
   insertBlockSuggestion,
   insertLinkSuggestion,
   isBlockRangeSelecting,
@@ -234,7 +234,7 @@ export function useDocumentsBlockEditorPresentation({
           : null
       const isSelected = isBlockSelected(index)
       const isHighlighted = Boolean(block.id) && block.id === highlightedBlockId
-      const indentPx = isNestableBlock(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
+      const indentPx = canBlockHaveParent(block.type) ? block.depth * BLOCK_INDENT_SIZE : 0
 
       const numberLabel = isOrderedListBlockType(block.type) ? `${numbers[index]}.` : ''
 
@@ -266,7 +266,7 @@ export function useDocumentsBlockEditorPresentation({
     blockSearchQuery,
     isBlockSelected,
     highlightedBlockId,
-    isNestableBlock,
+    canBlockHaveParent,
     selectedDocument,
     selectedBlockRange,
     selectedBlockInteractionIssue
@@ -437,6 +437,7 @@ export function useDocumentsBlockEditorPresentation({
     handleBlockMouseEnter,
     handleBlockPaste,
     insertDraftBlockAt,
+    insertChildDraftBlock: insertChildDraftBlock ?? (() => {}),
     isSelectionCoherent,
     mergeWithPreviousBlock,
     mergeWithNextBlock: mergeWithNextBlock ?? (() => false),
@@ -464,6 +465,7 @@ export function useDocumentsBlockEditorPresentation({
     ? {
         ...rowActions,
         onOpenBlockActions: onOpenBlockActions ? rowActions.onOpenBlockActions : undefined,
+        insertChildDraftBlock: insertChildDraftBlock ? rowActions.insertChildDraftBlock : undefined,
         getSelectedBlockActionIds,
         markdownReferences,
         markdownDocument,

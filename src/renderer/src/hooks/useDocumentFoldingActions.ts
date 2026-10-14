@@ -112,19 +112,21 @@ export function useDocumentFoldingActions(params: Params) {
 
   const toggleBlockCollapse = useCallback((id: string) => {
     const collapsedIds = new Set(params.foldView.collapsedIds)
+    const toggleOpenOverrides = new Map(params.foldView.toggleOpenOverrides)
+    if (params.draftBlocks.find(block => block.id === id)?.type === 'toggle') toggleOpenOverrides.set(id, collapsedIds.has(id))
     if (collapsedIds.has(id)) collapsedIds.delete(id)
     else collapsedIds.add(id)
-    changeView({ ...params.foldView, collapsedIds }, params.draftBlocks.findIndex((block) => block.id === id))
+    changeView({ ...params.foldView, collapsedIds, toggleOpenOverrides }, params.draftBlocks.findIndex((block) => block.id === id))
   }, [changeView, params.draftBlocks, params.foldView])
   const collapseAllSections = useCallback(() => {
-    changeView({ collapsedIds: new Set([...params.foldView.collapsedIds,
+    changeView({ ...params.foldView, collapsedIds: new Set([...params.foldView.collapsedIds,
       ...params.sections.filter((section) => section.end > section.index + 1).map((section) => section.id)]), focusedHeadingId: null })
     const section = params.sections.find((item) => item.index <= (params.activeBlockIndex ?? 0) && item.end > (params.activeBlockIndex ?? 0)) ?? params.sections[0]
     if (section) params.onScrollToBlock(section.index)
   }, [changeView, params])
   const expandAllSections = useCallback(() => {
     const headings = new Set(params.sections.map((section) => section.id))
-    changeView({ collapsedIds: new Set([...params.foldView.collapsedIds].filter((id) => !headings.has(id))), focusedHeadingId: null })
+    changeView({ ...params.foldView, collapsedIds: new Set([...params.foldView.collapsedIds].filter((id) => !headings.has(id))), focusedHeadingId: null })
   }, [changeView, params.foldView.collapsedIds, params.sections])
   const focusSection = useCallback((index: number) => {
     const section = findDocumentSection(params.sections, index)
@@ -133,7 +135,7 @@ export function useDocumentFoldingActions(params: Params) {
     for (const child of params.sections) {
       if (child.index >= section.index && child.index < section.end) collapsedIds.delete(child.id)
     }
-    changeView({ collapsedIds, focusedHeadingId: section.id }, section.index)
+    changeView({ ...params.foldView, collapsedIds, focusedHeadingId: section.id }, section.index)
     params.onScrollToBlock(section.index)
   }, [changeView, params])
   const exitSectionFocus = useCallback(() => changeView({ ...params.foldView, focusedHeadingId: null }), [changeView, params.foldView])

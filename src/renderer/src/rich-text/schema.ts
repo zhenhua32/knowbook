@@ -6,6 +6,8 @@ import { parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
 import type { MarkdownNode } from '@shared/markdownEngine'
 import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, parseInlineTextPresentationAttributes } from '@shared/inlineTextPresentation'
 import type { MarkSpec } from 'prosemirror-model'
+import { isContainerBlockType } from '@shared/blockTypes'
+import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
 
 function presentationMark(name: 'textColor' | 'backgroundColor', attribute: string): MarkSpec {
   return {
@@ -20,12 +22,14 @@ function presentationMark(name: 'textColor' | 'backgroundColor', attribute: stri
 
 function blockAttributes(node: Node): Record<string, string> {
   const block = node.attrs.block as DocumentBlockDraft | null
+  const native = block && isContainerBlockType(block.type) ? nativeContainerPresentation(block.type, block.markdownFormat) : null
   return {
     class: `block-editor-row rich-text-block type-${block?.type ?? 'paragraph'}`,
     'data-block-id': block?.id ?? '',
     'data-block-type': block?.type ?? 'paragraph',
     'data-block-depth': String(block?.depth ?? 0),
     'data-block-checked': String(Boolean(block?.checked)),
+    ...(native ? { 'data-native-container': block!.type, ...(block!.type === 'callout' ? { 'data-native-container-tone': native.tone } : {}) } : {}),
     ...(block?.type.startsWith('numbered-') ? { 'data-list-number': String(node.attrs.listNumber ?? block.listStart ?? 1) } : {}),
     style: `padding-left: ${(block?.depth ?? 0) * 24}px`
   }

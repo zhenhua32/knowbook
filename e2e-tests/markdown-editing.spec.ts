@@ -217,18 +217,57 @@ test('format shortcuts and toolbar preserve Unicode selections, IME and undo @el
 
 test('advanced slash templates insert useful content without replacing existing text @electron', async () => {
   await withElectronApp(async ({ page }) => {
-    await openDocument(page, 'Insert templates', [{ type: 'paragraph', content: 'Keep this ', checked: false, depth: 0 }])
+    const owner = 'advanced-template-owner'
+    const id = await openDocument(page, 'Insert templates', [
+      { id: owner, type: 'paragraph', content: 'Keep this ', checked: false, depth: 0, tags: ['owner-tag'] },
+      { id: 'advanced-template-tail', type: 'bulleted-list', content: 'Existing tail remains', checked: false, depth: 0, tags: ['tail-tag'] },
+      { id: 'advanced-template-child', type: 'todo', content: 'Existing checked child remains', checked: true, depth: 1,
+        parentBlockId: 'advanced-template-tail', tags: ['child-tag'], highlight: 'blue' }
+    ])
     const editor = page.locator('textarea.block-inline-textarea').first()
-    await editor.fill('Keep this\n/table'); await editor.press('End'); await editor.press('Enter')
+    const ownerRow = page.locator(`.block-editor-row[data-block-id="${owner}"]`)
+    const savedBlocks = async () => (await page.evaluate(id => window.knowbook.getDocumentDetail(id), id))!.blocks.map(block => ({
+      id: block.id, type: block.type, content: block.content, checked: block.checked, depth: block.depth,
+      parentBlockId: block.parentBlockId ?? null, tags: block.tags ?? [], highlight: block.highlight ?? null,
+      language: block.language ?? null, markdownFormat: block.markdownFormat ?? null, listStart: block.listStart ?? null
+    }))
+    await editor.fill('Keep this\n/table'); await editor.press('End')
+    await expect.poll(async () => (await savedBlocks())[0].content).toBe('Keep this\n/table')
+    const beforeTable = await savedBlocks()
+    await editor.press('Enter')
     await expect(editor).toHaveValue('Keep this\n')
     await expect(page.getByRole('grid', { name: uiText('Editable table', '可编辑表格') })).toBeVisible()
     await page.keyboard.press('Control+z')
     await expect(page.locator('textarea.type-table')).toHaveCount(0)
-    for (const [command, expected] of [['mermaid', 'flowchart LR'], ['callout', '[!note]'], ['toc', '[TOC]']]) {
-      await editor.fill('/' + command); await editor.press('End'); await editor.press('Enter')
-      await expect.poll(() => editor.inputValue()).toContain(expected)
+    await expect.poll(savedBlocks).toEqual(beforeTable)
+
+    for (const [command, expected] of [['mermaid', 'flowchart LR'], ['callout', null], ['toggle', null], ['toc', '[TOC]']] as const) {
+      await editor.fill('/' + command); await editor.press('End')
+      await expect.poll(async () => (await savedBlocks())[0].content).toBe('/' + command)
+      const before = await savedBlocks()
+      await editor.press('Enter')
+      if (expected) await expect.poll(() => editor.inputValue()).toContain(expected)
+      else {
+        await expect(ownerRow).toHaveAttribute('data-native-container', command)
+        await expect(editor).toHaveValue('')
+        await expect.poll(async () => (await savedBlocks())[0].type).toBe(command)
+        const created = await savedBlocks()
+        expect(created).toHaveLength(before.length)
+        expect(created[0]).toMatchObject({ id: owner, type: command, content: '', depth: 0, parentBlockId: null, tags: before[0].tags })
+        expect(created.slice(1)).toEqual(before.slice(1))
+        // Slash converts only the owner. Adding children is a separate public action.
+        await page.keyboard.press('Control+z')
+        await expect(editor).toHaveValue('/' + command)
+        await expect.poll(savedBlocks).toEqual(before)
+        await page.keyboard.press('Control+y')
+        await expect(ownerRow).toHaveAttribute('data-native-container', command)
+        await expect(editor).toHaveValue('')
+        await expect.poll(savedBlocks).toEqual(created)
+      }
       await page.keyboard.press('Control+z')
+      await expect.poll(savedBlocks).toEqual(before)
     }
+    expect((await savedBlocks()).slice(1)).toEqual(beforeTable.slice(1))
   })
 })
 

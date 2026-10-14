@@ -27,6 +27,7 @@ type VisibleSelectionSlice = {
 type UseBlockSelectionStateParams = {
   activeBlockIndex: number | null
   collapsedBlockIds: Set<string>
+  toggleOpenOverrides?: Map<string, boolean>
   focusedHeadingId?: string | null
   draftBlocks: DocumentBlockDraft[]
   onActiveBlockChange: (index: number) => void
@@ -37,6 +38,7 @@ type UseBlockSelectionStateParams = {
 export function useBlockSelectionState({
   activeBlockIndex,
   collapsedBlockIds,
+  toggleOpenOverrides,
   focusedHeadingId = null,
   draftBlocks,
   onActiveBlockChange,
@@ -51,8 +53,8 @@ export function useBlockSelectionState({
   const selectionFocusBlockId = useRef<string | null>(null)
 
   const getVisibleBlockEntries = useCallback((blocks: DocumentBlockDraft[]): VisibleBlockEntry[] => {
-    return getVisibleDocumentEntries(blocks, { collapsedIds: collapsedBlockIds, focusedHeadingId })
-  }, [collapsedBlockIds, focusedHeadingId])
+    return getVisibleDocumentEntries(blocks, { collapsedIds: collapsedBlockIds, focusedHeadingId, toggleOpenOverrides })
+  }, [collapsedBlockIds, focusedHeadingId, toggleOpenOverrides])
 
   const getVisibleBlocks = useCallback((blocks: DocumentBlockDraft[]) => {
     return getVisibleBlockEntries(blocks).map(({ block }) => block)

@@ -11,7 +11,7 @@ import { createEphemeralCredentialStorage } from '../src/main/credential-storage
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 import { attachmentMarkdown } from '../src/shared/attachments'
 import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
-import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord } from '../src/main/sync/model'
+import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord, type SyncDocument } from '../src/main/sync/model'
 import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
 import { createWebDavServer } from './helpers/webdav-server'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
@@ -68,6 +68,172 @@ function resolveConflict(sync: WebDavSyncService, input: { key: string; choice: 
   const version = sync.getStatus().conflicts.find(conflict => conflict.key === input.key)!
   return sync.resolveConflict({ ...input, localHash: version.localHash, remoteHash: version.remoteHash })
 }
+
+test('native containers upgrade the manifest atomically and two independent devices retain mixed children across restart and merge', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  edit(a.store, id, 'legacy body', 'Native sync')
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
+  const blocks = [
+    { id: 'native-owner', type: 'callout', content: 'Warning', checked: false, depth: 0, parentBlockId: null, tags: ['native'],
+      markdownFormat: { calloutKind: 'warning' as const, calloutIcon: 'book' as const, calloutTone: 'orange' as const } },
+    { id: 'native-toggle', type: 'toggle', content: 'Details', checked: false, depth: 1, parentBlockId: 'native-owner', tags: [], markdownFormat: { toggleDefaultOpen: false } },
+    { id: 'native-text', type: 'paragraph', content: 'Body', checked: false, depth: 2, parentBlockId: 'native-toggle', tags: [] },
+    { id: 'native-code', type: 'code', content: 'const a = 1', checked: false, depth: 2, parentBlockId: 'native-toggle', tags: [], language: 'ts', markdownFormat: { codeInfo: 'ts' } }
+  ]
+  a.store.updateDocument(id, { title: 'Native sync', summary: '', blocks })
+  await a.sync.sync()
+  const manifestBytes = server.files.get('/KnowBook/manifest.json')!
+  assert.equal(parseManifest(manifestBytes).version, 2)
+  // The shipped v1 reader's exact compatibility check precedes object reads.
+  const oldManifestGate = (bytes: Buffer) => { if (JSON.parse(bytes.toString()).version !== 1) throw new Error('unsupported v1 manifest') }
+  assert.throws(() => oldManifestGate(manifestBytes), /unsupported/)
+  await b.sync.sync()
+  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks, blocks)
+  const originalPath = b.store.getDatabasePath()
+  await b.sync.stop(); b.store.destroy()
+  b.store = new KnowbookStore(originalPath)
+  b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
+  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks, blocks)
+  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
+  a.store.updateDocument(id, { ...left, blocks: left.blocks.map(block => block.id === 'native-owner'
+    ? { ...block, markdownFormat: { ...block.markdownFormat, calloutTone: 'blue' } } : block) })
+  b.store.updateDocument(id, { ...right, blocks: right.blocks.map(block => block.id === 'native-text' ? { ...block, content: 'Remote body' } : block) })
+  await b.sync.sync(); await a.sync.sync(); await b.sync.sync()
+  const merged = a.store.documentRecovery.readContent(id)
+  assert.deepEqual(b.store.documentRecovery.readContent(id), merged)
+  assert.equal(merged.blocks[0].markdownFormat?.calloutTone, 'blue')
+  assert.equal(merged.blocks[1].markdownFormat?.toggleDefaultOpen, false)
+  assert.equal(merged.blocks[2].content, 'Remote body')
+  assert.deepEqual(merged.blocks.map(block => [block.id, block.depth, block.parentBlockId]), blocks.map(block => [block.id, block.depth, block.parentBlockId]))
+  assert.equal(a.sync.getStatus().conflicts.length, 0)
+  a.store.updateDocument(id, { ...merged, blocks: [{ id: 'plain-again', type: 'paragraph', content: 'Plain', checked: false, depth: 0 }] })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2, 'an upgraded workspace never downgrades its old-reader gate')
+}))
+
+test('the v1 to v2 compatibility gate shares CAS retry with concurrent independent document publication', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null); edit(a.store, id, 'Initial', 'Native race')
+  await a.sync.sync(); await b.sync.sync()
+  const other = b.store.createDocument(null); edit(b.store, other, 'Independent', 'Independent native race')
+  a.store.updateDocument(id, { title: 'Native race', summary: '', blocks: [
+    { id: 'race-toggle', type: 'toggle', content: 'Owner', checked: false, depth: 0 },
+    { id: 'race-child', type: 'paragraph', content: 'Child', checked: false, depth: 1, parentBlockId: 'race-toggle' }
+  ] })
+  let raced = false
+  server.setHook(async (req, bytes) => {
+    if (!raced && req.method === 'PUT' && req.url!.endsWith('manifest.json') && JSON.parse(bytes.toString()).version === 2) {
+      raced = true
+      await b.sync.sync()
+    }
+  })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(raced, true)
+  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+  assert.equal(manifest.version, 2)
+  assert.ok(manifest.entries[`doc:${id}`]); assert.ok(manifest.entries[`doc:${other}`])
+  assert.equal(content(a.store, other), 'Independent')
+  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
+  assert.equal(b.store.documentRecovery.readContent(id).blocks[1].parentBlockId, 'race-toggle')
+}))
+
+test('a v1 manifest containing a native tree is rejected without publication, local changes or advancing sync state', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null); edit(a.store, id, 'Original', 'Malformed native protocol')
+  await a.sync.sync(); await b.sync.sync()
+  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
+  record.content.blocks = [{ id: 'bad-native', type: 'toggle', content: 'Native owner', checked: false, depth: 0 }]
+  const bytes = Buffer.from(canonicalJson(record)), hash = hashBytes(bytes)
+  server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
+  manifest.entries[`doc:${id}`] = hash
+  const beforeManifest = Buffer.from(canonicalJson(manifest))
+  server.files.set('/KnowBook/manifest.json', beforeManifest)
+  const before = canonicalJson([...b.store.getSyncRecords()]), status = b.sync.getStatus(), requestStart = server.requests.length
+  const stateRows = b.store.getUnsafeDatabaseHandle().prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'").all()
+  await assert.rejects(b.sync.sync(), /清单版本/)
+  assert.equal(canonicalJson([...b.store.getSyncRecords()]), before)
+  assert.deepEqual(b.store.getUnsafeDatabaseHandle().prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'").all(), stateRows)
+  assert.equal(b.sync.getStatus().lastSyncAt, status.lastSyncAt)
+  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), beforeManifest)
+  assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
+}))
+
+test('a standalone layout table also gates old readers and preserves concurrent width and cell edits on two devices', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  const source = '<!-- knowbook:table-widths:v1 [160,null] -->\n| Name | Value |\n| --- | ---: |\n| StableName | OriginalValue |'
+  a.store.updateDocument(id, { title: 'Layout sync', summary: '', blocks: [{ id: 'layout-table', type: 'table', content: source, checked: false, depth: 0 }] })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2)
+  assert.equal(content(b.store, id), source)
+  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
+  a.store.updateDocument(id, { ...left, blocks: left.blocks.map(block => ({ ...block, content: block.content.replace('[160,null]', '[220,null]') })) })
+  b.store.updateDocument(id, { ...right, blocks: right.blocks.map(block => ({ ...block, content: block.content.replace('OriginalValue', 'RemoteValue') })) })
+  await b.sync.sync(); await a.sync.sync(); await b.sync.sync()
+  const expected = source.replace('[160,null]', '[220,null]').replace('OriginalValue', 'RemoteValue')
+  assert.equal(content(a.store, id), expected); assert.equal(content(b.store, id), expected)
+  assert.deepEqual(a.store.documentRecovery.readContent(id).blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId]),
+    b.store.documentRecovery.readContent(id).blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId]))
+  assert.equal(a.sync.getStatus().conflicts.length, 0)
+}))
+
+test('an unchanged normalized native baseline cannot accept or publish a downgraded v1 manifest, even for database-only writes', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  a.store.updateDocument(id, { title: 'Normalized native gate', summary: '', blocks: [
+    { id: 'normal-owner', type: 'toggle', content: 'Owner', checked: false, depth: 0 },
+    { id: 'normal-child', type: 'paragraph', content: 'Body', checked: false, depth: 1, parentBlockId: 'normal-owner', tags: ['same'] }
+  ] })
+  await a.sync.sync()
+  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
+  record.content.blocks[1].tags = ['same', 'same']
+  const bytes = Buffer.from(canonicalJson(record)), hash = hashBytes(bytes)
+  server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
+  manifest.entries[`doc:${id}`] = hash
+  server.files.set('/KnowBook/manifest.json', Buffer.from(canonicalJson(manifest)))
+  await b.sync.sync()
+  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks[1].tags, ['same'])
+  const stateQuery = "SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'"
+  const acceptedRows = b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all() as Array<{ value: string }>
+  const state = JSON.parse(acceptedRows[0].value)
+  assert.notEqual(state.baseline[`doc:${id}`].localHash, state.baseline[`doc:${id}`].remoteHash)
+  manifest.version = 1
+  const downgraded = Buffer.from(canonicalJson(manifest))
+  server.files.set('/KnowBook/manifest.json', downgraded)
+  for (const databaseOnly of [false, true]) {
+    if (databaseOnly) b.store.createDatabase({ name: 'Independent schema', description: '' })
+    const before = canonicalJson([...b.store.getSyncRecords()]), states = b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all()
+    const lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
+    await assert.rejects(b.sync.sync(), /清单版本/)
+    assert.equal(canonicalJson([...b.store.getSyncRecords()]), before)
+    assert.deepEqual(b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all(), states)
+    assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), downgraded)
+    assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
+  }
+}))
+
+test('concurrent edits to one width remain an explicit conflict on real devices until a verified version is selected', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  const source = '<!-- knowbook:table-widths:v1 [160,null] -->\n| A | B |\n| --- | --- |\n| One | Two |'
+  a.store.updateDocument(id, { title: 'Width conflict', summary: '', blocks: [{ id: 'width-conflict', type: 'table', content: source, checked: false, depth: 0 }] })
+  await a.sync.sync(); await b.sync.sync()
+  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
+  a.store.updateDocument(id, { ...left, blocks: [{ ...left.blocks[0], content: source.replace('[160,null]', '[260,null]') }] })
+  b.store.updateDocument(id, { ...right, blocks: [{ ...right.blocks[0], content: source.replace('[160,null]', '[161,null]') }] })
+  await a.sync.sync()
+  const published = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+  await b.sync.sync()
+  assert.equal(content(b.store, id), source.replace('[160,null]', '[161,null]'))
+  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), published)
+  const conflict = b.sync.getStatus().conflicts[0]
+  assert.equal(conflict.key, `doc:${id}`)
+  assert.equal(conflict.canMerge, true)
+  assert.deepEqual(conflict.mergeFields?.map(part => part.id), ['block:width-conflict:content'])
+  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'remote' })
+  await b.sync.sync(); await a.sync.sync()
+  assert.equal(content(b.store, id), source.replace('[160,null]', '[260,null]'))
+  assert.equal(content(a.store, id), content(b.store, id))
+}))
 
 test('live progress includes current attachments, deduplicated counts and publication before completion', () => fixture(async (a, b, server) => {
   const first = a.store.createDocument(null), second = a.store.createDocument(null)

@@ -1,13 +1,13 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { isTaskBlockType } from '@shared/blockTypes'
-import { isNestableBlock, normalizeBlockDepth } from './draftBlockShape'
-import { promoteDraftBlockChildren } from './draftTreeTextEditing'
+import { prepareDraftBlockTypeChanges } from './draftTreeTextEditing'
 import { getBlockSubtreeEndIndex } from './draftTreeMove'
 import { materializeDraftFragment } from './draftTreeFragment'
+import { isDraftTreeContiguous } from './draftTreeDepthChange'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from './draftTreeNormalization'
 
 export function blockActionRoots(blocks: DocumentBlockDraft[], ids: readonly string[]): string[] | null {
-  if (!ids.length || !validateBlockTreeStructure(blocks).valid) return null
+  if (!ids.length || !isDraftTreeContiguous(blocks) || !validateBlockTreeStructure(blocks).valid) return null
   const byId = new Map(blocks.map((block, index) => [block.id, index])), selected = new Set(ids)
   if (ids.some(id => !byId.has(id))) return null
   return blocks.filter(block => {
@@ -29,17 +29,13 @@ export function planBlockAction(blocks: DocumentBlockDraft[], ids: readonly stri
     markdownFormat: block.markdownFormat && { ...block.markdownFormat } }))
   if (action === 'convert') {
     if (!type) return null
-    // Only explicitly selected rows change type. Hidden descendants keep their
-    // own type; losing a list owner promotes their complete valid subtree.
-    for (const id of [...new Set(ids)].sort((a,b) => blocks.findIndex(block => block.id === b) - blocks.findIndex(block => block.id === a))) {
-      const index = next.findIndex(block => block.id === id), current = next[index]
-      if (current.type === type) continue
-      if (isNestableBlock(current.type) && !isNestableBlock(type)) next = promoteDraftBlockChildren(next, index)
-      const value = next[index]
-      next[index] = { ...value, type, content: type === 'divider' ? '' : value.content,
-        checked: isTaskBlockType(type) ? value.checked : false, depth: normalizeBlockDepth(type, value.depth),
-        parentBlockId: isNestableBlock(type) ? value.parentBlockId : null }
-    }
+    // Hidden descendants retain their type and complete subtree. Resolve all
+    // selected owner/child types together before shaping task and source data.
+    next = prepareDraftBlockTypeChanges(next, ids, type)
+    const selected = new Set(ids)
+    next = next.map(value => selected.has(value.id!) ? { ...value,
+      content: type === 'divider' ? '' : value.content,
+      checked: isTaskBlockType(type) ? value.checked : false } : value)
     next = normalizeDraftBlocks(next)
   } else {
     for (const id of [...roots].reverse()) {

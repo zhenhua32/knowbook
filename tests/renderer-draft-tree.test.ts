@@ -66,12 +66,15 @@ test('toDraftBlock preserves editable metadata without sharing the tags array', 
   assert.notEqual(draft.tags, tags)
 })
 
-test('block shape helpers clamp nestable depth and flatten other block types', () => {
+test('block shape helpers retain possible child depths while only lists continue list syntax', () => {
   assert.equal(isNestableBlock('todo'), true)
   assert.equal(isNestableBlock('paragraph'), false)
   assert.equal(normalizeBlockDepth('numbered-list', -4), 0)
   assert.equal(normalizeBlockDepth('bulleted-list', 9.8), 6)
-  assert.equal(normalizeBlockDepth('heading-1', 4), 0)
+  assert.equal(normalizeBlockDepth('heading-1', 4), 4)
+  assert.equal(normalizeBlockDepth('frontmatter', 4), 0)
+  assert.equal(isNestableBlock('callout'), false)
+  assert.equal(isNestableBlock('toggle'), false)
 })
 
 test('normalizeDraftBlocks repairs ids and parent relationships while preserving tags', () => {
@@ -98,7 +101,9 @@ test('validateBlockTreeStructure reports duplicate, forward, and invalid non-nes
   const result = validateBlockTreeStructure([
     block('duplicate', 'paragraph', 2, 'later'),
     block('duplicate', 'bulleted-list', 7, null),
-    block('later', 'paragraph', 0)
+    block('later', 'paragraph', 0),
+    block('invalid-child', 'todo', 1, 'later'),
+    block('protected-frontmatter', 'frontmatter', 1, 'later')
   ])
 
   assert.equal(result.valid, false)

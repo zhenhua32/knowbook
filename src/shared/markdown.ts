@@ -1,5 +1,7 @@
+import { encodeNativeLiteralText, decodedNativeSourceLines, type NativeTextProjection } from './markdownNativeText'
 import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode } from './markdownEngine'
-import { isTaskBlockType, isOrderedListBlockType } from './blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, canBlockNestUnder, isListBlockType } from './blockTypes'
+import { assertNativeContainerParse, nativeMarkdownContainer, renderNativeContainerHeader, nativeContainerClosingTag, validateNativeContainerFormat, nativeContainerFormatsAgree, parseNativeContainerOpening, NativeMarkdownContainerError } from './markdownContainers'
 import { parseTaskListMarker } from './markdownExtensions'
 import { normalizeMarkdownFormat, type MarkdownBlockFormat } from './markdownFormat'
 import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFrontmatter'
@@ -27,6 +29,7 @@ export interface ParsedMarkdownDocument {
 }
 
 type MarkdownBlockMetadata = {
+  parentSpecified?: boolean
   type?: string
   depth?: number
   listStart?: number
@@ -241,6 +244,7 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
     }
 
     const candidate = parsed as Record<string, unknown>
+    if (typeof candidate.type === 'string') validateNativeContainerFormat(candidate.type, candidate.markdownFormat)
     const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : undefined
     const parentBlockId = typeof candidate.parentBlockId === 'string' && candidate.parentBlockId.trim()
       ? candidate.parentBlockId.trim()
@@ -259,10 +263,12 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
       markdownFormat: normalizeMarkdownFormat(typeof candidate.type === 'string' ? candidate.type : '', candidate.markdownFormat),
       id,
       parentBlockId,
+      parentSpecified: Object.hasOwn(candidate, 'parentBlockId'),
       tags,
       highlight
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof NativeMarkdownContainerError) throw error
     return null
   }
 }
@@ -294,15 +300,30 @@ function applyMarkdownBlockMetadata(block: MarkdownRenderableBlock, metadata: Ma
   return nextBlock
 }
 
+/** Anonymous keys stay private: ordinary files do not acquire persistent IDs. */
+function resolveContainerMarkdownDepths(blocks: MarkdownRenderableBlock[]): number[] {
+  const stack: Array<{ key: string; type: string }> = []
+  return blocks.map((block, index) => {
+    const explicit = block.parentBlockId ? stack.findIndex(parent => parent.key === block.parentBlockId) : -1
+    let depth = explicit >= 0 ? explicit + 1 : Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0)))
+    depth = Math.min(depth, stack.length)
+    while (depth > 0 && !canBlockNestUnder(stack[depth - 1].type, block.type)) depth--
+    stack.length = depth
+    stack[depth] = { key: block.id || '\0anonymous:' + index, type: block.type }
+    return depth
+  })
+}
 function finalizeParsedMarkdownBlocks(blocks: MarkdownRenderableBlock[]): MarkdownRenderableBlock[] {
   const depthStack: Array<string | undefined> = []
   const depthById = new Map<string, number>()
-  return blocks.map((block) => {
+  const nativeDepths = blocks.some(block => isContainerBlockType(block.type)) ? resolveContainerMarkdownDepths(blocks) : null
+  return blocks.map((block, index) => {
     const id = block.id?.trim() || undefined
     const explicitParent = block.parentBlockId?.trim() || null
     const parentDepth = explicitParent ? depthById.get(explicitParent) : undefined
-    const depth = normalizeMarkdownDepth(block.type, parentDepth === undefined ? block.depth ?? 0 : parentDepth + 1)
-    const parentBlockId = explicitParent ?? (depth > 0 ? depthStack[depth - 1] ?? null : null)
+    const depth = nativeDepths?.[index] ?? normalizeMarkdownDepth(block.type, parentDepth === undefined ? block.depth ?? 0 : parentDepth + 1)
+    const parentBlockId = nativeDepths ? depth > 0 ? depthStack[depth - 1] ?? null : null
+      : explicitParent ?? (depth > 0 ? depthStack[depth - 1] ?? null : null)
     depthStack.length = depth + 1
     depthStack[depth] = id
     if (id) depthById.set(id, depth)
@@ -377,31 +398,65 @@ function protectContainerParagraphs(body: string, children: MarkdownNode[], firs
 
 /** Parse source into editable blocks. Complex list bodies remain Markdown in the
  * item; simple nested lists become the existing flat parent/depth structure. */
-export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[]): MarkdownRenderableBlock[] {
+export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[], closingRanges?: MarkdownContainerClosingRange[]): MarkdownRenderableBlock[] {
   if (sourceRanges) sourceRanges.length = 0
+  if (closingRanges) closingRanges.length = 0
   const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!source.trim()) return []
-  const lines = source.split('\n')
-  const nodes = markdownTokenTree(markdownEngine.parse(source, {}))
+  const environment: Record<string, unknown> = {}
+  const tokens = markdownEngine.parse(source, environment)
+  const lines = decodedNativeSourceLines(source, tokens)
+  const nodes = markdownTokenTree(tokens)
+  assertNativeContainerParse(environment)
   const blocks: MarkdownRenderableBlock[] = []
-  // Optional ranges refer to the normalized LF source. A simple list parent's
-  // range stops before its children, matching the flat editable block model.
+  const declared = new Map<number, { metadata: MarkdownBlockMetadata; scopeDepth: number; scopeParent?: number }>()
   const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => {
     while (startLine < endLine && !lines[startLine]?.trim()) startLine++
     while (endLine > startLine && !lines[endLine - 1]?.trim()) endLine--
     sourceRanges?.push({ index: blocks.length, startLine, endLine })
     blocks.push(block)
   }
-  const raw = (node: MarkdownNode) => trimBlankLines(lines.slice(...node.token.map!).join('\n'))
+  const rawStart = (node: MarkdownNode): number => node.token.type === 'table_open' && node.token.meta?.tableLayoutMap
+    ? (node.token.meta.tableLayoutMap as [number, number])[0] : node.token.map![0]
+  const raw = (node: MarkdownNode) => trimBlankLines(lines.slice(rawStart(node), node.token.map![1]).join('\n'))
   const make = (type: string, content: string, depth = 0): MarkdownRenderableBlock => ({ type, content, checked: false, depth })
-  const append = (node: MarkdownNode, depth = 0) => {
+  const append = (node: MarkdownNode, depth = 0, metadata: MarkdownBlockMetadata | null = null, metadataLine?: number, scopeParent?: number): void => {
     const { token, children } = node
+    // An unsupported multi-line marked opening may have fallen back to a legacy
+    // HTML/paragraph node. Validate only that node's opening, never the remaining
+    // document or literal code/math/quotes.
+    if (token.type === 'paragraph_open' || token.type === 'html_details_open') {
+      const opening = /^<[a-z][\w-]*(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/i.exec(raw(node))?.[0]
+      if (opening && /[\r\n]/.test(opening) && parseNativeContainerOpening(opening))
+        throw new NativeMarkdownContainerError('marked opening shell must occupy one line')
+    }
+    const container = nativeMarkdownContainer(token)
+    if (container) {
+      if (depth > 6) throw new NativeMarkdownContainerError('editable container nesting exceeds six levels')
+      if (metadata?.type && metadata.type !== container.type) throw new NativeMarkdownContainerError('backup type does not match its container shell')
+      const title = children.find(child => child.token.type === 'native_container_title')
+      if (!title) throw new NativeMarkdownContainerError('missing title token')
+      const ownerIndex = blocks.length
+      let owner: MarkdownRenderableBlock = { ...make(container.type, title.token.content, depth), markdownFormat: container.markdownFormat }
+      if (metadata) {
+        if (!nativeContainerFormatsAgree(container.type, metadata.markdownFormat, container.markdownFormat))
+          throw new NativeMarkdownContainerError('backup container format conflicts with its shell')
+        declared.set(ownerIndex, { metadata, scopeDepth: depth, scopeParent })
+        delete owner.markdownFormat
+        owner = applyMarkdownBlockMetadata(owner, metadata)
+      }
+      push(owner, metadataLine ?? container.headerRange[0], container.headerRange[1])
+      appendScope(children.filter(child => child !== title), ...container.bodyRange, depth + 1, ownerIndex)
+      closingRanges?.push({ index: ownerIndex, startLine: container.closingRange[0], endLine: container.closingRange[1] })
+      return
+    }
+    const put = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => push({ ...block, depth: block.depth || depth }, startLine, endLine)
     if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
       const ordered = token.type === 'ordered_list_open'
-      const loose = children.some((item) => item.children.some((child) => child.token.type === 'paragraph_open' && !child.token.hidden))
+      const loose = children.some(item => item.children.some(child => child.token.type === 'paragraph_open' && !child.token.hidden))
       children.forEach((item, index) => {
         const simple = item.children[0]?.token.type === 'paragraph_open'
-          && item.children.slice(1).every((child) => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type))
+          && item.children.slice(1).every(child => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type))
           && depth < 6 && !/^\s*\[[^\]]+\]:/m.test(raw(item))
         let content = simple ? protectParagraphContinuations(item.children[0].children[0]?.token.content ?? '')
           : trimBlankLines(protectContainerParagraphs(stripListMarker(raw(item), true), item.children, item.token.map![0]))
@@ -412,84 +467,101 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
         block.markdownFormat = { listMarker: token.markup as MarkdownBlockFormat['listMarker'], listLoose: loose }
         if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
         push(block, item.token.map![0], simple ? item.children[0].token.map![1] : item.token.map![1])
-        if (simple) item.children.slice(1).forEach((child) => append(child, depth + 1))
+        if (simple) item.children.slice(1).forEach(child => append(child, depth + 1))
       })
-    } else if (token.type === 'heading_open') {
-      push(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
-    } else if (token.type === 'fence' || token.type === 'code_block') {
-      push({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
-        markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
-    } else if (token.type === 'frontmatter') {
-      push(make('frontmatter', token.content), ...token.map!)
-    } else if (token.type === 'html_details_open' || token.type === 'html_figure_open') {
-      push(make('html', raw(node)), ...token.map!)
-    } else if (token.type === 'math_block') {
-      push(make('math', token.content), ...token.map!)
-    } else if (token.type === 'hr') {
-      push(make('divider', ''), ...token.map!)
-    } else if (token.type === 'table_open') {
-      push(make('table', raw(node)), ...token.map!)
-    } else if (token.type === 'blockquote_open') {
-      const body = raw(node).split('\n').map((line) => expandLeadingTabs(line).replace(/^ {0,3}> ?/, '')).join('\n')
-      push(make('quote', protectContainerParagraphs(body, children, token.map![0])), ...token.map!)
-    } else {
-      push(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')), ...token.map!)
-    }
+    } else if (token.type === 'heading_open') put(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
+    else if (token.type === 'fence' || token.type === 'code_block') put({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
+      markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
+    else if (token.type === 'frontmatter') put(make('frontmatter', token.content), ...token.map!)
+    else if (token.type === 'html_details_open' || token.type === 'html_figure_open') put(make('html', raw(node)), ...token.map!)
+    else if (token.type === 'math_block') put(make('math', token.content), ...token.map!)
+    else if (token.type === 'hr') put(make('divider', ''), ...token.map!)
+    else if (token.type === 'table_open') put(make('table', raw(node)), rawStart(node), token.map![1])
+    else if (token.type === 'blockquote_open') {
+      const body = raw(node).split('\n').map(line => expandLeadingTabs(line).replace(/^ {0,3}> ?/, '')).join('\n')
+      put(make('quote', protectContainerParagraphs(body, children, token.map![0])), ...token.map!)
+    } else put(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')), ...token.map!)
   }
-
-  let cursor = 0
-  let pending: MarkdownBlockMetadata | null = null
-  for (let index = 0; index < nodes.length; index++) {
-    const node = nodes[index]
-    if (!node.token.map) continue
-    const gap = trimBlankLines(lines.slice(cursor, node.token.map[0]).join('\n'))
-    // Reference definitions produce no Markdown tokens. Keep their source so
-    // definitions stay editable, survive export, and can resolve across blocks.
-    if (gap.trim()) push(make('paragraph', gap), cursor, node.token.map[0])
-    cursor = node.token.map[1]
-    if (node.token.type === 'knowbook_metadata') {
-      pending = parseMarkdownBlockMetadata(node.token.content)
-      if (!pending) push(make('paragraph', node.token.content), ...node.token.map)
-      else if (pending.type) {
-        let next = index + 1
-        while (next < nodes.length && nodes[next].token.type !== 'knowbook_metadata') next++
-        const end = nodes[next]?.token.map?.[0] ?? lines.length
-        const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
-        let parsed = parseMarkdownBlocks(body)[0] ?? make(pending.type, '')
-        if (['paragraph', 'table', 'frontmatter', 'html'].includes(pending.type)) parsed = make(pending.type, body)
-        else if (isNestableMarkdownBlock(pending.type)) {
-          let content = stripListMarker(body)
-          const task = isTaskBlockType(pending.type) ? parseTaskListMarker(content) : null
-          if (task) content = content.slice(task.length)
-          parsed = { ...make(pending.type, content), checked: task?.checked ?? false }
+  const appendScope = (items: MarkdownNode[], scopeStart: number, scopeEnd: number, depth: number, scopeParent?: number): void => {
+    if (depth > 6 && trimBlankLines(lines.slice(scopeStart, scopeEnd).join('\n'))) throw new NativeMarkdownContainerError('editable child nesting exceeds six levels')
+    let cursor = scopeStart
+    let pending: MarkdownBlockMetadata | null = null
+    for (let index = 0; index < items.length; index++) {
+      const node = items[index]
+      if (!node.token.map || node.token.type === 'footnote_block_open') continue
+      const gap = trimBlankLines(lines.slice(cursor, node.token.map[0]).join('\n'))
+      if (gap.trim()) push(make('paragraph', gap, depth), cursor, node.token.map[0])
+      cursor = node.token.map[1]
+      if (node.token.type === 'knowbook_table_layout' && node.token.meta?.boundTableLayout) continue
+      if (node.token.type === 'knowbook_metadata') {
+        pending = parseMarkdownBlockMetadata(node.token.content)
+        if (!pending) push(make('paragraph', node.token.content, depth), ...node.token.map)
+        else if (pending.type && isContainerBlockType(pending.type)) {
+          const next = items[index + 1]
+          if (!next || !nativeMarkdownContainer(next.token)) throw new NativeMarkdownContainerError('backup container metadata has no matching shell')
+          append(next, depth, pending, node.token.map[0], scopeParent)
+          cursor = next.token.map![1]; index++; pending = null
+        } else if (pending.type) {
+          let next = index + 1
+          while (next < items.length && items[next].token.type !== 'knowbook_metadata') next++
+          const end = items[next]?.token.map?.[0] ?? scopeEnd
+          const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
+          let parsed = parseMarkdownBlocks(body)[0] ?? make(pending.type, '')
+          if (['paragraph', 'table', 'frontmatter', 'html'].includes(pending.type)) parsed = make(pending.type, body)
+          else if (isNestableMarkdownBlock(pending.type)) {
+            let content = stripListMarker(body)
+            const task = isTaskBlockType(pending.type) ? parseTaskListMarker(content) : null
+            if (task) content = content.slice(task.length)
+            parsed = { ...make(pending.type, content), checked: task?.checked ?? false }
+          }
+          if (depth > 0 && pending.type === 'frontmatter') throw new NativeMarkdownContainerError('frontmatter cannot be a container child')
+          if (getHeadingLevel(pending.type) && /^ {0,3}#{1,6}(?:[ \t]|$)/.test(body)) parsed.content = body.replace(/^ {0,3}#{1,6}[ \t]?/, '')
+          if (isOrderedListBlockType(pending.type)) {
+            delete parsed.listStart
+            if (pending.listStart !== undefined) parsed.listStart = normalizeListStart(pending.listStart)
+          }
+          delete parsed.markdownFormat
+          declared.set(blocks.length, { metadata: pending, scopeDepth: depth, scopeParent })
+          push(applyMarkdownBlockMetadata({ ...parsed, type: pending.type, depth }, pending), node.token.map[0], end)
+          pending = null; cursor = end; index = next - 1
         }
-        if (getHeadingLevel(pending.type) && /^ {0,3}#{1,6}(?:[ \t]|$)/.test(body)) parsed.content = body.replace(/^ {0,3}#{1,6}[ \t]?/, '')
-        if (isOrderedListBlockType(pending.type)) {
-          delete parsed.listStart
-          if (pending.listStart !== undefined) parsed.listStart = normalizeListStart(pending.listStart)
-        }
-        // Metadata is authoritative, including the absence of format hints in
-        // older backups or blocks created directly in the editor.
-        delete parsed.markdownFormat
-        push(applyMarkdownBlockMetadata({ ...parsed, type: pending.type }, pending), node.token.map[0], end)
-        pending = null
-        cursor = end
-        index = next - 1
+        continue
       }
-      continue
+      const before = blocks.length
+      append(node, depth, null, undefined, scopeParent)
+      if (pending && blocks[before]) { blocks[before] = applyMarkdownBlockMetadata(blocks[before], pending); pending = null }
     }
-    const before = blocks.length
-    append(node)
-    if (pending && blocks[before]) {
-      blocks[before] = applyMarkdownBlockMetadata(blocks[before], pending)
-      pending = null
+    const remaining = trimBlankLines(lines.slice(cursor, scopeEnd).join('\n'))
+    if (remaining.trim()) push(applyMarkdownBlockMetadata(make('paragraph', remaining, depth), pending), cursor, scopeEnd)
+  }
+  appendScope(nodes, 0, lines.length, 0)
+  if (blocks.some(value => isContainerBlockType(value.type)) && declared.size) {
+    const ids = new Set<string>(), active: MarkdownRenderableBlock[] = []
+    for (let index = 0; index < blocks.length; index++) {
+      const value = blocks[index], entry = declared.get(index)
+      if (value.id) {
+        if (ids.has(value.id)) throw new NativeMarkdownContainerError('duplicate backup block identity')
+        ids.add(value.id)
+      }
+      const depth = value.depth ?? 0
+      if (!Number.isInteger(depth) || depth < 0 || depth > 6) throw new NativeMarkdownContainerError('invalid backup block depth')
+      if (entry) {
+        if (isListBlockType(value.type)) {
+          if (depth < entry.scopeDepth) throw new NativeMarkdownContainerError('list metadata escapes its container scope')
+          for (let ancestor = entry.scopeDepth; ancestor < depth; ancestor++)
+            if (!isListBlockType(active[ancestor]?.type ?? '')) throw new NativeMarkdownContainerError('list metadata points outside its active list')
+        } else if (depth !== entry.scopeDepth) throw new NativeMarkdownContainerError('metadata depth does not match its container scope')
+        const scopeOwner = entry.scopeParent === undefined ? null : blocks[entry.scopeParent]
+        if (entry.scopeDepth > 0 && active[entry.scopeDepth - 1] !== scopeOwner) throw new NativeMarkdownContainerError('backup child escapes its active container')
+        const parent = depth > 0 ? active[depth - 1] : null
+        if (depth > 0 && (!parent || !canBlockNestUnder(parent.type, value.type))) throw new NativeMarkdownContainerError('incompatible backup parent')
+        if (entry.metadata.parentSpecified && (entry.metadata.parentBlockId ?? null) !== (parent?.id ?? null)) throw new NativeMarkdownContainerError('foreign or inactive backup parent identity')
+      }
+      active.length = depth; active[depth] = value
     }
   }
-  const remaining = trimBlankLines(lines.slice(cursor).join('\n'))
-  if (remaining.trim()) push(applyMarkdownBlockMetadata(make('paragraph', remaining), pending), cursor, lines.length)
   return finalizeParsedMarkdownBlocks(blocks)
 }
-
 type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
 export type MarkdownBlockSourceRange = { index: number; startLine: number; endLine: number }
 
@@ -497,10 +569,76 @@ export function serializeBlocksToMarkdown(blocks: MarkdownRenderableBlock[], opt
   return serializeMarkdownWithBlockRanges(blocks, options).markdown
 }
 
-/** Source ranges use the exact same separators and indentation as file export. */
+/** Structural closers deliberately do not overlap any editable block range. */
+export type MarkdownContainerClosingRange = MarkdownBlockSourceRange
+
+/** Native forest envelopes are independent of relative list indentation. */
+function serializeContainerForest(
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions
+): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
+  const depths = resolveContainerMarkdownDepths(blocks)
+  const nativeAncestors: boolean[] = []
+  const contentProjections = blocks.map((block, index) => {
+    const depth = depths[index]
+    nativeAncestors.length = depth
+    const native = isContainerBlockType(block.type)
+    const scoped = native || nativeAncestors.some(Boolean)
+    nativeAncestors[depth] = native
+    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter'].includes(block.type) ? 'opaque' : native ? 'title' : 'body')
+  })
+  const parts: string[] = [], ranges: MarkdownBlockSourceRange[] = [], closingRanges: MarkdownContainerClosingRange[] = []
+  let line = 0
+  const emit = (source: string) => {
+    const separator = parts.length ? '\n\n' : ''
+    line += separator.length
+    const startLine = line
+    parts.push(separator + source)
+    line += source.match(/\n/g)?.length ?? 0
+    return startLine
+  }
+  const scope = (start: number, end: number, baseDepth: number): void => {
+    let index = start
+    while (index < end) {
+      const block = blocks[index]
+      if (isContainerBlockType(block.type)) {
+        let subtreeEnd = index + 1
+        while (subtreeEnd < end && depths[subtreeEnd] > depths[index]) subtreeEnd++
+        const metadata = options.includeBlockMetadata ? renderMarkdownBlockMetadata(block) : null
+        const header = (metadata ? metadata + '\n' : '') + renderNativeContainerHeader(block)
+        const startLine = emit(header)
+        ranges.push({ index, startLine, endLine: startLine + (header.match(/\n/g)?.length ?? 0) + 1 })
+        scope(index + 1, subtreeEnd, depths[index] + 1)
+        const closeLine = emit(nativeContainerClosingTag(block.type))
+        closingRanges.push({ index, startLine: closeLine, endLine: closeLine + 1 })
+        index = subtreeEnd
+        continue
+      }
+      const chunkStart = index
+      while (index < end && !isContainerBlockType(blocks[index].type)) index++
+      const originals = blocks.slice(chunkStart, index)
+      const relative = originals.map((value, offset) => ({ ...value, content: contentProjections[chunkStart + offset].source, depth: depths[chunkStart + offset] - baseDepth }))
+      const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true)
+      const offset = emit(rendered.markdown)
+      for (const range of rendered.ranges) ranges.push({ ...range, index: chunkStart + range.index,
+        startLine: offset + range.startLine, endLine: offset + range.endLine })
+    }
+  }
+  scope(0, blocks.length, 0)
+  return { markdown: parts.join(''), ranges, closingRanges, contentProjections }
+}
+
 export function serializeMarkdownWithBlockRanges(
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}
+): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
+  if (blocks.some(block => isContainerBlockType(block.type))) return serializeContainerForest(blocks, options)
+  return { ...serializeFlatMarkdownWithBlockRanges(blocks, options), closingRanges: [] }
+}
+/** Source ranges use the exact same separators and indentation as file export. */
+function serializeFlatMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[],
-  options: MarkdownSerializationOptions = {}
+  options: MarkdownSerializationOptions = {},
+  metadataBlocks = blocks,
+  nativeScope = false
 ): { markdown: string; ranges: MarkdownBlockSourceRange[] } {
   const effectiveDepths = resolveMarkdownBlockDepths(blocks)
   const indents: string[] = []
@@ -530,7 +668,7 @@ export function serializeMarkdownWithBlockRanges(
         return renderedBlock
       }
 
-      const metadata = renderMarkdownBlockMetadata(block)
+      const metadata = renderMarkdownBlockMetadata(metadataBlocks[index])
       return metadata ? `${metadata}\n${renderedBlock}` : renderedBlock
     })
   const ranges: MarkdownBlockSourceRange[] = []
@@ -546,6 +684,9 @@ export function serializeMarkdownWithBlockRanges(
       // happened to precede the next sibling in the flattened editor model.
       const loose = depth > previousDepth ? previous.markdownFormat?.listLoose : current.markdownFormat?.listLoose
       separator = loose === false ? '\n' : '\n\n'
+      // A non-one ordered start cannot interrupt a parent paragraph. This
+      // separator preserves independent native child list blocks in CommonMark.
+      if (nativeScope && depth > previousDepth && isOrderedListBlockType(current.type) && (current.listStart ?? 1) !== 1) separator = '\n\n'
     }
     line += separator.length
     const newlines = text.match(/\n/g)?.length ?? 0

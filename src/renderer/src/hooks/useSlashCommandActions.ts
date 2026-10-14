@@ -1,10 +1,9 @@
-import { isTaskBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
-import { isNestableBlock } from '../utils/draftBlockShape'
 import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
-import { promoteDraftBlockChildren } from '../utils/draftTreeTextEditing'
+import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { removeSlashCommand } from '../utils/editorAssist'
 
 type SlashCommandLike = {
@@ -135,19 +134,31 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     if (command.kind === 'type') {
       pushToHistory(draftBlocks)
       if (command.templateContent !== undefined) {
-        // A standalone template belongs after the enclosing list, so it cannot
-        // separate a list parent from its remaining nested siblings.
-        let targetIndex = nextContent.trim() ? getBlockSubtreeEndIndex(draftBlocks, activeBlockIndex) + 1 : activeBlockIndex
-        if (targetIndex !== activeBlockIndex) {
-          while (targetIndex < draftBlocks.length && draftBlocks[targetIndex].depth > 0) targetIndex += 1
+        let targetIndex = activeBlockIndex
+        let targetDepth = currentBlock.depth
+        let targetParentId = currentBlock.parentBlockId ?? null
+        if (nextContent.trim()) {
+          let branchIndex = activeBlockIndex
+          const byId = new Map(draftBlocks.map((block, index) => [block.id, index]))
+          let parentIndex = byId.get(targetParentId ?? undefined)
+          while (parentIndex !== undefined && !canBlockNestUnder(draftBlocks[parentIndex].type, command.type)) {
+            branchIndex = parentIndex
+            targetParentId = draftBlocks[parentIndex].parentBlockId ?? null
+            parentIndex = byId.get(targetParentId ?? undefined)
+          }
+          targetDepth = parentIndex === undefined ? 0 : draftBlocks[parentIndex].depth + 1
+          targetIndex = getBlockSubtreeEndIndex(draftBlocks, branchIndex) + 1
         }
-        const inserted = { ...buildBlockTypePatch(command.type, command.templateContent),
-          ...(command.templateLanguage ? { language: command.templateLanguage, markdownFormat: { codeInfo: command.templateLanguage } } : {}) }
         setDraftBlocks((previous) => {
-          const next = targetIndex === activeBlockIndex && !isNestableBlock(command.type)
-            ? promoteDraftBlockChildren(previous, activeBlockIndex) : [...previous]
-          next[activeBlockIndex] = { ...next[activeBlockIndex], content: nextContent }
-          if (targetIndex === activeBlockIndex) next[activeBlockIndex] = { ...next[activeBlockIndex], ...inserted, id: next[activeBlockIndex].id }
+          const next = targetIndex === activeBlockIndex
+            ? prepareDraftBlockTypeChange(previous, activeBlockIndex, command.type) : [...previous]
+          const target = next[activeBlockIndex]
+          const inserted = { ...buildBlockTypePatch(command.type, command.templateContent!, false,
+            targetIndex === activeBlockIndex ? target.depth : targetDepth,
+            targetIndex === activeBlockIndex ? target.parentBlockId : targetParentId),
+            ...(command.templateLanguage ? { language: command.templateLanguage, markdownFormat: { codeInfo: command.templateLanguage } } : {}) }
+          next[activeBlockIndex] = { ...target, content: nextContent }
+          if (targetIndex === activeBlockIndex) next[activeBlockIndex] = { ...next[activeBlockIndex], ...inserted, id: target.id }
           else next.splice(targetIndex, 0, inserted)
           return next
         })
@@ -156,16 +167,13 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
         setPendingFocusBlockIndex(targetIndex)
         return
       }
-      setDraftBlocks((previous) =>
-        (isNestableBlock(command.type) ? previous : promoteDraftBlockChildren(previous, activeBlockIndex)).map((block, index) =>
-          index === activeBlockIndex
-            ? {
-                ...block,
-                ...buildBlockTypePatch(command.type, nextContent, isTaskBlockType(command.type) ? currentBlock.checked : false, currentBlock.depth, currentBlock.parentBlockId ?? null)
-              }
-            : block
-        )
-      )
+      setDraftBlocks((previous) => {
+        const next = prepareDraftBlockTypeChange(previous, activeBlockIndex, command.type)
+        const block = next[activeBlockIndex]
+        next[activeBlockIndex] = { ...block, ...buildBlockTypePatch(command.type, nextContent,
+          isTaskBlockType(command.type) ? currentBlock.checked : false, block.depth, block.parentBlockId ?? null) }
+        return next
+      })
       setActiveCursorPosition(slashRemoval.cursorPosition)
       setPendingFocusBlockIndex(activeBlockIndex)
       return
@@ -196,7 +204,7 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     }
 
     if (command.action === 'indent' || command.action === 'outdent') {
-      if (!isNestableBlock(currentBlock.type)) {
+      if (!canBlockHaveParent(currentBlock.type)) {
         updateDraftBlock(activeBlockIndex, { content: nextContent })
         setActiveCursorPosition(slashRemoval.cursorPosition)
         setPendingFocusBlockIndex(activeBlockIndex)
@@ -231,7 +239,6 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
     duplicateDraftBlock,
     insertChildDraftBlock,
     insertDraftBlockAt,
-    isNestableBlock,
     moveDraftBlockBySibling,
     pushToHistory,
     removeDraftBlock,

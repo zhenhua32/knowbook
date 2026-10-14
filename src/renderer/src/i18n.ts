@@ -100,7 +100,9 @@ function createUiText(language: UiLanguage) {
     'bulleted-list': zh ? '无序' : 'Bullet',
     'numbered-list': zh ? '有序' : 'Number',
     divider: zh ? '分隔线' : 'Divider',
-    table: zh ? '表格' : 'Table'
+    table: zh ? '表格' : 'Table',
+    callout: zh ? '提示块' : 'Callout',
+    toggle: zh ? '折叠块' : 'Toggle'
   }
 
   const blockTypeOptions: Record<string, string> = {
@@ -119,7 +121,9 @@ function createUiText(language: UiLanguage) {
     'bulleted-list': zh ? '无序列表' : 'Bulleted List',
     'numbered-list': zh ? '有序列表' : 'Numbered List',
     divider: zh ? '分隔线' : 'Divider',
-    table: zh ? '表格' : 'Table'
+    table: zh ? '表格' : 'Table',
+    callout: zh ? '提示块' : 'Callout',
+    toggle: zh ? '折叠块' : 'Toggle'
   }
 
   const conversionOptions: Record<string, string> = {
@@ -129,7 +133,9 @@ function createUiText(language: UiLanguage) {
     quote: zh ? '转为引用' : 'As Quote',
     'bulleted-list': zh ? '转为无序列表' : 'As Bullet',
     'numbered-list': zh ? '转为有序列表' : 'As Numbered',
-    table: zh ? '转为表格' : 'As Table'
+    table: zh ? '转为表格' : 'As Table',
+    callout: zh ? '转为提示块' : 'As Callout',
+    toggle: zh ? '转为折叠块' : 'As Toggle'
   }
 
   return {

@@ -1,8 +1,9 @@
 import { useCallback } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
+import { isContainerBlockType } from '@shared/blockTypes'
 import { getMarkdownShortcut, parsePastedMarkdown } from '../utils/markdownInput'
-import { materializePastedDraftFragment, planDraftBlockPaste } from '../utils/draftTreePaste'
+import { materializePastedDraftFragment, planDraftBlockPaste, planDraftContainerTitlePaste } from '../utils/draftTreePaste'
 
 type BlockSelectionRange = {
   start: number
@@ -91,6 +92,19 @@ export function useBlockInputActions({
     const template = draftBlocks[start]
     const before = activeRange ? '' : current.content.slice(0, selectionStart)
     const after = activeRange ? '' : current.content.slice(selectionEnd)
+    if (!activeRange && isContainerBlockType(current.type)) {
+      const parsed = parsePastedMarkdown(text)
+      const plan = planDraftContainerTitlePaste(draftBlocks, index, parsed, before, after)
+      if (!plan) return false
+      pushToHistory(draftBlocks)
+      clearBlockSelection()
+      setDraftBlocks(previous => planDraftContainerTitlePaste(previous, index, parsed, before, after)?.blocks ?? previous)
+      setActiveBlockIndex(plan.focusIndex)
+      setActiveCursorPosition(plan.cursorPosition)
+      setPendingFocusBlockIndex(plan.focusIndex, plan.cursorPosition)
+      endBlockDrag()
+      return true
+    }
     let parsed = parsePastedMarkdown(before + text + after)
     if (!parsed.length) return false
     // A plain multiline paste inside an existing block retains that block's type.
@@ -100,12 +114,12 @@ export function useBlockInputActions({
     let nextBlocks = materializePastedDraftFragment(parsed.map((block) => ({
       ...block,
       language: block.type === 'code' ? normalizeCodeLanguage(block.language) ?? detectCodeLanguage(block.content) ?? undefined : undefined
-    })), template)
+    })), template, draftBlocks)
     if (!nextBlocks) {
       // The editor represents six nested levels. Preserve deeper Markdown
       // verbatim inside one block, so paste never discards its hierarchy.
       nextBlocks = materializePastedDraftFragment([activeRange
-        ? buildBlockTypePatch('paragraph', text) : { ...current, content: before + text + after }], template)
+        ? buildBlockTypePatch('paragraph', text) : { ...current, content: before + text + after }], template, draftBlocks)
     }
     if (!nextBlocks) return false
     const range = activeRange ?? { start, end: start }

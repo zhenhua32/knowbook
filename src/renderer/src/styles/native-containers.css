@@ -1,0 +1,44 @@
+.native-container-controls { margin: 4px 0; padding: 5px 8px; border: 1px solid var(--kb-line); border-radius: 6px; font-size: .86em; }
+.native-container-controls > summary { cursor: pointer; color: var(--kb-text-soft); }
+.native-container-control-fields { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.native-container-control-fields label { display: inline-flex; gap: 5px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.native-container-control-fields select { min-width: 0; max-width: 100%; }
+.native-container-child-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.native-container-controls select, .native-container-controls button { padding: 4px 6px; color: var(--kb-text); background: var(--kb-canvas); border: 1px solid var(--kb-line); border-radius: 4px; }
+[data-native-container="callout"].block-editor-row, .knowbook-rich-text-editor [data-native-container="callout"].block-editor-row, [data-native-container="callout"].document-reading-row, [data-native-container="callout"].native-container-markdown { border-left: 3px solid var(--native-container-accent, var(--kb-line)) !important; background: var(--native-container-background, var(--kb-accent-soft)); }
+[data-native-container-tone="gray"] { --native-container-background: #ebeef2; --native-container-accent: #5c6370; }
+[data-native-container-tone="brown"] { --native-container-background: #f0e4df; --native-container-accent: #795548; }
+[data-native-container-tone="orange"] { --native-container-background: #fff0df; --native-container-accent: #a84a05; }
+[data-native-container-tone="yellow"] { --native-container-background: #fff5c4; --native-container-accent: #856500; }
+[data-native-container-tone="green"] { --native-container-background: #e2f1e8; --native-container-accent: #207347; }
+[data-native-container-tone="blue"] { --native-container-background: #e3edfb; --native-container-accent: #215da8; }
+[data-native-container-tone="purple"] { --native-container-background: #eee5f8; --native-container-accent: #7041a1; }
+[data-native-container-tone="pink"] { --native-container-background: #fae5f0; --native-container-accent: #a33575; }
+[data-native-container-tone="red"] { --native-container-background: #fbe5e5; --native-container-accent: #b43132; }
+:root[data-theme="dark"] [data-native-container-tone="gray"] { --native-container-background: #363b45; --native-container-accent: #b9bec9; }
+:root[data-theme="dark"] [data-native-container-tone="brown"] { --native-container-background: #49372f; --native-container-accent: #d7aa92; }
+:root[data-theme="dark"] [data-native-container-tone="orange"] { --native-container-background: #523a25; --native-container-accent: #ffb56e; }
+:root[data-theme="dark"] [data-native-container-tone="yellow"] { --native-container-background: #4b4425; --native-container-accent: #e4c868; }
+:root[data-theme="dark"] [data-native-container-tone="green"] { --native-container-background: #264334; --native-container-accent: #85cda2; }
+:root[data-theme="dark"] [data-native-container-tone="blue"] { --native-container-background: #253c59; --native-container-accent: #8ebcff; }
+:root[data-theme="dark"] [data-native-container-tone="purple"] { --native-container-background: #40314f; --native-container-accent: #c4a0ec; }
+:root[data-theme="dark"] [data-native-container-tone="pink"] { --native-container-background: #4f2d43; --native-container-accent: #f4a5d1; }
+:root[data-theme="dark"] [data-native-container-tone="red"] { --native-container-background: #512e32; --native-container-accent: #ff9b9b; }
+.native-container-icon { display: inline-block; width: 1.5em; flex: 0 0 1.5em; text-align: center; }
+.native-container-icon[data-native-container-icon="note"]::before { content: '📝'; }
+.native-container-icon[data-native-container-icon="info"]::before { content: 'ℹ'; }
+.native-container-icon[data-native-container-icon="tip"]::before { content: '💡'; }
+.native-container-icon[data-native-container-icon="warning"]::before { content: '⚠'; }
+.native-container-icon[data-native-container-icon="danger"]::before { content: '⛔'; }
+.native-container-icon[data-native-container-icon="book"]::before { content: '📖'; }
+.native-container-icon[data-native-container-icon="pin"]::before { content: '📌'; }
+.native-container-icon[data-native-container-icon="check"]::before { content: '✓'; }
+.native-container-icon[data-native-container-icon="question"]::before { content: '?'; }
+.native-toggle-control { border: 0; background: transparent; color: var(--kb-text); cursor: pointer; width: 1.5em; padding: 0; }
+.native-toggle-control::before { content: '▾'; }
+.native-toggle-control[aria-expanded="false"]::before { content: '▸'; }
+.knowbook-rich-text-editor .native-container-icon, .knowbook-rich-text-editor .native-toggle-control { margin-right: 4px; }
+.document-reading-content .native-container-title { display: flex; align-items: baseline; gap: 5px; }
+.native-container-markdown { margin: 8px 0; padding: 8px 12px; border-radius: 5px; }
+.native-container-markdown > summary { cursor: pointer; }
+.native-container-markdown .native-container-title { display: flex; gap: 5px; align-items: baseline; }

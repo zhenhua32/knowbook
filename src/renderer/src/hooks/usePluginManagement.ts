@@ -1,318 +1,110 @@
-import type { AppMessageHandler } from '../notify'
-import { confirmAction } from '../confirmAction'
-import { useCallback, useState, type Dispatch, type SetStateAction } from 'react'
-import type {
-  DocumentDetail,
-  HomeData,
-  PluginDocumentAction,
-  PluginV2InstallationSummary,
-  SystemPluginSummary
-} from '@shared/contracts'
-import type { UiText } from '../i18n'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createColdBlockPopup } from '../utils/coldBlockPopup'
+import type { createPluginManagementActions, PluginManagementContext, UsePluginManagementParams } from './pluginManagementActions'
 
-type UsePluginManagementParams = {
-  selectedDocumentId: string | null
-  selectedDocument: DocumentDetail | null
-  ui: UiText
-  onHomeDataChange: Dispatch<SetStateAction<HomeData>>
-  onSelectedDocumentChange: (detail: DocumentDetail | null) => void
-  onDraftSummaryChange: (summary: string) => void
-  onMessage: AppMessageHandler
-}
+type Actions = ReturnType<typeof createPluginManagementActions>
+type ActionsModule = Pick<typeof import('./pluginManagementActions'), 'createPluginManagementActions'>
+const loadPluginActions = () => import('./pluginManagementActions')
+const INVENTORY_ACTION = 'installSystemPluginFromFolder'
+const DIRECTORY_ACTION = 'openSystemPluginDirectory'
+const RESTART_ACTION = 'restartInSystemPluginSafeMode'
+const DOCUMENT_ACTION = 'runPluginDocumentAction'
+const REMOVE_PLUGIN_ACTION = 'removePluginV2'
+const REMOVE_STARTUP_ACTION = 'removeSystemPluginOsPersistence'
+const actionNames: (keyof Actions)[] = [
+  INVENTORY_ACTION,
+  REMOVE_PLUGIN_ACTION,
+  'setPluginV2Enabled',
+  'setSystemPluginEnabled',
+  'recoverSystemPlugin',
+  'uninstallSystemPlugin',
+  'rollbackSystemPlugin',
+  'startSystemPluginService',
+  'stopSystemPluginService',
+  'requestSystemPluginOsPersistence',
+  'resolveSystemPluginOsPersistence',
+  REMOVE_STARTUP_ACTION,
+  DIRECTORY_ACTION,
+  RESTART_ACTION,
+  DOCUMENT_ACTION,
+]
 
-export function usePluginManagement({
-  selectedDocumentId,
-  selectedDocument,
-  ui,
-  onHomeDataChange,
-  onSelectedDocumentChange,
-  onDraftSummaryChange,
-  onMessage
-}: UsePluginManagementParams) {
+export function usePluginManagement(params: UsePluginManagementParams, loadActions: () => Promise<ActionsModule> = loadPluginActions) {
   const [pluginBusyId, setPluginBusyId] = useState<string | null>(null)
   const [pluginActionBusyKey, setPluginActionBusyKey] = useState<string | null>(null)
   const [pluginInventoryBusy, setPluginInventoryBusy] = useState(false)
+  const documentSession = useRef({ id: params.selectedDocumentId, revision: 0 })
+  if (documentSession.current.id !== params.selectedDocumentId)
+    documentSession.current = { id: params.selectedDocumentId, revision: documentSession.current.revision + 1 }
+  const latest = useRef(params)
+  latest.current = params
+  const loader = useRef(loadActions)
+  loader.current = loadActions
+  const loading = useRef<Promise<ActionsModule> | null>(null)
+  const pending = useRef(new Map<string, symbol>())
+  const lifecycle = useRef(0)
+  const mounted = useRef(false)
+  useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false; lifecycle.current++; pending.current.clear() }
+  }, [])
 
-  const refreshPluginHomeData = useCallback(async () => {
-    const refreshed = await window.knowbook.getPluginHomeData()
-    onHomeDataChange((current) => ({ ...current, ...refreshed }))
-    return refreshed
-  }, [onHomeDataChange])
-
-  const setPluginV2Enabled = useCallback(async (plugin: PluginV2InstallationSummary, enabled: boolean) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.setPluginV2Enabled({ pluginId: plugin.pluginId, enabled })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN'
-        ? `插件“${plugin.name}”已${enabled ? '启用' : '停用'}。`
-        : `Plugin "${plugin.name}" was ${enabled ? 'enabled' : 'disabled'}.`)
-    } catch (error) {
-      await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '插件状态更新失败。' : 'Plugin status update failed.'), 'error')
-    } finally {
-      setPluginBusyId(null)
+  const invoke = useCallback(async (name: keyof Actions, args: unknown[]) => {
+    if (!mounted.current) return
+    const snapshot = latest.current, generation = lifecycle.current, session = documentSession.current.revision
+    const documentAction = name === DOCUMENT_ACTION
+    if (documentAction && !snapshot.selectedDocumentId) return
+    const plugin = args[0] as { pluginId: string; id?: string } | undefined
+    const inventory = name === INVENTORY_ACTION
+    const directory = name === DIRECTORY_ACTION
+    const restart = name === RESTART_ACTION
+    const slot = documentAction ? 'document' : inventory ? 'inventory' : directory ? `directory:${plugin?.pluginId}:${args[1]}`
+      : restart ? 'restart' : 'plugin'
+    if (pending.current.has(slot)) return
+    const token = Symbol(slot)
+    pending.current.set(slot, token)
+    if (documentAction) setPluginActionBusyKey(`${plugin!.pluginId}:${plugin!.id}`)
+    else if (inventory) setPluginInventoryBusy(true)
+    else if (!directory && !restart) setPluginBusyId(plugin!.pluginId)
+    const isCurrent = () => mounted.current && lifecycle.current === generation
+    const ownsDocument = () => isCurrent() && documentSession.current.revision === session && latest.current.selectedDocumentId === snapshot.selectedDocumentId
+    const needsAttention = inventory || directory || restart || name === REMOVE_PLUGIN_ACTION || name === REMOVE_STARTUP_ACTION
+    const cold = needsAttention ? createColdBlockPopup(document.activeElement instanceof HTMLElement ? document.activeElement : null) : null
+    const guarded = <Args extends unknown[]>(callback: (...values: Args) => void, owns = isCurrent) =>
+      (...values: Args): void => { if (owns()) callback(...values) }
+    const context: PluginManagementContext = {
+      ...snapshot,
+      onHomeDataChange: guarded(snapshot.onHomeDataChange),
+      onSelectedDocumentChange: guarded(snapshot.onSelectedDocumentChange, ownsDocument),
+      onDraftSummaryChange: guarded(snapshot.onDraftSummaryChange, ownsDocument),
+      onMessage: guarded(snapshot.onMessage),
+      setPluginBusyId: guarded(setPluginBusyId),
+      setPluginActionBusyKey: guarded(setPluginActionBusyKey),
+      setPluginInventoryBusy: guarded(setPluginInventoryBusy)
     }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const removePluginV2 = useCallback(async (plugin: PluginV2InstallationSummary) => {
-    await confirmAction({ title: ui.language === 'zh-CN' ? `卸载“${plugin.name}”` : `Uninstall "${plugin.name}"`,
-      confirmLabel: ui.language === 'zh-CN' ? '卸载插件' : 'Uninstall plugin',
-      description: ui.language === 'zh-CN'
-        ? `确定卸载“${plugin.name}”吗？插件代码、历史版本、授权和本地状态都会被移除，此操作无法撤销。`
-        : `Uninstall "${plugin.name}"? Its code, revision history, grants, and local state will be removed. This cannot be undone.`,
-      onConfirm: async () => {
-        setPluginBusyId(plugin.pluginId)
-        try {
-          await window.knowbook.removePluginV2({ pluginId: plugin.pluginId })
-          await refreshPluginHomeData()
-          onMessage(ui.language === 'zh-CN' ? `插件“${plugin.name}”已卸载。` : `Plugin "${plugin.name}" was uninstalled.`)
-        } finally {
-          setPluginBusyId(null)
-        }
+    const request = loading.current ??= Promise.resolve().then(() => loader.current())
+    let loaded = false
+    try {
+      const module = await request
+      loaded = true
+      if (!isCurrent() || documentAction && !ownsDocument() || cold?.vetoed()) return
+      cold?.dispose()
+      const action = module.createPluginManagementActions(context)[name] as (...values: unknown[]) => Promise<void>
+      await action(...args)
+    } catch (error) {
+      if (!loaded && loading.current === request) loading.current = null
+      if (isCurrent()) snapshot.onMessage(error instanceof Error ? error.message : snapshot.ui.pluginActionFailed, 'error')
+    } finally {
+      cold?.dispose()
+      if (pending.current.get(slot) === token) pending.current.delete(slot)
+      if (isCurrent()) {
+        if (documentAction) setPluginActionBusyKey(null)
+        else if (inventory) setPluginInventoryBusy(false)
+        else if (!directory && !restart) setPluginBusyId(null)
       }
-    })
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const installSystemPluginFromFolder = useCallback(async () => {
-    setPluginInventoryBusy(true)
-    try {
-      const request = await window.knowbook.chooseAndPrepareSystemPluginInstall()
-      if (!request) return
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN'
-        ? `已检查“${request.name}”并计算精确 artifact 哈希；请在安全队列中确认。`
-        : `Inspected "${request.name}" and calculated its exact artifact hash. Review it in the security queue.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : (ui.language === 'zh-CN' ? '系统插件检查失败。' : 'System plugin inspection failed.'), 'error')
-    } finally {
-      setPluginInventoryBusy(false)
     }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const setSystemPluginEnabled = useCallback(async (plugin: SystemPluginSummary, enabled: boolean) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.setSystemPluginEnabled({ pluginId: plugin.pluginId, enabled })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN'
-        ? `Full Trust 插件“${plugin.name}”已${enabled ? '标记为重启后启用' : '停用'}。`
-        : `Full Trust plugin "${plugin.name}" was ${enabled ? 'scheduled to enable after restart' : 'disabled'}.`)
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin status update failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const recoverSystemPlugin = useCallback(async (plugin: SystemPluginSummary) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.recoverSystemPlugin({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '已解除安全停用；插件将在重启后重新尝试启动。' : 'Safe-mode disable was cleared; startup will be retried after restart.')
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin recovery failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const uninstallSystemPlugin = useCallback(async (plugin: SystemPluginSummary, preserveData: boolean) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.uninstallSystemPlugin({ pluginId: plugin.pluginId, preserveData })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN'
-        ? `已停用并标记为重启后卸载；${preserveData ? '插件数据将保留供重新安装使用。' : '插件专属数据将一并删除。'}`
-        : `Disabled and scheduled for uninstall after restart; plugin data will be ${preserveData ? 'retained for reinstall' : 'deleted'}.`)
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const rollbackSystemPlugin = useCallback(async (plugin: SystemPluginSummary, packageId: string) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.rollbackSystemPlugin({ pluginId: plugin.pluginId, packageId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '已选择回滚版本；重启后验证并激活。' : 'Rollback package selected; it will be verified and activated after restart.')
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin rollback failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const restartInSystemPluginSafeMode = useCallback(async () => {
-    const label = ui.language === 'zh-CN' ? '安全模式重启' : 'Restart in safe mode'
-    await confirmAction({ title: label, tone: 'warning',
-      description: ui.language === 'zh-CN'
-        ? '将立即重启，并在本次启动中跳过所有 Full Trust 插件。v2 插件不受影响。未保存的内容可能丢失。'
-        : 'Restart now and skip every Full Trust plugin for one boot. v2 plugins are unaffected. Unsaved changes may be lost.',
-      onConfirm: () => window.knowbook.restartInSystemPluginSafeMode()
-    })
-  }, [ui.language])
-
-  const startSystemPluginService = useCallback(async (plugin: SystemPluginSummary) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.startSystemPluginService({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '后台服务已启动。' : 'Background service started.')
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin service start failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const stopSystemPluginService = useCallback(async (plugin: SystemPluginSummary) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.stopSystemPluginService({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN' ? '后台服务已停止。' : 'Background service stopped.')
-    } catch (error) {
-      await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'System plugin service stop failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const requestSystemPluginOsPersistence = useCallback(async (plugin: SystemPluginSummary) => {
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.requestSystemPluginOsPersistence({ pluginId: plugin.pluginId })
-      await refreshPluginHomeData()
-      onMessage(ui.language === 'zh-CN'
-        ? '已生成独立的登录启动确认请求；尚未修改系统启动项。'
-        : 'A separate login-startup review was created; no OS startup item has been changed yet.')
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'OS persistence request failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const resolveSystemPluginOsPersistence = useCallback(async (
-    plugin: SystemPluginSummary,
-    decision: 'confirm' | 'cancel',
-    acknowledgeSystemStartup: boolean
-  ) => {
-    const record = plugin.osPersistence
-    if (!record) return
-    setPluginBusyId(plugin.pluginId)
-    try {
-      await window.knowbook.resolveSystemPluginOsPersistence({
-        recordId: record.id,
-        pluginId: plugin.pluginId,
-        revisionHash: record.revisionHash,
-        decision,
-        acknowledgeSystemStartup
-      })
-      await refreshPluginHomeData()
-      onMessage(decision === 'confirm'
-        ? (ui.language === 'zh-CN' ? '系统登录启动项已登记并校验。' : 'The OS login-startup item was registered and verified.')
-        : (ui.language === 'zh-CN' ? '登录启动请求已取消。' : 'The login-startup request was cancelled.'))
-    } catch (error) {
-      await refreshPluginHomeData().catch(() => undefined)
-      onMessage(error instanceof Error ? error.message : 'OS persistence confirmation failed.', 'error')
-    } finally {
-      setPluginBusyId(null)
-    }
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const removeSystemPluginOsPersistence = useCallback(async (plugin: SystemPluginSummary) => {
-    await confirmAction({ title: ui.language === 'zh-CN' ? '移除登录启动项' : 'Remove login-startup item',
-      confirmLabel: ui.language === 'zh-CN' ? '移除启动项' : 'Remove startup item', tone: 'warning',
-      description: ui.language === 'zh-CN'
-        ? `移除 ${plugin.name} 的宿主管理登录启动项吗？仅会删除与已记录命令精确匹配的启动项。`
-        : `Remove the host-managed login-startup item for ${plugin.name}? Only an exact recorded target will be removed.`,
-      onConfirm: async () => {
-        setPluginBusyId(plugin.pluginId)
-        try {
-          await window.knowbook.removeSystemPluginOsPersistence({ pluginId: plugin.pluginId })
-          await refreshPluginHomeData()
-          onMessage(ui.language === 'zh-CN' ? '宿主管理的登录启动项已移除。' : 'The host-managed login-startup item was removed.')
-        } catch (error) {
-          await refreshPluginHomeData().catch(() => undefined)
-          throw error
-        } finally {
-          setPluginBusyId(null)
-        }
-      }
-    })
-  }, [onMessage, refreshPluginHomeData, ui.language])
-
-  const openSystemPluginDirectory = useCallback(async (
-    plugin: SystemPluginSummary,
-    target: 'data' | 'logs'
-  ) => {
-    try {
-      if (target === 'data') {
-        await window.knowbook.openSystemPluginDataDirectory({ pluginId: plugin.pluginId })
-      } else {
-        await window.knowbook.openSystemPluginLogDirectory({ pluginId: plugin.pluginId })
-      }
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : 'System plugin directory could not be opened.', 'error')
-    }
-  }, [onMessage])
-
-  const runPluginDocumentAction = useCallback(async (action: PluginDocumentAction) => {
-    if (!selectedDocumentId) {
-      return
-    }
-
-    const actionKey = `${action.pluginId}:${action.id}`
-    setPluginActionBusyKey(actionKey)
-
-    try {
-      const result = await window.knowbook.runPluginDocumentAction({
-        pluginId: action.pluginId,
-        actionId: action.id,
-        documentId: selectedDocumentId
-      })
-
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        result.refreshDocument ? window.knowbook.getHomeData() : window.knowbook.getPluginHomeData(),
-        result.refreshDocument ? window.knowbook.getDocumentDetail(selectedDocumentId) : Promise.resolve(selectedDocument)
-      ])
-
-      onHomeDataChange((current) => ({ ...current, ...refreshedHome }))
-      if (result.refreshDocument) {
-        onSelectedDocumentChange(refreshedDetail)
-        onDraftSummaryChange(refreshedDetail?.summary ?? '')
-      }
-      onMessage(result.message)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ui.pluginActionFailed
-      onMessage(message, 'error')
-    } finally {
-      setPluginActionBusyKey(null)
-    }
-  }, [onDraftSummaryChange, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocument, selectedDocumentId, ui])
-
-  return {
-    pluginBusyId,
-    pluginActionBusyKey,
-    pluginInventoryBusy,
-    installSystemPluginFromFolder,
-    removePluginV2,
-    setPluginV2Enabled,
-    setSystemPluginEnabled,
-    recoverSystemPlugin,
-    uninstallSystemPlugin,
-    rollbackSystemPlugin,
-    startSystemPluginService,
-    stopSystemPluginService,
-    requestSystemPluginOsPersistence,
-    resolveSystemPluginOsPersistence,
-    removeSystemPluginOsPersistence,
-    openSystemPluginDirectory,
-    restartInSystemPluginSafeMode,
-    runPluginDocumentAction
-  }
+  }, [])
+  const actions = useMemo(() => Object.fromEntries(actionNames.map(name =>
+    [name, (...args: unknown[]) => invoke(name, args)])) as Actions, [invoke])
+  return { pluginBusyId, pluginActionBusyKey, pluginInventoryBusy, ...actions }
 }

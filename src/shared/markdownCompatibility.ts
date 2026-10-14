@@ -1,3 +1,4 @@
+import { projectedMarkdownContentPosition } from './markdownNativeText'
 import type { MarkdownImportIssue } from './contracts'
 import { serializeMarkdownWithBlockRanges, type MarkdownRenderableBlock } from './markdown'
 import { markdownEngine, type MarkdownEnvironment } from './markdownEngine'
@@ -5,7 +6,7 @@ import { capturedMarkdownCompatibility } from './markdownSourceLinks'
 
 /** Report only syntax actually visited by the shared parser, with block identity. */
 export function collectDocumentMarkdownCompatibility(blocks: MarkdownRenderableBlock[]): MarkdownImportIssue[] {
-  const { markdown, ranges } = serializeMarkdownWithBlockRanges(blocks)
+  const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
   const env: MarkdownEnvironment = { captureSourceLinks: true, captureCompatibility: true }
   markdownEngine.parse(markdown, env)
   const lines = markdown.split('\n'), offsets = [0]
@@ -19,16 +20,13 @@ export function collectDocumentMarkdownCompatibility(blocks: MarkdownRenderableB
     while (blockIndex < ranges.length && ranges[blockIndex].endLine <= line) blockIndex++
     const block = blocks[blockIndex], range = ranges[blockIndex]
     if (!range || !block?.id || line < range.startLine || ['code', 'math', 'frontmatter'].includes(block.type)) continue
-    const contentLines = block.content.split('\n'), localLine = line - range.startLine
-    const contentLine = contentLines[localLine]
-    if (contentLine === undefined || !lines[line].endsWith(contentLine)) continue
-    const offset = contentLines.slice(0, localLine).reduce((sum, text) => sum + text.length + 1, 0)
-      + finding.start - offsets[line] - (lines[line].length - contentLine.length)
-    if (offset < 0) continue
+    const offset = projectedMarkdownContentPosition(block, range, markdown, lines, offsets, finding.start, contentProjections?.[blockIndex])
+    const end = projectedMarkdownContentPosition(block, range, markdown, lines, offsets, finding.end, contentProjections?.[blockIndex], true)
+    if (offset === null || end === null || end < offset) continue
     const key = `${block.id}:${offset}:${finding.reason}`
     if (seen.has(key)) continue
     seen.add(key)
-    issues.push({ reason: finding.reason, blockId: block.id, offset, source: markdown.slice(finding.start, Math.min(finding.end, finding.start + 240)) })
+    issues.push({ reason: finding.reason, blockId: block.id, offset, source: block.content.slice(offset, Math.min(end, offset + 240)) })
   }
   return issues
 }

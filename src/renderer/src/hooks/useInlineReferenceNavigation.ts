@@ -1,14 +1,6 @@
 import type { AppMessageHandler } from '../notify'
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import type { DocumentBlockDraft, DocumentTreeNode } from '@shared/contracts'
-import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
-import { findWikiHeading } from '@shared/markdownWiki'
-
-type DocumentReferenceEntry = {
-  id: string
-  title: string
-  path: string
-}
 
 type UseInlineReferenceNavigationParams = {
   documentTree: DocumentTreeNode[]
@@ -21,7 +13,6 @@ type UseInlineReferenceNavigationParams = {
   notify: AppMessageHandler
   uiBlockReferenceNotFound: string
 }
-
 export function useInlineReferenceNavigation({
   documentTree,
   draftBlocks,
@@ -33,7 +24,6 @@ export function useInlineReferenceNavigation({
   notify,
   uiBlockReferenceNotFound
 }: UseInlineReferenceNavigationParams) {
-  const documentReferences = useMemo(() => buildDocumentReferences(documentTree), [documentTree])
   const activeDocument = useRef(selectedDocumentId), request = useRef(0)
   if (activeDocument.current !== selectedDocumentId) { activeDocument.current = selectedDocumentId; request.current += 1 }
 
@@ -41,18 +31,15 @@ export function useInlineReferenceNavigation({
     const sequence = ++request.current
     const isCurrent = () => request.current === sequence && activeDocument.current === selectedDocumentId
     try {
-      const { getInlineReferenceTokenAtCursor, resolveInlineReferenceTarget } = await import("../utils/inlineReferenceTargets")
+      const { getInlineReferenceTokenAtCursor, resolveInlineReferenceTarget, findInlineReferenceHeading, buildDocumentReferences, buildInlineBlockReferences } = await import("../utils/inlineReferenceTargets")
       if (!isCurrent()) return
       const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
       if (!token) {
         return
       }
 
-      const blockReferences = new Map(
-        draftBlocks
-          .filter((block): block is DocumentBlockDraft & { id: string } => Boolean(block.id?.trim()))
-          .map((block) => [block.id, { id: block.id, content: block.content }] as const)
-      )
+      const documentReferences = buildDocumentReferences(documentTree)
+      const blockReferences = buildInlineBlockReferences(draftBlocks)
 
       const target = resolveInlineReferenceTarget(token, documentReferences, blockReferences, selectedDocumentId)
       if (!target) {
@@ -89,7 +76,7 @@ export function useInlineReferenceNavigation({
       }
       if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
       else {
-        const heading = findWikiHeading(target.blockId, getMarkdownHeadingTargets(detail.blocks, detail.title))
+        const heading = findInlineReferenceHeading(target.blockId, detail.blocks, detail.title)
         if (heading) onOpenAnchor(detail.id, heading.slug)
         else notify(uiBlockReferenceNotFound, 'warning')
       }
@@ -97,7 +84,7 @@ export function useInlineReferenceNavigation({
       if (isCurrent()) notify(error instanceof Error ? error.message : uiBlockReferenceNotFound, "error")
     }
   }, [
-    documentReferences,
+    documentTree,
     draftBlocks,
     onOpenDocument,
     onOpenDocumentBlock,
@@ -107,19 +94,4 @@ export function useInlineReferenceNavigation({
     notify,
     uiBlockReferenceNotFound
   ])
-}
-
-function buildDocumentReferences(nodes: DocumentTreeNode[]): DocumentReferenceEntry[] {
-  const references: DocumentReferenceEntry[] = []
-
-  for (const node of nodes) {
-    references.push({
-      id: node.id,
-      title: node.title,
-      path: node.path
-    })
-    references.push(...buildDocumentReferences(node.children))
-  }
-
-  return references
 }

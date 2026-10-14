@@ -140,3 +140,32 @@ test('ordinary inline paste and selections crossing block boundaries are outside
   assert.equal(planRichTextTreePaste(state.doc, TextSelection.create(state.doc, 6), [block('inline', '**inline**')]), null)
   assert.equal(planRichTextTreePaste(state.doc, TextSelection.create(state.doc, 6, state.doc.child(0).nodeSize + 2), structured()), null)
 })
+
+for (const type of ['callout', 'toggle']) {
+  test(`rich ${type} title paste retains mixed forests, inline title marks, and a paragraph tail`, () => {
+    const before = [block('owner', '**中文😀** *尾部*', { type, tags: ['native'], highlight: 'yellow',
+      markdownFormat: type === 'callout' ? { calloutKind: 'danger', calloutIcon: 'pin', calloutTone: 'red' } : { toggleDefaultOpen: false } }),
+      block('body', 'Original', { depth: 1, parentBlockId: 'owner', tags: ['keep'] }),
+      block('list', 'Task', { type: 'todo', depth: 1, parentBlockId: 'owner', checked: true }),
+      block('nested', 'Nested', { type: 'numbered-todo', depth: 2, parentBlockId: 'list', checked: true }), block('after', 'After')]
+    const { after, afterState } = run(before, 0, 5, 4, structured())
+    assert.deepEqual(after[0], { ...before[0], content: '**中文😀**' })
+    assert.deepEqual(after.slice(1, 4), before.slice(1, 4))
+    assert.deepEqual(after.slice(4, 7).map(item => [item.type, item.content, item.parentBlockId]),
+      [['heading-2', 'Heading', 'owner'], ['paragraph', 'Body', 'owner'], ['paragraph', '*尾部*', 'owner']])
+    assert.equal(after[6].markdownFormat, undefined)
+    assert.equal(after[6].tags, undefined)
+    assert.equal(afterState.selection.$from.index(0), 6)
+    assert.equal(afterState.selection.$from.parentOffset, 0)
+    assert.deepEqual(richDocToDraftBlocks(draftBlocksToRichDoc(after)), after)
+  })
+}
+
+test('one multiline paragraph in a native title creates body text while ordinary single-line paste stays inline', () => {
+  const before = [block('owner', 'PrefixTail', { type: 'toggle' }), block('old', 'Old', { depth: 1, parentBlockId: 'owner' })]
+  const { after } = run(before, 0, 6, 6, [block('incoming', 'line one\nline two')])
+  assert.deepEqual(after.map(item => [item.type, item.content]),
+    [['toggle', 'Prefix'], ['paragraph', 'Old'], ['paragraph', 'line one\nline two'], ['paragraph', 'Tail']])
+  const doc = draftBlocksToRichDoc(before)
+  assert.equal(planRichTextTreePaste(doc, TextSelection.create(doc, 4), [block('single', 'word')]), null)
+})

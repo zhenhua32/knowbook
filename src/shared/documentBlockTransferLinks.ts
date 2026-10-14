@@ -1,3 +1,4 @@
+import { projectedMarkdownContentPosition, decodeNativeLiteralText } from './markdownNativeText'
 import type { DocumentBlockDraft } from './contracts'
 import { markdownEngine, type MarkdownEnvironment, type MarkdownToken } from './markdownEngine'
 import { serializeMarkdownWithBlockRanges } from './markdown'
@@ -88,7 +89,7 @@ type ContentEdit = { blockIndex: number; start: number; end: number; replacement
  */
 function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext, options: { inlineAllReferences?: boolean; forceMovedUse?: boolean } = {}): ContentEdit[] {
   if (context.sourcePath !== context.fromPath || !blocks.some(block => block.content.includes('['))) return []
-  const { markdown, ranges } = serializeMarkdownWithBlockRanges(blocks)
+  const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
   const env: MarkdownEnvironment = { captureSourceLinks: true }
   const tokens = markdownEngine.parse(markdown, env), definitions = new Map<string, number>()
   // The normal core pass strips definition tokens after recording their
@@ -105,15 +106,8 @@ function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTran
   }
   normalizedOffsets.push(markdown.length)
   const blockAtLine = (line: number) => ranges.findIndex(range => range.startLine <= line && range.endLine > line)
-  const localPosition = (blockIndex: number, position: number): number | null => {
-    let line = 0
-    while (line + 1 < offsets.length && offsets[line + 1] <= position) line++
-    const range = ranges[blockIndex], localLines = blocks[blockIndex].content.split('\n'), localLine = line - range.startLine
-    if (localLine < 0 || localLine >= localLines.length || !lines[line].endsWith(localLines[localLine])) return null
-    const prefix = lines[line].length - localLines[localLine].length
-    if (position - offsets[line] < prefix) return null
-    return localLines.slice(0, localLine).reduce((length, text) => length + text.length + 1, 0) + position - offsets[line] - prefix
-  }
+  const localPosition = (blockIndex: number, position: number): number | null =>
+    projectedMarkdownContentPosition(blocks[blockIndex], ranges[blockIndex], markdown, lines, offsets, position, contentProjections?.[blockIndex])
   const movedNames = new Map<string, string>(), usedNames = new Set<string>(), edits: ContentEdit[] = []
   const existingContent = ((context.targetContent ?? '') + '\n' + markdown).toLowerCase()
   for (const token of definitionTokens) {
@@ -131,7 +125,7 @@ function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTran
       usedNames.add(name)
     }
     const rawLine = lines[token.map[0]]
-    const labelMatch = [...rawLine.matchAll(/\[((?:\\.|[^\]\\])*)\]:/g)].find(match => markdownEngine.utils.normalizeReference(match[1]) === label)
+    const labelMatch = [...rawLine.matchAll(/\[((?:\\.|[^\]\\])*)\]:/g)].find(match => markdownEngine.utils.normalizeReference(token.meta?.nativeReferenceEscaped ? decodeNativeLiteralText(match[1]).content : match[1]) === label)
     if (!labelMatch) continue
     const first = labelMatch.index, start = localPosition(blockIndex, offsets[token.map[0]] + first + 1)
     const end = localPosition(blockIndex, offsets[token.map[0]] + first + 1 + labelMatch[1].length)
@@ -182,7 +176,14 @@ function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTran
   }
   for (const token of tokens) {
     const map = token.meta?.sourceMap
-    if (token.type === 'inline' && Array.isArray(map) && map.every(position => typeof position === 'number')) scanInline(token.content, map)
+    if ((token.type === 'inline' || token.type === 'native_container_title' || token.type === 'callout_title') && Array.isArray(map) && map.every(position => typeof position === 'number')) {
+      // The task renderer restores its marker after inline parsing; its map
+      // still describes the marker-free source visited by link rules.
+      const task = token.meta?.task as { length?: unknown } | undefined
+      const content = token.meta?.taskSource === token.content && typeof task?.length === 'number'
+        ? token.content.slice(task.length) : token.content
+      scanInline(content, map)
+    }
   }
   return edits
 }
@@ -236,7 +237,7 @@ function normalLinkEdits(blocks: DocumentBlockDraft[], context: BlockTransferLin
 function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext): ContentEdit[] {
   if (context.sourcePath !== context.fromPath || !blocks.some(block => context.movedIds.has(block.id ?? '')
     && !['code', 'math', 'frontmatter'].includes(block.type) && block.content.includes('[^'))) return []
-  const { markdown, ranges } = serializeMarkdownWithBlockRanges(blocks)
+  const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
   const env: MarkdownEnvironment = { captureSourceLinks: true }
   const state = new markdownEngine.core.State(markdown, markdownEngine, env)
   for (const rule of markdownEngine.core.ruler.__rules__) {
@@ -259,12 +260,8 @@ function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransfer
     while (line + 1 < originalLineOffsets.length && originalLineOffsets[line + 1] <= original) line++
     const blockIndex = ranges.findIndex(range => range.startLine <= line && range.endLine > line)
     if (blockIndex < 0) return null
-    const contentLines = blocks[blockIndex].content.split('\n'), localLine = line - ranges[blockIndex].startLine
-    const contentLine = contentLines[localLine]
-    if (contentLine === undefined || !originalLines[line].endsWith(contentLine)) return null
-    const prefix = originalLines[line].length - contentLine.length, column = original - originalLineOffsets[line] - prefix
-    if (column < 0 || column > contentLine.length) return null
-    return { blockIndex, offset: contentLines.slice(0, localLine).reduce((sum, line) => sum + line.length + 1, 0) + column }
+    const offset = projectedMarkdownContentPosition(blocks[blockIndex], ranges[blockIndex], markdown, originalLines, originalLineOffsets, original, contentProjections?.[blockIndex])
+    return offset === null ? null : { blockIndex, offset }
   }
   const fail = (): never => { throw new Error('脚注定义跨越无法安全定位的容器，未移动任何块。请先把脚注整理为独立的顶层段落。') }
 
@@ -314,7 +311,7 @@ function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransfer
   }
   for (let index = 0; index < state.tokens.length; index++) {
     const token = state.tokens[index], map = token.meta?.sourceMap
-    if (token.type === 'inline' && Array.isArray(map)) scanUses(token.content, map)
+    if ((token.type === 'inline' || token.type === 'native_container_title' || token.type === 'callout_title') && Array.isArray(map)) scanUses(token.content, map)
     if (token.type !== 'footnote_reference_open') continue
     const labelValue = token.meta?.label
     const label = typeof labelValue === 'string' ? labelValue : fail()

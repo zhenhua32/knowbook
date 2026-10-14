@@ -8,6 +8,7 @@ import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEdi
 import { useBlockInputActions } from '../src/renderer/src/hooks/useBlockInputActions'
 import { useBlockFocusState } from '../src/renderer/src/hooks/useBlockFocusState'
 import { useBlockSelectionState } from '../src/renderer/src/hooks/useBlockSelectionState'
+import { canBlockHaveParent } from '../src/shared/blockTypes'
 import { isNestableBlock, normalizeBlockDepth } from '../src/renderer/src/utils/draftBlockShape'
 import { isDraftTreeContiguous } from '../src/renderer/src/utils/draftTreeDepthChange'
 import { validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization'
@@ -57,7 +58,7 @@ async function withEditor(blocks: DocumentBlockDraft[], run: (current: () => Sta
     const calls = useRef(0)
     const input = useBlockInputActions({ draftBlocks: editor.draftBlocks, selectedBlockRange: selection.selectedBlockRange,
       buildBlockTypePatch: (type, content, checked = false, depth = 0, parentBlockId = null) => ({ type, content, checked,
-        depth: normalizeBlockDepth(type, depth), parentBlockId: isNestableBlock(type) ? parentBlockId : null }),
+        depth: normalizeBlockDepth(type, depth), parentBlockId: canBlockHaveParent(type) ? parentBlockId : null }),
       clearBlockSelection: selection.clearBlockSelection, getMultiBlockOperationRange: selection.getMultiBlockOperationRange,
       detectCodeLanguage: () => undefined, normalizeCodeLanguage: language => language,
       endBlockDrag: noop, pushToHistory: blocks => { calls.current++; editor.pushToHistory(blocks) },
@@ -258,5 +259,79 @@ test('functional paste preserves queued changes in untouched blocks and no-op pa
       assert.equal(current().historyCalls(), calls)
       assert.equal(current().editor.canRedo, true)
     })
+  } finally { t.mock.timers.reset() }
+})
+
+for (const type of ['callout', 'toggle']) {
+  test(`source ${type} title paste appends mixed children and a paragraph suffix with one backward-selection undo`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    try {
+      const source: DocumentBlockDraft[] = [
+        { id: 'owner', type, content: '中文😀尾', checked: false, depth: 0, parentBlockId: null, tags: ['owner'], highlight: 'yellow',
+          markdownFormat: type === 'callout' ? { calloutKind: 'warning', calloutIcon: 'pin', calloutTone: 'red' } : { toggleDefaultOpen: true } },
+        { id: 'body', type: 'paragraph', content: 'Old body', checked: false, depth: 1, parentBlockId: 'owner', tags: ['keep'] },
+        item('list', 1, 'owner'), item('list-child', 2, 'list'),
+        { id: 'after', type: 'paragraph', content: 'After', checked: false, depth: 0 }
+      ]
+      await withEditor(source, async (current, document) => {
+        const before = current().editor.draftBlocks
+        const input = document.querySelector<HTMLTextAreaElement>('[data-block-id="owner"] textarea')!
+        await act(async () => { input.focus(); input.setSelectionRange(2, 4, 'backward') })
+        await paste(current, 0, '## Heading\n\n- Incoming\n  - Child', 2, 4)
+        const after = current().editor.draftBlocks
+        assert.deepEqual(after[0], { ...before[0], content: '中文' })
+        assert.deepEqual(after.slice(1, 4), before.slice(1, 4))
+        assert.deepEqual(after.slice(4, 8).map(block => [block.type, block.content]),
+          [['heading-2', 'Heading'], ['bulleted-list', 'Incoming'], ['bulleted-list', 'Child'], ['paragraph', '尾']])
+        assert.equal(after[4].parentBlockId, 'owner')
+        assert.equal(after[5].parentBlockId, 'owner')
+        assert.equal(after[6].parentBlockId, after[5].id)
+        assert.equal(after[7].parentBlockId, 'owner')
+        assert.equal(after[7].markdownFormat, undefined)
+        assert.deepEqual(after.at(-1), before.at(-1))
+        assert.equal(current().historyCalls(), 1)
+        assert.equal(current().activeBlockIndex, 7)
+        assert.equal(current().activeCursorPosition, 0)
+        await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+        assert.deepEqual(current().editor.draftBlocks, before)
+        assert.equal(current().editor.canUndo, false)
+        assert.equal(document.activeElement, input)
+        assert.deepEqual([input.selectionStart, input.selectionEnd, input.selectionDirection], [2, 4, 'backward'])
+        await act(async () => current().editor.redoEdit())
+        assert.deepEqual(serializable(current().editor.draftBlocks), serializable(after))
+      })
+    } finally { t.mock.timers.reset() }
+  })
+}
+
+
+test('empty multiline paste records no history and preserves redo in both ordinary and native title paths', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    for (const type of ['paragraph', 'callout']) {
+      const blocks: DocumentBlockDraft[] = [{ id: 'owner', type, content: 'Title😀', checked: false, depth: 0, tags: ['owner'],
+        ...(type === 'callout' ? { markdownFormat: { calloutKind: 'tip' as const } } : {}) },
+        ...(type === 'callout' ? [{ id: 'child', type: 'paragraph', content: 'Child forest', checked: false, depth: 1, parentBlockId: 'owner' }] : []),
+        { id: 'tail', type: 'paragraph', content: 'Tail', checked: false, depth: 0 }]
+      await withEditor(blocks, async (current, document) => {
+        const original = current().editor.draftBlocks
+        const input = document.querySelector<HTMLTextAreaElement>('[data-block-id="owner"] textarea')!
+        await act(async () => { input.focus(); input.setSelectionRange(0, input.value.length, 'backward') })
+        await paste(current, 0, '- One\n- Two')
+        assert.equal(current().historyCalls(), 1)
+        await act(async () => { current().editor.undoEdit(); t.mock.timers.tick(0) })
+        assert.deepEqual(current().editor.draftBlocks, original)
+        assert.equal(current().editor.canRedo, true)
+        const beforeSelection = [input.selectionStart, input.selectionEnd, input.selectionDirection]
+        for (const text of ['\n', '\r\n', ' \n\t']) {
+          await act(async () => assert.equal(current().input.handleBlockPaste(0, text, 0, input.value.length), false))
+          assert.deepEqual(current().editor.draftBlocks, original)
+          assert.equal(current().historyCalls(), 1)
+          assert.equal(current().editor.canRedo, true)
+          assert.equal(document.activeElement, input)
+          assert.deepEqual([input.selectionStart, input.selectionEnd, input.selectionDirection], beforeSelection)
+        }
+      })
+    }
   } finally { t.mock.timers.reset() }
 })

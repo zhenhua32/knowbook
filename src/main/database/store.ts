@@ -1,4 +1,4 @@
-import { isTaskBlockType, isOrderedListBlockType } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
 import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
@@ -500,6 +500,8 @@ export class KnowbookStore {
       }
       // The additive transfer journal/routes are created by appSchema first.
       if (schemaVersion < 22) this.db.pragma('user_version = 22')
+      // Older stores flatten mixed container children; their startup gate must reject this semantic version.
+      if (schemaVersion < 23) this.db.pragma('user_version = 23')
     })
   }
 
@@ -981,39 +983,20 @@ export class KnowbookStore {
   }
 
   private healOrphanedBlockTree(blocks: ExportBlockRow[]): ExportBlockRow[] {
-    const latestIdByDepth: Array<string | null> = []
+    const ancestors: ExportBlockRow[] = []
     let changed = false
-
-    const healed = blocks.map((block) => {
-      const isNestable = isTaskBlockType(block.type) || block.type === 'bulleted-list' || isOrderedListBlockType(block.type)
-      let depth = isNestable ? Math.max(0, Math.min(6, Math.trunc(block.depth ?? 0))) : 0
-      if (depth !== (block.depth ?? 0)) {
-        changed = true
-      }
-
-      let parentBlockId: string | null = null
-      if (depth > 0) {
-        while (depth > 0 && !latestIdByDepth[depth - 1]) {
-          depth -= 1
-          changed = true
-        }
-        const declaredParent = block.parent_block_id
-        if (declaredParent && latestIdByDepth[depth - 1] === declaredParent) {
-          parentBlockId = declaredParent
-        } else {
-          changed = true
-        }
-      }
-
-      latestIdByDepth.length = depth + 1
-      latestIdByDepth[depth] = block.id
-
-      if (parentBlockId !== (block.parent_block_id ?? null)) {
-        changed = true
-      }
-      return { ...block, depth, parent_block_id: parentBlockId }
+    const healed = blocks.map(block => {
+      let depth = this.normalizeNestableDepth(block.type, block.depth ?? 0)
+      while (depth > 0 && (!ancestors[depth - 1] || !canBlockNestUnder(ancestors[depth - 1].type, block.type))) depth--
+      // A read never adopts a child into an unrelated owner when its declared parent is missing.
+      if (depth > 0 && block.parent_block_id !== ancestors[depth - 1].id) depth = 0
+      const parentBlockId = depth > 0 ? ancestors[depth - 1].id : null
+      const value = { ...block, depth, parent_block_id: parentBlockId }
+      ancestors.length = depth + 1
+      ancestors[depth] = value
+      if (depth !== (block.depth ?? 0) || parentBlockId !== (block.parent_block_id ?? null)) changed = true
+      return value
     })
-
     return changed ? healed : blocks
   }
 
@@ -3580,7 +3563,7 @@ export class KnowbookStore {
   }
 
   private normalizeNestableDepth(type: string, depth: number): number {
-    return ['todo', 'numbered-todo', 'bulleted-list', 'numbered-list'].includes(type) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
+    return canBlockHaveParent(type) && Number.isFinite(depth) ? Math.max(0, Math.min(6, Math.trunc(depth))) : 0
   }
 
   private resolveBlockRelationship(
@@ -3589,32 +3572,23 @@ export class KnowbookStore {
     requestedParentBlockId: string | null,
     blockId: string,
     resolvedDepthById: Map<string, number>,
-    depthStack: Array<string | null>
+    depthStack: Array<string | null>,
+    resolvedTypeById: Map<string, string>
   ): { depth: number; parentBlockId: string | null } {
-    const trimmedParentBlockId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
-    const explicitParentDepth = trimmedParentBlockId && trimmedParentBlockId !== blockId
-      ? resolvedDepthById.get(trimmedParentBlockId)
-      : undefined
-
-    if (explicitParentDepth !== undefined) {
-      const explicitDepth = this.normalizeNestableDepth(type, explicitParentDepth + 1)
-      if (explicitDepth > explicitParentDepth) {
-        return {
-          depth: explicitDepth,
-          parentBlockId: trimmedParentBlockId
-        }
-      }
+    const parentId = requestedParentBlockId?.trim() ? requestedParentBlockId : null
+    const parentDepth = parentId && parentId !== blockId ? resolvedDepthById.get(parentId) : undefined
+    const parentType = parentId ? resolvedTypeById.get(parentId) : undefined
+    if (parentDepth !== undefined && parentDepth < 6 && depthStack[parentDepth] === parentId
+      && parentType && canBlockNestUnder(parentType, type)) {
+      return { depth: parentDepth + 1, parentBlockId: parentId }
     }
-
-    let fallbackDepth = this.normalizeNestableDepth(type, requestedDepth)
-    while (fallbackDepth > 0 && !depthStack[fallbackDepth - 1]) {
-      fallbackDepth -= 1
+    let depth = this.normalizeNestableDepth(type, requestedDepth)
+    while (depth > 0) {
+      const ownerId = depthStack[depth - 1], ownerType = ownerId ? resolvedTypeById.get(ownerId) : undefined
+      if (ownerType && canBlockNestUnder(ownerType, type)) break
+      depth--
     }
-
-    return {
-      depth: fallbackDepth,
-      parentBlockId: fallbackDepth > 0 ? depthStack[fallbackDepth - 1] ?? null : null
-    }
+    return { depth, parentBlockId: depth > 0 ? depthStack[depth - 1] ?? null : null }
   }
 
   private buildPersistedBlocks(blocks: DocumentBlockDraft[]): Array<
@@ -3624,6 +3598,7 @@ export class KnowbookStore {
     }
   > {
     const resolvedDepthById = new Map<string, number>()
+    const resolvedTypeById = new Map<string, string>()
     const depthStack: Array<string | null> = []
 
     return blocks.map((block) => {
@@ -3634,12 +3609,14 @@ export class KnowbookStore {
         block.parentBlockId ?? null,
         id,
         resolvedDepthById,
-        depthStack
+        depthStack,
+        resolvedTypeById
       )
 
       depthStack.length = depth + 1
       depthStack[depth] = id
       resolvedDepthById.set(id, depth)
+      resolvedTypeById.set(id, block.type)
 
       return {
         ...block,
@@ -3894,12 +3871,14 @@ export class KnowbookStore {
     const transaction = this.db.transaction(() => {
       let currentDocumentId: string | null = null
       let resolvedDepthById = new Map<string, number>()
+      let resolvedTypeById = new Map<string, string>()
       let depthStack: Array<string | null> = []
 
       for (const row of rows) {
         if (row.document_id !== currentDocumentId) {
           currentDocumentId = row.document_id
           resolvedDepthById = new Map<string, number>()
+          resolvedTypeById = new Map<string, string>()
           depthStack = []
         }
 
@@ -3909,12 +3888,14 @@ export class KnowbookStore {
           row.parent_block_id ?? null,
           row.id,
           resolvedDepthById,
-          depthStack
+          depthStack,
+          resolvedTypeById
         )
 
         depthStack.length = depth + 1
         depthStack[depth] = row.id
         resolvedDepthById.set(row.id, depth)
+        resolvedTypeById.set(row.id, row.type)
 
         if ((row.parent_block_id ?? null) !== parentBlockId || row.depth !== depth) {
           updateBlock.run(parentBlockId, depth, row.id)

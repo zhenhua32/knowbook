@@ -131,7 +131,11 @@ test('native rich text copy and cross-document paste preserve Markdown, semantic
     await expect(rows(page)).toHaveCount(blocks.length)
     await expect(rows(page).first().locator('strong')).toHaveText('Bold')
     await expect(rows(page).first().locator('code')).toHaveText('inline')
-    await expect(editor(page).locator('.rich-text-source-preview table')).toHaveCount(1)
+    const table = editor(page).getByRole('grid', { name: uiText('Editable table', '可编辑表格') })
+    await expect(table).toHaveCount(1)
+    await expect(table).toBeVisible()
+    await expect(table).toContainText('One')
+    await expect(table.locator('strong')).toHaveText('Two')
     await expect(editor(page).locator('.rich-text-source-preview pre code')).toContainText('<script>safe text</script>')
     await save(page)
     await expect.poll(async () => (await readBlocks(page, destinationId)).map(({ type, content, language }) => ({
