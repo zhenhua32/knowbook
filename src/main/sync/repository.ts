@@ -191,9 +191,16 @@ export class SyncRepository {
       for (const row of chain.reverse()) paths.set(row.id, row.parent_id ? `${paths.get(row.parent_id)}/${row.title}` : row.title)
       return paths.get(id)!
     }
+    const transferredIds = JSON.stringify(transfers.map(move => move.id))
+    const rememberPath = this.db.prepare(`INSERT OR IGNORE INTO document_block_routes (document_path, block_id)
+      SELECT ?, id FROM blocks WHERE document_id = ? AND id NOT IN (SELECT value FROM json_each(?))`)
     for (const row of metadata) {
       const old = before.get(row.id)!, path = pathFor(row.id)
       if (old.parent_id === row.parent_id && old.title === row.title && old.path === path) continue
+      // Preserve only pairs this receiver actually observed before the batch.
+      // Incoming transferred IDs never existed at the target's old path; their
+      // actual previous-owner route was recorded before changing ownership.
+      if (old.path !== path) rememberPath.run(old.path, row.id, transferredIds)
       if (old.title !== row.title && !documentIds.has(row.id)) this.store.documentRecovery.checkpoint(row.id, 'restore')
       const updatedAt = new Date(Math.max(Date.now(), Date.parse(old.updated_at) + 1)).toISOString()
       this.db.prepare('UPDATE documents SET parent_id = ?, title = ?, path = ?, updated_at = ? WHERE id = ?')

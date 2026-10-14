@@ -700,3 +700,85 @@ for (const selected of ['source', 'target'] as const) test(
     }
   })
 )
+
+
+test('two real WebDAV devices retain receiver-observed copied block paths after remote document path changes', async context => {
+  for (const change of ['document rename', 'ancestor rename', 'document move', 'ancestor move', 'parent deletion'] as const) await context.test(change,
+    () => fixture(async (a, b) => {
+      const parent = moveFixtureDocument(a.store, 'Observed Parent', [{ id: 'observed-parent', content: 'Parent body' }])
+      const leaf = a.store.createDocument(parent)
+      a.store.updateDocument(leaf, { title: 'Observed Leaf', summary: 'Leaf summary', blocks: [
+        { id: 'observed-stable', type: 'paragraph', content: 'Copied stable block', checked: false, depth: 0, parentBlockId: null }
+      ] })
+      const destination = moveFixtureDocument(a.store, 'Observed Destination', [{ id: 'observed-destination', content: 'Destination body' }])
+      await a.sync.sync(); await b.sync.sync()
+      const copiedPath = b.store.getDocumentDetail(leaf)!.path
+      assert.equal(copiedPath, 'Observed Parent/Observed Leaf')
+      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf)
+      const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?')
+        .get('observed-stable') as { created_at: string }).created_at
+      if (change === 'document rename' || change === 'ancestor rename') {
+        const id = change === 'document rename' ? leaf : parent, original = a.store.documentRecovery.readContent(id)
+        a.store.updateDocument(id, { ...original, title: change === 'document rename' ? 'Renamed Leaf' : 'Renamed Parent' })
+      } else if (change === 'document move') a.store.moveDocument(leaf, destination)
+      else if (change === 'ancestor move') a.store.moveDocument(parent, destination)
+      else a.store.deleteDocument(parent)
+      await a.sync.sync(); await b.sync.sync()
+      const current = b.store.getDocumentDetail(leaf)!, expected = a.store.getDocumentDetail(leaf)!
+      assert.notEqual(current.path, copiedPath)
+      assert.equal(current.path, expected.path)
+      assert.deepEqual(current.blocks, expected.blocks)
+      assert.equal(current.blocks[0].id, 'observed-stable')
+      assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?')
+        .get('observed-stable') as { created_at: string }).created_at, createdAt)
+      assert.equal(a.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf, 'the sending device preserves its locally observed old route')
+      assert.equal(b.store.getBlockReference(current.path, '^observed-stable')?.documentId, leaf)
+      assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-stable'), null)
+      assert.equal(b.store.getBlockReference(copiedPath, '^observed-destination'), null, 'a historical path must be bound to the exact copied block ID')
+      const copied = b.store.getBlockReference(copiedPath, '^observed-stable')
+      assert.ok(copied, 'the receiver copied this path before synchronization; receiving ' + change + ' must preserve that exact observed route')
+      assert.equal(copied.documentId, leaf)
+      assert.equal(copied.documentPath, current.path)
+      assert.equal(copied.block.id, 'observed-stable')
+      const databasePath = b.store.getUnsafeDatabaseHandle().name
+      await b.sync.stop(); b.store.destroy()
+      b.store = new KnowbookStore(databasePath)
+      b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
+      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf)
+      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentPath, current.path)
+      assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-stable'), null)
+    }))
+})
+
+test('a remote block move with target rename preserves observed routes without inventing an unseen old-target incoming-ID pair', () => fixture(async (a, b) => {
+  const source = moveFixtureDocument(a.store, 'Observed Transfer Source', [{ id: 'observed-incoming', content: 'Moved identity' }, { id: 'observed-source-keep', content: 'Keep source' }])
+  const target = moveFixtureDocument(a.store, 'Observed Transfer Target', [{ id: 'observed-target-existing', content: 'Keep target' }])
+  await a.sync.sync(); await b.sync.sync()
+  const oldSourcePath = b.store.getDocumentDetail(source)!.path, oldTargetPath = b.store.getDocumentDetail(target)!.path
+  assert.equal(b.store.getBlockReference(oldSourcePath, '^observed-incoming')?.documentId, source)
+  assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-target-existing')?.documentId, target)
+  assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-incoming'), null)
+  moveFixture(a.store, source, target, 'observed-incoming')
+  const moved = a.store.documentRecovery.readContent(target)
+  a.store.updateDocument(target, { ...moved, title: 'Observed Renamed Target' })
+  assert.equal(a.store.getBlockReference(oldTargetPath, '^observed-incoming')?.documentId, target,
+    'the sender actually observed the incoming ID at the old target path before renaming it')
+  await a.sync.sync(); await b.sync.sync()
+  const currentPath = b.store.getDocumentDetail(target)!.path
+  assert.equal(currentPath, 'Observed Renamed Target')
+  const verify = () => {
+    assert.equal(b.store.getBlockReference(oldSourcePath, '^observed-incoming')?.documentId, target)
+    assert.equal(b.store.getBlockReference(currentPath, '^observed-incoming')?.documentId, target)
+    assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-incoming'), null,
+      'the receiver never observed this old-target path plus incoming ID; protocol v1 cannot invent the sender\'s historical pair')
+    assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-target-existing')?.documentId, target,
+      'the receiver did observe the preexisting target block at that old path')
+    assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-incoming'), null)
+  }
+  verify()
+  const databasePath = b.store.getUnsafeDatabaseHandle().name
+  await b.sync.stop(); b.store.destroy()
+  b.store = new KnowbookStore(databasePath)
+  b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
+  verify()
+}))
