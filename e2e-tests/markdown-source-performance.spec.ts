@@ -124,7 +124,8 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
     const sourceFiles = ['package-lock.json', 'src/renderer/src/components/DocumentMarkdownSourceDialog.tsx',
       'src/renderer/src/components/document-markdown-source.css',
       'src/renderer/src/pages/DocumentsPage.tsx', 'src/renderer/src/hooks/useDocumentEditorState.ts',
-      'src/renderer/src/utils/markdownSourceDraft.ts', 'src/renderer/src/utils/markdownFormatting.ts', 'src/shared/markdown.ts']
+      'src/renderer/src/utils/markdownSourceDraft.ts', 'src/renderer/src/utils/markdownSourceSession.ts',
+      'src/renderer/src/utils/markdownFormatting.ts', 'src/shared/markdown.ts']
     writeFileSync(`test-results/markdown-source-frame-${count}.json`, JSON.stringify({ recordedAt: new Date().toISOString(),
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim(),
       workingTreeChanged: Boolean(execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8', windowsHide: true }).trim()),

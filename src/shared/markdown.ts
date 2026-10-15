@@ -9,6 +9,7 @@ import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFr
 import { assertDatabaseViewStructure, validateDatabaseViewBlock } from './databaseViewBlock'
 import { renderDatabaseViewFence } from './markdownDatabaseView'
 import { parseStrictJson } from './strictJson'
+export { parseMarkdownSourceStrict, serializeMarkdownHostSource } from './markdownSource'
 
 function assertMarkdownColumnStructure(blocks: MarkdownRenderableBlock[]): void {
   try { assertColumnStructure(blocks) }
@@ -27,6 +28,36 @@ export type MarkdownRenderableBlock = {
   markdownFormat?: MarkdownBlockFormat
   tags?: string[]
   highlight?: string
+}
+
+export type MarkdownSourceSyntaxBlock = Omit<MarkdownRenderableBlock, 'id' | 'parentBlockId' | 'tags' | 'highlight' | 'depth'> & {
+  depth: number
+  parentIndex: number | null
+  refKey: string | null
+}
+export type MarkdownSourceStrictOptions = { mode: 'canonical' } | {
+  mode: 'internal-host'
+  references: readonly { key: string; from: number; to: number; payload: string }[]
+}
+export interface MarkdownSourceStrictResult {
+  blocks: MarkdownSourceSyntaxBlock[]
+  sourceRanges: MarkdownBlockSourceRange[]
+  closingRanges: MarkdownContainerClosingRange[]
+  metadata: Array<{ startLine: number; endLine: number; raw: string }>
+  references: Array<{ key: string; from: number; to: number }>
+}
+
+/** Internal policy port: the public grammar has no dependency on Source-only
+ * validation, reference payloads or budgets. The cold Source module injects it. */
+export interface MarkdownSourceParsePolicy {
+  push: (block: MarkdownRenderableBlock, index: number, refKey: string | null) => void
+  expectedRef: (node: MarkdownNode) => { key: string; payload: string } | undefined
+  consumeRef: (node: MarkdownNode, key: string) => void
+  hasProtectedRef: (node: MarkdownNode) => boolean
+  checkListDepth: (node: MarkdownNode, depth: number) => void
+  metadata: (node: MarkdownNode) => void
+  finish: (blocks: MarkdownRenderableBlock[]) => void
+  fail: (message: string) => never
 }
 
 export type MarkdownDocumentFrontmatter = Record<string, string>
@@ -426,6 +457,10 @@ function protectContainerParagraphs(body: string, children: MarkdownNode[], firs
 /** Parse source into editable blocks. Complex list bodies remain Markdown in the
  * item; simple nested lists become the existing flat parent/depth structure. */
 export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[], closingRanges?: MarkdownContainerClosingRange[]): MarkdownRenderableBlock[] {
+  return parseMarkdownBlocksCore(markdownBody, sourceRanges, closingRanges)
+}
+
+export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[], closingRanges?: MarkdownContainerClosingRange[], strict?: MarkdownSourceParsePolicy): MarkdownRenderableBlock[] {
   if (sourceRanges) sourceRanges.length = 0
   if (closingRanges) closingRanges.length = 0
   const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
@@ -437,18 +472,28 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
   assertNativeContainerParse(environment)
   const blocks: MarkdownRenderableBlock[] = []
   const declared = new Map<number, { metadata: MarkdownBlockMetadata; scopeDepth: number; scopeParent?: number }>()
-  const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => {
+  const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number, refKey: string | null = null) => {
     while (startLine < endLine && !lines[startLine]?.trim()) startLine++
     while (endLine > startLine && !lines[endLine - 1]?.trim()) endLine--
     sourceRanges?.push({ index: blocks.length, startLine, endLine })
+    strict?.push(block, blocks.length, refKey)
     blocks.push(block)
   }
   const rawStart = (node: MarkdownNode): number => node.token.type === 'table_open' && node.token.meta?.tableLayoutMap
     ? (node.token.meta.tableLayoutMap as [number, number])[0] : node.token.map![0]
   const raw = (node: MarkdownNode) => trimBlankLines(lines.slice(rawStart(node), node.token.map![1]).join('\n'))
   const make = (type: string, content: string, depth = 0): MarkdownRenderableBlock => ({ type, content, checked: false, depth })
+  const expectedRef = (node: MarkdownNode) => strict?.expectedRef(node)
+  const hasProtectedRef = (node: MarkdownNode) => strict?.hasProtectedRef(node) ?? false
   const append = (node: MarkdownNode, depth = 0, metadata: MarkdownBlockMetadata | null = null, metadataLine?: number, scopeParent?: number): void => {
     const { token, children } = node
+    if (strict && depth > 6) strict.fail('source nesting exceeds six levels')
+    const ref = strict ? expectedRef(node) : undefined
+    if (ref) {
+      strict!.consumeRef(node, ref.key)
+      push(make('synced-block', ref.payload, depth), ...token.map!, ref.key)
+      return
+    }
     // An unsupported multi-line marked opening may have fallen back to a legacy
     // HTML/paragraph node. Validate only that node's opening, never the remaining
     // document or literal code/math/quotes.
@@ -479,13 +524,29 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
     }
     const put = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => push({ ...block, depth: block.depth || depth }, startLine, endLine)
     if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
+      strict?.checkListDepth(node, depth)
       const ordered = token.type === 'ordered_list_open'
       const loose = children.some(item => item.children.some(child => child.token.type === 'paragraph_open' && !child.token.hidden))
       children.forEach((item, index) => {
+        if (strict && item.children.length === 1 && expectedRef(item.children[0])) {
+          append(item.children[0], depth)
+          return
+        }
         const simple = item.children[0]?.token.type === 'paragraph_open'
           && item.children.slice(1).every(child => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type))
-          && depth < 6 && !/^\s*\[[^\]]+\]:/m.test(raw(item))
-        let content = simple ? protectParagraphContinuations(item.children[0].children[0]?.token.content ?? '')
+          && (strict !== undefined || depth < 6) && !/^\s*\[[^\]]+\]:/m.test(raw(item))
+        let projectedFrom = -1
+        if (strict && !simple && hasProtectedRef(item)) {
+          projectedFrom = item.children.findIndex(child => ['bullet_list_open', 'ordered_list_open'].includes(child.token.type) || !!expectedRef(child))
+          if (projectedFrom < 1 || item.children.slice(0, projectedFrom).some(hasProtectedRef)
+            || item.children.slice(projectedFrom).some(child => !['bullet_list_open', 'ordered_list_open'].includes(child.token.type) && !expectedRef(child)))
+            strict.fail('complex list body cannot preserve protected reference order and ranges')
+        }
+        const projectedStart = projectedFrom < 0 ? null : item.children[projectedFrom].token.map![0]
+        let content = projectedStart !== null
+          ? trimBlankLines(protectContainerParagraphs(stripListMarker(trimBlankLines(lines.slice(item.token.map![0], projectedStart).join('\n')), true),
+            item.children.slice(0, projectedFrom), item.token.map![0]))
+          : simple ? protectParagraphContinuations(item.children[0].children[0]?.token.content ?? '')
           : trimBlankLines(protectContainerParagraphs(stripListMarker(raw(item), true), item.children, item.token.map![0]))
         const task = item.children[0]?.token.type === 'paragraph_open' ? parseTaskListMarker(content) : null
         if (task) content = content.slice(task.length)
@@ -493,8 +554,9 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
         block.checked = task?.checked ?? false
         block.markdownFormat = { listMarker: token.markup as MarkdownBlockFormat['listMarker'], listLoose: loose }
         if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
-        push(block, item.token.map![0], simple ? item.children[0].token.map![1] : item.token.map![1])
+        push(block, item.token.map![0], projectedStart ?? (simple ? item.children[0].token.map![1] : item.token.map![1]))
         if (simple) item.children.slice(1).forEach(child => append(child, depth + 1))
+        else if (projectedFrom >= 0) item.children.slice(projectedFrom).forEach(child => append(child, depth + 1))
       })
     } else if (token.type === 'heading_open') put(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
     else if (token.type === 'knowbook_database_view') put(make('database-view', token.content), ...token.map!)
@@ -522,6 +584,10 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
       cursor = node.token.map[1]
       if (node.token.type === 'knowbook_table_layout' && node.token.meta?.boundTableLayout) continue
       if (node.token.type === 'knowbook_metadata') {
+        if (strict) {
+          strict.metadata(node)
+          continue
+        }
         pending = parseMarkdownBlockMetadata(node.token.content)
         if (!pending) push(make('paragraph', node.token.content, depth), ...node.token.map)
         else if (pending.type && isNativeStructureBlockType(pending.type)) {
@@ -594,12 +660,26 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
       active.length = depth; active[depth] = value
     }
   }
-  assertMarkdownColumnStructure(blocks)
+  if (strict) {
+    strict.finish(blocks)
+  } else assertMarkdownColumnStructure(blocks)
   assertDatabaseViewStructure(blocks)
-  return finalizeParsedMarkdownBlocks(blocks)
+  return strict ? blocks : finalizeParsedMarkdownBlocks(blocks)
 }
 type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
 export type MarkdownBlockSourceRange = { index: number; startLine: number; endLine: number }
+export interface MarkdownSourceSerializationPolicy {
+  depths: (blocks: readonly MarkdownRenderableBlock[]) => number[]
+  render: (block: MarkdownRenderableBlock, indent: string, parentType: string | null) => { markdown: string; from: number; to: number } | null
+  listMember: (block: MarkdownRenderableBlock, parentType: string | null) => boolean
+}
+export interface MarkdownSerializationCoreResult {
+  markdown: string
+  ranges: MarkdownBlockSourceRange[]
+  closingRanges: MarkdownContainerClosingRange[]
+  contentProjections?: NativeTextProjection[]
+  references?: Array<{ index: number; from: number; to: number }>
+}
 
 export function serializeBlocksToMarkdown(blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}): string {
   return serializeMarkdownWithBlockRanges(blocks, options).markdown
@@ -610,9 +690,9 @@ export type MarkdownContainerClosingRange = MarkdownBlockSourceRange
 
 /** Native forest envelopes are independent of relative list indentation. */
 function serializeContainerForest(
-  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions
-): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
-  const depths = resolveContainerMarkdownDepths(blocks)
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions, policy?: MarkdownSourceSerializationPolicy
+): MarkdownSerializationCoreResult {
+  const depths = policy ? policy.depths(blocks) : resolveContainerMarkdownDepths(blocks)
   const nativeAncestors: boolean[] = []
   const contentProjections = blocks.map((block, index) => {
     const depth = depths[index]
@@ -623,11 +703,14 @@ function serializeContainerForest(
     return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter', 'database-view'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body')
   })
   const parts: string[] = [], ranges: MarkdownBlockSourceRange[] = [], closingRanges: MarkdownContainerClosingRange[] = []
-  let line = 0
+  const references: Array<{ index: number; from: number; to: number }> = []
+  let line = 0, characters = 0, emittedFrom = 0
   const emit = (source: string) => {
     const separator = parts.length ? '\n\n' : ''
     line += separator.length
     const startLine = line
+    emittedFrom = characters + separator.length
+    characters += separator.length + source.length
     parts.push(separator + source)
     line += source.match(/\n/g)?.length ?? 0
     return startLine
@@ -653,40 +736,54 @@ function serializeContainerForest(
       while (index < end && !isNativeStructureBlockType(blocks[index].type)) index++
       const originals = blocks.slice(chunkStart, index)
       const relative = originals.map((value, offset) => ({ ...value, content: contentProjections[chunkStart + offset].source, depth: depths[chunkStart + offset] - baseDepth }))
-      const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true)
+      const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true, policy)
       const offset = emit(rendered.markdown)
       for (const range of rendered.ranges) ranges.push({ ...range, index: chunkStart + range.index,
         startLine: offset + range.startLine, endLine: offset + range.endLine })
+      for (const ref of rendered.references ?? []) references.push({ index: chunkStart + ref.index, from: emittedFrom + ref.from, to: emittedFrom + ref.to })
     }
   }
   scope(0, blocks.length, 0)
-  return { markdown: parts.join(''), ranges, closingRanges, contentProjections }
+  return { markdown: parts.join(''), ranges, closingRanges, contentProjections, ...(policy ? { references } : {}) }
 }
 
 export function serializeMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}
 ): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
-  assertMarkdownColumnStructure(blocks)
+  return serializeMarkdownWithBlockRangesCore(blocks, options)
+}
+/** Shared renderer; a cold internal Source adapter supplies already-validated
+ * exact depths and reference emission. Public callers retain legacy policy. */
+export function serializeMarkdownWithBlockRangesCore(
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}, policy?: MarkdownSourceSerializationPolicy
+): MarkdownSerializationCoreResult {
+  if (!policy) assertMarkdownColumnStructure(blocks)
   assertDatabaseViewStructure(blocks)
-  if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options)
-  return { ...serializeFlatMarkdownWithBlockRanges(blocks, options), closingRanges: [] }
+  if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options, policy)
+  return { ...serializeFlatMarkdownWithBlockRanges(blocks, options, blocks, false, policy), closingRanges: [] }
 }
 /** Source ranges use the exact same separators and indentation as file export. */
 function serializeFlatMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[],
   options: MarkdownSerializationOptions = {},
   metadataBlocks = blocks,
-  nativeScope = false
-): { markdown: string; ranges: MarkdownBlockSourceRange[] } {
-  const effectiveDepths = resolveMarkdownBlockDepths(blocks)
+  nativeScope = false,
+  policy?: MarkdownSourceSerializationPolicy
+): { markdown: string; ranges: MarkdownBlockSourceRange[]; references?: Array<{ index: number; from: number; to: number }> } {
+  const effectiveDepths = policy ? policy.depths(blocks) : resolveMarkdownBlockDepths(blocks)
   const indents: string[] = []
   const markers: number[] = []
   const orderedDelimiters = new Map<number, string>()
   const numbers = getMarkdownListNumbers(blocks)
+  const parentTypes: string[] = [], listMembers: boolean[] = []
+  const coreReferences = new Map<number, { from: number; to: number }>()
 
   const rendered = blocks
     .map((block, index) => {
       const depth = effectiveDepths[index] ?? 0
+      const parentType = depth > 0 ? parentTypes[depth - 1] ?? null : null
+      parentTypes.length = depth + 1; parentTypes[depth] = block.type
+      listMembers[index] = policy ? policy.listMember(block, parentType) : isNestableMarkdownBlock(block.type)
       const indent = depth > 0 ? (indents[depth - 1] ?? '') + ' '.repeat(markers[depth - 1] ?? 2) : ''
       indents[depth] = indent
       // Continuation marker values are ignored by Markdown; keep them within
@@ -701,7 +798,9 @@ function serializeFlatMarkdownWithBlockRanges(
       if (previousDelimiter === delimiter && block.listStart !== undefined) delimiter = delimiter === '.' ? ')' : '.'
       if (isOrderedListBlockType(block.type)) orderedDelimiters.set(depth, delimiter)
       else orderedDelimiters.delete(depth)
-      const renderedBlock = renderMarkdownBlock(isOrderedListBlockType(block.type) ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
+      const custom = policy?.render(block, indent, parentType)
+      if (custom) coreReferences.set(index, { from: custom.from, to: custom.to })
+      const renderedBlock = custom?.markdown ?? renderMarkdownBlock(isOrderedListBlockType(block.type) ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
       if (!options.includeBlockMetadata) {
         return renderedBlock
       }
@@ -710,12 +809,13 @@ function serializeFlatMarkdownWithBlockRanges(
       return metadata ? `${metadata}\n${renderedBlock}` : renderedBlock
     })
   const ranges: MarkdownBlockSourceRange[] = []
-  let line = 0
+  const references: Array<{ index: number; from: number; to: number }> = []
+  let line = 0, characters = 0
   const markdown = rendered.map((text, index) => {
     let separator = index === 0 ? '' : '\n\n'
     const previous = blocks[index - 1]
     const current = blocks[index]
-    if (previous && !options.includeBlockMetadata && isNestableMarkdownBlock(previous.type) && isNestableMarkdownBlock(current.type)) {
+    if (previous && !options.includeBlockMetadata && listMembers[index - 1] && listMembers[index]) {
       const depth = effectiveDepths[index]
       const previousDepth = effectiveDepths[index - 1]
       // Spacing belongs to the containing list, not the deepest child that
@@ -727,12 +827,15 @@ function serializeFlatMarkdownWithBlockRanges(
       if (nativeScope && depth > previousDepth && isOrderedListBlockType(current.type) && (current.listStart ?? 1) !== 1) separator = '\n\n'
     }
     line += separator.length
+    const reference = coreReferences.get(index), from = characters + separator.length
+    if (reference) references.push({ index, from: from + reference.from, to: from + reference.to })
+    characters = from + text.length
     const newlines = text.match(/\n/g)?.length ?? 0
     ranges.push({ index, startLine: line, endLine: line + newlines + (text && !text.endsWith('\n') ? 1 : 0) })
     line += newlines
     return separator + text
   }).join('')
-  return { markdown, ranges }
+  return { markdown, ranges, ...(policy ? { references } : {}) }
 }
 
 /** KnowBook's backup envelope, explicitly distinguished from user YAML. */
