@@ -2,7 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
-import type { DocumentBlockMoveResult } from '@shared/document-block-moves'
+import type { BlockMoveCompletionContext } from '../utils/blockMoveActions'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
 import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
@@ -668,34 +668,13 @@ export function useDocumentEditorState({
       && areDocumentDraftBlocksEqual(target.blocks, draftBlocksRef.current)
   ), [])
 
-  const acceptBlockMoveResult = useCallback((result: DocumentBlockMoveResult) => {
-    const documentId = selectedDocumentIdRef.current
-    const detail = result.source.id === documentId ? result.source : result.target
-    selectedDocumentRef.current = detail
-    const blocks = normalizeDraftBlocks(detail.blocks.map(toDraftBlock))
-    draftBlocksRef.current = blocks
-    draftTitleRef.current = detail.title
-    draftSummaryRef.current = detail.summary
-    setDraftBlocksState(blocks)
-    setDraftTitle(detail.title)
-    setDraftSummary(detail.summary)
-    setFailedSave(null)
-    onSelectedDocumentChange(detail)
-    for (const snapshot of editHistoryRef.current) if (snapshot.move) {
-      for (const [id, version] of Object.entries(result.expectedUpdatedAtByDocument)) {
-        if (Object.hasOwn(snapshot.move.versions, id)) snapshot.move.versions[id] = version
-      }
-    }
-    checkpointedDraftBlocksRef.current = blocks
-    return blocks
-  }, [onSelectedDocumentChange])
-
-  const refreshAfterBlockMove = useCallback(async () => {
-    try {
-      const home = await window.knowbook.getHomeData()
-      if (mountedRef.current) onHomeDataChange(home)
-    } catch (error) { console.warn('Failed to refresh workspace after committing a block move.', error) }
-  }, [onHomeDataChange])
+  const getBlockMoveContext = useCallback((isCurrent: () => boolean): BlockMoveCompletionContext => ({
+    isCurrent, mounted: mountedRef, busy: blockMoveBusyRef, selectedId: selectedDocumentIdRef,
+    selected: selectedDocumentRef, blocks: draftBlocksRef, title: draftTitleRef, summary: draftSummaryRef,
+    checkpointed: checkpointedDraftBlocksRef, history: editHistoryRef, pointer: editHistoryPointerRef,
+    setBlocks: setDraftBlocksState, setTitle: setDraftTitle, setSummary: setDraftSummary, clearFailure: setFailedSave,
+    onDocument: onSelectedDocumentChange, onHome: onHomeDataChange, onRevision: setHistoryRevision
+  }), [onHomeDataChange, onSelectedDocumentChange])
 
   const moveDraftBlocksToDocument = useCallback(async (target: DocumentBlockActionTarget, toDocumentId: string): Promise<boolean> => {
     if (blockMoveBusyRef.current || composingDraftRef.current || !isBlockActionTargetCurrent(target)
@@ -711,24 +690,15 @@ export function useDocumentEditorState({
       const source = selectedDocumentRef.current!
       const destination = await window.knowbook.getDocumentDetail(toDocumentId)
       if (!isCurrent() || !destination) return false
-      const result = await window.knowbook.moveDocumentBlocks({ fromDocumentId: source.id, toDocumentId,
-        blockIds: [...target.blockIds], expectedFromUpdatedAt: source.updatedAt, expectedToUpdatedAt: destination.updatedAt })
-      if (isCurrent()) {
-        const blocks = acceptBlockMoveResult(result)
-        const history = editHistoryRef.current.slice(0, editHistoryPointerRef.current + 1)
-        history.push({ blocks: cloneDraftBlocks(blocks), bookmark: target.bookmark,
-          move: { operationId: result.operationId, versions: { ...result.expectedUpdatedAtByDocument } } })
-        editHistoryRef.current = history.slice(-80)
-        editHistoryPointerRef.current = editHistoryRef.current.length - 1
-        setHistoryRevision(value => value + 1)
-      }
-      await refreshAfterBlockMove()
-      return isCurrent()
+      const input = { fromDocumentId: source.id, toDocumentId, blockIds: [...target.blockIds],
+        expectedFromUpdatedAt: source.updatedAt, expectedToUpdatedAt: destination.updatedAt }
+      const { completeDocumentBlockMove } = await import('../utils/blockMoveActions')
+      return await completeDocumentBlockMove(input, target.bookmark, getBlockMoveContext(isCurrent))
     } catch (error) {
       if (isCurrent()) onMessage(getErrorMessage(error, '移动失败，请重新打开文档后重试。'), 'error')
       return false
     } finally { blockMoveBusyRef.current = false; if (mountedRef.current) setIsBlockMoveBusy(false) }
-  }, [acceptBlockMoveResult, checkpointDraft, clearAutoSaveTimer, isBlockActionTargetCurrent, onMessage, persistDraft, refreshAfterBlockMove])
+  }, [checkpointDraft, clearAutoSaveTimer, getBlockMoveContext, isBlockActionTargetCurrent, onMessage, persistDraft])
 
   restoreMoveRef.current = async (move, state) => {
     if (blockMoveBusyRef.current || composingDraftRef.current) return false
@@ -741,11 +711,8 @@ export function useDocumentEditorState({
     try {
       if (!await persistDraft(false, true) || !isCurrent()) return false
       const input = { operationId: move.operationId, expectedUpdatedAtByDocument: { ...move.versions } }
-      const result = state === 'undone' ? await window.knowbook.undoDocumentBlockMove(input)
-        : await window.knowbook.redoDocumentBlockMove(input)
-      if (isCurrent()) acceptBlockMoveResult(result)
-      await refreshAfterBlockMove()
-      return isCurrent()
+      const { completeDocumentBlockMoveRestore } = await import('../utils/blockMoveActions')
+      return await completeDocumentBlockMoveRestore(input, state, getBlockMoveContext(isCurrent))
     } catch (error) {
       if (isCurrent()) onMessage(getErrorMessage(error, '撤销移动失败；不会覆盖后续编辑。'), 'error')
       return false
@@ -762,22 +729,11 @@ export function useDocumentEditorState({
       || typeof window.knowbook.getDocumentBlockMoveHistory !== 'function') return
     const documentId = selectedDocumentId, session = editorSessionRef.current
     let cancelled = false
-    void window.knowbook.getDocumentBlockMoveHistory(documentId).then(entry => {
-      if (!entry || cancelled || !mountedRef.current || selectedDocumentIdRef.current !== documentId
-        || editorSessionRef.current !== session || blockMoveBusyRef.current
-        || editHistoryRef.current.length !== 1 || editHistoryPointerRef.current !== 0) return
-      const expected = normalizeDraftBlocks(entry.state === 'applied' ? entry.afterBlocks : entry.beforeBlocks)
-      const detail = selectedDocumentRef.current
-      if (!detail || !areDocumentDraftBlocksEqual(expected, draftBlocksRef.current)
-        || draftTitleRef.current !== detail.title || draftSummaryRef.current !== detail.summary) return
-      editHistoryRef.current = [
-        { blocks: cloneDraftBlocks(normalizeDraftBlocks(entry.beforeBlocks)), bookmark: null },
-        { blocks: cloneDraftBlocks(normalizeDraftBlocks(entry.afterBlocks)), bookmark: null,
-          move: { operationId: entry.operationId, versions: { ...entry.expectedUpdatedAtByDocument } } }
-      ]
-      editHistoryPointerRef.current = entry.state === 'applied' ? 1 : 0
-      checkpointedDraftBlocksRef.current = draftBlocksRef.current
-      setHistoryRevision(value => value + 1)
+    void window.knowbook.getDocumentBlockMoveHistory(documentId).then(async entry => {
+      if (!entry || cancelled) return
+      const { acceptDocumentBlockMoveHistory } = await import('../utils/blockMoveActions')
+      acceptDocumentBlockMoveHistory(entry, getBlockMoveContext(() => !cancelled && mountedRef.current
+        && selectedDocumentIdRef.current === documentId && editorSessionRef.current === session))
     }).catch(error => console.warn('Failed to read paired block move history.', error))
     return () => { cancelled = true }
   }, [isEditing, selectedDocument?.id, selectedDocument?.updatedAt, selectedDocumentId])

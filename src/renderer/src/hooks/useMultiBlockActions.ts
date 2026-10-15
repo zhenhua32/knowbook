@@ -9,6 +9,7 @@ import { planDraftBlockDepthChange, planDraftSubtreePlacement } from '../utils/d
 import { materializeDraftFragment } from '../utils/draftTreeFragment'
 import { reparentOrphanedBlocksAfterRangeDeletion } from '../utils/draftTreePlacement'
 import { planBlockAction } from '../utils/documentBlockActions'
+import { validColumnStructure } from '@shared/columnStructure'
 import {
   getBlockSubtreeEndIndex,
   getNextSiblingSubtreeStartIndex,
@@ -261,6 +262,9 @@ export function useMultiBlockActions({
 
     const operationRange = getMultiBlockOperationRange(selectedBlockRange)
     const operationCount = operationRange.end - operationRange.start + 1
+    const ids = draftBlocks.slice(operationRange.start, operationRange.end + 1).map(block => block.id!)
+    const nextBlocks = planBlockAction(draftBlocks, ids, 'convert', nextType)
+    if (!nextBlocks) return
     pushToHistory(draftBlocks)
 
     const focusIndex =
@@ -268,8 +272,7 @@ export function useMultiBlockActions({
         ? activeBlockIndex
         : operationRange.start
 
-    const ids = draftBlocks.slice(operationRange.start, operationRange.end + 1).map(block => block.id!)
-    setDraftBlocks(previous => planBlockAction(previous, ids, 'convert', nextType) ?? previous)
+    setDraftBlocks(nextBlocks)
     setActiveBlockIndex(focusIndex)
     setPendingFocusBlockIndex(focusIndex)
     endBlockDrag()
@@ -291,13 +294,14 @@ export function useMultiBlockActions({
   ])
 
   const removeSelectedBlockRange = useCallback((range: BlockSelectionRange) => {
-    pushToHistory(draftBlocks)
     const lastRemovedBlock = draftBlocks[range.end]
     if (!lastRemovedBlock) {
-      return
+      return false
     }
 
     const modifiedBlocks = reparentOrphanedBlocksAfterRangeDeletion(draftBlocks, range.start, range.end)
+    if (!validColumnStructure(modifiedBlocks, { checkParentIds: true })) { notify(ui.invalidVisibleTreeSlice, 'warning'); return false }
+    pushToHistory(draftBlocks)
 
     const remainingCount = modifiedBlocks.length
     const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null
@@ -308,15 +312,18 @@ export function useMultiBlockActions({
     setActiveCursorPosition(0)
     setPendingFocusBlockIndex(nextIndex)
     endBlockDrag()
+    return true
   }, [
     clearBlockSelection,
     draftBlocks,
     endBlockDrag,
+    notify,
     pushToHistory,
     setActiveBlockIndex,
     setActiveCursorPosition,
     setDraftBlocks,
-    setPendingFocusBlockIndex
+    setPendingFocusBlockIndex,
+    ui.invalidVisibleTreeSlice
   ])
 
   const copySelectedBlocks = useCallback(async () => {
@@ -366,8 +373,7 @@ export function useMultiBlockActions({
 
     try {
       await window.knowbook.writeClipboardText(text)
-      removeSelectedBlockRange(range)
-      notify(ui.cutBlocks(count))
+      if (removeSelectedBlockRange(range)) notify(ui.cutBlocks(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.cutFailed
       notify(message, 'error')
@@ -381,8 +387,7 @@ export function useMultiBlockActions({
 
     const range = getMultiBlockOperationRange(selectedBlockRange)
     const count = range.end - range.start + 1
-    removeSelectedBlockRange(range)
-    notify(ui.deletedBlocks(count))
+    if (removeSelectedBlockRange(range)) notify(ui.deletedBlocks(count))
   }, [getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, notify, ui])
 
   const duplicateSelectedBlocks = useCallback(() => {
@@ -390,24 +395,21 @@ export function useMultiBlockActions({
       return
     }
 
-    pushToHistory(draftBlocks)
-
     const range = getMultiBlockOperationRange(selectedBlockRange)
     const duplicatedBlocks = materializeDraftFragment(
       draftBlocks.slice(range.start, range.end + 1),
       getNormalizedParentBlockId(draftBlocks[range.start])
     )
     const count = duplicatedBlocks.length
+    const nextBlocks = [...draftBlocks.slice(0, range.end + 1), ...duplicatedBlocks, ...draftBlocks.slice(range.end + 1)]
+    if (!validColumnStructure(nextBlocks, { checkParentIds: true })) return
+    pushToHistory(draftBlocks)
     const duplicatedRange = {
       start: range.end + 1,
       end: range.end + count
     }
 
-    setDraftBlocks((previous) => {
-      const next = [...previous]
-      next.splice(range.end + 1, 0, ...duplicatedBlocks)
-      return next
-    })
+    setDraftBlocks(nextBlocks)
     setSelectionAnchorBlockId(duplicatedBlocks[0]?.id ?? null)
     setSelectedBlockRange(duplicatedRange)
     setActiveBlockIndex(duplicatedRange.start)

@@ -15,16 +15,31 @@ export function isContainerBlockType(type: string): boolean {
   return type === 'callout' || type === 'toggle'
 }
 
+export function isColumnsBlockType(type: string): boolean {
+  return type === 'columns'
+}
+
+export function isColumnBlockType(type: string): boolean {
+  return type === 'column'
+}
+
+/** Structures have explicit Markdown shells; only callout/toggle have titles. */
+export function isNativeStructureBlockType(type: string): boolean {
+  return isContainerBlockType(type) || isColumnsBlockType(type) || isColumnBlockType(type)
+}
+
 export function canBlockOwnChildren(type: string): boolean {
-  return isListBlockType(type) || isContainerBlockType(type)
+  return isListBlockType(type) || isNativeStructureBlockType(type)
 }
 
 export function canBlockHaveParent(type: string): boolean {
   return type !== 'frontmatter'
 }
 
-/** List semantics stay unchanged; mixed children belong only to native containers. */
+/** Layout groups own columns; their columns and titled containers own mixed blocks. */
 export function canBlockNestUnder(parentType: string, childType: string): boolean {
-  return isContainerBlockType(parentType) ? canBlockHaveParent(childType)
+  return isColumnsBlockType(parentType) ? isColumnBlockType(childType)
+    : isContainerBlockType(parentType) || isColumnBlockType(parentType)
+      ? canBlockHaveParent(childType) && !isColumnBlockType(childType)
     : isListBlockType(parentType) && isListBlockType(childType)
 }

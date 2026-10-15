@@ -1,4 +1,4 @@
-import { isTaskBlockType, isListBlockType, isContainerBlockType } from './blockTypes'
+import { isTaskBlockType, isListBlockType, isContainerBlockType, isColumnsBlockType, isColumnBlockType } from './blockTypes'
 import { serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange, type MarkdownRenderableBlock } from './markdown'
 import { markdownEngine, markdownTokenTree, type MarkdownEnvironment, type MarkdownNode } from './markdownEngine'
 import type { MarkdownHeading } from './markdownAdvanced'
@@ -101,6 +101,7 @@ export function parseMarkdownDocumentBlocks(blocks: MarkdownRenderableBlock[], t
   }
   collectReadingLists(body)
   const blockNodes = ranges.map((range, index) => {
+    if (isColumnsBlockType(blocks[index].type) || isColumnBlockType(blocks[index].type)) return []
     const owned = sliceNodes(body, range, mappedArrays)
     if (isContainerBlockType(blocks[index].type)) return owned.find(node => node.token.type === 'native_container_title')?.children ?? []
     if (!isListBlockType(blocks[index].type)) return owned

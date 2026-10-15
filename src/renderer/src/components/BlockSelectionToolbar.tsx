@@ -3,6 +3,8 @@ import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 
 type BlockSelectionToolbarProps = {
   disabled?: boolean
+  onWrapInColumns?: () => void
+  wrapInColumnsLabel?: string
   onCopyBlockLinks?: () => void
   onMoveToDocument?: () => void
   copyBlockLinksLabel?: string
@@ -100,6 +102,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
         {moveDisabledReason ? <p className="mini-hint" role="status">{moveDisabledReason}</p> : null}
       </div>
       <div className="block-selection-actions">
+        {props.onWrapInColumns ? <button className="secondary-button" disabled={disabled} type="button" onClick={props.onWrapInColumns}>{props.wrapInColumnsLabel}</button> : null}
         <select
           className="editor-select compact-select" disabled={disabled} aria-label={convertLabel}
           onChange={(event) => onConversionTypeChange(event.target.value as DocumentBlock['type'])}

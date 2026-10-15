@@ -1,7 +1,8 @@
 import { parseMarkdownBlocks, serializeMarkdownWithBlockRanges, type MarkdownBlockSourceRange } from '@shared/markdown'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { normalizeCodeLanguage } from '@shared/code'
-import { isContainerBlockType, canBlockNestUnder } from '@shared/blockTypes'
+import { isNativeStructureBlockType, canBlockNestUnder } from '@shared/blockTypes'
+import { assertColumnStructure } from '@shared/columns'
 
 export type MarkdownSourceChange = { from: number; to: number; insert: string }
 type SourceAnchor = { block: DocumentBlockDraft; from: number; to: number; original: string }
@@ -181,7 +182,7 @@ export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): Documen
   }
   // Foreign metadata IDs never become authoritative. Restore parents only from
   // surviving local anchors and the parser's structural depth after identity mapping.
-  if (blocks.some(block => isContainerBlockType(block.type))) {
+  if (blocks.some(block => isNativeStructureBlockType(block.type))) {
     const stack: DocumentBlockDraft[] = []
     for (const block of blocks) {
       let depth = Math.min(block.depth ?? 0, stack.length)
@@ -191,5 +192,6 @@ export function markdownSourceDraftToBlocks(draft: MarkdownSourceDraft): Documen
       stack.length = depth; stack[depth] = block
     }
   }
+  assertColumnStructure(blocks)
   return blocks
 }

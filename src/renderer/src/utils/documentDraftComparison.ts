@@ -49,6 +49,7 @@ export function areDocumentDraftBlocksEqual(
       || leftBlock.markdownFormat?.calloutIcon !== rightBlock.markdownFormat?.calloutIcon
       || leftBlock.markdownFormat?.calloutTone !== rightBlock.markdownFormat?.calloutTone
       || leftBlock.markdownFormat?.toggleDefaultOpen !== rightBlock.markdownFormat?.toggleDefaultOpen
+      || leftBlock.markdownFormat?.columnWeight !== rightBlock.markdownFormat?.columnWeight
       || (leftBlock.language ?? null) !== (rightBlock.language ?? null)
       || (leftBlock.highlight ?? null) !== (rightBlock.highlight ?? null)
       || !areTagsEqual(leftBlock.tags, rightBlock.tags)

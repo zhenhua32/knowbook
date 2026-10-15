@@ -4,7 +4,7 @@ import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice } from '../../shared/webdav-sync'
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
-import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
+import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, requiresPageCompositionProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
 import { mergeSyncDocument } from './merge'
 import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
@@ -410,8 +410,9 @@ export class WebDavSyncService {
       throw error
     }
     // Publish the compatibility gate in the same conditional manifest write as
-    // its first native tree. An old writer racing that write must reread v2.
-    if ([...writes.values()].some(requiresStructureEditingProtocol)) next.version = 2
+    // its first new tree. A competing older writer must reread the new gate.
+    if ([...writes.values()].some(requiresPageCompositionProtocol)) next.version = 3
+    else if (next.version === 1 && [...writes.values()].some(requiresStructureEditingProtocol)) next.version = 2
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
     const writtenDocumentIds = new Set([...writes.values()].flatMap(record => record.kind === 'databases' ? [] : [record.id]))
     if (changed && writtenDocumentIds.size) {

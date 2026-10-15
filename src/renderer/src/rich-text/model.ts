@@ -111,7 +111,67 @@ export function draftBlocksToRichDoc(blocks: DocumentBlockDraft[], references?: 
   const model = parseMarkdownDocumentBlocks(source)
   if (references) model.environment.references = { ...references, ...model.environment.references }
   const numbers = getMarkdownListNumbers(source)
-  return reconcileRichTextBlockIds(richTextSchema.nodes.doc.create(null, source.map((block, index) => blockToNode(block, model.environment, model.blockNodes[index], numbers[index]))))
+  const leaves = source.map((block, index) => blockToNode(block, model.environment, model.blockNodes[index], numbers[index]))
+  const scope = (start: number, end: number): Node[] => {
+    const children: Node[] = []
+    for (let index = start; index < end;) {
+      const block = source[index]
+      if (block.type === 'column') throw new Error('A column requires its columns owner.')
+      if (block.type !== 'columns') { children.push(leaves[index++]); continue }
+      let boundary = index + 1
+      while (boundary < end && source[boundary].depth > block.depth) boundary++
+      const columns: Node[] = []
+      for (let cursor = index + 1; cursor < boundary;) {
+        const column = source[cursor]
+        if (column.type !== 'column' || column.depth !== block.depth + 1) throw new Error('Invalid columns children.')
+        let columnEnd = cursor + 1
+        while (columnEnd < boundary && source[columnEnd].depth > column.depth) columnEnd++
+        columns.push(richTextSchema.nodes.column_block.create({ block: cloneRichTextBlock(column) }, scope(cursor + 1, columnEnd)))
+        cursor = columnEnd
+      }
+      children.push(richTextSchema.nodes.columns_block.createChecked({ block: cloneRichTextBlock(block) }, columns))
+      index = boundary
+    }
+    return children
+  }
+  return reconcileRichTextBlockIds(richTextSchema.nodes.doc.create(null, scope(0, source.length)))
+}
+
+export type RichBlockEntry = { node: Node; pos: number; index: number }
+
+/** DFS indices match persisted draft indices; positions include structural node boundaries. */
+export function richBlockEntries(doc: Node): RichBlockEntry[] {
+  const entries: RichBlockEntry[] = []
+  doc.descendants((node, pos) => {
+    if (!node.isBlock && node.type !== richTextSchema.nodes.column_block) return false
+    entries.push({ node, pos, index: entries.length })
+    return node.type === richTextSchema.nodes.columns_block || node.type === richTextSchema.nodes.column_block
+  })
+  return entries
+}
+
+export function richBlockEntryAt(doc: Node, position: number): RichBlockEntry | undefined {
+  const entries = richBlockEntries(doc)
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (position >= entry.pos && position <= entry.pos + entry.node.nodeSize) return entry
+  }
+}
+
+/** Preserve existing leaf nodes/marks when a draft operation changes only the flat forest. */
+export function rebuildRichStructure(blocks: DocumentBlockDraft[], nodes: Map<string, Node>): Node {
+  const doc = draftBlocksToRichDoc(blocks)
+  const replace = (node: Node): Node => {
+    const saved = nodes.get(node.attrs.block?.id)
+    if (node.type === richTextSchema.nodes.text_block && saved?.type === node.type && saved.attrs.block?.content === node.attrs.block?.content) {
+      return node.type.create({ ...saved.attrs, block: node.attrs.block }, saved.content, saved.marks)
+    }
+    if (!node.childCount || node.isTextblock) return node
+    const children: Node[] = []
+    node.forEach(child => children.push(replace(child)))
+    return node.copy(Fragment.fromArray(children))
+  }
+  return replace(doc)
 }
 
 /** Repair IDs copied by a split/paste while retaining the first surviving ID.
@@ -125,37 +185,55 @@ export function reconcileRichTextBlockIds(doc: Node): Node {
   const types = new Map<string, string>()
   const remappedIds = new Map<string, string>()
   let changed = false
-  const children: Node[] = []
-  doc.forEach(node => {
+  const entries = richBlockEntries(doc)
+  const normalized = new Map<number, DocumentBlockDraft>()
+  const layoutParents: Array<{ pos: number; end: number }> = []
+  for (const { node, pos } of entries) {
+    while (layoutParents.length && layoutParents.at(-1)!.end <= pos) layoutParents.pop()
     const original = node.attrs.block as DocumentBlockDraft | null
     const block = original ?? defaultBlock()
     const requested = block.id?.trim()
     const id = requested && !ids.has(requested) ? requested : createDraftBlockId()
     ids.add(id)
     if (requested) remappedIds.set(requested, id)
-    const requestedParent = block.parentBlockId ? remappedIds.get(block.parentBlockId) ?? block.parentBlockId : null
-    const { depth, parentBlockId } = resolveDraftBlockRelationship(block.type, block.depth, requestedParent, id, depths, depthStack, types)
+    const layoutOwner = layoutParents.at(-1)
+    const layoutBlock = layoutOwner && normalized.get(layoutOwner.pos)
+    let requestedParent = block.parentBlockId ? remappedIds.get(block.parentBlockId) ?? block.parentBlockId : null
+    let requestedDepth = block.depth
+    if (layoutBlock && (node.type === richTextSchema.nodes.column_block || requestedDepth <= layoutBlock.depth
+      || requestedParent !== layoutBlock.id && !depthStack.slice(layoutBlock.depth + 1).includes(requestedParent))) {
+      requestedParent = layoutBlock.id ?? null
+      requestedDepth = layoutBlock.depth + 1
+    }
+    const { depth, parentBlockId } = resolveDraftBlockRelationship(block.type, requestedDepth, requestedParent, id, depths, depthStack, types)
     depthStack.length = depth + 1
     // A prose/source block cannot become an implicit parent of a pasted list.
     depthStack[depth] = canBlockOwnChildren(block.type) ? id : null
     depths.set(id, depth)
     types.set(id, block.type)
-    if (!original || id !== block.id || depth !== block.depth || (block.parentBlockId ?? null) !== parentBlockId) {
-      changed = true
-      children.push(node.type.create({ ...node.attrs, block: { ...cloneRichTextBlock(block), id, depth, parentBlockId } }, node.content, node.marks))
-    } else {
-      children.push(node)
-    }
+    const adjusted = !original || id !== block.id || depth !== block.depth || (block.parentBlockId ?? null) !== parentBlockId
+    if (adjusted) changed = true
+    normalized.set(pos, adjusted ? { ...cloneRichTextBlock(block), id, depth, parentBlockId } : block)
+    if (node.type === richTextSchema.nodes.columns_block || node.type === richTextSchema.nodes.column_block)
+      layoutParents.push({ pos, end: pos + node.nodeSize })
+  }
+  const numbers = getMarkdownListNumbers(entries.map(({ pos }) => normalized.get(pos)!))
+  const numbered = new Map<number, number | undefined>()
+  entries.forEach(({ node, pos }, index) => {
+    numbered.set(pos, numbers[index])
+    if (normalized.get(pos)!.type.startsWith('numbered-') && node.attrs.listNumber !== numbers[index]) changed = true
   })
-  const numbers = getMarkdownListNumbers(children.map(node => node.attrs.block as DocumentBlockDraft))
-  children.forEach((node, index) => {
-    const block = node.attrs.block as DocumentBlockDraft
-    if (block.type.startsWith('numbered-') && node.attrs.listNumber !== numbers[index]) {
-      changed = true
-      children[index] = node.type.create({ ...node.attrs, listNumber: numbers[index] }, node.content, node.marks)
-    }
-  })
-  return changed ? doc.copy(Fragment.fromArray(children)) : doc
+  if (!changed) return doc
+  const rebuild = (node: Node, pos: number): Node => {
+    const block = normalized.get(pos)
+    if (!block) return node
+    const children: Node[] = []
+    node.forEach((child, offset) => children.push(normalized.has(pos + 1 + offset) ? rebuild(child, pos + 1 + offset) : child))
+    return node.type.create({ ...node.attrs, block, ...(block.type.startsWith('numbered-') ? { listNumber: numbered.get(pos) } : {}) }, children, node.marks)
+  }
+  const children: Node[] = []
+  doc.forEach((node, pos) => children.push(rebuild(node, pos)))
+  return doc.copy(Fragment.fromArray(children))
 }
 
 function codeDelimiter(node: Node, close: boolean): string {
@@ -233,12 +311,12 @@ export function serializeRichTextInline(node: Node): string {
 export function richDocToDraftBlocks(document: Node): DocumentBlockDraft[] {
   const doc = reconcileRichTextBlockIds(document)
   const blocks: DocumentBlockDraft[] = []
-  doc.forEach(node => {
+  for (const { node } of richBlockEntries(doc)) {
     const block = cloneRichTextBlock(node.attrs.block as DocumentBlockDraft)
     if (node.type === richTextSchema.nodes.text_block && node.attrs.originalInline !== richTextInlineFingerprint(node)) {
       block.content = serializeRichTextInline(node)
     }
     blocks.push(block)
-  })
+  }
   return blocks
 }

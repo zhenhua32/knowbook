@@ -7,7 +7,7 @@ import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
 import { isDraftTreeContiguous } from '../utils/draftTreeDepthChange'
 import { validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { materializePastedDraftFragment, planDraftBlockPaste, planDraftContainerTitlePaste } from '../utils/draftTreePaste'
-import { draftBlocksToRichDoc, richDocToDraftBlocks, serializeRichTextInline } from './model'
+import { draftBlocksToRichDoc, richBlockEntries, richBlockEntryAt, richDocToDraftBlocks, serializeRichTextInline } from './model'
 
 export type RichTextTreePastePlan = { doc: Node; selection: Selection }
 
@@ -20,9 +20,9 @@ export function planRichTextTreePaste(doc: Node, selection: Selection, pastedBlo
     || !selection.$from.sameParent(selection.$to) || selection.$from.parent.type.name !== 'text_block' || !pastedBlocks.length) return null
   const pastedDoc = draftBlocksToRichDoc(pastedBlocks)
   const blocks = richDocToDraftBlocks(doc)
-  const index = selection.$from.index(0), current = blocks[index], node = selection.$from.parent
+  const index = richBlockEntryAt(doc, selection.from)!.index, current = blocks[index], node = selection.$from.parent
   const parent = blocks.find(block => block.id === current?.parentBlockId)
-  if (!current || (getBlockSubtreeEndIndex(blocks, index) === index && !isContainerBlockType(parent?.type ?? '') && !isContainerBlockType(current.type))
+  if (!current || (getBlockSubtreeEndIndex(blocks, index) === index && !isContainerBlockType(parent?.type ?? '') && parent?.type !== 'column' && !isContainerBlockType(current.type))
     || !isDraftTreeContiguous(blocks) || !validateBlockTreeStructure(blocks).valid) return null
 
   if (pastedBlocks.length === 1 && pastedBlocks[0].type === 'paragraph' && pastedDoc.firstChild?.type.name === 'text_block'
@@ -35,9 +35,7 @@ export function planRichTextTreePaste(doc: Node, selection: Selection, pastedBlo
       inlineMarkdown(selection.$to.parentOffset, node.content.size))
     if (!plan) return null
     const nextDoc = draftBlocksToRichDoc(plan.blocks)
-    let offset = 0
-    for (let cursor = 0; cursor < plan.focusIndex; cursor++) offset += nextDoc.child(cursor).nodeSize
-    const target = nextDoc.child(plan.focusIndex)
+    const { pos: offset, node: target } = richBlockEntries(nextDoc)[plan.focusIndex]
     return { doc: nextDoc, selection: target.isTextblock
       ? TextSelection.create(nextDoc, offset + 1 + (plan.cursorPosition === 0 ? 0 : target.content.size))
       : Selection.near(nextDoc.resolve(offset + target.nodeSize), -1) }
@@ -66,9 +64,7 @@ export function planRichTextTreePaste(doc: Node, selection: Selection, pastedBlo
   const nextDoc = draftBlocksToRichDoc(plan.blocks)
   const exported = richDocToDraftBlocks(nextDoc)
   if (!validateBlockTreeStructure(exported).valid || !isDraftTreeContiguous(exported)) return null
-  let offset = 0
-  for (let cursor = 0; cursor < plan.focusIndex; cursor++) offset += nextDoc.child(cursor).nodeSize
-  const target = nextDoc.child(plan.focusIndex)
+  const { pos: offset, node: target } = richBlockEntries(nextDoc)[plan.focusIndex]
   const nextSelection = target.isTextblock
     ? TextSelection.create(nextDoc, offset + 1 + (suffix ? 0 : target.content.size))
     : Selection.near(nextDoc.resolve(offset + target.nodeSize), -1)

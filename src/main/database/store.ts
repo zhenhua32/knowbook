@@ -1,4 +1,5 @@
 import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
+import { assertColumnStructure } from '@shared/columns'
 import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
@@ -502,6 +503,8 @@ export class KnowbookStore {
       if (schemaVersion < 22) this.db.pragma('user_version = 22')
       // Older stores flatten mixed container children; their startup gate must reject this semantic version.
       if (schemaVersion < 23) this.db.pragma('user_version = 23')
+      // V23 readers flatten the columns/column parent roles. Gate them before repair.
+      if (schemaVersion < 24) this.db.pragma('user_version = 24')
     })
   }
 
@@ -3481,6 +3484,7 @@ export class KnowbookStore {
   }
 
   private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
+    assertColumnStructure(blocks)
     const normalized = blocks.map((block) => {
       const type = block.type.trim() || 'paragraph'
       const normalizedLanguage = type === 'code' && typeof block.language === 'string' && block.language.trim()
@@ -3601,7 +3605,7 @@ export class KnowbookStore {
     const resolvedTypeById = new Map<string, string>()
     const depthStack: Array<string | null> = []
 
-    return blocks.map((block) => {
+    const persisted = blocks.map((block) => {
       const id = block.id?.trim() ? block.id : randomUUID()
       const { depth, parentBlockId } = this.resolveBlockRelationship(
         block.type,
@@ -3625,6 +3629,8 @@ export class KnowbookStore {
         parentBlockId
       }
     })
+    assertColumnStructure(persisted, { checkParentIds: true })
+    return persisted
   }
 
   private resyncLinksForAllDocuments(): void {

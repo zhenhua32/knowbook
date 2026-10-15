@@ -1,6 +1,6 @@
 import { lazy, Suspense, useContext, useLayoutEffect, useRef, useState } from 'react'
-import { Fragment, Slice, type Node as RichNode } from 'prosemirror-model'
-import { EditorState, NodeSelection, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
+import { Slice, type Node as RichNode } from 'prosemirror-model'
+import { AllSelection, EditorState, NodeSelection, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
 import { createRoot, type Root } from 'react-dom/client'
 import { createPortal } from 'react-dom'
@@ -12,10 +12,15 @@ import type { DocumentBlockDraft } from '@shared/contracts'
 import { markdownEngine, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { htmlClipboardToMarkdown } from '@shared/htmlClipboard'
-import { draftBlocksToRichDoc, reconcileRichTextBlockIds, richDocToDraftBlocks } from './model'
+import { draftBlocksToRichDoc, reconcileRichTextBlockIds, rebuildRichStructure, richBlockEntries, richBlockEntryAt, richDocToDraftBlocks, serializeRichTextInline } from './model'
+import { richTextSelectionBlockIds, richEndpoint as endpoint, richPositionOf as positionOf, richSelectionFromBookmark, richSelectionKind,
+  type RichEndpoint as Endpoint, type RichSelectionBookmark } from './positions'
+export { richTextSelectionBlockIds } from './positions'
 import { richTextSchema } from './schema'
 import { registerRichTextHistoryBridge } from './history'
 import { planRichTextTreePaste } from './paste'
+import { richTextSliceMarkdown as sliceMarkdown } from './clipboard'
+import { deleteCrossColumnSelection } from './columnEditing'
 import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import { captureAsyncHistoryFocusPermission, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
@@ -29,6 +34,7 @@ import { importAttachmentFiles } from '../utils/attachments'
 import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { isContainerBlockType } from '@shared/blockTypes'
 import { normalizeMarkdownFormat } from '@shared/markdownFormat'
+import { validColumnStructure } from '@shared/columnStructure'
 import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
@@ -40,6 +46,8 @@ import '../styles/inline-text-presentation.css'
 const NativeContainerControls = lazy(() => import('../components/NativeContainerControls').then(module => ({ default: module.NativeContainerControls })))
 const NativeContainerStyle = lazy(() => import('../components/NativeContainerStyle'))
 const MarkdownTableEditor = lazy(() => import('../components/MarkdownTableEditor').then(module => ({ default: module.MarkdownTableEditor })))
+const ColumnsControls = lazy(() => import('../components/ColumnsControls'))
+const ColumnContentControls = lazy(() => import('./ColumnContentControls'))
 
 type Props = {
   blocks: DocumentBlockDraft[]
@@ -57,42 +65,6 @@ type Props = {
   collapsedBlockIds?: Set<string>
   onToggleCollapse?: (id: string) => void
   onAddContainerChild?: (id: string, type: typeof BLOCK_CONVERSION_TYPES[number]) => string | void
-}
-
-export function richTextSelectionBlockIds(state: EditorState): string[] {
-  const { selection } = state, ids: string[] = []
-  state.doc.forEach((node, position) => {
-    const id = node.attrs.block?.id
-    if (!id) return
-    if (selection.empty ? selection.from >= position && selection.from <= position + node.nodeSize
-      : selection.from < position + node.nodeSize && selection.to > position
-        && !(node.type === richTextSchema.nodes.text_block && selection.to === position + 1)) ids.push(id)
-  })
-  return ids
-}
-
-type Endpoint = NonNullable<EditorHistoryBookmark['richText']>['anchor']
-function endpoint(doc: RichNode, position: number): Endpoint {
-  let result: Endpoint = { index: 0, offset: 0 }
-  doc.forEach((node, offset, index) => {
-    if (position >= offset && position <= offset + node.nodeSize) {
-      result = { blockId: node.attrs.block?.id, index, offset: Math.max(0, Math.min(node.content.size, position - offset - 1)) }
-    }
-  })
-  return result
-}
-function positionOf(doc: RichNode, point: Endpoint): number {
-  let result = 1, matched = false
-  doc.forEach((node, offset, index) => {
-    if ((!matched && index === point.index) || (point.blockId && node.attrs.block?.id === point.blockId)) {
-      result = offset + 1 + Math.min(point.offset, node.content.size)
-      if (point.blockId && node.attrs.block?.id === point.blockId) matched = true
-    }
-  })
-  return Math.min(result, doc.content.size)
-}
-function sliceMarkdown(slice: Slice): string {
-  return serializeBlocksToMarkdown(richDocToDraftBlocks(richTextSchema.nodes.doc.create(null, slice.content)))
 }
 
 function clipboardHtml(markdown: string): string {
@@ -119,6 +91,7 @@ export function DocumentRichTextEditor(props: Props) {
   const [linkUrl, setLinkUrl] = useState<string | null>(null)
   const [palette, setPalette] = useState<'textColor' | 'backgroundColor' | null>(null)
   const [tableHosts, setTableHosts] = useState<Array<{ id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined }>>([])
+  const [columnHosts, setColumnHosts] = useState<Array<{ id: string; dom: HTMLElement; grid: HTMLElement; position: () => number | undefined }>>([])
   const markdownDocument = useContext(MarkdownDocumentContext)
   const paletteRef = useRef(palette)
   paletteRef.current = palette
@@ -129,18 +102,18 @@ export function DocumentRichTextEditor(props: Props) {
   const pendingSelection = useRef<EditorHistoryBookmark | null>(null)
   const pendingChildFocus = useRef<{ editor: EditorView; documentId: string; id?: string; parentId: string; type: string;
     before: DocumentBlockDraft[]; permission: ReturnType<typeof captureAsyncHistoryFocusPermission> } | null>(null)
-  const parkedFoldSelection = useRef<{ doc: RichNode; anchor: Endpoint; head: Endpoint; fallback: { anchor: Endpoint; head: Endpoint } } | null>(null)
+  const parkedFoldSelection = useRef<{ doc: RichNode; anchor: Endpoint; head: Endpoint; kind: RichSelectionBookmark['kind']; fallback: RichSelectionBookmark } | null>(null)
   const sourceRefresh = useRef(new Set<() => void>())
   const pendingContextMenu = useRef<(() => void) | null>(null)
   const view = viewRef.current
   const selection = view?.state.selection
-  const currentBlock = selection && view ? view.state.doc.child(Math.min(selection.$from.index(0), view.state.doc.childCount - 1)).attrs.block as DocumentBlockDraft | undefined : undefined
+  const currentBlock = selection && view ? richBlockEntryAt(view.state.doc, selection.from)?.node.attrs.block as DocumentBlockDraft | undefined : undefined
   const currentType = currentBlock?.type ?? 'paragraph'
   const currentText = selection?.$from.parent.textContent ?? ''
   const slashMatch = selection?.empty ? /^\/([^\s]*)$/.exec(currentText) : null
   const slashQuery = slashMatch?.[1].toLowerCase()
   const slashCommands = slashQuery === undefined || slashDismissed === currentText ? []
-    : types.map((type, index) => ({ type, label: (props.isZh ? labelsZh : labelsEn)[index] }))
+    : [...types.map((type, index) => ({ type, label: (props.isZh ? labelsZh : labelsEn)[index] })), { type: 'columns', label: props.isZh ? '分栏' : 'Columns' }]
       .filter(item => `${item.type} ${item.label}`.toLowerCase().includes(slashQuery))
   const slashRef = useRef({ commands: slashCommands, index: slashIndex })
   slashRef.current = { commands: slashCommands, index: Math.min(slashIndex, Math.max(0, slashCommands.length - 1)) }
@@ -163,7 +136,7 @@ export function DocumentRichTextEditor(props: Props) {
     if (child.type !== request.type || child.parentBlockId !== request.parentId || !current.visibleIndices.includes(index)
       || !areDocumentDraftBlocksEqual(current.blocks.filter(block => block.id !== request.id), request.before)) { cancelChildFocus(); return }
     let position = -1
-    editor.state.doc.forEach((node, offset) => { if (node.attrs.block?.id === request.id) position = offset })
+    richBlockEntries(editor.state.doc).forEach(({ node, pos }) => { if (node.attrs.block?.id === request.id) position = pos })
     const node = position >= 0 ? editor.state.doc.nodeAt(position) : null
     if (!node || node.attrs.block?.type !== request.type) return
     const row = editor.nodeDOM(position) as HTMLElement | null
@@ -197,7 +170,7 @@ export function DocumentRichTextEditor(props: Props) {
     const editor = viewRef.current
     if (!editor || editor.composing || !latest.current.onOpenBlockActions) return
     const visible = new Set(latest.current.visibleIndices), visibleIds = new Set<string>()
-    editor.state.doc.forEach((node, _position, index) => { if (visible.has(index) && node.attrs.block?.id) visibleIds.add(node.attrs.block.id) })
+    richBlockEntries(editor.state.doc).forEach(({ node, index }) => { if (visible.has(index) && node.attrs.block?.id) visibleIds.add(node.attrs.block.id) })
     if (!visibleIds.has(id)) return
     const selected = richTextSelectionBlockIds(editor.state).filter(blockId => visibleIds.has(blockId))
     latest.current.onOpenBlockActions({ blockIds: selected.includes(id) ? selected : [id], x, y })
@@ -267,9 +240,14 @@ export function DocumentRichTextEditor(props: Props) {
     let tr = editor.state.tr
     if (removeSlash) tr = tr.delete(editor.state.selection.$from.start(), editor.state.selection.$from.end())
     const anchor = endpoint(tr.doc, tr.selection.anchor), head = endpoint(tr.doc, tr.selection.head)
+    const kind = richSelectionKind(tr.selection)
     let blocks = richDocToDraftBlocks(tr.doc)
     const selected = richTextSelectionBlockIds(EditorState.create({ doc: tr.doc, selection: tr.selection }))
       .filter(id => latest.current.visibleIndices.some(index => blocks[index]?.id === id))
+    if (selected.some(id => blocks.some(block => block.id === id && ['columns', 'column'].includes(block.type)))) {
+      setMessage(latest.current.isZh ? '请通过分栏控件调整列结构。' : 'Use the column controls to change the column structure.')
+      return
+    }
     for (const id of selected) {
       const index = blocks.findIndex(block => block.id === id)
       blocks = prepareDraftBlockTypeChange(blocks, index, type)
@@ -277,9 +255,53 @@ export function DocumentRichTextEditor(props: Props) {
         markdownFormat: normalizeMarkdownFormat(type, blocks[index].markdownFormat) }
     }
     tr = tr.replaceWith(0, tr.doc.content.size, draftBlocksToRichDoc(blocks).content)
-    tr.setSelection(TextSelection.between(tr.doc.resolve(positionOf(tr.doc, anchor)), tr.doc.resolve(positionOf(tr.doc, head))))
+    tr.setSelection(richSelectionFromBookmark(tr.doc, { anchor, head, kind }))
     boundary.current = true; editor.dispatch(tr.scrollIntoView())
     setSlashDismissed(null); setSlashIndex(0); editor.focus()
+  }
+
+  const applyColumnsBlocks = (next: DocumentBlockDraft[], expected: DocumentBlockDraft[]) => {
+    const editor = viewRef.current, current = latest.current
+    if (!editor || editor.composing || !areDocumentDraftBlocksEqual(current.blocks, expected)
+      || !areDocumentDraftBlocksEqual(richDocToDraftBlocks(editor.state.doc), expected)
+      || areDocumentDraftBlocksEqual(next, expected) || !validColumnStructure(next, { checkParentIds: true })) return
+    const anchor = endpoint(editor.state.doc, editor.state.selection.anchor), head = endpoint(editor.state.doc, editor.state.selection.head), kind = richSelectionKind(editor.state.selection)
+    const nodes = new Map(richBlockEntries(editor.state.doc).map(({ node }) => [node.attrs.block.id as string, node]))
+    const doc = rebuildRichStructure(next, nodes)
+    const added = next.find(block => block.type === 'paragraph' && !expected.some(before => before.id === block.id))
+    const tr = editor.state.tr.replaceWith(0, editor.state.doc.content.size, doc.content)
+    tr.setSelection(richSelectionFromBookmark(tr.doc, { anchor, head, kind }))
+    if (added?.id && added.parentBlockId && areDocumentDraftBlocksEqual(next.filter(block => block.id !== added.id), expected)) {
+      cancelChildFocus()
+      pendingChildFocus.current = { editor, documentId: current.documentId, id: added.id, parentId: added.parentBlockId,
+        type: added.type, before: expected, permission: captureAsyncHistoryFocusPermission() }
+    }
+    current.checkpoint(); boundary.current = true
+    editor.dispatch(tr)
+  }
+  const wrapSelectionInColumns = async (removeSlash = false) => {
+    const editor = viewRef.current, current = latest.current
+    if (!editor || editor.composing) return
+    const doc = editor.state.doc, selection = editor.state.selection, documentId = current.documentId
+    const permission = captureAsyncHistoryFocusPermission()
+    try {
+      const { wrapBlocksInColumns, insertColumnsAt } = await import('../utils/columnOperations')
+      if (viewRef.current !== editor || latest.current.documentId !== documentId || editor.composing
+        || !editor.state.doc.eq(doc) || !editor.state.selection.eq(selection) || !permission.canRestore()) return
+      const blocks = richDocToDraftBlocks(doc), ids = richTextSelectionBlockIds(editor.state)
+      const index = richBlockEntryAt(doc, selection.from)?.index
+      let next: DocumentBlockDraft[] | null
+      if (removeSlash && index !== undefined && /^\/[^\s]*$/.test(selection.$from.parent.textContent)) {
+        const cleared = blocks.map((block, position) => position === index ? { ...block, content: '' } : block)
+        next = blocks[index].type === 'paragraph'
+          ? insertColumnsAt(cleared, index, blocks[index].parentBlockId ?? null, blocks[index].id)
+          : wrapBlocksInColumns(cleared, ids)
+      } else next = wrapBlocksInColumns(blocks, ids)
+      if (next) applyColumnsBlocks(next, blocks)
+      else setMessage(latest.current.isZh ? '请选择可放入分栏的同级完整内容。' : 'Select complete sibling content that fits in columns.')
+      setSlashDismissed(null); setSlashIndex(0)
+    } catch (error) { if (viewRef.current === editor) setMessage(error instanceof Error ? error.message : String(error)) }
+    finally { permission.dispose() }
   }
 
   useLayoutEffect(() => {
@@ -289,8 +311,9 @@ export function DocumentRichTextEditor(props: Props) {
         if (!transactions.some(transaction => transaction.docChanged)) return null
         const normalized = reconcileRichTextBlockIds(state.doc)
         let tr: Transaction | null = null
-        state.doc.forEach((node, pos, index) => {
-          const next = normalized.child(index)
+        const entries = richBlockEntries(normalized)
+        richBlockEntries(state.doc).forEach(({ node, pos, index }) => {
+          const next = entries[index].node
           if (next === node) return
           tr ??= state.tr
           tr.setNodeMarkup(pos, undefined, next.attrs)
@@ -299,6 +322,10 @@ export function DocumentRichTextEditor(props: Props) {
       },
       filterTransaction(transaction, state) {
         if (!transaction.docChanged || transaction.getMeta('external')) return true
+        if (!validColumnStructure(richDocToDraftBlocks(transaction.doc), { checkParentIds: true })) {
+          setMessage(latest.current.isZh ? '请通过分栏控件调整列结构。' : 'Use the column controls to change the column structure.')
+          return false
+        }
         const visible = new Set(latest.current.visibleIndices)
         const hidden = richDocToDraftBlocks(state.doc).filter((_block, index) => !visible.has(index))
         if (!hidden.length) return true
@@ -310,11 +337,18 @@ export function DocumentRichTextEditor(props: Props) {
       props: {
         decorations(state) {
           const decorations: Decoration[] = [], visible = new Set(latest.current.visibleIndices)
-          state.doc.forEach((node, pos, index) => {
+          richBlockEntries(state.doc).forEach(({ node, pos, index }) => {
             const highlight = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'].includes(node.attrs.block?.highlight) ? node.attrs.block.highlight : null
+            const resolved = state.doc.resolve(pos)
+            let columnDepth: number | null = null
+            for (let depth = resolved.depth; depth > 0; depth--) if (resolved.node(depth).type.name === 'column_block') {
+              columnDepth = resolved.node(depth).attrs.block.depth; break
+            }
+            const indent = columnDepth !== null && node.type.name !== 'column_block'
+              ? `padding-left:${Math.max(0, node.attrs.block.depth - columnDepth - 1) * 24}px;` : ''
             decorations.push(Decoration.node(pos, pos + node.nodeSize, {
               'data-block-index': String(index), 'data-block-id': node.attrs.block?.id ?? '',
-              ...(highlight || !visible.has(index) ? { style: `${highlight ? `background:var(--highlight-${highlight});` : ''}${visible.has(index) ? '' : 'display:none'}` } : {}),
+              ...(highlight || !visible.has(index) || indent ? { style: `${indent}${highlight ? `background:var(--highlight-${highlight});` : ''}${visible.has(index) ? '' : 'display:none'}` } : {}),
               ...(visible.has(index) ? {} : { 'aria-hidden': 'true' })
             }))
             if (node.type === richTextSchema.nodes.text_block && visible.has(index) && latest.current.onOpenBlockActions) {
@@ -349,7 +383,7 @@ export function DocumentRichTextEditor(props: Props) {
                   const editor = viewRef.current
                   if (!editor) return
                   latest.current.checkpoint()
-                  editor.state.doc.forEach((current, position) => {
+                  richBlockEntries(editor.state.doc).forEach(({ node: current, pos: position }) => {
                     if (current.attrs.block?.id === node.attrs.block.id) {
                       boundary.current = true
                       editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...current.attrs, block: { ...current.attrs.block, checked: checkbox.checked } }))
@@ -368,43 +402,41 @@ export function DocumentRichTextEditor(props: Props) {
       const node = state.selection.$from.parent
       const block: DocumentBlockDraft | undefined = node.attrs.block
       if (node.type.name === 'text_block' && !node.content.size && block?.type !== 'paragraph' && !isContainerBlockType(block?.type ?? '')) {
-        const blocks = richDocToDraftBlocks(state.doc), index = state.selection.$from.index(0)
+        const blocks = richDocToDraftBlocks(state.doc), index = richBlockEntryAt(state.doc, state.selection.from)!.index
         const promoted = prepareDraftBlockTypeChange(blocks, index, 'paragraph')
         promoted[index] = { ...promoted[index], checked: false, markdownFormat: undefined }
         const tr = state.tr.replaceWith(0, state.doc.content.size, draftBlocksToRichDoc(promoted).content)
-        let pos = 1; for (let i = 0; i < index; i++) pos += tr.doc.child(i).nodeSize
+        const pos = richBlockEntries(tr.doc)[index].pos + 1
         dispatch?.(tr.setSelection(TextSelection.create(tr.doc, pos)))
         return true
       }
       if (node.type.name === 'text_block' && block && isContainerBlockType(block.type)) {
-        const tr = state.tr.deleteSelection(), index = tr.selection.$from.index(0), from = tr.selection.$from.parentOffset
-        const current = tr.selection.$from.parent, children: RichNode[] = []
-        tr.doc.forEach(child => children.push(child))
-        children[index] = current.copy(current.content.cut(0, from))
-        const right = richTextSchema.nodes.text_block.create({ block: { id: createDraftBlockId(), type: 'paragraph', content: '', checked: false,
-          depth: block.depth < 6 ? block.depth + 1 : block.depth, parentBlockId: block.depth < 6 ? block.id : block.parentBlockId }, originalInline: null }, current.content.cut(from))
+        const tr = state.tr.deleteSelection(), index = richBlockEntryAt(tr.doc, tr.selection.from)!.index, from = tr.selection.$from.parentOffset
+        const current = tr.selection.$from.parent, blocks = richDocToDraftBlocks(tr.doc)
+        blocks[index] = { ...blocks[index], content: serializeRichTextInline(current.copy(current.content.cut(0, from))) }
+        const right: DocumentBlockDraft = { id: createDraftBlockId(), type: 'paragraph', content: serializeRichTextInline(current.copy(current.content.cut(from))), checked: false,
+          depth: block.depth < 6 ? block.depth + 1 : block.depth, parentBlockId: block.depth < 6 ? block.id : block.parentBlockId }
         let insertion = index + 1
-        if (block.depth >= 6) while (insertion < children.length && children[insertion].attrs.block?.depth > block.depth) insertion++
-        children.splice(insertion, 0, right)
-        tr.replaceWith(0, tr.doc.content.size, Fragment.fromArray(children))
-        const pos = 1 + children.slice(0, insertion).reduce((sum, child) => sum + child.nodeSize, 0)
+        if (block.depth >= 6) while (insertion < blocks.length && blocks[insertion].depth > block.depth) insertion++
+        blocks.splice(insertion, 0, right)
+        tr.replaceWith(0, tr.doc.content.size, draftBlocksToRichDoc(blocks).content)
+        const pos = positionOf(tr.doc, { blockId: right.id, index: insertion, offset: 0 })
         latest.current.onRevealBlock(block.id!)
         if (latest.current.collapsedBlockIds?.has(block.id!)) latest.current.onToggleCollapse?.(block.id!)
         dispatch?.(tr.setSelection(TextSelection.create(tr.doc, pos)).scrollIntoView())
         return true
       }
       if (node.type.name === 'text_block' && ['bulleted-list', 'numbered-list', 'todo', 'numbered-todo'].includes(block?.type ?? '')) {
-        const tr = state.tr.deleteSelection(), index = tr.selection.$from.index(0), from = tr.selection.$from.parentOffset
-        const current = tr.selection.$from.parent, children: RichNode[] = []
-        tr.doc.forEach(child => children.push(child))
-        const left = current.copy(current.content.cut(0, from))
-        const right = current.type.create({ ...current.attrs, originalInline: null, block: { ...current.attrs.block,
-          id: createDraftBlockId(), content: '', checked: false, tags: undefined, highlight: undefined, listStart: undefined } }, current.content.cut(from))
+        const tr = state.tr.deleteSelection(), index = richBlockEntryAt(tr.doc, tr.selection.from)!.index, from = tr.selection.$from.parentOffset
+        const current = tr.selection.$from.parent, blocks = richDocToDraftBlocks(tr.doc)
+        const right = { ...blocks[index], id: createDraftBlockId(), content: serializeRichTextInline(current.copy(current.content.cut(from))),
+          checked: false, tags: undefined, highlight: undefined, listStart: undefined }
         let end = index + 1
-        while (end < children.length && (children[end].attrs.block?.depth ?? 0) > (block?.depth ?? 0)) end++
-        children[index] = left; children.splice(end, 0, right)
-        tr.replaceWith(0, tr.doc.content.size, Fragment.fromArray(children))
-        const pos = 1 + children.slice(0, end).reduce((sum, child) => sum + child.nodeSize, 0)
+        while (end < blocks.length && blocks[end].depth > (block?.depth ?? 0)) end++
+        blocks[index] = { ...blocks[index], content: serializeRichTextInline(current.copy(current.content.cut(0, from))) }
+        blocks.splice(end, 0, right)
+        tr.replaceWith(0, tr.doc.content.size, draftBlocksToRichDoc(blocks).content)
+        const pos = positionOf(tr.doc, { blockId: right.id, index: end, offset: 0 })
         dispatch?.(tr.setSelection(TextSelection.create(tr.doc, pos)).scrollIntoView())
         return true
       }
@@ -424,18 +456,34 @@ export function DocumentRichTextEditor(props: Props) {
       const { $from, empty } = state.selection, block = $from.parent.attrs.block as DocumentBlockDraft | null
       if (!empty || $from.parentOffset || $from.parent.type.name !== 'text_block' || !block || block.type === 'paragraph') return false
       latest.current.checkpoint(); boundary.current = true
-      const blocks = prepareDraftBlockTypeChange(richDocToDraftBlocks(state.doc), $from.index(0), 'paragraph')
-      blocks[$from.index(0)] = { ...blocks[$from.index(0)], checked: false, markdownFormat: undefined }
+      const index = richBlockEntryAt(state.doc, state.selection.from)!.index
+      const blocks = prepareDraftBlockTypeChange(richDocToDraftBlocks(state.doc), index, 'paragraph')
+      blocks[index] = { ...blocks[index], checked: false, markdownFormat: undefined }
       const tr = state.tr.replaceWith(0, state.doc.content.size, draftBlocksToRichDoc(blocks).content)
       dispatch?.(tr.setSelection(TextSelection.create(tr.doc, $from.start())).scrollIntoView())
       return true
     }
+    const eraseColumns: Command = (state, dispatch) => {
+      const tr = deleteCrossColumnSelection(state)
+      if (!tr) return false
+      dispatch?.(tr.scrollIntoView()); return true
+    }
+    const enterColumns: Command = (state, dispatch, editor) => {
+      const tr = deleteCrossColumnSelection(state)
+      if (!tr) return false
+      const next = state.apply(tr)
+      split(next, transaction => {
+        for (const step of transaction.steps) tr.step(step)
+        tr.setSelection(Selection.fromJSON(tr.doc, transaction.selection.toJSON()))
+      }, editor)
+      dispatch?.(tr.scrollIntoView()); return true
+    }
     const shortcuts = keymap({
       ...baseKeymap,
-      Enter: run(chainCommands(createParagraphNear, split)),
-      Backspace: run(chainCommands(downgrade, baseKeymap.Backspace)),
-      Delete: run(baseKeymap.Delete),
-      'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.replaceSelectionWith(richTextSchema.nodes.hard_break.create()).scrollIntoView()); return true },
+      Enter: run(chainCommands(enterColumns, createParagraphNear, split)),
+      Backspace: run(chainCommands(eraseColumns, downgrade, baseKeymap.Backspace)),
+      Delete: run(chainCommands(eraseColumns, baseKeymap.Delete)),
+      'Shift-Enter': (state, dispatch) => { dispatch?.((deleteCrossColumnSelection(state) ?? state.tr).replaceSelectionWith(richTextSchema.nodes.hard_break.create()).scrollIntoView()); return true },
       'Mod-b': run(toggleMark(richTextSchema.marks.strong)), 'Mod-i': run(toggleMark(richTextSchema.marks.em)),
       'Mod-u': run(toggleMark(richTextSchema.marks.underline)),
       'Mod-e': run(toggleMark(richTextSchema.marks.code)), 'Mod-Shift-x': run(toggleMark(richTextSchema.marks.strike)),
@@ -458,6 +506,12 @@ export function DocumentRichTextEditor(props: Props) {
         let tr = editor.state.tr
         if (position !== undefined) tr.setSelection(TextSelection.near(tr.doc.resolve(position)))
         else tr.setSelection(selected)
+        const selectedState = EditorState.create({ doc: tr.doc, selection: tr.selection })
+        const erased = deleteCrossColumnSelection(selectedState)
+        if (erased) {
+          tr = tr.replaceWith(0, tr.doc.content.size, erased.doc.content)
+          tr.setSelection(Selection.fromJSON(tr.doc, erased.selection.toJSON()))
+        }
         const treePaste = planRichTextTreePaste(tr.doc, tr.selection, blocks)
         if (treePaste) {
           tr.replaceWith(0, tr.doc.content.size, treePaste.doc.content)
@@ -493,6 +547,18 @@ export function DocumentRichTextEditor(props: Props) {
       },
       handleKeyDown(_editor, event) {
         if (isImeKeyboardEvent(event) || editor.composing) return false
+        if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey
+          && !editor.state.selection.empty && (editor.state.selection instanceof TextSelection || editor.state.selection instanceof AllSelection)) {
+          // After a popup returns focus, ProseMirror can mistake a native range
+          // collapse at the document start for a browser focus reset and restore
+          // the old range. Commit this explicit navigation before that heuristic.
+          const selection = editor.state.selection
+          const rtl = editor.dom.ownerDocument.defaultView!.getComputedStyle(editor.dom).direction === 'rtl'
+          const backwards = (event.key === 'ArrowLeft') !== rtl
+          const next = Selection.near(editor.state.doc.resolve(backwards ? selection.from : selection.to), backwards ? 1 : -1)
+          editor.dispatch(editor.state.tr.setSelection(next).scrollIntoView())
+          return true
+        }
         if (event.key === 'Escape' && paletteRef.current) { setPalette(null); return true }
         if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') {
           const id = richTextSelectionBlockIds(editor.state)[0]
@@ -507,7 +573,12 @@ export function DocumentRichTextEditor(props: Props) {
             const delta = event.key === 'ArrowDown' ? 1 : -1
             setSlashIndex((slash.index + delta + slash.commands.length) % slash.commands.length); return true
           }
-          if (event.key === 'Enter') { convert(slash.commands[slash.index].type, true); return true }
+          if (event.key === 'Enter') {
+            const type = slash.commands[slash.index].type
+            if (type === 'columns') void wrapSelectionInColumns(true)
+            else convert(type, true)
+            return true
+          }
           if (event.key === 'Escape') { setSlashDismissed(editor.state.selection.$from.parent.textContent); return true }
         }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -539,8 +610,16 @@ export function DocumentRichTextEditor(props: Props) {
           event.clipboardData.setData('text/plain', markdown); event.clipboardData.setData('text/html', clipboardHtml(markdown))
           event.clipboardData.setData('application/x-knowbook-markdown', markdown)
           latest.current.checkpoint(); boundary.current = true
-          editor.dispatch(editor.state.tr.deleteSelection().scrollIntoView())
+          editor.dispatch((deleteCrossColumnSelection(editor.state) ?? editor.state.tr.deleteSelection()).scrollIntoView())
           event.preventDefault(); return true
+        },
+        compositionstart() {
+          const tr = deleteCrossColumnSelection(editor.state)
+          if (tr) {
+            latest.current.checkpoint(); boundary.current = true
+            editor.dispatch(tr)
+          }
+          return false
         },
         keydown(_editor, event) {
           if (!isImeKeyboardEvent(event) && !editor.composing) return false
@@ -561,9 +640,10 @@ export function DocumentRichTextEditor(props: Props) {
         const fragment = normalizeDraftBlocks(parsePastedMarkdown(markdown).map(block => ({ ...block, id: createDraftBlockId() })))
         if (!fragment.length) return false
         latest.current.checkpoint(); boundary.current = true
-        const treePaste = planRichTextTreePaste(editor.state.doc, editor.state.selection, fragment)
+        const base = deleteCrossColumnSelection(editor.state) ?? editor.state.tr
+        const treePaste = planRichTextTreePaste(base.doc, base.selection, fragment)
         if (treePaste) {
-          const tr = editor.state.tr.replaceWith(0, editor.state.doc.content.size, treePaste.doc.content)
+          const tr = base.replaceWith(0, base.doc.content.size, treePaste.doc.content)
           editor.dispatch(tr.setSelection(Selection.fromJSON(tr.doc, treePaste.selection.toJSON())).scrollIntoView())
           return true
         }
@@ -571,7 +651,7 @@ export function DocumentRichTextEditor(props: Props) {
         const oneInline = document.childCount === 1 && document.firstChild?.type.name === 'text_block' && fragment[0].type === 'paragraph'
         const onlyParagraphs = fragment.every(block => block.type === 'paragraph') && Array.from({ length: document.childCount }, (_, index) => document.child(index)).every(node => node.type.name === 'text_block')
         const slice = oneInline ? new Slice(document.firstChild!.content, 0, 0) : new Slice(document.content, onlyParagraphs ? 1 : 0, onlyParagraphs ? 1 : 0)
-        editor.dispatch(editor.state.tr.replaceSelection(slice).scrollIntoView())
+        editor.dispatch(base.replaceSelection(slice).scrollIntoView())
         return true
       },
       handleDrop(_editor, event) {
@@ -582,6 +662,11 @@ export function DocumentRichTextEditor(props: Props) {
       },
       handleTextInput(_editor, from, to, text) {
         if (editor.composing) return false
+        const erased = deleteCrossColumnSelection(editor.state)
+        if (erased) {
+          latest.current.checkpoint(); boundary.current = true
+          editor.dispatch(erased.insertText(text).scrollIntoView()); return true
+        }
         const { $from } = editor.state.selection
         if ($from.parent.type.name !== 'text_block' || !$from.parent.attrs.block || from !== to) return false
         if (isContainerBlockType($from.parent.attrs.block.type)) return false
@@ -596,6 +681,49 @@ export function DocumentRichTextEditor(props: Props) {
         return true
       },
       nodeViews: {
+        columns_block(node, _view, getPos) {
+          let current = node
+          const dom = document.createElement('section'), grid = document.createElement('div'), host = document.createElement('div')
+          const id = node.attrs.block.id as string
+          dom.className = 'rich-text-columns document-columns block-editor-row'; dom.dataset.blockType = 'columns'; dom.dataset.columnsGroup = id
+          host.className = 'rich-text-columns-controls'; host.contentEditable = 'false'
+          grid.className = 'columns-grid document-columns-grid'
+          dom.append(host, grid)
+          const refresh = () => {
+            dom.dataset.blockId = id; dom.dataset.blockDepth = String(current.attrs.block.depth)
+            const weights: number[] = []
+            current.forEach(column => weights.push(column.attrs.block?.markdownFormat?.columnWeight ?? 1))
+            grid.style.setProperty('--column-tracks', weights.map(weight => `minmax(0, ${weight}fr)`).join(' '))
+          }
+          refresh()
+          setColumnHosts(previous => [...previous.filter(item => item.id !== id), { id, dom: host, grid, position: getPos }])
+          return { dom, contentDOM: grid,
+            stopEvent: event => event.target instanceof HTMLElement && host.contains(event.target) && blockActionStopsEvent(event),
+            ignoreMutation: record => record.type !== 'selection' && (record.target === dom || record.target === grid && record.type === 'attributes' || host.contains(record.target)),
+            update(next) {
+              if (next.type !== current.type || next.attrs.block?.id !== id) return false
+              current = next; refresh(); return true
+            }, destroy() { if (viewRef.current) setColumnHosts(previous => previous.filter(item => item.dom !== host)) }
+          }
+        },
+        column_block(node) {
+          let current = node
+          const dom = document.createElement('div')
+          dom.className = 'rich-text-column document-column block-editor-row'
+          const refresh = () => {
+            dom.dataset.blockId = current.attrs.block.id; dom.dataset.blockType = 'column'
+            dom.dataset.blockDepth = String(current.attrs.block.depth)
+            dom.dataset.columnWeight = String(current.attrs.block.markdownFormat?.columnWeight ?? 10000)
+          }
+          refresh()
+          return { dom, contentDOM: dom,
+            ignoreMutation: record => record.type === 'attributes' && record.target === dom,
+            update(next) {
+              if (next.type !== current.type || next.attrs.block?.id !== current.attrs.block.id) return false
+              current = next; refresh(); return true
+            }
+          }
+        },
         source_block(node, _view, getPos) {
           const dom = document.createElement('div')
           dom.className = 'rich-text-source-block block-editor-row'
@@ -659,7 +787,7 @@ export function DocumentRichTextEditor(props: Props) {
               onBegin={() => latest.current.checkpoint()} onCommit={(occurrence, next) => {
                 const editor = viewRef.current
                 if (!editor || editor.composing) return
-                editor.state.doc.forEach((candidate, position) => {
+                richBlockEntries(editor.state.doc).forEach(({ node: candidate, pos: position }) => {
                   if (candidate.attrs.block?.id !== current.attrs.block.id) return
                   const content = replaceMarkdownImageOccurrence(candidate.attrs.block.content, occurrence, next, latest.current.references)
                   if (content === null) { setMessage(latest.current.isZh ? '正文已变化，请重新选择图片。' : 'The text changed. Select the image again.'); return }
@@ -696,15 +824,16 @@ export function DocumentRichTextEditor(props: Props) {
       capture() {
         const anchor = endpoint(editor.state.doc, editor.state.selection.anchor)
         const head = endpoint(editor.state.doc, editor.state.selection.head)
+        const kind = richSelectionKind(editor.state.selection)
         return { blockId: anchor.blockId, index: anchor.index, start: anchor.offset, end: head.offset,
-          direction: editor.state.selection.anchor > editor.state.selection.head ? 'backward' : 'forward', richText: { anchor, head } }
+          direction: editor.state.selection.anchor > editor.state.selection.head ? 'backward' : 'forward', richText: { anchor, head, ...(kind === 'text' ? {} : { kind }) } }
       },
       restore(bookmark) {
         if (!bookmark.richText) return
         const visible = new Set(latest.current.visibleIndices)
         const missing = [bookmark.richText.anchor, bookmark.richText.head].filter(point => {
           let index = point.index
-          editor.state.doc.forEach((node, _pos, position) => { if (point.blockId && node.attrs.block?.id === point.blockId) index = position })
+          richBlockEntries(editor.state.doc).forEach(({ node, index: position }) => { if (point.blockId && node.attrs.block?.id === point.blockId) index = position })
           return !visible.has(index)
         })
         if (missing.length) {
@@ -712,8 +841,7 @@ export function DocumentRichTextEditor(props: Props) {
           for (const point of missing) if (point.blockId) latest.current.onRevealBlock(point.blockId)
           return
         }
-        const anchor = positionOf(editor.state.doc, bookmark.richText.anchor), head = positionOf(editor.state.doc, bookmark.richText.head)
-        editor.dispatch(editor.state.tr.setSelection(TextSelection.between(editor.state.doc.resolve(anchor), editor.state.doc.resolve(head))))
+        editor.dispatch(editor.state.tr.setSelection(richSelectionFromBookmark(editor.state.doc, bookmark.richText)))
         editor.focus()
       }
     })
@@ -730,9 +858,10 @@ export function DocumentRichTextEditor(props: Props) {
     if (!areDocumentDraftBlocksEqual(emitted.current, props.blocks)) {
       const bookmark = endpoint(editor.state.doc, editor.state.selection.anchor)
       const head = endpoint(editor.state.doc, editor.state.selection.head)
+      const kind = richSelectionKind(editor.state.selection)
       const doc = draftBlocksToRichDoc(props.blocks)
       const tr = editor.state.tr.replaceWith(0, editor.state.doc.content.size, doc.content).setMeta('external', true)
-      tr.setSelection(TextSelection.between(tr.doc.resolve(positionOf(tr.doc, bookmark)), tr.doc.resolve(positionOf(tr.doc, head))))
+      tr.setSelection(richSelectionFromBookmark(tr.doc, { anchor: bookmark, head, kind }))
       emitted.current = props.blocks
       editor.updateState(editor.state.apply(tr))
       setRevision(value => value + 1)
@@ -741,32 +870,32 @@ export function DocumentRichTextEditor(props: Props) {
       editor.updateState(editor.state)
     }
     const visible = new Set(props.visibleIndices), doc = editor.state.doc
-    const anchor = endpoint(doc, editor.state.selection.anchor), head = endpoint(doc, editor.state.selection.head)
+    const anchor = endpoint(doc, editor.state.selection.anchor), head = endpoint(doc, editor.state.selection.head), kind = richSelectionKind(editor.state.selection)
     const parked = parkedFoldSelection.current
-    if (parked && (!doc.eq(parked.doc) || JSON.stringify({ anchor, head }) !== JSON.stringify(parked.fallback))) parkedFoldSelection.current = null
+    if (parked && (!doc.eq(parked.doc) || JSON.stringify({ anchor, head, kind }) !== JSON.stringify(parked.fallback))) parkedFoldSelection.current = null
     if (!visible.has(anchor.index) || !visible.has(head.index)) {
       const focusOwned = editor.hasFocus()
       const index = [...visible].filter(index => index <= Math.min(anchor.index, head.index)).at(-1) ?? props.visibleIndices[0]
       if (index !== undefined) {
-        const node = doc.child(index), fallback = { index, blockId: node.attrs.block?.id, offset: node.content.size }
+        const node = richBlockEntries(doc)[index].node, fallback = { index, blockId: node.attrs.block?.id, offset: node.content.size }
         const next = Selection.near(doc.resolve(positionOf(doc, fallback)), -1)
         editor.updateState(editor.state.apply(editor.state.tr.setSelection(next)))
-        parkedFoldSelection.current = { doc, anchor, head, fallback: { anchor: endpoint(doc, next.anchor), head: endpoint(doc, next.head) } }
+        parkedFoldSelection.current = { doc, anchor, head, kind, fallback: { anchor: endpoint(doc, next.anchor), head: endpoint(doc, next.head), kind: richSelectionKind(next) } }
         if (focusOwned) editor.focus()
         setRevision(value => value + 1)
       }
     } else if (parkedFoldSelection.current && visible.has(parkedFoldSelection.current.anchor.index) && visible.has(parkedFoldSelection.current.head.index)) {
       const restore = parkedFoldSelection.current, focusOwned = editor.hasFocus()
       parkedFoldSelection.current = null
-      editor.updateState(editor.state.apply(editor.state.tr.setSelection(TextSelection.between(doc.resolve(positionOf(doc, restore.anchor)), doc.resolve(positionOf(doc, restore.head))))))
+      editor.updateState(editor.state.apply(editor.state.tr.setSelection(richSelectionFromBookmark(doc, restore))))
       if (focusOwned) editor.focus()
       setRevision(value => value + 1)
     }
     if (boundary.current) { boundary.current = false; props.checkpoint() }
     if (pendingSelection.current?.richText) {
-      const { anchor, head } = pendingSelection.current.richText
+      const bookmark = pendingSelection.current.richText
       pendingSelection.current = null
-      editor.dispatch(editor.state.tr.setSelection(TextSelection.between(editor.state.doc.resolve(positionOf(editor.state.doc, anchor)), editor.state.doc.resolve(positionOf(editor.state.doc, head)))))
+      editor.dispatch(editor.state.tr.setSelection(richSelectionFromBookmark(editor.state.doc, bookmark)))
       editor.focus()
     }
     focusAddedChild()
@@ -823,14 +952,21 @@ export function DocumentRichTextEditor(props: Props) {
         if (!editor || editor.composing) return
         linkSelection.current = { from: editor.state.selection.from, to: editor.state.selection.to, doc: editor.state.doc }; setLinkUrl('https://')
       }}>{props.isZh ? '链接' : 'Link'}</button>
+      <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => { void wrapSelectionInColumns() }}>
+        {props.isZh ? '分栏' : 'Columns'}
+      </button>
     </div>
+    {currentBlock?.id && props.blocks.some(block => block.type === 'column') && <Suspense fallback={null}>
+      <ColumnContentControls blocks={props.blocks} blockId={currentBlock.id} isZh={props.isZh}
+        onApplyBlocks={next => applyColumnsBlocks(next, props.blocks)} />
+    </Suspense>}
     {currentBlock?.id && isContainerBlockType(currentType) && <Suspense fallback={null}>
       <NativeContainerControls key={currentBlock.id} type={currentType as 'callout' | 'toggle'} format={currentBlock.markdownFormat}
         isZh={props.isZh} typeOptions={Object.fromEntries(types.map((type, index) => [type, (props.isZh ? labelsZh : labelsEn)[index]]))}
         onChange={format => {
           const editor = viewRef.current
           if (!editor || editor.composing) return
-          editor.state.doc.forEach((node, position, index) => {
+          richBlockEntries(editor.state.doc).forEach(({ node, pos: position, index }) => {
             if (node.attrs.block?.id !== currentBlock.id || !latest.current.visibleIndices.includes(index)) return
             latest.current.checkpoint(); boundary.current = true
             editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...node.attrs,
@@ -852,6 +988,19 @@ export function DocumentRichTextEditor(props: Props) {
       <button type="submit">{props.isZh ? '应用' : 'Apply'}</button><button type="button" onClick={() => { setLinkUrl(null); viewRef.current?.focus() }}>{props.isZh ? '取消' : 'Cancel'}</button>
     </form>}
     <div ref={mount} />
+    {columnHosts.map(host => {
+      if (!props.blocks.some(block => block.id === host.id && block.type === 'columns')) return null
+      return createPortal(<Suspense fallback={null}><ColumnsControls blocks={props.blocks} groupId={host.id} isZh={props.isZh}
+        sessionKey={`${props.documentId}:${host.id}`} onApplyBlocks={next => {
+          const position = host.position(), editor = viewRef.current
+          if (!editor || !host.dom.isConnected || position === undefined || editor.state.doc.nodeAt(position)?.attrs.block?.id !== host.id) return
+          applyColumnsBlocks(next, props.blocks)
+        }} onPreviewWeights={weights => {
+          if (!host.grid.isConnected) return
+          const columns = weights ?? props.blocks.filter(block => block.parentBlockId === host.id && block.type === 'column').map(block => block.markdownFormat!.columnWeight!)
+          host.grid.style.setProperty('--column-tracks', columns.map(weight => `minmax(0, ${weight}fr)`).join(' '))
+        }} /></Suspense>, host.dom, `${props.documentId}:${host.id}`)
+    })}
     {tableHosts.map(host => {
       const index = props.blocks.findIndex(block => block.id === host.id)
       if (index < 0 || props.blocks[index].type !== 'table') return null
@@ -873,7 +1022,10 @@ export function DocumentRichTextEditor(props: Props) {
     })}
     {slashCommands.length > 0 && <div className="rich-text-slash-menu" role="listbox" aria-label={props.isZh ? '插入块' : 'Insert block'}>
       {slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashRef.current.index} key={command.type}
-        onMouseDown={event => event.preventDefault()} onClick={() => convert(command.type, true)}>{command.label}</button>)}
+        onMouseDown={event => event.preventDefault()} onClick={() => {
+          if (command.type === 'columns') void wrapSelectionInColumns(true)
+          else convert(command.type, true)
+        }}>{command.label}</button>)}
     </div>}
     {message && <p role="status">{message}</p>}
   </div>

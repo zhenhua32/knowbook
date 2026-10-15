@@ -19,6 +19,8 @@ export interface MarkdownBlockFormat {
   calloutTone?: InlineTextColor
   /** Authored initial state; personal folding preferences are stored separately. */
   toggleDefaultOpen?: boolean
+  /** Layout share in basis points; direct columns in a group total 10,000. */
+  columnWeight?: number
 }
 
 export function normalizeMarkdownFormat(type: string, value: unknown): MarkdownBlockFormat | undefined {
@@ -43,6 +45,8 @@ export function normalizeMarkdownFormat(type: string, value: unknown): MarkdownB
     if (tone) result.calloutTone = tone
   }
   if (type === 'toggle' && typeof input.toggleDefaultOpen === 'boolean') result.toggleDefaultOpen = input.toggleDefaultOpen
+  if (type === 'column' && Number.isSafeInteger(input.columnWeight)
+    && Number(input.columnWeight) >= 1 && Number(input.columnWeight) <= 10_000) result.columnWeight = Number(input.columnWeight)
   return Object.keys(result).length ? result : undefined
 }
 

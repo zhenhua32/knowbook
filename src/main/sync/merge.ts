@@ -1,6 +1,7 @@
 import type { DocumentBlockDraft } from '../../shared/contracts'
 import { isOrderedListBlockType, isTaskBlockType } from '../../shared/blockTypes'
 import { normalizeMarkdownFormat } from '../../shared/markdownFormat'
+import { COLUMN_WEIGHT_TOTAL, isColumnWeight } from '../../shared/columns'
 import { collectMarkdownSourceLinks } from '../../shared/markdownLinks'
 import { markdownTableWidthValueRanges } from '../../shared/markdownTableLayoutRanges'
 import { parseMarkdownTableNode } from '../../shared/markdownTable'
@@ -192,6 +193,16 @@ function skeleton(blocks: DocumentBlockDraft[]): unknown {
     emptyCode: markdownFormat?.emptyCode === true }))
 }
 
+type ColumnLayout = Array<{ id: string; weight: number }>
+function columnLayouts(blocks: DocumentBlockDraft[]): Map<string, ColumnLayout> {
+  const layouts = new Map<string, ColumnLayout>()
+  for (const block of blocks) {
+    if (block.type === 'columns') layouts.set(block.id!, [])
+    else if (block.type === 'column') layouts.get(block.parentBlockId!)!.push({ id: block.id!, weight: block.markdownFormat!.columnWeight! })
+  }
+  return layouts
+}
+
 const preview = (value: unknown): string => typeof value === 'string' ? value : value === undefined ? '（未设置）' : JSON.stringify(value, null, 2)
 const validTitle = (title: string): boolean => Boolean(title.trim()) && title.length <= 500 && !/[/\\\x00-\x1f]/.test(title) && !['.', '..'].includes(title)
 
@@ -249,11 +260,29 @@ export function mergeSyncDocument(base: SyncDocument, local: SyncDocument, remot
     || !same(skeleton(before), skeleton(left)) || !same(skeleton(before), skeleton(right))) blocks = structuralChoice()
   else {
     const conflictCount = conflicts.length, unresolvedCount = unresolved.length
+    const originalLayouts = columnLayouts(before), localLayouts = columnLayouts(left), remoteLayouts = columnLayouts(right)
+    const mergedWeights = new Map<string, number>()
+    for (const [groupId, original] of originalLayouts) {
+      const a = localLayouts.get(groupId)!, b = remoteLayouts.get(groupId)!
+      const automatic = same(a, b) ? a : same(original, a) ? b : same(original, b) ? a : undefined
+      const valid = (layout: ColumnLayout) => Array.isArray(layout) && layout.length === original.length
+        && layout.every((column, index) => column.id === original[index].id && isColumnWeight(column.weight))
+        && layout.reduce((sum, column) => sum + column.weight, 0) === COLUMN_WEIGHT_TOTAL
+      // A resize changes coupled shares. Never merge each column independently
+      // into a third, unintended ratio; ordinary body edits still merge by ID.
+      const selected = automatic ?? resolve({ id: `block:${groupId}:column-layout`, field: 'block-property', blockId: groupId,
+        property: 'columnWeights', canEditText: false }, original, a, b, valid)
+      for (const column of selected) mergedWeights.set(column.id, column.weight)
+    }
     blocks = before.map((block, index) => {
       const localBlock = left[index], remoteBlock = right[index]
       const merged: DocumentBlockDraft = { ...block, content: text({ id: `block:${block.id}:content`, field: 'block-content', blockId: block.id, canEditText: true },
         block.content, localBlock.content, remoteBlock.content) }
       for (const property of blockProperties) {
+        if (block.type === 'column' && property === 'markdownFormat') {
+          merged.markdownFormat = { columnWeight: mergedWeights.get(block.id!)! }
+          continue
+        }
         const original = block[property], a = localBlock[property], b = remoteBlock[property]
         const value = same(a, b) ? a : same(original, a) ? b : same(original, b) ? a
           : resolve({ id: `block:${block.id}:${property}`, field: 'block-property', blockId: block.id, property, canEditText: false }, original, a, b)

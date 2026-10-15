@@ -5,6 +5,7 @@ import { getBlockSubtreeEndIndex } from './draftTreeMove'
 import { materializeDraftFragment } from './draftTreeFragment'
 import { isDraftTreeContiguous } from './draftTreeDepthChange'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from './draftTreeNormalization'
+import { validColumnStructure } from '@shared/columnStructure'
 
 export function blockActionRoots(blocks: DocumentBlockDraft[], ids: readonly string[]): string[] | null {
   if (!ids.length || !isDraftTreeContiguous(blocks) || !validateBlockTreeStructure(blocks).valid) return null
@@ -47,5 +48,5 @@ export function planBlockAction(blocks: DocumentBlockDraft[], ids: readonly stri
       }
     }
   }
-  return validateBlockTreeStructure(next).valid ? next : null
+  return validateBlockTreeStructure(next).valid && validColumnStructure(next, { checkParentIds: true }) ? next : null
 }

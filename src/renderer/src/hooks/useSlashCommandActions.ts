@@ -1,5 +1,5 @@
 import { isTaskBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
@@ -20,7 +20,7 @@ type SlashCommandLike = {
     }
   | {
       kind: 'action'
-      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete'
+      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete' | 'columns'
     }
 )
 
@@ -75,6 +75,8 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
   setPendingFocusBlockIndex,
   updateDraftBlock
 }: UseSlashCommandActionsParams<TSlashCommand>) {
+  const liveBlocks = useRef(draftBlocks)
+  liveBlocks.current = draftBlocks
   const removeDraftBlock = useCallback((index: number) => {
     pushToHistory(draftBlocks)
     const subtreeEndIndex = getBlockSubtreeEndIndex(draftBlocks, index)
@@ -130,6 +132,14 @@ export function useSlashCommandActions<TSlashCommand extends SlashCommandLike>({
       activeCursorPosition
     )
     const nextContent = slashRemoval.content
+
+    if (command.kind === 'action' && command.action === 'columns') {
+      const before = draftBlocks
+      void import('../utils/columnOperations').then(({ completeColumnSlash }) => completeColumnSlash(before, activeBlockIndex, nextContent,
+        { isCurrent: () => liveBlocks.current === before, pushToHistory, clearBlockSelection, setDraftBlocks,
+          setActiveBlockIndex, setPendingFocusBlockIndex, endBlockDrag })).catch(error => console.warn('Could not load column layout tools.', error))
+      return
+    }
 
     if (command.kind === 'type') {
       pushToHistory(draftBlocks)

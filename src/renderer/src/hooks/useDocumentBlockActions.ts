@@ -134,6 +134,20 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     currentMove.current = guarded; setMove(guarded); setMoveError(null); closeMenu()
   }
   const convertSelectedBlocks = (type: string) => { const opening = openingFor(selectedBlockActionIds()); if (opening) apply(opening, 'convert', type, true) }
+  const wrapInColumns = async (opening: Opening) => {
+    if (!live.current.isBlockActionTargetCurrent(opening.target) || live.current.isBlockMoveBusy) return
+    try {
+      const { wrapBlocksInColumns } = await import('../utils/columnOperations')
+      const current = live.current
+      if (!current.isBlockActionTargetCurrent(opening.target) || current.isBlockMoveBusy) return
+      const next = wrapBlocksInColumns(opening.target.blocks, opening.target.blockIds)
+      if (!next) { current.notifyBlockAction(isZh ? '请选择可放入分栏的连续同级内容，最多嵌套六层。' : 'Select consecutive sibling content that fits within six levels.'); return }
+      current.pushToHistory(opening.target.blocks, opening.target.bookmark)
+      current.clearBlockSelection(); current.setDraftBlocks(next); current.pushToHistory(next, opening.target.bookmark)
+      restore(opening)
+    } catch (error) { live.current.notifyBlockAction(getErrorMessage(error, isZh ? '分栏工具加载失败，请重试。' : 'Could not load column tools. Please retry.'), 'error') }
+  }
+  const wrapSelectedInColumns = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) void wrapInColumns(opening) }
   const copySelectedBlockLinks = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) void copy(opening) }
   const openSelectedBlocksMove = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) openMove(opening) }
   useEffect(() => {
@@ -164,6 +178,7 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
       ? menu.target.blocks.find(block => block.id === menu.target.blockIds[0])?.type ?? '' : '',
     selectedBlockCount: menu.target.blockIds.length, onTypeChange: type => apply(menu, 'convert', type, true),
     onDuplicate: () => apply(menu, 'duplicate'), onDelete: () => apply(menu, 'delete'), onClose: closeMenu,
+    onWrapInColumns: () => { void wrapInColumns(menu) },
     onCopyBlockLinks: () => { void copy(menu) }, onMoveToDocument: () => openMove(menu),
     disabled: copying || documents.isBlockMoveBusy, moveDisabledReason: moveReason(menu),
     currentHighlight: menu.target.blockIds.length === 1 ? menu.target.blocks.find(block => block.id === menu.target.blockIds[0])?.highlight : undefined,
@@ -203,5 +218,5 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
   } : null
   const selectedOpening = openingFor(selectedBlockActionIds())
   const selectedMoveDisabledReason = selectedOpening ? moveReason(selectedOpening) : null
-  return { selectedMoveDisabledReason, convertSelectedBlocks, openBlockActions, copySelectedBlockLinks, openSelectedBlocksMove, selectedBlockActionIds, contextMenuProps, moveDialogProps }
+  return { selectedMoveDisabledReason, convertSelectedBlocks, wrapSelectedInColumns, openBlockActions, copySelectedBlockLinks, openSelectedBlocksMove, selectedBlockActionIds, contextMenuProps, moveDialogProps }
 }

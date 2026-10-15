@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto'
 import type { UpdateDocumentInput } from '../../shared/contracts'
-import { canBlockHaveParent, canBlockNestUnder, isContainerBlockType } from '../../shared/blockTypes'
+import { canBlockHaveParent, canBlockNestUnder, isContainerBlockType, isNativeStructureBlockType, isColumnsBlockType, isColumnBlockType } from '../../shared/blockTypes'
+import { validColumnStructure } from '../../shared/columnStructure'
+import { hasMarkdownColumnsTokens } from '../../shared/markdownColumns'
+import { assertNativeContainerParse, nativeMarkdownContainer } from '../../shared/markdownContainers'
+import type { Token } from 'markdown-it'
 import { normalizeMarkdownFormat } from '../../shared/markdownFormat'
 import { markdownEngine } from '../../shared/markdownEngine'
 import { serializeBlocksToMarkdown } from '../../shared/markdown'
@@ -36,7 +40,7 @@ export interface SyncDatabases {
 }
 export interface SyncDeletion { kind: 'deleted'; id: string }
 export type SyncRecord = SyncDocument | SyncDatabases | SyncDeletion
-export interface SyncManifest { version: 1 | 2; workspaceId: string; entries: Record<string, string> }
+export interface SyncManifest { version: 1 | 2 | 3; workspaceId: string; entries: Record<string, string> }
 export interface SyncBaseline { localHash: string | null; remoteHash: string }
 export interface StoredConflict {
   local: SyncRecord
@@ -67,7 +71,7 @@ export const recordHash = (record: SyncRecord): string => hashBytes(canonicalJso
 
 export function parseManifest(bytes: Uint8Array): SyncManifest {
   const value = JSON.parse(Buffer.from(bytes).toString('utf8')) as SyncManifest
-  if (!value || ![1, 2].includes(value.version) || !validId(value.workspaceId) || !value.entries || Array.isArray(value.entries)
+  if (!value || ![1, 2, 3].includes(value.version) || !validId(value.workspaceId) || !value.entries || Array.isArray(value.entries)
     || typeof value.entries !== 'object' || Object.keys(value.entries).length > 100_000
     || Object.entries(value.entries).some(([key, hash]) => !(key === 'databases' || key.startsWith('doc:') && validId(key.slice(4))) || !validHash(hash))) {
     throw new Error('远端同步清单无效或版本不受支持，未修改本地数据。')
@@ -77,10 +81,40 @@ export function parseManifest(bytes: Uint8Array): SyncManifest {
 
 /** V2 permanently gates v1 readers before they fetch mixed trees or layout tables. */
 export function requiresStructureEditingProtocol(value: SyncRecord): boolean {
-  return value.kind === 'document' && value.content.blocks.some(block => isContainerBlockType(block.type)
-    || (block.content.includes('<!-- knowbook:table-widths:v1 ') || block.content.includes('data-knowbook-container'))
-      && markdownEngine.parse(serializeBlocksToMarkdown([block]), {}).some(token => token.type === 'native_container_open'
-        || token.type === 'knowbook_table_layout' && token.meta?.boundTableLayout))
+  if (value.kind !== 'document') return false
+  if (value.content.blocks.some(block => isContainerBlockType(block.type))) return true
+  if (!value.content.blocks.some(block => block.content.includes('<!-- knowbook:table-widths:v1 ')
+    || block.content.includes('data-knowbook-container'))) return false
+  const visit = (tokens: readonly Token[]): boolean => {
+    let legacyDepth = 0
+    for (const token of tokens) {
+      if (token.type === 'html_details_open' || token.type === 'html_figure_open') { legacyDepth++; continue }
+      if (token.type === 'html_details_close' || token.type === 'html_figure_close') { legacyDepth--; continue }
+      if (legacyDepth > 0) continue
+      const type = nativeMarkdownContainer(token)?.type
+      if (type !== undefined && isContainerBlockType(type)
+        || token.type === 'knowbook_table_layout' && token.meta?.boundTableLayout
+        || token.children !== null && visit(token.children)) return true
+    }
+    return false
+  }
+  const environment: Record<string, unknown> = {}
+  const tokens = markdownEngine.parse(serializeBlocksToMarkdown(value.content.blocks), environment)
+  assertNativeContainerParse(environment)
+  return visit(tokens)
+}
+
+/** V3 protects column ownership before a v1/v2 reader can flatten its tree.
+ * Inspect the complete source so literals inside a native owner retain their
+ * context; code fences and unmarked HTML never become layout declarations. */
+export function requiresPageCompositionProtocol(value: SyncRecord): boolean {
+  if (value.kind !== 'document') return false
+  const typed = value.content.blocks.some(block => isColumnsBlockType(block.type) || isColumnBlockType(block.type))
+  if (!value.content.blocks.some(block => block.content.includes('data-knowbook-container'))) return typed
+  const environment: Record<string, unknown> = {}
+  const tokens = markdownEngine.parse(serializeBlocksToMarkdown(value.content.blocks), environment)
+  assertNativeContainerParse(environment)
+  return typed || hasMarkdownColumnsTokens(tokens)
 }
 
 /** Parent IDs must name the current ancestor, not an earlier closed subtree. */
@@ -97,12 +131,12 @@ export function validSyncBlockTree(blocks: UpdateDocumentInput['blocks']): boole
       if (!canBlockHaveParent(block.type) || !parent || parent.id !== parentId
         || !canBlockNestUnder(parent.type, block.type)) return false
     }
-    if (isContainerBlockType(block.type) && (block.checked || block.language !== undefined || block.listStart !== undefined
+    if (isNativeStructureBlockType(block.type) && (block.checked || block.language !== undefined || block.listStart !== undefined
       || canonicalJson(block.markdownFormat) !== canonicalJson(normalizeMarkdownFormat(block.type, block.markdownFormat)))) return false
     ancestors.length = block.depth + 1
     ancestors[block.depth] = block
   }
-  return true
+  return validColumnStructure(blocks, { checkParentIds: true })
 }
 
 export function validateRecord(value: SyncRecord, key: string, protocolVersion?: SyncManifest['version']): SyncRecord {
@@ -126,6 +160,9 @@ export function validateRecord(value: SyncRecord, key: string, protocolVersion?:
       ids.add(block.id)
     }
     if (!validSyncBlockTree(content.blocks)) return fail()
+    if (requiresPageCompositionProtocol(value) && protocolVersion !== undefined && protocolVersion < 3) {
+      throw new Error('远端清单版本未声明分栏支持，未修改本地数据。')
+    }
     if (protocolVersion === 1 && requiresStructureEditingProtocol(value)) {
       throw new Error('远端清单版本未声明结构编辑支持，未修改本地数据。')
     }

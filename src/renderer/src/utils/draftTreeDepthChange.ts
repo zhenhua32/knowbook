@@ -1,5 +1,6 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
+import { validColumnStructure } from '@shared/columnStructure'
 import { normalizeBlockDepth } from './draftBlockShape'
 import { shiftDraftFragmentDepth } from './draftTreeFragment'
 import { resolveDraftInsertionPlacement } from './draftTreePlacement'
@@ -22,7 +23,7 @@ export function isDraftTreeContiguous(blocks: DocumentBlockDraft[]): boolean {
     ancestors.length = block.depth + 1
     ancestors[block.depth] = block
   }
-  return true
+  return validColumnStructure(blocks, { checkParentIds: true })
 }
 
 /** Place complete sibling subtrees without clamping descendants or splitting a parent tree. */

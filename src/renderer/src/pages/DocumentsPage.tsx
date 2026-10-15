@@ -167,6 +167,10 @@ export function DocumentsPage({
     endBlockDrag: documents.endBlockDrag,
     endBlockRangeSelection: documents.endBlockRangeSelection,
     filteredSlashCommands: documents.filteredSlashCommands,
+    slashCommandsUnavailable: documents.slashCommandsLoading || documents.slashCommandsError !== null,
+    slashCommandsLoading: documents.slashCommandsLoading,
+    slashCommandsError: documents.slashCommandsError,
+    retrySlashCommands: documents.retrySlashCommands,
     getDraggedBlockDepthPreview: documents.getDraggedBlockDepthPreview,
     getBlockSelectionFocusIndex: documents.getBlockSelectionFocusIndex,
     getMultiBlockOperationRange: documents.getMultiBlockOperationRange,
@@ -417,7 +421,8 @@ export function DocumentsPage({
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
         selectionAiContent={selectionAiContent}
-        selectionToolbarProps={selectionToolbarProps}
+        selectionToolbarProps={selectionToolbarProps ? { ...selectionToolbarProps, onWrapInColumns: blockActions.wrapSelectedInColumns,
+          wrapInColumnsLabel: isZh ? '放入两列分栏' : 'Wrap in two columns' } : null}
         summaryCardProps={summaryCardProps}
         visibleEditorRows={visibleEditorRows}
       />}

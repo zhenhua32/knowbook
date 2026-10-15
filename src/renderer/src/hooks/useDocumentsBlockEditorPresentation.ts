@@ -72,6 +72,9 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
   selectedVisibleSiblingSlice: unknown
   setSelectedBlockConversionType: (type: DocumentBlock['type']) => void
   slashPanelPos: { x: number; y: number } | null
+  slashCommandsLoading?: boolean
+  slashCommandsError?: string | null
+  retrySlashCommands?: () => void
 }
 
 export function useDocumentsBlockEditorPresentation({
@@ -91,6 +94,10 @@ export function useDocumentsBlockEditorPresentation({
   activeLinkContext,
   activeSlashCommand,
   activeSlashContext,
+  slashCommandsUnavailable,
+  slashCommandsLoading = false,
+  slashCommandsError = null,
+  retrySlashCommands,
   adjustBlockDepth,
   adjustSelectedBlocksDepth,
   applySlashCommand,
@@ -399,6 +406,10 @@ export function useDocumentsBlockEditorPresentation({
           description: command.description
         })),
         noMatchingLabel: ui.noMatchingCommands,
+        loadingLabel: slashCommandsLoading ? (isZh ? '正在加载命令，请稍后再按 Enter。' : 'Loading commands. Press Enter again when ready.') : undefined,
+        errorLabel: slashCommandsError,
+        retryLabel: isZh ? '重试' : 'Retry',
+        onRetry: retrySlashCommands,
         onHoverCommand: setSelectedSlashCommandIndex,
         onSelectCommand: (command) => {
           const fullCommand = filteredSlashCommands.find((candidate) => candidate.id === command.id)
@@ -472,6 +483,8 @@ export function useDocumentsBlockEditorPresentation({
         activeBlockIndex,
         activeSlashCommand,
         activeSlashContext,
+        slashCommandsUnavailable,
+        retrySlashCommands: slashCommandsError ? retrySlashCommands : undefined,
         blockTextareaRefs,
         BLOCK_INDENT_SIZE,
         collapsedBlockIds,

@@ -1,4 +1,4 @@
-import { canBlockHaveParent, canBlockOwnChildren, isContainerBlockType } from '@shared/blockTypes'
+import { canBlockHaveParent, canBlockOwnChildren, canBlockNestUnder, isContainerBlockType } from '@shared/blockTypes'
 import { getHeadingLevel } from '@shared/markdownEngine'
 import { useCallback, useLayoutEffect, useRef } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
@@ -117,7 +117,7 @@ export function useSingleBlockTreeActions({
 
     const exitsToParagraph = ['heading-1', 'heading-2', 'heading-3', 'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list']
     if (currentBlock.content.trim() === '' && exitsToParagraph.includes(currentBlock.type)) {
-      if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !isContainerBlockType(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '')) {
+      if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !canBlockNestUnder(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '', 'paragraph')) {
         adjustBlockDepth(index, -1, 0)
         return
       }
@@ -150,7 +150,7 @@ export function useSingleBlockTreeActions({
       return
     }
 
-    if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !isContainerBlockType(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '')) {
+    if (isNestableBlock(currentBlock.type) && currentBlock.depth > 0 && !canBlockNestUnder(draftBlocks.find(block => block.id === currentBlock.parentBlockId)?.type ?? '', 'paragraph')) {
       adjustBlockDepth(index, -1, 0)
       return
     }

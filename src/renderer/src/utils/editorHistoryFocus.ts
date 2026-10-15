@@ -10,6 +10,7 @@ export type EditorHistoryBookmark = {
   direction: 'forward' | 'backward' | 'none'
   cell?: { row: number; column: number; editing: boolean }
   richText?: {
+    kind?: 'text' | 'node' | 'all'
     anchor: { blockId?: string; index: number; offset: number }
     head: { blockId?: string; index: number; offset: number }
   }

@@ -107,6 +107,22 @@ export const richTextSchema = new Schema({
         { tag: 'div.rich-text-block', getAttrs: () => importedBlock('paragraph') }
       ]
     },
+    columns_block: {
+      attrs: blockAttrs,
+      content: 'column_block{1,6}',
+      group: 'block',
+      defining: true,
+      isolating: true,
+      toDOM: node => ['section', { ...blockAttributes(node), class: 'rich-text-columns block-editor-row', 'data-columns-group': 'true' }, 0]
+    },
+    column_block: {
+      attrs: blockAttrs,
+      content: 'block*',
+      defining: true,
+      isolating: true,
+      toDOM: node => ['div', { ...blockAttributes(node), class: 'rich-text-column block-editor-row',
+        'data-column-weight': String(node.attrs.block?.markdownFormat?.columnWeight ?? 10000) }, 0]
+    },
     source_block: {
       attrs: blockAttrs,
       group: 'block',

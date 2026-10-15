@@ -11,6 +11,10 @@ type FloatingSlashCommandPanelProps = {
   }>
   activeCommandId: string | null | undefined
   noMatchingLabel: string
+  loadingLabel?: string
+  errorLabel?: string | null
+  retryLabel?: string
+  onRetry?: () => void
   onSelectCommand: (command: { id: string; label: string; description: string }) => void
   onHoverCommand: (index: number) => void
 }
@@ -23,6 +27,10 @@ export function FloatingSlashCommandPanel(props: FloatingSlashCommandPanelProps)
     commands,
     activeCommandId,
     noMatchingLabel,
+    loadingLabel,
+    errorLabel,
+    retryLabel,
+    onRetry,
     onSelectCommand,
     onHoverCommand
   } = props
@@ -31,6 +39,7 @@ export function FloatingSlashCommandPanel(props: FloatingSlashCommandPanelProps)
   return (
     <div
       className="floating-slash-command-panel"
+      aria-busy={Boolean(loadingLabel)}
       ref={menuRef}
       style={{ ...menuStyle, zIndex: 1001 }}
     >
@@ -40,7 +49,11 @@ export function FloatingSlashCommandPanel(props: FloatingSlashCommandPanelProps)
       </div>
 
       <div className="slash-command-list">
-        {commands.length > 0 ? (
+        {loadingLabel ? <p className="slash-command-empty" role="status">{loadingLabel}</p>
+          : errorLabel ? <div role="alert"><p className="slash-command-empty">{errorLabel}</p>
+            {onRetry && <button onMouseDown={event => event.preventDefault()} onClick={onRetry} type="button">{retryLabel}</button>}
+          </div>
+          : commands.length > 0 ? (
           commands.map((command, commandIndex) => (
             <button
               className={`slash-command-item${activeCommandId === command.id ? ' slash-command-item-active' : ''}`}

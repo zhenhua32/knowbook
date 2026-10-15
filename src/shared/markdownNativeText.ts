@@ -4,8 +4,8 @@ export const NATIVE_LITERAL_MARKER = '<!-- knowbook:literal-close:v1 -->'
 export const NATIVE_LITERAL_ATTRIBUTE = 'data-knowbook-escape'
 export const NATIVE_LITERAL_VERSION = 'literal-v1'
 export type NativeTextProjection = { content: string; source: string; starts?: number[]; ends?: number[] }
-const closer = /^<\/(?:aside|details|summary|div)[\t ]*>/i
-const entityCloser = /^&lt;(\/(?:aside|details|summary|div)[\t ]*)&gt;/i
+const closer = /^<\/(?:aside|details|summary|div|section)[\t ]*>/i
+const entityCloser = /^&lt;(\/(?:aside|details|summary|div|section)[\t ]*)&gt;/i
 
 /** Bounds code and complete legacy shells only; it grants no HTML permissions. */
 function protectedTextRanges(content: string, inlineCode: boolean, legacy: boolean): Array<[number, number]> {

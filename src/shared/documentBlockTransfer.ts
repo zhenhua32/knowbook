@@ -1,4 +1,5 @@
 import { canBlockOwnChildren, canBlockNestUnder } from './blockTypes'
+import { validColumnStructure } from './columnStructure'
 import type { DocumentBlockDraft } from './contracts'
 
 export interface DocumentBlockTransferInput {
@@ -33,6 +34,7 @@ function parentId(block: DocumentBlockDraft): string | null {
 
 /** Validate the active ancestor stack rather than accepting a parent in a closed subtree. */
 function indexTree(blocks: readonly DocumentBlockDraft[]): TreeIndex | null {
+  if (!validColumnStructure(blocks, { checkParentIds: true })) return null
   const byId = new Map<string, number>(), subtreeEnds: number[] = []
   const ancestors: DocumentBlockDraft[] = [], openSubtrees: number[] = []
   for (let index = 0; index < blocks.length; index++) {

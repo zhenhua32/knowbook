@@ -15,6 +15,8 @@ import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord, ty
 import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
 import { createWebDavServer } from './helpers/webdav-server'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
+import type { DocumentBlockDraft } from '../src/shared/contracts'
+import { serializeBlocksToMarkdown } from '../src/shared/markdown'
 
 let previousFixturePort: string | undefined
 function fetchFailureCodes(error: unknown): Array<{ name?: string; code?: string }> {
@@ -68,6 +70,194 @@ function resolveConflict(sync: WebDavSyncService, input: { key: string; choice: 
   const version = sync.getStatus().conflicts.find(conflict => conflict.key === input.key)!
   return sync.resolveConflict({ ...input, localHash: version.localHash, remoteHash: version.remoteHash })
 }
+
+function columnSyncBlocks(): DocumentBlockDraft[] {
+  return [
+    { id: 'sync-columns', type: 'columns', content: '', checked: false, depth: 0, parentBlockId: null, tags: ['layout'] },
+    { id: 'sync-left', type: 'column', content: '', checked: false, depth: 1, parentBlockId: 'sync-columns', tags: [], markdownFormat: { columnWeight: 4000 } },
+    { id: 'sync-left-body', type: 'paragraph', content: 'Left original', checked: false, depth: 2, parentBlockId: 'sync-left', tags: ['left'], highlight: 'yellow' },
+    { id: 'sync-toggle', type: 'toggle', content: 'Nested details', checked: false, depth: 2, parentBlockId: 'sync-left', tags: [], markdownFormat: { toggleDefaultOpen: false } },
+    { id: 'sync-leaf', type: 'paragraph', content: 'Nested body', checked: false, depth: 3, parentBlockId: 'sync-toggle', tags: [] },
+    { id: 'sync-right', type: 'column', content: '', checked: false, depth: 1, parentBlockId: 'sync-columns', tags: [], markdownFormat: { columnWeight: 6000 } },
+    { id: 'sync-right-body', type: 'paragraph', content: 'Right original', checked: false, depth: 2, parentBlockId: 'sync-right', tags: [] }
+  ]
+}
+function columnWeights(store: KnowbookStore, id: string) {
+  return store.documentRecovery.readContent(id).blocks.filter(block => block.type === 'column').map(block => block.markdownFormat!.columnWeight!)
+}
+function setColumnWeights(store: KnowbookStore, id: string, left: number, right: number) {
+  const old = store.documentRecovery.readContent(id)
+  store.updateDocument(id, { ...old, blocks: old.blocks.map(block => block.id === 'sync-left' || block.id === 'sync-right'
+    ? { ...block, markdownFormat: { columnWeight: block.id === 'sync-left' ? left : right } } : block) })
+}
+const syncStateRows = (store: KnowbookStore) => store.getUnsafeDatabaseHandle()
+  .prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%' ORDER BY key").all()
+
+test('columns protocol3 upgrades v1 then v2 in the same retried CAS as its first layout and stays v3 after restart and removal', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null); edit(a.store, id, 'Original', 'Columns CAS')
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
+  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: [
+    { id: 'before-columns-toggle', type: 'toggle', content: 'Before layout', checked: false, depth: 0 }
+  ] })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2)
+  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: columnSyncBlocks() })
+  const other = b.store.createDocument(null); edit(b.store, other, 'Independent document', 'Columns concurrent publication')
+  let raced = false, version3Puts = 0
+  server.setHook(async (req, bytes) => {
+    if (req.method === 'PUT' && req.url!.endsWith('manifest.json') && JSON.parse(bytes.toString()).version === 3) {
+      version3Puts++
+      if (!raced) { raced = true; await b.sync.sync() }
+    }
+  })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(raced, true); assert.ok(version3Puts >= 2, 'a stale v2 ETag must force a new conditional v3 manifest write')
+  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+  assert.equal(manifest.version, 3)
+  assert.ok(manifest.entries[`doc:${id}`]); assert.ok(manifest.entries[`doc:${other}`])
+  const published = validateRecord(JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()), `doc:${id}`, 3) as SyncDocument
+  assert.deepEqual(published.content.blocks, a.store.documentRecovery.readContent(id).blocks)
+  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
+  assert.equal(content(a.store, other), 'Independent document')
+  const version2Gate = (bytes: Buffer) => { if (![1, 2].includes(JSON.parse(bytes.toString()).version)) throw new Error('unsupported v2 manifest') }
+  assert.throws(() => version2Gate(server.files.get('/KnowBook/manifest.json')!), /unsupported/)
+  const databasePath = b.store.getDatabasePath()
+  await b.sync.stop(); b.store.destroy()
+  b.store = new KnowbookStore(databasePath); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
+  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
+  assert.deepEqual(columnWeights(b.store, id), [4000, 6000])
+  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: [{ id: 'plain-after-columns', type: 'paragraph', content: 'Plain again', checked: false, depth: 0 }] })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 3)
+  assert.equal(content(b.store, id), 'Plain again')
+}))
+
+test('columns protocol3 automatically merges edits in different columns on two independent devices with stable identities', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  a.store.updateDocument(id, { title: 'Columns independent edits', summary: '', blocks: columnSyncBlocks() })
+  await a.sync.sync(); await b.sync.sync()
+  const base = a.store.documentRecovery.readContent(id), other = b.store.documentRecovery.readContent(id)
+  a.store.updateDocument(id, { ...base, blocks: base.blocks.map(block => block.id === 'sync-left-body' ? { ...block, content: 'Left from A' } : block) })
+  b.store.updateDocument(id, { ...other, blocks: other.blocks.map(block => block.id === 'sync-right-body' ? { ...block, content: 'Right from B' } : block) })
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(b.sync.getStatus().merged, 1)
+  assert.equal(b.sync.getStatus().conflicts.length, 0)
+  await a.sync.sync()
+  const merged = a.store.documentRecovery.readContent(id)
+  assert.deepEqual(b.store.documentRecovery.readContent(id), merged)
+  assert.equal(merged.blocks.find(block => block.id === 'sync-left-body')!.content, 'Left from A')
+  assert.equal(merged.blocks.find(block => block.id === 'sync-right-body')!.content, 'Right from B')
+  assert.deepEqual(merged.blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId, block.markdownFormat, block.tags, block.highlight]),
+    base.blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId, block.markdownFormat, block.tags, block.highlight]))
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 3)
+}))
+
+test('columns protocol3 keeps each coupled width vector atomic until a verified group choice resolves the conflict', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  a.store.updateDocument(id, { title: 'Columns ratio conflict', summary: '', blocks: columnSyncBlocks() })
+  await a.sync.sync(); await b.sync.sync()
+  setColumnWeights(a.store, id, 5500, 4500); setColumnWeights(b.store, id, 4100, 5900)
+  const local = b.store.documentRecovery.readContent(id)
+  b.store.updateDocument(id, { ...local, blocks: local.blocks.map(block => block.id === 'sync-right-body' ? { ...block, content: 'Keep B body' } : block) })
+  await a.sync.sync()
+  const published = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+  await b.sync.sync()
+  assert.deepEqual(columnWeights(b.store, id), [4100, 5900])
+  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), published)
+  const conflict = b.sync.getStatus().conflicts[0]
+  assert.equal(conflict.key, `doc:${id}`); assert.equal(conflict.canMerge, true)
+  const field = 'block:sync-columns:column-layout'
+  assert.deepEqual(conflict.mergeFields.map(part => part.id), [field])
+  const version = { key: conflict.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash }
+  const details = b.sync.getConflictDetails(version)
+  assert.deepEqual(details.merge?.unresolvedIds, [field])
+  assert.equal(details.merge!.conflicts[0].property, 'columnWeights')
+  assert.equal(details.merge!.conflicts[0].canEditText, false)
+  const state = syncStateRows(b.store)
+  assert.throws(() => b.sync.resolveConflict({ ...version, choice: 'merge', mergeChoices: { [field]: { choice: 'custom', text: '[5600,4400]' } } }), /全部冲突字段/)
+  assert.deepEqual(syncStateRows(b.store), state)
+  b.sync.resolveConflict({ ...version, choice: 'merge', mergeChoices: { [field]: { choice: 'remote' } } })
+  await b.sync.sync(); await a.sync.sync()
+  assert.deepEqual(columnWeights(a.store, id), [5500, 4500])
+  assert.deepEqual(columnWeights(b.store, id), [5500, 4500])
+  assert.equal(b.store.documentRecovery.readContent(id).blocks.find(block => block.id === 'sync-right-body')!.content, 'Keep B body')
+  assert.deepEqual(a.store.documentRecovery.readContent(id), b.store.documentRecovery.readContent(id))
+  assert.equal(b.sync.getStatus().conflicts.length, 0)
+}))
+
+test('columns protocol3 rejects cached v1 and v2 downgrades even for database-only writes without changing knowledge or cursors', async context => {
+  for (const oldVersion of [1, 2] as const) await context.test(`manifest v${oldVersion}`, () => fixture(async (a, b, server) => {
+    const id = a.store.createDocument(null)
+    a.store.updateDocument(id, { title: 'Columns old protocol', summary: '', blocks: columnSyncBlocks() })
+    await a.sync.sync(); await b.sync.sync()
+    const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+    assert.equal(manifest.version, 3)
+    manifest.version = oldVersion
+    const downgraded = Buffer.from(canonicalJson(manifest)); server.files.set('/KnowBook/manifest.json', downgraded)
+    for (const databaseOnly of [false, true]) {
+      if (databaseOnly) b.store.createDatabase({ name: 'Independent columns schema', description: '' })
+      const before = receivedMoveState(b.store), records = canonicalJson([...b.store.getSyncRecords()]), state = syncStateRows(b.store)
+      const lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
+      await assert.rejects(b.sync.sync(), /清单版本.*分栏/)
+      assert.deepEqual(receivedMoveState(b.store), before)
+      assert.equal(canonicalJson([...b.store.getSyncRecords()]), records)
+      assert.deepEqual(syncStateRows(b.store), state)
+      assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
+      assert.deepEqual(server.files.get('/KnowBook/manifest.json'), downgraded)
+      assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
+    }
+  }))
+})
+
+test('columns protocol3 rejects invalid ownership, weights, hidden source and future manifests before any local mutation or publication', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null)
+  a.store.updateDocument(id, { title: 'Columns malformed protocol', summary: '', blocks: columnSyncBlocks() })
+  await a.sync.sync(); await b.sync.sync()
+  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
+  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
+  const invalidSum = structuredClone(record), foreignParent = structuredClone(record), invalidRole = structuredClone(record), hiddenSource = structuredClone(record)
+  const mixedHiddenSource = structuredClone(record)
+  invalidSum.content.blocks[1].markdownFormat = { columnWeight: 4001 }
+  foreignParent.content.blocks[1].parentBlockId = 'foreign-owner'
+  invalidRole.content.blocks[1] = { ...invalidRole.content.blocks[1], type: 'paragraph', content: 'Not a column', markdownFormat: undefined }
+  hiddenSource.content.blocks = [{ id: 'hidden-columns', type: 'paragraph', checked: false, depth: 0, parentBlockId: null,
+    content: serializeBlocksToMarkdown(record.content.blocks).replace('data-knowbook-weight="4000"', 'data-knowbook-weight="4001"') }]
+  mixedHiddenSource.content.blocks.push({ ...hiddenSource.content.blocks[0], id: 'hidden-next-to-valid-columns' })
+  for (const invalid of [invalidSum, foreignParent, invalidRole, hiddenSource, mixedHiddenSource]) {
+    const bytes = Buffer.from(canonicalJson(invalid)), hash = hashBytes(bytes)
+    server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
+    const malformed = Buffer.from(canonicalJson({ ...manifest, entries: { ...manifest.entries, [`doc:${id}`]: hash } }))
+    server.files.set('/KnowBook/manifest.json', malformed)
+    const before = receivedMoveState(b.store), state = syncStateRows(b.store), lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
+    await assert.rejects(b.sync.sync(), /格式无效|Invalid native Markdown container/)
+    assert.deepEqual(receivedMoveState(b.store), before); assert.deepEqual(syncStateRows(b.store), state)
+    assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), malformed)
+    assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
+  }
+  const unsupported = Buffer.from(canonicalJson({ ...manifest, version: 4 }))
+  server.files.set('/KnowBook/manifest.json', unsupported)
+  const before = receivedMoveState(b.store), state = syncStateRows(b.store), requestStart = server.requests.length
+  await assert.rejects(b.sync.sync(), /清单无效|版本不受支持/)
+  assert.deepEqual(receivedMoveState(b.store), before); assert.deepEqual(syncStateRows(b.store), state)
+  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), unsupported)
+  assert.equal(server.requests.slice(requestStart).some(request => request.path.startsWith('/KnowBook/objects/')), false)
+}))
+
+test('columns protocol3 leaves fenced, inline and unmarked legacy HTML examples on v1 through real device sync', () => fixture(async (a, b, server) => {
+  const id = a.store.createDocument(null), source = serializeBlocksToMarkdown(columnSyncBlocks())
+  a.store.updateDocument(id, { title: 'Columns literal examples', summary: '', blocks: [
+    { id: 'columns-literal-code', type: 'code', content: source, checked: false, depth: 0, language: 'html', markdownFormat: { codeInfo: 'html' } },
+    { id: 'columns-literal-legacy', type: 'html', content: '<details>\n<summary>Literal example</summary>\n\n' + source + '\n\n</details>', checked: false, depth: 0 },
+    { id: 'columns-literal-inline', type: 'paragraph', content: 'Inline `<section data-knowbook-container="columns-v1">` example', checked: false, depth: 0 }
+  ] })
+  const original = a.store.documentRecovery.readContent(id)
+  await a.sync.sync(); await b.sync.sync()
+  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
+  assert.deepEqual(b.store.documentRecovery.readContent(id), original)
+  assert.equal(b.sync.getStatus().conflicts.length, 0)
+}))
 
 test('native containers upgrade the manifest atomically and two independent devices retain mixed children across restart and merge', () => fixture(async (a, b, server) => {
   const id = a.store.createDocument(null)

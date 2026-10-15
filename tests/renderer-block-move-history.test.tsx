@@ -228,6 +228,42 @@ test('fresh source and target editor sessions hydrate the persisted pair and can
   })
 })
 
+test('a delayed paired-history acknowledgement cannot replace a newer local draft or its undo scope', async () => {
+  const backend = peer(); backend.setApplied()
+  const read = backend.api.getDocumentBlockMoveHistory, gate = deferred()
+  backend.api.getDocumentBlockMoveHistory = async id => { const entry = await read(id); await gate.promise; return entry }
+  await withEditor(backend, async api => {
+    await act(async () => {
+      api.current().updateDraftBlock(0, { content: 'Typed while the paired history was loading' })
+      api.current().checkpointDraft()
+      gate.resolve()
+    })
+    assert.equal(api.current().draftBlocks[0].content, 'Typed while the paired history was loading')
+    await act(async () => api.current().undoEdit())
+    assert.deepEqual(ids(api.current()), ['stay'])
+    assert.equal(api.current().draftBlocks[0].content, backend.afterSource.blocks[0].content)
+    assert.equal(api.current().canUndo, false)
+    assert.equal(backend.calls.undos.length, 0)
+  })
+})
+
+test('a committed move refreshes the workspace without writing its acknowledgement into a replacement editor session', async () => {
+  const backend = peer()
+  await withEditor(backend, async api => {
+    const gate = backend.hold('move')
+    let moved!: Promise<boolean>
+    await act(async () => { moved = api.current().moveDraftBlocksToDocument(api.current().getBlockActionTarget(['move'])!, 'target') })
+    await waitForRenderer(() => backend.calls.moves.length === 1, 'The held move must reach IPC')
+    await api.restart('target')
+    await act(async () => { gate.resolve(); assert.equal(await moved, false) })
+    assert.deepEqual(ids(api.current()), ['original-target'])
+    assert.equal(api.current().draftTitle, 'target')
+    assert.equal(api.current().canUndo, false)
+    assert.equal(backend.calls.home, 1)
+    assert.deepEqual(backend.get('target').blocks.map(value => value.id), ['original-target', 'move', 'child'])
+  })
+})
+
 test('IME composition blocks stale-target moves and paired history replay without mutating either document', async () => {
   const backend = peer()
   await withEditor(backend, async api => {

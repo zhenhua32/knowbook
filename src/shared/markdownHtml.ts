@@ -7,6 +7,7 @@ import { IMAGE_ALIGN_ATTRIBUTE, IMAGE_CROP_ATTRIBUTE, parseImageCropAttribute, p
 import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE, parseInlineTextPresentationAttributes } from './inlineTextPresentation'
 
 import { nativeContainerClosingLine, nativeContainerTitleLines, recordNativeContainerError, parseNativeContainerOpening, parseNativeContainerTitle, shiftNativeContainerRanges, type NativeMarkdownContainer } from './markdownContainers'
+import { COLUMN_WEIGHT_TOTAL, MAX_COLUMNS } from './columnStructure'
 
 const presentationTags = new Set(['u', 'span'])
 const semanticInlineTags = new Set(['strong', 'em', 's', 'del', 'mark', 'code'])
@@ -20,6 +21,35 @@ type FigureTokenMeta = {
   inlineFigure: boolean
   htmlSourceLinks: MarkdownDestination[]
   htmlFigureRange?: FigureRange
+}
+
+/** A layout is an explicit sequence of column shells, never a best-effort
+ * HTML repair. Check this in the grammar as well as before persistence so
+ * hidden source and protocol-gate consumers see the same invalid structure. */
+function validateColumnsBody(tokens: Token[], body: string): void {
+  const columns: Token[] = []
+  let depth = 0
+  for (const token of tokens) {
+    if (depth === 0 && token.type !== 'knowbook_metadata') {
+      const native = token.meta?.nativeContainer as NativeMarkdownContainer | undefined
+      if (token.type !== 'native_container_open' || native?.type !== 'column') throw new Error('columns owner accepts only column shells')
+      columns.push(token)
+    }
+    depth += token.nesting
+    if (depth < 0) throw new Error('unbalanced column shells')
+  }
+  if (depth !== 0 || columns.length < 1 || columns.length > MAX_COLUMNS) throw new Error('columns owner requires one to six columns')
+  if (columns.reduce((sum, token) => sum + (token.meta!.nativeContainer as NativeMarkdownContainer).markdownFormat!.columnWeight!, 0) !== COLUMN_WEIGHT_TOTAL)
+    throw new Error('column weights must sum to 10000')
+  const lines = body.split('\n')
+  let cursor = 0
+  for (const column of columns) {
+    const gap = lines.slice(cursor, column.map![0]).filter(line => line.trim())
+    if (gap.length > 1 || gap.length === 1 && !/^<!-- knowbook:block \{.*\} -->$/.test(gap[0]))
+      throw new Error('columns owner contains content outside its columns')
+    cursor = column.map![1]
+  }
+  if (lines.slice(cursor).some(line => line.trim())) throw new Error('columns owner contains trailing content outside its columns')
 }
 
 function isFigureRange(value: unknown): value is FigureRange {
@@ -351,12 +381,13 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
       if (/[\r\n]/.test(openingSource)) throw new Error('opening shell must occupy one line')
       const opening = parseNativeContainerOpening(openingSource)
       if (!opening) return false
+      if (!state.env.nativeContainerOpaque && opening.type === 'column' && state.env.nativeContainerParent !== 'columns') throw new Error('column shell requires a columns owner')
+      if (!state.env.nativeContainerOpaque && state.env.nativeContainerParent === 'columns' && opening.type !== 'column') throw new Error('columns owner accepts only column shells')
       const lines = candidate.split('\n')
       if (lines[0].trim() !== openingSource) throw new Error('unexpected text after opening shell')
-      const titleHeader = nativeContainerTitleLines(lines, 1, opening)
-      const titleSource = titleHeader.source
-      const title = parseNativeContainerTitle(titleSource, opening)
-      const bodyLine = titleHeader.endLine
+      const titleHeader = opening.titleTag ? nativeContainerTitleLines(lines, 1, opening) : null
+      const title = titleHeader ? parseNativeContainerTitle(titleHeader.source, opening) : null
+      const bodyLine = titleHeader?.endLine ?? 1
       const closeLine = nativeContainerClosingLine(lines, bodyLine, lines.length, opening.tag)
       const source = lines.slice(0, closeLine + 1).join('\n')
       const positions = htmlSourcePositions(state, start, source)
@@ -366,21 +397,28 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
         headerRange: [start, start + bodyLine], bodyRange: [start + bodyLine, start + closeLine], closingRange: [start + closeLine, start + closeLine + 1] }
       const open = state.push('native_container_open', opening.tag, 1)
       open.meta = { nativeContainer: meta, nativeLiteralEscaped: Boolean(opening.literalEscaped) }; open.map = [start, start + closeLine + 1]
-      const inline = state.push('inline', '', 0)
-      inline.content = title.content; inline.children = []; inline.map = meta.headerRange
-      const titleOffset = lines[0].length + 1 + (lines[1].length - lines[1].trimStart().length) + title.offset
-      inline.meta = { nativeContainerTitle: opening.type, nativeLiteralEscaped: Boolean(opening.literalEscaped),
-        sourceMap: Array.from({ length: title.content.length }, (_, index) => positions[titleOffset + index]) }
+      if (title) {
+        const inline = state.push('inline', '', 0)
+        inline.content = title.content; inline.children = []; inline.map = meta.headerRange
+        const titleOffset = lines[0].length + 1 + (lines[1].length - lines[1].trimStart().length) + title.offset
+        inline.meta = { nativeContainerTitle: opening.type, nativeLiteralEscaped: Boolean(opening.literalEscaped),
+          sourceMap: Array.from({ length: title.content.length }, (_, index) => positions[titleOffset + index]) }
+      }
       const bodyStart = lines.slice(0, bodyLine).reduce((length, line) => length + line.length + 1, 0)
       const body = lines.slice(bodyLine, closeLine).join('\n')
       const bodyTokens: Token[] = [], linkStart = capturedMarkdownSourceLinks(state.env).length
       const diagnosticStart = capturedMarkdownCompatibility(state.env).length
       const previous = state.env.suppressFrontmatter, previousDepth = Number(state.env.htmlDetailsDepth ?? 0)
       const priorEscape = state.env.nativeLiteralEscaped
+      const priorParent = state.env.nativeContainerParent
       state.env.suppressFrontmatter = true; state.env.htmlDetailsDepth = previousDepth + 1
       state.env.nativeLiteralEscaped = Boolean(opening.literalEscaped)
+      state.env.nativeContainerParent = opening.type
       try { md.block.parse(body, md, state.env, bodyTokens) }
-      finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = priorEscape }
+      finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = priorEscape
+        state.env.nativeContainerParent = priorParent }
+
+      if (opening.type === 'columns' && !state.env.nativeContainerOpaque) validateColumnsBody(bodyTokens, body)
 
       shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, offset => positions[bodyStart + offset], start + bodyLine, diagnosticStart)
       let legacyDepth = 0
@@ -426,6 +464,8 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
   })
   md.renderer.rules.native_container_open = (tokens, index, _options, _env) => {
     const value = tokens[index].meta!.nativeContainer as NativeMarkdownContainer
+    if (value.type === 'columns') return '<section class="markdown-native-columns">\n'
+    if (value.type === 'column') return '<div class="markdown-native-column" data-column-weight="' + value.markdownFormat!.columnWeight + '">\n'
     if (value.type === 'toggle') return '<details class="markdown-native-toggle"' + (value.markdownFormat?.toggleDefaultOpen ? ' open=""' : '') + '>\n'
     const format = value.markdownFormat
     const attrs = [['data-callout-kind', format?.calloutKind ?? 'note'], ['data-callout-icon', format?.calloutIcon ?? format?.calloutKind ?? 'note'],
@@ -497,9 +537,12 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     state.env.suppressFrontmatter = true
     state.env.htmlDetailsDepth = previousDepth + 1
     const previousEscape = state.env.nativeLiteralEscaped
+    const previousOpaque = state.env.nativeContainerOpaque
     state.env.nativeLiteralEscaped = false
+    state.env.nativeContainerOpaque = true
     try { md.block.parse(body, md, state.env, bodyTokens) }
-    finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = previousEscape }
+    finally { state.env.suppressFrontmatter = previous; state.env.htmlDetailsDepth = previousDepth; state.env.nativeLiteralEscaped = previousEscape
+      state.env.nativeContainerOpaque = previousOpaque }
     const lineOffset = start + (source.slice(0, bodyStart).match(/\n/g)?.length ?? 0)
     shiftMarkdownSourceCapture(state.env, bodyTokens, linkStart, (offset) => positions[bodyStart + offset], lineOffset, diagnosticStart)
     for (const token of bodyTokens) {

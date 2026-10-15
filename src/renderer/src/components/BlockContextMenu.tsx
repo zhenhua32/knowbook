@@ -25,11 +25,12 @@ export type BlockContextMenuProps = {
   onOpenAiEdit?: () => void
   currentHighlight?: string
   onHighlightChange?: (color: string | undefined) => void
+  onWrapInColumns?: () => void
 }
 
 export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, onDelete, onClose,
   typeOptions, isZh, canOpen, canReturnFocus, selectedBlockCount = 1, disabled = false, disabledReason,
-  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange }: BlockContextMenuProps) {
+  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange, onWrapInColumns }: BlockContextMenuProps) {
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
   usePopupKeyboard(menuRef, onClose, canOpen, canReturnFocus)
   const run = (action: () => void) => { if (!disabled) { action(); onClose() } }
@@ -64,6 +65,9 @@ export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, o
         </div>
       </div> : null}
       <div className="context-menu-section context-menu-group">
+        {onWrapInColumns ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onWrapInColumns)} type="button">
+          {isZh ? '放入两列分栏' : 'Wrap in two columns'}
+        </button> : null}
         {onCopyBlockLinks ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onCopyBlockLinks)} type="button">
           {isZh ? '复制块链接' : 'Copy block links'}
         </button> : null}

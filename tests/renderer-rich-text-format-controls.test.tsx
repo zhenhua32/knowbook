@@ -110,6 +110,7 @@ type PendingContextApi = {
   document: Document; window: JSDOM['window']; editor: HTMLElement; first: HTMLElement; source: HTMLElement; outside: HTMLInputElement
   menus: Array<{ blockIds: string[]; x: number; y: number }>; frames: Map<number, FrameRequestCallback>; callbacks: FrameRequestCallback[]
   bridge: NonNullable<ReturnType<typeof getRichTextHistoryBridge>>
+  changes: () => number; checkpoints: () => number
   flush: () => Promise<void>; open: (target?: HTMLElement) => void; remove: () => Promise<void>
 }
 
@@ -133,10 +134,11 @@ async function withPendingContext(run: (api: PendingContextApi) => Promise<void>
     { id: 'second', type: 'paragraph', content: 'uvwxyz', checked: false, depth: 0 },
     { id: 'source', type: tailType, content: 'const x = 1', checked: false, depth: 0 }]
   const menus: PendingContextApi['menus'] = []
+  let changes = 0, checkpoints = 0
   const noop = () => {}
   try {
     await act(async () => root.render(createElement(DocumentRichTextEditor, { documentId: 'pending', blocks, visibleIndices,
-      isZh: false, checkpoint: noop, onChange: noop, onUndo: noop, onRedo: noop, onRevealBlock: noop, onEditSource: noop,
+      isZh: false, checkpoint: () => { checkpoints++ }, onChange: () => { changes++ }, onUndo: noop, onRedo: noop, onRevealBlock: noop, onEditSource: noop,
       onOpenBlockActions: request => menus.push(request) })))
     const document = dom.window.document, editor = document.querySelector<HTMLElement>('.knowbook-rich-text-editor')!
     const first = editor.querySelector<HTMLElement>('[data-block-id="first"]')!, source = editor.querySelector<HTMLElement>('[data-block-id="source"]')!
@@ -144,6 +146,7 @@ async function withPendingContext(run: (api: PendingContextApi) => Promise<void>
     await act(async () => bridge.restore({ blockId: 'first', index: 0, start: 2, end: 2, direction: 'none',
       richText: { anchor: { blockId: 'first', index: 0, offset: 2 }, head: { blockId: 'first', index: 0, offset: 2 } } }))
     await run({ document, window: dom.window, editor, first, source, bridge, menus, frames, callbacks,
+      changes: () => changes, checkpoints: () => checkpoints,
       outside: document.getElementById('outside') as HTMLInputElement,
       open: (target = first) => { target.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 30 })) },
       flush: async () => { await act(async () => { const pending = [...frames.values()]; frames.clear(); pending.forEach(callback => callback(0)) }) },
@@ -336,5 +339,93 @@ test('atomic public DOM focus and selection retain a nonfirst caret through the 
         anchor: { blockId: 'second', index: 1, offset: 3 }, head: { blockId: 'second', index: 1, offset: 3 }
       })
     } finally { Object.defineProperty(globalThis, 'setTimeout', original) }
+  })
+})
+
+for (const kind of ['forward', 'backward', 'all'] as const) test(`a ${kind} rich range collapses synchronously after popup focus returns and its next context menu targets one block`, async () => {
+  await withPendingContext(async api => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'setTimeout')!, schedule = globalThis.setTimeout
+    const repairs: Array<() => void> = []
+    Object.defineProperty(globalThis, 'setTimeout', { configurable: true, value: (...args: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...values] = args
+      if (delay === 20) { repairs.push(() => callback(...values)); return 0 as unknown as ReturnType<typeof setTimeout> }
+      return schedule(callback, delay, ...values)
+    } })
+    try {
+      const first = { blockId: 'first', index: 0, offset: 0 }, last = { blockId: 'source', index: 2, offset: 11 }
+      for (const direction of ['ltr', 'rtl']) {
+        api.editor.style.direction = direction
+        for (const key of ['ArrowLeft', 'ArrowRight']) {
+          const anchor = kind === 'backward' ? last : first, head = kind === 'backward' ? first : last
+          await act(async () => {
+            api.bridge.restore({ blockId: anchor.blockId, index: anchor.index, start: anchor.offset, end: head.offset,
+              direction: kind === 'backward' ? 'backward' : 'forward',
+              richText: { anchor, head, ...(kind === 'all' ? { kind: 'all' as const } : {}) } })
+            api.outside.focus(); api.editor.focus()
+          })
+          assert.notDeepEqual(api.bridge.capture().richText!.anchor, api.bridge.capture().richText!.head)
+          const event = new api.window.KeyboardEvent('keydown', { key, keyCode: key === 'ArrowLeft' ? 37 : 39,
+            bubbles: true, cancelable: true })
+          const backwards = (key === 'ArrowLeft') !== (direction === 'rtl'), expected = backwards ? first : last
+          await act(async () => {
+            api.editor.dispatchEvent(event)
+            // No native selectionchange is delivered before this assertion.
+            // An actual selection-only transaction must have committed the key.
+            assert.deepEqual(api.bridge.capture().richText, { anchor: expected, head: expected })
+            assert.ok(repairs.length, 'Returning focus left a real ProseMirror focus repair pending')
+            repairs.splice(0).forEach(repair => repair())
+            api.document.dispatchEvent(new api.window.Event('selectionchange'))
+          })
+          assert.equal(event.defaultPrevented, true, `${direction} ${key}`)
+          assert.deepEqual(api.bridge.capture().richText, { anchor: expected, head: expected })
+          const native = api.document.getSelection()!
+          assert.equal(native.isCollapsed, true)
+          const element = native.anchorNode?.nodeType === api.window.Node.ELEMENT_NODE
+            ? native.anchorNode as Element : native.anchorNode?.parentElement
+          assert.equal(element?.closest<HTMLElement>('[data-block-id]')?.dataset.blockId, expected.blockId)
+          await act(async () => api.open(backwards ? api.first : api.source))
+          await api.flush()
+          assert.deepEqual(api.menus.at(-1)?.blockIds, [expected.blockId], `${direction} ${key}`)
+          assert.deepEqual(api.bridge.capture().richText, { anchor: expected, head: expected })
+          assert.equal(api.changes(), 0, 'Navigation and the following menu never change document content')
+          assert.equal(api.checkpoints(), 0, 'Selection navigation never creates an edit history boundary')
+        }
+      }
+    } finally { Object.defineProperty(globalThis, 'setTimeout', original) }
+  }, [0, 1, 2], 'paragraph')
+})
+
+test('rich range collapse keeps modified arrows and IME candidate navigation on their original paths', async () => {
+  await withPendingContext(async api => {
+    const anchor = { blockId: 'first', index: 0, offset: 0 }, head = { blockId: 'second', index: 1, offset: 6 }
+    await act(async () => api.bridge.restore({ blockId: 'first', index: 0, start: 0, end: 6, direction: 'forward', richText: { anchor, head } }))
+    const before = api.bridge.capture().richText
+    for (const options of [{ shiftKey: true }, { altKey: true }, { ctrlKey: true }, { metaKey: true }, { isComposing: true }, { keyCode: 229 }]) {
+      for (const key of ['ArrowLeft', 'ArrowRight']) {
+        const event = new api.window.KeyboardEvent('keydown', { key, keyCode: key === 'ArrowLeft' ? 37 : 39,
+          bubbles: true, cancelable: true, ...options })
+        await act(async () => api.editor.dispatchEvent(event))
+        assert.equal(event.defaultPrevented, false, `${key} ${JSON.stringify(options)}`)
+        assert.deepEqual(api.bridge.capture().richText, before)
+      }
+    }
+    assert.equal(api.changes(), 0)
+    assert.equal(api.checkpoints(), 0)
+  })
+})
+
+test('a selected source atom keeps ProseMirror horizontal navigation instead of the text-range collapse path', async () => {
+  await withPendingContext(async api => {
+    const point = { blockId: 'source', index: 2, offset: 0 }
+    await act(async () => api.bridge.restore({ blockId: 'source', index: 2, start: 0, end: 0, direction: 'forward',
+      richText: { kind: 'node', anchor: point, head: point } }))
+    assert.equal(api.bridge.capture().richText!.kind, 'node')
+    const event = new api.window.KeyboardEvent('keydown', { key: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true })
+    await act(async () => api.editor.dispatchEvent(event))
+    const previous = { blockId: 'second', index: 1, offset: 6 }
+    assert.equal(event.defaultPrevented, true)
+    assert.deepEqual(api.bridge.capture().richText, { anchor: previous, head: previous })
+    assert.equal(api.changes(), 0)
+    assert.equal(api.checkpoints(), 0)
   })
 })

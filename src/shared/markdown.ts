@@ -1,10 +1,16 @@
 import { encodeNativeLiteralText, decodedNativeSourceLines, type NativeTextProjection } from './markdownNativeText'
 import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode } from './markdownEngine'
-import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, canBlockNestUnder, isListBlockType } from './blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, isNativeStructureBlockType, canBlockNestUnder, isListBlockType } from './blockTypes'
+import { assertColumnStructure } from './columns'
 import { assertNativeContainerParse, nativeMarkdownContainer, renderNativeContainerHeader, nativeContainerClosingTag, validateNativeContainerFormat, nativeContainerFormatsAgree, parseNativeContainerOpening, NativeMarkdownContainerError } from './markdownContainers'
 import { parseTaskListMarker } from './markdownExtensions'
 import { normalizeMarkdownFormat, type MarkdownBlockFormat } from './markdownFormat'
 import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFrontmatter'
+
+function assertMarkdownColumnStructure(blocks: MarkdownRenderableBlock[]): void {
+  try { assertColumnStructure(blocks) }
+  catch (error) { throw new NativeMarkdownContainerError(error instanceof Error ? error.message : String(error)) }
+}
 
 export type MarkdownRenderableBlock = {
   id?: string
@@ -244,6 +250,16 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
     }
 
     const candidate = parsed as Record<string, unknown>
+    if (candidate.type === 'columns' || candidate.type === 'column') {
+      const allowed = ['type', 'depth', 'id', 'parentBlockId', 'tags', 'highlight', 'markdownFormat']
+      if (Object.keys(candidate).some(key => !allowed.includes(key))
+        || Object.hasOwn(candidate, 'id') && (typeof candidate.id !== 'string' || !candidate.id || candidate.id !== candidate.id.trim())
+        || Object.hasOwn(candidate, 'parentBlockId') && candidate.parentBlockId !== null
+          && (typeof candidate.parentBlockId !== 'string' || !candidate.parentBlockId || candidate.parentBlockId !== candidate.parentBlockId.trim())
+        || Object.hasOwn(candidate, 'depth') && (!Number.isSafeInteger(candidate.depth) || Number(candidate.depth) < 0 || Number(candidate.depth) > 6)) {
+        throw new NativeMarkdownContainerError('invalid backup layout identity, depth or property')
+      }
+    }
     if (typeof candidate.type === 'string') validateNativeContainerFormat(candidate.type, candidate.markdownFormat)
     const id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : undefined
     const parentBlockId = typeof candidate.parentBlockId === 'string' && candidate.parentBlockId.trim()
@@ -316,7 +332,7 @@ function resolveContainerMarkdownDepths(blocks: MarkdownRenderableBlock[]): numb
 function finalizeParsedMarkdownBlocks(blocks: MarkdownRenderableBlock[]): MarkdownRenderableBlock[] {
   const depthStack: Array<string | undefined> = []
   const depthById = new Map<string, number>()
-  const nativeDepths = blocks.some(block => isContainerBlockType(block.type)) ? resolveContainerMarkdownDepths(blocks) : null
+  const nativeDepths = blocks.some(block => isNativeStructureBlockType(block.type)) ? resolveContainerMarkdownDepths(blocks) : null
   return blocks.map((block, index) => {
     const id = block.id?.trim() || undefined
     const explicitParent = block.parentBlockId?.trim() || null
@@ -435,9 +451,9 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
       if (depth > 6) throw new NativeMarkdownContainerError('editable container nesting exceeds six levels')
       if (metadata?.type && metadata.type !== container.type) throw new NativeMarkdownContainerError('backup type does not match its container shell')
       const title = children.find(child => child.token.type === 'native_container_title')
-      if (!title) throw new NativeMarkdownContainerError('missing title token')
+      if (!title && isContainerBlockType(container.type)) throw new NativeMarkdownContainerError('missing title token')
       const ownerIndex = blocks.length
-      let owner: MarkdownRenderableBlock = { ...make(container.type, title.token.content, depth), markdownFormat: container.markdownFormat }
+      let owner: MarkdownRenderableBlock = { ...make(container.type, title?.token.content ?? '', depth), markdownFormat: container.markdownFormat }
       if (metadata) {
         if (!nativeContainerFormatsAgree(container.type, metadata.markdownFormat, container.markdownFormat))
           throw new NativeMarkdownContainerError('backup container format conflicts with its shell')
@@ -496,7 +512,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
       if (node.token.type === 'knowbook_metadata') {
         pending = parseMarkdownBlockMetadata(node.token.content)
         if (!pending) push(make('paragraph', node.token.content, depth), ...node.token.map)
-        else if (pending.type && isContainerBlockType(pending.type)) {
+        else if (pending.type && isNativeStructureBlockType(pending.type)) {
           const next = items[index + 1]
           if (!next || !nativeMarkdownContainer(next.token)) throw new NativeMarkdownContainerError('backup container metadata has no matching shell')
           append(next, depth, pending, node.token.map[0], scopeParent)
@@ -535,7 +551,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
     if (remaining.trim()) push(applyMarkdownBlockMetadata(make('paragraph', remaining, depth), pending), cursor, scopeEnd)
   }
   appendScope(nodes, 0, lines.length, 0)
-  if (blocks.some(value => isContainerBlockType(value.type)) && declared.size) {
+  if (blocks.some(value => isNativeStructureBlockType(value.type)) && declared.size) {
     const ids = new Set<string>(), active: MarkdownRenderableBlock[] = []
     for (let index = 0; index < blocks.length; index++) {
       const value = blocks[index], entry = declared.get(index)
@@ -560,6 +576,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
       active.length = depth; active[depth] = value
     }
   }
+  assertMarkdownColumnStructure(blocks)
   return finalizeParsedMarkdownBlocks(blocks)
 }
 type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
@@ -581,10 +598,10 @@ function serializeContainerForest(
   const contentProjections = blocks.map((block, index) => {
     const depth = depths[index]
     nativeAncestors.length = depth
-    const native = isContainerBlockType(block.type)
+    const native = isNativeStructureBlockType(block.type)
     const scoped = native || nativeAncestors.some(Boolean)
     nativeAncestors[depth] = native
-    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter'].includes(block.type) ? 'opaque' : native ? 'title' : 'body')
+    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body')
   })
   const parts: string[] = [], ranges: MarkdownBlockSourceRange[] = [], closingRanges: MarkdownContainerClosingRange[] = []
   let line = 0
@@ -600,7 +617,7 @@ function serializeContainerForest(
     let index = start
     while (index < end) {
       const block = blocks[index]
-      if (isContainerBlockType(block.type)) {
+      if (isNativeStructureBlockType(block.type)) {
         let subtreeEnd = index + 1
         while (subtreeEnd < end && depths[subtreeEnd] > depths[index]) subtreeEnd++
         const metadata = options.includeBlockMetadata ? renderMarkdownBlockMetadata(block) : null
@@ -614,7 +631,7 @@ function serializeContainerForest(
         continue
       }
       const chunkStart = index
-      while (index < end && !isContainerBlockType(blocks[index].type)) index++
+      while (index < end && !isNativeStructureBlockType(blocks[index].type)) index++
       const originals = blocks.slice(chunkStart, index)
       const relative = originals.map((value, offset) => ({ ...value, content: contentProjections[chunkStart + offset].source, depth: depths[chunkStart + offset] - baseDepth }))
       const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true)
@@ -630,7 +647,8 @@ function serializeContainerForest(
 export function serializeMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}
 ): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
-  if (blocks.some(block => isContainerBlockType(block.type))) return serializeContainerForest(blocks, options)
+  assertMarkdownColumnStructure(blocks)
+  if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options)
   return { ...serializeFlatMarkdownWithBlockRanges(blocks, options), closingRanges: [] }
 }
 /** Source ranges use the exact same separators and indentation as file export. */

@@ -22,6 +22,7 @@ import { matchingOpeningTitleIndex } from '../utils/documentReadingTitle'
 import { openShortcutHelp } from '../openShortcutHelp'
 const MarkdownReadingList = lazy(() => import('../components/MarkdownReadingList').then((module) => ({ default: module.MarkdownReadingList })))
 const DocumentRichTextEditor = lazy(() => import('../rich-text/DocumentRichTextEditor').then(module => ({ default: module.DocumentRichTextEditor })))
+const DocumentColumnsLayout = lazy(() => import('../components/DocumentColumnsLayout'))
 const editorModeKey = 'knowbook.document-editor-mode'
 function readEditorMode(): 'rich' | 'markdown' {
   try { return localStorage.getItem(editorModeKey) === 'markdown' ? 'markdown' : 'rich' } catch { return 'rich' }
@@ -177,6 +178,28 @@ export function DocumentsSection({
       ui={previewHeaderProps.ui} isZh={previewHeaderProps.isZh}
       onToggleTask={(checked) => { blockEditorRowSharedProps.checkpointDraft?.(); blockEditorRowSharedProps.updateDraftBlock(row.index, { checked }) }} />
   </MarkdownBlockNodesContext.Provider>
+  const renderBodyRow = (row: VisibleEditorRow, visualDepth = row.block.depth) => {
+    if (!blockEditorRowSharedProps || !selectedDocument) return null
+    const visualRow = { ...row, indentPx: visualDepth * blockEditorRowSharedProps.BLOCK_INDENT_SIZE }
+    if (isReadingMode) {
+      const group = readingGroups.get(row.index)
+      if (!group) return row.index === openingTitleIndex && showReadingMetadata && readingSummary
+        ? <div key={row.block.id ?? row.index} className="document-reading-opening">
+          {renderReadingRow(visualRow)}
+          <div className="document-reading-summary"><p>{readingSummary}</p></div>
+        </div> : renderReadingRow(visualRow)
+      if (group.first !== row.index) return null
+      return <Suspense key={row.block.id ?? row.index} fallback={renderReadingRow(visualRow)}>
+        <MarkdownReadingList node={group.node} owners={blockEditorRowSharedProps.markdownDocument!.listItemOwners}
+          visible={visibleReadingIndices} renderBlock={index => { const item = readingRows.get(index); return item ? renderReadingRow(item, true) : null }} />
+      </Suspense>
+    }
+    const nodes = blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]
+    const previewNodes = nodes && (row.block.type === 'table' || hasAdvancedMarkdown(nodes)) ? nodes : undefined
+    return <MarkdownBlockNodesContext.Provider key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`} value={previewNodes}>
+      <BlockEditorRow {...blockEditorRowSharedProps} markdownDocument={undefined} {...visualRow} isHighlighted={row.isHighlighted} />
+    </MarkdownBlockNodesContext.Provider>
+  }
   const auxPanelProps = documentsAuxPanelProps?.isOpen && documentReady ? documentsAuxPanelProps : null
   const showAuxPanel = Boolean(auxPanelProps)
   const isAuxPanelStacked = showAuxPanel && workspaceWidth > 0 && workspaceWidth < 710
@@ -359,42 +382,12 @@ export function DocumentsSection({
                     references={blockEditorRowSharedProps?.markdownReferences} isZh={previewHeaderProps.isZh}
                     onRevealBlock={onRevealBlock} visibleIndices={visibleEditorRows.map(row => row.index)} />
                 </Suspense> : blockEditorRowSharedProps
-                  ? visibleEditorRows.map((row) => {
-                     if (isReadingMode) {
-                       const group = readingGroups.get(row.index)
-                       if (!group) return row.index === openingTitleIndex && showReadingMetadata && readingSummary
-                         ? <div key={row.block.id ?? row.index} className="document-reading-opening">
-                           {renderReadingRow(row)}
-                           <div className="document-reading-summary"><p>{readingSummary}</p></div>
-                         </div> : renderReadingRow(row)
-                       if (group.first !== row.index) return null
-                       return <Suspense key={row.block.id ?? row.index} fallback={renderReadingRow(row)}>
-                         <MarkdownReadingList node={group.node} owners={blockEditorRowSharedProps.markdownDocument!.listItemOwners}
-                           visible={visibleReadingIndices} renderBlock={(index) => { const item = readingRows.get(index); return item ? renderReadingRow(item, true) : null }} />
-                       </Suspense>
-                     }
-                     const nodes = blockEditorRowSharedProps.markdownDocument?.blockNodes[row.index]
-                     // Plain source rows do not render document tokens. Keep
-                     // their context stable when another paragraph changes;
-                     // tables and advanced previews still receive full tokens.
-                     const previewNodes = nodes && (row.block.type === 'table' || hasAdvancedMarkdown(nodes)) ? nodes : undefined
-                     return (
-                     <MarkdownBlockNodesContext.Provider key={row.block.id ?? `${selectedDocument.id}-draft-${row.index}`} value={previewNodes}>
-                     <BlockEditorRow
-                       {...blockEditorRowSharedProps}
-                       markdownDocument={undefined}
-                       block={row.block}
-                       dropPreview={row.dropPreview}
-                       hasChildren={row.hasChildren}
-                       indentPx={row.indentPx}
-                        index={row.index}
-                        isHighlighted={row.isHighlighted}
-                        isSelected={row.isSelected}
-                       isSearchMatch={row.isSearchMatch}
-                       numberLabel={row.numberLabel}
-                     />
-                     </MarkdownBlockNodesContext.Provider>
-                  )})
+                  ? richEditorProps?.blocks.some(block => block.type === 'columns') ? <Suspense fallback={<p role="status">{previewHeaderProps.isZh ? '正在加载分栏…' : 'Loading columns…'}</p>}>
+                    <DocumentColumnsLayout blocks={richEditorProps.blocks} visibleIndices={visibleEditorRows.map(row => row.index)}
+                      isZh={previewHeaderProps.isZh} reading={isReadingMode} sessionKey={`${selectedDocument.id}:${editorMode}:${isReadingMode}`}
+                      onApplyBlocks={next => { richEditorProps.checkpoint(); blockEditorRowSharedProps.clearBlockSelection?.(); richEditorProps.onChange(next) }}
+                      renderBlock={(index, depth) => { const row = readingRows.get(index); return row ? renderBodyRow(row, depth) : null }} />
+                  </Suspense> : visibleEditorRows.map(row => renderBodyRow(row))
                   : null}
                 {blockEditorRowSharedProps?.markdownDocument?.footnotes.length ? <MarkdownNodes nodes={blockEditorRowSharedProps.markdownDocument.footnotes}
                   onReference={(label) => { void blockEditorRowSharedProps.navigateInlineReferenceAtCursor(`[[${label}]]`, 2) }} /> : null}

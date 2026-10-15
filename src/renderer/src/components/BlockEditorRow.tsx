@@ -74,6 +74,8 @@ export type BlockEditorRowProps = {
   activeSlashContext: { query: string } | null
   filteredSlashCommands: Array<{ id: string; label: string; description: string }>
   activeSlashCommand: { id: string } | null | undefined
+  slashCommandsUnavailable?: boolean
+  retrySlashCommands?: () => void
   selectedBlockRange: { start: number; end: number } | null
   selectedBlockCount: number
 
@@ -172,6 +174,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     activeSlashContext,
     filteredSlashCommands,
     activeSlashCommand,
+    slashCommandsUnavailable = false,
+    retrySlashCommands,
     selectedBlockRange,
     selectedBlockCount,
     blockTextareaRefs,
@@ -832,9 +836,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                       ? 0 : (previous + delta + filteredSlashCommands.length) % filteredSlashCommands.length)
                     return
                   }
-                  if ((event.key === 'Enter' || event.key === 'Tab') && activeSlashCommand) {
+                  if ((event.key === 'Enter' || event.key === 'Tab') && (activeSlashCommand || slashCommandsUnavailable)) {
                     event.preventDefault(); event.stopPropagation()
-                    applySlashCommand(activeSlashCommand as any)
+                    if (activeSlashCommand) applySlashCommand(activeSlashCommand as any)
+                    else if (event.key === 'Enter') retrySlashCommands?.()
                     return
                   }
                   if (event.key === 'Escape') {

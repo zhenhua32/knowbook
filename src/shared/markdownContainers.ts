@@ -5,14 +5,14 @@ import { NATIVE_CALLOUT_KINDS, NATIVE_CALLOUT_ICONS, NATIVE_CONTAINER_TONES, nor
 
 export const NATIVE_CONTAINER_ATTRIBUTE = 'data-knowbook-container'
 export type NativeMarkdownContainer = {
-  type: 'toggle' | 'callout'
+  type: 'toggle' | 'callout' | 'columns' | 'column'
   markdownFormat?: MarkdownBlockFormat
   headerRange: [number, number]
   bodyRange: [number, number]
   closingRange: [number, number]
   literalEscaped?: boolean
 }
-type NativeOpening = Pick<NativeMarkdownContainer, 'type' | 'markdownFormat' | 'literalEscaped'> & { tag: 'details' | 'aside'; titleTag: 'summary' | 'div' }
+type NativeOpening = Pick<NativeMarkdownContainer, 'type' | 'markdownFormat' | 'literalEscaped'> & { tag: 'details' | 'aside' | 'section' | 'div'; titleTag?: 'summary' | 'div' }
 
 export class NativeMarkdownContainerError extends Error {
   constructor(message: string) {
@@ -35,15 +35,18 @@ function elementShell(source: string, tag: string): Html.Element {
   return root
 }
 export function validateNativeContainerFormat(type: string, value: unknown): void {
-  if (!['toggle', 'callout'].includes(type) || value === undefined) return
+  if (!['toggle', 'callout', 'columns', 'column'].includes(type) || value === undefined) return
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new NativeMarkdownContainerError('invalid backup container format')
-  const allowed = type === 'toggle' ? ['toggleDefaultOpen'] : ['calloutKind', 'calloutIcon', 'calloutTone']
+  const allowed = type === 'toggle' ? ['toggleDefaultOpen'] : type === 'column' ? ['columnWeight']
+    : type === 'columns' ? [] : ['calloutKind', 'calloutIcon', 'calloutTone']
   const normalized = normalizeMarkdownFormat(type, value)
   for (const [key, field] of Object.entries(value))
     if (!allowed.includes(key) || field !== normalized?.[key as keyof MarkdownBlockFormat])
       throw new NativeMarkdownContainerError('invalid backup container format field ' + key)
 }
 export function nativeContainerFormatsAgree(type: string, authored: MarkdownBlockFormat | undefined, derived: MarkdownBlockFormat | undefined): boolean {
+  if (type === 'columns') return authored === undefined && derived === undefined
+  if (type === 'column') return authored?.columnWeight === derived?.columnWeight
   if (type === 'toggle') return (authored?.toggleDefaultOpen ?? true) === (derived?.toggleDefaultOpen ?? false)
   const kind = authored?.calloutKind ?? 'note', otherKind = derived?.calloutKind ?? 'note'
   return kind === otherKind && (authored?.calloutIcon ?? kind) === (derived?.calloutIcon ?? otherKind)
@@ -54,18 +57,25 @@ export function nativeContainerFormatsAgree(type: string, authored: MarkdownBloc
   if (!tag) throw new NativeMarkdownContainerError('unsupported shell')
   const probe = parseFragment(source + '</' + tag + '>').childNodes[0]
   if (!probe || !('tagName' in probe) || !probe.attrs.some(attr => attr.name === NATIVE_CONTAINER_ATTRIBUTE)) return null
-  if (!['details', 'aside'].includes(tag)) throw new NativeMarkdownContainerError('unsupported marked shell')
+  if (!['details', 'aside', 'section', 'div'].includes(tag)) throw new NativeMarkdownContainerError('unsupported marked shell')
   const root = elementShell(source, tag)
   const attrs = new Map(root.attrs.map(attr => [attr.name, attr.value]))
   const marker = attrs.get(NATIVE_CONTAINER_ATTRIBUTE)
-  const type = marker === 'toggle-v1' ? 'toggle' : marker === 'callout-v1' ? 'callout' : null
-  if (!type || tag !== (type === 'toggle' ? 'details' : 'aside')) throw new NativeMarkdownContainerError('unknown marker or mismatched shell')
+  const type = marker === 'toggle-v1' ? 'toggle' : marker === 'callout-v1' ? 'callout'
+    : marker === 'columns-v1' ? 'columns' : marker === 'column-v1' ? 'column' : null
+  const tags = { toggle: 'details', callout: 'aside', columns: 'section', column: 'div' }
+  if (!type || tag !== tags[type]) throw new NativeMarkdownContainerError('unknown marker or mismatched shell')
   const allowed = new Set([NATIVE_CONTAINER_ATTRIBUTE, NATIVE_LITERAL_ATTRIBUTE, ...(type === 'toggle' ? ['open']
-    : ['data-knowbook-kind', 'data-knowbook-icon', 'data-knowbook-tone'])])
+    : type === 'callout' ? ['data-knowbook-kind', 'data-knowbook-icon', 'data-knowbook-tone'] : type === 'column' ? ['data-knowbook-weight'] : [])])
   if (root.attrs.some(attr => !allowed.has(attr.name))) throw new NativeMarkdownContainerError('unsupported shell attribute')
   const escape = attrs.get(NATIVE_LITERAL_ATTRIBUTE)
   if (escape !== undefined && escape !== NATIVE_LITERAL_VERSION) throw new NativeMarkdownContainerError('unknown native text escape version')
   const format: MarkdownBlockFormat = type === 'toggle' ? { toggleDefaultOpen: false } : {}
+  if (type === 'column') {
+    const weight = attrs.get('data-knowbook-weight')
+    if (!weight || !/^(?:[1-9]\d{0,3}|10000)$/.test(weight)) throw new NativeMarkdownContainerError('invalid or missing column weight')
+    format.columnWeight = Number(weight)
+  }
   if (type === 'toggle' && attrs.has('open')) {
     if (!['', 'open'].includes(attrs.get('open')!)) throw new NativeMarkdownContainerError('invalid open attribute')
     format.toggleDefaultOpen = true
@@ -81,11 +91,12 @@ export function nativeContainerFormatsAgree(type: string, authored: MarkdownBloc
       Object.assign(format, { [field]: value })
     }
   }
-  return { type, tag: tag as NativeOpening['tag'], titleTag: type === 'toggle' ? 'summary' : 'div',
+  return { type, tag: tag as NativeOpening['tag'], titleTag: type === 'toggle' ? 'summary' : type === 'callout' ? 'div' : undefined,
     markdownFormat: normalizeMarkdownFormat(type, format), literalEscaped: escape === NATIVE_LITERAL_VERSION }
 }
 export function parseNativeContainerTitle(source: string, opening: NativeOpening): { content: string; offset: number } {
   const tag = opening.titleTag
+  if (!tag) throw new NativeMarkdownContainerError('layout shells cannot have titles')
   const match = new RegExp('^<' + tag + '((?:[^"\'<>]|"[^"]*"|\'[^\']*\')*)>([\\s\\S]*)</' + tag + '>$', 'i').exec(source)
   if (!match) throw new NativeMarkdownContainerError('expected a complete title shell')
   const shell = elementShell('<' + tag + match[1] + '>', tag)
@@ -160,7 +171,7 @@ export function nativeContainerTitleLines(lines: string[], start: number, openin
   throw new NativeMarkdownContainerError('missing title closing shell')
 }
 /** Native shells have dedicated closing lines; code fences never terminate them. */
-export function nativeContainerClosingLine(lines: string[], start: number, end: number, tag: string, nesting = 0): number {
+export function nativeContainerClosingLine(lines: string[], start: number, end: number, tag: string, nesting = 0, legacyScope = false): number {
   if (nesting > 20) throw new NativeMarkdownContainerError('container shell nesting limit exceeded')
   let depth = 1
   let fence: { marker: string; width: number } | undefined
@@ -179,7 +190,7 @@ export function nativeContainerClosingLine(lines: string[], start: number, end: 
     const legacy = /^ {0,3}<(details|figure)(?=[\s>])/i.exec(text)?.[1].toLowerCase()
     if (legacy && !/\bdata-knowbook-container\b/i.test(text)) {
       if (new RegExp('</' + legacy + '[\\t ]*>[\\t ]*$', 'i').test(text)) continue
-      line = nativeContainerClosingLine(lines, line + 1, end, legacy, nesting + 1); continue
+      line = nativeContainerClosingLine(lines, line + 1, end, legacy, nesting + 1, true); continue
     }
     const math = /^ {0,3}(\$\$|\\\[)[\t ]*$/.exec(text)
     if (math) {
@@ -190,13 +201,16 @@ export function nativeContainerClosingLine(lines: string[], start: number, end: 
     const nestedSource = /^ {0,3}(<[a-z][\w-]*(?=[\s>])(?:[^"'<>]|"[^"]*"|'[^']*')*>)/i.exec(text)?.[1]
     const nested = nestedSource && parseNativeContainerOpening(nestedSource)
     if (nested) {
-      const title = nativeContainerTitleLines(lines, line + 1, nested)
-      line = nativeContainerClosingLine(lines, title.endLine, end, nested.tag, nesting + 1)
+      const bodyLine = nested.titleTag ? nativeContainerTitleLines(lines, line + 1, nested).endLine : line + 1
+      line = nativeContainerClosingLine(lines, bodyLine, end, nested.tag, nesting + 1)
       continue
     }    const open = new RegExp('^ {0,3}<' + tag + '(?=[\\s>])', 'i').test(text)
     const closes = new RegExp('</' + tag + '[\\t ]*>[\\t ]*$', 'i').test(text)
     if (open) {
-      if (!closes) depth++
+      // Only explicit marked shells own editable native structure. An
+      // unsupported literal <div>/<section> opener does not acquire a child
+      // scope when its authored closer has been escrowed by the finite codec.
+      if (legacyScope && !closes) depth++
     } else if (new RegExp('^ {0,3}</' + tag + '[\\t ]*>[\\t ]*$', 'i').test(text) && --depth === 0) return line
   }
   throw new NativeMarkdownContainerError('missing closing shell')
@@ -219,6 +233,8 @@ export function shiftNativeContainerRanges(token: Token, lineOffset: number): vo
 export function renderNativeContainerHeader(block: { type: string; content: string; markdownFormat?: MarkdownBlockFormat }): string {
   const content = encodeNativeLiteralText(block.content, 'title').source
   const escape = ' ' + NATIVE_LITERAL_ATTRIBUTE + '="' + NATIVE_LITERAL_VERSION + '"'
+  if (block.type === 'columns') return '<section data-knowbook-container="columns-v1"' + escape + '>'
+  if (block.type === 'column') return '<div data-knowbook-container="column-v1" data-knowbook-weight="' + block.markdownFormat?.columnWeight + '"' + escape + '>'
   // A title remains Markdown source. Closing shell-looking text is safe because
   // only an entire dedicated body line can close a native container.
   if (block.type === 'toggle') return '<details data-knowbook-container="toggle-v1"'
@@ -228,4 +244,6 @@ export function renderNativeContainerHeader(block: { type: string; content: stri
     .filter((entry): entry is [string, string] => typeof entry[1] === 'string').map(([name, value]) => ' ' + name + '="' + value + '"').join('')
   return '<aside data-knowbook-container="callout-v1"' + attrs + escape + '>\n<div data-knowbook-title="true">' + content + '</div>'
 }
-export function nativeContainerClosingTag(type: string): string { return type === 'toggle' ? '</details>' : '</aside>' }
+export function nativeContainerClosingTag(type: string): string {
+  return type === 'toggle' ? '</details>' : type === 'columns' ? '</section>' : type === 'column' ? '</div>' : '</aside>'
+}

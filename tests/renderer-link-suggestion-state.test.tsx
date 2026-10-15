@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom'
 import type { DocumentBlockDraft, DocumentSuggestion, ElectronApi } from '../src/shared/contracts'
 import { useEditorAssistState } from '../src/renderer/src/hooks/useEditorAssistState'
 import type { UiLanguage } from '../src/renderer/src/i18n'
+import { slashCommandCatalog } from '../src/renderer/src/utils/slashCommandCatalog'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -135,6 +136,7 @@ test('child slash commands are available only for list parents below the depth l
   await withAssist(t, async ({ state, update }) => {
     const parent = block('parent', '/child')
     await update({ blocks: [parent], index: 0, cursor: parent.content.length })
+    await act(async () => { await slashCommandCatalog.load('en-US') })
     assert.equal(state().activeSlashContext?.query, 'child')
     assert.equal(state().filteredSlashCommands.some(command => command.id === 'child'), false)
 
@@ -457,6 +459,7 @@ test('paragraph, headings, lists and quotes retain slash commands and working wi
     for (const type of proseTypes) {
       const slash = { ...block('input', '/todo'), type }
       await update({ blocks: [slash], cursor: slash.content.length })
+      await act(async () => { await slashCommandCatalog.load('en-US') })
       assert.equal(state().activeSlashContext?.query, 'todo', `${type} keeps slash commands`)
       assert.equal(state().activeSlashCommand?.id, 'todo')
       assert.ok(state().filteredSlashCommands.some(command => command.id === 'todo'))
