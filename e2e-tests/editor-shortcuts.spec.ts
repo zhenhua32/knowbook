@@ -6,6 +6,11 @@ async function createFreshDocumentEditor(page: Page): Promise<Locator> {
   await ensureDocumentMetadataEditor(page)
   await expect(page.locator('.document-summary-card .editor-input').first()).toHaveValue(/Untitled/i)
 
+  const markdownMode = page.getByRole('group', { name: uiText('Editing mode', '编辑模式') })
+    .getByRole('button', { name: 'Markdown', exact: true })
+  await markdownMode.click()
+  await expect(markdownMode).toHaveAttribute('aria-pressed', 'true')
+
   const editor = page.locator('textarea.block-inline-textarea').nth(1)
   await expect(editor).toBeVisible()
   return editor
