@@ -108,7 +108,9 @@ export function DatabaseTableView({
     if (!node) return
     const maximum = node.clientHeight > 0 && node.scrollHeight > 0
       ? Math.max(0, node.scrollHeight - node.clientHeight) : maximumScrollTop
-    const nextScrollTop = Math.min(boundedScrollTop, maximum)
+    // Native keyboard/wheel scrolling may advance after its last React event.
+    // Clamp the current DOM position instead of cancelling it with older state.
+    const nextScrollTop = Math.max(0, Math.min(node.scrollTop, maximumScrollTop, maximum))
     if (node.scrollTop !== nextScrollTop) node.scrollTop = nextScrollTop
     if (scrollTop !== node.scrollTop) setScrollTop(node.scrollTop)
   }, [boundedScrollTop, maximumScrollTop, scrollTop])

@@ -148,6 +148,36 @@ test('fresh objects with the same record IDs retain scroll position, input ident
   })
 })
 
+test('a native scroll that advances again before React commits is not rewound to the earlier scroll event', async () => {
+  await withViewport(async ({ document, scroll, render, move }) => {
+    await render(records)
+    const viewport = scroll()
+    viewport.scrollLeft = 175
+    const checkbox = rows(document)[0].querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await act(async () => checkbox.focus())
+
+    await act(async () => {
+      viewport.scrollTop = 156
+      viewport.dispatchEvent(new document.defaultView!.Event('scroll', { bubbles: true }))
+      // Native scrolling can continue before React commits the event's state.
+      viewport.scrollTop = 385
+    })
+
+    assert.equal(scroll(), viewport)
+    assert.equal(viewport.scrollTop, 385, 'committing the event for 156 must retain the newer native position')
+    assert.equal(viewport.scrollLeft, 175)
+    assert.equal(rows(document)[0].querySelector('input[type="checkbox"]'), checkbox)
+    assert.equal(document.activeElement, checkbox, 'a still-mounted focused control retains its identity')
+
+    await move(385)
+    assert.equal(viewport.scrollTop, 385)
+    assert.equal(viewport.scrollLeft, 175)
+    assert.deepEqual(titles(document), Array.from({ length: 27 }, (_, index) => `Record ${index}`),
+      'the next actual scroll renders a valid slice for the retained native position')
+    assert.ok(spacers(document).every(height => Number.isFinite(height) && height >= 0))
+  })
+})
+
 test('reordering or replacing a same-sized result set retains a valid position instead of forcing a jump to the top', async () => {
   await withViewport(async ({ document, scroll, render, move }) => {
     await render(records)
