@@ -6,7 +6,7 @@ import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron
 const managementPages = [
   { id: 'dashboard', en: 'Dashboard', zh: '总览', header: ':scope > .hero' },
   { id: 'ai', en: 'AI Assistant', zh: 'AI 助手', header: ':scope > .management-page-header' },
-  { id: 'settings', en: 'Settings', zh: '配置中心', header: ':scope > .settings-page-header' },
+  { id: 'settings', en: 'Settings', zh: '配置中心', header: ':scope > [data-testid="settings-route"]:not([hidden]) > .settings-page-header' },
   { id: 'search', en: 'Search', zh: '搜索', header: '.workspace-search-page > .management-page-header' },
   { id: 'plugins', en: 'Plugins', zh: '插件中心', header: '.plugins-page > .plugin-page-hero' }
 ] as const
@@ -19,9 +19,11 @@ async function openPage(page: Page, item: ManagementPage): Promise<void> {
   await navigation.click()
   await expect(navigation).toHaveClass(/active/)
   const content = page.locator(`.content.page-${item.id}`)
-  // Search is retained in a hidden child after first navigation. A direct-child
-  // selector distinguishes AI/settings headers from that hidden search header.
-  await expect(content.locator(item.header)).toBeVisible()
+  // AI owns a direct header; settings owns the header in its active retained
+  // route. Both scopes exclude the search header retained in a hidden child.
+  const header = content.locator(item.header)
+  await expect(header).toHaveCount(1)
+  await expect(header).toBeVisible()
   await content.evaluate(element => { element.scrollTop = 0 })
 }
 
