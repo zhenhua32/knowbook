@@ -23,7 +23,7 @@ export function collectDocumentMarkdownLinks(blocks: MarkdownRenderableBlock[]):
     while (line + 1 < lineOffsets.length && lineOffsets[line + 1] <= link.start) line++
     while (rangeIndex < ranges.length && ranges[rangeIndex].endLine <= line) rangeIndex++
     const range = ranges[rangeIndex], block = blocks[rangeIndex]
-    if (!range || !block || line < range.startLine || ['code', 'math', 'frontmatter'].includes(block.type)) continue
+    if (!range || !block || line < range.startLine || ['code', 'math', 'frontmatter', 'database-view'].includes(block.type)) continue
     const start = projectedMarkdownContentPosition(block, range, markdown, lines, lineOffsets, link.start, contentProjections?.[rangeIndex])
     const end = projectedMarkdownContentPosition(block, range, markdown, lines, lineOffsets, link.end, contentProjections?.[rangeIndex], true)
     if (start === null || end === null || end < start) continue

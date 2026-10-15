@@ -6,6 +6,7 @@ import { formatDatabaseValueDisplay } from '../model/databaseValueDisplay'
 import { useDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseCardView({
+  readOnly = false,
   fields,
   locale = 'en-US',
   records,
@@ -16,6 +17,7 @@ export function DatabaseCardView({
   onOpenRecord,
   onSelect
 }: {
+  readOnly?: boolean
   fields: DatabaseField[]
   locale?: string
   records: DatabaseRecord[]
@@ -36,9 +38,9 @@ export function DatabaseCardView({
       {records.slice(0, limit).map((record) => (
         <article className={`dbw-record-card${selectedIds.has(record.id) ? ' is-selected' : ''}`} key={record.id}>
           <label className="dbw-checkbox-hit-target dbw-card-checkbox-target">
-            <input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} className="dbw-card-checkbox" onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
+            <input disabled={readOnly} aria-label={text.selected(1)} checked={selectedIds.has(record.id)} className="dbw-card-checkbox" onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
           </label>
-          <button className="dbw-card-body" onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
+          <button disabled={readOnly && !(sourceKind === 'document-catalog' && record.documentId)} className="dbw-card-body" onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
             <span aria-hidden="true" className="dbw-card-icon">{sourceKind === 'document-catalog' ? '▤' : '▦'}</span>
             <strong title={record.title}>{record.title}</strong>
             <small title={String(record.fieldValues[sourceKind === 'document-catalog' ? DATABASE_SYSTEM_FIELD_IDS.path : DATABASE_SYSTEM_FIELD_IDS.document] ?? '')}>{String(record.fieldValues[sourceKind === 'document-catalog' ? DATABASE_SYSTEM_FIELD_IDS.path : DATABASE_SYSTEM_FIELD_IDS.document] ?? '')}</small>

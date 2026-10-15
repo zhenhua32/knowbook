@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { DocumentBlockAiEditMode, DocumentBlockDraft, PreviewDocumentBlockAiEditInput } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 
 type BlockRange = {
   start: number
@@ -80,7 +81,7 @@ export function useDocumentSelectionAiState({
   }, [draftBlocks, operationRange])
 
   const previewInput = useMemo<PreviewDocumentBlockAiEditInput | null>(() => {
-    if (!selectedDocument || !operationRange || selectedBlocks.length === 0) {
+    if (!selectedDocument || !operationRange || !canAiEditBlockText(draftBlocks, operationRange)) {
       return null
     }
 
@@ -93,25 +94,26 @@ export function useDocumentSelectionAiState({
       mode,
       instruction: mode === 'custom' ? customInstruction.trim() : undefined
     }
-  }, [customInstruction, draftSummary, draftTitle, mode, operationRange, selectedBlocks, selectedDocument])
+  }, [customInstruction, draftBlocks, draftSummary, draftTitle, mode, operationRange, selectedBlocks, selectedDocument])
 
   const previewSignature = useMemo(() => {
     return previewInput ? JSON.stringify(previewInput) : null
   }, [previewInput])
 
-  const isPreviewStale = Boolean(previewSourceSignature && previewSignature && previewSourceSignature !== previewSignature)
+  const isPreviewStale = Boolean(previewSourceSignature && previewSourceSignature !== previewSignature)
   const canGeneratePreview = Boolean(previewInput && aiEnabled && hasApiKey && !previewBusy && (mode !== 'custom' || customInstruction.trim()))
-  const canApplyPreview = Boolean(previewText && operationRange && !previewBusy && !isPreviewStale)
+  const canApplyPreview = Boolean(previewInput && previewText && operationRange && !previewBusy && !isPreviewStale)
 
   useEffect(() => {
     clearPreview()
   }, [clearPreview, selectedDocument?.id])
 
   const openSelectionAiEditor = useCallback(() => {
+    if (operationRange && !canAiEditBlockText(draftBlocks, operationRange)) return
     if (!documentsAuxPanelOpen) {
       onOpenAuxPanel()
     }
-  }, [documentsAuxPanelOpen, onOpenAuxPanel])
+  }, [documentsAuxPanelOpen, draftBlocks, onOpenAuxPanel, operationRange])
 
   const setMode = useCallback((nextMode: DocumentBlockAiEditMode) => {
     setModeState((previous) => {
@@ -153,7 +155,7 @@ export function useDocumentSelectionAiState({
   }, [aiEnabled, hasApiKey, previewInput, previewSignature, ui.aiRequestFailed])
 
   const applyPreview = useCallback(() => {
-    if (!previewText || !operationRange || isPreviewStale) {
+    if (!previewInput || !previewText || !operationRange || isPreviewStale) {
       return false
     }
 
@@ -163,7 +165,7 @@ export function useDocumentSelectionAiState({
     }
 
     return applied
-  }, [clearPreview, handleBlockPaste, isPreviewStale, operationRange, previewText])
+  }, [clearPreview, handleBlockPaste, isPreviewStale, operationRange, previewInput, previewText])
 
   return {
     applyPreview,

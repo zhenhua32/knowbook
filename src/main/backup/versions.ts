@@ -8,9 +8,9 @@ const versionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 const RECENT_COUNT = 10
 const DAILY_DAYS = 30
 
-export function writeSnapshotMetadata(root: string, documentCount: number): void {
+export function writeSnapshotMetadata(root: string, documentCount: number, snapshotId: string = randomUUID()): void {
   mkdirSync(join(root, '__knowbook'), { recursive: true })
-  writeFileSync(join(root, metadataFile), JSON.stringify({ id: randomUUID(), createdAt: new Date().toISOString(), documentCount }), 'utf8')
+  writeFileSync(join(root, metadataFile), JSON.stringify({ id: snapshotId, createdAt: new Date().toISOString(), documentCount }), 'utf8')
 }
 
 function readVersion(root: string, id: string, current: boolean): BackupVersion {

@@ -1,0 +1,5 @@
+.rich-database-view { min-width: 0; position: relative; margin-block: 8px; }
+.rich-database-view-host { min-width: 0; }
+.rich-database-view-state { border: 1px solid var(--kb-line); border-radius: 8px; padding: 12px; }
+.rich-database-view-select { border: 0; background: transparent; color: var(--kb-text-soft); cursor: pointer; }
+.rich-database-view.ProseMirror-selectednode { outline: 2px solid var(--kb-accent); outline-offset: 2px; }

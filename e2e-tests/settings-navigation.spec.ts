@@ -1,8 +1,71 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Frame, type Page, type TestInfo } from '@playwright/test'
+import type { ElectronApplication } from 'playwright'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
-type NavigationSaveProbe = { calls: number; reject: ((reason: Error) => void) | null }
+type NavigationSaveProbe = { calls: number; scheduled: number; delivered: number; reject: ((reason: Error) => void) | null }
 type NavigationProbeGlobal = typeof globalThis & { __knowbookNavigationSaveProbe?: NavigationSaveProbe }
+
+/** Observe the controlled failure without changing its IPC, rejection, or timing gate. */
+function observeControlledSave(app: ElectronApplication, page: Page) {
+  const child = app.process(), events: Array<{ at: string; type: string; detail?: unknown }> = []
+  let stdout = '', stderr = ''
+  const record = (type: string, detail?: unknown) => {
+    events.push({ at: new Date().toISOString(), type, detail })
+    if (events.length > 64) events.shift()
+  }
+  const output = (chunk: Buffer | string) => { stdout = (stdout + String(chunk)).slice(-32_000) }
+  const errorOutput = (chunk: Buffer | string) => { stderr = (stderr + String(chunk)).slice(-32_000) }
+  const exit = (code: number | null, signal: NodeJS.Signals | null) => record('main-child-exit', { code, signal })
+  const close = (code: number | null, signal: NodeJS.Signals | null) => record('main-child-close', { code, signal })
+  const processError = (error: Error) => record('main-child-error', { name: error.name, message: error.message, stack: error.stack })
+  const applicationClose = () => record('electron-application-close')
+  const pageClose = () => record('renderer-page-close')
+  const crash = () => record('renderer-page-crash')
+  const pageError = (error: Error) => record('renderer-page-error', { name: error.name, message: error.message, stack: error.stack })
+  const navigated = (frame: Frame) => { if (frame === page.mainFrame()) record('renderer-main-frame-navigation', { url: frame.url() }) }
+  child.stdout?.on('data', output); child.stderr?.on('data', errorOutput)
+  child.on('exit', exit); child.on('close', close); child.on('error', processError)
+  app.on('close', applicationClose)
+  page.on('close', pageClose); page.on('crash', crash); page.on('pageerror', pageError); page.on('framenavigated', navigated)
+  const processState = () => ({ pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode, killed: child.killed })
+  return {
+    async attach(info: TestInfo, context: { language: string; theme: string; tempRoot: string; phase: string; error: unknown; mainInstallation: unknown }) {
+      let renderer: unknown = { closed: page.isClosed() }
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      try {
+        if (!page.isClosed()) renderer = await Promise.race([
+          page.evaluate(() => {
+            const active = document.activeElement, save = document.querySelector<HTMLButtonElement>('.settings-ai-panel .settings-actions > .primary-button')
+            return { url: location.href, readyState: document.readyState, hasFocus: document.hasFocus(),
+              settingsVisible: Boolean(document.querySelector('.content.page-settings')),
+              selectedCategories: [...document.querySelectorAll('[role="tab"][aria-selected="true"]')].map(tab => tab.textContent),
+              save: save ? { connected: save.isConnected, busy: save.getAttribute('aria-busy'), disabled: save.disabled } : null,
+              errors: [...document.querySelectorAll('.settings-ai-save-error, .recovery-state, .error-boundary')]
+                .map(element => element.textContent?.slice(0, 1000)),
+              active: active ? { tag: active.tagName, id: active.id, class: active.className,
+                label: active.getAttribute('aria-label') } : null }
+          }).then(value => ({ available: true, value }), error => ({ available: false, error: String(error) })),
+          new Promise(resolve => { deadline = setTimeout(() => resolve({ available: false, diagnosticReadDeadlineMs: 1500 }), 1500) })
+        ])
+      } catch (error) { renderer = { available: false, error: String(error) } }
+      finally { if (deadline) clearTimeout(deadline) }
+      const failure = context.error instanceof Error ? { name: context.error.name, message: context.error.message, stack: context.error.stack } : String(context.error)
+      try {
+        await info.attach('controlled-navigation-save-runtime', { contentType: 'application/json', body: JSON.stringify({
+          recordedAt: new Date().toISOString(), ...context, error: failure, launcherProcess: processState(),
+          pages: page.context().pages().map(candidate => ({ closed: candidate.isClosed(), url: candidate.url() })),
+          renderer, events, stdout, stderr
+        }, null, 2) })
+      } catch (error) { console.warn('Could not attach controlled-save runtime diagnostics:', error) }
+    },
+    dispose() {
+      child.stdout?.off('data', output); child.stderr?.off('data', errorOutput)
+      child.off('exit', exit); child.off('close', close); child.off('error', processError)
+      app.off('close', applicationClose)
+      page.off('close', pageClose); page.off('crash', crash); page.off('pageerror', pageError); page.off('framenavigated', navigated)
+    }
+  }
+}
 
 async function openSettings(page: Page) {
   await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
@@ -471,15 +534,22 @@ for (const language of ['en-US', 'zh-CN'] as const) {
         await expect(port).toHaveValue('4455')
 
         // A gated IPC failure exercises busy and feedback re-renders without saving credentials or making AI requests.
-        await app.evaluate(({ ipcMain }) => {
-          const probe: NavigationSaveProbe = { calls: 0, reject: null }
+        const runtime = observeControlledSave(app, page)
+        let phase = 'install-controlled-save', mainInstallation: unknown
+        try {
+        mainInstallation = await app.evaluate(({ ipcMain }) => {
+          const probe: NavigationSaveProbe = { calls: 0, scheduled: 0, delivered: 0, reject: null }
           ;(globalThis as NavigationProbeGlobal).__knowbookNavigationSaveProbe = probe
           ipcMain.removeHandler('knowbook:update-ai-config')
           ipcMain.handle('knowbook:update-ai-config', () => {
             probe.calls++
             return new Promise<never>((_resolve, reject) => { probe.reject = reject })
           })
+          return { pid: process.pid, platform: process.platform, electron: process.versions.electron,
+            unhandledRejectionListeners: process.listenerCount('unhandledRejection'),
+            uncaughtExceptionListeners: process.listenerCount('uncaughtException') }
         })
+        phase = 'trigger-controlled-save'
         await clickCategoryWithMouse(1, 'clipping-to-ai-before-save')
         await expectPanelOpening('ai-before-controlled-save-opening')
         await wheelToBottom()
@@ -492,18 +562,33 @@ for (const language of ['en-US', 'zh-CN'] as const) {
         await expect(save).toHaveAttribute('aria-busy', 'true')
         expect(await content.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
         await expectStickyNavigation('ai-saving-keeps-reading-position')
+        phase = 'schedule-controlled-save-rejection-after-inspector-return'
         await app.evaluate(() => {
           const probe = (globalThis as NavigationProbeGlobal).__knowbookNavigationSaveProbe!
           if (!probe.reject) throw new Error('Missing controlled navigation save')
           const reject = probe.reject
           probe.reject = null
-          reject(new Error('Controlled navigation save failure'))
+          probe.scheduled++
+          // Return the Inspector command before delivering the real IPC completion.
+          setImmediate(() => {
+            probe.delivered++
+            reject(new Error('Controlled navigation save failure'))
+          })
         })
+        phase = 'assert-rejected-save-feedback-and-focus'
         await expect(page.locator('.settings-ai-save-error')).toContainText('Controlled navigation save failure')
         await expect(save).toBeFocused()
         await expect(model).toHaveValue(modelDraft)
         expect(await content.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
         await expectStickyNavigation('ai-save-feedback-keeps-reading-position')
+        expect(await app.evaluate(() => {
+          const probe = (globalThis as NavigationProbeGlobal).__knowbookNavigationSaveProbe!
+          return { calls: probe.calls, scheduled: probe.scheduled, delivered: probe.delivered, rejectNull: probe.reject === null }
+        })).toEqual({ calls: 1, scheduled: 1, delivered: 1, rejectNull: true })
+        } catch (error) {
+          await runtime.attach(testInfo, { language, theme, tempRoot, phase, error, mainInstallation })
+          throw error
+        } finally { runtime.dispose() }
 
         await resize(850)
         await expect(list).toHaveAttribute('aria-orientation', 'vertical')

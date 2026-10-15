@@ -21,7 +21,7 @@ function rewriteRecord(record: SyncRecord, rewrite: (url: string) => string | un
     return rewriteMarkdownDestinations(text, ({ url }) => rewrite(url))
   }
   return { ...record, content: { ...record.content, summary: transform(record.content.summary), blocks: record.content.blocks.map(block =>
-    block.type === 'code' || block.type === 'code-block' ? block : { ...block, content: transform(block.content),
+    block.type === 'code' || block.type === 'code-block' || block.type === 'database-view' ? block : { ...block, content: transform(block.content),
       ...(block.markdownFormat ? { markdownFormat: mapStrings(block.markdownFormat, transform) } : {}) }) } }
 }
 

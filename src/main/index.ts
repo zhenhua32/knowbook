@@ -4,6 +4,7 @@ import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 import electron from 'electron'
 import { AttachmentStore } from './attachments'
 import { registerAttachmentHandlers } from './attachment-ipc'
@@ -1627,31 +1628,38 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:create-document-database-column', (_event, input: CreateDocumentDatabaseColumnInput) => {
     const column: DocumentDatabaseColumn = store.createDocumentDatabaseColumn(input)
+    notifyWorkspaceMutation()
     return column
   })
 
   ipcMain.handle('knowbook:rename-document-database-column', (_event, input: RenameDocumentDatabaseColumnInput) => {
     store.renameDocumentDatabaseColumn(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:move-document-database-column', (_event, input: MoveDocumentDatabaseColumnInput) => {
     store.moveDocumentDatabaseColumn(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:update-document-database-column-options', (_event, input: UpdateDocumentDatabaseColumnOptionsInput) => {
     store.updateDocumentDatabaseColumnOptions(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:delete-document-database-column', (_event, columnId: string) => {
     store.deleteDocumentDatabaseColumn(columnId)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:update-document-database-value', (_event, input: UpdateDocumentDatabaseValueInput) => {
     store.updateDocumentDatabaseValue(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:create-document-database', (_event, input: CreateDatabaseInput) => {
     const database: DocumentDatabase = store.createDatabase(input)
+    notifyWorkspaceMutation()
     return database
   })
 
@@ -1660,17 +1668,21 @@ function registerIpcHandlers(): void {
     return databases
   })
 
+  ipcMain.handle('knowbook:get-database-embed-snapshot', (_event, databaseId: string) => store.getDatabaseEmbedSnapshot(databaseId))
+
   ipcMain.handle('knowbook:update-database-metadata', (_event, input: UpdateDatabaseMetadataInput) => {
     store.updateDatabaseMetadata(input)
     const updatedDatabase = store.getDatabases().find((database) => database.id === input.databaseId)
     if (!updatedDatabase) {
       throw new Error('Database not found after metadata update.')
     }
+    notifyWorkspaceMutation()
     return updatedDatabase
   })
 
   ipcMain.handle('knowbook:delete-database', (_event, databaseId: string) => {
     store.deleteDatabase(databaseId)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:get-database-saved-views', (_event, databaseId: string) => {
@@ -1680,49 +1692,63 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('knowbook:create-database-saved-view', (_event, input: CreateDatabaseSavedViewInput) => {
     const view: DatabaseSavedView = store.createDatabaseSavedView(input)
+    notifyWorkspaceMutation()
     return view
   })
 
   ipcMain.handle('knowbook:update-database-saved-view', (_event, input: UpdateDatabaseSavedViewInput) => {
     const view: DatabaseSavedView = store.updateDatabaseSavedView(input)
+    notifyWorkspaceMutation()
     return view
   })
 
   ipcMain.handle('knowbook:create-database-saved-view-form', (_event, input: CreateDatabaseSavedViewInput) => {
-    return runDatabaseSavedViewForm(() => store.createDatabaseSavedView(input))
+    const result = runDatabaseSavedViewForm(() => store.createDatabaseSavedView(input))
+    if (result.status === 'saved') notifyWorkspaceMutation()
+    return result
   })
 
   ipcMain.handle('knowbook:update-database-saved-view-form', (_event, input: UpdateDatabaseSavedViewInput) => {
-    return runDatabaseSavedViewForm(() => store.updateDatabaseSavedView(input))
+    const result = runDatabaseSavedViewForm(() => store.updateDatabaseSavedView(input))
+    if (result.status === 'saved') notifyWorkspaceMutation()
+    return result
   })
 
   ipcMain.handle('knowbook:reorder-database-saved-views', (_event, input: ReorderDatabaseSavedViewsInput) => {
-    return store.reorderDatabaseSavedViews(input)
+    const views = store.reorderDatabaseSavedViews(input)
+    notifyWorkspaceMutation()
+    return views
   })
 
   ipcMain.handle('knowbook:delete-database-saved-view', (_event, viewId: string) => {
     store.deleteDatabaseSavedView(viewId)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:create-database-entity', (_event, input: CreateDatabaseEntityInput) => {
     const entity: DatabaseEntity = store.createDatabaseEntity(input)
+    notifyWorkspaceMutation()
     return entity
   })
 
   ipcMain.handle('knowbook:update-database-entity', (_event, input: UpdateDatabaseEntityInput) => {
     store.updateDatabaseEntity(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:update-database-entities', (_event, input: UpdateDatabaseEntitiesInput) => {
     store.updateDatabaseEntities(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:delete-database-entity', (_event, entityId: string) => {
     store.deleteDatabaseEntity(entityId)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:delete-database-entities', (_event, input: DeleteDatabaseEntitiesInput) => {
     store.deleteDatabaseEntities(input)
+    notifyWorkspaceMutation()
   })
 
   ipcMain.handle('knowbook:get-database-entities', (_event, databaseId: string) => {
@@ -2484,6 +2510,9 @@ async function askAiAboutDocument(input: AskAiInput): Promise<AskAiResult> {
 async function previewDocumentBlockAiEdit(
   input: PreviewDocumentBlockAiEditInput
 ): Promise<PreviewDocumentBlockAiEditResult> {
+  if (input.selectedBlocks.length && !canAiEditBlockText(input.selectedBlocks)) {
+    throw new Error('Database views cannot be edited as text by AI.')
+  }
   const aiConfig = store.getAiConfigPublic()
   if (!aiConfig.enabled) {
     throw new Error('AI is disabled. Enable AI in settings first.')

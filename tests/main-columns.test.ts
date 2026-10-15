@@ -200,7 +200,7 @@ test('protocol v3 gates typed and actual source columns but allows literal fence
   const mixed = document([...columnForest(), ...damaged.content.blocks])
   assert.throws(() => validateRecord(mixed, 'doc:columns', 3), 'typed columns do not bypass validation of another marked source block')
   for (const version of [1, 2, 3]) assert.equal(parseManifest(Buffer.from(canonicalJson({ version, workspaceId: 'workspace', entries: {} }))).version, version)
-  assert.throws(() => parseManifest(Buffer.from(canonicalJson({ version: 4, workspaceId: 'workspace', entries: {} }))))
+  assert.throws(() => parseManifest(Buffer.from(canonicalJson({ version: 5, workspaceId: 'workspace', entries: {} }))))
 })
 
 test('separate column body edits and one complete resize merge without changing identities or inputs', () => {

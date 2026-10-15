@@ -7,6 +7,9 @@ import type { DocumentBlockDraft, DocumentTreeNode } from '../src/shared/contrac
 import { getUiText } from '../src/renderer/src/i18n'
 import { BLOCK_CONVERSION_TYPES } from '../src/renderer/src/utils/blockConversionTypes'
 import { createColdBlockPopup } from '../src/renderer/src/utils/coldBlockPopup'
+import type { DocumentsDomainState } from '../src/renderer/src/types/appDomains'
+import { serializeDatabaseViewPayload } from '../src/shared/databaseViewBlock'
+import { createDefaultDatabaseViewConfig, DATABASE_SYSTEM_FIELD_IDS } from '../src/shared/database-workspace'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -125,6 +128,23 @@ test('single and multiple block controls expose all sixteen conversions in the s
   assert.deepEqual([...context.document.querySelectorAll('select option')].map(option => option.getAttribute('value')), [...BLOCK_CONVERSION_TYPES])
 }))
 
+test('database single and mixed menus disable only ordinary conversions while copy, delete and move stay available', async () => withDom(async context => {
+  for (const props of [{ blockType: 'database-view' }, { blockType: '', selectedBlockCount: 2, conversionDisabled: true }]) {
+    const calls: string[] = []
+    await context.render(createElement(BlockContextMenu, menuProps({ ...props, onTypeChange: type => calls.push(type),
+      onCopyBlockLinks: () => calls.push('links'), onMoveToDocument: () => calls.push('move'), onDelete: () => calls.push('delete') })))
+    for (const type of BLOCK_CONVERSION_TYPES) {
+      const conversion = button(context, labels[type])
+      assert.equal(conversion.disabled, true)
+      await context.change(() => conversion.click())
+    }
+    assert.deepEqual(calls, [])
+    for (const label of ['Copy block links', 'Move to document…', 'Delete']) assert.equal(button(context, label).disabled, false)
+    await context.change(() => button(context, 'Copy block links').click())
+    assert.deepEqual(calls, ['links'])
+  }
+}))
+
 test('shared menu actions honor disabled state and keyboard Escape preserves an IME composition', async () => withDom(async context => {
   const calls: string[] = []
   await context.render(createElement(BlockContextMenu, menuProps({ onCopyBlockLinks: () => calls.push('links'), onMoveToDocument: () => calls.push('move'), onClose: () => calls.push('close') })))
@@ -225,6 +245,125 @@ function rowProps(block: DocumentBlockDraft, index: number, blocks: () => Docume
   }
 }
 const paragraph = (id: string): DocumentBlockDraft => ({ id, content: id, type: 'paragraph', checked: false, depth: 0 })
+
+test('real source and shared menu AI entries reject database atoms and their selected owners while atomic actions stay enabled', async () => withDom(async context => {
+  const { useDocumentBlockActions } = await import('../src/renderer/src/hooks/useDocumentBlockActions')
+  const database: DocumentBlockDraft = { ...paragraph('database'), type: 'database-view', depth: 1, parentBlockId: 'owner',
+    content: serializeDatabaseViewPayload({ version: 1, databaseId: 'private-source', viewId: null,
+      config: createDefaultDatabaseViewConfig('table', [DATABASE_SYSTEM_FIELD_IDS.title]) }) }
+  const blocks = [{ ...paragraph('owner'), type: 'toggle' }, database, paragraph('ordinary')]
+  let aiCalls = 0, selections = 0
+  for (const index of [0, 1, 2]) {
+    await context.render(null)
+    await context.render(createElement(BlockEditorRow, rowProps(blocks[index], index, () => blocks, {
+      hasChildren: index === 0, selectBlockRange: () => { selections++ }, onOpenSelectionAiEditor: () => { aiCalls++ }
+    })))
+    await context.change(() => context.document.querySelector<HTMLButtonElement>('.block-drag-handle')!.click())
+    const ai = context.document.querySelector<HTMLButtonElement>('.block-toolbar-ai-edit')!
+    assert.equal(ai.disabled, index !== 2)
+    for (const selector of ['.block-toolbar-duplicate', '.block-toolbar-delete']) {
+      assert.equal(context.document.querySelector<HTMLButtonElement>(selector)!.disabled, false)
+    }
+    await context.change(() => ai.click())
+  }
+  assert.equal(aiCalls, 1)
+  assert.equal(selections, 1, 'blocked Source AI buttons must not alter the block selection')
+
+  let actions!: ReturnType<typeof useDocumentBlockActions>
+  function Harness() {
+    const documents = { draftBlocks: blocks, selectedDocumentId: 'source', selectedDocument: { title: 'Source' },
+      selectedBlockRange: null, isBlockMoveBusy: false, checkpointDraft: noop,
+      getDraftBlocks: () => blocks, getRenameTarget: () => ({ documentId: 'source', session: 1 }),
+      getBlockActionTarget: (ids: string[]) => ids.length ? { documentId: 'source', session: 1, blockIds: ids, blocks, bookmark: null } : null,
+      isBlockActionTargetCurrent: () => true, setSelectedBlockRange: () => { selections++ }
+    } as unknown as DocumentsDomainState
+    actions = useDocumentBlockActions({ documents, documentTree: [], isZh: false, ui: getUiText('en-US'), onOpenAiEdit: () => { aiCalls++ } })
+    return actions.contextMenuProps ? createElement(BlockContextMenu, actions.contextMenuProps) : null
+  }
+  await context.render(createElement(Harness))
+  for (const blockIds of [['owner'], ['database'], ['owner', 'ordinary']]) {
+    await context.change(() => actions.openBlockActions({ blockIds, x: 20, y: 30 }))
+    assert.equal(button(context, 'AI edit').disabled, true)
+    for (const label of ['Copy block links', 'Move to document…', 'Duplicate', 'Delete']) assert.equal(button(context, label).disabled, false)
+    await context.change(() => { button(context, 'AI edit').click(); actions.contextMenuProps!.onOpenAiEdit!() })
+    assert.equal(aiCalls, 1, 'the actual shared hook must reject programmatic invocation as well as the disabled button')
+    assert.equal(selections, 1)
+  }
+  await context.change(() => actions.openBlockActions({ blockIds: ['ordinary'], x: 20, y: 30 }))
+  assert.equal(button(context, 'AI edit').disabled, false)
+  await context.change(() => button(context, 'AI edit').click())
+  await waitForUi(() => aiCalls === 2)
+}))
+
+test('the actual text AI hook never submits a database subtree and cannot apply a late prose preview to its replacement selection', async () => withDom(async context => {
+  const { useDocumentSelectionAiState } = await import('../src/renderer/src/hooks/useDocumentSelectionAiState')
+  const { DocumentSelectionAiPanel } = await import('../src/renderer/src/components/DocumentSelectionAiPanel')
+  const ordinary = [paragraph('ordinary')]
+  const protectedSelection: DocumentBlockDraft[] = [{ ...paragraph('owner'), type: 'toggle' }, {
+    ...paragraph('database'), type: 'database-view', depth: 1, parentBlockId: 'owner',
+    content: serializeDatabaseViewPayload({ version: 1, databaseId: 'private-source', viewId: null,
+      config: createDefaultDatabaseViewConfig('table', [DATABASE_SYSTEM_FIELD_IDS.title]) })
+  }]
+  type AiRequest = { input: import('../src/shared/contracts').PreviewDocumentBlockAiEditInput;
+    response: ReturnType<typeof deferred<import('../src/shared/contracts').PreviewDocumentBlockAiEditResult>> }
+  const requests: AiRequest[] = []
+  const recordedRequests = (): AiRequest[] => requests.slice()
+  Object.defineProperty(context.window, 'knowbook', { value: {
+    previewDocumentBlockAiEdit: (input: import('../src/shared/contracts').PreviewDocumentBlockAiEditInput) => {
+      const response = deferred<import('../src/shared/contracts').PreviewDocumentBlockAiEditResult>()
+      requests.push({ input, response }); return response.promise
+    }
+  } })
+  let current = protectedSelection, replace!: (blocks: DocumentBlockDraft[]) => void
+  let ai!: ReturnType<typeof useDocumentSelectionAiState>, opened = 0
+  const pasted: string[] = []
+  const ui = getUiText('en-US')
+  function Harness() {
+    const [blocks, setBlocks] = useState(current); current = blocks; replace = setBlocks
+    ai = useDocumentSelectionAiState({ aiEnabled: true, hasApiKey: true, documentsAuxPanelOpen: false,
+      draftBlocks: blocks, draftTitle: 'Source', draftSummary: '', selectedBlockRange: { start: 0, end: 0 },
+      selectedDocument: { id: 'source', title: 'Source', path: 'Source' }, getMultiBlockOperationRange: () => ({ start: 0, end: blocks.length - 1 }),
+      onOpenAuxPanel: () => { opened++ }, handleBlockPaste: (_index, text) => { pasted.push(text); return true }, ui })
+    return createElement(DocumentSelectionAiPanel, { ...ai, aiEnabled: true, hasApiKey: true, ui,
+      onApplyPreview: () => { ai.applyPreview() }, onClearPreview: ai.clearPreview, onCustomInstructionChange: ai.setCustomInstruction,
+      onGeneratePreview: () => { void ai.generatePreview() }, onModeChange: ai.setMode,
+      selectedBlockActionCount: ai.selectedBlockActionCount, selectedBlockCount: ai.selectedBlockCount })
+  }
+  await context.render(createElement(Harness))
+  assert.equal(ai.canGeneratePreview, false)
+  assert.equal(button(context, ui.aiSelectionGeneratePreview).disabled, true)
+  await context.change(() => { ai.openSelectionAiEditor(); void ai.generatePreview() })
+  assert.equal(opened, 0)
+  assert.deepEqual(recordedRequests(), [])
+
+  await context.change(() => replace(ordinary))
+  let first!: Promise<void>
+  await context.change(() => { first = ai.generatePreview() })
+  assert.equal(recordedRequests().length, 1)
+  const firstRequest = recordedRequests()[0]
+  assert.ok(firstRequest)
+  assert.deepEqual(firstRequest.input.selectedBlocks.map(block => block.type), ['paragraph'])
+  await act(async () => { firstRequest.response.resolve({ documentId: 'source', mode: 'summarize', instruction: 'Summarize', replacementText: 'Valid prose' }); await first })
+  assert.equal(ai.canApplyPreview, true)
+  await context.change(() => { assert.equal(ai.applyPreview(), true) })
+  assert.deepEqual(pasted, ['Valid prose'])
+
+  let late!: Promise<void>
+  await context.change(() => { late = ai.generatePreview() })
+  assert.equal(recordedRequests().length, 2)
+  const lateRequest = recordedRequests()[1]
+  assert.ok(lateRequest)
+  await context.change(() => replace(protectedSelection))
+  await act(async () => { lateRequest.response.resolve({ documentId: 'source', mode: 'summarize', instruction: 'Summarize', replacementText: 'Late prose' }); await late })
+  assert.equal(ai.canGeneratePreview, false)
+  assert.equal(ai.canApplyPreview, false)
+  assert.equal(ai.isPreviewStale, true)
+  assert.equal(button(context, ui.aiSelectionApplyPreview).disabled, true)
+  await context.change(() => { assert.equal(ai.applyPreview(), false); void ai.generatePreview() })
+  assert.equal(recordedRequests().length, 2, 'the new protected selection must not issue another text AI request')
+  assert.deepEqual(pasted, ['Valid prose'], 'a late text result must never be pasted into a database atom or its parent')
+  assert.deepEqual(current, protectedSelection)
+}))
 
 test('source right-click freezes explicitly selected IDs without adding hidden descendants, while outside the selection targets itself', async () => withDom(async context => {
   let blocks = ['A', 'child', 'B', 'C'].map(paragraph)

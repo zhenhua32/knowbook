@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { KnowbookStore } from '../database/store'
+import { mapDatabaseViewReferences, parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { canonicalJson, recordKey, validateRecord, SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncRecord, type SyncRow, type SyncDatabases, type SyncDocument } from './model'
 
 /** A complete remote move cannot be applied until its old owner has an
@@ -16,6 +17,33 @@ export class SyncBlockOwnershipError extends Error {
 }
 
 type SyncBlockTransferPlan = { id: string; fromId: string; fromPath: string; toId: string }
+
+function mapDocumentDatabaseViews(content: SyncDocument['content'], sourceCatalogId: string, targetCatalogId: string): SyncDocument['content'] {
+  return { ...content, blocks: content.blocks.map(block => {
+    if (block.type !== 'database-view') return block
+    const payload = parseDatabaseViewPayload(block.content)
+    // The existing database wire protocol reserves this identity. A literal
+    // missing/custom source must never silently bind to another device's catalog.
+    if (targetCatalogId === 'catalog' && sourceCatalogId !== 'catalog' && payload.databaseId === 'catalog')
+      throw new Error('数据库视图引用使用了同步保留的来源 ID catalog，请重新选择来源后同步；未发布或改绑数据。')
+    return { ...block, content: serializeDatabaseViewPayload(mapDatabaseViewReferences(payload, {
+      databaseId: source => source === sourceCatalogId ? targetCatalogId : source
+    })) }
+  }) }
+}
+
+/** Check wire identities before mapping its catalog sentinel into the local ID.
+ * A different raw reference/definition with that same ID must remain distinct. */
+export function preflightSyncCatalogReferences(records: Iterable<SyncRecord>, catalogId: string): void {
+  if (catalogId === 'catalog') return
+  for (const record of records) {
+    const collision = record.kind === 'document'
+      ? record.content.blocks.some(block => block.type === 'database-view' && parseDatabaseViewPayload(block.content).databaseId === catalogId)
+      : record.kind === 'databases' && (record.tables.databases.some(row => row.id === catalogId)
+        || SYNC_TABLES.some(table => record.tables[table].some(row => row.database_id === catalogId)))
+    if (collision) throw new Error('同步来源与本机默认数据库 ID 冲突，请重新选择来源或重新导入后重试；未发布或改绑数据。')
+  }
+}
 
 /** Read-only preflight is also used before remote manifest publication. */
 export function preflightSyncBlockTransfers(db: Database.Database, records: SyncRecord[], deferredDocuments: SyncDocument[] = []): SyncBlockTransferPlan[] {
@@ -100,14 +128,16 @@ export class SyncRepository {
 
   snapshot(): Map<string, SyncRecord> {
     const records = new Map<string, SyncRecord>()
+    const catalogId = this.catalogId()
+    if (catalogId !== 'catalog' && this.db.prepare("SELECT 1 FROM databases WHERE id = 'catalog'").get())
+      throw new Error('自定义数据库使用了同步保留的 ID catalog，请重新导入该数据库后同步；未发布或改绑数据。')
     const documents = this.db.prepare('SELECT id, parent_id, sort_order, created_at FROM documents ORDER BY id').all() as Array<{
       id: string; parent_id: string | null; sort_order: number; created_at: string
     }>
     for (const row of documents) records.set(`doc:${row.id}`, {
       kind: 'document', id: row.id, parentId: row.parent_id, sortOrder: row.sort_order,
-      createdAt: row.created_at, content: this.store.documentRecovery.readContent(row.id)
+      createdAt: row.created_at, content: mapDocumentDatabaseViews(this.store.documentRecovery.readContent(row.id), catalogId, 'catalog')
     })
-    const catalogId = this.catalogId()
     const tables = Object.fromEntries(SYNC_TABLES.map(table => [table,
       (this.db.prepare(`SELECT ${SYNC_TABLE_COLUMNS[table].join(',')} FROM ${table}`).all() as SyncRow[])
         .map(row => {
@@ -126,11 +156,12 @@ export class SyncRepository {
 
   /** Caller commits sync cursors in this same SQLite transaction. */
   apply(records: SyncRecord[]): void {
+    const transfers = preflightSyncBlockTransfers(this.db, records)
+    preflightSyncCatalogReferences(records, this.catalogId())
     const now = new Date().toISOString()
     const documents = records.filter((record): record is SyncDocument => record.kind === 'document')
     const documentIds = new Set(documents.map(record => record.id))
     const deletedIds = new Set(records.filter(record => record.kind === 'deleted').map(record => record.id))
-    const transfers = preflightSyncBlockTransfers(this.db, records)
     const deleted = records.filter(record => record.kind === 'deleted' && this.store.getDocumentSnapshot(record.id))
     // Archive every row before a transfer or cascade changes its original data.
     for (const record of deleted) this.store.documentRecovery.archive(record.id)
@@ -208,7 +239,7 @@ export class SyncRepository {
     }
     for (const record of documents) {
       const current = this.db.prepare('SELECT updated_at FROM documents WHERE id = ?').get(record.id) as { updated_at: string }
-      this.store.updateDocument(record.id, { ...record.content, title: byId.get(record.id)!.title }, { skipCheckpoint: true, skipLinkMaintenance: true })
+      this.store.updateDocument(record.id, { ...mapDocumentDatabaseViews(record.content, 'catalog', this.catalogId()), title: byId.get(record.id)!.title }, { skipCheckpoint: true, skipLinkMaintenance: true })
       // A remote write must invalidate an editor's optimistic timestamp even within the same millisecond.
       const updatedAt = new Date(Math.max(Date.now(), Date.parse(current.updated_at) + 1)).toISOString()
       this.db.prepare('UPDATE documents SET sort_order = ?, updated_at = ? WHERE id = ?').run(record.sortOrder, updatedAt, record.id)

@@ -145,7 +145,7 @@ export function decodedNativeSourceLines(source: string, tokens: NativeTextToken
     const native = token.meta?.nativeContainer as { literalEscaped?: boolean } | undefined
     if (token.type === 'native_container_open' && native)
       enabled.fill(native.literalEscaped ? 1 : 0, token.map[0], token.map[1])
-    else if (['fence', 'code_block', 'math_block', 'frontmatter', 'knowbook_metadata'].includes(token.type))
+    else if (['fence', 'code_block', 'math_block', 'frontmatter', 'knowbook_metadata', 'knowbook_database_view'].includes(token.type))
       enabled.fill(0, token.map[0], token.map[1])
   }
   return lines.map((line, index) => enabled[index] ? decodeNativeLiteralText(line).content : line)
@@ -157,6 +157,19 @@ export function projectedMarkdownContentPosition(block: { type: string; content:
   markdown: string, lines: string[], offsets: number[], position: number, projection?: NativeTextProjection, end = false): number | null {
   const value = projection ?? { content: block.content, source: block.content }
   if (value.content !== block.content) return null
+  if (block.type === 'database-view') {
+    const first = /^<!-- knowbook:block \{.*\} -->$/.test(lines[range.startLine] ?? '') ? range.startLine + 1 : range.startLine
+    const opening = /^([ \t]*)(`{3,}|~{3,})[ \t]*knowbook-database-view-v1[ \t]*$/.exec(lines[first] ?? '')
+    if (!opening || range.endLine !== first + 3) return null
+    const indent = opening[1], marker = opening[2]
+    const close = lines[range.endLine - 1]
+    if (!new RegExp('^' + indent + marker[0] + '{' + marker.length + ',}[ \\t]*$').test(close ?? '')
+      || lines[first + 1] !== indent + block.content) return null
+    // The serializer canonicalizes JSON. A differently spaced original payload
+    // has no character-for-character projection; never guess offsets into it.
+    const from = offsets[first + 1] + indent.length
+    return position >= from && position <= from + block.content.length ? position - from : null
+  }
   if (block.type === 'callout' || block.type === 'toggle') {
     const prefix = block.type === 'toggle' ? '<summary>' : '<div data-knowbook-title="true">'
     const contentStart = offsets[range.startLine + 1] + prefix.length

@@ -4,6 +4,7 @@ import './management-sections.css'
 import { lazy, Suspense, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
 import { WebClipExtensionSetup } from '../components/WebClipExtensionSetup'
+import { DashboardStorageOverview } from './DashboardStorageOverview'
 const WebDavSyncSettings = lazy(() => import('./WebDavSyncSettings'))
 
 type SettingsCategory = 'general' | 'ai' | 'sync' | 'storage' | 'clipping' | 'updates' | 'appearance'
@@ -291,6 +292,8 @@ export function DashboardSettingsSection({
     role: 'tabpanel' as const,
     hidden: activeCategory !== category
   })
+  if (!isSettingsPage) return <DashboardStorageOverview ui={ui} loading={loading} summary={summary}
+    aiEndpoint={aiEndpoint} recentDocuments={recentDocuments} onOpenDocument={onOpenDocument} />
   return (
     <>
       {isSettingsPage ? (
@@ -327,32 +330,6 @@ export function DashboardSettingsSection({
           </nav>
         ) : null}
         <article className={isSettingsPage ? 'settings-category-content' : 'panel large-panel'}>
-          {!isSettingsPage ? <><div className="panel-head">
-            <div>
-              <p className="panel-label">{ui.storageLabel}</p>
-              <h3>{ui.storageTitle}</h3>
-            </div>
-            {loading ? <span className="pill">{ui.common.loading}</span> : <span className="pill">{ui.common.ready}</span>}
-          </div>
-          <dl className="meta-grid">
-            <div>
-              <dt>{ui.databasePath}</dt>
-              <dd>{summary.databasePath || ui.initializing}</dd>
-            </div>
-            <div>
-              <dt>{ui.backupRoot}</dt>
-              <dd>{summary.backupRoot || ui.initializing}</dd>
-            </div>
-            <div>
-              <dt>{ui.lastBackup}</dt>
-              <dd>{summary.lastBackupAt ? new Date(summary.lastBackupAt).toLocaleString(ui.locale) : ui.notYetExported}</dd>
-            </div>
-            <div>
-              <dt>{ui.aiEndpoint}</dt>
-              <dd>{aiEndpoint}</dd>
-            </div>
-          </dl></> : null}
-
           {isSettingsPage ? (
             <>
               <section className="panel settings-category-panel" {...panelProps('sync')}>
@@ -606,30 +583,6 @@ export function DashboardSettingsSection({
           ) : null}
         </article>
 
-        {!isSettingsPage ? (
-          <article className="panel large-panel">
-            <div className="panel-head">
-              <div>
-                <p className="panel-label">{ui.recentDocumentsLabel}</p>
-                <h3>{ui.recentDocumentsTitle}</h3>
-              </div>
-            </div>
-            <div className="document-list">
-              {recentDocuments.map((document) => (
-                <button className="document-row document-button" key={document.id} onClick={() => onOpenDocument(document.id)} type="button">
-                  <div>
-                    <strong>{document.title}</strong>
-                    <p>{document.path}</p>
-                  </div>
-                  <div className="document-meta">
-                    <span>{document.blockCount} {ui.docStatBlocks}</span>
-                    <span>{new Date(document.updatedAt).toLocaleDateString(ui.locale)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </article>
-        ) : null}
       </section>
     </>
   )

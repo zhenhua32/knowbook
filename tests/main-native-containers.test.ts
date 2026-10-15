@@ -150,7 +150,7 @@ test('sync v2 accepts valid mixed trees and rejects closed parents, list mixed c
     assert.throws(() => validateRecord(document(bad), 'doc:native', 2), /格式/)
   }
   for (const version of [1, 2, 3]) assert.equal(parseManifest(Buffer.from(canonicalJson({ version, workspaceId: 'workspace', entries: {} }))).version, version)
-  assert.throws(() => parseManifest(Buffer.from(canonicalJson({ version: 4, workspaceId: 'workspace', entries: {} }))), /清单/)
+  assert.throws(() => parseManifest(Buffer.from(canonicalJson({ version: 5, workspaceId: 'workspace', entries: {} }))), /清单/)
 })
 
 test('three-way merge preserves native metadata and body changes while refusing inactive parent choices', () => {

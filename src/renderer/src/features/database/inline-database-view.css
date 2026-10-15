@@ -1,0 +1,10 @@
+.inline-database-view { position:relative; min-width:0; margin:12px 0; }
+.inline-database-view .dbw-shell, .inline-database-overlays { --dbw-bg:#fff;--dbw-canvas:#fbfbfc;--dbw-line:#e7e9ef;--dbw-line-strong:#d9dce6;--dbw-text:#20232c;--dbw-muted:#74798a;--dbw-soft:#f2f3f7;--dbw-accent:#6268dc;--dbw-accent-on:#fff;--dbw-accent-hover:#555bcf;--dbw-accent-soft:#eeefff;--dbw-danger:#b33e3e; position:relative;display:flex;flex-direction:column;min-width:0;height:520px;max-height:70vh;overflow:hidden;border:1px solid var(--dbw-line);border-radius:10px;background:var(--dbw-bg);color:var(--dbw-text); }
+.inline-database-overlays { display:contents;height:auto;max-height:none;overflow:visible; }
+.inline-database-view .dbw-canvas { min-height:0;flex:1; }
+.inline-database-view .dbw-toolbar { flex-wrap:wrap; }
+.inline-database-edit { margin-bottom:6px; }
+.inline-database-view-error { padding:12px;border:1px solid #b33e3e; }
+.database-view-picker { width:min(580px,90vw);max-height:85vh;overflow:auto; }
+.database-view-picker label { display:flex;flex-direction:column;gap:6px;margin:12px 0; }
+.database-view-picker footer { display:flex;gap:8px;justify-content:flex-end; }

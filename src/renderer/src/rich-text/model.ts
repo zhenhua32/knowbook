@@ -10,6 +10,7 @@ import { canBlockOwnChildren, isContainerBlockType } from '@shared/blockTypes'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
 import { resolveDraftBlockRelationship } from '../utils/draftTreePlacement'
 import { richTextSchema } from './schema'
+import { validateDatabaseViewBlock } from '@shared/databaseViewBlock'
 
 const textBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
   'heading-4', 'heading-5', 'heading-6', 'callout', 'toggle', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
@@ -91,6 +92,10 @@ function hasUnsupportedBlockSyntax(nodes: MarkdownNode[]): boolean {
 
 function blockToNode(block: DocumentBlockDraft, environment: MarkdownEnvironment, blockNodes: MarkdownNode[], listNumber?: number): Node {
   const stored = cloneRichTextBlock(block)
+  if (block.type === 'database-view') {
+    validateDatabaseViewBlock(block)
+    return richTextSchema.nodes.database_view_block.create({ block: stored })
+  }
   // Definitions carry document-wide meaning and are not ordinary inline text.
   const hasDefinition = /(?:^|\n) {0,3}\[[^\]\n]+\]:[ \t]*/.test(block.content)
   const inlineEnvironment = { ...environment, captureSourceLinks: true, captureCompatibility: true }

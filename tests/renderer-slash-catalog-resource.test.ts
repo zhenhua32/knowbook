@@ -43,6 +43,7 @@ const expectedCommands = [
   ['callout', 'type', 'callout'],
   ['toggle', 'type', 'toggle'],
   ['columns', 'action', 'columns'],
+  ['database', 'action', 'database'],
   ['toc', 'type', 'paragraph'],
   ['above', 'action', 'insert-above'],
   ['below', 'action', 'insert-below'],

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
-import { blockActionRoots, planBlockAction } from '../src/renderer/src/utils/documentBlockActions'
+import { blockActionRoots, canConvertBlockActionTargets, planBlockAction } from '../src/renderer/src/utils/documentBlockActions'
+import { serializeDatabaseViewPayload } from '../src/shared/databaseViewBlock'
+import { createDefaultDatabaseViewConfig } from '../src/shared/database-workspace'
 import { validateBlockTreeStructure } from '../src/renderer/src/utils/draftTreeNormalization'
 
 function fixture(): DocumentBlockDraft[] {
@@ -63,4 +65,21 @@ test('deletion expands subtrees without deleting surrounding unselected blocks a
   assert.equal(planBlockAction(blocks, ['deleted'], 'delete'), null)
   assert.equal(planBlockAction(blocks, [], 'duplicate'), null)
   assert.equal(planBlockAction([{ ...blocks[0], parentBlockId: 'missing' }], ['parent'], 'delete'), null)
+})
+
+test('database atom conversion is rejected for single or mixed selections while atomic duplication and deletion retain normal behavior', () => {
+  const content = serializeDatabaseViewPayload({ version: 1, databaseId: 'real-source', viewId: null, config: createDefaultDatabaseViewConfig() })
+  const atom: DocumentBlockDraft = { id: 'database-reference', type: 'database-view', content, checked: false, depth: 0, parentBlockId: null }
+  const blocks = [atom, fixture()[3]], before = structuredClone(blocks)
+  for (const ids of [[atom.id!], [atom.id!, 'other']]) {
+    assert.equal(canConvertBlockActionTargets(blocks, ids), false)
+    for (const type of ['paragraph', 'heading-1', 'code', 'divider', 'database-view']) assert.equal(planBlockAction(blocks, ids, 'convert', type), null)
+  }
+  assert.equal(canConvertBlockActionTargets(blocks, ['other']), true)
+  assert.equal(planBlockAction(blocks, ['other'], 'convert', 'database-view'), null, 'An ordinary conversion cannot manufacture a database payload')
+  const duplicated = planBlockAction(blocks, [atom.id!], 'duplicate')!
+  assert.equal(duplicated.length, 3); assert.equal(duplicated[1].type, 'database-view'); assert.equal(duplicated[1].content, content)
+  assert.notEqual(duplicated[1].id, atom.id)
+  assert.deepEqual(planBlockAction(blocks, [atom.id!], 'delete')!.map(block => block.id), ['other'])
+  assert.deepEqual(blocks, before)
 })

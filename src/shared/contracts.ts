@@ -261,6 +261,19 @@ export interface DatabaseEntity {
   fieldValues: Record<string, DocumentDatabaseFieldValue>
 }
 
+/** One read transaction, with no fallback to another database. Catalog entries
+ * contain real documents only; detached entities remain explicit in entities. */
+export type DatabaseEmbedSnapshot =
+  | { status: 'missing'; databaseId: string }
+  | {
+      status: 'ready'
+      database: DocumentDatabase
+      columns: DocumentDatabaseColumn[]
+      savedViews: DatabaseSavedView[]
+      entities: DatabaseEntity[]
+      catalogDocuments: DocumentCatalogEntry[]
+    }
+
 export interface CreateDatabaseInput {
   name: string
   description?: string
@@ -1056,6 +1069,7 @@ export interface ElectronApi {
   createDocumentDatabase: (input: CreateDatabaseInput) => Promise<DocumentDatabase>
   updateDatabaseMetadata: (input: UpdateDatabaseMetadataInput) => Promise<DocumentDatabase>
   getDatabases: () => Promise<DocumentDatabase[]>
+  getDatabaseEmbedSnapshot: (databaseId: string) => Promise<DatabaseEmbedSnapshot>
   deleteDatabase: (databaseId: string) => Promise<void>
   getDatabaseSavedViews: (databaseId: string) => Promise<DatabaseSavedView[]>
   createDatabaseSavedView: (input: CreateDatabaseSavedViewInput) => Promise<DatabaseSavedView>

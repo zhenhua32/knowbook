@@ -20,7 +20,7 @@ type SlashCommandLike = {
     }
   | {
       kind: 'action'
-      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete' | 'columns'
+      action: 'insert-above' | 'insert-below' | 'insert-child' | 'move-up' | 'move-down' | 'indent' | 'outdent' | 'duplicate' | 'delete' | 'columns' | 'database'
     }
 )
 

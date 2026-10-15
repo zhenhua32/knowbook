@@ -23,7 +23,7 @@ export function deleteCrossColumnSelection(state: EditorState): Transaction | nu
       const start = Math.max(from, pos + 1), end = Math.min(to, pos + node.nodeSize - 1)
       return start < end ? [{ from: start, to: end }] : []
     }
-    return node.type.name === 'source_block' && from <= pos && to >= pos + node.nodeSize ? [{ from: pos, to: pos + node.nodeSize }] : []
+    return (node.type.name === 'source_block' || node.type.name === 'database_view_block') && from <= pos && to >= pos + node.nodeSize ? [{ from: pos, to: pos + node.nodeSize }] : []
   })
   for (let index = ranges.length - 1; index >= 0; index--) tr.delete(ranges[index].from, ranges[index].to)
   tr.setSelection(Selection.near(tr.doc.resolve(tr.mapping.map(from, -1)), 1))

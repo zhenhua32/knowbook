@@ -2,6 +2,7 @@ import type { DocumentBlockDraft } from '../../shared/contracts'
 import { isOrderedListBlockType, isTaskBlockType } from '../../shared/blockTypes'
 import { normalizeMarkdownFormat } from '../../shared/markdownFormat'
 import { COLUMN_WEIGHT_TOTAL, isColumnWeight } from '../../shared/columns'
+import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { collectMarkdownSourceLinks } from '../../shared/markdownLinks'
 import { markdownTableWidthValueRanges } from '../../shared/markdownTableLayoutRanges'
 import { parseMarkdownTableNode } from '../../shared/markdownTable'
@@ -276,8 +277,13 @@ export function mergeSyncDocument(base: SyncDocument, local: SyncDocument, remot
     }
     blocks = before.map((block, index) => {
       const localBlock = left[index], remoteBlock = right[index]
-      const merged: DocumentBlockDraft = { ...block, content: text({ id: `block:${block.id}:content`, field: 'block-content', blockId: block.id, canEditText: true },
-        block.content, localBlock.content, remoteBlock.content) }
+      const atomContent = () => same(localBlock.content, remoteBlock.content) ? localBlock.content
+        : same(block.content, localBlock.content) ? remoteBlock.content : same(block.content, remoteBlock.content) ? localBlock.content
+        : resolve({ id: `block:${block.id}:content`, field: 'block-content', blockId: block.id, canEditText: false },
+          block.content, localBlock.content, remoteBlock.content, content => { try { parseDatabaseViewPayload(content); return true } catch { return false } })
+      const merged: DocumentBlockDraft = { ...block, content: block.type === 'database-view' ? atomContent()
+        : text({ id: `block:${block.id}:content`, field: 'block-content', blockId: block.id, canEditText: true },
+          block.content, localBlock.content, remoteBlock.content) }
       for (const property of blockProperties) {
         if (block.type === 'column' && property === 'markdownFormat') {
           merged.markdownFormat = { columnWeight: mergedWeights.get(block.id!)! }

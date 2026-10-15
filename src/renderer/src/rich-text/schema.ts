@@ -47,9 +47,15 @@ function importedBlock(type: string): Record<string, unknown> {
   return { block: { type, content: '', checked: false, depth: 0, parentBlockId: null }, originalInline: null }
 }
 
+/** Both source probes and serializers see the same independent fragment.
+ * The actual PM attrs retain their complete owning forest relationship. */
+function isolatedSourceBlock(block: DocumentBlockDraft): DocumentBlockDraft {
+  return { ...block, depth: 0, parentBlockId: null }
+}
+
 export function richTextSourceMarkdown(node: Node): string {
   const block = node.attrs.block as DocumentBlockDraft | null
-  return block ? serializeBlocksToMarkdown([block]) : ''
+  return block ? serializeBlocksToMarkdown([isolatedSourceBlock(block)]) : ''
 }
 
 function requiresLiteralClipboard(block: DocumentBlockDraft): boolean {
@@ -58,7 +64,7 @@ function requiresLiteralClipboard(block: DocumentBlockDraft): boolean {
     'table_of_contents', 'wiki_link', 'html_details_open', 'html_element_open'])
   const visit = (nodes: MarkdownNode[]): boolean => nodes.some(({ token, children }) =>
     unsupported.has(token.type) || Boolean(token.meta?.callout || token.meta?.wiki) || visit(children))
-  return visit(parseMarkdownDocumentBlocks([block]).blockNodes[0])
+  return visit(parseMarkdownDocumentBlocks([isolatedSourceBlock(block)]).blockNodes[0])
 }
 
 /** The editor uses its own NodeView. This DOM is used for clipboard HTML:
@@ -122,6 +128,15 @@ export const richTextSchema = new Schema({
       isolating: true,
       toDOM: node => ['div', { ...blockAttributes(node), class: 'rich-text-column block-editor-row',
         'data-column-weight': String(node.attrs.block?.markdownFormat?.columnWeight ?? 10000) }, 0]
+    },
+    database_view_block: {
+      attrs: blockAttrs,
+      group: 'block',
+      atom: true,
+      selectable: true,
+      draggable: true,
+      leafText: richTextSourceMarkdown,
+      toDOM: richTextSourceDom
     },
     source_block: {
       attrs: blockAttrs,

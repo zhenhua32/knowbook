@@ -4,9 +4,9 @@ import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice } from '../../shared/webdav-sync'
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
-import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, requiresPageCompositionProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
+import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, requiresPageCompositionProtocol, requiresDatabaseViewProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
 import { mergeSyncDocument } from './merge'
-import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, SyncBlockOwnershipError } from './repository'
+import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, preflightSyncCatalogReferences, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
 
 const CONFIG_KEY = 'sync.webdav.config'
@@ -221,6 +221,8 @@ export class WebDavSyncService {
   private async exchange(client: WebDavClient): Promise<void> {
     const state = this.state()
     const raw = this.store.getSyncRecords()
+    const catalogId = this.store.getDatabases().find(database => database.kind === 'document-catalog')?.id
+    if (!catalogId) throw new Error('默认数据库配置缺失，未发布或修改数据。')
     const local = new Map<string, SyncRecord>()
     this.stage('preparing', raw.size)
     for (const [key, record] of raw) {
@@ -256,10 +258,15 @@ export class WebDavSyncService {
       throw new Error('无法分配冲突副本，请重新同步后重试。')
     }
     const remoteRecord = async (key: string, hash: string): Promise<SyncRecord> => {
-      if (this.remoteObjects.has(hash)) return validateRecord(this.remoteObjects.get(hash)!, key, manifest.version)
+      const checked = (value: SyncRecord): SyncRecord => {
+        const record = validateRecord(value, key, manifest.version)
+        preflightSyncCatalogReferences([record], catalogId)
+        return record
+      }
+      if (this.remoteObjects.has(hash)) return checked(this.remoteObjects.get(hash)!)
       const object = await client.get(`objects/${hash}.json`, MAX_RECORD_BYTES)
       if (!object || hashBytes(object.bytes) !== hash) throw new Error('远端文档版本缺失或校验失败，未更新本地数据。')
-      const record = validateRecord(JSON.parse(Buffer.from(object.bytes).toString('utf8')), key, manifest.version)
+      const record = checked(JSON.parse(Buffer.from(object.bytes).toString('utf8')) as SyncRecord)
       this.remoteObjects.set(hash, record)
       this.remoteObjectBytes += Buffer.byteLength(canonicalJson(record))
       while (this.remoteObjects.size > 256 || this.remoteObjectBytes > 32 * 1024 * 1024) {
@@ -411,7 +418,8 @@ export class WebDavSyncService {
     }
     // Publish the compatibility gate in the same conditional manifest write as
     // its first new tree. A competing older writer must reread the new gate.
-    if ([...writes.values()].some(requiresPageCompositionProtocol)) next.version = 3
+    if ([...writes.values()].some(requiresDatabaseViewProtocol)) next.version = 4
+    else if (next.version < 3 && [...writes.values()].some(requiresPageCompositionProtocol)) next.version = 3
     else if (next.version === 1 && [...writes.values()].some(requiresStructureEditingProtocol)) next.version = 2
     const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
     const writtenDocumentIds = new Set([...writes.values()].flatMap(record => record.kind === 'databases' ? [] : [record.id]))

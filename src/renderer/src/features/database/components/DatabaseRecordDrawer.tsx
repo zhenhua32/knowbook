@@ -163,6 +163,7 @@ export function DatabaseRecordDrawer({
   const closeRef = useRef<HTMLButtonElement | null>(null)
   const errorId = useId()
   const draftSession = useRef<string | null>(null)
+  const baseline = useRef<DatabaseRecord | null>(null)
   const edited = useRef(false)
   const [draft, setDraft] = useState<RecordDraft>({ title: '', documentId: '', fieldValues: {} })
   const propertyFields = useMemo(() => fields.filter((field) => field.role === 'property'), [fields])
@@ -177,6 +178,7 @@ export function DatabaseRecordDrawer({
   useLayoutEffect(() => {
     if (!open || !record) {
       draftSession.current = null
+      baseline.current = null
       edited.current = false
       return
     }
@@ -197,8 +199,10 @@ export function DatabaseRecordDrawer({
             Object.hasOwn(current.fieldValues, field.id) ? current.fieldValues[field.id] : toDocumentValue(record.fieldValues[field.id])]))
         }
       })
+      if (baseline.current) baseline.current = { ...baseline.current, fieldValues: { ...record.fieldValues, ...baseline.current.fieldValues } }
       return
     }
+    baseline.current = structuredClone(record)
     setDraft({
       title: record.title,
       documentId: record.documentId ?? '',
@@ -245,7 +249,7 @@ export function DatabaseRecordDrawer({
         {submission.failed ? <p className="dbw-record-submit-error" id={errorId} role="alert">{text.formFailed}</p> : null}
         <footer className="dbw-drawer-footer">
           <button className="dbw-danger-quiet-button" disabled={submission.busy} onClick={() => { if (!submission.isBusy()) onDelete(record) }} type="button">{text.deleteRecord}</button>
-          <div><button className="dbw-quiet-button" disabled={submission.busy} onClick={close} type="button">{text.cancel}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => { if (draft.title.trim()) void submission.submit(() => onSave(record, draft), onClose) }} type="button">{submission.busy ? text.saving : text.save}</button></div>
+          <div><button className="dbw-quiet-button" disabled={submission.busy} onClick={close} type="button">{text.cancel}</button><button aria-describedby={submission.failed ? errorId : undefined} className="dbw-primary-button" disabled={submission.busy || !draft.title.trim()} onClick={() => { if (draft.title.trim()) void submission.submit(() => onSave(baseline.current ?? record, draft), onClose) }} type="button">{submission.busy ? text.saving : text.save}</button></div>
         </footer>
       </aside>
     </>

@@ -124,6 +124,11 @@ export function buildBlockSlashCommands(language: UiLanguage): BlockSlashCommand
       keywords: ['columns', 'layout', '分栏', '两列'], kind: 'action', action: 'columns'
     },
     {
+      id: 'database', label: language === 'zh-CN' ? '数据库视图' : 'Database view',
+      description: language === 'zh-CN' ? '嵌入已有数据库的实时视图。' : 'Embed a live view of an existing database.',
+      keywords: ['database', 'linked', 'view', '数据库', '视图'], kind: 'action', action: 'database'
+    },
+    {
       id: 'toc', label: language === 'zh-CN' ? '文内目录' : 'Table of contents',
       description: language === 'zh-CN' ? '插入自动更新的章节目录。' : 'Insert an automatically updated heading index.',
       keywords: ['outline', 'contents', '目录'], kind: 'type', type: 'paragraph', templateContent: '[TOC]'

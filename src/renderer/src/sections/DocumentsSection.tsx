@@ -58,6 +58,7 @@ type DocumentsSectionProps = {
   blockEditorRowSharedProps: SharedBlockEditorRowProps | null
   onEditorKeyDown: KeyboardEventHandler<HTMLDivElement>
   onAddBlock: () => void
+  onInsertDatabaseView?: () => void
   onAuxPanelWidthChange: (value: number) => void
   addBlockLabel: string
   linkSuggestionPanelProps: ComponentProps<typeof LinkSuggestionPanel> | null
@@ -126,6 +127,7 @@ export function DocumentsSection({
   blockEditorRowSharedProps,
   onEditorKeyDown,
   onAddBlock,
+  onInsertDatabaseView,
   onAuxPanelWidthChange,
   addBlockLabel,
   linkSuggestionPanelProps,
@@ -395,6 +397,8 @@ export function DocumentsSection({
                   <span aria-hidden="true">＋</span>
                   {addBlockLabel}
                 </button> : null}
+                {!isReadingMode && editorMode === 'markdown' && onInsertDatabaseView ? <button className="secondary-button add-block-button"
+                  onClick={onInsertDatabaseView} type="button">{previewHeaderProps.isZh ? '插入数据库视图' : 'Insert database view'}</button> : null}
                 {isReadingMode ? null : linkSuggestionPanelProps ? (
                   <LinkSuggestionPanel {...linkSuggestionPanelProps} />
                 ) : (

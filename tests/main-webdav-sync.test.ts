@@ -236,7 +236,7 @@ test('columns protocol3 rejects invalid ownership, weights, hidden source and fu
     assert.deepEqual(server.files.get('/KnowBook/manifest.json'), malformed)
     assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
   }
-  const unsupported = Buffer.from(canonicalJson({ ...manifest, version: 4 }))
+  const unsupported = Buffer.from(canonicalJson({ ...manifest, version: 5 }))
   server.files.set('/KnowBook/manifest.json', unsupported)
   const before = receivedMoveState(b.store), state = syncStateRows(b.store), requestStart = server.requests.length
   await assert.rejects(b.sync.sync(), /清单无效|版本不受支持/)

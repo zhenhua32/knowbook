@@ -22,6 +22,13 @@ export function blockActionRoots(blocks: DocumentBlockDraft[], ids: readonly str
   }).map(block => block.id!)
 }
 
+/** A database reference can be moved or removed as a whole block. Its private
+ * payload is never prose for the ordinary block-type conversion controls. */
+export function canConvertBlockActionTargets(blocks: DocumentBlockDraft[], ids: readonly string[]): boolean {
+  const selected = new Set(ids)
+  return ids.length > 0 && !blocks.some(block => selected.has(block.id ?? '') && block.type === 'database-view')
+}
+
 export function planBlockAction(blocks: DocumentBlockDraft[], ids: readonly string[], action: 'convert' | 'duplicate' | 'delete',
   type?: string): DocumentBlockDraft[] | null {
   const roots = blockActionRoots(blocks, ids)
@@ -29,7 +36,7 @@ export function planBlockAction(blocks: DocumentBlockDraft[], ids: readonly stri
   let next: DocumentBlockDraft[] = blocks.map(block => ({ ...block, tags: block.tags && [...block.tags],
     markdownFormat: block.markdownFormat && { ...block.markdownFormat } }))
   if (action === 'convert') {
-    if (!type) return null
+    if (!type || type === 'database-view' || !canConvertBlockActionTargets(blocks, ids)) return null
     // Hidden descendants retain their type and complete subtree. Resolve all
     // selected owner/child types together before shaping task and source data.
     next = prepareDraftBlockTypeChanges(next, ids, type)

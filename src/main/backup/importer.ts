@@ -22,6 +22,8 @@ import { collectMarkdownDestinations, parseLocalMarkdownUrl, relativeMarkdownPat
 import { KnowbookStore } from '../database/store'
 import { createMarkdownImportReport, type ImportedMarkdownFile } from './import-report'
 import { collectBackupAssetReferences, rewriteBackupAssetReferences } from './markdown-asset-references'
+import { parseArchiveV2, type ArchiveV2 } from './v2-format'
+import { applyRestoreV2, planRestoreV2 } from './v2-restore'
 
 type RestoreSourceDocument = {
   kind: 'document'
@@ -74,6 +76,7 @@ type RestoreSourceStandaloneDatabaseManifest = {
 type RestoreSourceFile = RestoreSourceDocument | RestoreSourceStandaloneDatabase | RestoreSourceStandaloneDatabaseManifest
 
 type PreparedRestoreSources = {
+  archiveV2?: ArchiveV2
   sourceDocuments: RestoreSourceDocument[]
   sourceStandaloneDatabases: RestoreSourceStandaloneDatabase[]
   sourceStandaloneDatabaseManifest: RestoreSourceStandaloneDatabaseManifest | undefined
@@ -192,11 +195,13 @@ export class MarkdownRestoreService {
   }
 
   async previewFromDirectory(root: string): Promise<BackupRestorePreview> {
+    const prepared = await this.prepareRestoreSources(root, false)
+    if (prepared.archiveV2) return { root, ...planRestoreV2(this.store, prepared.archiveV2).preview }
     const {
       sourceDocuments,
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest
-    } = await this.prepareRestoreSources(root, false)
+    } = prepared
     const snapshots = this.store.getAllDocumentSnapshots()
     const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
     const snapshotsByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]))
@@ -259,8 +264,11 @@ export class MarkdownRestoreService {
       sourceStandaloneDatabases,
       sourceStandaloneDatabaseManifest,
       assets,
-      wikiAssets
+      wikiAssets,
+      archiveV2
     } = await this.prepareRestoreSources(root, true)
+
+    const v2Plan = archiveV2 ? planRestoreV2(this.store, archiveV2) : null
 
     const stagedAssets = await this.stageRestoreAssets(assets)
     const publishedAssets: PublishedRestoreAsset[] = []
@@ -272,6 +280,15 @@ export class MarkdownRestoreService {
       }
 
       return this.store.runInTransaction(() => {
+        if (v2Plan) return this.store.runInBulkDocumentMutation(() => {
+          const existingIds = new Set(this.store.getAllDocumentSnapshots().map(document => document.id))
+          const result = applyRestoreV2(this.store, v2Plan, root)
+          const importedFiles: ImportedMarkdownFile[] = v2Plan.archive.documents.map(source => {
+            const id = v2Plan.identities.find(row => row.kind === 'document' && row.source_id === source.id)!.target_id
+            return { sourceFilePath: source.sourceFilePath, documentId: id, status: existingIds.has(id) ? 'updated' : 'created' }
+          })
+          return { ...result, importReport: createMarkdownImportReport(this.store, importedFiles, root, this.assetRoot, wikiAssets) }
+        })
         const importedFiles: ImportedMarkdownFile[] = []
         const result = this.store.runInBulkDocumentMutation(() => {
           let created = 0
@@ -370,6 +387,23 @@ export class MarkdownRestoreService {
     if (parsedDocuments.length !== sourceInputs.length) {
       throw new Error('Restore Markdown parser returned an incomplete result.')
     }
+    const archiveV2 = parseArchiveV2(sourceInputs, parsedDocuments)
+    if (archiveV2) {
+      const fileKey = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+      const byFile = new Map(archiveV2.documents.map(source => [fileKey(source.sourceFilePath), source]))
+      for (const source of archiveV2.documents) for (const block of source.blocks) {
+        if (['code', 'math', 'database-view'].includes(block.type)) continue
+        block.content = rewriteMarkdownDestinations(block.content, ({ url, kind }) => {
+          const local = parseLocalMarkdownUrl(url)
+          if (kind === 'image' || !local?.path || !/\.md$/i.test(local.path)) return null
+          const file = local.path.startsWith('/') ? resolve(root, local.path.slice(1)) : resolve(dirname(source.sourceFilePath), local.path)
+          const target = byFile.get(fileKey(file))
+          return target ? relativeMarkdownPath(`${source.path}.md`, `${target.path}.md`) + local.suffix : null
+        })
+      }
+      return { archiveV2, sourceDocuments: [], sourceStandaloneDatabases: [], sourceStandaloneDatabaseManifest: undefined,
+        assets: [...assetsByDestination.values()], wikiAssets }
+    }
     const sourceFiles = sourceInputs.map((source, index) => this.buildRestoreSourceFile(
       source.filePath,
       source.relativePath,
@@ -399,7 +433,7 @@ export class MarkdownRestoreService {
     const documentsByFile = new Map(sourceDocuments.map((source) => [fileKey(source.sourceFilePath), source]))
     for (const source of sourceDocuments) {
       for (const block of source.blocks) {
-        if (['code', 'math'].includes(block.type)) continue
+        if (['code', 'math', 'database-view'].includes(block.type)) continue
         block.content = rewriteMarkdownDestinations(block.content, ({ url, kind }) => {
           const local = parseLocalMarkdownUrl(url)
           if (kind === 'image' || !local?.path || !/\.md$/i.test(local.path)) return null

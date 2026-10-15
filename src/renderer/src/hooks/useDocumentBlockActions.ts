@@ -7,14 +7,19 @@ import type { DocumentBlockActionTarget } from './useDocumentEditorState'
 import type { BlockContextMenuProps } from '../components/BlockContextMenu'
 import type { DocumentBlockMoveDialogProps } from '../components/DocumentBlockMoveDialog'
 import { blockConversionLabels } from '../utils/blockConversionTypes'
-import { planBlockAction } from '../utils/documentBlockActions'
+import { canConvertBlockActionTargets, planBlockAction } from '../utils/documentBlockActions'
 import { captureEditorHistoryBookmark, restoreEditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { getErrorMessage } from '../utils/errorMessage'
 import { createColdBlockPopup, type ColdBlockPopup } from '../utils/coldBlockPopup'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 
 type Opening = { target: DocumentBlockActionTarget; opener: HTMLElement | null; x: number; y: number; cold?: ColdBlockPopup }
-export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit }: {
-  documents: DocumentsDomainState; documentTree: DocumentTreeNode[]; isZh: boolean; ui: UiText; onOpenAiEdit?: () => void
+function canAiEditOpening(opening: Opening): boolean {
+  const indices = opening.target.blockIds.map(id => opening.target.blocks.findIndex(block => block.id === id))
+  return indices.length > 0 && canAiEditBlockText(opening.target.blocks, { start: Math.min(...indices), end: Math.max(...indices) })
+}
+export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit, onInsertDatabaseView }: {
+  documents: DocumentsDomainState; documentTree: DocumentTreeNode[]; isZh: boolean; ui: UiText; onOpenAiEdit?: () => void; onInsertDatabaseView?: (anchorId: string) => void
 }) {
   const live = useRef(documents), currentMenu = useRef<Opening | null>(null), currentMove = useRef<Opening | null>(null)
   live.current = documents
@@ -177,8 +182,13 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     x: menu.x, y: menu.y, blockType: menu.target.blockIds.length === 1
       ? menu.target.blocks.find(block => block.id === menu.target.blockIds[0])?.type ?? '' : '',
     selectedBlockCount: menu.target.blockIds.length, onTypeChange: type => apply(menu, 'convert', type, true),
+    conversionDisabled: !canConvertBlockActionTargets(menu.target.blocks, menu.target.blockIds),
+    aiEditDisabled: !canAiEditOpening(menu),
     onDuplicate: () => apply(menu, 'duplicate'), onDelete: () => apply(menu, 'delete'), onClose: closeMenu,
     onWrapInColumns: () => { void wrapInColumns(menu) },
+    onInsertDatabaseView: onInsertDatabaseView && menu.target.blockIds.length === 1 ? () => {
+      if (live.current.isBlockActionTargetCurrent(menu.target)) onInsertDatabaseView(menu.target.blockIds[0])
+    } : undefined,
     onCopyBlockLinks: () => { void copy(menu) }, onMoveToDocument: () => openMove(menu),
     disabled: copying || documents.isBlockMoveBusy, moveDisabledReason: moveReason(menu),
     currentHighlight: menu.target.blockIds.length === 1 ? menu.target.blocks.find(block => block.id === menu.target.blockIds[0])?.highlight : undefined,
@@ -189,10 +199,10 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
       live.current.setDraftBlocks(next); live.current.pushToHistory(next, menu.target.bookmark)
     },
     onOpenAiEdit: () => {
-      if (!live.current.isBlockActionTargetCurrent(menu.target)) return
+      if (!live.current.isBlockActionTargetCurrent(menu.target) || !canAiEditOpening(menu)) return
       const indices = menu.target.blockIds.map(id => menu.target.blocks.findIndex(block => block.id === id))
       live.current.setSelectedBlockRange({ start: Math.min(...indices), end: Math.max(...indices) })
-      requestAnimationFrame(() => { if (sameSession(menu.target)) aiOpening.current?.() })
+      requestAnimationFrame(() => { if (sameSession(menu.target) && live.current.isBlockActionTargetCurrent(menu.target) && canAiEditOpening(menu)) aiOpening.current?.() })
     },
     typeOptions: blockConversionLabels(ui.blockTypeOptions), isZh, ui, canOpen: () => canOpen(menu),
     canReturnFocus: () => canReturnFocus(menu)

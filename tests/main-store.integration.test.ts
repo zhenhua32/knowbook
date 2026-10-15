@@ -1278,6 +1278,11 @@ test('database metadata, columns, lookups, and entity lifecycle cover successful
 
 test('block AI edit prompts validate selection and enforce table-only output rules', () => {
   withStore((store) => {
+    for (const selectedBlocks of [[{ type: 'database-view', content: '{"private":"payload"}', checked: false, depth: 0 }],
+      [{ type: 'toggle', content: 'Owner', checked: false, depth: 0 }, { type: ' database-view ', content: '{"private":"payload"}', checked: false, depth: 1 }]]) {
+      assert.throws(() => store.buildDocumentBlockAiEditPrompt({ documentId: 'doc', documentTitle: 'Title', documentPath: 'Title',
+        documentSummary: '', selectedBlocks, mode: 'rewrite' }, 'Rewrite'), /Database views cannot be edited as text by AI/)
+    }
     assert.throws(() => store.buildDocumentBlockAiEditPrompt({
       documentId: 'doc',
       documentTitle: 'Title',

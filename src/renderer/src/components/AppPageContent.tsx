@@ -26,9 +26,10 @@ const AISection = lazy(async () => {
   return { default: module.AISection }
 })
 
-const DashboardSettingsSection = lazy(async () => {
-  const module = await import('../sections/DashboardSettingsSection')
-  return { default: module.DashboardSettingsSection }
+const SettingsPage = lazy(() => import('../pages/SettingsPage'))
+const DashboardStorageOverview = lazy(async () => {
+  const module = await import('../sections/DashboardStorageOverview')
+  return { default: module.DashboardStorageOverview }
 })
 
 const PluginsSection = lazy(async () => {
@@ -58,6 +59,8 @@ export function AppPageContent({
 }: AppPageContentProps) {
   const [searchMounted, setSearchMounted] = useState(false)
   useEffect(() => { if (shell.activePage === 'search') setSearchMounted(true) }, [shell.activePage])
+  const [settingsMounted, setSettingsMounted] = useState(false)
+  useEffect(() => { if (shell.activePage === 'settings') setSettingsMounted(true) }, [shell.activePage])
   const [recoveryTarget, onOpenRecovery] = useState<DataRecoveryTarget | null>(null)
   useEffect(() => {
     const open = () => onOpenRecovery({ kind: 'trash' })
@@ -102,6 +105,30 @@ export function AppPageContent({
           <SearchPage isActive={shell.activePage === 'search'} isZh={shell.isZh} documentTree={shell.homeData.documentTree}
             request={shell.searchRequest} onOpenDocument={documents.openDocumentInDocumentsPage}
             onOpenBlock={documents.openDocumentBlockInDocumentsPage} />
+        </Suspense>
+        </ErrorBoundary>
+      </div>}
+      {(settingsMounted || shell.activePage === 'settings') && <div hidden={shell.activePage !== 'settings'} data-testid="settings-route"
+        style={{ display: shell.activePage === 'settings' ? 'flex' : 'none', flexDirection: 'column', flexShrink: 0,
+          gap: 'inherit', width: 'min(100%, 1520px)', marginInline: 'auto' }}>
+        <ErrorBoundary page onNavigate={() => shell.setActivePage('documents')}
+          navigateLabel={shell.isZh ? '返回文档' : 'Return to documents'}>
+        <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
+          <SettingsPage settings={{ ...features.settingsParams, isSettingsPage: shell.activePage === 'settings' }}
+            requestedCategory={shell.settingsCategoryRequest}
+            onCategoryRequestHandled={shell.clearSettingsCategoryRequest}
+            appearanceContent={<PluginSlot contributions={pluginUiContributions} slot="settings.sections" />}
+            recoveryContent={
+              <section className="settings-group">
+                <h3>{shell.isZh ? '数据恢复' : 'Data recovery'}</h3>
+                <p>{shell.isZh ? '找回删除的文档，或查看并恢复自动保留的备份版本。单篇文档历史可从文档右上角菜单打开。' : 'Recover deleted documents or restore retained backups. Document history is available from each document’s action menu.'}</p>
+                <div className="settings-actions">
+                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'trash' })}>{shell.isZh ? '打开回收站' : 'Open Trash'}</button>
+                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'backups' })}>{shell.isZh ? '查看备份版本' : 'View backup versions'}</button>
+                </div>
+              </section>
+            }
+          />
         </Suspense>
         </ErrorBoundary>
       </div>}
@@ -187,24 +214,9 @@ export function AppPageContent({
 
         {shell.activePage === 'plugins' ? <PluginsSection {...features.plugins.sectionProps} /> : null}
 
-        {shell.activePage === 'dashboard' || shell.activePage === 'settings' ? (
-          <DashboardSettingsSection
-            {...features.settingsSectionProps}
-            requestedCategory={shell.settingsCategoryRequest}
-            onCategoryRequestHandled={shell.clearSettingsCategoryRequest}
-            appearanceContent={<PluginSlot contributions={pluginUiContributions} slot="settings.sections" />}
-            recoveryContent={
-              <section className="settings-group">
-                <h3>{shell.isZh ? '数据恢复' : 'Data recovery'}</h3>
-                <p>{shell.isZh ? '找回删除的文档，或查看并恢复自动保留的备份版本。单篇文档历史可从文档右上角菜单打开。' : 'Recover deleted documents or restore retained backups. Document history is available from each document’s action menu.'}</p>
-                <div className="settings-actions">
-                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'trash' })}>{shell.isZh ? '打开回收站' : 'Open Trash'}</button>
-                  <button type="button" className="secondary-button" onClick={() => onOpenRecovery({ kind: 'backups' })}>{shell.isZh ? '查看备份版本' : 'View backup versions'}</button>
-                </div>
-              </section>
-            }
-          />
-        ) : null}
+        {shell.activePage === 'dashboard' ? <DashboardStorageOverview ui={shell.ui} loading={shell.loading}
+          summary={shell.homeData.summary} aiEndpoint={shell.homeData.aiConfig.baseUrl}
+          recentDocuments={shell.homeData.recentDocuments} onOpenDocument={documents.openDocumentInDocumentsPage} /> : null}
       </Suspense>
     </main>
   )

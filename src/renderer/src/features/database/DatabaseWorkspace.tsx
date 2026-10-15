@@ -43,8 +43,12 @@ import { DatabaseMultiSelectCellCache, multiSelectSchema } from './model/databas
 import { selectCellSchema } from './model/databaseSelectCells'
 import { checkboxCellSchema } from './model/databaseCheckboxCells'
 import { dateDraftFieldId, dateDraftKey } from './model/databaseDateCells'
+import { coordinateDatabaseCellWrite, coordinateDatabaseCellWrites } from './model/databaseCellWrites'
+import { DatabaseWorkspaceOverlays } from './components/DatabaseWorkspaceOverlays'
 
 type DatabaseWorkspaceProps = {
+  embedded?: { config: DatabaseViewConfigV1; onChange: (config: DatabaseViewConfigV1) => void;
+    readOnly: boolean; session: object; onChooseSource: () => void }
   activeViewId: string
   catalogColumns: DocumentDatabaseColumn[]
   catalogDocuments: DocumentCatalogEntry[]
@@ -61,7 +65,7 @@ type DatabaseWorkspaceProps = {
   onActiveViewIdChange: (viewId: string) => void
   onCurrentDatabaseIdChange: (databaseId: string) => void
   onMessage: AppMessageHandler
-  onOpenDocument: (documentId: string) => void
+  onOpenDocument: (documentId: string, shouldContinue?: () => boolean) => void
   onRefresh: (databaseId?: string, preferredViewId?: string, shouldContinue?: () => boolean) => Promise<void | boolean>
   onSavedDatabase?: (database: DocumentDatabase, options?: { activate?: boolean }) => void
   onDeleted?: (deletion: DatabaseDeletion) => void | Promise<void>
@@ -85,6 +89,7 @@ type ConfirmTarget =
   | { kind: 'records'; ids: string[]; name: string }
 
 export function DatabaseWorkspace({
+  embedded,
   activeViewId,
   catalogColumns,
   catalogDocuments,
@@ -108,6 +113,9 @@ export function DatabaseWorkspace({
   onSavedView,
   onSelectedRecordIdsChange
 }: DatabaseWorkspaceProps) {
+  const shellRef = useRef<HTMLElement | null>(null)
+  const overlayRef = useRef<HTMLElement | null>(null)
+  const writable = !embedded?.readOnly
   const text = useMemo(() => getDatabaseWorkspaceText(locale), [locale])
   const localTextDraftCache = useRef<DatabaseTextDraftCache | null>(null)
   if (!localTextDraftCache.current) localTextDraftCache.current = new DatabaseTextDraftCache()
@@ -116,11 +124,13 @@ export function DatabaseWorkspace({
   if (!localMultiSelectCache.current) localMultiSelectCache.current = new DatabaseMultiSelectCellCache()
   const multiCells = multiSelectCache ?? localMultiSelectCache.current
   const sources = useMemo(() => adaptDatabaseSources(databases), [databases])
-  const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? sources[0]
+  const currentSource = sources.find((source) => source.id === currentDatabaseId) ?? (embedded ? undefined : sources[0])
   const currentSourceIdRef = useRef(currentSource?.id)
   currentSourceIdRef.current = currentSource?.id
-  const fieldSourceSessionRef = useRef({ id: currentSource?.id })
-  if (fieldSourceSessionRef.current.id !== currentSource?.id) fieldSourceSessionRef.current = { id: currentSource?.id }
+  const fieldSourceSessionRef = useRef({ id: currentSource?.id, embed: embedded?.session })
+  if (fieldSourceSessionRef.current.id !== currentSource?.id || fieldSourceSessionRef.current.embed !== embedded?.session) {
+    fieldSourceSessionRef.current = { id: currentSource?.id, embed: embedded?.session }
+  }
   const fieldSourceSession = fieldSourceSessionRef.current
   const viewSessionRef = useRef({ sourceId: currentSource?.id, viewId: activeViewId })
   if (viewSessionRef.current.sourceId !== currentSource?.id || viewSessionRef.current.viewId !== activeViewId) {
@@ -182,7 +192,7 @@ export function DatabaseWorkspace({
     cancelOpener: null as HTMLElement | null, acknowledged: false })
   const openConfirm = (target: ConfirmTarget, cancelOpener: HTMLElement | null = null) => {
     confirmOwner.current = { source: fieldSourceSessionRef.current, view: viewSessionRef.current,
-      returnFocus: document.querySelector<HTMLInputElement>('.dbw-main-search input'), cancelOpener, acknowledged: false }
+      returnFocus: shellRef.current?.querySelector<HTMLInputElement>('.dbw-main-search input') ?? null, cancelOpener, acknowledged: false }
     setConfirmSession(++confirmSessionRef.current)
     setConfirmTarget(target)
   }
@@ -196,6 +206,14 @@ export function DatabaseWorkspace({
   }, [confirmTarget, confirmSession, fieldSourceSession, viewSession])
   const [bulkFieldId, setBulkFieldId] = useState('')
   const [bulkValue, setBulkValue] = useState<DocumentDatabaseFieldValue>(null)
+  const drawerOwner = useRef(fieldSourceSession)
+  useLayoutEffect(() => {
+    if (embedded && (drawerOwner.current !== fieldSourceSession || !writable)) {
+      setFieldDrawerOpen(false); setCreateRecordOpen(false); setOpenRecordId(null)
+      setBulkFieldId(''); setBulkValue(null)
+    }
+    drawerOwner.current = fieldSourceSession
+  }, [embedded?.session, fieldSourceSession, writable])
 
   const labels = useMemo(() => ({
     title: text.title,
@@ -210,11 +228,14 @@ export function DatabaseWorkspace({
   }), [locale, text.linkedDocument, text.title])
 
   const columns = currentSource?.kind === 'document-catalog' ? catalogColumns : selectedColumns
-  const fields = useMemo(() => currentSource?.kind === 'document-catalog'
+  const fields = useMemo(() => (currentSource?.kind === 'document-catalog'
     ? adaptCatalogFields(columns, labels)
-    : adaptCustomFields(columns, labels), [columns, currentSource?.kind, labels])
+    : adaptCustomFields(columns, labels)).map(field => writable ? field : { ...field, editable: false }), [columns, currentSource?.kind, labels, writable])
   const records = useMemo(() => !currentSource ? [] : currentSource.kind === 'document-catalog'
-    ? adaptCatalogRecords(currentSource.id, catalogDocuments)
+    ? [...adaptCatalogRecords(currentSource.id, catalogDocuments.filter(document => !entities.some(entity => entity.id === document.id && !entity.documentId))),
+      ...adaptCustomRecords(currentSource.id, entities.filter(entity => entity.databaseId === currentSource.id && !entity.documentId), catalogDocuments).map(record => ({ ...record,
+        fieldValues: { ...record.fieldValues, [DATABASE_SYSTEM_FIELD_IDS.path]: '', [DATABASE_SYSTEM_FIELD_IDS.parent]: null,
+          [DATABASE_SYSTEM_FIELD_IDS.blockCount]: 0, [DATABASE_SYSTEM_FIELD_IDS.linkCount]: 0, [DATABASE_SYSTEM_FIELD_IDS.childCount]: 0 } }))]
     : adaptCustomRecords(currentSource.id, entities, catalogDocuments), [catalogDocuments, currentSource, entities])
   useLayoutEffect(() => {
     if (currentSource) cellDrafts.prune(currentSource.id, new Set(records.map(record => record.id)),
@@ -234,7 +255,8 @@ export function DatabaseWorkspace({
     draftCache: viewDraftCache,
     fields,
     onActiveViewIdChange,
-    savedViews
+    savedViews,
+    controlled: embedded
   })
   const visibleFields = useMemo(() => {
     const byId = new Map(fields.map((field) => [field.id, field]))
@@ -261,52 +283,54 @@ export function DatabaseWorkspace({
   }, [filteredRecords, onSelectedRecordIdsChange, selectedRecordIds])
 
   useEffect(() => {
-    if (draft.layout !== 'board' || draft.groupBy.fieldId) return
+    if (embedded || draft.layout !== 'board' || draft.groupBy.fieldId) return
     const nextField = fields.find((field) => field.type === 'select' || field.type === 'multi-select')
       ?? fields.find((field) => field.id === DATABASE_SYSTEM_FIELD_IDS.parent)
       ?? fields.find((field) => field.role === 'property')
     if (nextField) updateDraft((current) => ({ ...current, groupBy: { fieldId: nextField.id } }))
-  }, [draft.groupBy.fieldId, draft.layout, fields, updateDraft])
+  }, [draft.groupBy.fieldId, draft.layout, embedded, fields, updateDraft])
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
+      if (embedded && (!target || !shellRef.current?.contains(target) && !overlayRef.current?.contains(target))) return
       if (target?.closest('[role="dialog"], [role="alertdialog"], .dbw-action-menu, .dbw-menu-wrap > button[aria-expanded="true"], .dbw-new-view-menu[open], .dbw-toolbar-menu[open]')) return
       const isTyping = target?.matches('input, textarea, select, [contenteditable="true"]')
       if (event.key === '/' && !isTyping) {
         event.preventDefault()
-        document.querySelector<HTMLInputElement>('.dbw-main-search input')?.focus()
+        shellRef.current?.querySelector<HTMLInputElement>('.dbw-main-search input')?.focus()
         return
       }
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'l') {
         event.preventDefault()
-        document.querySelector<HTMLButtonElement>('.dbw-source-trigger')?.focus()
+        shellRef.current?.querySelector<HTMLButtonElement>('.dbw-source-trigger')?.focus()
         return
       }
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'v') {
         event.preventDefault()
-        document.querySelector<HTMLElement>('.dbw-new-view-menu summary')?.focus()
+        shellRef.current?.querySelector<HTMLElement>('.dbw-new-view-menu summary')?.focus()
         return
       }
-      if (event.key === 'Delete' && !isTyping && currentSource?.kind === 'custom' && selectedRecordIds.length > 0) {
+      if (writable && event.key === 'Delete' && !isTyping && currentSource?.kind === 'custom' && selectedRecordIds.length > 0) {
         event.preventDefault()
         openConfirm({ kind: 'records', ids: selectedRecordIds, name: text.selected(selectedRecordIds.length) })
       }
     }
     window.addEventListener('keydown', handleShortcut)
     return () => window.removeEventListener('keydown', handleShortcut)
-  }, [currentSource?.kind, selectedRecordIds, text])
+  }, [currentSource?.kind, embedded, selectedRecordIds, text, writable])
 
   if (!currentSource) return <div className="dbw-loading">{text.loading}</div>
 
   const reportError = (error: unknown) => onMessage(error instanceof Error ? error.message : text.failed, 'error')
   const run = async (action: () => Promise<void>, successMessage?: string) => {
+    if (!writable || !mounted.current || fieldSourceSessionRef.current !== fieldSourceSession) return false
     try {
       await action()
-      if (successMessage) onMessage(successMessage)
+      if (successMessage && mounted.current && fieldSourceSessionRef.current === fieldSourceSession) onMessage(successMessage)
       return true
     } catch (error) {
-      reportError(error)
+      if (mounted.current && fieldSourceSessionRef.current === fieldSourceSession) reportError(error)
       return false
     }
   }
@@ -329,6 +353,7 @@ export function DatabaseWorkspace({
     }
   }
   const runFieldMutation = async <T,>(mutate: () => Promise<T>, onSaved?: (result: T) => void) => {
+    if (!writable || !mounted.current || fieldSourceSessionRef.current !== fieldSourceSession) return false
     let result: T
     try {
       result = await mutate()
@@ -348,8 +373,9 @@ export function DatabaseWorkspace({
   }
 
   const switchSource = (databaseId: string) => {
+    if (embedded) { embedded.onChooseSource(); return }
     if (databaseId !== currentSource.id) {
-      fieldSourceSessionRef.current = { id: databaseId }
+      fieldSourceSessionRef.current = { id: databaseId, embed: undefined }
       viewSessionRef.current = { sourceId: databaseId, viewId: '' }
     }
     onSelectedRecordIdsChange([])
@@ -364,14 +390,18 @@ export function DatabaseWorkspace({
   }
 
   const createDocumentOrRecord = () => {
+    if (!writable) return
     if (currentSource.kind === 'custom') {
       setCreateRecordOpen(true)
       return
     }
+    const ownsCreation = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession
+      && viewSessionRef.current === viewSession
     void run(async () => {
       const created = await window.knowbook.createDocument(null)
-      await onRefresh(currentSource.id)
-      onOpenDocument(created.id)
+      if (!ownsCreation()) return
+      const refreshed = await onRefresh(currentSource.id, undefined, ownsCreation)
+      if (refreshed !== false && ownsCreation()) onOpenDocument(created.id, ownsCreation)
     })
   }
 
@@ -399,6 +429,7 @@ export function DatabaseWorkspace({
   }
 
   const submitForm = async () => {
+    if (!writable || embedded) return
     if (!mounted.current || formSessionRef.current !== formSession || formRequests.current.has(formSession)) return
     const name = formName.trim()
     if (!name) return
@@ -595,13 +626,16 @@ export function DatabaseWorkspace({
   }
 
   const updateValue = async (record: DatabaseRecord, field: DatabaseField, value: DocumentDatabaseFieldValue, fromTextCell = false): Promise<void | DatabaseValueCommitResult> => {
-    const write = async () => {
-      if (currentSource.kind === 'document-catalog') {
-        await window.knowbook.updateDocumentDatabaseValue({ documentId: record.id, columnId: field.id, value })
+    if (!writable || !mounted.current || fieldSourceSessionRef.current !== fieldSourceSession) return { status: 'failed', message: text.formFailed }
+    const write = () => coordinateDatabaseCellWrite(record.databaseId, record.id, field.id, async () => {
+      if (!writable || !mounted.current || fieldSourceSessionRef.current !== fieldSourceSession
+        || viewSessionRef.current !== viewSession) throw new Error(text.formFailed)
+      if (currentSource.kind === 'document-catalog' && record.documentId) {
+        await window.knowbook.updateDocumentDatabaseValue({ documentId: record.documentId, columnId: field.id, value })
       } else {
         await window.knowbook.updateDatabaseEntity({ entityId: record.id, fieldValues: { [field.id]: value } })
       }
-    }
+    })
     const choiceCell = fromTextCell && (field.type === 'multi-select' || field.type === 'select' || field.type === 'checkbox')
     const dateCell = fromTextCell && field.type === 'date'
     if (field.type !== 'text' && !choiceCell && !dateCell) {
@@ -644,18 +678,22 @@ export function DatabaseWorkspace({
 
   const updateLinkedDocument = async (record: DatabaseRecord, documentId: string | null) => {
     await run(async () => {
-      await window.knowbook.updateDatabaseEntity({ entityId: record.id, documentId })
+      await coordinateDatabaseCellWrite(currentSource.id, record.id, DATABASE_SYSTEM_FIELD_IDS.document, async () => {
+        if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession || viewSessionRef.current !== viewSession) throw new Error(text.formFailed)
+        await window.knowbook.updateDatabaseEntity({ entityId: record.id, documentId })
+      })
       await refresh(activeViewId)
     })
   }
 
   const refreshAfterRecordSave = async () => {
-    if (currentSourceIdRef.current !== currentSource.id) return
+    const ownsSave = () => mounted.current && fieldSourceSessionRef.current === fieldSourceSession && viewSessionRef.current === viewSession
+    if (!ownsSave()) return
     try {
-      await refresh(activeViewId)
+      await onRefresh(currentSource.id, activeViewId, ownsSave)
     } catch {
       // The mutation already succeeded; retrying creation would duplicate it.
-      onMessage(text.savedRefreshFailed, 'error')
+      if (ownsSave()) onMessage(text.savedRefreshFailed, 'error')
     }
   }
 
@@ -673,18 +711,26 @@ export function DatabaseWorkspace({
 
   const saveRecord = async (record: DatabaseRecord, recordDraft: { title: string; documentId: string; fieldValues: Record<string, DocumentDatabaseFieldValue> }) => {
     return run(async () => {
-      await window.knowbook.updateDatabaseEntity({
-        entityId: record.id,
-        title: recordDraft.title,
-        documentId: recordDraft.documentId || null,
-        fieldValues: recordDraft.fieldValues
+      const fieldValues = Object.fromEntries(Object.entries(recordDraft.fieldValues)
+        .filter(([id, value]) => JSON.stringify(value ?? null) !== JSON.stringify(record.fieldValues[id] ?? null)))
+      const title = recordDraft.title !== record.title ? recordDraft.title : undefined
+      const documentId = recordDraft.documentId !== (record.documentId ?? '') ? recordDraft.documentId || null : undefined
+      if (!Object.keys(fieldValues).length && title === undefined && documentId === undefined) return
+      const cells = Object.keys(fieldValues).map(fieldId => ({ recordId: record.id, fieldId }))
+      if (title !== undefined) cells.push({ recordId: record.id, fieldId: DATABASE_SYSTEM_FIELD_IDS.title })
+      if (documentId !== undefined) cells.push({ recordId: record.id, fieldId: DATABASE_SYSTEM_FIELD_IDS.document })
+      await coordinateDatabaseCellWrites(currentSource.id, cells, async () => {
+        if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession || viewSessionRef.current !== viewSession) throw new Error(text.formFailed)
+        await window.knowbook.updateDatabaseEntity({ entityId: record.id,
+          ...(title === undefined ? {} : { title }), ...(documentId === undefined ? {} : { documentId }),
+          ...(Object.keys(fieldValues).length ? { fieldValues } : {}) })
       })
       await refreshAfterRecordSave()
     })
   }
 
   const moveBoardRecord = async (record: DatabaseRecord, field: DatabaseField | null, groupId: string) => {
-    if (!field) return
+    if (!field || !writable) return
     const value: string | boolean | null = groupId === '__ungrouped__'
       ? null
       : groupId === '__checked__'
@@ -693,6 +739,7 @@ export function DatabaseWorkspace({
           ? false
           : groupId.startsWith('value:') ? groupId.slice('value:'.length) : groupId
     if (field.id === DATABASE_SYSTEM_FIELD_IDS.parent && currentSource.kind === 'document-catalog') {
+      if (!record.documentId) return
       const parent = value ? catalogDocuments.find((document) => document.title === value) : null
       await run(async () => { await window.knowbook.moveDocument(record.id, parent?.id ?? null); await refresh(activeViewId) })
       return
@@ -721,11 +768,10 @@ export function DatabaseWorkspace({
   const applyBulkValue = async (clear = false) => {
     if (!bulkField || currentSource.kind !== 'custom' || selectedRecordIds.length === 0) return
     await run(async () => {
-      await window.knowbook.updateDatabaseEntities({
-        updates: selectedRecordIds.map((entityId) => ({
-          entityId,
-          fieldValues: { [bulkField.id]: clear ? null : bulkValue }
-        }))
+      await coordinateDatabaseCellWrites(currentSource.id, selectedRecordIds.map(recordId => ({ recordId, fieldId: bulkField.id })), async () => {
+        if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession || viewSessionRef.current !== viewSession) throw new Error(text.formFailed)
+        await window.knowbook.updateDatabaseEntities({ updates: selectedRecordIds.map(entityId => ({ entityId,
+          fieldValues: { [bulkField.id]: clear ? null : bulkValue } })) })
       })
       await refresh(activeViewId)
     })
@@ -734,12 +780,16 @@ export function DatabaseWorkspace({
   const clearBulkDocuments = async () => {
     if (currentSource.kind !== 'custom') return
     await run(async () => {
-      await window.knowbook.updateDatabaseEntities({ updates: selectedRecordIds.map((entityId) => ({ entityId, documentId: null })) })
+      await coordinateDatabaseCellWrites(currentSource.id, selectedRecordIds.map(recordId => ({ recordId, fieldId: DATABASE_SYSTEM_FIELD_IDS.document })), async () => {
+        if (!mounted.current || fieldSourceSessionRef.current !== fieldSourceSession || viewSessionRef.current !== viewSession) throw new Error(text.formFailed)
+        await window.knowbook.updateDatabaseEntities({ updates: selectedRecordIds.map(entityId => ({ entityId, documentId: null })) })
+      })
       await refresh(activeViewId)
     })
   }
 
   const handleConfirm = async () => {
+    if (!writable) return
     const target = confirmTarget
     if (!target) return
     const session = confirmSession
@@ -806,12 +856,17 @@ export function DatabaseWorkspace({
   const empty = filteredRecords.length === 0
   const hasSearchOrFilters = draft.query.trim().length > 0 || draft.filters.rules.length > 0
   const clearSearchAndFilters = () => {
+    if (!writable) return
     updateDraft((current) => ({ ...current, query: '', filters: { operator: 'and', rules: [] } }))
-    document.querySelector<HTMLInputElement>('.dbw-main-search input')?.focus()
+    shellRef.current?.querySelector<HTMLInputElement>('.dbw-main-search input')?.focus()
   }
   return (
-    <section className="dbw-shell" data-testid="database-grid">
-      <DatabaseHeader
+    <section ref={shellRef} className="dbw-shell" data-testid="database-grid">
+      {embedded ? <div className="dbw-header"><strong>{currentSource.name}</strong>
+        {!embedded.readOnly && <button type="button" className="dbw-source-trigger dbw-toolbar-button" onClick={embedded.onChooseSource}>{locale.startsWith('zh') ? '更换来源' : 'Change source'}</button>}
+        <button type="button" className="dbw-toolbar-button" onClick={() => void refreshDatabase()}>{text.refresh}</button>
+        {writable && <button type="button" className="dbw-primary-button" onClick={createDocumentOrRecord}>＋ {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}</button>}
+      </div> : <DatabaseHeader
         currentSource={currentSource}
         sourceSessionKey={fieldSourceSession}
         onCreateDatabase={(returnTarget) => openDatabaseForm('create-database', returnTarget)}
@@ -823,8 +878,13 @@ export function DatabaseWorkspace({
         refreshing={refreshingSource === fieldSourceSession}
         sources={sources}
         text={text}
-      />
-      <DatabaseViewTabs
+      />}
+      {embedded ? <label className="dbw-view-tabs">{locale.startsWith('zh') ? '来源保存视图' : 'Source saved view'}
+        <select aria-label={locale.startsWith('zh') ? '来源保存视图' : 'Source saved view'} disabled={!writable}
+          value={activeViewId} onChange={event => selectView(event.target.value)}>
+          <option value="">{locale.startsWith('zh') ? '本地视图' : 'Local view'}</option>
+          {savedViews.map(view => <option key={view.id} value={view.id}>{view.name}</option>)}
+        </select></label> : <DatabaseViewTabs
         activeViewId={activeViewId}
         dirty={dirty}
         newViewTriggerRef={newViewTriggerRef}
@@ -852,8 +912,9 @@ export function DatabaseWorkspace({
         savedViews={savedViews}
         sourceSessionKey={fieldSourceSession}
         text={text}
-      />
-      <DatabaseViewToolbar
+      />}
+      <div inert={!writable ? true : undefined}><DatabaseViewToolbar
+        localView={Boolean(embedded)}
         config={draft}
         scopeKey={viewSession}
         dirty={dirty}
@@ -866,9 +927,9 @@ export function DatabaseWorkspace({
         onSaveAs={(returnTarget) => openViewForm('create-view', draft.layout, undefined, returnTarget)}
         recordCount={filteredRecords.length}
         text={text}
-      />
+      /></div>
 
-      {selectedRecordIds.length > 0 ? (
+      {writable && selectedRecordIds.length > 0 ? (
         <div className="dbw-selection-toolbar">
           <strong>{text.selected(selectedRecordIds.length)}</strong>
           <button onClick={() => onSelectedRecordIdsChange(filteredRecords.map((record) => record.id))} type="button">{locale.startsWith('zh') ? '全选当前视图' : 'Select all visible'}</button>
@@ -896,19 +957,21 @@ export function DatabaseWorkspace({
             <h3>{hasSearchOrFilters ? text.noMatchingRecords : text.noRecords}</h3>
             <p>{hasSearchOrFilters ? text.noMatchingRecordsHint : text.noRecordsHint}</p>
             {hasSearchOrFilters ? (
-              <button className="dbw-primary-button" onClick={clearSearchAndFilters} type="button">{text.clearSearchAndFilters}</button>
+              <button className="dbw-primary-button" disabled={!writable} onClick={clearSearchAndFilters} type="button">{text.clearSearchAndFilters}</button>
             ) : (
-              <button className="dbw-primary-button" onClick={createDocumentOrRecord} type="button">＋ {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}</button>
+              writable ? <button className="dbw-primary-button" onClick={createDocumentOrRecord} type="button">＋ {currentSource.kind === 'document-catalog' ? text.newDocument : text.newRecord}</button> : null
             )}
           </div>
         ) : null}
         {!empty && draft.layout === 'table' ? (
-          <DatabaseTableView columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={(record, field, value) => updateValue(record, field, value, true)} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} multiSelectCache={multiCells} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
+          <DatabaseTableView readOnly={!writable} columnWidths={draft.columnWidths} documents={catalogDocuments} fields={visibleFields} locale={locale} onColumnWidthChange={(fieldId, width) => updateDraft((current) => ({ ...current, columnWidths: { ...current.columnWidths, [fieldId]: Math.round(width) } }))} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} onUpdateDocument={updateLinkedDocument} onUpdateValue={(record, field, value) => updateValue(record, field, value, true)} onRefreshValue={refreshTextValues} textDraftCache={cellDrafts} multiSelectCache={multiCells} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} />
         ) : null}
-        {!empty && draft.layout === 'board' ? <DatabaseBoardView field={boardField} groups={boardGroups} onMoveRecord={moveBoardRecord} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} sourceKind={currentSource.kind} text={text} /> : null}
-        {!empty && draft.layout === 'cards' ? <DatabaseCardView fields={draft.cardFieldIds.length > 0 ? visibleFields.filter((field) => draft.cardFieldIds.includes(field.id) || field.role === 'title') : visibleFields} locale={locale} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} /> : null}
+        {!empty && draft.layout === 'board' ? <DatabaseBoardView readOnly={!writable} field={boardField} groups={boardGroups} onMoveRecord={moveBoardRecord} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} sourceKind={currentSource.kind} text={text} /> : null}
+        {!empty && draft.layout === 'cards' ? <DatabaseCardView readOnly={!writable} fields={draft.cardFieldIds.length > 0 ? visibleFields.filter((field) => draft.cardFieldIds.includes(field.id) || field.role === 'title') : visibleFields} locale={locale} onOpenDocument={onOpenDocument} onOpenRecord={(record) => setOpenRecordId(record.id)} onSelect={(id, selected) => onSelectedRecordIdsChange(selected ? [...selectedRecordIds, id] : selectedRecordIds.filter((candidate) => candidate !== id))} records={filteredRecords} selectedIds={selectedIdSet} sourceKind={currentSource.kind} text={text} /> : null}
       </main>
 
+      <DatabaseWorkspaceOverlays embedded={Boolean(embedded)} hostRef={overlayRef}
+        active={fieldDrawerOpen || createRecordOpen || Boolean(openRecord) || formMode !== null || Boolean(confirmTarget)}>
       <DatabaseFieldDrawer
         key={`fields-${currentSource.id}`}
         sourceSessionKey={currentSource.id}
@@ -974,6 +1037,7 @@ export function DatabaseWorkspace({
         canReturnFocus={() => mounted.current && fieldSourceSessionRef.current === confirmOwner.current.source
           && confirmSessionRef.current === confirmSession + 1}
         onCancel={() => closeConfirm(confirmSession)} onConfirm={handleConfirm} open={Boolean(confirmTarget)} text={text} title={confirmTarget?.kind === 'database' ? text.deleteDatabase : confirmTarget?.kind === 'field' ? text.deleteField : confirmTarget?.kind === 'view' ? text.deleteView : text.deleteRecord} />
+      </DatabaseWorkspaceOverlays>
     </section>
   )
 }

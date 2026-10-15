@@ -7,7 +7,7 @@ import { useSettingsState } from './useSettingsState'
 
 type DashboardSettingsSectionProps = ComponentProps<typeof DashboardSettingsSection>
 
-type UseSettingsDomainParams = {
+export type UseSettingsDomainParams = {
   aiApiKeyDraft: string
   aiAutoSummaryOnSaveDraft: boolean
   aiBaseUrlDraft: string

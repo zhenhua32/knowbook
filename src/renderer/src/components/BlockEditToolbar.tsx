@@ -1,4 +1,5 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 
 const BLOCK_HIGHLIGHT_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'] as const
 
@@ -13,6 +14,7 @@ type BlockEditToolbarProps = {
   onDuplicate: () => void
   onDelete: () => void
   onAiEdit: () => void
+  aiEditDisabled?: boolean
   typeOptions: Record<string, string>
   ui: any
   isZh: boolean
@@ -52,11 +54,13 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
     <div className="block-edit-toolbar" title={ui.blockTypeChangeHint || 'Change block type'}>
       {/* 块类型选择器 */}
       <select
+        disabled={block.type === 'database-view'}
         className="block-type-selector"
         onChange={(e) => onTypeChange(e.target.value)}
         value={block.type}
         title={isZh ? '改变块类型' : 'Change block type'}
       >
+        {block.type === 'database-view' ? <option value="database-view">{isZh ? '数据库视图' : 'Database view'}</option> : null}
         <option value="paragraph">{typeOptions.paragraph}</option>
         <option value="heading-1">{typeOptions['heading-1']}</option>
         <option value="heading-2">{typeOptions['heading-2']}</option>
@@ -116,7 +120,8 @@ export function BlockEditToolbar(props: BlockEditToolbarProps) {
 
       <button
         className="block-toolbar-btn block-toolbar-ai-edit"
-        onClick={onAiEdit}
+        disabled={props.aiEditDisabled || !canAiEditBlockText([block])}
+        onClick={() => { if (!props.aiEditDisabled && canAiEditBlockText([block])) onAiEdit() }}
         title={ui.blockToolbarAiEdit}
         type="button"
       >

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { KnowbookStore } from '../src/main/database/store'
 import { MarkdownRestoreService } from '../src/main/backup/importer'
-import { MarkdownBackupService } from '../src/main/backup/exporter'
+import { MarkdownBackupService, writeBackupSnapshot } from '../src/main/backup/exporter'
 import { writeMarkdownFile } from '../src/main/backup/markdown-file'
 import { buildDraftMarkdownExport } from '../src/renderer/src/utils/documentMarkdown'
 import { checkMarkdownAttachment } from '../src/main/markdown-attachment-check'
@@ -82,14 +82,20 @@ test('YAML and HTML survive three portable file cycles, link maintenance and cur
     const backup = join(root, 'backup')
     await new MarkdownBackupService(last, backup, assets).exportAll()
     for (const legacy of [false, true]) {
-      if (legacy) for (const entry of readdirSync(backup, { recursive: true, withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith('.md')) continue
-        const path = join(entry.parentPath, entry.name)
-        writeFileSync(path, readFileSync(path, 'utf8').replace(KNOWBOOK_BACKUP_MARKER + '\n', ''))
+      const restoreRoot = legacy ? join(root, 'legacy-backup') : backup
+      if (legacy) {
+        // A genuine pre-V2 snapshot has no catalog definition/version fields.
+        // Removing only the marker from V2 would create a damaged V2 archive.
+        writeBackupSnapshot({ documents: last.getExportDocuments(), standaloneDatabases: last.getExportStandaloneDatabases(), backupRoot: restoreRoot, assetRoot: assets })
+        for (const entry of readdirSync(restoreRoot, { recursive: true, withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith('.md')) continue
+          const path = join(entry.parentPath, entry.name)
+          writeFileSync(path, readFileSync(path, 'utf8').replace(KNOWBOOK_BACKUP_MARKER + '\n', ''))
+        }
       }
       const restored = new KnowbookStore(join(root, `restored-${legacy}.sqlite`)); stores.push(restored)
       const restoredAssets = join(root, `restored-assets-${legacy}`)
-      await new MarkdownRestoreService(restored, restoredAssets).restoreFromDirectory(backup)
+      await new MarkdownRestoreService(restored, restoredAssets).restoreFromDirectory(restoreRoot)
       const note = lookup(restored, 'Note')
       assert.equal(note.blocks[0].content, yaml)
       assert.deepEqual(note.blocks.map((block) => block.id), lookup(last, 'Note').blocks.map((block) => block.id))

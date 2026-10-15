@@ -4,6 +4,7 @@ import type { DatabaseWorkspaceText } from '../databaseText'
 import { useDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseBoardView({
+  readOnly = false,
   field,
   groups,
   sourceKind,
@@ -12,6 +13,7 @@ export function DatabaseBoardView({
   onOpenDocument,
   onOpenRecord
 }: {
+  readOnly?: boolean
   field: DatabaseField | null
   groups: Array<{ id: string; label: string; records: DatabaseRecord[] }>
   sourceKind: DatabaseSourceKind
@@ -35,6 +37,7 @@ export function DatabaseBoardView({
           onDragEnter={() => setOverGroupId(group.id)}
           onDragOver={(event) => event.preventDefault()}
           onDrop={(event) => {
+            if (readOnly) return
             event.preventDefault()
             const record = group.records.find((candidate) => candidate.id === draggingId)
               ?? groups.flatMap((candidate) => candidate.records).find((candidate) => candidate.id === draggingId)
@@ -48,12 +51,12 @@ export function DatabaseBoardView({
             {group.records.slice(0, groupLimits[group.id] ?? 60).map((record) => (
               <article
                 className={`dbw-board-card${draggingId === record.id ? ' is-dragging' : ''}`}
-                draggable
+                draggable={!readOnly}
                 key={record.id}
                 onDragEnd={() => { setDraggingId(null); setOverGroupId(null) }}
                 onDragStart={() => setDraggingId(record.id)}
               >
-                <button onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
+                <button disabled={readOnly && !(sourceKind === 'document-catalog' && record.documentId)} onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
                   <strong title={record.title}>{record.title}</strong>
                   <small title={field ? `${field.name} · ${group.label}` : text.noGrouping}>{field ? `${field.name} · ${group.label}` : text.noGrouping}</small>
                 </button>

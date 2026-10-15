@@ -7,6 +7,7 @@ import { installMarkdownFrontmatter } from './markdownFrontmatter'
 import { installMarkdownHtml } from './markdownHtml'
 import { installMarkdownWiki } from './markdownWiki'
 import { installMarkdownTableLayout } from './markdownTableLayoutPlugin'
+import { installMarkdownDatabaseView } from './markdownDatabaseView'
 
 export type MarkdownEnvironment = Env
 export type MarkdownToken = Token
@@ -65,6 +66,7 @@ installMarkdownWiki(markdownEngine)
 installMarkdownHtml(markdownEngine)
 installMarkdownSourceLinks(markdownEngine)
 installMarkdownTableLayout(markdownEngine)
+installMarkdownDatabaseView(markdownEngine)
 
 export type MarkdownNode = { token: Token; children: MarkdownNode[] }
 

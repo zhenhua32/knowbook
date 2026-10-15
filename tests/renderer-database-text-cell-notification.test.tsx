@@ -307,11 +307,12 @@ test('late text failures after source departure, unmount, or schema replacement 
         await act(async () => input().focus())
         await fill('New same-key request draft')
         await enter()
-        assert.equal(writes.length, 2)
+        assert.equal(writes.length, 1, 'the replacement draft must wait for the same physical cell request to settle')
         assert.equal(input().readOnly, true)
       }
       await act(async () => { outside.focus(); outside.setSelectionRange(0, 0) })
       await fail(0, cause)
+      if (transition === 'replace-type') assert.equal(writes.length, 2, 'the new owner starts its own physical request after the old rejection')
       assert.equal(document.activeElement, outside)
       assert.equal(appNotifications.getSnapshot().length, 0)
       assert.equal(appNotifications.getHistorySnapshot().length, 0)

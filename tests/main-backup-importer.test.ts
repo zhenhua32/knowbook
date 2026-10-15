@@ -10,6 +10,17 @@ import { KnowbookStore } from '../src/main/database/store.ts'
 import type { DocumentCatalogEntry, DocumentDetail } from '../src/shared/contracts.ts'
 import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
 
+// These fixtures exercise the pre-V2 path-based compatibility branch. Complete
+// identity-preserving V2 snapshots have their own integration fixtures.
+function legacyBackup(store: KnowbookStore, root: string, assetRoot?: string): MarkdownBackupService {
+  const adapter = {
+    getExportDocuments: () => store.getExportDocuments(),
+    getExportStandaloneDatabases: () => store.getExportStandaloneDatabases(),
+    saveSetting: (key: string, value: string) => store.saveSetting(key, value)
+  } as KnowbookStore
+  return new MarkdownBackupService(adapter, root, assetRoot)
+}
+
 function byPath(entries: DocumentCatalogEntry[], path: string): DocumentCatalogEntry {
   const found = entries.find((entry) => entry.path === path)
   assert.ok(found, `expected catalog entry at path: ${path}`)
@@ -182,7 +193,7 @@ test('MarkdownRestoreService restores exported markdown into a fresh store', asy
     })
 
     const exportedCount = sourceStore.getExportDocuments().length
-    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await legacyBackup(sourceStore, backupRoot).exportAll()
 
     const restoreService = new MarkdownRestoreService(targetStore)
     const snapshotsBeforePreview = targetStore.getAllDocumentSnapshots()
@@ -320,7 +331,7 @@ test('MarkdownRestoreService resolves path conflicts and deletes stale documents
       ]
     })
 
-    await new MarkdownBackupService(store, backupRoot).exportAll()
+    await legacyBackup(store, backupRoot).exportAll()
 
     const staleId = store.createDocument(product.id)
     store.updateDocument(staleId, {
@@ -434,7 +445,7 @@ test('MarkdownRestoreService deletes stale standalone databases when backup mani
       }
     })
 
-    await new MarkdownBackupService(store, backupRoot).exportAll()
+    await legacyBackup(store, backupRoot).exportAll()
 
     const staleDatabase = store.createDatabase({
       name: 'Archive',
@@ -476,7 +487,7 @@ test('MarkdownRestoreService keeps standalone databases when restoring a legacy 
   const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
 
   try {
-    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await legacyBackup(sourceStore, backupRoot).exportAll()
     rmSync(join(backupRoot, '__knowbook'), { recursive: true, force: true })
 
     const staleDatabase = targetStore.createDatabase({
@@ -501,7 +512,7 @@ test('MarkdownRestoreService rolls back all changes when a restore step fails', 
   const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
 
   try {
-    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await legacyBackup(sourceStore, backupRoot).exportAll()
     const before = targetStore.getHomeData(backupRoot).documentCatalog
     const originalUpdateDocument = targetStore.updateDocument.bind(targetStore)
     let updateCount = 0
@@ -569,7 +580,7 @@ test('MarkdownRestoreService restores portable assets into the active managed as
       }
     })
 
-    await new MarkdownBackupService(sourceStore, backupRoot, sourceAssetRoot).exportAll()
+    await legacyBackup(sourceStore, backupRoot, sourceAssetRoot).exportAll()
     rmSync(sourceAssetRoot, { recursive: true, force: true })
 
     const restoreService = new MarkdownRestoreService(targetStore, targetAssetRoot)
@@ -919,7 +930,7 @@ test('MarkdownRestoreService aborts instead of wiping local views when a backup 
       fieldValues: { [stageColumn.id]: 'Idea' }
     })
 
-    await new MarkdownBackupService(store, backupRoot).exportAll()
+    await legacyBackup(store, backupRoot).exportAll()
 
     const standaloneDatabaseFile = join(backupRoot, '__knowbook', 'databases', `${sourceDatabase.id}.md`)
     const corruptContent = readFileSync(standaloneDatabaseFile, 'utf8').replace(
@@ -950,7 +961,7 @@ test('MarkdownRestoreService aborts instead of deleting databases when the backu
 
   try {
     store.createDatabase({ name: 'Projects', description: 'Canonical' })
-    await new MarkdownBackupService(store, backupRoot).exportAll()
+    await legacyBackup(store, backupRoot).exportAll()
 
     const staleDatabase = store.createDatabase({ name: 'Archive', description: 'Must survive a failed restore' })
 
@@ -981,7 +992,7 @@ test('MarkdownRestoreService removes in-scope stale occupants before restoring s
   try {
     const catalog = store.getHomeData(backupRoot).documentCatalog
     const roadmap = byPath(catalog, 'Home/Product/Roadmap')
-    await new MarkdownBackupService(store, backupRoot).exportAll()
+    await legacyBackup(store, backupRoot).exportAll()
 
     // Local reorganization: move the id-matched document away and put a stray at its backed-up path.
     const product = byPath(store.getHomeData(backupRoot).documentCatalog, 'Home/Product')
@@ -1011,7 +1022,7 @@ test('MarkdownRestoreService rejects archives containing duplicate document ids 
   const targetStore = new KnowbookStore(join(tempRoot, 'target.sqlite'))
 
   try {
-    await new MarkdownBackupService(sourceStore, backupRoot).exportAll()
+    await legacyBackup(sourceStore, backupRoot).exportAll()
     const roadmapFile = join(backupRoot, 'Home', 'Product', 'Roadmap.md')
     const duplicatePath = join(backupRoot, '__knowbook-document-duplicate', 'Roadmap.md')
     mkdirSync(dirname(duplicatePath), { recursive: true })

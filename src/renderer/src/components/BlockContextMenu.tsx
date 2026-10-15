@@ -18,6 +18,8 @@ export type BlockContextMenuProps = {
   canReturnFocus?: () => boolean
   selectedBlockCount?: number
   disabled?: boolean
+  conversionDisabled?: boolean
+  aiEditDisabled?: boolean
   disabledReason?: string | null
   onCopyBlockLinks?: () => void
   onMoveToDocument?: () => void
@@ -26,11 +28,12 @@ export type BlockContextMenuProps = {
   currentHighlight?: string
   onHighlightChange?: (color: string | undefined) => void
   onWrapInColumns?: () => void
+  onInsertDatabaseView?: () => void
 }
 
 export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, onDelete, onClose,
-  typeOptions, isZh, canOpen, canReturnFocus, selectedBlockCount = 1, disabled = false, disabledReason,
-  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange, onWrapInColumns }: BlockContextMenuProps) {
+  typeOptions, isZh, canOpen, canReturnFocus, selectedBlockCount = 1, disabled = false, conversionDisabled = false, aiEditDisabled = false, disabledReason,
+  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange, onWrapInColumns, onInsertDatabaseView }: BlockContextMenuProps) {
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
   usePopupKeyboard(menuRef, onClose, canOpen, canReturnFocus)
   const run = (action: () => void) => { if (!disabled) { action(); onClose() } }
@@ -47,9 +50,9 @@ export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, o
       <div className="context-menu-section">
         <p className="context-menu-label">{isZh ? '转换为' : 'Convert to'}</p>
         <div className="context-menu-group">
-          {BLOCK_CONVERSION_TYPES.map(type => <button key={type} type="button" disabled={disabled}
+          {BLOCK_CONVERSION_TYPES.map(type => <button key={type} type="button" disabled={disabled || conversionDisabled || blockType === 'database-view'}
             className={`context-menu-item${blockType === type ? ' context-menu-item-active' : ''}`}
-            aria-pressed={blockType === type} onClick={() => run(() => onTypeChange(type))}>
+            aria-pressed={blockType === type} onClick={() => { if (!conversionDisabled && blockType !== 'database-view') run(() => onTypeChange(type)) }}>
             {typeOptions[type] ?? type}
           </button>)}
         </div>
@@ -65,6 +68,8 @@ export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, o
         </div>
       </div> : null}
       <div className="context-menu-section context-menu-group">
+        {onInsertDatabaseView ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onInsertDatabaseView)} type="button">
+          {isZh ? '插入数据库视图' : 'Insert database view'}</button> : null}
         {onWrapInColumns ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onWrapInColumns)} type="button">
           {isZh ? '放入两列分栏' : 'Wrap in two columns'}
         </button> : null}
@@ -74,7 +79,7 @@ export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, o
         {onMoveToDocument ? <button className="context-menu-item" disabled={disabled || Boolean(moveDisabledReason)} title={moveDisabledReason ?? undefined} onClick={() => { if (!moveDisabledReason) run(onMoveToDocument) }} type="button">
           {isZh ? '移动到文档…' : 'Move to document…'}
         </button> : null}
-        {onOpenAiEdit ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onOpenAiEdit)} type="button">{isZh ? 'AI 编辑' : 'AI edit'}</button> : null}
+        {onOpenAiEdit ? <button className="context-menu-item" disabled={disabled || aiEditDisabled || blockType === 'database-view'} onClick={() => { if (!aiEditDisabled && blockType !== 'database-view') run(onOpenAiEdit) }} type="button">{isZh ? 'AI 编辑' : 'AI edit'}</button> : null}
         <button className="context-menu-item" disabled={disabled} onClick={() => run(onDuplicate)} type="button">{isZh ? '复制' : 'Duplicate'}</button>
         <button className="context-menu-item context-menu-item-danger" disabled={disabled} onClick={() => run(onDelete)} type="button">{isZh ? '删除' : 'Delete'}</button>
       </div>

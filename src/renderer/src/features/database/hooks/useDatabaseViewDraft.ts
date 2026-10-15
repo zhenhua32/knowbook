@@ -13,6 +13,7 @@ type UseDatabaseViewDraftInput = {
   activeViewId: string
   draftCache?: Map<string, DatabaseViewConfigV1>
   onActiveViewIdChange: (viewId: string) => void
+  controlled?: { config: DatabaseViewConfigV1; onChange: (config: DatabaseViewConfigV1) => void }
 }
 
 export function useDatabaseViewDraft({
@@ -21,7 +22,8 @@ export function useDatabaseViewDraft({
   savedViews,
   activeViewId,
   draftCache: sharedDraftCache,
-  onActiveViewIdChange
+  onActiveViewIdChange,
+  controlled
 }: UseDatabaseViewDraftInput) {
   const localDraftCache = useRef(new Map<string, DatabaseViewConfigV1>())
   const draftCache = sharedDraftCache ?? localDraftCache.current
@@ -33,12 +35,13 @@ export function useDatabaseViewDraft({
     )
   }, [fields])
   const activeView = savedViews.find((view) => view.id === activeViewId) ?? null
-  const [draft, setDraft] = useState<DatabaseViewConfigV1>(defaultConfig)
+  const [localDraft, setDraft] = useState<DatabaseViewConfigV1>(defaultConfig)
+  const draft = controlled?.config ?? localDraft
 
   const getCacheKey = useCallback((viewId: string) => `${databaseId}:${viewId || '__default__'}`, [databaseId])
 
   useEffect(() => {
-    if (!databaseId) {
+    if (controlled || !databaseId) {
       return
     }
     const rememberedId = window.localStorage.getItem(`knowbook.database.last-view.${databaseId}`) ?? ''
@@ -50,9 +53,10 @@ export function useDatabaseViewDraft({
     if (nextViewId !== activeViewId) {
       onActiveViewIdChange(nextViewId)
     }
-  }, [activeViewId, databaseId, onActiveViewIdChange, savedViews])
+  }, [activeViewId, controlled, databaseId, onActiveViewIdChange, savedViews])
 
   useEffect(() => {
+    if (controlled) return
     const view = savedViews.find((candidate) => candidate.id === activeViewId) ?? null
     const cacheKey = getCacheKey(activeViewId)
     const cached = draftCache.get(cacheKey)
@@ -66,21 +70,27 @@ export function useDatabaseViewDraft({
     if (databaseId) {
       window.localStorage.setItem(`knowbook.database.last-view.${databaseId}`, activeViewId)
     }
-  }, [activeViewId, databaseId, defaultConfig, draftCache, fields, getCacheKey, savedViews])
+  }, [activeViewId, controlled, databaseId, defaultConfig, draftCache, fields, getCacheKey, savedViews])
 
   const updateDraft = useCallback((updater: (current: DatabaseViewConfigV1) => DatabaseViewConfigV1) => {
+    if (controlled) {
+      const next = updater(controlled.config)
+      if (!areDatabaseViewConfigsEqual(next, controlled.config)) controlled.onChange(next)
+      return
+    }
     setDraft((current) => {
       const next = repairDatabaseViewConfig(updater(current), fields)
       draftCache.set(getCacheKey(activeViewId), next)
       return next
     })
-  }, [activeViewId, draftCache, fields, getCacheKey])
+  }, [activeViewId, controlled, draftCache, fields, getCacheKey])
 
   const replaceDraft = useCallback((config: DatabaseViewConfigV1) => {
+    if (controlled) { if (!areDatabaseViewConfigsEqual(config, controlled.config)) controlled.onChange(config); return }
     const next = repairDatabaseViewConfig(config, fields)
     draftCache.set(getCacheKey(activeViewId), next)
     setDraft(next)
-  }, [activeViewId, draftCache, fields, getCacheKey])
+  }, [activeViewId, controlled, draftCache, fields, getCacheKey])
 
   const activateCreatedView = useCallback((view: DatabaseSavedView) => {
     const next = repairDatabaseViewConfig(view.config, fields)
@@ -98,9 +108,9 @@ export function useDatabaseViewDraft({
 
   return {
     activeView,
-    baseConfig,
+    baseConfig: controlled?.config ?? baseConfig,
     draft,
-    dirty: !areDatabaseViewConfigsEqual(draft, baseConfig),
+    dirty: !controlled && !areDatabaseViewConfigsEqual(draft, baseConfig),
     activateCreatedView,
     replaceDraft,
     updateDraft

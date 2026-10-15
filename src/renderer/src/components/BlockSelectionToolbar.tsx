@@ -3,6 +3,8 @@ import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
 
 type BlockSelectionToolbarProps = {
   disabled?: boolean
+  conversionDisabled?: boolean
+  aiEditDisabled?: boolean
   onWrapInColumns?: () => void
   wrapInColumnsLabel?: string
   onCopyBlockLinks?: () => void
@@ -104,13 +106,13 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
       <div className="block-selection-actions">
         {props.onWrapInColumns ? <button className="secondary-button" disabled={disabled} type="button" onClick={props.onWrapInColumns}>{props.wrapInColumnsLabel}</button> : null}
         <select
-          className="editor-select compact-select" disabled={disabled} aria-label={convertLabel}
+          className="editor-select compact-select" disabled={disabled || props.conversionDisabled} aria-label={convertLabel}
           onChange={(event) => onConversionTypeChange(event.target.value as DocumentBlock['type'])}
           value={selectedBlockConversionType}
         >
           {BLOCK_CONVERSION_TYPES.map(type => <option key={type} value={type}>{conversionOptions[type] ?? type}</option>)}
         </select>
-        <button className="secondary-button" disabled={disabled} onClick={onConvert} type="button">
+        <button className="secondary-button" disabled={disabled || props.conversionDisabled} onClick={onConvert} type="button">
           {convertLabel}
         </button>
         <button className="secondary-button" disabled={disabled} onClick={onCopyBlocks} type="button">
@@ -131,7 +133,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
         <button className="secondary-button" disabled={disabled} onClick={onDuplicate} type="button">
           {duplicateLabel}
         </button>
-        <button className="secondary-button" disabled={disabled} onClick={onOpenAiEdit} type="button">
+        <button className="secondary-button" disabled={disabled || props.aiEditDisabled} onClick={() => { if (!props.aiEditDisabled) onOpenAiEdit() }} type="button">
           {aiEditLabel}
         </button>
         <button className="danger-button" disabled={disabled} onClick={onDelete} type="button">

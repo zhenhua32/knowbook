@@ -80,6 +80,7 @@ function ToolbarMenu({ summary, summaryClassName, popoverClassName, scopeKey, ch
 }
 
 export function DatabaseViewToolbar({
+  localView = false,
   config,
   scopeKey,
   dirty,
@@ -93,6 +94,7 @@ export function DatabaseViewToolbar({
   onSave,
   onSaveAs
 }: {
+  localView?: boolean
   config: DatabaseViewConfigV1
   scopeKey?: unknown
   dirty: boolean
@@ -246,12 +248,12 @@ export function DatabaseViewToolbar({
       </div>
 
       <span className="dbw-record-count">{text.records(recordCount)}</span>
-      <div className="dbw-save-actions">
+      {!localView && <div className="dbw-save-actions">
         {dirty ? <button className="dbw-quiet-button" onClick={onReset} type="button">{text.resetView}</button> : null}
         <button aria-busy={saving} aria-disabled={saving || !dirty} className="dbw-save-button" disabled={!dirty && !saving}
           onClick={() => { if (!saving) onSave() }} type="button">{saving ? text.saving : dirty ? text.saveChanges : text.saved}</button>
         <button aria-label={text.saveAsView} className="dbw-save-as-button" disabled={saving} onClick={(event) => onSaveAs(event.currentTarget)} type="button">⌄</button>
-      </div>
+      </div>}
     </div>
   )
 }

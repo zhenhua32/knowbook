@@ -128,6 +128,18 @@ CREATE TABLE IF NOT EXISTS document_block_moves (
 CREATE INDEX IF NOT EXISTS idx_document_block_moves_source ON document_block_moves(source_document_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_document_block_moves_target ON document_block_moves(target_document_id, created_at DESC);
 
+-- Restore provenance survives missing target objects and deliberately missing
+-- references. No target FK may cascade away its identity reservation.
+CREATE TABLE IF NOT EXISTS backup_restore_identities (
+  lineage TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  source_database_id TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('live', 'missing')),
+  target_id TEXT NOT NULL,
+  PRIMARY KEY (lineage, kind, source_database_id, source_id, state)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS document_search USING fts5(
   document_id UNINDEXED,
   title,

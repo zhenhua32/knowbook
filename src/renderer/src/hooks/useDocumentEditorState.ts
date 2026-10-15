@@ -11,6 +11,7 @@ import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
 import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
 import { captureAsyncHistoryFocusPermission, captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
+import { isDatabaseEditorIsland } from '../utils/editorIsland'
 import {
   areDocumentDraftBlocksEqual,
   normalizeComparableDocumentTitle
@@ -338,6 +339,7 @@ export function useDocumentEditorState({
   useEffect(() => {
     let composingTarget: EventTarget | null = null
     const start = (event: CompositionEvent) => {
+      if (isDatabaseEditorIsland(event.target)) return
       if (!(event.target instanceof HTMLElement) || !event.target.closest('.block-editor-list, .document-summary-card')) return
       const bookmark = captureEditorHistoryBookmark(draftBlocksRef.current, event.target)
       if (bookmark) {

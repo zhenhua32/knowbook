@@ -9,10 +9,11 @@ import { DatabaseMultiSelectCellCache } from '../model/databaseMultiSelectCells'
 import { revealDatabaseResizeFocus } from '../hooks/useDatabaseResizeFocus'
 
 export function DatabaseTableView({
+  readOnly = false,
   documents,
   fields,
   locale = 'en-US',
-  columnWidths,
+  columnWidths: committedColumnWidths,
   records,
   selectedIds,
   sourceKind,
@@ -27,6 +28,7 @@ export function DatabaseTableView({
   textDraftCache,
   multiSelectCache
 }: {
+  readOnly?: boolean
   documents: DocumentCatalogEntry[]
   fields: DatabaseField[]
   locale?: string
@@ -55,6 +57,10 @@ export function DatabaseTableView({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
   const [headerHeight, setHeaderHeight] = useState(0)
+  const [resizePreview, setResizePreview] = useState<{ fieldId: string; width: number } | null>(null)
+  const resizeCleanup = useRef<() => void>(() => {})
+  const columnWidths = resizePreview ? { ...committedColumnWidths, [resizePreview.fieldId]: resizePreview.width } : committedColumnWidths
+  useLayoutEffect(() => () => resizeCleanup.current(), [fields, committedColumnWidths, readOnly])
   const rowHeight = 56
   const tableWidth = 44 + fields.reduce((width, field) => width + (columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180)), 0)
   const overscan = 8
@@ -143,20 +149,43 @@ export function DatabaseTableView({
               <th className={field.role === 'title' ? 'dbw-title-column' : ''} key={field.id} style={{ minWidth: width, width }}>
                 <span className="dbw-column-label" title={field.name}>{field.name}{field.role === 'system' ? <span className="dbw-lock-mark">⌁</span> : null}</span>
                 <span
-                  aria-hidden="true"
+                  role="separator" aria-orientation="vertical" tabIndex={readOnly ? -1 : 0}
+                  aria-label={`${field.name} ${text.layout}`} aria-valuemin={80} aria-valuemax={1200} aria-valuenow={width}
                   className="dbw-column-resizer"
+                  onKeyDown={event => {
+                    if (readOnly || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                    event.preventDefault(); event.stopPropagation()
+                    onColumnWidthChange(field.id, event.key === 'Home' ? 80 : event.key === 'End' ? 1200
+                      : Math.max(80, Math.min(1200, width + (event.key === 'ArrowLeft' ? -10 : 10))))
+                  }}
                   onDoubleClick={() => {
+                    if (readOnly) return
                     const longest = Math.max(field.name.length, ...records.slice(0, 100).map((record) => String(field.role === 'title' ? record.title : record.fieldValues[field.id] ?? '').length))
                     onColumnWidthChange(field.id, Math.max(120, Math.min(480, 44 + longest * 7)))
                   }}
                   onMouseDown={(event) => {
+                    if (readOnly) return
                     event.preventDefault()
+                    resizeCleanup.current()
                     const startX = event.clientX
                     const startWidth = width
-                    const move = (moveEvent: MouseEvent) => onColumnWidthChange(field.id, Math.max(80, Math.min(1200, startWidth + moveEvent.clientX - startX)))
-                    const stop = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', stop) }
+                    let nextWidth = width
+                    const move = (moveEvent: MouseEvent) => {
+                      nextWidth = Math.max(80, Math.min(1200, Math.round(startWidth + moveEvent.clientX - startX)))
+                      setResizePreview({ fieldId: field.id, width: nextWidth })
+                    }
+                    const stop = (commit: boolean) => {
+                      window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', finish)
+                      window.removeEventListener('keydown', key, true); window.removeEventListener('blur', cancel)
+                      resizeCleanup.current = () => {}; setResizePreview(null)
+                      if (commit && nextWidth !== startWidth) onColumnWidthChange(field.id, nextWidth)
+                    }
+                    const finish = () => stop(true), cancel = () => stop(false)
+                    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancel() } }
+                    resizeCleanup.current = cancel
                     window.addEventListener('mousemove', move)
-                    window.addEventListener('mouseup', stop)
+                    window.addEventListener('mouseup', finish)
+                    window.addEventListener('keydown', key, true); window.addEventListener('blur', cancel)
                   }}
                 />
               </th>
@@ -169,22 +198,22 @@ export function DatabaseTableView({
             <tr className={selectedIds.has(record.id) ? 'is-selected' : ''} key={record.id}>
               <td className="dbw-select-column" tabIndex={-1}>
                 <label className="dbw-checkbox-hit-target">
-                  <input aria-label={text.selected(1)} checked={selectedIds.has(record.id)} onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
+                  <input disabled={readOnly} aria-label={text.selected(1)} checked={selectedIds.has(record.id)} onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
                 </label>
               </td>
               {fields.map((field) => (
                 <td className={field.role === 'title' ? 'dbw-title-column' : field.role === 'system' ? 'is-system' : ''} key={field.id} style={{ minWidth: columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180), width: columnWidths[field.id] ?? (field.role === 'title' ? 270 : 180) }} tabIndex={-1}>
                   {field.role === 'title' ? (
-                    <button className="dbw-record-title" onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
+                    <button disabled={readOnly && !(sourceKind === 'document-catalog' && record.documentId)} className="dbw-record-title" onClick={() => sourceKind === 'document-catalog' && record.documentId ? onOpenDocument(record.documentId) : onOpenRecord(record)} type="button">
                       <strong>{record.title}</strong>
                       <small>{sourceKind === 'document-catalog' ? String(record.fieldValues[DATABASE_SYSTEM_FIELD_IDS.path] ?? '') : String(record.fieldValues[DATABASE_SYSTEM_FIELD_IDS.document] ?? '')}</small>
                     </button>
-                  ) : field.id === DATABASE_SYSTEM_FIELD_IDS.document && sourceKind === 'custom' ? (
+                  ) : !readOnly && field.id === DATABASE_SYSTEM_FIELD_IDS.document && sourceKind === 'custom' ? (
                     <select className="dbw-inline-select" onChange={(event) => void onUpdateDocument(record, event.target.value || null)} value={record.documentId ?? ''}>
                       <option value="">{text.noLinkedDocument}</option>
                       {documents.map((document) => <option key={document.id} value={document.id}>{document.path}</option>)}
                     </select>
-                  ) : field.editable && field.role === 'property' ? (
+                  ) : !readOnly && field.editable && field.role === 'property' ? (
                     <DatabaseValueEditor
                       column={{ id: field.id, name: field.name, type: field.type, options: field.options, sortOrder: field.sortOrder }}
                       onChangeValue={(value) => onUpdateValue(record, field, value)}

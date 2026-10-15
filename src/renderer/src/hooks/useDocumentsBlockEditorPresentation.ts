@@ -8,6 +8,7 @@ import type { ComponentProps, Dispatch, SetStateAction } from 'react'
 import type { DocumentBlock, DocumentBlockDraft } from '@shared/contracts'
 import { getActiveUiText } from '../i18n'
 import { BLOCK_CONVERSION_TYPES } from '../utils/blockConversionTypes'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 import { getBlockDropPreview } from '../utils/draftTreeDropPreview'
 import { BlockEditorRow } from '../components/BlockEditorRow'
 import { BlockSelectionToolbar } from '../components/BlockSelectionToolbar'
@@ -26,6 +27,7 @@ type LinkSuggestionPanelProps = ComponentProps<typeof LinkSuggestionPanel>
 type FloatingSlashCommandPanelProps = ComponentProps<typeof FloatingSlashCommandPanel>
 
 type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps & {
+  onInsertDatabaseView?: () => void
   isBlockMoveBusy?: boolean
   selectedMoveDisabledReason?: string | null
   onCopySelectedBlockLinks?: () => void
@@ -78,6 +80,7 @@ type UseDocumentsBlockEditorPresentationParams = SharedBlockEditorRowBaseProps &
 }
 
 export function useDocumentsBlockEditorPresentation({
+  onInsertDatabaseView,
   isBlockMoveBusy = false,
   selectedMoveDisabledReason,
   onCopySelectedBlockLinks,
@@ -185,6 +188,10 @@ export function useDocumentsBlockEditorPresentation({
   updateBlockHighlight,
   updateDraftBlock
 }: UseDocumentsBlockEditorPresentationParams) {
+  const applyDocumentSlashCommand = (command: Parameters<typeof applySlashCommand>[0]) => {
+    if (command.id === 'database' && onInsertDatabaseView) onInsertDatabaseView()
+    else applySlashCommand(command)
+  }
   const [selectedLinkSuggestionKey, setSelectedLinkSuggestionKey] = useState<string | null>(null)
   const [dismissedLinkContextKey, setDismissedLinkContextKey] = useState<string | null>(null)
   const linkContextKey = linkSuggestionContextKey
@@ -318,6 +325,8 @@ export function useDocumentsBlockEditorPresentation({
         canMoveUp: canMoveSelectionUp,
         clearLabel: ui.clear,
         disabled: isBlockMoveBusy,
+        conversionDisabled: draftBlocks.slice(selectedBlockRange.start, selectedBlockRange.end + 1).some(block => block.type === 'database-view'),
+        aiEditDisabled: !canAiEditBlockText(draftBlocks, selectedBlockRange),
         conversionOptions: Object.fromEntries(BLOCK_CONVERSION_TYPES.map(type => [type, getBlockConversionLabel(type)])),
         onCopyBlockLinks: onCopySelectedBlockLinks,
         onMoveToDocument: onOpenSelectedBlocksMove,
@@ -414,7 +423,7 @@ export function useDocumentsBlockEditorPresentation({
         onSelectCommand: (command) => {
           const fullCommand = filteredSlashCommands.find((candidate) => candidate.id === command.id)
           if (fullCommand) {
-            applySlashCommand(fullCommand)
+            applyDocumentSlashCommand(fullCommand)
           }
         },
         query: activeSlashContext.query,
@@ -426,7 +435,7 @@ export function useDocumentsBlockEditorPresentation({
   const rowActions = useStableCallbackProps({
     adjustBlockDepth,
     adjustSelectedBlocksDepth,
-    applySlashCommand,
+    applySlashCommand: applyDocumentSlashCommand,
     beginBlockDrag,
     canMoveSelectedRange,
     captureBlockCursor,

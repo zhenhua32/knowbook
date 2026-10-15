@@ -1,5 +1,7 @@
 import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
 import { assertColumnStructure } from '@shared/columns'
+import { assertDatabaseViewStructure } from '@shared/databaseViewBlock'
+import { canAiEditBlockText } from '@shared/blockAiEligibility'
 import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
@@ -19,6 +21,7 @@ import type {
   CreateDocumentFromTemplateInput,
   CreateQuickNoteInput,
   DatabaseEntity,
+  DatabaseEmbedSnapshot,
   DatabaseSavedView,
   DatabaseSavedViewLayoutMode,
   DatabaseSavedViewSortMode,
@@ -94,6 +97,7 @@ import {
 } from '@shared/database-workspace'
 
 import { DEFAULT_DOCUMENT_SUMMARY } from '@shared/documentSummary'
+import { strictSavedViewConfig } from '../backup/v2-format'
 export { DEFAULT_DOCUMENT_SUMMARY } from '@shared/documentSummary'
 const DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY = 'database.defaultId'
 const DEFAULT_DOCUMENT_DATABASE_NAME = 'Default'
@@ -349,6 +353,12 @@ export interface ExportStandaloneDatabase {
   entities: ExportStandaloneDatabaseEntity[]
 }
 
+export interface ExportWorkspaceSnapshot {
+  documents: ExportDocument[]
+  catalog: ExportStandaloneDatabase
+  standaloneDatabases: ExportStandaloneDatabase[]
+}
+
 export class KnowbookStore {
   private readonly db: SqliteDatabase
   private readonly markdownLinks: MarkdownLinkIndex
@@ -505,6 +515,8 @@ export class KnowbookStore {
       if (schemaVersion < 23) this.db.pragma('user_version = 23')
       // V23 readers flatten the columns/column parent roles. Gate them before repair.
       if (schemaVersion < 24) this.db.pragma('user_version = 24')
+      // V24 readers cannot preserve database-view atoms or restore identities.
+      if (schemaVersion < 25) this.db.pragma('user_version = 25')
     })
   }
 
@@ -851,6 +863,28 @@ export class KnowbookStore {
   getDocumentCatalog(databaseId: string = this.getDefaultDocumentDatabaseId()): DocumentCatalogEntry[] {
     const databaseColumns = this.getDocumentDatabaseColumns(databaseId)
     return this.buildDocumentCatalog(databaseColumns, databaseId, this.getHomeDocumentCatalogRows())
+  }
+
+  getDatabaseEmbedSnapshot(databaseId: string): DatabaseEmbedSnapshot {
+    if (typeof databaseId !== 'string' || !/^[a-zA-Z0-9_-]{1,160}$/.test(databaseId)
+      || ['__proto__', 'prototype', 'constructor'].includes(databaseId)) throw new Error('数据库来源 ID 无效。')
+    return this.db.transaction((): DatabaseEmbedSnapshot => {
+      const row = this.db.prepare('SELECT id, name, description, created_at, updated_at FROM databases WHERE id = ?')
+        .get(databaseId) as { id: string; name: string; description: string; created_at: string; updated_at: string } | undefined
+      if (!row) return { status: 'missing', databaseId }
+      // Do not call the lazy default-database repair from this read API.
+      const setting = this.db.prepare('SELECT value FROM app_settings WHERE key = ?').get(DEFAULT_DOCUMENT_DATABASE_ID_SETTING_KEY) as { value: string } | undefined
+      if (!setting || !this.db.prepare('SELECT 1 FROM databases WHERE id = ?').get(setting.value)) {
+        throw new Error('默认数据库配置缺失，未更改数据。')
+      }
+      const catalogId = setting.value
+      const columns = this.getDocumentDatabaseColumns(databaseId)
+      const catalogColumns = databaseId === catalogId ? columns : this.getDocumentDatabaseColumns(catalogId)
+      return { status: 'ready', database: { id: row.id, kind: databaseId === catalogId ? 'document-catalog' : 'custom',
+        name: row.name, description: row.description, createdAt: row.created_at, updatedAt: row.updated_at }, columns,
+        savedViews: this.getStrictDatabaseSavedViews(databaseId), entities: this.getDatabaseEntities(databaseId),
+        catalogDocuments: this.buildDocumentCatalogEntries(catalogColumns, catalogId, this.getHomeDocumentCatalogRows(), [], false) }
+    })()
   }
 
   getDocumentCatalogPage(input: DocumentCatalogPageInput): DocumentCatalogPage {
@@ -1340,7 +1374,8 @@ export class KnowbookStore {
       const mappedIds = new Map(source.map((block) => [block.id, randomUUID()]))
       const expand = (value: string) => date === undefined ? value : expandDocumentTemplateVariables(value, title, date)
       const copiedBlocks = source.map((block) => ({ ...block, id: mappedIds.get(block.id)!,
-        parentBlockId: block.parentBlockId ? mappedIds.get(block.parentBlockId)! : null, content: expand(block.content) }))
+        parentBlockId: block.parentBlockId ? mappedIds.get(block.parentBlockId)! : null,
+        content: block.type === 'database-view' ? block.content : expand(block.content) }))
       const blocks = rewriteDocumentMarkdownLinks(copiedBlocks, (link) => {
         if (link.kind === 'wiki') {
           const reference = parseWikiReference(link.url)
@@ -1355,6 +1390,7 @@ export class KnowbookStore {
         return mapped ? '#' + mapped : null
       })
       const { sortOrder } = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS sortOrder FROM documents WHERE parent_id IS ?').get(parentId) as { sortOrder: number }
+      assertDatabaseViewStructure(blocks)
       this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, title, `doc-${id}`, parentId, path, expand(summary).trim(), sortOrder, now, now)
       const insert = this.db.prepare(`INSERT INTO blocks
@@ -2137,6 +2173,9 @@ export class KnowbookStore {
     input: PreviewDocumentBlockAiEditInput,
     resolvedInstruction: string
   ): string {
+    if (input.selectedBlocks.length && !canAiEditBlockText(input.selectedBlocks)) {
+      throw new Error('Database views cannot be edited as text by AI.')
+    }
     const selectedBlocks = input.selectedBlocks
       .map((block) => ({
         ...block,
@@ -2616,6 +2655,39 @@ export class KnowbookStore {
           ) as Record<string, DocumentDatabaseFieldValue>
         }))
       }))
+  }
+
+  /** One authoritative source snapshot, including an otherwise empty catalog.
+   * Saved-view configs are read before the UI's legacy normalization can repair
+   * damaged nonempty JSON into a broader, apparently valid filter. */
+  getExportWorkspaceSnapshot(): ExportWorkspaceSnapshot {
+    return this.runInTransaction(() => {
+      const documents = this.getExportDocuments()
+      const defaultId = this.getDefaultDocumentDatabaseId()
+      const paths = new Map(documents.map(document => [document.id, document.path]))
+      const sources = this.getDatabases().map(database => {
+        const savedViews = this.getStrictDatabaseSavedViews(database.id)
+        return { id: database.id, name: database.name, description: database.description, createdAt: database.createdAt, updatedAt: database.updatedAt,
+          columns: this.getDocumentDatabaseColumns(database.id), savedViews,
+          entities: this.getDatabaseEntities(database.id).map(entity => ({ id: entity.id, title: entity.title,
+            documentId: entity.documentId, documentPath: entity.documentId ? paths.get(entity.documentId) ?? null : null,
+            createdAt: entity.createdAt, updatedAt: entity.updatedAt, fieldValues: entity.fieldValues })) }
+      })
+      const catalog = sources.find(source => source.id === defaultId)
+      if (!catalog) throw new Error('The default catalog is missing from the backup snapshot.')
+      return { documents, catalog, standaloneDatabases: sources.filter(source => source.id !== defaultId) }
+    })
+  }
+
+  /** Strict source read shared by backup and embedded-view snapshots. */
+  getStrictDatabaseSavedViews(databaseId: string): DatabaseSavedView[] {
+    const rows = this.db.prepare(`SELECT id, database_id, name, filter_query, filter_scope, sort_mode, view_mode,
+      config_json, config_version, sort_order, created_at, updated_at FROM database_saved_views WHERE database_id = ? ORDER BY sort_order, id`)
+      .all(databaseId) as DatabaseSavedViewRow[]
+    return rows.map(row => ({ id: row.id, databaseId: row.database_id, name: row.name, filterQuery: row.filter_query, filterScope: row.filter_scope,
+      sortMode: row.sort_mode as DatabaseSavedView['sortMode'], viewMode: row.view_mode as DatabaseSavedView['viewMode'], configVersion: 1, sortOrder: row.sort_order,
+      createdAt: row.created_at, updatedAt: row.updated_at, config: strictSavedViewConfig(row.config_json, row.config_version,
+        { filterQuery: row.filter_query, filterScope: row.filter_scope, sortMode: row.sort_mode, viewMode: row.view_mode }) }))
   }
 
   getBackupRevision(): string {
@@ -3485,6 +3557,7 @@ export class KnowbookStore {
 
   private normalizeBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
     assertColumnStructure(blocks)
+    assertDatabaseViewStructure(blocks)
     const normalized = blocks.map((block) => {
       const type = block.type.trim() || 'paragraph'
       const normalizedLanguage = type === 'code' && typeof block.language === 'string' && block.language.trim()
@@ -3630,6 +3703,7 @@ export class KnowbookStore {
       }
     })
     assertColumnStructure(persisted, { checkParentIds: true })
+    assertDatabaseViewStructure(persisted)
     return persisted
   }
 

@@ -6,6 +6,9 @@ import { assertNativeContainerParse, nativeMarkdownContainer, renderNativeContai
 import { parseTaskListMarker } from './markdownExtensions'
 import { normalizeMarkdownFormat, type MarkdownBlockFormat } from './markdownFormat'
 import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFrontmatter'
+import { assertDatabaseViewStructure, validateDatabaseViewBlock } from './databaseViewBlock'
+import { renderDatabaseViewFence } from './markdownDatabaseView'
+import { parseStrictJson } from './strictJson'
 
 function assertMarkdownColumnStructure(blocks: MarkdownRenderableBlock[]): void {
   try { assertColumnStructure(blocks) }
@@ -154,6 +157,9 @@ function renderMarkdownBlock(
   const listItem = (marker: string, content = block.content) => indent + marker + content.split('\n').map((line, index) => index === 0 ? line : '\n' + indent + ' '.repeat(marker.length) + line).join('')
 
   switch (type) {
+    case 'database-view':
+      validateDatabaseViewBlock(block)
+      return renderDatabaseViewFence(block.content)
     case 'todo':
       return listItem(`${block.markdownFormat?.listMarker ?? '-'} `, `[${block.checked ? 'x' : ' '}] ${block.content}`)
     case 'numbered-todo':
@@ -250,8 +256,13 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
     }
 
     const candidate = parsed as Record<string, unknown>
-    if (candidate.type === 'columns' || candidate.type === 'column') {
-      const allowed = ['type', 'depth', 'id', 'parentBlockId', 'tags', 'highlight', 'markdownFormat']
+    if (candidate.type === 'database-view') {
+      parseStrictJson(rawJson, { maxBytes: 128 * 1024, maxDepth: 32 })
+      if (Object.keys(candidate).some(key => !['type', 'depth', 'id', 'parentBlockId', 'tags', 'highlight'].includes(key)))
+        throw new NativeMarkdownContainerError('database view metadata has unsupported properties')
+    }
+    if (candidate.type === 'columns' || candidate.type === 'column' || candidate.type === 'database-view') {
+      const allowed = ['type', 'depth', 'id', 'parentBlockId', 'tags', 'highlight', ...(candidate.type === 'database-view' ? [] : ['markdownFormat'])]
       if (Object.keys(candidate).some(key => !allowed.includes(key))
         || Object.hasOwn(candidate, 'id') && (typeof candidate.id !== 'string' || !candidate.id || candidate.id !== candidate.id.trim())
         || Object.hasOwn(candidate, 'parentBlockId') && candidate.parentBlockId !== null
@@ -284,7 +295,7 @@ function parseMarkdownBlockMetadata(line: string): MarkdownBlockMetadata | null 
       highlight
     }
   } catch (error) {
-    if (error instanceof NativeMarkdownContainerError) throw error
+    if (error instanceof NativeMarkdownContainerError || rawJson.includes('database-view')) throw error
     return null
   }
 }
@@ -486,6 +497,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
         if (simple) item.children.slice(1).forEach(child => append(child, depth + 1))
       })
     } else if (token.type === 'heading_open') put(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
+    else if (token.type === 'knowbook_database_view') put(make('database-view', token.content), ...token.map!)
     else if (token.type === 'fence' || token.type === 'code_block') put({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
       markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
     else if (token.type === 'frontmatter') put(make('frontmatter', token.content), ...token.map!)
@@ -522,7 +534,13 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
           while (next < items.length && items[next].token.type !== 'knowbook_metadata') next++
           const end = items[next]?.token.map?.[0] ?? scopeEnd
           const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
-          let parsed = parseMarkdownBlocks(body)[0] ?? make(pending.type, '')
+          const parsedBody = parseMarkdownBlocks(body)
+          let parsed = parsedBody[0] ?? make(pending.type, '')
+          if (pending.type === 'database-view' || parsedBody.some(block => block.type === 'database-view')) {
+            if (pending.type !== 'database-view' || parsedBody.length !== 1 || parsed.type !== 'database-view')
+              throw new NativeMarkdownContainerError('backup database view metadata does not match exactly one atom')
+            validateDatabaseViewBlock({ ...parsed, ...pending, type: pending.type })
+          }
           if (['paragraph', 'table', 'frontmatter', 'html'].includes(pending.type)) parsed = make(pending.type, body)
           else if (isNestableMarkdownBlock(pending.type)) {
             let content = stripListMarker(body)
@@ -577,6 +595,7 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
     }
   }
   assertMarkdownColumnStructure(blocks)
+  assertDatabaseViewStructure(blocks)
   return finalizeParsedMarkdownBlocks(blocks)
 }
 type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
@@ -601,7 +620,7 @@ function serializeContainerForest(
     const native = isNativeStructureBlockType(block.type)
     const scoped = native || nativeAncestors.some(Boolean)
     nativeAncestors[depth] = native
-    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body')
+    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter', 'database-view'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body')
   })
   const parts: string[] = [], ranges: MarkdownBlockSourceRange[] = [], closingRanges: MarkdownContainerClosingRange[] = []
   let line = 0
@@ -648,6 +667,7 @@ export function serializeMarkdownWithBlockRanges(
   blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}
 ): { markdown: string; ranges: MarkdownBlockSourceRange[]; closingRanges: MarkdownContainerClosingRange[]; contentProjections?: NativeTextProjection[] } {
   assertMarkdownColumnStructure(blocks)
+  assertDatabaseViewStructure(blocks)
   if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options)
   return { ...serializeFlatMarkdownWithBlockRanges(blocks, options), closingRanges: [] }
 }

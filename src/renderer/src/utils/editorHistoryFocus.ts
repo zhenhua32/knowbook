@@ -1,6 +1,7 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { focusBlockTextarea } from './textareaLayout'
 import { getRichTextHistoryBridge } from '../rich-text/history'
+import { isDatabaseEditorIsland } from './editorIsland'
 
 export type EditorHistoryBookmark = {
   blockId?: string
@@ -30,6 +31,7 @@ export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], targe
   if (typeof document === 'undefined') return null
   const active = target === undefined ? document.activeElement : target
   if (!(active instanceof HTMLElement)) return null
+  if (isDatabaseEditorIsland(active)) return null
   const cell = active.closest<HTMLElement>('[data-row][data-column]')
   const table = active.closest<HTMLElement>('.markdown-table-editor')
   const tableScope = table && tableHistorySelections.get(table)

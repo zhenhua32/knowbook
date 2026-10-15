@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync
 } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
@@ -19,6 +19,7 @@ import { KnowbookStore } from '../database/store'
 import { rewriteBackupAssetReferences } from './markdown-asset-references'
 import { listBackupVersions, publishBackupSnapshot, resolveBackupVersion, writeSnapshotMetadata } from './versions'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
+import { BACKUP_V2, CATALOG_KIND, CATALOG_PATH, backupJson, backupScope, databaseFile, missingReferences, validateExportSnapshot } from './v2-format'
 
 const STANDALONE_DATABASE_BACKUP_KIND = 'standalone-database'
 const STANDALONE_DATABASE_MANIFEST_BACKUP_KIND = 'standalone-database-manifest'
@@ -39,6 +40,8 @@ interface BackupExportJobBase {
 export interface BackupDataExportJob extends BackupExportJobBase {
   documents: ExportDocument[]
   standaloneDatabases: ExportStandaloneDatabase[]
+  /** Absent only for the legacy data-job adapter. Real workspace snapshots include it even with zero documents. */
+  catalog?: ExportStandaloneDatabase
 }
 
 export interface BackupDatabaseExportJob extends BackupExportJobBase {
@@ -52,13 +55,10 @@ export function writeBackupSnapshot(job: BackupExportJob): number {
   if ('databasePath' in job) {
     const store = new KnowbookStore(job.databasePath)
     try {
-      const snapshot = store.runInTransaction(() => ({
-        documents: store.getExportDocuments(),
-        standaloneDatabases: store.getExportStandaloneDatabases()
-      }))
+      const snapshot = store.getExportWorkspaceSnapshot()
       new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(
         snapshot.documents,
-        snapshot.standaloneDatabases
+        snapshot.standaloneDatabases, snapshot.catalog
       )
       return snapshot.documents.length
     } finally {
@@ -66,7 +66,7 @@ export function writeBackupSnapshot(job: BackupExportJob): number {
     }
   }
 
-  new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(job.documents, job.standaloneDatabases)
+  new MarkdownBackupWriter(job.backupRoot, job.assetRoot).writeAll(job.documents, job.standaloneDatabases, job.catalog)
   return job.documents.length
 }
 
@@ -111,10 +111,12 @@ export class MarkdownBackupService {
       }
       fallbackExported = this.store.getDocumentCount()
     } else {
-      const documents = this.store.getExportDocuments()
+      const snapshot = typeof this.store.getExportWorkspaceSnapshot === 'function' ? this.store.getExportWorkspaceSnapshot() : null
+      const documents = snapshot?.documents ?? this.store.getExportDocuments()
       job = {
         documents,
-        standaloneDatabases: this.store.getExportStandaloneDatabases(),
+        standaloneDatabases: snapshot?.standaloneDatabases ?? this.store.getExportStandaloneDatabases(),
+        ...(snapshot ? { catalog: snapshot.catalog } : {}),
         backupRoot: this.backupRoot,
         assetRoot: this.assetRoot
       }
@@ -165,13 +167,18 @@ class MarkdownBackupWriter {
   private readonly ensuredDirectories = new Set<string>()
   private readonly copiedAssets = new Set<string>()
   private readonly documentFiles = new Map<string, string>()
+  private version: { snapshotId: string; catalog: ExportStandaloneDatabase } | null = null
 
   constructor(
     private readonly backupRoot: string,
     private readonly assetRoot?: string
   ) {}
 
-  writeAll(documents: ExportDocument[], standaloneDatabases: ExportStandaloneDatabase[]): void {
+  writeAll(documents: ExportDocument[], standaloneDatabases: ExportStandaloneDatabase[], catalog?: ExportStandaloneDatabase): void {
+    if (catalog) {
+      validateExportSnapshot({ documents, standaloneDatabases, catalog })
+      this.version = { snapshotId: randomUUID(), catalog }
+    }
     const backupParent = dirname(this.backupRoot)
     mkdirSync(backupParent, { recursive: true })
     this.cleanupAbandonedStagingRoots(backupParent)
@@ -188,8 +195,9 @@ class MarkdownBackupWriter {
       for (const database of standaloneDatabases) {
         this.writeStandaloneDatabase(stagingRoot, database)
       }
-      this.writeStandaloneDatabaseManifest(stagingRoot, standaloneDatabases)
-      writeSnapshotMetadata(stagingRoot, documents.length)
+      if (catalog) this.writeStandaloneDatabase(stagingRoot, catalog, true)
+      this.writeStandaloneDatabaseManifest(stagingRoot, standaloneDatabases, documents)
+      writeSnapshotMetadata(stagingRoot, documents.length, this.version?.snapshotId)
       this.replaceBackupSnapshot(stagingRoot)
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true })
@@ -243,21 +251,22 @@ class MarkdownBackupWriter {
     )
   }
 
-  private writeStandaloneDatabase(root: string, database: ExportStandaloneDatabase): void {
-    const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${this.toSafePathSegment(database.id)}.md`)
+  private writeStandaloneDatabase(root: string, database: ExportStandaloneDatabase, catalog = false): void {
+    const filePath = this.version ? join(root, ...(catalog ? CATALOG_PATH : databaseFile(database.id)).split('/'))
+      : join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), `${this.toSafePathSegment(database.id)}.md`)
     this.assertPathInsideRoot(filePath, root)
     this.ensureDirectory(dirname(filePath))
     writeFileSync(
       filePath,
-      this.rewriteManagedAssetReferences(root, filePath, this.renderStandaloneDatabase(database)),
+      this.rewriteManagedAssetReferences(root, filePath, this.renderStandaloneDatabase(database, catalog)),
       'utf8'
     )
   }
 
-  private writeStandaloneDatabaseManifest(root: string, databases: ExportStandaloneDatabase[]): void {
+  private writeStandaloneDatabaseManifest(root: string, databases: ExportStandaloneDatabase[], documents: ExportDocument[]): void {
     const filePath = join(root, ...STANDALONE_DATABASE_BACKUP_ROOT.split('/'), STANDALONE_DATABASE_MANIFEST_FILE_NAME)
     this.ensureDirectory(dirname(filePath))
-    writeFileSync(filePath, this.renderStandaloneDatabaseManifest(databases), 'utf8')
+    writeFileSync(filePath, this.renderStandaloneDatabaseManifest(databases, documents), 'utf8')
   }
 
   private ensureDirectory(directoryPath: string): void {
@@ -396,7 +405,8 @@ class MarkdownBackupWriter {
       updatedAt: document.updatedAt,
       summary: document.summary,
       documentDatabaseColumns: JSON.stringify(document.documentDatabaseColumns),
-      documentDatabaseFieldValues: JSON.stringify(document.documentDatabaseFieldValues)
+      documentDatabaseFieldValues: JSON.stringify(document.documentDatabaseFieldValues),
+      ...(this.version ? { backupFormatVersion: BACKUP_V2, backupSnapshotId: this.version.snapshotId, documentDatabaseId: this.version.catalog.id } : {})
     })
 
     const body = serializeBlocksToMarkdown(document.blocks, {
@@ -407,9 +417,10 @@ class MarkdownBackupWriter {
     return `${frontmatter}${body}\n`
   }
 
-  private renderStandaloneDatabase(database: ExportStandaloneDatabase): string {
+  private renderStandaloneDatabase(database: ExportStandaloneDatabase, catalog = false): string {
     return `${renderMarkdownFrontmatter({
-      kind: STANDALONE_DATABASE_BACKUP_KIND,
+      kind: catalog ? CATALOG_KIND : STANDALONE_DATABASE_BACKUP_KIND,
+      ...(this.version ? { backupFormatVersion: BACKUP_V2, backupSnapshotId: this.version.snapshotId } : {}),
       databaseId: database.id,
       databaseName: database.name,
       databaseDescription: database.description,
@@ -421,10 +432,15 @@ class MarkdownBackupWriter {
     })}\n`
   }
 
-  private renderStandaloneDatabaseManifest(databases: ExportStandaloneDatabase[]): string {
+  private renderStandaloneDatabaseManifest(databases: ExportStandaloneDatabase[], documents: ExportDocument[]): string {
     return `${renderMarkdownFrontmatter({
       kind: STANDALONE_DATABASE_MANIFEST_BACKUP_KIND,
-      databaseIds: JSON.stringify(databases.map((database) => database.id))
+      databaseIds: JSON.stringify(databases.map((database) => database.id).sort()),
+      ...(this.version ? { backupFormatVersion: BACKUP_V2, backupSnapshotId: this.version.snapshotId,
+        catalogDatabaseId: this.version.catalog.id, documentIds: backupJson(documents.map(document => document.id).sort()),
+        databaseMissingReferences: backupJson(missingReferences({ catalog: this.version.catalog, standaloneDatabases: databases, documents })),
+        restoreDeletionPolicy: backupJson({ documents: documents.length ? { mode: 'scopes', paths: [...new Set(documents.map(document => backupScope(document.path, this.documentFiles.get(document.path)!.slice(0, -3))))].sort() }
+          : { mode: 'none' }, customDatabases: { mode: 'complete' }, catalog: { mode: 'source-owned' } }) } : {})
     })}\n`
   }
 }

@@ -24,7 +24,7 @@ import { deleteCrossColumnSelection } from './columnEditing'
 import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import { captureAsyncHistoryFocusPermission, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
-import { createColdBlockPopup } from '../utils/coldBlockPopup'
+import { createColdBlockPopup, type ColdBlockPopup } from '../utils/coldBlockPopup'
 import { createDraftBlockId } from '../utils/draftTreeFragment'
 import { normalizeDraftBlocks } from '../utils/draftTreeNormalization'
 import { getMarkdownShortcut, parsePastedMarkdown } from '../utils/markdownInput'
@@ -40,6 +40,10 @@ import { nativeContainerPresentation } from '../utils/nativeContainerPresentatio
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { INLINE_TEXT_COLORS, type InlineTextColor } from '@shared/inlineTextPresentation'
 import { selectedRichTextColor, setRichTextColor } from './presentation'
+import { useDatabaseEmbedContext } from '../features/database/DatabaseEmbedContext'
+import { validateDatabaseViewBlock } from '@shared/databaseViewBlock'
+import { planRichDatabaseViewInsertion } from './databaseViewInsertion'
+import DatabaseViewPortal from './DatabaseViewPortal'
 import './rich-text.css'
 import '../styles/inline-text-presentation.css'
 
@@ -48,6 +52,11 @@ const NativeContainerStyle = lazy(() => import('../components/NativeContainerSty
 const MarkdownTableEditor = lazy(() => import('../components/MarkdownTableEditor').then(module => ({ default: module.MarkdownTableEditor })))
 const ColumnsControls = lazy(() => import('../components/ColumnsControls'))
 const ColumnContentControls = lazy(() => import('./ColumnContentControls'))
+
+type DatabaseHost = {
+  id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined
+  editor: EditorView; documentId: string; session: object | undefined; epoch: number; alive: boolean
+}
 
 type Props = {
   blocks: DocumentBlockDraft[]
@@ -74,6 +83,7 @@ function clipboardHtml(markdown: string): string {
   // Only strict parsed container/layout tokens claim the existing source-copy
   // fallback. Literal fenced examples and external HTML keep their old path.
   const nativeSource = tokens.some(token => token.type === 'native_container_open' && Boolean(token.meta?.nativeContainer)
+    || token.type === 'knowbook_database_view' && Boolean(token.meta?.databaseViewPayload)
     || token.type === 'knowbook_table_layout' && token.meta?.boundTableLayout === true)
   return nativeSource ? `<div data-knowbook-markdown-source="true">${html}</div>` : html
 }
@@ -92,6 +102,10 @@ export function DocumentRichTextEditor(props: Props) {
   const [palette, setPalette] = useState<'textColor' | 'backgroundColor' | null>(null)
   const [tableHosts, setTableHosts] = useState<Array<{ id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined }>>([])
   const [columnHosts, setColumnHosts] = useState<Array<{ id: string; dom: HTMLElement; grid: HTMLElement; position: () => number | undefined }>>([])
+  const [databaseHosts, setDatabaseHosts] = useState<DatabaseHost[]>([])
+  const databaseContext = useDatabaseEmbedContext(), databaseContextRef = useRef(databaseContext)
+  databaseContextRef.current = databaseContext
+  const pendingDatabaseFocus = useRef<{ editor: EditorView; doc: RichNode; id: string; documentId: string; session: object; permission: ColdBlockPopup } | null>(null)
   const markdownDocument = useContext(MarkdownDocumentContext)
   const paletteRef = useRef(palette)
   paletteRef.current = palette
@@ -113,7 +127,8 @@ export function DocumentRichTextEditor(props: Props) {
   const slashMatch = selection?.empty ? /^\/([^\s]*)$/.exec(currentText) : null
   const slashQuery = slashMatch?.[1].toLowerCase()
   const slashCommands = slashQuery === undefined || slashDismissed === currentText ? []
-    : [...types.map((type, index) => ({ type, label: (props.isZh ? labelsZh : labelsEn)[index] })), { type: 'columns', label: props.isZh ? '分栏' : 'Columns' }]
+    : [...types.map((type, index) => ({ type, label: (props.isZh ? labelsZh : labelsEn)[index] })), { type: 'columns', label: props.isZh ? '分栏' : 'Columns' },
+      ...(databaseContext ? [{ type: 'database-view', label: props.isZh ? '数据库视图' : 'Database view' }] : [])]
       .filter(item => `${item.type} ${item.label}`.toLowerCase().includes(slashQuery))
   const slashRef = useRef({ commands: slashCommands, index: slashIndex })
   slashRef.current = { commands: slashCommands, index: Math.min(slashIndex, Math.max(0, slashCommands.length - 1)) }
@@ -122,6 +137,63 @@ export function DocumentRichTextEditor(props: Props) {
   const cancelChildFocus = () => {
     pendingChildFocus.current?.permission.dispose()
     pendingChildFocus.current = null
+  }
+  const cancelDatabaseFocus = () => {
+    pendingDatabaseFocus.current?.permission.dispose()
+    pendingDatabaseFocus.current = null
+  }
+  const openDatabasePicker = (removeSlash = false) => {
+    const editor = viewRef.current, context = databaseContextRef.current
+    if (!editor || editor.composing || !context || context.documentId !== latest.current.documentId) return
+    cancelDatabaseFocus()
+    const doc = editor.state.doc, selection = editor.state.selection, documentId = latest.current.documentId, session = context.session
+    const isCurrent = () => viewRef.current === editor && editor.dom.isConnected && !editor.composing
+      && latest.current.documentId === documentId && databaseContextRef.current?.session === session
+      && editor.state.doc.eq(doc) && editor.state.selection.eq(selection)
+    let completed: typeof pendingDatabaseFocus.current = null
+    context.openPicker({ isCurrent, onSelect: payload => {
+      if (!isCurrent()) return false
+      const tr = planRichDatabaseViewInsertion(editor.state, payload, removeSlash)
+      if (!tr) return false
+      latest.current.checkpoint(); boundary.current = true
+      const active = editor.dom.ownerDocument.activeElement
+      const scope = active instanceof HTMLElement ? active.closest<HTMLElement>('dialog, [role="dialog"]') : null
+      const permission = createColdBlockPopup(editor.dom, scope)
+      permission.claim(scope)
+      editor.dispatch(tr.scrollIntoView())
+      const id = editor.state.selection instanceof NodeSelection ? editor.state.selection.node.attrs.block?.id : undefined
+      if (id) {
+        completed = { editor, id, doc: editor.state.doc, documentId, session, permission }
+        pendingDatabaseFocus.current = completed
+      } else permission.dispose()
+      setSlashDismissed(null); setSlashIndex(0)
+      return true
+    }, onComplete: () => {
+      const request = completed
+      if (!request || pendingDatabaseFocus.current !== request) return
+      const active = editor.dom.ownerDocument.activeElement
+      const allowed = request.permission.canRestore() && document.hasFocus() && viewRef.current === editor
+        && databaseContextRef.current?.session === session && latest.current.documentId === documentId
+        && editor.dom.isConnected && !editor.composing && editor.state.doc.eq(request.doc)
+        && editor.state.selection instanceof NodeSelection && editor.state.selection.node.attrs.block?.id === request.id
+        && (active === document.body || active === editor.dom)
+      cancelDatabaseFocus()
+      if (allowed) editor.focus()
+    } })
+  }
+  const commitDatabaseHost = (host: DatabaseHost, epoch: number, expected: string, next: string) => {
+    const editor = viewRef.current
+    if (!host.alive || host.epoch !== epoch || editor !== host.editor || editor.composing || !host.dom.isConnected
+      || latest.current.documentId !== host.documentId || databaseContextRef.current?.session !== host.session || next === expected) return false
+    let position: number | undefined
+    try { position = host.position() } catch { return false }
+    if (position === undefined) return false
+    const node = editor.state.doc.nodeAt(position)
+    if (node?.type !== richTextSchema.nodes.database_view_block || node.attrs.block?.id !== host.id || node.attrs.block.content !== expected) return false
+    try { validateDatabaseViewBlock({ ...node.attrs.block, content: next }) } catch { return false }
+    latest.current.checkpoint(); boundary.current = true
+    editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...node.attrs, block: { ...node.attrs.block, content: next } }))
+    return true
   }
   const focusAddedChild = (readyId?: string, readyCell?: HTMLElement | null) => {
     const request = pendingChildFocus.current, editor = viewRef.current, current = latest.current
@@ -236,7 +308,6 @@ export function DocumentRichTextEditor(props: Props) {
   const convert = (type: string, removeSlash = false): void => {
     const editor = viewRef.current
     if (!editor || editor.composing) return
-    latest.current.checkpoint()
     let tr = editor.state.tr
     if (removeSlash) tr = tr.delete(editor.state.selection.$from.start(), editor.state.selection.$from.end())
     const anchor = endpoint(tr.doc, tr.selection.anchor), head = endpoint(tr.doc, tr.selection.head)
@@ -244,10 +315,12 @@ export function DocumentRichTextEditor(props: Props) {
     let blocks = richDocToDraftBlocks(tr.doc)
     const selected = richTextSelectionBlockIds(EditorState.create({ doc: tr.doc, selection: tr.selection }))
       .filter(id => latest.current.visibleIndices.some(index => blocks[index]?.id === id))
+    if (selected.some(id => blocks.some(block => block.id === id && block.type === 'database-view'))) return
     if (selected.some(id => blocks.some(block => block.id === id && ['columns', 'column'].includes(block.type)))) {
       setMessage(latest.current.isZh ? '请通过分栏控件调整列结构。' : 'Use the column controls to change the column structure.')
       return
     }
+    latest.current.checkpoint()
     for (const id of selected) {
       const index = blocks.findIndex(block => block.id === id)
       blocks = prepareDraftBlockTypeChange(blocks, index, type)
@@ -576,6 +649,7 @@ export function DocumentRichTextEditor(props: Props) {
           if (event.key === 'Enter') {
             const type = slash.commands[slash.index].type
             if (type === 'columns') void wrapSelectionInColumns(true)
+            else if (type === 'database-view') openDatabasePicker(true)
             else convert(type, true)
             return true
           }
@@ -681,6 +755,50 @@ export function DocumentRichTextEditor(props: Props) {
         return true
       },
       nodeViews: {
+        database_view_block(node, editor, getPos) {
+          let current = node
+          const dom = document.createElement('section'), host = document.createElement('div'), select = document.createElement('button')
+          const id = node.attrs.block.id as string
+          dom.className = 'rich-database-view block-editor-row'; dom.contentEditable = 'false'
+          host.className = 'rich-database-view-host'; host.dataset.editorIsland = 'database-view'
+          select.type = 'button'; select.className = 'rich-database-view-select'; select.contentEditable = 'false'
+          select.setAttribute('aria-label', latest.current.isZh ? '选择数据库视图块' : 'Select database view block')
+          select.textContent = '⋮⋮'
+          select.addEventListener('mousedown', event => event.preventDefault())
+          select.addEventListener('click', () => {
+            if (!descriptor.alive || viewRef.current !== editor || editor.composing) return
+            const position = getPos()
+            if (position === undefined || editor.state.doc.nodeAt(position)?.attrs.block?.id !== id) return
+            editor.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc, position)))
+            editor.focus()
+          })
+          const descriptor: DatabaseHost = { id, dom: host, node: () => current, position: getPos, editor,
+            documentId: latest.current.documentId, session: databaseContextRef.current?.session, epoch: 0, alive: true }
+          const refresh = () => {
+            dom.dataset.blockId = id; dom.dataset.blockType = 'database-view'; dom.dataset.blockDepth = String(current.attrs.block.depth)
+          }
+          refresh()
+          dom.append(select, host)
+          if (latest.current.onOpenBlockActions) dom.prepend(blockActionButton(id))
+          dom.addEventListener('contextmenu', event => {
+            if (host.contains(event.target as Node) || !latest.current.onOpenBlockActions || editor.composing) return
+            event.preventDefault(); event.stopPropagation(); openContextBlockActions(id, event.clientX, event.clientY)
+          })
+          setDatabaseHosts(previous => [...previous.filter(item => item.id !== id), descriptor])
+          return { dom,
+            stopEvent: event => event.target instanceof Node && host.contains(event.target)
+              || event.target === select || event.target instanceof Element && Boolean(event.target.closest('.rich-text-block-actions')) && blockActionStopsEvent(event),
+            ignoreMutation: record => host.contains(record.target) || record.type === 'attributes' && record.target === dom,
+            update(next) {
+              if (next.type !== current.type || next.attrs.block?.id !== id) return false
+              if (next.attrs.block.content !== current.attrs.block.content) descriptor.epoch++
+              current = next; refresh(); return true
+            }, destroy() {
+              descriptor.alive = false; descriptor.epoch++
+              if (viewRef.current) setDatabaseHosts(previous => previous.filter(item => item !== descriptor))
+            }
+          }
+        },
         columns_block(node, _view, getPos) {
           let current = node
           const dom = document.createElement('section'), grid = document.createElement('div'), host = document.createElement('div')
@@ -846,8 +964,8 @@ export function DocumentRichTextEditor(props: Props) {
       }
     })
     setRevision(value => value + 1)
-    return () => { cancelChildFocus(); pendingContextMenu.current?.(); unregister(); parkedFoldSelection.current = null; viewRef.current = null; editor.destroy() }
-  }, [props.documentId])
+    return () => { cancelChildFocus(); cancelDatabaseFocus(); pendingContextMenu.current?.(); unregister(); parkedFoldSelection.current = null; viewRef.current = null; editor.destroy() }
+  }, [props.documentId, databaseContext?.session])
 
   const referenceSignature = JSON.stringify(props.references ?? {})
   useLayoutEffect(() => { for (const refresh of sourceRefresh.current) refresh() }, [referenceSignature, props.isZh])
@@ -935,7 +1053,7 @@ export function DocumentRichTextEditor(props: Props) {
   }}>
     {props.blocks.some(block => isContainerBlockType(block.type)) ? <Suspense fallback={null}><NativeContainerStyle /></Suspense> : null}
     <div className="rich-text-toolbar" role="toolbar" aria-label={props.isZh ? '正文格式' : 'Body formatting'}>
-      <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} value={types.includes(currentType) ? currentType : 'paragraph'}
+      <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} disabled={Boolean(view && richTextSelectionBlockIds(view.state).some(id => props.blocks.some(block => block.id === id && block.type === 'database-view')))} value={types.includes(currentType) ? currentType : 'paragraph'}
         onChange={event => convert(event.target.value)}>{types.map((type, index) => <option key={type} value={type}>{(props.isZh ? labelsZh : labelsEn)[index]}</option>)}</select></label>
       {([['strong', 'B', '加粗', 'Bold'], ['em', 'I', '斜体', 'Italic'], ['strike', 'S', '删除线', 'Strikethrough'],
         ['underline', 'U', '下划线', 'Underline'], ['highlight', '▧', '高亮', 'Highlight'], ['code', '</>', '行内代码', 'Inline code']] as const).map(([name, symbol, zh, en]) =>
@@ -955,6 +1073,9 @@ export function DocumentRichTextEditor(props: Props) {
       <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => { void wrapSelectionInColumns() }}>
         {props.isZh ? '分栏' : 'Columns'}
       </button>
+      {databaseContext && <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => openDatabasePicker()}>
+        {props.isZh ? '插入数据库视图' : 'Insert database view'}
+      </button>}
     </div>
     {currentBlock?.id && props.blocks.some(block => block.type === 'column') && <Suspense fallback={null}>
       <ColumnContentControls blocks={props.blocks} blockId={currentBlock.id} isZh={props.isZh}
@@ -988,6 +1109,15 @@ export function DocumentRichTextEditor(props: Props) {
       <button type="submit">{props.isZh ? '应用' : 'Apply'}</button><button type="button" onClick={() => { setLinkUrl(null); viewRef.current?.focus() }}>{props.isZh ? '取消' : 'Cancel'}</button>
     </form>}
     <div ref={mount} />
+    {databaseHosts.map(host => {
+      if (!host.alive || host.editor !== viewRef.current || host.documentId !== props.documentId
+        || host.session !== databaseContext?.session || !props.blocks.some(block => block.id === host.id && block.type === 'database-view')) return null
+      const content = host.node().attrs.block.content as string, epoch = host.epoch
+      return createPortal(<Suspense fallback={<p role="status">{props.isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
+        <DatabaseViewPortal blockId={host.id} content={content} isZh={props.isZh}
+          onCommitContent={(expected, next) => commitDatabaseHost(host, epoch, expected, next)} />
+      </Suspense>, host.dom, `${props.documentId}:${host.id}`)
+    })}
     {columnHosts.map(host => {
       if (!props.blocks.some(block => block.id === host.id && block.type === 'columns')) return null
       return createPortal(<Suspense fallback={null}><ColumnsControls blocks={props.blocks} groupId={host.id} isZh={props.isZh}
@@ -1024,6 +1154,7 @@ export function DocumentRichTextEditor(props: Props) {
       {slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashRef.current.index} key={command.type}
         onMouseDown={event => event.preventDefault()} onClick={() => {
           if (command.type === 'columns') void wrapSelectionInColumns(true)
+          else if (command.type === 'database-view') openDatabasePicker(true)
           else convert(command.type, true)
         }}>{command.label}</button>)}
     </div>}

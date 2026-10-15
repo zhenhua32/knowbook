@@ -12,6 +12,7 @@ import { parseMarkdownTable } from '../utils/markdownTable'
 import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
 
 const NativeContainerStyle = lazy(() => import('./NativeContainerStyle'))
+const InlineDatabaseView = lazy(() => import('../features/database/InlineDatabaseView'))
 
 const CodePreview = lazy(async () => {
   const [module] = await Promise.all([import('./CodeBlockPreview'), import('highlight.js/styles/github-dark.css')])
@@ -43,10 +44,13 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   const nodes = useContext(MarkdownBlockNodesContext)
   const nativeContainer = isContainerBlockType(block.type) ? nativeContainerPresentation(block.type, block.markdownFormat) : null
   const advanced = Boolean(nodes && hasAdvancedMarkdown(nodes))
-  const structured = ['code', 'math', 'table', 'divider', 'frontmatter'].includes(block.type)
+  const structured = ['code', 'math', 'table', 'divider', 'frontmatter', 'database-view'].includes(block.type)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   let content: ReactNode
-  if (block.type === 'divider') content = <hr />
+  if (block.type === 'database-view' && block.id) content = <Suspense fallback={<p role="status">{isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
+    <InlineDatabaseView blockId={block.id} content={block.content} mode="reading" />
+  </Suspense>
+  else if (block.type === 'divider') content = <hr />
   else if (block.type === 'frontmatter') content = <details className="markdown-frontmatter"><summary>{isZh ? '文档属性（YAML）' : 'Document properties (YAML)'}</summary><pre>{block.content}</pre></details>
   else if (isMermaid) content = <MarkdownMermaidPreview source={block.content} label={isZh ? 'Mermaid 图表' : 'Mermaid diagram'} />
   else if (block.type === 'code') content = <Suspense fallback={<pre>{block.content}</pre>}>

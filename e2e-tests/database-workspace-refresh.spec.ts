@@ -117,8 +117,8 @@ async function readStored(page: Page, app: ElectronApplication, language: Langua
   return { ...api, raw: await readRawStores(app) }
 }
 
-async function installProbe(app: ElectronApplication, databaseId: string) {
-  await app.evaluate(({ ipcMain }, databaseId) => {
+async function installProbe(app: ElectronApplication, { databaseId, kind }: Pick<Ids, 'databaseId' | 'kind'>) {
+  await app.evaluate(({ ipcMain }, { databaseId, kind }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
     const writeChannels: WriteChannel[] = ['knowbook:update-database-entity', 'knowbook:update-document-database-value']
     const readChannels = ['knowbook:get-database-entities', 'knowbook:get-document-catalog-page']
@@ -166,8 +166,19 @@ async function installProbe(app: ElectronApplication, databaseId: string) {
           rejectHeldReply = gate.fail
           gate.settled = true
         }
-        if (attempt && (rejectHeldReply || (phase === 'drop' && channel === 'knowbook:get-database-entities' &&
-            inputs[0] === databaseId && probe.writes.length === 1 && probe.rejectReadReply && probe.failedReads.length === 0))) {
+        const targetEntitiesRead = channel === 'knowbook:get-database-entities' && inputs[0] === databaseId
+        const catalogInput = inputs[0]
+        const catalogSourceId = catalogInput && typeof catalogInput === 'object' && 'databaseId' in catalogInput
+          ? catalogInput.databaseId : undefined
+        const catalogRecordsRead = kind === 'catalog' && channel === 'knowbook:get-document-catalog-page'
+          && catalogInput !== null && typeof catalogInput === 'object'
+          && (catalogSourceId == null || catalogSourceId === databaseId)
+        // Catalog records also publish through the mutation-driven global
+        // catalog refresh. Reject every participating reply during the drop,
+        // including reads outside DatabasePage's own all-or-nothing refresh.
+        const rejectDropReply = phase === 'drop' && probe.writes.length === 1 && probe.rejectReadReply
+          && (targetEntitiesRead || catalogRecordsRead) && (kind === 'catalog' || probe.failedReads.length === 0)
+        if (attempt && (rejectHeldReply || rejectDropReply)) {
           const message = 'The authenticated workspace read completed, but its IPC reply is temporarily unavailable.'
           probe.failedReads.push({ ...attempt, message, kind: 'temporary-ipc-reply' })
           throw new Error(message)
@@ -176,7 +187,7 @@ async function installProbe(app: ElectronApplication, databaseId: string) {
         return result
       })
     }
-  }, databaseId)
+  }, { databaseId, kind })
   await pageDragProbe(app)
 }
 
@@ -202,7 +213,7 @@ async function mainState(app: ElectronApplication, endUserReadPhase = false) {
     return { requests: probe.requests, writes: probe.writes, failures: probe.failures,
       readRequests: probe.readRequests, successfulReads: probe.successfulReads, failedReads: probe.failedReads,
       gates: probe.gates.map(gate => ({ attempt: gate.attempt, settled: gate.settled, fail: gate.fail })),
-      readCountScope: 'Only native drag and Refresh database actions; artifact and reload reads are excluded.' }
+      readCountScope: 'Native drag, mutation-driven catalog publication, and Refresh database actions; artifact and reload reads are excluded.' }
   }, endUserReadPhase)
 }
 
@@ -302,6 +313,18 @@ function expectedRequest(ids: Ids): Request {
     : { channel: 'knowbook:update-document-database-value', input: { documentId: ids.recordId, columnId: ids.fieldId, value: 'Beta' } }
 }
 
+function isSourceRecordRead(read: ReadAttempt, ids: Ids) {
+  if (read.channel === 'knowbook:get-database-entities') return read.input === ids.databaseId
+  if (ids.kind !== 'catalog' || read.channel !== 'knowbook:get-document-catalog-page'
+      || !read.input || typeof read.input !== 'object') return false
+  const databaseId = 'databaseId' in read.input ? read.input.databaseId : undefined
+  return databaseId == null || databaseId === ids.databaseId
+}
+
+function readKey(read: ReadAttempt) {
+  return JSON.stringify([read.channel, read.input, read.phase])
+}
+
 function expectOnlyTargetFieldChanged(before: Awaited<ReturnType<typeof readStored>>, after: Awaited<ReturnType<typeof readStored>>, ids: Ids) {
   if (ids.kind === 'custom') {
     const original = before.sources.find(source => source.id === ids.databaseId)!.entities.find(entity => entity.id === ids.recordId)!
@@ -346,7 +369,7 @@ for (const { language, kind } of cases) {
       page.on('pageerror', error => errors.push(error.message))
       const ids = await seed(page, language, kind)
       const before = await readStored(page, app, language)
-      await installProbe(app, ids.databaseId)
+      await installProbe(app, ids)
       const initial = await record(page, app, info, language, language + '-' + kind + '-before-native-drag')
       expect(initial.stored).toEqual(before)
       expect(initial.state.targetGroup).toBe('Alpha')
@@ -355,7 +378,20 @@ for (const { language, kind } of cases) {
       expect(initial.state.dropPoint.hit).toBe(true)
       await app.evaluate(() => { (globalThis as ProbeGlobal).__knowbookWorkspaceRefresh!.phase = 'drop' })
       await card(page).dragTo(column(page, 'Beta'), { targetPosition: { x: 100, y: 100 } })
-      await expect.poll(async () => (await mainState(app)).failedReads.length).toBe(1)
+      if (kind === 'custom') {
+        await expect.poll(async () => (await mainState(app)).failedReads.length).toBe(1)
+      } else {
+        // Observe the global catalog read failure as well as the drop refresh;
+        // a successful independent catalog publication would legitimately move
+        // the saved record to Beta before the user presses Refresh database.
+        await expect(page.getByText('数据库加载失败', { exact: true })).toBeVisible()
+        await expect.poll(async () => {
+          const ipc = await mainState(app)
+          const requests = ipc.readRequests.filter(read => read.phase === 'drop' && isSourceRecordRead(read, ids))
+          const failures = ipc.failedReads.filter(read => read.phase === 'drop' && isSourceRecordRead(read, ids))
+          return requests.length > 0 && JSON.stringify(requests.map(readKey).sort()) === JSON.stringify(failures.map(readKey).sort())
+        }).toBe(true)
+      }
       await twoFrames(page)
       // Preserve the durable SQLite write and stale Board before checking the
       // missing user recovery entry. No reload or fabricated UI refresh occurs.
@@ -363,9 +399,17 @@ for (const { language, kind } of cases) {
       expect(failed.ipc.requests).toEqual([expectedRequest(ids)])
       expect(failed.ipc.writes).toEqual([expectedRequest(ids)])
       expect(failed.ipc.failures).toEqual([])
-      expect(failed.ipc.failedReads).toHaveLength(1)
-      expect(failed.ipc.failedReads[0]).toMatchObject({ channel: 'knowbook:get-database-entities', input: ids.databaseId,
-        phase: 'drop', kind: 'temporary-ipc-reply' })
+      if (kind === 'custom') {
+        expect(failed.ipc.failedReads).toHaveLength(1)
+        expect(failed.ipc.failedReads[0]).toMatchObject({ channel: 'knowbook:get-database-entities', input: ids.databaseId,
+          phase: 'drop', kind: 'temporary-ipc-reply' })
+      } else {
+        const reads = failed.ipc.readRequests.filter(read => read.phase === 'drop' && isSourceRecordRead(read, ids))
+        expect(reads.some(read => read.channel === 'knowbook:get-document-catalog-page')).toBe(true)
+        expect(failed.ipc.failedReads.map(readKey).sort()).toEqual(reads.map(readKey).sort())
+        expect(failed.ipc.failedReads.every(read => read.kind === 'temporary-ipc-reply')).toBe(true)
+        expect(failed.ipc.successfulReads.filter(read => read.phase === 'drop' && isSourceRecordRead(read, ids))).toEqual([])
+      }
       expect(failed.ipc.readRequests.filter(read => read.phase === 'drop' && read.channel === 'knowbook:get-database-entities' && read.input === ids.databaseId)).toHaveLength(1)
       expectOnlyTargetFieldChanged(before, failed.stored, ids)
       expect(failed.state.targetGroup).toBe('Alpha')
@@ -385,6 +429,14 @@ for (const { language, kind } of cases) {
       await refresh.click()
       await expect(column(page, 'Beta').locator('.dbw-board-card')).toHaveCount(2)
       await twoFrames(page)
+      if (kind === 'catalog') {
+        await expect.poll(async () => {
+          const ipc = await mainState(app)
+          const requests = ipc.readRequests.filter(read => read.phase === 'recovery' && isSourceRecordRead(read, ids))
+          const replies = ipc.successfulReads.filter(read => read.phase === 'recovery' && isSourceRecordRead(read, ids))
+          return requests.length > 0 && JSON.stringify(requests.map(readKey).sort()) === JSON.stringify(replies.map(readKey).sort())
+        }).toBe(true)
+      }
       const recovered = await record(page, app, info, language, language + '-' + kind + '-actual-header-refresh-reads-without-repeating-write', true)
       expect(recovered.ipc.requests).toEqual([expectedRequest(ids)])
       expect(recovered.ipc.writes).toEqual([expectedRequest(ids)])
@@ -392,6 +444,12 @@ for (const { language, kind } of cases) {
       expect(recovered.ipc.failedReads).toEqual(failed.ipc.failedReads)
       expect(recovered.ipc.readRequests.filter(read => read.phase === 'recovery' && read.channel === 'knowbook:get-database-entities' && read.input === ids.databaseId)).toHaveLength(1)
       expect(recovered.ipc.successfulReads.filter(read => read.phase === 'recovery' && read.channel === 'knowbook:get-database-entities' && read.input === ids.databaseId)).toHaveLength(1)
+      if (kind === 'catalog') {
+        const reads = recovered.ipc.readRequests.filter(read => read.phase === 'recovery' && isSourceRecordRead(read, ids))
+        const replies = recovered.ipc.successfulReads.filter(read => read.phase === 'recovery' && isSourceRecordRead(read, ids))
+        expect(reads.some(read => read.channel === 'knowbook:get-document-catalog-page')).toBe(true)
+        expect(replies.map(readKey).sort()).toEqual(reads.map(readKey).sort())
+      }
       expect(recovered.state.targetGroup).toBe('Beta')
       expect(recovered.state.columns).toEqual([{ label: 'Beta', count: '2', titles: [recordTitle, otherRecordTitle] }])
       expect(recovered.state.card.ratio).toBeCloseTo(1, 5)
@@ -475,8 +533,9 @@ for (const { language, kind } of cases) {
       expect(manualFailed.state.selection).toEqual(selection)
       expect(manualFailed.state.focusCalls).toEqual([])
       expect(manualFailed.state.messages).toContain(refreshError)
-      expect(manualFailed.ipc.failedReads).toHaveLength(2)
-      expect(manualFailed.ipc.failedReads[1]).toMatchObject({ channel: 'knowbook:get-database-entities', input: ids.databaseId,
+      expect(manualFailed.ipc.failedReads).toHaveLength(failed.ipc.failedReads.length + 1)
+      expect(manualFailed.ipc.failedReads.slice(0, failed.ipc.failedReads.length)).toEqual(failed.ipc.failedReads)
+      expect(manualFailed.ipc.failedReads[failed.ipc.failedReads.length]).toMatchObject({ channel: 'knowbook:get-database-entities', input: ids.databaseId,
         phase: 'dirty-refresh', kind: 'temporary-ipc-reply' })
       expect(manualFailed.ipc.requests).toEqual([expectedRequest(ids)])
       expect(manualFailed.ipc.writes).toEqual([expectedRequest(ids)])

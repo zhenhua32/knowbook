@@ -5,6 +5,7 @@ import type { DocumentsKeyboardState } from '../types/appDomains'
 import type { ShellPageState } from '../types/appShell'
 import { openQuickCapture } from '../documentCapture'
 import { hasVisibleShortcutBlocker } from '../utils/shortcutBlocker'
+import { isDatabaseEditorIsland } from '../utils/editorIsland'
 
 type UseAppKeyboardShortcutsParams = {
   documents: DocumentsKeyboardState
@@ -53,7 +54,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
         return
       }
       if (event.target instanceof Element && event.target.closest('.global-search-modal')) return
-      if (key === 'mod+k' && event.target instanceof Element && event.target.closest('.knowbook-rich-text-editor')) return
+      if (key === 'mod+k' && !isDatabaseEditorIsland(event.target) && event.target instanceof Element && event.target.closest('.knowbook-rich-text-editor')) return
       if (key !== 'mod+k' && key !== 'mod+shift+p') return
       event.preventDefault(); event.stopPropagation()
       if (key === 'mod+shift+p') documents.openGlobalSearch('commands')
@@ -70,6 +71,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
       if (/^mod\+[1-6]$/.test(key)) {
         event.preventDefault(); shell.setActivePage(PAGE_ORDER[Number(key.at(-1)) - 1]); return
       }
+      if (isDatabaseEditorIsland(event.target)) return
       if (shell.activePage !== 'documents') return
       if (key === 'mod+s') {
         event.preventDefault()

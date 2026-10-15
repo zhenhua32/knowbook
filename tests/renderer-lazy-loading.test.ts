@@ -24,7 +24,8 @@ test('renderer page bodies stay behind lazy loading boundaries', () => {
     '../pages/DocumentsPage',
     '../pages/DatabasePage',
     '../sections/AISection',
-    '../sections/DashboardSettingsSection',
+    '../pages/SettingsPage',
+    '../sections/DashboardStorageOverview',
     '../sections/PluginsSection',
     '../sections/WorkspaceDashboardSection'
   ]

@@ -3,7 +3,7 @@ import type { AppShellState } from '../types/appShell'
 import { useRef } from 'react'
 import { useAiDomain } from './useAiDomain'
 import { usePluginsDomain } from './usePluginsDomain'
-import { useSettingsDomain } from './useSettingsDomain'
+import type { UseSettingsDomainParams } from './useSettingsDomain'
 
 type UseAppFeatureDomainsParams = {
   handleBackup: () => Promise<void>
@@ -49,15 +49,13 @@ export function useAppFeatureDomains({
     ui: shell.ui
   })
 
-  const {
-    sectionProps: settingsSectionProps
-  } = useSettingsDomain({
+  const settingsParams: UseSettingsDomainParams = {
     aiApiKeyDraft: ai.aiApiKeyDraft,
     aiAutoSummaryOnSaveDraft: ai.aiAutoSummaryOnSaveDraft,
     aiBaseUrlDraft: ai.aiBaseUrlDraft,
-     aiEnabledDraft: ai.aiEnabledDraft,
-     aiRelatedNotesEnabledDraft: ai.aiRelatedNotesEnabledDraft,
-     aiEndpoint: shell.homeData.aiConfig.baseUrl,
+    aiEnabledDraft: ai.aiEnabledDraft,
+    aiRelatedNotesEnabledDraft: ai.aiRelatedNotesEnabledDraft,
+    aiEndpoint: shell.homeData.aiConfig.baseUrl,
     aiModelDraft: ai.aiModelDraft,
     aiSaving: ai.aiSaving,
     aiClearingApiKey: ai.aiClearingApiKey,
@@ -73,9 +71,9 @@ export function useAppFeatureDomains({
     },
     onAiAutoSummaryOnSaveChange: ai.setAiAutoSummaryOnSaveDraft,
     onAiBaseUrlChange: ai.setAiBaseUrlDraft,
-     onAiEnabledChange: ai.setAiEnabledDraft,
-     onAiModelChange: ai.setAiModelDraft,
-     onAiRelatedNotesEnabledChange: ai.setAiRelatedNotesEnabledDraft,
+    onAiEnabledChange: ai.setAiEnabledDraft,
+    onAiModelChange: ai.setAiModelDraft,
+    onAiRelatedNotesEnabledChange: ai.setAiRelatedNotesEnabledDraft,
     onBackupNow: () => {
       void handleBackup()
     },
@@ -93,11 +91,11 @@ export function useAppFeatureDomains({
     summary: shell.homeData.summary,
     ui: shell.ui,
     uiLanguage: shell.uiLanguage
-  })
+  }
 
   return {
     ai,
     plugins,
-    settingsSectionProps
+    settingsParams
   }
 }

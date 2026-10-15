@@ -21,6 +21,8 @@ import { useDocumentBlockActions } from '../hooks/useDocumentBlockActions'
 import type { BlockContextMenuProps } from '../components/BlockContextMenu'
 import { useDocumentRenameOpening } from './documentRenameOpening'
 import { ErrorBoundary } from '../components/ErrorBoundary'
+import { DatabaseEmbedProvider } from '../features/database/DatabaseEmbedContext'
+import { useDocumentDatabaseViewInsertion } from '../hooks/useDocumentDatabaseViewInsertion'
 
 const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
@@ -67,6 +69,7 @@ export function DocumentsPage({
   const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
   const attachments = useDocumentAttachments(documents, isZh)
   const rename = useDocumentRenameOpening(documents.getRenameTarget)
+  const databaseViews = useDocumentDatabaseViewInsertion(documents, ui, isZh)
 
 
   const selectionAi = useDocumentSelectionAiState({
@@ -84,7 +87,8 @@ export function DocumentsPage({
     ui
   })
 
-  const blockActions = useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit: selectionAi.openSelectionAiEditor })
+  const blockActions = useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit: selectionAi.openSelectionAiEditor,
+    onInsertDatabaseView: id => databaseViews.insert(id) })
 
   const handleClipWebPage = async () => {
     if (!documents.selectedDocument || documents.detailLoading
@@ -117,6 +121,7 @@ export function DocumentsPage({
     selectionToolbarProps,
     visibleEditorRows
   } = useDocumentsBlockEditorPresentation({
+    onInsertDatabaseView: () => databaseViews.insert(undefined, true),
     isBlockMoveBusy: documents.isBlockMoveBusy,
     selectedMoveDisabledReason: blockActions.selectedMoveDisabledReason,
     onOpenBlockActions: blockActions.openBlockActions,
@@ -356,6 +361,7 @@ export function DocumentsPage({
     : null
 
   return (
+    <DatabaseEmbedProvider value={databaseViews.context}>
     <div {...attachments.surfaceProps}>
       <MarkdownNavigationContext.Provider value={documents.navigateMarkdownLink}>
       {documents.documentLoadError ? <RecoveryState
@@ -400,6 +406,7 @@ export function DocumentsPage({
           if (section) documents.insertDraftBlockAt(section.end)
           else documents.addDraftBlock()
         }}
+        onInsertDatabaseView={() => databaseViews.insert()}
         onAuxPanelWidthChange={documents.setDocumentsAuxPanelWidth}
         onEditorKeyDown={() => {}}
         outlinePanelProps={outlinePanelProps}
@@ -460,6 +467,8 @@ export function DocumentsPage({
         <Suspense fallback={null}><DocumentBlockMoveDialog {...blockActions.moveDialogProps} /></Suspense>
       </ErrorBoundary>}
       {attachments.dialog}
+      {databaseViews.picker}
     </div>
+    </DatabaseEmbedProvider>
   )
 }
