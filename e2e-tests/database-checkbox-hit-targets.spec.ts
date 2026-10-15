@@ -398,15 +398,26 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       expect(retryDraft.ipc.requests).toEqual(cancelled.ipc.requests)
       await drawer.getByRole('button', { name: text.save, exact: true }).click()
       await expect.poll(async () => (await mainState(app)).gates.length).toBe(3)
-      const formRequest = { channel: 'knowbook:update-database-entity', input: [{ entityId: ids.entityId, title: recordTitle,
-        documentId: null, fieldValues: { [ids.doneId]: true, [ids.notesId]: 'Original Notes' } }] }
+      const formRequest = { channel: 'knowbook:update-database-entity', input: [{ entityId: ids.entityId,
+        fieldValues: { [ids.doneId]: true } }] }
       expect((await mainState(app)).requests).toEqual([...cancelled.ipc.requests, formRequest])
       await releaseWrite(app, 2)
       await expect(drawer).toHaveCount(0)
       await expect(done).toBeChecked()
       const formSaved = await record(page, app, info, language, done, before,
         language + '-record-save-is-the-only-draft-write-and-protects-all-other-data', { kind: 'genuine-record-save' }, false)
-      expectOnlyDoneSaved(before, formSaved.stored, ids, true, [ids.doneId, ids.notesId])
+      expectOnlyDoneSaved(before, formSaved.stored, ids, true)
+      const originalEntity = before.sources.find(source => source.id === ids.databaseId)!.entities.find(entity => entity.id === ids.entityId)!
+      const savedEntity = formSaved.stored.sources.find(source => source.id === ids.databaseId)!.entities.find(entity => entity.id === ids.entityId)!
+      expect(savedEntity.fieldValues[ids.notesId]).toBe(originalEntity.fieldValues[ids.notesId])
+      expect(savedEntity.title).toBe(originalEntity.title)
+      expect(savedEntity.documentId).toBe(originalEntity.documentId)
+      expect(savedEntity.createdAt).toBe(originalEntity.createdAt)
+      const originalNotesRow = before.sql.values.find(value => value.entity_id === ids.entityId && value.column_id === ids.notesId)
+      expect(originalNotesRow).toBeDefined()
+      expect(formSaved.stored.sql.values.find(value => value.entity_id === ids.entityId && value.column_id === ids.notesId)).toEqual(originalNotesRow)
+      expect(formSaved.stored.sql.entities.find(entity => entity.id === ids.entityId)!.created_at)
+        .toBe(before.sql.entities.find(entity => entity.id === ids.entityId)!.created_at)
       expect(formSaved.ipc.requests).toEqual([...cancelled.ipc.requests, formRequest])
       expect(formSaved.ipc.writes).toEqual(formSaved.ipc.requests)
       expect(formSaved.ipc.failures).toHaveLength(0)
