@@ -9,7 +9,7 @@ export type ImagePresentationEditorProps = {
   value: ImagePresentation
   isZh: boolean
   editable: boolean
-  onCommit?: (next: ImagePresentation) => void
+  onCommit?: (next: ImagePresentation) => boolean | void
   onBegin?: () => void
 }
 
@@ -30,6 +30,8 @@ function release(drag: Drag | null) {
 export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
   const latest = useRef(props); latest.current = props
   const [draft, setDraft] = useState(() => copy(props.value)), draftRef = useRef(draft)
+  const [rejected, setRejected] = useState(false), rejectedRef = useRef(false)
+  const rejectedCommit = useRef<ImagePresentationEditorProps['onCommit']>(undefined)
   const [selected, setSelected] = useState(false), [cropping, setCropping] = useState(false)
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null)
   const [failed, setFailed] = useState(false)
@@ -37,11 +39,22 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
   const drag = useRef<Drag | null>(null), composing = useRef(false), pendingBlur = useRef(false)
   const keyboardCrop = useRef<ImagePresentation | null>(null)
   const incoming = JSON.stringify(copy(props.value))
+  const presentation = rejected ? copy(props.value) : draft
   const update = (next: ImagePresentation) => { draftRef.current = next; setDraft(next) }
+  const clearRejection = () => { rejectedRef.current = false; rejectedCommit.current = undefined; setRejected(false) }
   const commit = (next: ImagePresentation) => {
     const normalized = copy(next)
+    // Retrying a retained draft must keep the source/occurrence lease that
+    // rejected it, rather than acquire a newer callback for unrelated content.
+    const callback = rejectedRef.current ? rejectedCommit.current : latest.current.onCommit
+    if (!same(normalized, copy(latest.current.value)) && callback?.(normalized) === false) {
+      rejectedRef.current = true; rejectedCommit.current = callback; setRejected(true)
+      update(normalized)
+      return false
+    }
+    clearRejection()
     update(normalized)
-    if (!same(normalized, copy(latest.current.value))) latest.current.onCommit?.(normalized)
+    return true
   }
   const cancelDrag = () => {
     const active = drag.current
@@ -51,10 +64,11 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
   useEffect(() => {
     if (drag.current) { release(drag.current); drag.current = null }
     keyboardCrop.current = null
+    if (rejectedRef.current) return
     const next = copy(latest.current.value)
     draftRef.current = next; setDraft(next)
   }, [incoming])
-  useEffect(() => { setNatural(null); setFailed(false) }, [draft.src])
+  useEffect(() => { setNatural(null); setFailed(false) }, [presentation.src])
   useEffect(() => () => { release(drag.current); drag.current = null }, [])
   useEffect(() => {
     if (!props.editable || !selected) return
@@ -64,15 +78,15 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
       event.preventDefault(); event.stopPropagation()
       if (drag.current) cancelDrag()
       else if (keyboardCrop.current) { update(copy(keyboardCrop.current)); keyboardCrop.current = null }
-      else if (cropping) { update(copy(latest.current.value)); setCropping(false) }
-      else { update(copy(latest.current.value)); setSelected(false) }
+      else if (cropping) { clearRejection(); update(copy(latest.current.value)); setCropping(false) }
+      else { clearRejection(); update(copy(latest.current.value)); setSelected(false) }
     }
     document.addEventListener('keydown', escape, true)
     return () => document.removeEventListener('keydown', escape, true)
   }, [props.editable, selected, cropping])
 
-  const layout = natural ? computeImageCropLayout(draft, natural.width, natural.height) : null
-  const previewUrl = toBlockRichMediaPreviewUrl(draft.src)
+  const layout = natural ? computeImageCropLayout(presentation, natural.width, natural.height) : null
+  const previewUrl = toBlockRichMediaPreviewUrl(presentation.src)
   const text = (zh: string, en: string) => props.isZh ? zh : en
   const availableWidth = () => Math.max(24, Math.min(10000, container.current?.clientWidth || frame.current?.getBoundingClientRect().width || 10000))
   const resized = (value: ImagePresentation, width: number, ratio: number) => {
@@ -122,7 +136,7 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
   const pointerEvents = { onPointerMove: moveDrag, onPointerUp: (event: PointerEvent<HTMLElement>) => endDrag(event),
     onPointerCancel: (event: PointerEvent<HTMLElement>) => endDrag(event, true),
     onLostPointerCapture: (event: PointerEvent<HTMLElement>) => { if (drag.current?.pointerId === event.pointerId) cancelDrag() } }
-  const crop = cropOf(draft)
+  const crop = cropOf(presentation)
   const cropKeyboard = (event: KeyboardEvent<HTMLElement>, kind: DragKind) => {
     if (!event.key.startsWith('Arrow') || isImeKeyboardEvent(event.nativeEvent, composing.current)) return
     event.preventDefault(); event.stopPropagation()
@@ -143,19 +157,19 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
   const finishKeyboardCrop = () => { if (keyboardCrop.current) { keyboardCrop.current = null; commit(draftRef.current) } }
   const editField = (field: 'alt' | 'caption', value: string) => update({ ...draftRef.current, [field]: value })
   const blurField = () => { if (composing.current) pendingBlur.current = true; else commit(draftRef.current) }
-  const frameStyle: CSSProperties = layout?.frameStyle ?? { width: draft.width ? `${draft.width}px` : undefined,
-    maxWidth: '100%', ...(draft.width && draft.height ? { aspectRatio: `${draft.width}/${draft.height}` } : {}),
-    marginLeft: draft.align === 'left' ? '0' : 'auto', marginRight: draft.align === 'right' ? '0' : 'auto' }
+  const frameStyle: CSSProperties = layout?.frameStyle ?? { width: presentation.width ? `${presentation.width}px` : undefined,
+    maxWidth: '100%', ...(presentation.width && presentation.height ? { aspectRatio: `${presentation.width}/${presentation.height}` } : {}),
+    marginLeft: presentation.align === 'left' ? '0' : 'auto', marginRight: presentation.align === 'right' ? '0' : 'auto' }
 
   return <span className={`image-presentation${selected && props.editable ? ' is-selected' : ''}`} data-image-presentation
-    data-image-align={draft.align} contentEditable={false} ref={container}>
+    data-image-align={presentation.align} contentEditable={false} ref={container}>
     <span className="image-presentation-frame block-rich-media-image-card" style={{ ...frameStyle, overflow: 'visible' }} ref={frame}
       {...(props.editable ? { role: 'button', tabIndex: 0, 'aria-label': text('选择图片', 'Select image'),
         onClick: (event: React.MouseEvent<HTMLSpanElement>) => { event.stopPropagation(); setSelected(true) },
         onKeyDown: (event: KeyboardEvent<HTMLSpanElement>) => { if (event.target === event.currentTarget && ['Enter', ' '].includes(event.key)) { event.preventDefault(); setSelected(true) } } } : {})}>
       <span className="image-presentation-viewport" style={layout ? { position: 'absolute', inset: 0 } : undefined}>
-      {failed || !draft.src ? <span className="image-presentation-unavailable" role="status">{text('无法显示图片', 'Image unavailable')}</span>
-        : <img className={`image-presentation-image block-rich-media-image${props.editable ? '' : ' markdown-inline-image'}`} alt={draft.alt} title={draft.title}
+      {failed || !presentation.src ? <span className="image-presentation-unavailable" role="status">{text('无法显示图片', 'Image unavailable')}</span>
+        : <img className={`image-presentation-image block-rich-media-image${props.editable ? '' : ' markdown-inline-image'}`} alt={presentation.alt} title={presentation.title}
           src={previewUrl} loading="lazy" decoding="async" style={layout?.imageStyle}
           onLoad={event => { if (event.currentTarget.naturalWidth && event.currentTarget.naturalHeight) setNatural({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight }) }}
           onError={() => setFailed(true)} />}
@@ -171,13 +185,20 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
           update(resized(draftRef.current, (frame.current?.getBoundingClientRect().width ?? layout.width) + delta, layout.aspectRatio))
         }} onKeyUp={event => { if (event.key.startsWith('Arrow')) finishKeyboardCrop() }} onBlur={finishKeyboardCrop} />}
     </span>
-    {draft.caption && <span className="image-presentation-caption" data-image-caption style={{ width: frameStyle.width,
-      maxWidth: '100%', marginLeft: frameStyle.marginLeft, marginRight: frameStyle.marginRight }}>{draft.caption}</span>}
+    {presentation.caption && <span className="image-presentation-caption" data-image-caption style={{ width: frameStyle.width,
+      maxWidth: '100%', marginLeft: frameStyle.marginLeft, marginRight: frameStyle.marginRight }}>{presentation.caption}</span>}
+    {rejected && <span className="image-presentation-help" role="alert" data-image-commit-error>
+      {text('修改未保存，草稿已保留。', 'Changes were not saved. Your draft is retained.')}
+      <span className="image-presentation-toolbar">
+      <button type="button" data-image-commit-retry onClick={() => { latest.current.onBegin?.(); commit(draftRef.current) }}>{text('重试保存', 'Retry saving')}</button>
+      <button type="button" data-image-commit-discard onClick={() => { clearRejection(); update(copy(latest.current.value)) }}>{text('放弃修改', 'Discard changes')}</button>
+      </span>
+    </span>}
     {selected && props.editable && <span className="image-presentation-controls" data-image-controls>
       <span className="image-presentation-toolbar" role="toolbar" aria-label={text('图片编辑', 'Image editing')}>
         {(['left', 'center', 'right'] as const).map((align, index) => <button type="button" key={align} data-image-align-button={align}
           aria-label={(props.isZh ? ['左对齐', '居中', '右对齐'] : ['Align left', 'Align center', 'Align right'])[index]}
-          aria-pressed={draft.align === align} onClick={() => { latest.current.onBegin?.(); commit({ ...draftRef.current, align }) }}>
+          aria-pressed={presentation.align === align} onClick={() => { latest.current.onBegin?.(); commit({ ...draftRef.current, align }) }}>
           {(props.isZh ? ['左', '中', '右'] : ['Left', 'Center', 'Right'])[index]}</button>)}
         <button type="button" data-image-crop-toggle aria-pressed={cropping} disabled={!natural || failed}
           onClick={() => setCropping(value => !value)}>{text('裁剪', 'Crop')}</button>

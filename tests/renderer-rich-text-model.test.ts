@@ -92,6 +92,24 @@ test('split nodes retain the first ID and copied list subtrees attach to their n
   assert.equal(new Set(duplicated.map(block => block.id)).size, 4)
 })
 
+test('opaque existing identities keep their original bytes and copied raw parent IDs follow the copied subtree', () => {
+  const input = [paragraph('Parent', { id: ' __proto__ ', type: 'todo' }),
+    paragraph('Child', { id: '\tconstructor:中文\t', type: 'todo', depth: 1, parentBlockId: ' __proto__ ' }),
+    paragraph('Separate exact identity', { id: '__proto__' })]
+  const original = draftBlocksToRichDoc(input)
+  assert.deepEqual(richDocToDraftBlocks(original), input)
+  assert.equal(reconcileRichTextBlockIds(original), original)
+  const duplicated = richDocToDraftBlocks(document(original.child(0), original.child(1), original.child(0), original.child(1), original.child(2)))
+  assert.equal(duplicated[0].id, ' __proto__ ')
+  assert.equal(duplicated[1].id, '\tconstructor:中文\t')
+  assert.equal(duplicated[1].parentBlockId, ' __proto__ ')
+  assert.equal(duplicated[4].id, '__proto__')
+  assert.notEqual(duplicated[2].id, duplicated[0].id)
+  assert.notEqual(duplicated[3].id, duplicated[1].id)
+  assert.equal(duplicated[3].parentBlockId, duplicated[2].id)
+  assert.equal(new Set(duplicated.map(block => block.id)).size, 5)
+})
+
 test('an actual ProseMirror split repairs copied attrs without changing positions or prior snapshots', () => {
   const initial = [paragraph('中文😀 tail', { tags: ['original'], highlight: 'blue' })]
   const state = EditorState.create({ doc: draftBlocksToRichDoc(initial) })

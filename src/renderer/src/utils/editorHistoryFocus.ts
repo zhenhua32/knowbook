@@ -1,7 +1,7 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { focusBlockTextarea } from './textareaLayout'
 import { getRichTextHistoryBridge } from '../rich-text/history'
-import { isDatabaseEditorIsland } from './editorIsland'
+import { getSyncedEditorIsland, isDatabaseEditorIsland } from './editorIsland'
 
 export type EditorHistoryBookmark = {
   blockId?: string
@@ -27,10 +27,11 @@ export function withTableHistorySelection(element: HTMLElement, selection: { sou
   try { action() } finally { tableHistorySelections.delete(element) }
 }
 
-export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], target?: EventTarget | null): EditorHistoryBookmark | null {
+export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], target?: EventTarget | null, root?: HTMLElement): EditorHistoryBookmark | null {
   if (typeof document === 'undefined') return null
   const active = target === undefined ? document.activeElement : target
   if (!(active instanceof HTMLElement)) return null
+  if (root ? !root.contains(active) : getSyncedEditorIsland(active)) return null
   if (isDatabaseEditorIsland(active)) return null
   const cell = active.closest<HTMLElement>('[data-row][data-column]')
   const table = active.closest<HTMLElement>('.markdown-table-editor')
@@ -53,15 +54,17 @@ export function captureEditorHistoryBookmark(blocks: DocumentBlockDraft[], targe
   }
 }
 
-export function restoreEditorHistoryBookmark(bookmark: EditorHistoryBookmark, blocks: DocumentBlockDraft[]): boolean {
+export function restoreEditorHistoryBookmark(bookmark: EditorHistoryBookmark, blocks: DocumentBlockDraft[], root?: HTMLElement): boolean {
+  const query = (selector: string): HTMLElement | undefined => [...(root ?? document).querySelectorAll<HTMLElement>(selector)]
+    .find(element => root || !getSyncedEditorIsland(element))
   if (bookmark.richText) {
-    const host = document.querySelector<HTMLElement>('.knowbook-rich-text-editor')
+    const host = root?.matches('.knowbook-rich-text-editor') ? root : query('.knowbook-rich-text-editor')
     const bridge = host && getRichTextHistoryBridge(host)
     if (bridge) { bridge.restore(bookmark); return true }
   }
   const matchingIndex = bookmark.blockId ? blocks.findIndex(block => block.id === bookmark.blockId) : -1
   const index = matchingIndex >= 0 ? matchingIndex : Math.min(bookmark.index, blocks.length - 1)
-  const row = document.querySelector<HTMLElement>(`.block-editor-row[data-block-index="${index}"]`)
+  const row = query(`.block-editor-row[data-block-index="${index}"]`)
   if (!row) return false
   const table = bookmark.cell && row.querySelector<HTMLElement>('.markdown-table-editor')
   if (table) {

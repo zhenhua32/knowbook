@@ -5,7 +5,7 @@ import type { DocumentsKeyboardState } from '../types/appDomains'
 import type { ShellPageState } from '../types/appShell'
 import { openQuickCapture } from '../documentCapture'
 import { hasVisibleShortcutBlocker } from '../utils/shortcutBlocker'
-import { isDatabaseEditorIsland } from '../utils/editorIsland'
+import { isDatabaseEditorIsland, isIndependentEditorIsland } from '../utils/editorIsland'
 
 type UseAppKeyboardShortcutsParams = {
   documents: DocumentsKeyboardState
@@ -71,7 +71,7 @@ export function useAppKeyboardShortcuts({ documents, onClearBlockRangeSelection,
       if (/^mod\+[1-6]$/.test(key)) {
         event.preventDefault(); shell.setActivePage(PAGE_ORDER[Number(key.at(-1)) - 1]); return
       }
-      if (isDatabaseEditorIsland(event.target)) return
+      if (isIndependentEditorIsland(event.target)) return
       if (shell.activePage !== 'documents') return
       if (key === 'mod+s') {
         event.preventDefault()

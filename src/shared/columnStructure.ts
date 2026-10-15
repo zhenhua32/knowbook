@@ -1,4 +1,4 @@
-import { canBlockNestUnder, isColumnBlockType, isColumnsBlockType } from './blockTypes'
+import { canBlockNestUnder, isColumnBlockType, isColumnsBlockType, isListBlockType } from './blockTypes'
 import type { MarkdownBlockFormat } from './markdownFormat'
 
 export const COLUMN_WEIGHT_TOTAL = 10_000
@@ -26,7 +26,7 @@ export function isColumnWeight(value: unknown): value is number {
 /** Parse-time forests may not have IDs yet. Persisted forests must also prove
  * declared ownership against the active ancestor, rather than a closed subtree. */
 export function columnStructureErrorCode(blocks: readonly ColumnStructureBlock[],
-  options: { checkParentIds?: boolean } = {}): ColumnStructureErrorCode | null {
+  options: { checkParentIds?: boolean; allowSyncedPlaceholders?: boolean } = {}): ColumnStructureErrorCode | null {
   if (!blocks.some(block => typeof block.type === 'string'
     && (isColumnsBlockType(block.type.trim()) || isColumnBlockType(block.type.trim())))) return null
   const ancestors: Array<{ block: ColumnStructureBlock; index: number }> = []
@@ -37,11 +37,12 @@ export function columnStructureErrorCode(blocks: readonly ColumnStructureBlock[]
     if (typeof block.type !== 'string' || block.type !== block.type.trim()) return 'type'
     if (!Number.isSafeInteger(depth) || depth < 0 || depth > 6) return 'depth'
     if (block.id !== undefined && block.id !== '') {
-      if (typeof block.id !== 'string' || block.id !== block.id.trim() || ids.has(block.id)) return 'identity'
+      if (typeof block.id !== 'string' || !block.id.trim() || ids.has(block.id)) return 'identity'
       ids.add(block.id)
     } else if (options.checkParentIds) return 'missingIdentity'
     const parent = depth > 0 ? ancestors[depth - 1] : undefined
-    if (depth > 0 && (!parent || !canBlockNestUnder(parent.block.type, block.type))) return 'parentRole'
+    const deferredReference = options.allowSyncedPlaceholders && block.type === 'synced-block' && parent && isListBlockType(parent.block.type)
+    if (depth > 0 && (!parent || !canBlockNestUnder(parent.block.type, block.type) && !deferredReference)) return 'parentRole'
     if (isColumnBlockType(block.type) && (!parent || !isColumnsBlockType(parent.block.type))) return 'columnOwner'
     if (options.checkParentIds || block.parentBlockId !== undefined) {
       const expected = parent?.block.id ?? null

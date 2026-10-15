@@ -1,0 +1,457 @@
+import type {
+  SyncedBlocksApi, SyncedCanonicalEdit, SyncedGroupMutationResult, SyncedGroupSaved, SyncedGroupSnapshot,
+  SyncedInstanceGuard, SyncedRestoreGroupInput, SyncedUpdateGroupInput
+} from '@shared/synced-blocks'
+import { SyncedValidationError, syncedCanonicalEdits, validateSyncedCanonicalEdit, validateSyncedCanonicalProjection,
+  validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
+import type {
+  SyncedGroupApply, SyncedGroupBinding, SyncedGroupController, SyncedGroupDraftState, SyncedGroupScope, SyncedScopeBookmark
+} from './types'
+import { syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
+
+function immutable<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) immutable(child)
+    Object.freeze(value)
+  }
+  return value
+}
+
+function ordered(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(ordered)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
+    .filter(([, item]) => item !== undefined).sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => [key, ordered(item)]))
+  return value
+}
+const equal = (left: SyncedCanonicalEdit[], right: SyncedCanonicalEdit[]) => JSON.stringify(ordered(left)) === JSON.stringify(ordered(right))
+const semantic = ({ creationId, createdAt, origin, bindings, blocks }: SyncedGroupSnapshot) =>
+  JSON.stringify(ordered({ creationId, createdAt, origin, bindings, blocks }))
+const cloneBlocks = (blocks: SyncedCanonicalEdit[]) => immutable(structuredClone(blocks))
+const sameInstance = (left: SyncedInstanceGuard, right: SyncedInstanceGuard) => left.instanceId === right.instanceId
+  && left.hostDocumentId === right.hostDocumentId && left.bindingVersion === right.bindingVersion
+
+function keepBookmark(bookmark: SyncedScopeBookmark | null): SyncedScopeBookmark | null {
+  return bookmark && Object.freeze({ ...bookmark, owner: Object.freeze({ ...bookmark.owner }), selection: immutable(structuredClone(bookmark.selection)) })
+}
+
+type Mount = {
+  scope: SyncedGroupScope
+  lease: Pick<SyncedGroupScope, 'hostDocumentId' | 'windowSessionId' | 'hostSession' | 'mountEpoch' | 'bindingEpoch' | 'instanceId' | 'bindingVersion'> & { groupId: string }
+  bookmark: SyncedScopeBookmark | null
+  bookmarkSequence: number
+}
+type Frame = {
+  before: SyncedCanonicalEdit[]; after: SyncedCanonicalEdit[]; sequence: number
+  mount: Mount; instance: SyncedInstanceGuard; transactionId: string; sealed: boolean
+  beforeBookmark: SyncedScopeBookmark | null; afterBookmark: SyncedScopeBookmark | null
+}
+type ServerRedo = {
+  revision: string; cursor: string; token: string; before: string; after: string
+}
+type Pending = {
+  kind: 'content'; input: SyncedUpdateGroupInput; frame: Frame; sequence: number; uncertain: boolean
+} | {
+  kind: 'history'; input: SyncedRestoreGroupInput; sequence: number; uncertain: boolean; mount: Mount; bookmarkSequence: number
+  before: SyncedGroupSnapshot; redo: ServerRedo | null
+}
+
+export interface SyncedControllerOptions {
+  operationId?: () => string
+  /** A later portable-budget adapter may add a pure preflight; no filesystem is read here. */
+  validateBudget?: (blocks: SyncedCanonicalEdit[], snapshot: SyncedGroupSnapshot) => void
+  onSubscriberError?: (error: unknown) => void
+}
+
+/** Created only by its workspace registry, never by an individual occurrence. */
+class GroupController implements SyncedGroupController {
+  private state: SyncedGroupDraftState
+  private readonly listeners = new Set<() => void>()
+  private readonly mounts = new Map<string, Mount>()
+  private readonly compositions = new Set<Mount>()
+  private frames: Frame[] = []
+  private redoFrames: Frame[] = []
+  // Server Undos sit above the local Redo branch until their precise sides have
+  // been redone. Merely refreshing a revision cannot authorize those old frames.
+  private serverRedo: ServerRedo[] = []
+  private cutServerRedo = false
+  private pending: Pending | null = null
+  private queue: Promise<void> = Promise.resolve()
+  private historyBusy = false
+  private workspaceInvalid = false
+  private readonly knownOperations = new Set<string>()
+  private readonly historyBookmarks = new Map<string, { before: SyncedScopeBookmark | null; after: SyncedScopeBookmark | null }>()
+
+  constructor(private readonly api: SyncedBlocksApi, snapshot: SyncedGroupSnapshot, private readonly options: SyncedControllerOptions) {
+    snapshot = validateSyncedGroupSnapshot(snapshot)
+    const blocks = syncedCanonicalEdits(snapshot.blocks)
+    validateSyncedCanonicalProjection(blocks, snapshot.instances)
+    this.state = immutable({ snapshot: structuredClone(snapshot), working: cloneBlocks(blocks), editSequence: 0, dirty: false,
+      phase: 'clean', incoming: null, failure: null, error: null, pending: null, composingInstanceIds: [],
+      canUndo: snapshot.history.undoToken !== null, canRedo: snapshot.history.redoToken !== null })
+  }
+
+  getSnapshot = () => this.state
+  subscribe = (notify: () => void) => { this.listeners.add(notify); return () => { this.listeners.delete(notify) } }
+  private publish(patch: Partial<SyncedGroupDraftState> = {}) {
+    const next = { ...this.state, ...patch }
+    next.dirty = this.frames.length > 0
+    next.pending = this.pending ? immutable({ clientOperationId: this.pending.input.clientOperationId, kind: this.pending.kind, editSequence: this.pending.sequence }) : null
+    next.composingInstanceIds = immutable([...new Set([...this.compositions].map(mount => mount.lease.instanceId))])
+    next.failure = next.failure && immutable(structuredClone(next.failure))
+    next.phase = next.incoming || next.failure?.status === 'conflict' ? 'conflict'
+      : next.error || next.failure ? 'error' : this.pending ? 'saving' : next.dirty ? 'dirty' : 'clean'
+    next.canUndo = this.frames.length > 0 || next.snapshot.history.undoToken !== null
+    next.canRedo = this.serverRedo.length > 0 || this.redoFrames.length > 0
+      || (this.frames.length === 0 && !this.cutServerRedo && next.snapshot.history.redoToken !== null)
+    this.state = Object.freeze(next)
+    for (const listener of [...this.listeners]) {
+      try { listener() } catch (error) { try { this.options.onSubscriberError?.(error) } catch { /* A listener cannot reject an accepted transaction. */ } }
+    }
+  }
+
+  private live(scope: SyncedGroupScope): Mount | undefined {
+    const mount = this.mounts.get(scope.instanceId)
+    const lease = mount?.lease
+    return mount?.scope === scope && lease && scope.isCurrent() && scope.owner.groupId === lease.groupId
+      && scope.owner.groupId === this.state.snapshot.groupId && scope.hostDocumentId === lease.hostDocumentId
+      && scope.windowSessionId === lease.windowSessionId && scope.hostSession === lease.hostSession
+      && scope.mountEpoch === lease.mountEpoch && scope.bindingEpoch === lease.bindingEpoch
+      && scope.instanceId === lease.instanceId && scope.bindingVersion === lease.bindingVersion
+      && this.state.snapshot.instances.some(instance => sameInstance(instance, syncedScopeInstanceGuard(scope))) ? mount : undefined
+  }
+  private hasComposition() { return this.compositions.size > 0 }
+  private bookmarkFits(scope: SyncedGroupScope, bookmark: SyncedScopeBookmark | null) {
+    return !bookmark || bookmark.owner.kind === 'synced-group' && bookmark.owner.groupId === scope.owner.groupId
+      && bookmark.instanceId === scope.instanceId && bookmark.mountEpoch === scope.mountEpoch && bookmark.bindingEpoch === scope.bindingEpoch
+  }
+
+  bind = (scope: SyncedGroupScope): SyncedGroupBinding => {
+    const mount: Mount = { scope, lease: { hostDocumentId: scope.hostDocumentId, windowSessionId: scope.windowSessionId,
+      hostSession: scope.hostSession, mountEpoch: scope.mountEpoch, bindingEpoch: scope.bindingEpoch,
+      instanceId: scope.instanceId, bindingVersion: scope.bindingVersion, groupId: scope.owner.groupId }, bookmark: null, bookmarkSequence: 0 }
+    this.mounts.set(scope.instanceId, mount)
+    let disposed = false
+    const current = () => !disposed && this.live(scope) === mount
+    return {
+      scope, getCurrent: this.getSnapshot, subscribe: this.subscribe, isCurrent: current,
+      apply: input => current() && this.apply({ ...input, scope }),
+      checkpoint: () => { if (current()) this.checkpoint() },
+      undo: () => current() ? this.undo(scope) : Promise.resolve(false),
+      redo: () => current() ? this.redo(scope) : Promise.resolve(false),
+      flush: options => current() ? this.flush(options) : Promise.resolve(false),
+      setComposing: composing => {
+        // A genuine late compositionend may settle its original mount; disposal
+        // itself never fabricates compositionend or silently permits a flush.
+        if (!composing && this.compositions.delete(mount)) { this.checkpoint(); this.publish() }
+        else if (composing && current() && !this.compositions.has(mount)) { this.compositions.add(mount); this.checkpoint(); this.publish() }
+      },
+      getBookmark: () => current() ? mount.bookmark : null,
+      setBookmark: bookmark => {
+        if (current() && this.bookmarkFits(scope, bookmark)) { mount.bookmark = keepBookmark(bookmark); mount.bookmarkSequence++ }
+      },
+      dispose: () => {
+        disposed = true
+        if (this.mounts.get(scope.instanceId) === mount) { this.mounts.delete(scope.instanceId); this.checkpoint(); this.publish() }
+      }
+    }
+  }
+
+  private validated(blocks: unknown): SyncedCanonicalEdit[] {
+    const checked = validateSyncedCanonicalEdit(blocks)
+    validateSyncedCanonicalProjection(checked, this.state.snapshot.instances)
+    this.options.validateBudget?.(checked, this.state.snapshot)
+    return cloneBlocks(checked)
+  }
+  private rejected(error: unknown) {
+    this.publish(error instanceof SyncedValidationError
+      ? { failure: { status: 'invalid', code: error.code, blockingInstances: error.blockingInstances }, error: null }
+      : { error: error instanceof Error ? error.message : 'Synced group operation failed.' })
+  }
+
+  apply = (input: SyncedGroupApply): boolean => {
+    const mount = this.live(input.scope), snapshot = this.state.snapshot
+    if (!mount || this.workspaceInvalid || this.historyBusy || this.pending?.kind === 'history' || !input.transactionId
+      || input.expectedEditSequence !== this.state.editSequence || !this.bookmarkFits(input.scope, input.bookmark)
+      || input.guards.groupId !== snapshot.groupId || input.guards.expectedRevision !== snapshot.revision
+      || input.guards.expectedTopologyRevision !== snapshot.topologyRevision
+      || [...this.compositions].some(other => other !== mount)) return false
+    let next: SyncedCanonicalEdit[]
+    try { next = this.validated(input.blocks) } catch (error) { this.rejected(error); return false }
+    if (equal(next, this.state.working)) return false
+    const previous = this.state.working, sequence = this.state.editSequence + 1, bookmark = keepBookmark(input.bookmark)
+    const tail = this.frames.at(-1)
+    if (tail && !tail.sealed && tail.mount === mount && tail.transactionId === input.transactionId) {
+      tail.after = next; tail.sequence = sequence; tail.afterBookmark = bookmark
+      if (equal(tail.before, next)) this.frames.pop()
+    } else this.frames.push({ before: previous, after: next, sequence, mount, instance: syncedScopeInstanceGuard(input.scope),
+      transactionId: input.transactionId, sealed: false, beforeBookmark: mount.bookmark, afterBookmark: bookmark })
+    this.redoFrames = []; this.serverRedo = []; this.cutServerRedo = true
+    mount.bookmark = bookmark; mount.bookmarkSequence++
+    this.publish({ working: next, editSequence: sequence, failure: null, error: this.pending?.uncertain ? this.state.error : null })
+    return true
+  }
+
+  checkpoint = () => { const tail = this.frames.at(-1); if (tail) tail.sealed = true }
+  private serial<T>(run: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(run)
+    this.queue = result.then(() => {}, () => {})
+    return result
+  }
+
+  private operationId() { return (this.options.operationId ?? (() => crypto.randomUUID()))() }
+  private markOperation(id: string) {
+    this.knownOperations.add(id)
+    if (this.knownOperations.size > 256) this.knownOperations.delete(this.knownOperations.values().next().value!)
+  }
+  ownsOperation(id: string) { return this.knownOperations.has(id) }
+  invalidateWorkspace() { this.workspaceInvalid = true; this.publish({ error: 'Synced workspace identity changed; preserve drafts and reopen the workspace.' }) }
+  canRelease() { return !this.frames.length && !this.redoFrames.length && !this.serverRedo.length
+    && !(this.cutServerRedo && this.state.snapshot.history.redoToken) && !this.pending && !this.hasComposition()
+    && !this.state.incoming && !this.state.failure && !this.state.error && !this.listeners.size && !this.mounts.size }
+
+  private failure(result: SyncedGroupMutationResult) {
+    if ('snapshot' in result) return
+    const incoming = result.status === 'conflict' ? result.groups.find(group => group.groupId === this.state.snapshot.groupId) : null
+    this.publish({ failure: result, incoming: incoming ? immutable(structuredClone(incoming)) : this.state.incoming, error: null })
+  }
+
+  private acknowledge(pending: Pending, result: SyncedGroupSaved) {
+    if (result.operationId !== pending.input.clientOperationId || result.snapshot.groupId !== this.state.snapshot.groupId
+      || result.snapshot.creationId !== this.state.snapshot.creationId) throw new Error('Synced operation acknowledgement identity mismatch.')
+    const snapshot = immutable(structuredClone(validateSyncedGroupSnapshot(result.snapshot)))
+    const blocks = cloneBlocks(syncedCanonicalEdits(snapshot.blocks))
+    if (pending.kind === 'content' && !equal(blocks, pending.input.blocks)) throw new Error('Synced operation acknowledgement content mismatch.')
+    if (pending.kind === 'history') {
+      if (result.status === 'noop' && (snapshot.revision !== pending.before.revision
+        || snapshot.history.cursor !== pending.before.history.cursor || semantic(snapshot) !== semantic(pending.before))) {
+        throw new Error('A no-op history acknowledgement changed its history side.')
+      }
+      if (result.status === 'saved' && pending.redo && (this.serverRedo.at(-1) !== pending.redo
+        || semantic(snapshot) !== pending.redo.after)) throw new Error('Synced Redo acknowledgement is outside its recorded history side.')
+      if (result.status === 'saved' && pending.input.direction === 'undo' && !snapshot.history.redoToken) {
+        throw new Error('Synced Undo acknowledgement omitted its Redo tail.')
+      }
+      const previousRedo = pending.redo ? this.serverRedo.at(-2) : undefined
+      if (result.status === 'saved' && previousRedo && (semantic(snapshot) !== previousRedo.before || !snapshot.history.redoToken)) {
+        throw new Error('Synced Redo acknowledgement changed its remaining history branch.')
+      }
+    }
+    if (pending.kind === 'content') {
+      if (this.frames[0] !== pending.frame) throw new Error('Synced operation acknowledgement is outside the pending history tail.')
+      if (result.status === 'saved' && snapshot.history.undoToken) this.historyBookmarks.set(snapshot.history.undoToken,
+        { before: pending.frame.beforeBookmark, after: pending.frame.afterBookmark })
+      this.frames.shift()
+    } else if (result.status === 'saved') {
+      const bookmarks = this.historyBookmarks.get(pending.input.historyToken)
+      const bookmark = pending.input.direction === 'undo' ? bookmarks?.before : bookmarks?.after
+      if (bookmark !== undefined && this.live(pending.mount.scope) === pending.mount
+        && pending.mount.bookmarkSequence === pending.bookmarkSequence && this.bookmarkFits(pending.mount.scope, bookmark)) {
+        pending.mount.bookmark = bookmark; pending.mount.bookmarkSequence++
+      }
+      const token = pending.input.direction === 'undo' ? snapshot.history.redoToken : snapshot.history.undoToken
+      if (bookmarks && token) this.historyBookmarks.set(token, bookmarks)
+      if (pending.input.direction === 'undo') {
+        this.serverRedo.push({ revision: snapshot.revision, cursor: snapshot.history.cursor,
+          token: snapshot.history.redoToken!, before: semantic(snapshot), after: semantic(pending.before) })
+      } else if (pending.redo) {
+        this.serverRedo.pop()
+        const next = this.serverRedo.at(-1)
+        if (next) {
+          next.revision = snapshot.revision; next.cursor = snapshot.history.cursor; next.token = snapshot.history.redoToken!
+        }
+      }
+    }
+    if (this.historyBookmarks.size > 256) this.historyBookmarks.delete(this.historyBookmarks.keys().next().value!)
+    this.pending = null
+    const incoming = this.state.incoming && this.state.incoming.revision === snapshot.revision
+      && this.state.incoming.topologyRevision === snapshot.topologyRevision ? null : this.state.incoming
+    this.publish({ snapshot, working: this.frames.length ? this.state.working : blocks, incoming, failure: null, error: null,
+      editSequence: pending.kind === 'history' && result.status === 'saved' ? this.state.editSequence + 1 : this.state.editSequence })
+  }
+
+  /** An uncertain request keeps its original ID and exact body until lookup resolves it. */
+  private async writePending(): Promise<boolean> {
+    const pending = this.pending
+    if (!pending) return true
+    try {
+      let result: SyncedGroupMutationResult
+      if (pending.uncertain) {
+        const known = await this.api.getSyncedOperation({ clientOperationId: pending.input.clientOperationId })
+        if (known.status === 'committed') {
+          if (!('snapshot' in known.result)) throw new Error('Synced operation acknowledgement has the wrong operation kind.')
+          this.acknowledge(pending, known.result)
+          return true
+        }
+      }
+      result = pending.kind === 'content' ? await this.api.updateSyncedBlockGroup(pending.input)
+        : await this.api.restoreSyncedGroupOperation(pending.input)
+      if (result.status === 'saved' || result.status === 'noop') { this.acknowledge(pending, result); return true }
+      this.pending = null; this.failure(result)
+      return false
+    } catch (error) {
+      pending.uncertain = true
+      this.rejected(error)
+      return false
+    }
+  }
+
+  flush = (options: { shouldContinue?: () => boolean } = {}): Promise<boolean> => {
+    this.checkpoint()
+    const throughSequence = this.state.editSequence
+    return this.serial(async () => {
+      if (this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
+      if (this.pending && !await this.writePending()) return false
+      if (options.shouldContinue?.() === false || this.state.incoming || this.state.failure?.status === 'conflict') return false
+      for (;;) {
+        const frame = this.frames[0]
+        if (!frame || frame.sequence > throughSequence) return true
+        if (options.shouldContinue?.() === false || this.hasComposition()) return false
+        const snapshot = this.state.snapshot
+        if (!snapshot.instances.some(instance => sameInstance(instance, frame.instance))) {
+          this.publish({ failure: { status: 'missing', kind: 'instance', id: frame.instance.instanceId } }); return false
+        }
+        try { this.validated(frame.after) } catch (error) { this.rejected(error); return false }
+        const input: SyncedUpdateGroupInput = immutable({ ...syncedSnapshotGuard(snapshot), clientOperationId: this.operationId(),
+          expectedInstanceBinding: { ...frame.instance }, blocks: structuredClone(frame.after) })
+        this.pending = { kind: 'content', input, frame, sequence: frame.sequence, uncertain: false }
+        this.markOperation(input.clientOperationId); this.publish({ error: null, failure: null })
+        if (!await this.writePending()) return false
+        if (this.state.incoming || options.shouldContinue?.() === false) return false
+      }
+    })
+  }
+
+  private history(scope: SyncedGroupScope, direction: 'undo' | 'redo'): Promise<boolean> {
+    this.checkpoint()
+    const sequence = this.state.editSequence
+    return this.serial(async () => {
+      const mount = this.live(scope)
+      if (!mount || this.workspaceInvalid || this.hasComposition() || sequence !== this.state.editSequence || this.state.incoming
+        || this.state.failure?.status === 'conflict') return false
+      if (this.pending && !await this.writePending()) return false
+      if (!this.live(scope) || sequence !== this.state.editSequence) return false
+      const serverRedo = direction === 'redo' ? this.serverRedo.at(-1) : undefined
+      if (serverRedo && (this.state.snapshot.revision !== serverRedo.revision
+        || this.state.snapshot.history.cursor !== serverRedo.cursor || this.state.snapshot.history.redoToken !== serverRedo.token
+        || semantic(this.state.snapshot) !== serverRedo.before)) return false
+      const local = direction === 'undo' ? this.frames.at(-1) : serverRedo ? undefined : this.redoFrames.at(-1)
+      if (local) {
+        const next = direction === 'undo' ? local.before : local.after
+        if (direction === 'redo' && !equal(this.state.working, local.before)) return false
+        try { this.validated(next) } catch (error) { this.rejected(error); return false }
+        if (direction === 'undo') { this.frames.pop(); this.redoFrames.push(local) }
+        else { this.redoFrames.pop(); local.sequence = sequence + 1; local.sealed = true; this.frames.push(local) }
+        // A bookmark is local to the occurrence that originally owned it.
+        const bookmark = direction === 'undo' ? local.beforeBookmark : local.afterBookmark
+        if (this.bookmarkFits(scope, bookmark)) { mount.bookmark = bookmark; mount.bookmarkSequence++ }
+        this.publish({ working: next, editSequence: sequence + 1, failure: null, error: null })
+        return true
+      }
+      if (direction === 'redo' && this.frames.length) return false
+      if (direction === 'redo' && !serverRedo && this.cutServerRedo) return false
+      const snapshot = this.state.snapshot, token = direction === 'undo' ? snapshot.history.undoToken : snapshot.history.redoToken
+      if (!token) return false
+      const input: SyncedRestoreGroupInput = immutable({ ...syncedSnapshotGuard(snapshot), clientOperationId: this.operationId(),
+        expectedInstanceBinding: syncedScopeInstanceGuard(scope), historyToken: token, expectedHistoryCursor: snapshot.history.cursor, direction })
+      this.historyBusy = true
+      this.pending = { kind: 'history', input, sequence, uncertain: false, mount, bookmarkSequence: mount.bookmarkSequence,
+        before: snapshot, redo: serverRedo ?? null }
+      this.markOperation(input.clientOperationId); this.publish({ failure: null, error: null })
+      try { return await this.writePending() } finally { this.historyBusy = false }
+    })
+  }
+  undo = (scope: SyncedGroupScope) => this.history(scope, 'undo')
+  redo = (scope: SyncedGroupScope) => this.history(scope, 'redo')
+
+  /** Content conflicts do not silently replace the baseline used by dirty edits. */
+  receive(snapshot: SyncedGroupSnapshot) {
+    snapshot = validateSyncedGroupSnapshot(snapshot)
+    if (snapshot.groupId !== this.state.snapshot.groupId) throw new Error('Synced snapshot group mismatch.')
+    const blocks = cloneBlocks(syncedCanonicalEdits(snapshot.blocks))
+    validateSyncedCanonicalProjection(blocks, snapshot.instances)
+    const previous = this.state.snapshot
+    if (snapshot.creationId !== previous.creationId) {
+      this.publish({ incoming: immutable(structuredClone(snapshot)), failure: { status: 'conflict', kind: 'group', groups: [snapshot], hosts: [] } }); return
+    }
+    if (snapshot.revision === previous.revision && snapshot.topologyRevision === previous.topologyRevision) return
+    const incoming = immutable(structuredClone(snapshot))
+    if (snapshot.revision === previous.revision && !this.pending) {
+      this.publish({ snapshot: incoming })
+      try { this.validated(this.state.working); this.publish({ failure: null, error: null }) } catch (error) { this.rejected(error) }
+      return
+    }
+    if (this.frames.length || this.pending || this.hasComposition() || this.state.incoming) {
+      this.publish({ incoming }); return
+    }
+    this.redoFrames = []
+    this.serverRedo = []; this.cutServerRedo = true
+    this.historyBookmarks.clear()
+    this.publish({ snapshot: incoming, working: blocks, editSequence: this.state.editSequence + 1, failure: null, error: null })
+  }
+
+  receiveMissing() { this.publish({ failure: { status: 'missing', kind: 'group', id: this.state.snapshot.groupId } }) }
+  receiveError(error: unknown) { this.rejected(error) }
+}
+
+export interface SyncedWorkspaceController {
+  getGroup: (groupId: string) => SyncedGroupController | undefined
+  getWorkspaceScope: () => string | null
+  load: (groupIds: string[]) => Promise<void>
+  releaseClean: (groupId: string) => boolean
+  dispose: () => boolean
+}
+
+const workspaces = new WeakMap<SyncedBlocksApi, SyncedWorkspaceController>()
+
+/** The API port identifies a renderer workspace session; occurrences reuse this registry. */
+export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: SyncedControllerOptions = {}): SyncedWorkspaceController {
+  const existing = workspaces.get(api)
+  if (existing) return existing
+  const groups = new Map<string, GroupController>(), reads = new Map<string, Promise<void>>(), epochs = new Map<string, number>()
+  let workspaceScope: string | null = null, disposed = false
+  const loadOne = (id: string): Promise<void> => {
+    const running = reads.get(id)
+    if (running) return running
+    const read = (async () => {
+      for (;;) {
+        const epoch = epochs.get(id) ?? 0, baseline = groups.get(id)?.getSnapshot().snapshot
+        const result = await api.getSyncedGroupSnapshots({ groupIds: [id] })
+        if (disposed) return
+        if (workspaceScope !== null && workspaceScope !== result.workspaceScope) {
+          for (const group of groups.values()) group.invalidateWorkspace()
+          throw new Error('Synced workspace identity changed; preserve drafts and reopen the workspace.')
+        }
+        workspaceScope = result.workspaceScope
+        if ((epochs.get(id) ?? 0) !== epoch || groups.get(id)?.getSnapshot().snapshot !== baseline) continue
+        const item = result.items.find(item => item.status === 'ready' ? item.snapshot.groupId === id : item.groupId === id)
+        if (!item) throw new Error('Synced snapshot response omitted the requested group.')
+        if (item.status === 'missing') groups.get(id)?.receiveMissing()
+        else if (groups.has(id)) groups.get(id)!.receive(item.snapshot)
+        else groups.set(id, new GroupController(api, item.snapshot, options))
+        return
+      }
+    })().catch(error => { groups.get(id)?.receiveError(error); throw error }).finally(() => { if (reads.get(id) === read) reads.delete(id) })
+    reads.set(id, read)
+    return read
+  }
+  const unsubscribe = api.onSyncedBlocksChanged(event => {
+    for (const change of event.changes) {
+      const group = groups.get(change.groupId)
+      if (!group && !reads.has(change.groupId) || group?.ownsOperation(event.operationId)) continue
+      epochs.set(change.groupId, (epochs.get(change.groupId) ?? 0) + 1)
+      void loadOne(change.groupId).catch(() => {})
+    }
+  })
+  const workspace: SyncedWorkspaceController = {
+    getGroup: id => groups.get(id), getWorkspaceScope: () => workspaceScope,
+    load: async ids => { if (disposed) throw new Error('Synced workspace is disposed.'); await Promise.all([...new Set(ids)].map(loadOne)) },
+    releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; return groups.delete(id) },
+    dispose: () => {
+      if (reads.size || [...groups.values()].some(group => !group.canRelease())) return false
+      disposed = true; unsubscribe(); groups.clear(); workspaces.delete(api); return true
+    }
+  }
+  workspaces.set(api, workspace)
+  return workspace
+}

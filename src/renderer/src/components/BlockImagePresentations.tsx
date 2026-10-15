@@ -11,7 +11,7 @@ export type BlockImagePresentationsProps = {
   isZh: boolean
   references?: MarkdownEnvironment['references']
   occurrences?: MarkdownImageOccurrence[]
-  onCommit?: (occurrence: MarkdownImageOccurrence, next: ImagePresentation, nextContent: string) => void
+  onCommit?: (occurrence: MarkdownImageOccurrence, next: ImagePresentation, nextContent: string) => boolean | void
   onBegin?: () => void
 }
 
@@ -34,7 +34,7 @@ export function BlockImagePresentations({ content, isZh, references, occurrences
       <ImagePresentationEditor value={presentation} isZh={isZh} editable={Boolean(onCommit && occurrence)}
         onBegin={onBegin} onCommit={onCommit && occurrence ? next => {
           const nextContent = replaceMarkdownImageOccurrence(content, occurrence, next, references)
-          if (nextContent !== null) onCommit(occurrence, next, nextContent)
+          return nextContent === null ? false : onCommit(occurrence, next, nextContent)
         } : undefined} />
     </Suspense>)}
   </figure>

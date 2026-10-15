@@ -197,7 +197,9 @@ export function reconcileRichTextBlockIds(doc: Node): Node {
     while (layoutParents.length && layoutParents.at(-1)!.end <= pos) layoutParents.pop()
     const original = node.attrs.block as DocumentBlockDraft | null
     const block = original ?? defaultBlock()
-    const requested = block.id?.trim()
+    // Existing identities are opaque. trim only decides whether an ID is blank;
+    // changing its bytes would also break exact parent/reference identities.
+    const requested = typeof block.id === 'string' && block.id.trim() ? block.id : undefined
     const id = requested && !ids.has(requested) ? requested : createDraftBlockId()
     ids.add(id)
     if (requested) remappedIds.set(requested, id)

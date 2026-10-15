@@ -1,8 +1,7 @@
-import { lazy, Suspense, useContext, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useContext, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Slice, type Node as RichNode } from 'prosemirror-model'
 import { AllSelection, EditorState, NodeSelection, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
-import { createRoot, type Root } from 'react-dom/client'
 import { createPortal } from 'react-dom'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from '../components/MarkdownDocumentContext'
 import { baseKeymap, chainCommands, createParagraphNear, splitBlockAs, toggleMark } from 'prosemirror-commands'
@@ -21,7 +20,7 @@ import { registerRichTextHistoryBridge } from './history'
 import { planRichTextTreePaste } from './paste'
 import { richTextSliceMarkdown as sliceMarkdown } from './clipboard'
 import { deleteCrossColumnSelection } from './columnEditing'
-import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
+import { planMarkdownImageDisplays, replaceMarkdownImageOccurrence, type MarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import { captureAsyncHistoryFocusPermission, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import { createColdBlockPopup, type ColdBlockPopup } from '../utils/coldBlockPopup'
@@ -44,6 +43,8 @@ import { useDatabaseEmbedContext } from '../features/database/DatabaseEmbedConte
 import { validateDatabaseViewBlock } from '@shared/databaseViewBlock'
 import { planRichDatabaseViewInsertion } from './databaseViewInsertion'
 import DatabaseViewPortal from './DatabaseViewPortal'
+import type { SyncedForestScope } from '../features/synced-blocks/types'
+import { syncedScopeDomKey } from '../features/synced-blocks/types'
 import './rich-text.css'
 import '../styles/inline-text-presentation.css'
 
@@ -56,6 +57,12 @@ const ColumnContentControls = lazy(() => import('./ColumnContentControls'))
 type DatabaseHost = {
   id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined
   editor: EditorView; documentId: string; session: object | undefined; epoch: number; alive: boolean
+}
+
+type MediaHost = {
+  id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined
+  editor: EditorView; documentId: string; alive: boolean; occurrences: MarkdownImageOccurrence[]
+  module: typeof import('../components/BlockImagePresentations') | null
 }
 
 type Props = {
@@ -76,6 +83,29 @@ type Props = {
   onAddContainerChild?: (id: string, type: typeof BLOCK_CONVERSION_TYPES[number]) => string | void
 }
 
+export type ForestRichTextViewProps = Omit<Props, 'documentId' | 'onChange' | 'checkpoint' | 'onUndo' | 'onRedo'>
+export type ForestRichTextBinding = {
+  scope: SyncedForestScope
+  apply: (blocks: DocumentBlockDraft[], bookmark: EditorHistoryBookmark) => boolean
+  checkpoint: () => void
+  undo: () => void
+  redo: () => void
+  setComposing?: (composing: boolean) => void
+  rememberSelection?: (bookmark: EditorHistoryBookmark) => void
+}
+type ForestProps = ForestRichTextViewProps & {
+  binding: ForestRichTextBinding
+  rootRef?: RefObject<HTMLDivElement | null>
+}
+
+function captureRichBookmark(state: EditorState): EditorHistoryBookmark {
+  const anchor = endpoint(state.doc, state.selection.anchor), head = endpoint(state.doc, state.selection.head)
+  const kind = richSelectionKind(state.selection)
+  return { blockId: anchor.blockId, index: anchor.index, start: anchor.offset, end: head.offset,
+    direction: state.selection.anchor > state.selection.head ? 'backward' : 'forward',
+    richText: { anchor, head, ...(kind === 'text' ? {} : { kind }) } }
+}
+
 function clipboardHtml(markdown: string): string {
   const environment: MarkdownEnvironment = {}
   const tokens = markdownEngine.parse(markdown, environment)
@@ -92,17 +122,36 @@ const types: readonly string[] = BLOCK_CONVERSION_TYPES
 const labelsZh = ['正文', '标题 1', '标题 2', '标题 3', '标题 4', '标题 5', '标题 6', '待办', '有序待办', '代码', '公式', '引用', '无序列表', '有序列表', '表格', '分割线', '提示块', '折叠块']
 const labelsEn = ['Text', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4', 'Heading 5', 'Heading 6', 'To-do', 'Numbered to-do', 'Code', 'Math', 'Quote', 'Bullet list', 'Numbered list', 'Table', 'Divider', 'Callout', 'Toggle']
 
-export function DocumentRichTextEditor(props: Props) {
+/** The document API stays compatible; the core edits an explicitly owned forest. */
+export function DocumentRichTextEditor({ documentId, onChange, checkpoint, onUndo, onRedo, ...props }: Props) {
+  const root = useRef<HTMLDivElement>(null), current = useRef(documentId)
+  current.current = documentId
+  const lease = useMemo(() => ({ alive: true, epoch: {} }), [documentId])
+  const scope = useMemo<SyncedForestScope>(() => ({ owner: { kind: 'document', documentId },
+    hostDocumentId: documentId, windowSessionId: 'document', hostSession: lease.epoch,
+    mountEpoch: lease.epoch, bindingEpoch: lease.epoch, domNamespace: JSON.stringify(['document', documentId]),
+    root: () => root.current, isCurrent: () => lease.alive && current.current === documentId
+  }), [documentId, lease])
+  useLayoutEffect(() => { lease.alive = true; return () => { lease.alive = false } }, [lease])
+  return <ForestRichTextEditor {...props} rootRef={root} binding={{ scope,
+    apply: blocks => { onChange(blocks); return true }, checkpoint, undo: onUndo, redo: onRedo }} />
+}
+
+export function ForestRichTextEditor(input: ForestProps) {
+  const props = { ...input, documentId: input.binding.scope.hostDocumentId,
+    checkpoint: input.binding.checkpoint, onUndo: input.binding.undo, onRedo: input.binding.redo }
   const mount = useRef<HTMLDivElement>(null), viewRef = useRef<EditorView | null>(null)
   const latest = useRef(props), emitted = useRef<DocumentBlockDraft[]>(props.blocks)
   latest.current = props
   const [revision, setRevision] = useState(0)
+  const [compositionRevision, setCompositionRevision] = useState(0)
   const [message, setMessage] = useState('')
   const [linkUrl, setLinkUrl] = useState<string | null>(null)
   const [palette, setPalette] = useState<'textColor' | 'backgroundColor' | null>(null)
   const [tableHosts, setTableHosts] = useState<Array<{ id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined }>>([])
   const [columnHosts, setColumnHosts] = useState<Array<{ id: string; dom: HTMLElement; grid: HTMLElement; position: () => number | undefined }>>([])
   const [databaseHosts, setDatabaseHosts] = useState<DatabaseHost[]>([])
+  const [mediaHosts, setMediaHosts] = useState<MediaHost[]>([])
   const databaseContext = useDatabaseEmbedContext(), databaseContextRef = useRef(databaseContext)
   databaseContextRef.current = databaseContext
   const pendingDatabaseFocus = useRef<{ editor: EditorView; doc: RichNode; id: string; documentId: string; session: object; permission: ColdBlockPopup } | null>(null)
@@ -184,6 +233,7 @@ export function DocumentRichTextEditor(props: Props) {
   const commitDatabaseHost = (host: DatabaseHost, epoch: number, expected: string, next: string) => {
     const editor = viewRef.current
     if (!host.alive || host.epoch !== epoch || editor !== host.editor || editor.composing || !host.dom.isConnected
+      || !latest.current.binding.scope.isCurrent()
       || latest.current.documentId !== host.documentId || databaseContextRef.current?.session !== host.session || next === expected) return false
     let position: number | undefined
     try { position = host.position() } catch { return false }
@@ -379,6 +429,9 @@ export function DocumentRichTextEditor(props: Props) {
 
   useLayoutEffect(() => {
     if (!mount.current) return
+    setMediaHosts([]); setTableHosts([]); setColumnHosts([]); setDatabaseHosts([])
+    setMessage(''); setLinkUrl(null); setPalette(null); linkSelection.current = null
+    setSlashIndex(0); setSlashDismissed(null)
     const identities = new Plugin({
       appendTransaction(transactions, _old, state) {
         if (!transactions.some(transaction => transaction.docChanged)) return null
@@ -453,13 +506,18 @@ export function DocumentRichTextEditor(props: Props) {
                 checkbox.type = 'checkbox'; checkbox.checked = Boolean(node.attrs.block.checked)
                 checkbox.contentEditable = 'false'; checkbox.setAttribute('aria-label', latest.current.isZh ? '完成待办' : 'Complete task')
                 checkbox.addEventListener('change', () => {
+                  const requested = checkbox.checked
                   const editor = viewRef.current
+                  checkbox.checked = Boolean(node.attrs.block.checked)
                   if (!editor) return
-                  latest.current.checkpoint()
                   richBlockEntries(editor.state.doc).forEach(({ node: current, pos: position }) => {
                     if (current.attrs.block?.id === node.attrs.block.id) {
+                      // A rejected transaction reuses this widget. Restore its
+                      // accepted value before asking the owning forest to apply.
+                      checkbox.checked = Boolean(current.attrs.block.checked)
+                      latest.current.checkpoint()
                       boundary.current = true
-                      editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...current.attrs, block: { ...current.attrs.block, checked: checkbox.checked } }))
+                      editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...current.attrs, block: { ...current.attrs.block, checked: requested } }))
                     }
                   })
                 })
@@ -572,7 +630,7 @@ export function DocumentRichTextEditor(props: Props) {
       setMessage(latest.current.isZh ? '正在导入附件…' : 'Importing attachments…')
       try {
         const attachments = await importAttachmentFiles(files)
-        if (viewRef.current !== editor) return
+        if (viewRef.current !== editor || !latest.current.binding.scope.isCurrent()) return
         if (!editor.state.doc.eq(doc)) { setMessage(latest.current.isZh ? '正文已变化，请重新插入附件。' : 'The text changed. Insert the attachments again.'); return }
         const blocks = normalizeDraftBlocks(attachments.map(attachment => ({ id: createDraftBlockId(), type: 'paragraph', content: attachmentMarkdown(attachment), checked: false, depth: 0 })))
         latest.current.checkpoint(); boundary.current = true
@@ -610,12 +668,17 @@ export function DocumentRichTextEditor(props: Props) {
       clipboardTextSerializer: sliceMarkdown,
       dispatchTransaction(transaction) {
         const result = editor.state.applyTransaction(transaction)
-        editor.updateState(result.state)
-        if (result.transactions.some(item => item.docChanged)) {
-          const blocks = richDocToDraftBlocks(result.state.doc)
-          emitted.current = blocks
-          latest.current.onChange(blocks)
+        if (!latest.current.binding.scope.isCurrent()) return
+        const blocks = result.transactions.some(item => item.docChanged) ? richDocToDraftBlocks(result.state.doc) : null
+        if (blocks) latest.current.binding.rememberSelection?.(captureRichBookmark(editor.state))
+        if (blocks && !latest.current.binding.apply(blocks, captureRichBookmark(result.state))) {
+          boundary.current = false
+          editor.updateState(editor.state)
+          return
         }
+        editor.updateState(result.state)
+        if (blocks) emitted.current = blocks
+        else latest.current.binding.rememberSelection?.(captureRichBookmark(result.state))
         setRevision(value => value + 1)
       },
       handleKeyDown(_editor, event) {
@@ -663,6 +726,10 @@ export function DocumentRichTextEditor(props: Props) {
         return false
       },
       handleDOMEvents: {
+        focus(_editor, event) {
+          if (event.target === editor.dom) latest.current.binding.rememberSelection?.(captureRichBookmark(editor.state))
+          return false
+        },
         contextmenu(_editor, event) {
           const target = event.target instanceof Element ? event.target : null
           if (!target || target.closest('input,textarea,select') || !latest.current.onOpenBlockActions || editor.composing) return false
@@ -688,11 +755,23 @@ export function DocumentRichTextEditor(props: Props) {
           event.preventDefault(); return true
         },
         compositionstart() {
+          latest.current.binding.setComposing?.(true)
           const tr = deleteCrossColumnSelection(editor.state)
           if (tr) {
             latest.current.checkpoint(); boundary.current = true
             editor.dispatch(tr)
           }
+          return false
+        },
+        compositionend() {
+          const binding = latest.current.binding
+          // PM finishes the native event after this callback. Mirror only then.
+          queueMicrotask(() => {
+            // This is evidence from an actual compositionend on this mount.
+            // It may settle that original lease after the view is destroyed.
+            binding.setComposing?.(false)
+            if (viewRef.current === editor) setCompositionRevision(value => value + 1)
+          })
           return false
         },
         keydown(_editor, event) {
@@ -842,7 +921,7 @@ export function DocumentRichTextEditor(props: Props) {
             }
           }
         },
-        source_block(node, _view, getPos) {
+        source_block(node, editor, getPos) {
           const dom = document.createElement('div')
           dom.className = 'rich-text-source-block block-editor-row'
           dom.contentEditable = 'false'
@@ -876,9 +955,11 @@ export function DocumentRichTextEditor(props: Props) {
           preview.className = 'rich-text-source-preview'
           const mediaHost = document.createElement('div')
           mediaHost.className = 'rich-text-source-media'
-          let current = node, disposed = false, mediaLoading = false, mediaRoot: Root | null = null
-          let mediaModule: typeof import('../components/BlockImagePresentations') | null = null
+          let current = node, mediaLoading = false
+          const descriptor: MediaHost = { id: node.attrs.block.id, dom: mediaHost, node: () => current, position: getPos,
+            editor, documentId: latest.current.documentId, alive: true, occurrences: [], module: null }
           const renderPreview = () => {
+            if (!descriptor.alive) return
             preview.innerHTML = markdownEngine.render(serializeBlocksToMarkdown([current.attrs.block]), { references: { ...latest.current.references } })
             const displays = planMarkdownImageDisplays(current.attrs.block.content, latest.current.references, preview.innerHTML)
             const occurrences = displays.flatMap(display => display.occurrence ? [display.occurrence] : [])
@@ -886,34 +967,26 @@ export function DocumentRichTextEditor(props: Props) {
             for (const [index, image] of Array.from(preview.querySelectorAll('img[src]')).entries()) {
               const url = toBlockRichMediaPreviewUrl(image.getAttribute('src')!)
               image.setAttribute('src', url)
-              if (mediaModule && managed.has(index)) {
+              if (descriptor.module && managed.has(index)) {
                 ;((image.closest('figure,[data-knowbook-align]') ?? image) as HTMLElement).style.display = 'none'
               }
             }
-            if (!mediaModule) {
+            if (!descriptor.module) {
               if (occurrences.length && !mediaLoading) {
                 mediaLoading = true
                 void import('../components/BlockImagePresentations').then(module => {
-                  if (disposed) return
-                  mediaModule = module; renderPreview()
+                  if (!descriptor.alive || viewRef.current !== editor || !latest.current.binding.scope.isCurrent()
+                    || latest.current.documentId !== descriptor.documentId) return
+                  const position = getPos()
+                  if (position === undefined || editor.state.doc.nodeAt(position)?.attrs.block?.id !== descriptor.id) return
+                  descriptor.module = module; renderPreview()
                 })
               }
               return
             }
-            mediaRoot ??= createRoot(mediaHost)
-            mediaRoot.render(<mediaModule.BlockImagePresentations content={current.attrs.block.content} references={latest.current.references} occurrences={occurrences} isZh={latest.current.isZh}
-              onBegin={() => latest.current.checkpoint()} onCommit={(occurrence, next) => {
-                const editor = viewRef.current
-                if (!editor || editor.composing) return
-                richBlockEntries(editor.state.doc).forEach(({ node: candidate, pos: position }) => {
-                  if (candidate.attrs.block?.id !== current.attrs.block.id) return
-                  const content = replaceMarkdownImageOccurrence(candidate.attrs.block.content, occurrence, next, latest.current.references)
-                  if (content === null) { setMessage(latest.current.isZh ? '正文已变化，请重新选择图片。' : 'The text changed. Select the image again.'); return }
-                  latest.current.checkpoint(); boundary.current = true
-                  editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...candidate.attrs,
-                    block: { ...candidate.attrs.block, content } }))
-                })
-              }} />)
+            descriptor.occurrences = occurrences
+            setMediaHosts(previous => occurrences.length ? [...previous.filter(item => item !== descriptor), descriptor]
+              : previous.filter(item => item !== descriptor))
           }
           sourceRefresh.current.add(renderPreview)
           renderPreview()
@@ -933,21 +1006,20 @@ export function DocumentRichTextEditor(props: Props) {
             update(next) {
               if (next.type !== current.type || next.attrs.block?.id !== current.attrs.block.id) return false
               current = next; renderPreview(); return true
-            }, destroy() { disposed = true; sourceRefresh.current.delete(renderPreview); const root = mediaRoot; if (root) queueMicrotask(() => root.unmount()) } }
+            }, destroy() {
+              descriptor.alive = false; sourceRefresh.current.delete(renderPreview)
+              if (viewRef.current) setMediaHosts(previous => previous.filter(item => item !== descriptor))
+            } }
         }
       }
     })
     viewRef.current = editor
     const unregister = registerRichTextHistoryBridge(editor.dom, {
       capture() {
-        const anchor = endpoint(editor.state.doc, editor.state.selection.anchor)
-        const head = endpoint(editor.state.doc, editor.state.selection.head)
-        const kind = richSelectionKind(editor.state.selection)
-        return { blockId: anchor.blockId, index: anchor.index, start: anchor.offset, end: head.offset,
-          direction: editor.state.selection.anchor > editor.state.selection.head ? 'backward' : 'forward', richText: { anchor, head, ...(kind === 'text' ? {} : { kind }) } }
+        return captureRichBookmark(editor.state)
       },
       restore(bookmark) {
-        if (!bookmark.richText) return
+        if (!bookmark.richText || !latest.current.binding.scope.isCurrent()) return
         const visible = new Set(latest.current.visibleIndices)
         const missing = [bookmark.richText.anchor, bookmark.richText.head].filter(point => {
           let index = point.index
@@ -965,20 +1037,20 @@ export function DocumentRichTextEditor(props: Props) {
     })
     setRevision(value => value + 1)
     return () => { cancelChildFocus(); cancelDatabaseFocus(); pendingContextMenu.current?.(); unregister(); parkedFoldSelection.current = null; viewRef.current = null; editor.destroy() }
-  }, [props.documentId, databaseContext?.session])
+  }, [props.documentId, props.binding.scope.mountEpoch, props.binding.scope.bindingEpoch, databaseContext?.session])
 
   const referenceSignature = JSON.stringify(props.references ?? {})
   useLayoutEffect(() => { for (const refresh of sourceRefresh.current) refresh() }, [referenceSignature, props.isZh])
 
   useLayoutEffect(() => {
     const editor = viewRef.current
-    if (!editor || editor.composing) return
+    if (!editor || editor.composing || !props.binding.scope.isCurrent()) return
     if (!areDocumentDraftBlocksEqual(emitted.current, props.blocks)) {
       const bookmark = endpoint(editor.state.doc, editor.state.selection.anchor)
       const head = endpoint(editor.state.doc, editor.state.selection.head)
       const kind = richSelectionKind(editor.state.selection)
       const doc = draftBlocksToRichDoc(props.blocks)
-      const tr = editor.state.tr.replaceWith(0, editor.state.doc.content.size, doc.content).setMeta('external', true)
+      const tr = editor.state.tr.replaceWith(0, editor.state.doc.content.size, doc.content).setMeta('external', true).setMeta('addToHistory', false)
       tr.setSelection(richSelectionFromBookmark(tr.doc, { anchor: bookmark, head, kind }))
       emitted.current = props.blocks
       editor.updateState(editor.state.apply(tr))
@@ -1017,7 +1089,7 @@ export function DocumentRichTextEditor(props: Props) {
       editor.focus()
     }
     focusAddedChild()
-  }, [props.blocks, props.visibleIndices, props.collapsedBlockIds])
+  }, [props.blocks, props.visibleIndices, props.collapsedBlockIds, compositionRevision])
 
   const format = (name: string) => {
     const editor = viewRef.current
@@ -1046,7 +1118,11 @@ export function DocumentRichTextEditor(props: Props) {
     else tr.addMark(selected.from, selected.to, richTextSchema.marks.link.create({ href: url.toString() }))
     editor.dispatch(tr); setLinkUrl(null); setMessage(''); editor.focus()
   }
-  return <div className="rich-text-document" onKeyDown={event => {
+  return <div ref={props.rootRef} className="rich-text-document"
+    data-editor-island={props.binding.scope.owner.kind === 'synced-group' ? 'synced-group' : undefined}
+    data-forest-owner={props.binding.scope.owner.kind}
+    data-synced-instance-id={props.binding.scope.instanceId}
+    onKeyDown={event => {
     if (palette && event.key === 'Escape' && !isImeKeyboardEvent(event) && !viewRef.current?.composing) {
       event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus()
     }
@@ -1109,6 +1185,36 @@ export function DocumentRichTextEditor(props: Props) {
       <button type="submit">{props.isZh ? '应用' : 'Apply'}</button><button type="button" onClick={() => { setLinkUrl(null); viewRef.current?.focus() }}>{props.isZh ? '取消' : 'Cancel'}</button>
     </form>}
     <div ref={mount} />
+    {mediaHosts.map(host => {
+      const index = props.blocks.findIndex(block => block.id === host.id)
+      if (!host.alive || host.editor !== viewRef.current || host.documentId !== props.documentId || index < 0 || !host.module) return null
+      const content = host.node().attrs.block.content as string, references = props.references, scope = props.binding.scope
+      const currentNode = () => {
+        if (!host.alive || viewRef.current !== host.editor || host.editor.composing || !host.dom.isConnected
+          || latest.current.binding.scope !== scope || !scope.isCurrent()
+          || latest.current.documentId !== host.documentId || latest.current.references !== references) return null
+        const position = host.position()
+        if (position === undefined) return null
+        const candidate = host.editor.state.doc.nodeAt(position)
+        return candidate?.type === host.node().type && candidate.attrs.block?.id === host.id
+          && candidate.attrs.block.content === content ? { candidate, position } : null
+      }
+      return createPortal(<MarkdownBlockNodesContext.Provider value={markdownDocument.model?.blockNodes[index]}>
+        <host.module.BlockImagePresentations content={content} references={references} occurrences={host.occurrences} isZh={props.isZh}
+          onBegin={() => { if (currentNode()) latest.current.checkpoint() }} onCommit={(occurrence, next) => {
+            const target = currentNode()
+            if (!target) return false
+            const replaced = replaceMarkdownImageOccurrence(content, occurrence, next, references)
+            if (replaced === null) { setMessage(latest.current.isZh ? '正文已变化，请重新选择图片。' : 'The text changed. Select the image again.'); return false }
+            latest.current.checkpoint(); boundary.current = true
+            host.editor.dispatch(host.editor.state.tr.setNodeMarkup(target.position, undefined, { ...target.candidate.attrs,
+              block: { ...target.candidate.attrs.block, content: replaced } }))
+            if (!host.alive || viewRef.current !== host.editor || latest.current.binding.scope !== scope || !scope.isCurrent()) return false
+            const accepted = host.editor.state.doc.nodeAt(target.position)
+            return accepted?.attrs.block?.id === host.id && accepted.attrs.block.content === replaced
+          }} />
+      </MarkdownBlockNodesContext.Provider>, host.dom, syncedScopeDomKey(props.binding.scope, host.id, 'media'))
+    })}
     {databaseHosts.map(host => {
       if (!host.alive || host.editor !== viewRef.current || host.documentId !== props.documentId
         || host.session !== databaseContext?.session || !props.blocks.some(block => block.id === host.id && block.type === 'database-view')) return null
@@ -1116,39 +1222,45 @@ export function DocumentRichTextEditor(props: Props) {
       return createPortal(<Suspense fallback={<p role="status">{props.isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
         <DatabaseViewPortal blockId={host.id} content={content} isZh={props.isZh}
           onCommitContent={(expected, next) => commitDatabaseHost(host, epoch, expected, next)} />
-      </Suspense>, host.dom, `${props.documentId}:${host.id}`)
+      </Suspense>, host.dom, syncedScopeDomKey(props.binding.scope, host.id, 'database'))
     })}
     {columnHosts.map(host => {
       if (!props.blocks.some(block => block.id === host.id && block.type === 'columns')) return null
+      const scope = props.binding.scope
       return createPortal(<Suspense fallback={null}><ColumnsControls blocks={props.blocks} groupId={host.id} isZh={props.isZh}
-        sessionKey={`${props.documentId}:${host.id}`} onApplyBlocks={next => {
-          const position = host.position(), editor = viewRef.current
-          if (!editor || !host.dom.isConnected || position === undefined || editor.state.doc.nodeAt(position)?.attrs.block?.id !== host.id) return
+        sessionKey={syncedScopeDomKey(props.binding.scope, host.id, 'columns')} onApplyBlocks={next => {
+          const editor = viewRef.current
+          if (!editor || latest.current.binding.scope !== scope || !scope.isCurrent() || !host.dom.isConnected) return
+          const position = host.position()
+          if (position === undefined || editor.state.doc.nodeAt(position)?.attrs.block?.id !== host.id) return
           applyColumnsBlocks(next, props.blocks)
         }} onPreviewWeights={weights => {
           if (!host.grid.isConnected) return
           const columns = weights ?? props.blocks.filter(block => block.parentBlockId === host.id && block.type === 'column').map(block => block.markdownFormat!.columnWeight!)
           host.grid.style.setProperty('--column-tracks', columns.map(weight => `minmax(0, ${weight}fr)`).join(' '))
-        }} /></Suspense>, host.dom, `${props.documentId}:${host.id}`)
+        }} /></Suspense>, host.dom, syncedScopeDomKey(props.binding.scope, host.id, 'columns'))
     })}
     {tableHosts.map(host => {
       const index = props.blocks.findIndex(block => block.id === host.id)
       if (index < 0 || props.blocks[index].type !== 'table') return null
-      const content = props.blocks[index].content
+      const content = props.blocks[index].content, scope = props.binding.scope
       return createPortal(<MarkdownBlockNodesContext.Provider value={markdownDocument.model?.blockNodes[index]}>
         <Suspense fallback={<p role="status">{props.isZh ? '正在加载表格…' : 'Loading table…'}</p>}>
-          <MarkdownTableEditor key={`${props.documentId}:${host.id}`} content={content} sessionKey={`${props.documentId}:${host.id}`} isZh={props.isZh}
-            onReady={cell => focusAddedChild(host.id, cell)}
-            onBeginEdit={() => latest.current.checkpoint()} onChange={(next, transaction) => {
-              const editor = viewRef.current, position = host.position()
-              if (!editor || editor.composing || !host.dom.isConnected || position === undefined) return
+          <MarkdownTableEditor key={syncedScopeDomKey(props.binding.scope, host.id, 'table')} content={content}
+            sessionKey={syncedScopeDomKey(props.binding.scope, host.id, 'table')} isZh={props.isZh}
+            onReady={cell => { if (latest.current.binding.scope === scope && scope.isCurrent()) focusAddedChild(host.id, cell) }}
+            onBeginEdit={() => { if (latest.current.binding.scope === scope && scope.isCurrent() && host.dom.isConnected) latest.current.checkpoint() }} onChange={(next, transaction) => {
+              const editor = viewRef.current
+              if (!editor || editor.composing || latest.current.binding.scope !== scope || !scope.isCurrent() || !host.dom.isConnected) return
+              const position = host.position()
+              if (position === undefined) return
               const current = editor.state.doc.nodeAt(position)
               if (current?.attrs.block?.id !== host.id || current.attrs.block.type !== 'table' || current.attrs.block.content !== content || next === content) return
               if (transaction) { latest.current.checkpoint(); boundary.current = true }
               editor.dispatch(editor.state.tr.setNodeMarkup(position, undefined, { ...current.attrs, block: { ...current.attrs.block, content: next } }))
             }} />
         </Suspense>
-      </MarkdownBlockNodesContext.Provider>, host.dom, `${props.documentId}:${host.id}`)
+      </MarkdownBlockNodesContext.Provider>, host.dom, syncedScopeDomKey(props.binding.scope, host.id, 'table'))
     })}
     {slashCommands.length > 0 && <div className="rich-text-slash-menu" role="listbox" aria-label={props.isZh ? '插入块' : 'Insert block'}>
       {slashCommands.map((command, index) => <button type="button" role="option" aria-selected={index === slashRef.current.index} key={command.type}
