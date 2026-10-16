@@ -17,6 +17,9 @@ export const SYNCED_BINDING_SOURCE_LIMITS = Object.freeze({ tickets: 256, bytes:
 export type SyncedBaselineOwnerResult =
   | { status: 'ready'; workspaceScope: string; readOwnerId: string; snapshot: SyncedGroupSnapshot; bindingSource: SyncedBindingSource }
   | { status: 'missing'; workspaceScope: string; groupId: string }
+export type SyncedReadOwnerValidationResult =
+  | { status: 'ready'; workspaceScope: string }
+  | { status: 'owner-unavailable' }
 export type SyncedOwnedOperationWithLinkSourceResult =
   | { status: 'owner-unavailable' }
   | { status: 'unknown-operation' }
@@ -213,6 +216,23 @@ export function captureSyncedBaselineOwner(db: Database.Database, input: unknown
   const [bindingSource] = publishCapturedSources(db, captured.workspace, [captured.source!], owner, true)
   return { status: 'ready', workspaceScope: captured.workspace.scope, readOwnerId: owner.readOwnerId,
     snapshot: captured.item.snapshot, bindingSource: bindingSource! }
+}
+
+/** Validate this original capability in one owned read without allocating a
+ * ticket or probing an unrelated operation. Final copy resolution still rechecks
+ * the owner: this result describes this read, not a future writer lease. */
+export function validateSyncedReadOwner(db: Database.Database, input: unknown): SyncedReadOwnerValidationResult {
+  ownRead(db)
+  const { readOwnerId } = ownerInput(input, ['readOwnerId'])
+  const registry = registries.get(db), owner = registry?.owners.get(readOwnerId)
+  if (!registry || !owner) return { status: 'owner-unavailable' }
+  return db.transaction((): SyncedReadOwnerValidationResult => {
+    const workspace = identity(db)
+    if (registry.epoch !== workspace.epoch || currentIncarnation(db, owner.groupId) !== owner.incarnation) {
+      return { status: 'owner-unavailable' }
+    }
+    return { status: 'ready', workspaceScope: workspace.scope }
+  })()
 }
 
 /** Read the original stored ACK for this exact owner incarnation. No current

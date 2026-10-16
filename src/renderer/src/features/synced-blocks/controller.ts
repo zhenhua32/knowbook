@@ -10,9 +10,12 @@ import type {
 import { syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
 import { composeSyncedBindingClaims, syncedBindingClaimsAreIdentity, validateSyncedWorkingClaims } from './bindingClaims'
 
+import type { SyncedReadSourcesPort, ControllerReadOwnerContext } from './sourceReadOwner'
+
 /** Local read capabilities only. Public fields cannot reconstruct ownership. */
 export interface SyncedWorkingEndpointReceipt { readonly kind: 'synced-working-endpoint' }
 export interface SyncedCommittedEndpointReceipt { readonly kind: 'synced-committed-endpoint' }
+export interface SyncedSourceReadOwnerFence { readonly kind: 'synced-source-read-owner-fence' }
 export type SyncedWorkingEndpointRead = Readonly<{ status: 'unavailable' }> | Readonly<{
   status: 'available'; current: boolean; editSequence: number; groupId: string; creationId: string;
   working: readonly Readonly<SyncedCanonicalEdit>[];
@@ -27,12 +30,16 @@ export type SyncedEndpointApplyResult = Readonly<{ accepted: false }>
   | Readonly<{ accepted: true; endpoint: SyncedWorkingEndpointReceipt }>;
 type EndpointPort = { capture: () => SyncedWorkingEndpointReceipt | null;
   source: (validation?: SyncedSourceEndpointValidation) => SyncedSourceEndpointOpening | null;
+  adopt: (context: ControllerReadOwnerContext, endpoint: SyncedWorkingEndpointReceipt, validate: () => boolean,
+    fence?: SyncedSourceReadOwnerFence) => SyncedSourceReadOwnerFence | null;
   apply: (input: Omit<SyncedGroupApply, 'scope'>, validateSource?: () => boolean) => SyncedEndpointApplyResult }
 interface SyncedSourceEndpointValidation {
   readonly expected: SyncedWorkingEndpointReceipt
   readonly validate: () => boolean
 }
 export interface SyncedSourceEndpointOpening {
+  readonly snapshot: Readonly<SyncedGroupSnapshot>
+  readonly readOwner: ControllerReadOwnerContext | null
   readonly endpoint: SyncedWorkingEndpointReceipt
   readonly working: readonly Readonly<SyncedCanonicalEdit>[]
   readonly origin: Readonly<SyncedOriginV1>
@@ -56,6 +63,11 @@ export function captureSyncedWorkingEndpoint(binding: SyncedGroupBinding): Synce
  * binding's public methods or a caller-supplied snapshot/lease. No flush. */
 export function captureSyncedSourceEndpoint(binding: SyncedGroupBinding, validation?: SyncedSourceEndpointValidation): SyncedSourceEndpointOpening | null {
   try { return endpointPorts.get(binding)?.source(validation) ?? null } catch { return null }
+}
+/** Internal Source adoption gate: original historical endpoints need not be current. */
+export function finalizeSyncedSourceReadOwner(binding: SyncedGroupBinding, context: ControllerReadOwnerContext,
+  endpoint: SyncedWorkingEndpointReceipt, validate: () => boolean, fence?: SyncedSourceReadOwnerFence): SyncedSourceReadOwnerFence | null {
+  try { return endpointPorts.get(binding)?.adopt(context, endpoint, validate, fence) ?? null } catch { return null }
 }
 export function readSyncedWorkingEndpoint(receipt: SyncedWorkingEndpointReceipt): SyncedWorkingEndpointRead {
   try { return endpointReaders.get(receipt)?.() ?? unavailableEndpoint } catch { return unavailableEndpoint }
@@ -196,6 +208,8 @@ function committedEndpointReceipt(endpoint: Endpoint): SyncedCommittedEndpointRe
 }
 
 export interface SyncedControllerOptions {
+  /** Private opt-in initial owned read; no production IPC or cached-workspace retrofit. */
+  readSources?: SyncedReadSourcesPort
   operationId?: () => string
   /** A later portable-budget adapter may add a pure preflight; no filesystem is read here. */
   validateBudget?: (blocks: SyncedCanonicalEdit[], snapshot: SyncedGroupSnapshot) => void
@@ -224,7 +238,8 @@ class GroupController implements SyncedGroupController {
   private currentEndpoint: Endpoint
   private readonly frameVersions = new WeakMap<Frame, FrameVersion>()
 
-  constructor(private readonly api: SyncedBlocksApi, snapshot: SyncedGroupSnapshot, private readonly options: SyncedControllerOptions) {
+  constructor(private readonly api: SyncedBlocksApi, snapshot: SyncedGroupSnapshot, private readonly options: SyncedControllerOptions,
+    private readOwner: ControllerReadOwnerContext | null = null) {
     snapshot = validateSyncedGroupSnapshot(snapshot)
     const blocks = syncedCanonicalEdits(snapshot.blocks)
     validateSyncedCanonicalProjection(blocks, snapshot.instances)
@@ -339,6 +354,7 @@ class GroupController implements SyncedGroupController {
       instanceId: scope.instanceId, bindingVersion: scope.bindingVersion, groupId: scope.owner.groupId }, bookmark: null, bookmarkSequence: 0 }
     this.mounts.set(scope.instanceId, mount)
     let disposed = false
+    const adoptionFences = new WeakMap<SyncedSourceReadOwnerFence, { state: SyncedGroupDraftState; current: Endpoint; endpoint: Endpoint; callback: () => boolean }>()
     const current = () => !disposed && this.live(scope) === mount && !disposed && this.mounts.get(mount.lease.instanceId) === mount
     const binding: SyncedGroupBinding = {
       scope, getCurrent: this.getSnapshot, subscribe: this.subscribe, isCurrent: current,
@@ -375,8 +391,23 @@ class GroupController implements SyncedGroupController {
         if (!sourceScopeMatches(mount, callback) || disposed || this.mounts.get(mount.lease.instanceId) !== mount || this.state !== state
           || this.currentEndpoint !== endpoint || !this.endpointAvailable(endpoint)) return null
         return Object.freeze({ endpoint: this.mintEndpoint(endpoint, current), working: endpoint.working, origin: state.snapshot.origin,
+          snapshot: state.snapshot, readOwner: this.readOwner,
           lease: Object.freeze({ scope: Object.freeze({ ...mount.lease }), expectedEditSequence: state.editSequence,
             guards: Object.freeze(syncedSnapshotGuard(state.snapshot)) }) })
+      },
+      adopt: (context, receipt, validate, fence) => {
+        const state = this.state, currentEndpoint = this.currentEndpoint, endpoint = endpointIdentities.get(receipt)
+        const prior = fence && adoptionFences.get(fence)
+        const callback = sourceScopeCallback(mount)
+        if (fence && (!prior || prior.state !== state || prior.current !== currentEndpoint || prior.endpoint !== endpoint || prior.callback !== callback)) return null
+        if (!endpoint || !callback || disposed || this.readOwner !== context || !this.sourceLive(mount, callback)
+          || this.state !== state || this.currentEndpoint !== currentEndpoint || !this.endpointAvailable(endpoint) || validate() !== true) return null
+        if (!sourceScopeMatches(mount, callback) || disposed || this.mounts.get(mount.lease.instanceId) !== mount
+          || this.readOwner !== context || this.state !== state || this.currentEndpoint !== currentEndpoint || !this.endpointAvailable(endpoint)) return null
+        if (fence) return fence
+        const captured: SyncedSourceReadOwnerFence = Object.freeze({ kind: 'synced-source-read-owner-fence' })
+        adoptionFences.set(captured, { state, current: currentEndpoint, endpoint, callback })
+        return captured
       },
       apply: (input, validateSource) => {
         const callback = validateSource ? sourceScopeCallback(mount) : null
@@ -475,7 +506,8 @@ class GroupController implements SyncedGroupController {
     if (this.knownOperations.size > 256) this.knownOperations.delete(this.knownOperations.values().next().value!)
   }
   ownsOperation(id: string) { return this.knownOperations.has(id) }
-  invalidateWorkspace() { this.workspaceInvalid = true; this.expireEndpoints(); this.publish({ error: 'Synced workspace identity changed; preserve drafts and reopen the workspace.' }) }
+  releaseReadOwner() { const owner = this.readOwner; this.readOwner = null; owner?.release() }
+  invalidateWorkspace() { this.releaseReadOwner(); this.workspaceInvalid = true; this.expireEndpoints(); this.publish({ error: 'Synced workspace identity changed; preserve drafts and reopen the workspace.' }) }
   canRelease() { return !this.frames.length && !this.redoFrames.length && !this.serverRedo.length
     && !(this.cutServerRedo && this.state.snapshot.history.redoToken) && !this.pending && !this.hasComposition()
     && !this.state.incoming && !this.state.failure && !this.state.error && !this.listeners.size && !this.mounts.size }
@@ -659,6 +691,8 @@ class GroupController implements SyncedGroupController {
 
   /** Content conflicts do not silently replace the baseline used by dirty edits. */
   receive(snapshot: SyncedGroupSnapshot) {
+    // An external load is a new provenance generation even when all DTO fields match.
+    this.releaseReadOwner()
     snapshot = validateSyncedGroupSnapshot(snapshot)
     if (snapshot.groupId !== this.state.snapshot.groupId) throw new Error('Synced snapshot group mismatch.')
     const blocks = cloneBlocks(syncedCanonicalEdits(snapshot.blocks))
@@ -686,7 +720,7 @@ class GroupController implements SyncedGroupController {
     this.publish({ snapshot: incoming, working: blocks, editSequence: this.state.editSequence + 1, failure: null, error: null })
   }
 
-  receiveMissing() { this.expireEndpoints(); this.publish({ failure: { status: 'missing', kind: 'group', id: this.state.snapshot.groupId } }) }
+  receiveMissing() { this.releaseReadOwner(); this.expireEndpoints(); this.publish({ failure: { status: 'missing', kind: 'group', id: this.state.snapshot.groupId } }) }
   receiveError(error: unknown) { this.rejected(error) }
 }
 
@@ -704,6 +738,7 @@ const workspaces = new WeakMap<SyncedBlocksApi, SyncedWorkspaceController>()
 export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: SyncedControllerOptions = {}): SyncedWorkspaceController {
   const existing = workspaces.get(api)
   if (existing) return existing
+  const readSources = options.readSources
   const groups = new Map<string, GroupController>(), reads = new Map<string, Promise<void>>(), epochs = new Map<string, number>()
   let workspaceScope: string | null = null, disposed = false
   const loadOne = (id: string): Promise<void> => {
@@ -712,7 +747,13 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
     const read = (async () => {
       for (;;) {
         const epoch = epochs.get(id) ?? 0, baseline = groups.get(id)?.getSnapshot().snapshot
-        const result = await api.getSyncedGroupSnapshots({ groupIds: [id] })
+        const owned = !groups.has(id) && readSources
+          ? await (await import('./sourceReadOwner')).captureControllerReadOwner(readSources, id) : null
+        const result = owned ? { workspaceScope: owned.workspaceScope, items: [owned.status === 'ready'
+          ? { status: 'ready' as const, snapshot: owned.snapshot } : { status: 'missing' as const, groupId: id }] }
+          : await api.getSyncedGroupSnapshots({ groupIds: [id] })
+        let adopted = false
+        try {
         if (disposed) return
         if (workspaceScope !== null && workspaceScope !== result.workspaceScope) {
           for (const group of groups.values()) group.invalidateWorkspace()
@@ -724,8 +765,9 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
         if (!item) throw new Error('Synced snapshot response omitted the requested group.')
         if (item.status === 'missing') groups.get(id)?.receiveMissing()
         else if (groups.has(id)) groups.get(id)!.receive(item.snapshot)
-        else groups.set(id, new GroupController(api, item.snapshot, options))
+        else { groups.set(id, new GroupController(api, item.snapshot, options, owned?.status === 'ready' ? owned.context : null)); adopted = true }
         return
+        } finally { if (!adopted && owned?.status === 'ready') owned.context.release() }
       }
     })().catch(error => { groups.get(id)?.receiveError(error); throw error }).finally(() => { if (reads.get(id) === read) reads.delete(id) })
     reads.set(id, read)
@@ -742,10 +784,10 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
   const workspace: SyncedWorkspaceController = {
     getGroup: id => groups.get(id), getWorkspaceScope: () => workspaceScope,
     load: async ids => { if (disposed) throw new Error('Synced workspace is disposed.'); await Promise.all([...new Set(ids)].map(loadOne)) },
-    releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; return groups.delete(id) },
+    releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; group.releaseReadOwner(); return groups.delete(id) },
     dispose: () => {
       if (reads.size || [...groups.values()].some(group => !group.canRelease())) return false
-      disposed = true; unsubscribe(); groups.clear(); workspaces.delete(api); return true
+      disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); return true
     }
   }
   workspaces.set(api, workspace)

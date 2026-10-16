@@ -12,8 +12,10 @@ import { SyncedValidationError, validateSyncedCanonicalEdit, validateSyncedOrigi
 import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalEdit, SyncedGroupGuard, SyncedOriginV1 } from '@shared/synced-blocks'
 import { replaceMarkdownSourceChanges, type MarkdownSourceChange, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
 import { createMarkdownSourceSession } from '../../utils/markdownSourceSession'
-import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, readSyncedWorkingEndpointCommitted,
-  type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt } from './controller'
+import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, finalizeSyncedSourceReadOwner, readSyncedWorkingEndpointCommitted,
+  type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt, type SyncedSourceEndpointOpening } from './controller'
+import type { SourceReadOwner, SourceReadOwnerAccess, AdoptedSourceSide, SourceSideAdoptionResult, AdoptedSourceSideFacts } from './sourceReadOwner'
+export type { SourceReadOwner, AdoptedSourceSide, SourceSideAdoptionResult, AdoptedSourceSideFacts } from './sourceReadOwner'
 import { syncedBindingClaimsAreIdentity } from './bindingClaims'
 import type { SyncedGroupBinding, SyncedScopeBookmark } from './types'
 import { allocateCanonicalSourceDraft, createCanonicalSourceAllocationBasis, readCanonicalSourceAllocation,
@@ -112,6 +114,67 @@ function grammar(): readonly unknown[] {
     values.push(null)
   }
   return Object.freeze(values)
+}
+/** Adoption only: close the same grammar surface after its final callout.
+ * Descriptor reads never evaluate a grammar accessor. Ordinary editing keeps
+ * its existing codec; an accessor-bearing configuration cannot adopt a side. */
+function ownDataGrammar(): readonly unknown[] | null {
+  try {
+    const get = (input: unknown, key: string): unknown => {
+      if (!input || typeof input !== 'object' && typeof input !== 'function') throw new Error('Invalid grammar object')
+      let current: object | null = input
+      while (current) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, key)
+        if (descriptor) {
+          if (!Object.hasOwn(descriptor, 'value')) throw new Error('Grammar accessor')
+          return descriptor.value
+        }
+        current = Object.getPrototypeOf(current) as object | null
+      }
+      return undefined
+    }
+    const entries = (input: unknown): Array<[string, unknown]> => {
+      if (!input || typeof input !== 'object') throw new Error('Invalid grammar entries')
+      return Object.entries(Object.getOwnPropertyDescriptors(input)).filter(([, descriptor]) => descriptor.enumerable)
+        .map<[string, unknown]>(([key, descriptor]) => {
+          if (!Object.hasOwn(descriptor, 'value')) throw new Error('Grammar accessor')
+          return [key, descriptor.value]
+        })
+    }
+    const array = (input: unknown): unknown[] => {
+      if (!Array.isArray(input)) throw new Error('Invalid grammar array')
+      const length = get(input, 'length')
+      if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) throw new Error('Invalid grammar array')
+      const result: unknown[] = []
+      for (let index = 0; index < length; index++) result.push(get(input, String(index)))
+      return result
+    }
+    const block = get(markdownEngine, 'block'), inline = get(markdownEngine, 'inline'), core = get(markdownEngine, 'core')
+    const helpers = get(markdownEngine, 'helpers'), inlineState = get(inline, 'State')
+    const values: unknown[] = [get(markdownEngine, 'parse'), get(markdownEngine, 'parseInline'), get(block, 'parse'), get(block, 'State'),
+      get(inline, 'parse'), get(core, 'process'), get(markdownEngine, 'normalizeLink'), get(markdownEngine, 'validateLink'),
+      get(helpers, 'parseLinkLabel'), get(helpers, 'parseLinkDestination'), get(helpers, 'parseLinkTitle'), inlineState, observeMarkdownSourceCarriers]
+    const prototype = get(inlineState, 'prototype')
+    if (!prototype || typeof prototype !== 'object') return null
+    const push = Object.getOwnPropertyDescriptor(prototype, 'push')
+    if (push && !Object.hasOwn(push, 'value')) return null
+    values.push(push?.value, push?.get, push?.set, push?.configurable, push?.enumerable, push?.writable)
+    for (const [key, value] of entries(get(markdownEngine, 'options'))) values.push(key, value)
+    for (const ruler of [get(core, 'ruler'), get(block, 'ruler'), get(inline, 'ruler'), get(inline, 'ruler2')])
+      for (const rule of array(get(ruler, '__rules__'))) {
+        const alt = get(rule, 'alt')
+        values.push(get(rule, 'name'), get(rule, 'enabled'), get(rule, 'fn'), ...(alt === undefined || alt === null ? [] : array(alt)), null)
+      }
+    const linkify = get(markdownEngine, 'linkify'), options = get(linkify, '__opts__'), schemas = get(linkify, '__schemas__')
+    for (const [key, value] of entries(options ?? {})) values.push(key, value)
+    for (const [key, value] of entries(schemas ?? {})) {
+      values.push(key)
+      if (value && typeof value === 'object') for (const [field, item] of entries(value)) values.push(field, item)
+      else values.push(value)
+      values.push(null)
+    }
+    return values
+  } catch { return null }
 }
 function plain(value: unknown, keys: readonly string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || ![null, Object.prototype].includes(Object.getPrototypeOf(value))) return fail('来源上下文不是封闭数据')
@@ -718,7 +781,7 @@ export type SourceCheckpointPreparationResult = Readonly<{ status: 'prepared'; p
 export type SourceCheckpointApplyResult = Readonly<{ status: 'accepted'; accepted: AcceptedSourceCheckpoint }>
   | Readonly<{ status: 'unavailable' }>
 type CheckpointState = {
-  binding: SyncedGroupBinding; root: Root; endpoint: SyncedWorkingEndpointReceipt;
+  binding: SyncedGroupBinding; root: Root; opening: SyncedSourceEndpointOpening; openingDraft: SourceLedgerDraft; endpoint: SyncedWorkingEndpointReceipt;
   current: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>; seen: Set<Lineage>;
   staged: PreparedSourceCheckpoint | null; preparing: boolean; applying: boolean
 }
@@ -729,6 +792,7 @@ type CheckpointPreparation = {
 const checkpoints = new WeakMap<SourceCheckpoint, CheckpointState>()
 const checkpointPreparations = new WeakMap<PreparedSourceCheckpoint, CheckpointPreparation>()
 const acceptedCheckpoints = new WeakMap<AcceptedSourceCheckpoint, AcceptedSourceCheckpointFacts>()
+const acceptedOwners = new WeakMap<AcceptedSourceCheckpoint, CheckpointState>()
 const unavailableCheckpoint = Object.freeze({ status: 'unavailable' as const })
 const noopCheckpoint = Object.freeze({ status: 'noop' as const })
 const historyCheckpoint = Object.freeze({ status: 'needs-history-source' as const })
@@ -765,7 +829,7 @@ export function openSyncedSourceCheckpoint(binding: SyncedGroupBinding): {
   const opened = openCanonicalSourceLedger({ blocks: context.working, origin: context.origin, lease: context.lease })
   const saved = data(opened.draft), tokens = new Map<Lineage, Readonly<SyncedBindingKey>>()
   for (const lineage of saved.lineage.values()) if (lineage.source) tokens.set(lineage, lineage.source)
-  const state: CheckpointState = { binding, root: saved.root, endpoint: context.endpoint, current: tokens,
+  const state: CheckpointState = { binding, root: saved.root, opening: context, openingDraft: opened.draft, endpoint: context.endpoint, current: tokens,
     seen: new Set(tokens.keys()), staged: null, preparing: false, applying: false }
   if (!checkpointEndpoint(state, opened.draft, saved)) return null
   const checkpoint: SourceCheckpoint = Object.freeze({ kind: 'source-checkpoint' })
@@ -868,6 +932,7 @@ export function applyPreparedSourceCheckpoint(input: {
     const accepted: AcceptedSourceCheckpoint = Object.freeze({ kind: 'accepted-source-checkpoint' })
     acceptedCheckpoints.set(accepted, Object.freeze({ draft: facts.draft, draftReceipt: facts.draftReceipt,
       allocation: facts.allocation, endpoint: applied.endpoint, committed: null }))
+    acceptedOwners.set(accepted, state)
     state.endpoint = applied.endpoint; state.current = saved.tokens
     for (const token of saved.tokens.keys()) state.seen.add(token)
     state.staged = null
@@ -887,4 +952,46 @@ export function readAcceptedSourceCheckpoint(accepted: AcceptedSourceCheckpoint)
     return committed
   }
   return facts
+}
+
+// Loaded only by an explicit adoption request. Default editor startup keeps the
+// source codec and Main read-owner handshake out of the renderer entry chunk.
+let sourceReadOwnerModule: typeof import('./sourceReadOwner') | undefined
+async function readOwnerKernel() { return sourceReadOwnerModule ??= await import('./sourceReadOwner') }
+/** Internal registry lookup; an arbitrary access adapter cannot mint an owner. */
+export function readSourceReadOwnerAccess(checkpoint: SourceCheckpoint): SourceReadOwnerAccess | null {
+  const state = checkpoints.get(checkpoint)
+  if (!state || !state.opening.readOwner) return null
+  return {
+    context: state.opening.readOwner, endpoint: state.opening.endpoint, snapshot: state.opening.snapshot,
+    accepted: value => acceptedOwners.get(value) === state ? readAcceptedSourceCheckpoint(value) : null,
+    capture: endpoint => finalizeSyncedSourceReadOwner(state.binding, state.opening.readOwner!, endpoint,
+      () => data(state.openingDraft).root === state.root),
+    finalize: (endpoint, fence, validate, accepted) => finalizeSyncedSourceReadOwner(state.binding, state.opening.readOwner!, endpoint, () => {
+      const facts = accepted ? acceptedOwners.get(accepted) === state ? readAcceptedSourceCheckpoint(accepted) : null : null
+      if (accepted && !facts) return false
+      if (!validate()) return false
+      const opening = data(state.openingDraft)
+      if (facts && data(facts.draft).facts.receipt !== facts.draftReceipt) return false
+      const currentGrammar = ownDataGrammar()
+      if (!currentGrammar || !sameArray(state.root.grammar, currentGrammar)) return false
+      return opening.root === state.root && readMarkdownSourceDraftReceipt(state.openingDraft) === opening.facts.receipt
+        && (!facts || readMarkdownSourceDraftReceipt(facts.draft) === facts.draftReceipt)
+    }, fence) === fence
+  }
+}
+export async function openSyncedSourceReadOwner(checkpoint: SourceCheckpoint): Promise<SourceReadOwner | null> {
+  return (await readOwnerKernel()).openSourceReadOwner(checkpoint)
+}
+export async function adoptSyncedSourceBaseline(owner: SourceReadOwner): Promise<SourceSideAdoptionResult> {
+  return sourceReadOwnerModule ? sourceReadOwnerModule.adoptSourceBaseline(owner) : { status: 'unavailable', reason: 'unknown-owner' }
+}
+export async function adoptSyncedAcceptedSource(owner: SourceReadOwner, accepted: AcceptedSourceCheckpoint): Promise<SourceSideAdoptionResult> {
+  return sourceReadOwnerModule ? sourceReadOwnerModule.adoptAcceptedSource(owner, accepted) : { status: 'unavailable', reason: 'unknown-owner' }
+}
+export function closeSyncedSourceReadOwner(owner: SourceReadOwner): Promise<void> {
+  return sourceReadOwnerModule?.closeSourceReadOwner(owner) ?? Promise.resolve()
+}
+export function readAdoptedSourceSide(side: AdoptedSourceSide): AdoptedSourceSideFacts | null {
+  return sourceReadOwnerModule?.readAdoptedSourceSide(side) ?? null
 }

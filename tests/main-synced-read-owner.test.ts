@@ -10,7 +10,7 @@ import type { SyncedBindingKey, SyncedBindingSource, SyncedCanonicalWire, Synced
 import { SyncedValidationError, isSyncedUuid } from '../src/shared/syncedBlockValidation'
 import { canonicalSyncedPortableJson } from '../src/shared/syncedBlockPortable'
 import { captureSyncedGroupBindings } from '../src/main/database/synced-block-links'
-import { captureSyncedBaselineOwner, getSyncedOperationWithOwnedLinkSource, releaseSyncedReadOwner,
+import { captureSyncedBaselineOwner, getSyncedOperationWithOwnedLinkSource, releaseSyncedReadOwner, validateSyncedReadOwner,
   getSyncedGroupSnapshotsWithLinkSources, getSyncedOperationWithLinkSource, resolveSyncedBindingSource,
   SYNCED_BINDING_SOURCE_LIMITS } from '../src/main/database/synced-binding-sources'
 import { updateSyncedBlockGroup, restoreSyncedGroupOperation } from '../src/main/database/synced-blocks-content'
@@ -145,6 +145,7 @@ test('read-owner inputs are closed UUID data objects and never evaluate supplied
   let getterCalls = 0
   const APIs: Array<{ run: (input: unknown) => unknown; valid: Record<string, string> }> = [
     { run: input => captureSyncedBaselineOwner(db, input), valid: { groupId } },
+    { run: input => validateSyncedReadOwner(db, input), valid: { readOwnerId: owner.readOwnerId } },
     { run: input => getSyncedOperationWithOwnedLinkSource(db, input), valid: { readOwnerId: owner.readOwnerId, clientOperationId: ack.operationId } },
     { run: input => releaseSyncedReadOwner(db, input), valid: { readOwnerId: owner.readOwnerId } }
   ]
@@ -706,3 +707,70 @@ test('the actual 32 MiB budget fails atomically releases payloads and leaves eve
     assert.throws(() => baseline(db), /容量已满/)
   })
 }))
+
+test('owner validation is read-only at full capacity and never signs replacement capabilities', () => withDatabase(db => {
+  const owners = Array.from({ length: SYNCED_BINDING_SOURCE_LIMITS.tickets / 2 }, () => baseline(db))
+  assert.throws(() => baseline(db), /容量已满/)
+  db.pragma('query_only=ON')
+  try { readOnly(db, () => {
+    for (const owner of owners) {
+      const first = validateSyncedReadOwner(db, { readOwnerId: owner.readOwnerId })
+      assert.deepEqual(first, { status: 'ready', workspaceScope: uuid(900) })
+      if (first.status !== 'ready') throw new Error('The real original owner remains available')
+      first.workspaceScope = randomUUID()
+      assert.deepEqual(validateSyncedReadOwner(db, { readOwnerId: owner.readOwnerId }),
+        { status: 'ready', workspaceScope: uuid(900) })
+    }
+    assert.throws(() => baseline(db), /容量已满/)
+    releaseSyncedReadOwner(db, { readOwnerId: owners[0].readOwnerId })
+    assert.deepEqual(validateSyncedReadOwner(db, { readOwnerId: owners[0].readOwnerId }), { status: 'owner-unavailable' })
+    assert.deepEqual(validateSyncedReadOwner(db, { readOwnerId: randomUUID() }), { status: 'owner-unavailable' })
+    baseline(db)
+    assert.throws(() => baseline(db), /容量已满/)
+  }) } finally { db.pragma('query_only=OFF') }
+}))
+
+test('validation rejects the other actual connection and an unseen recovery epoch despite equal full snapshots', () => withTwoClients((a, b) => {
+  const owner = baseline(a), before = snapshot(a)
+  readOnly(b, () => assert.deepEqual(validateSyncedReadOwner(b, { readOwnerId: owner.readOwnerId }), { status: 'owner-unavailable' }))
+  b.prepare('UPDATE synced_workspace_state SET recovery_epoch=? WHERE singleton=1').run(randomUUID())
+  assert.deepEqual(snapshot(a), before)
+  readOnly(a, () => {
+    assert.deepEqual(validateSyncedReadOwner(a, { readOwnerId: owner.readOwnerId }), { status: 'owner-unavailable' })
+    const fresh = baseline(a)
+    assert.deepEqual(fresh.snapshot, owner.snapshot)
+    assert.deepEqual(validateSyncedReadOwner(a, { readOwnerId: fresh.readOwnerId }), { status: 'ready', workspaceScope: owner.workspaceScope })
+    assert.deepEqual(validateSyncedReadOwner(a, { readOwnerId: owner.readOwnerId }), { status: 'owner-unavailable' })
+  })
+}))
+
+test('validation refuses uncommitted caller transactions without permanently revoking the original owner', () => withDatabase(db => {
+  const owner = baseline(db), input = { readOwnerId: owner.readOwnerId }, before = persisted(db)
+  assert.throws(() => db.transaction(() => validateSyncedReadOwner(db, input))(), /独占只读事务/)
+  assert.throws(() => db.transaction(() => {
+    db.prepare('UPDATE synced_groups SET creation_id=? WHERE id=?').run(randomUUID(), groupId)
+    assert.throws(() => validateSyncedReadOwner(db, input), /独占只读事务/)
+    throw new Error('Rollback validation fixture')
+  }).immediate(), /Rollback validation fixture/)
+  assert.deepEqual(persisted(db), before)
+  readOnly(db, () => assert.deepEqual(validateSyncedReadOwner(db, input), { status: 'ready', workspaceScope: owner.workspaceScope }))
+}))
+
+test('validation follows immutable incarnation rather than content or lifecycle writer state', () => withDatabase(db => {
+  seed(db); install27(db)
+  const fixture = createdGroup27(db), owner = baseline(db, fixture.groupId), input = { readOwnerId: owner.readOwnerId }
+  const ready = () => readOnly(db, () => assert.deepEqual(validateSyncedReadOwner(db, input), { status: 'ready', workspaceScope: owner.workspaceScope }))
+  retireFixture27(db, fixture); ready()
+  reactivateFixture27(db, fixture); ready()
+  saveBody(db, 'A later content revision', fixture.groupId); ready()
+}))
+
+test('validation rejects a replacement immutable incarnation before signing another source', () => {
+  for (const field of ['creation', 'createdAt', 'origin'] as const) withDatabase(db => {
+    const current = baseline(db)
+    if (field === 'creation') db.prepare('UPDATE synced_groups SET creation_id=? WHERE id=?').run(randomUUID(), groupId)
+    else if (field === 'createdAt') db.prepare('UPDATE synced_groups SET created_at=? WHERE id=?').run('2030-01-01T00:00:00.000Z', groupId)
+    else db.prepare('UPDATE synced_groups SET origin_json=? WHERE id=?').run(JSON.stringify({ ...current.snapshot.origin, pathAtCreation: 'Other/Origin' }), groupId)
+    readOnly(db, () => assert.deepEqual(validateSyncedReadOwner(db, { readOwnerId: current.readOwnerId }), { status: 'owner-unavailable' }))
+  })
+})
